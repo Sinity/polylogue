@@ -36,12 +36,13 @@ from polylogue.sources.source_acquisition_components import (
     replay_zip_entry_acquisition_payloads,
     sniff_zip_provider,
 )
-from polylogue.sources.sqlite_snapshot import is_sqlite_path, sqlite_member_revision
+from polylogue.sources.sqlite_snapshot import is_sqlite_path, sqlite_member_revision_and_size
 from polylogue.sources.walk_faults import WalkRefusedError
 from polylogue.storage.archive_identity import MAINTENANCE_STATE_DIRNAME
 
 _PENDING_DIR = "production-source-baseline"
 _PENDING_FILE = "pending.json"
+MATERIAL_BYTE_DEFINITION = "retained-canonical-payload-v1"
 
 
 class ProductionBaselineError(RuntimeError):
@@ -56,6 +57,7 @@ class SourceDecision:
     reason: str
     revision: str | None = None
     source_index: int | None = None
+    material_bytes: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,9 +71,37 @@ class ProductionSourceBaseline:
     def accepted(self) -> tuple[SourceDecision, ...]:
         return tuple(row for row in self.decisions if row.disposition == "accepted")
 
+    @property
+    def prospective_material_bytes(self) -> int | None:
+        sizes = [row.material_bytes for row in self.accepted]
+        return None if any(size is None for size in sizes) else sum(size for size in sizes if size is not None)
+
+    def prospective_retained_allocation_bytes(self, block_bytes: int) -> int | None:
+        """Conservatively charge each accepted payload as a separate retained blob."""
+        if block_bytes <= 0:
+            raise ValueError("allocation block size must be positive")
+        if self.prospective_material_bytes is None:
+            return None
+        return sum(
+            ((row.material_bytes + block_bytes - 1) // block_bytes) * block_bytes
+            for row in self.accepted
+            if row.material_bytes is not None
+        )
+
+    def prospective_source_db_allocation_bytes(self, block_bytes: int) -> int:
+        """Estimate one metadata allocation per accepted raw revision."""
+        if block_bytes <= 0:
+            raise ValueError("allocation block size must be positive")
+        return sum(
+            ((max(block_bytes, len(row.path.encode("utf-8")) + 512) + block_bytes - 1) // block_bytes) * block_bytes
+            for row in self.accepted
+        )
+
     def as_dict(self) -> dict[str, object]:
         return {
-            "schema": "polylogue.production-source-baseline.v1",
+            "schema": "polylogue.production-source-baseline.v2",
+            "material_byte_definition": MATERIAL_BYTE_DEFINITION,
+            "prospective_material_bytes": self.prospective_material_bytes,
             "operation_id": self.operation_id,
             "source_signature": self.source_signature,
             "decisions": [
@@ -82,6 +112,7 @@ class ProductionSourceBaseline:
                     "reason": row.reason,
                     "revision": row.revision,
                     "source_index": row.source_index,
+                    "material_bytes": row.material_bytes,
                 }
                 for row in self.decisions
             ],
@@ -125,8 +156,10 @@ class ProductionSourceBaseline:
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> ProductionSourceBaseline:
         try:
-            if payload["schema"] != "polylogue.production-source-baseline.v1":
+            if payload["schema"] != "polylogue.production-source-baseline.v2":
                 raise ValueError("schema")
+            if payload["material_byte_definition"] != MATERIAL_BYTE_DEFINITION:
+                raise ValueError("material_byte_definition")
             raw_decisions = payload["decisions"]
             if not isinstance(raw_decisions, list):
                 raise ValueError("decisions")
@@ -138,12 +171,18 @@ class ProductionSourceBaseline:
                     reason=str(row["reason"]),
                     revision=None if row["revision"] is None else str(row["revision"]),
                     source_index=None if row.get("source_index") is None else int(row["source_index"]),
+                    material_bytes=None if row.get("material_bytes") is None else int(row["material_bytes"]),
                 )
                 for row in raw_decisions
                 if isinstance(row, dict)
             )
             if len(decisions) != len(raw_decisions):
                 raise ValueError("decisions")
+            if any(
+                row.material_bytes is not None and (row.disposition != "accepted" or row.material_bytes < 0)
+                for row in decisions
+            ):
+                raise ValueError("material_bytes")
             result = cls(
                 operation_id=str(payload["operation_id"]),
                 source_signature=str(payload["source_signature"]),
@@ -235,14 +274,16 @@ def merge_pending_production_baseline(
     return _seal(current.operation_id, current.source_signature, tuple(rows))
 
 
-def _revision(path: Path) -> str:
+def _revision(path: Path) -> tuple[str, int]:
     if is_sqlite_path(path):
-        return sqlite_member_revision(path)
+        return sqlite_member_revision_and_size(path)
     digest = hashlib.sha256()
+    size = 0
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
-    return digest.hexdigest()
+            size += len(chunk)
+    return digest.hexdigest(), size
 
 
 def _archive_members(path: Path, source_name: str) -> tuple[SourceDecision, ...]:
@@ -300,6 +341,7 @@ def _archive_members(path: Path, source_name: str) -> tuple[SourceDecision, ...]
                             "archive_member",
                             hashlib.sha256(payload.payload_bytes).hexdigest(),
                             zip_member_source_index(entry_ordinal=ordinals[id(info)], split_index=split),
+                            len(payload.payload_bytes),
                         )
                     )
             except (OSError, UnicodeError, ValueError, ZipBombError, zipfile.BadZipFile) as exc:
@@ -397,11 +439,14 @@ def capture_production_source_baseline(
                     decisions.append(SourceDecision(source_name, str(path), "excluded", "expanded_to_members"))
                     decisions.extend(_archive_members(path, source_name))
                     continue
-                revision = _revision(path)
+                revision, material_bytes = _revision(path)
             except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as exc:
                 decisions.append(SourceDecision(source_name, str(path), "fault", f"revision_unreadable:{exc}"))
                 continue
         else:
             revision = None
-        decisions.append(SourceDecision(source_name, str(path), disposition, reason, revision))
+            material_bytes = None
+        decisions.append(
+            SourceDecision(source_name, str(path), disposition, reason, revision, material_bytes=material_bytes)
+        )
     return _seal(operation_id, signature, tuple(decisions))

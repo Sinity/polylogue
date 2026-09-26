@@ -18,6 +18,7 @@ from polylogue.core.binary_signatures import looks_like_sqlite_bytes as _looks_l
 from polylogue.sources.sqlite_export import (
     MemberExportScope,
     logical_export_digest,
+    logical_export_digest_and_size,
     looks_like_logical_export_path,
     read_export_header,
     write_logical_export,
@@ -231,6 +232,11 @@ def sqlite_member_revision(path: Path, *, immutable: bool = False) -> str:
     A whole-database digest would move for a commit in a table nothing reads.
     """
     return logical_export_digest(path, scope=member_export_scope(path), immutable=immutable)
+
+
+def sqlite_member_revision_and_size(path: Path, *, immutable: bool = False) -> tuple[str, int]:
+    """Return the retained logical export's revision and byte length together."""
+    return logical_export_digest_and_size(path, scope=member_export_scope(path), immutable=immutable)
 
 
 def is_sqlite_page_image(blob_path: Path) -> bool:

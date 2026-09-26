@@ -41,7 +41,7 @@ ALLOCATION_UNIT_BYTES: Final = 512
 
 #: Index bytes produced per byte of durable evidence (``source.db`` + blob
 #: store) when no build has yet been measured on this archive. Superseded for
-#: an archive as soon as one recorded receipt carries an observed peak.
+#: an archive as soon as one recorded receipt carries a final candidate sample.
 DEFAULT_INDEX_BYTES_PER_EVIDENCE_BYTE: Final = 4.0
 
 #: WAL written against the candidate index during construction, and SQLite
@@ -58,7 +58,7 @@ RESERVE_FLOOR_BYTES: Final = 256 * 1024 * 1024
 RECEIPT_GROWTH_FLOOR_BYTES: Final = 16 * 1024 * 1024
 
 CAPACITY_RECEIPT_DIRNAME: Final = "candidate-capacity"
-CAPACITY_RECEIPT_SCHEMA: Final = "polylogue.candidate-capacity.v1"
+CAPACITY_RECEIPT_SCHEMA: Final = "polylogue.candidate-capacity.v2"
 
 _BLOB_DIRNAME: Final = "blob"
 _DURABLE_TIER_FILENAMES: Final = ("source.db", "user.db", "audit.db")
@@ -87,13 +87,17 @@ class InsufficientCapacityError(RuntimeError):
     """Verified free space cannot hold the candidate this build would allocate."""
 
     def __init__(self, projection: CandidateCapacityProjection) -> None:
+        deficient = ", ".join(
+            f"{'/'.join(row.destinations)}: required {row.required_bytes}, available {row.available_bytes}"
+            for row in projection.filesystem_requirements
+            if row.shortfall_bytes > 0
+        )
         super().__init__(
             "insufficient free space for a candidate index build: "
-            f"required {projection.required_free_bytes} bytes, "
-            f"available {projection.available_bytes} bytes, "
-            f"short by {projection.shortfall_bytes} bytes "
+            f"{deficient}; short by {projection.shortfall_bytes} bytes "
             f"(projected index {projection.projected_index_bytes} bytes from "
-            f"{projection.evidence_bytes} bytes of durable evidence, "
+            f"{projection.evidence_bytes} existing evidence bytes and "
+            f"{projection.prospective_retained_allocation_bytes} prospective retained bytes, "
             f"calibration {projection.calibration_source})"
         )
         self.projection = projection
@@ -147,6 +151,7 @@ class ArchiveCapacityInventory:
     populations: tuple[PopulationMeasurement, ...]
     generations: tuple[GenerationMeasurement, ...]
     available_bytes: int
+    destinations: tuple[CapacityDestination, ...] = ()
 
     @property
     def total_allocated_bytes(self) -> int:
@@ -170,14 +175,54 @@ class ArchiveCapacityInventory:
             "populations": [population.as_dict() for population in self.populations],
             "generations": [generation.as_dict() for generation in self.generations],
             "available_bytes": self.available_bytes,
+            "destinations": [destination.as_dict() for destination in self.destinations],
             "total_allocated_bytes": self.total_allocated_bytes,
             "total_logical_bytes": self.total_logical_bytes,
         }
 
 
 @dataclass(frozen=True, slots=True)
+class CapacityDestination:
+    name: str
+    probe: Path
+    device: int
+    available_bytes: int
+    block_bytes: int
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "probe": str(self.probe),
+            "device": self.device,
+            "available_bytes": self.available_bytes,
+            "block_bytes": self.block_bytes,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class FilesystemRequirement:
+    device: int
+    destinations: tuple[str, ...]
+    required_bytes: int
+    available_bytes: int
+
+    @property
+    def shortfall_bytes(self) -> int:
+        return max(0, self.required_bytes - self.available_bytes)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "device": self.device,
+            "destinations": list(self.destinations),
+            "required_bytes": self.required_bytes,
+            "available_bytes": self.available_bytes,
+            "shortfall_bytes": self.shortfall_bytes,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class CapacityReceipt:
-    """One build's predicted and observed peak, the input to later calibration."""
+    """One build's prediction and sampled candidate allocation."""
 
     operation_id: str
     evidence_bytes: int
@@ -187,15 +232,19 @@ class CapacityReceipt:
     predicted_peak_allocated_bytes: int
     required_free_bytes: int
     available_bytes_at_prediction: int
+    shortfall_bytes: int
     baseline_allocated_bytes: int
-    actual_peak_index_bytes: int = 0
+    prospective_material_bytes: int = 0
+    prospective_retained_allocation_bytes: int = 0
+    prospective_source_db_allocation_bytes: int = 0
+    baseline_digest: str | None = None
+    material_byte_definition: str | None = None
+    status: str = "admitted"
+    actual_evidence_bytes: int = 0
+    final_candidate_allocated_bytes: int = 0
+    candidate_generation_id: str | None = None
+    filesystem_requirements: tuple[FilesystemRequirement, ...] = ()
     observations: int = 0
-
-    @property
-    def actual_peak_allocated_bytes(self) -> int:
-        if self.actual_peak_index_bytes <= 0:
-            return 0
-        return self.baseline_allocated_bytes + self.actual_peak_index_bytes
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -208,9 +257,18 @@ class CapacityReceipt:
             "predicted_peak_allocated_bytes": self.predicted_peak_allocated_bytes,
             "required_free_bytes": self.required_free_bytes,
             "available_bytes_at_prediction": self.available_bytes_at_prediction,
+            "shortfall_bytes": self.shortfall_bytes,
             "baseline_allocated_bytes": self.baseline_allocated_bytes,
-            "actual_peak_index_bytes": self.actual_peak_index_bytes,
-            "actual_peak_allocated_bytes": self.actual_peak_allocated_bytes,
+            "prospective_material_bytes": self.prospective_material_bytes,
+            "prospective_retained_allocation_bytes": self.prospective_retained_allocation_bytes,
+            "prospective_source_db_allocation_bytes": self.prospective_source_db_allocation_bytes,
+            "baseline_digest": self.baseline_digest,
+            "material_byte_definition": self.material_byte_definition,
+            "status": self.status,
+            "actual_evidence_bytes": self.actual_evidence_bytes,
+            "final_candidate_allocated_bytes": self.final_candidate_allocated_bytes,
+            "candidate_generation_id": self.candidate_generation_id,
+            "filesystem_requirements": [requirement.as_dict() for requirement in self.filesystem_requirements],
             "observations": self.observations,
         }
 
@@ -230,8 +288,18 @@ class CapacityReceipt:
             predicted_peak_allocated_bytes=_int_field(payload, "predicted_peak_allocated_bytes"),
             required_free_bytes=_int_field(payload, "required_free_bytes"),
             available_bytes_at_prediction=_int_field(payload, "available_bytes_at_prediction"),
+            shortfall_bytes=_int_field(payload, "shortfall_bytes"),
             baseline_allocated_bytes=_int_field(payload, "baseline_allocated_bytes"),
-            actual_peak_index_bytes=_int_field(payload, "actual_peak_index_bytes"),
+            prospective_material_bytes=_int_field(payload, "prospective_material_bytes"),
+            prospective_retained_allocation_bytes=_int_field(payload, "prospective_retained_allocation_bytes"),
+            prospective_source_db_allocation_bytes=_int_field(payload, "prospective_source_db_allocation_bytes"),
+            baseline_digest=_str_field(payload, "baseline_digest") or None,
+            material_byte_definition=_str_field(payload, "material_byte_definition") or None,
+            status=_str_field(payload, "status"),
+            actual_evidence_bytes=_int_field(payload, "actual_evidence_bytes"),
+            final_candidate_allocated_bytes=_int_field(payload, "final_candidate_allocated_bytes"),
+            candidate_generation_id=_str_field(payload, "candidate_generation_id") or None,
+            filesystem_requirements=_requirements_from_payload(payload.get("filesystem_requirements")),
             observations=_int_field(payload, "observations"),
         )
 
@@ -251,21 +319,23 @@ class CandidateCapacityProjection:
     receipt_growth_bytes: int
     reserve_bytes: int
     retained_allocated_bytes: int
+    prospective_material_bytes: int = 0
+    prospective_retained_allocation_bytes: int = 0
+    prospective_source_db_allocation_bytes: int = 0
+    baseline_digest: str | None = None
+    material_byte_definition: str | None = None
+    filesystem_requirements: tuple[FilesystemRequirement, ...] = ()
 
     @property
     def required_free_bytes(self) -> int:
-        return (
-            self.projected_index_bytes
-            + self.wal_amplification_bytes
-            + self.temporary_amplification_bytes
-            + self.receipt_growth_bytes
-            + self.reserve_bytes
-        )
+        return sum(requirement.required_bytes for requirement in self.filesystem_requirements)
 
     @property
     def predicted_peak_allocated_bytes(self) -> int:
         return (
             self.retained_allocated_bytes
+            + self.prospective_retained_allocation_bytes
+            + self.prospective_source_db_allocation_bytes
             + self.projected_index_bytes
             + self.wal_amplification_bytes
             + self.temporary_amplification_bytes
@@ -274,15 +344,15 @@ class CandidateCapacityProjection:
 
     @property
     def available_bytes(self) -> int:
-        return self.inventory.available_bytes
+        return sum(requirement.available_bytes for requirement in self.filesystem_requirements)
 
     @property
     def sufficient(self) -> bool:
-        return self.available_bytes >= self.required_free_bytes
+        return all(requirement.shortfall_bytes == 0 for requirement in self.filesystem_requirements)
 
     @property
     def shortfall_bytes(self) -> int:
-        return max(0, self.required_free_bytes - self.available_bytes)
+        return sum(requirement.shortfall_bytes for requirement in self.filesystem_requirements)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -296,6 +366,12 @@ class CandidateCapacityProjection:
             "receipt_growth_bytes": self.receipt_growth_bytes,
             "reserve_bytes": self.reserve_bytes,
             "retained_allocated_bytes": self.retained_allocated_bytes,
+            "prospective_material_bytes": self.prospective_material_bytes,
+            "prospective_retained_allocation_bytes": self.prospective_retained_allocation_bytes,
+            "prospective_source_db_allocation_bytes": self.prospective_source_db_allocation_bytes,
+            "baseline_digest": self.baseline_digest,
+            "material_byte_definition": self.material_byte_definition,
+            "filesystem_requirements": [requirement.as_dict() for requirement in self.filesystem_requirements],
             "required_free_bytes": self.required_free_bytes,
             "predicted_peak_allocated_bytes": self.predicted_peak_allocated_bytes,
             "available_bytes": self.available_bytes,
@@ -517,24 +593,52 @@ def _physical_archive_root(location: ArchiveLocation) -> Path:
     return active.parent
 
 
-def _generations_available_bytes(archive_root: Path, generations_root: Path) -> int:
-    """Free space where the generations will actually be written.
-
-    ``IndexGenerationStore.generations_root`` is ``active_pointer.parent /
-    GENERATIONS_DIRNAME``, which a symlink-farm layout can resolve onto a
-    different filesystem from the archive root.  Measuring the root's
-    filesystem admitted or refused a candidate on free space that the build
-    would never consume.  Before the first generation exists the directory is
-    absent, so the nearest existing ancestor is the honest stand-in.
-    """
-    probe = generations_root.resolve(strict=False)
+def _capacity_destination(name: str, path: Path) -> CapacityDestination:
+    """Probe the filesystem of an existing destination or its nearest ancestor."""
+    probe = path.resolve(strict=False)
     while not probe.exists():
         parent = probe.parent
         if parent == probe:
-            probe = archive_root
-            break
+            raise ArchiveCapacityError(f"cannot locate filesystem for {name}: {path}")
         probe = parent
-    return _available_bytes(probe)
+    try:
+        metadata = probe.stat()
+        statistics = os.statvfs(probe)
+    except OSError as exc:
+        raise ArchiveCapacityError(f"cannot measure filesystem for {name}: {probe}") from exc
+    block_bytes = int(statistics.f_frsize)
+    if block_bytes <= 0:
+        raise ArchiveCapacityError(f"invalid allocation block size for {name}: {probe}")
+    return CapacityDestination(name, probe, int(metadata.st_dev), _available_bytes(probe), block_bytes)
+
+
+def evidence_allocation_block_bytes(archive_root: Path) -> tuple[int, int]:
+    """Return allocation units at the blob and source database destinations."""
+    root = Path(archive_root)
+    return (
+        _capacity_destination("blob", root / _BLOB_DIRNAME).block_bytes,
+        _capacity_destination("source_db", root / "source.db").block_bytes,
+    )
+
+
+def _filesystem_requirements(
+    destinations: tuple[CapacityDestination, ...], growth: dict[str, int]
+) -> tuple[tuple[FilesystemRequirement, ...], int]:
+    grouped: dict[int, tuple[list[str], int, int]] = {}
+    for destination in destinations:
+        amount = growth[destination.name]
+        if amount <= 0:
+            continue
+        names, total, available = grouped.get(destination.device, ([], 0, destination.available_bytes))
+        names.append(destination.name)
+        grouped[destination.device] = (names, total + amount, min(available, destination.available_bytes))
+    requirements: list[FilesystemRequirement] = []
+    total_reserve = 0
+    for device, (names, amount, available) in grouped.items():
+        reserve = max(RESERVE_FLOOR_BYTES, math.ceil(amount * RESERVE_FRACTION))
+        total_reserve += reserve
+        requirements.append(FilesystemRequirement(device, tuple(names), amount + reserve, available))
+    return tuple(requirements), total_reserve
 
 
 def _available_bytes(path: Path) -> int:
@@ -662,13 +766,20 @@ def measure_archive_capacity(archive_root: Path) -> ArchiveCapacityInventory:
             continue
         _measure_path(unclassified, Path(entry.path), label="archive root entry")
 
+    destinations = (
+        _capacity_destination("candidate", store_generations_root),
+        _capacity_destination("blob", root / _BLOB_DIRNAME),
+        _capacity_destination("source_db", root / "source.db"),
+        _capacity_destination("receipt", root / MAINTENANCE_STATE_DIRNAME),
+    )
     return ArchiveCapacityInventory(
         archive_root=root,
         active_index_path=location.active_index_path,
         active_generation_id=_active_generation_id(location),
         populations=tuple(accumulators[name].measurement() for name in POPULATION_NAMES),
         generations=generations,
-        available_bytes=_generations_available_bytes(root, store_generations_root),
+        available_bytes=destinations[0].available_bytes,
+        destinations=destinations,
     )
 
 
@@ -715,8 +826,24 @@ def _measure_generations(
     return tuple(measurements)
 
 
-def project_candidate_capacity(archive_root: Path) -> CandidateCapacityProjection:
+def project_candidate_capacity(
+    archive_root: Path,
+    *,
+    prospective_material_bytes: int = 0,
+    prospective_retained_allocation_bytes: int | None = None,
+    prospective_source_db_allocation_bytes: int = 0,
+    baseline_digest: str | None = None,
+    material_byte_definition: str | None = None,
+) -> CandidateCapacityProjection:
     """Project one candidate index build against the measured archive tree."""
+    if prospective_material_bytes < 0:
+        raise ArchiveCapacityError("prospective material bytes cannot be negative")
+    if prospective_retained_allocation_bytes is None:
+        prospective_retained_allocation_bytes = prospective_material_bytes
+    if prospective_retained_allocation_bytes < prospective_material_bytes:
+        raise ArchiveCapacityError("prospective retained allocation cannot be smaller than material bytes")
+    if prospective_source_db_allocation_bytes < 0:
+        raise ArchiveCapacityError("prospective source database allocation cannot be negative")
     inventory = measure_archive_capacity(archive_root)
     evidence_bytes = (
         inventory.population("durable_tiers").allocated_bytes + inventory.population("blob").allocated_bytes
@@ -729,7 +856,9 @@ def project_candidate_capacity(archive_root: Path) -> CandidateCapacityProjectio
     # The candidate reproduces the current index from the same evidence: it is
     # no smaller than the largest generation on disk, and no smaller than what
     # the evidence has been observed to expand into.
-    projected_index_bytes = max(observed_index_bytes, math.ceil(evidence_bytes * ratio))
+    projected_index_bytes = max(
+        observed_index_bytes, math.ceil((evidence_bytes + prospective_retained_allocation_bytes) * ratio)
+    )
     wal_amplification_bytes = math.ceil(projected_index_bytes * WAL_AMPLIFICATION_FRACTION)
     temporary_amplification_bytes = math.ceil(projected_index_bytes * TEMPORARY_AMPLIFICATION_FRACTION)
     receipt_growth_bytes = max(
@@ -737,8 +866,15 @@ def project_candidate_capacity(archive_root: Path) -> CandidateCapacityProjectio
         inventory.population("maintenance_receipts").allocated_bytes
         + inventory.population("rebuild_transactions").allocated_bytes,
     )
-    construction_bytes = projected_index_bytes + wal_amplification_bytes + temporary_amplification_bytes
-    reserve_bytes = max(RESERVE_FLOOR_BYTES, math.ceil(construction_bytes * RESERVE_FRACTION))
+    requirements, reserve_bytes = _filesystem_requirements(
+        inventory.destinations,
+        {
+            "candidate": projected_index_bytes + wal_amplification_bytes + temporary_amplification_bytes,
+            "blob": prospective_retained_allocation_bytes,
+            "source_db": prospective_source_db_allocation_bytes,
+            "receipt": receipt_growth_bytes,
+        },
+    )
     return CandidateCapacityProjection(
         inventory=inventory,
         evidence_bytes=evidence_bytes,
@@ -751,13 +887,38 @@ def project_candidate_capacity(archive_root: Path) -> CandidateCapacityProjectio
         receipt_growth_bytes=receipt_growth_bytes,
         reserve_bytes=reserve_bytes,
         retained_allocated_bytes=inventory.total_allocated_bytes,
+        prospective_material_bytes=prospective_material_bytes,
+        prospective_retained_allocation_bytes=prospective_retained_allocation_bytes,
+        prospective_source_db_allocation_bytes=prospective_source_db_allocation_bytes,
+        baseline_digest=baseline_digest,
+        material_byte_definition=material_byte_definition,
+        filesystem_requirements=requirements,
     )
 
 
-def require_candidate_capacity(archive_root: Path, *, operation_id: str) -> CandidateCapacityProjection:
+def require_candidate_capacity(
+    archive_root: Path,
+    *,
+    operation_id: str,
+    prospective_material_bytes: int = 0,
+    prospective_retained_allocation_bytes: int | None = None,
+    prospective_source_db_allocation_bytes: int = 0,
+    baseline_digest: str | None = None,
+    material_byte_definition: str | None = None,
+) -> CandidateCapacityProjection:
     """Refuse a candidate build whose projected peak does not fit, before allocating."""
-    projection = project_candidate_capacity(archive_root)
+    projection = project_candidate_capacity(
+        archive_root,
+        prospective_material_bytes=prospective_material_bytes,
+        prospective_retained_allocation_bytes=prospective_retained_allocation_bytes,
+        prospective_source_db_allocation_bytes=prospective_source_db_allocation_bytes,
+        baseline_digest=baseline_digest,
+        material_byte_definition=material_byte_definition,
+    )
     if not projection.sufficient:
+        record_capacity_prediction(
+            Path(archive_root), operation_id=operation_id, projection=projection, status="refused"
+        )
         raise InsufficientCapacityError(projection)
     record_capacity_prediction(Path(archive_root), operation_id=operation_id, projection=projection)
     return projection
@@ -784,7 +945,7 @@ def _receipt_filename(operation_id: str) -> str:
 
 
 def record_capacity_prediction(
-    archive_root: Path, *, operation_id: str, projection: CandidateCapacityProjection
+    archive_root: Path, *, operation_id: str, projection: CandidateCapacityProjection, status: str = "admitted"
 ) -> CapacityReceipt:
     """Persist what this build predicted, so its outcome can calibrate the next one."""
     filename = _receipt_filename(operation_id)
@@ -797,7 +958,15 @@ def record_capacity_prediction(
         predicted_peak_allocated_bytes=projection.predicted_peak_allocated_bytes,
         required_free_bytes=projection.required_free_bytes,
         available_bytes_at_prediction=projection.available_bytes,
+        shortfall_bytes=projection.shortfall_bytes,
         baseline_allocated_bytes=projection.retained_allocated_bytes,
+        prospective_material_bytes=projection.prospective_material_bytes,
+        prospective_retained_allocation_bytes=projection.prospective_retained_allocation_bytes,
+        prospective_source_db_allocation_bytes=projection.prospective_source_db_allocation_bytes,
+        baseline_digest=projection.baseline_digest,
+        material_byte_definition=projection.material_byte_definition,
+        status=status,
+        filesystem_requirements=projection.filesystem_requirements,
     )
     _ensure_maintenance_state(Path(archive_root))
     with maintenance_receipt_directory(Path(archive_root), CAPACITY_RECEIPT_DIRNAME) as directory_fd:
@@ -808,7 +977,7 @@ def record_capacity_prediction(
 def record_capacity_observation(
     archive_root: Path, *, operation_id: str, candidate_root: Path
 ) -> CapacityReceipt | None:
-    """Raise the recorded peak to what the candidate has actually allocated.
+    """Record the candidate's allocation at this observation boundary.
 
     Returns ``None`` when no prediction was recorded for ``operation_id``: an
     observation without a prediction calibrates nothing.
@@ -823,11 +992,17 @@ def record_capacity_observation(
         if raw is None:
             return None
         recorded = CapacityReceipt.from_payload(_decode(raw))
-        if recorded is None:
+        if recorded is None or recorded.status != "admitted":
             return None
+        inventory = measure_archive_capacity(Path(archive_root))
+        actual_evidence_bytes = (
+            inventory.population("durable_tiers").allocated_bytes + inventory.population("blob").allocated_bytes
+        )
         observed = replace(
             recorded,
-            actual_peak_index_bytes=max(recorded.actual_peak_index_bytes, isolated.allocated),
+            actual_evidence_bytes=actual_evidence_bytes,
+            final_candidate_allocated_bytes=isolated.allocated,
+            candidate_generation_id=Path(candidate_root).name,
             observations=recorded.observations + 1,
         )
         atomic_replace_receipt(directory_fd, filename, _encode(observed.as_dict()))
@@ -859,9 +1034,11 @@ def calibrated_index_ratio(archive_root: Path) -> tuple[float, str]:
     except (OSError, RuntimeError):
         return DEFAULT_INDEX_BYTES_PER_EVIDENCE_BYTE, "default"
     ratios = [
-        receipt.actual_peak_index_bytes / receipt.evidence_bytes
+        receipt.final_candidate_allocated_bytes / receipt.actual_evidence_bytes
         for receipt in receipts
-        if receipt.actual_peak_index_bytes > 0 and receipt.evidence_bytes > 0
+        if receipt.status == "admitted"
+        and receipt.final_candidate_allocated_bytes > 0
+        and receipt.actual_evidence_bytes > 0
     ]
     if not ratios:
         return DEFAULT_INDEX_BYTES_PER_EVIDENCE_BYTE, "default"
@@ -878,6 +1055,27 @@ def _decode(raw: bytes) -> dict[str, object] | None:
     except ValueError:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _requirements_from_payload(value: object) -> tuple[FilesystemRequirement, ...]:
+    if not isinstance(value, list):
+        return ()
+    requirements: list[FilesystemRequirement] = []
+    for row in value:
+        if not isinstance(row, dict) or not isinstance(row.get("destinations"), list):
+            return ()
+        names = row["destinations"]
+        if not all(isinstance(name, str) for name in names):
+            return ()
+        requirements.append(
+            FilesystemRequirement(
+                device=_int_field(row, "device"),
+                destinations=tuple(names),
+                required_bytes=_int_field(row, "required_bytes"),
+                available_bytes=_int_field(row, "available_bytes"),
+            )
+        )
+    return tuple(requirements)
 
 
 def _int_field(payload: dict[str, object], name: str) -> int:

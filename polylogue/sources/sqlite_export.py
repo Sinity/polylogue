@@ -313,9 +313,11 @@ class _HashingSink:
 
     def __init__(self) -> None:
         self._digest = hashlib.sha256()
+        self.byte_count = 0
 
     def write(self, payload: bytes) -> int:
         self._digest.update(payload)
+        self.byte_count += len(payload)
         return len(payload)
 
     def hexdigest(self) -> str:
@@ -327,6 +329,13 @@ def logical_export_digest(source: Path, **kwargs: Any) -> str:
     sink = _HashingSink()
     write_logical_export(source, sink, **kwargs)
     return sink.hexdigest()
+
+
+def logical_export_digest_and_size(source: Path, **kwargs: Any) -> tuple[str, int]:
+    """Digest and count the canonical export in the same SQLite read transaction."""
+    sink = _HashingSink()
+    write_logical_export(source, sink, **kwargs)
+    return sink.hexdigest(), sink.byte_count
 
 
 def looks_like_logical_export_bytes(payload: bytes) -> bool:

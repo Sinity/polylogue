@@ -256,9 +256,11 @@ def test_the_cold_build_refuses_before_it_allocates_a_generation(
 
     assert refusal.value.projection.shortfall_bytes > 0
     assert list((tmp_path / GENERATIONS_DIRNAME).glob("gen-*")) == []
-    # A refused build records nothing: a prediction receipt for a build that
-    # never ran would calibrate the next projection from fiction.
-    assert read_capacity_receipts(tmp_path) == ()
+    # A refusal records its bound inputs and shortfall, but cannot calibrate
+    # a later projection as if a candidate had been built.
+    refused = read_capacity_receipts(tmp_path)
+    assert len(refused) == 1
+    assert refused[0].status == "refused"
 
 
 def test_a_first_daemon_start_is_not_refused_by_the_preflight(tmp_path: Path) -> None:
@@ -282,7 +284,8 @@ def test_a_first_daemon_start_is_not_refused_by_the_preflight(tmp_path: Path) ->
         receipt = receipts[0]
         assert receipt.required_free_bytes < 512 * 1024 * 1024
         assert receipt.available_bytes_at_prediction >= receipt.required_free_bytes
-        assert receipt.actual_peak_index_bytes == 0
+        assert receipt.final_candidate_allocated_bytes == 0
+        assert receipt.baseline_digest == generation.source_baseline.digest
     finally:
         generation.discard()
 
@@ -292,7 +295,7 @@ def test_a_promoted_cold_build_calibrates_the_next_projection(tmp_path: Path, co
 
     ``record_capacity_observation`` used to have exactly one caller, on the
     manual rebuild lifecycle that had no production entry point, so every
-    recorded receipt kept ``actual_peak_index_bytes == 0`` and every
+    recorded receipt kept ``final_candidate_allocated_bytes == 0`` and every
     projection forever used the unmeasured 4.0 constant.
 
     Anti-vacuity: deleting the ``observe_candidate_capacity`` call from
@@ -310,11 +313,58 @@ def test_a_promoted_cold_build_calibrates_the_next_projection(tmp_path: Path, co
 
     receipt = read_capacity_receipts(tmp_path)[0]
     assert receipt.operation_id == cold_build.operation_id
-    assert receipt.actual_peak_index_bytes > 0
+    assert receipt.final_candidate_allocated_bytes > 0
+    assert receipt.candidate_generation_id == cold_build.generation_id
     assert receipt.observations == 1
     ratio, source = calibrated_index_ratio(tmp_path)
     assert source == "recorded"
     assert ratio > 0
+
+
+def test_fresh_capacity_uses_sealed_material_without_a_second_source_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.sources.live import production_baseline
+
+    _free_space(monkeypatch, 1024**3)
+    real_revision = production_baseline._revision
+    reads = 0
+
+    def measured_revision(path: Path) -> tuple[str, int]:
+        nonlocal reads
+        reads += 1
+        digest, _size = real_revision(path)
+        return digest, 2 * 1024**3
+
+    monkeypatch.setattr(production_baseline, "_revision", measured_revision)
+    large_root = tmp_path / "large"
+    large_source = tmp_path / "large-source"
+    large_source.mkdir()
+    (large_source / "session.json").write_bytes(b"{}")
+    assert active_index_generation_is_empty(large_root)
+    with pytest.raises(InsufficientCapacityError):
+        ColdBuildGeneration.begin(
+            large_root, reason="test", sources=(WatchSource("fixture", large_source, suffixes=(".json",)),)
+        )
+    assert reads == 1
+    assert list((large_root / GENERATIONS_DIRNAME).glob("gen-*")) == []
+    refusal = read_capacity_receipts(large_root)[0]
+    assert refusal.prospective_material_bytes == 2 * 1024**3
+    assert refusal.status == "refused"
+
+    monkeypatch.setattr(production_baseline, "_revision", real_revision)
+    small_root = tmp_path / "small"
+    assert active_index_generation_is_empty(small_root)
+    generation = ColdBuildGeneration.begin(
+        small_root, reason="test", sources=(WatchSource("fixture", large_source, suffixes=(".json",)),)
+    )
+    try:
+        receipt = read_capacity_receipts(small_root)[0]
+        assert receipt.status == "admitted"
+        assert receipt.prospective_material_bytes == 2
+        assert receipt.baseline_digest == generation.source_baseline.digest
+    finally:
+        generation.discard()
 
 
 def test_a_failed_capacity_observation_does_not_block_promotion(
