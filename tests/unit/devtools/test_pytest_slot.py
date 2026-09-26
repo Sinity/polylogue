@@ -35,6 +35,7 @@ import pytest
 from devtools import cloud_sentinels, pytest_slot
 from devtools.pytest_slot import (
     BASETEMP_ROOT_ENV,
+    PytestSlotObservationUnavailableError,
     PytestSlotUnavailableError,
     basetemp_root,
     holds_pytest_slot,
@@ -90,7 +91,7 @@ def _install_fake_agentctl(
     *,
     job_id: int = 7,
     phase: str = "succeeded",
-    exit_code: int = 0,
+    exit_code: int | None = 0,
     receipt: dict[str, Any] | None = None,
 ) -> Path:
     directory = tmp_path / "fakebin"
@@ -108,6 +109,50 @@ def _install_fake_agentctl(
     # The fake is the whole PATH: submitting must resolve its tool from what
     # the test installed, never from whatever the workstation has deployed.
     monkeypatch.setenv("PATH", str(directory))
+    monkeypatch.setattr(pytest_slot, "POLL_INTERVAL_S", 0.0)
+    return Path(str(script) + ".calls.jsonl")
+
+
+def _install_scripted_agentctl(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    observations: list[dict[str, Any] | str],
+    *,
+    receipt: dict[str, Any] | None = None,
+    cancel_state: str = "removed",
+) -> Path:
+    source = (
+        """import json, os, sys
+with open(sys.argv[0] + ".calls.jsonl", "a", encoding="utf-8") as handle:
+    handle.write(json.dumps({"argv": sys.argv[1:]}) + "\\n")
+words = [word for word in sys.argv[1:] if word != "--json"]
+verb = " ".join(words[:2])
+if verb == "job start":
+    if {receipt!r} is not None:
+        with open(sys.argv[-1][:-len(".json")] + ".result.json", "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({receipt!r}))
+    print(json.dumps({"job_id": 23, "phase": "queued", "terminal": False}))
+elif verb == "job get":
+    index_path = sys.argv[0] + ".get-count"
+    try:
+        index = int(open(index_path, encoding="utf-8").read())
+    except OSError:
+        index = 0
+    open(index_path, "w", encoding="utf-8").write(str(index + 1))
+    response = {observations!r}[min(index, len({observations!r}) - 1)]
+    if response == "error":
+        sys.stderr.write("temporary queue read failure\\n")
+        sys.exit(1)
+    print(json.dumps(response))
+elif verb == "job cancel":
+    print(json.dumps({"job_id": 23, "state": __CANCEL_STATE__}))
+sys.exit(0)
+""".replace("{observations!r}", repr(observations))
+        .replace("{receipt!r}", repr(receipt))
+        .replace("__CANCEL_STATE__", repr(cancel_state))
+    )
+    script = _install_executable(tmp_path / "fakebin", "agentctl", source)
+    monkeypatch.setenv("PATH", str(script.parent))
     monkeypatch.setattr(pytest_slot, "POLL_INTERVAL_S", 0.0)
     return Path(str(script) + ".calls.jsonl")
 
@@ -325,6 +370,76 @@ def test_a_failed_job_reports_its_exit_code(tmp_path: Path, monkeypatch: pytest.
     assert (outcome.returncode, outcome.slot) == (1, "agentctl job 12")
 
 
+def test_transient_get_failure_keeps_waiting_on_the_submitted_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = _install_scripted_agentctl(
+        tmp_path,
+        monkeypatch,
+        [
+            "error",
+            {"job_id": 23, "phase": "running", "terminal": False},
+            {"job_id": 23, "phase": "succeeded", "terminal": True, "exit_code": 0},
+        ],
+    )
+
+    outcome = run_pytest(_marker_command(tmp_path / "unused"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
+
+    assert outcome.returncode == 0
+    assert _verbs(record) == ["job start", "job get 23", "job get 23", "job get 23"]
+
+
+def test_persistent_get_failures_are_bounded_and_keep_run_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt = {"kind": "polylogue.pytest-slot-result", "status": "success", "exit_code": 0}
+    record = _install_scripted_agentctl(tmp_path, monkeypatch, ["error"], receipt=receipt)
+
+    with pytest.raises(PytestSlotObservationUnavailableError) as failure:
+        run_pytest(_marker_command(tmp_path / "unused"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
+
+    error = failure.value
+    assert "status for agentctl job 23 was unavailable" in str(error)
+    assert error.cancellation_attempted is True
+    assert error.cancellation_succeeded is True
+    assert error.receipt == receipt
+    assert error.log_path is not None
+    assert len(error.observation_errors) == 3
+    assert _verbs(record) == ["job start", "job get 23", "job get 23", "job get 23", "job cancel 23"]
+    assert not error.log_path.with_suffix(".json").exists(), "successful cancellation removes the launch file"
+    assert error.log_path.with_suffix(".result.json").read_text(encoding="utf-8") == json.dumps(receipt)
+
+
+def test_unresolved_cancel_keeps_launch_file_for_a_possible_queued_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = _install_scripted_agentctl(
+        tmp_path,
+        monkeypatch,
+        ["error"],
+        cancel_state="unresolved",
+    )
+
+    with pytest.raises(PytestSlotObservationUnavailableError) as failure:
+        run_pytest(_marker_command(tmp_path / "unused"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
+
+    error = failure.value
+    assert error.cancellation_attempted is True
+    assert error.cancellation_succeeded is False
+    assert error.log_path.with_suffix(".json").exists(), "unresolved jobs may still read their launch file"
+    assert _verbs(record) == ["job start", "job get 23", "job get 23", "job get 23", "job cancel 23"]
+
+
+def test_invalid_get_view_counts_as_an_observation_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    record = _install_scripted_agentctl(tmp_path, monkeypatch, [{"job_id": 99, "terminal": True}])
+
+    with pytest.raises(PytestSlotObservationUnavailableError) as failure:
+        run_pytest(_marker_command(tmp_path / "unused"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
+
+    assert "invalid view" in str(failure.value)
+    assert len(_calls(record)) == 5
+
+
 @pytest.mark.parametrize(
     ("phase", "meaning"),
     [
@@ -344,6 +459,28 @@ def test_a_job_that_did_not_run_is_unavailable(
 
     with pytest.raises(PytestSlotUnavailableError, match=f"{meaning}.*agentctl job 12 ended '{phase}'"):
         run_pytest(_marker_command(tmp_path / "unused"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
+
+
+def test_a_success_receipt_does_not_override_runtime_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt = {"kind": "polylogue.pytest-slot-result", "status": "success", "exit_code": 0}
+    _install_fake_agentctl(
+        tmp_path,
+        monkeypatch,
+        job_id=12,
+        phase="cancelled",
+        exit_code=None,
+        receipt=receipt,
+    )
+
+    with pytest.raises(PytestSlotUnavailableError) as failure:
+        run_pytest(_marker_command(tmp_path / "unused"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
+
+    runtime_evidence = failure.value.runtime_evidence
+    assert runtime_evidence is not None
+    assert runtime_evidence["phase"] == "cancelled"
+    assert runtime_evidence["pytest_slot_receipt"] == receipt
 
 
 def test_an_unknown_terminal_phase_is_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -666,6 +803,7 @@ elif verb == "job cancel":
     if {refuses}:
         sys.stderr.write("agentctl: no such job\\n")
         sys.exit(1)
+    print(json.dumps({{"job_id": 11, "state": "removed"}}))
 sys.exit(0)
 """
 

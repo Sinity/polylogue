@@ -143,6 +143,39 @@ REFUSAL = (
 class PytestSlotUnavailableError(RuntimeError):
     """The pytest slot could not be acquired, and the run must not proceed."""
 
+    runtime_evidence: dict[str, Any] | None = None
+
+
+class PytestSlotObservationUnavailableError(PytestSlotUnavailableError):
+    """The submitted job could not be observed after bounded read retries."""
+
+    def __init__(
+        self,
+        job_id: int,
+        errors: Sequence[str],
+        *,
+        log_path: Path,
+        receipt: dict[str, Any] | None,
+        cancellation_attempted: bool,
+        cancellation_succeeded: bool,
+    ) -> None:
+        diagnostics = [error[:300] for error in errors[-3:]]
+        super().__init__(
+            REFUSAL.format(
+                reason=(
+                    f"status for {AGENTCTL} job {job_id} was unavailable after "
+                    f"{len(diagnostics)} consecutive read failures; owned cancellation "
+                    f"was {'attempted' if cancellation_attempted else 'not attempted'}: {diagnostics}"
+                )
+            )
+        )
+        self.job_id = job_id
+        self.log_path = log_path
+        self.observation_errors = diagnostics
+        self.receipt = receipt
+        self.cancellation_attempted = cancellation_attempted
+        self.cancellation_succeeded = cancellation_succeeded
+
 
 @dataclass(frozen=True)
 class SlotOutcome:
@@ -462,18 +495,47 @@ def _document(completed: subprocess.CompletedProcess[str], *, verb: str) -> dict
     return document
 
 
-def _cancel_job(job_id: int, *, env: Mapping[str, str]) -> None:
+def _cancel_job(job_id: int, *, env: Mapping[str, str]) -> bool:
     """Cancel through the owner that also stops the job's transient unit."""
-    completed = _agentctl(["job", "cancel", str(job_id)], env=env)
-    if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip()
-        raise PytestSlotUnavailableError(REFUSAL.format(reason=f"`{AGENTCTL} job cancel` failed: {detail}"))
+    completed = _agentctl(["--json", "job", "cancel", str(job_id)], env=env)
+    document = _document(completed, verb="job cancel")
+    # A zero process exit only means the cancel request was handled. In
+    # particular, state=unresolved means agentctl could not establish that the
+    # queue or its runner stopped consuming the launch file.
+    return document.get("state") in {"removed", "stopped", "terminal"}
+
+
+OBSERVATION_ERROR_LIMIT: Final = 3
+
+
+class _JobObservationExhaustedError(RuntimeError):
+    def __init__(self, errors: Sequence[str]) -> None:
+        self.errors = tuple(errors)
 
 
 def _wait_for(job_id: int, *, env: Mapping[str, str]) -> dict[str, Any]:
     """The job's terminal view. The queue wait has no deadline; the job itself has one."""
+    observation_errors: list[str] = []
     while True:
-        view = _document(_agentctl(["--json", "job", "get", str(job_id)], env=env), verb="job get")
+        try:
+            view = _document(_agentctl(["--json", "job", "get", str(job_id)], env=env), verb="job get")
+        except PytestSlotUnavailableError as exc:
+            observation_errors.append(str(exc))
+            if len(observation_errors) >= OBSERVATION_ERROR_LIMIT:
+                raise _JobObservationExhaustedError(observation_errors) from exc
+            time.sleep(POLL_INTERVAL_S)
+            continue
+        if (
+            view.get("job_id") != job_id
+            or not isinstance(view.get("terminal"), bool)
+            or not isinstance(view.get("phase"), str)
+        ):
+            observation_errors.append(f"`{AGENTCTL} job get` returned an invalid view for job {job_id}")
+            if len(observation_errors) >= OBSERVATION_ERROR_LIMIT:
+                raise _JobObservationExhaustedError(observation_errors)
+            time.sleep(POLL_INTERVAL_S)
+            continue
+        observation_errors.clear()
         if view.get("terminal"):
             return view
         time.sleep(POLL_INTERVAL_S)
@@ -509,7 +571,7 @@ def _job_exit_status(view: Mapping[str, Any], *, receipt: Mapping[str, Any] | No
     raise PytestSlotUnavailableError(REFUSAL.format(reason=detail))
 
 
-def _reap_job(job_id: int, *, env: Mapping[str, str], launch_path: Path | None = None) -> None:
+def _reap_job(job_id: int, *, env: Mapping[str, str], launch_path: Path | None = None) -> bool:
     """End a job this process owns and stop its transient unit.
 
     Best effort by construction: the reason we are here is that the waiter is
@@ -521,14 +583,12 @@ def _reap_job(job_id: int, *, env: Mapping[str, str], launch_path: Path | None =
     starts.
     """
     cancelled = False
-    try:
-        _cancel_job(job_id, env=env)
-        cancelled = True
-    except PytestSlotUnavailableError:
-        pass
+    with contextlib.suppress(PytestSlotUnavailableError):
+        cancelled = _cancel_job(job_id, env=env)
     if cancelled and launch_path is not None:
         with contextlib.suppress(OSError):
             launch_path.unlink(missing_ok=True)
+    return cancelled
 
 
 @contextlib.contextmanager
@@ -642,10 +702,39 @@ def _submit(
         raise
     sys.stderr.write(f"  waiting for the host pytest slot ({AGENTCTL} job {job_id}, pool {PYTEST_POOL}) ...\n")
     sys.stderr.flush()
-    with _on_exit(lambda: _reap_job(job_id, env=client, launch_path=launch_path), on_exit):
-        view = _wait_for(job_id, env=client)
+    cancellation_attempted = False
+    cancellation_succeeded = False
+
+    def reap_owned_job() -> None:
+        nonlocal cancellation_attempted, cancellation_succeeded
+        cancellation_attempted = True
+        cancellation_succeeded = _reap_job(job_id, env=client, launch_path=launch_path)
+
+    try:
+        with _on_exit(reap_owned_job, on_exit):
+            view = _wait_for(job_id, env=client)
+    except _JobObservationExhaustedError as exc:
+        receipt = _read_slot_result(log_path)
+        raise PytestSlotObservationUnavailableError(
+            job_id,
+            exc.errors,
+            log_path=log_path,
+            receipt=receipt,
+            cancellation_attempted=cancellation_attempted,
+            cancellation_succeeded=cancellation_succeeded,
+        ) from exc
     receipt = _read_slot_result(log_path)
-    returncode = _job_exit_status(view, receipt=receipt)
+    try:
+        returncode = _job_exit_status(view, receipt=receipt)
+    except PytestSlotUnavailableError as exc:
+        exc.runtime_evidence = {
+            "job_id": job_id,
+            "phase": view.get("phase"),
+            "exit_code": view.get("exit_code"),
+            "pytest_slot_receipt": receipt,
+            "pytest_slot_log": str(log_path),
+        }
+        raise
     launch_path.unlink(missing_ok=True)
     if returncode == 0:
         _telemetry_path(log_path).unlink(missing_ok=True)
