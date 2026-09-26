@@ -192,8 +192,11 @@ Source files, rather than documentation line numbers, decide current behavior.
   when a usable checkout testmon graph (`.cache/testmon/testmondata`,
   environment `polylogue`) can support one. An absent, unusable, or unbounded
   graph refuses the affected plan before pytest; it never silently becomes a
-  corpus run. `devtools verify --all` explicitly runs the complete corpus and
-  updates its graph; `--quick` runs static gates only.
+  corpus run. A zero-test normal selection is reported as zero. When testmon
+  cannot select, run an explicitly supplied focused selection or report that
+  selection is unavailable; broad seeding and complete-corpus runs are
+  scheduled or explicitly requested. `devtools verify --all` runs the
+  complete corpus and updates its graph; `--quick` runs static gates only.
 - `devtools test <selection>` submits workstation pytest through its declared
   host pool and refuses if admission is unavailable. `--runner isolated` is
   explicit for CI without agentctl, not a workstation fallback. A job id is
@@ -214,10 +217,11 @@ Source files, rather than documentation line numbers, decide current behavior.
 Testmon is an accelerator: a selected green proves the selected scope only,
 and the receipt names which selection ran. Focused `devtools test` receipts
 may report the graph diagnostically, but do not make selection evidence.
-Explicit affected and full verification advance the graph. When `--all` is
-requested, the corpus runs as one collection; partitioning it would drop the
-edges of every test the last shard did not collect. A test names its
-anti-vacuity condition — what mutation or bypass would make it red.
+Normal development accepts that a useful selection can miss affected tests;
+nightly or explicitly requested broad verification supplies wider feedback.
+When `--all` is requested, the corpus runs as one collection; partitioning it
+would drop the edges of every test the last shard did not collect. A test names
+its anti-vacuity condition — what mutation or bypass would make it red.
 Fixtures are generated and deterministic (`tests/infra/`: SessionBuilder,
 seeded archives, pathology composer, corpus programs); timestamp-sensitive
 tests use `frozen_clock` (an autouse guard rejects wall-clock reads). Keep

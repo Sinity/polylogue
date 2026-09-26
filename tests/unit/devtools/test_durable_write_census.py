@@ -83,6 +83,47 @@ def test_temporary_and_in_memory_scratch_creations_have_non_archive_dispositions
     assert _rules(tmp_path, _declaration(tmp_path)) == set()
 
 
+def test_declared_private_scratch_table_can_be_rewritten_across_methods(tmp_path: Path) -> None:
+    """A scoped scratch authority covers writes through the scratch object's connection.
+
+    Anti-vacuity: changing the disposition to the ops-only token must both
+    reject the declaration and leave the cross-method rewrite visible.
+    """
+    package = tmp_path / "polylogue" / "storage" / "sqlite" / "archive_tiers"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "write.py").write_text(
+        "import sqlite3\n"
+        "class Scratch:\n"
+        "    def __init__(self, path):\n"
+        "        self.conn = sqlite3.connect(path)\n"
+        '        self.conn.execute("CREATE TABLE scratch_rows (value TEXT)")\n'
+        "    def replace(self, value):\n"
+        '        self.conn.execute("INSERT OR REPLACE INTO scratch_rows VALUES (?)", (value,))\n',
+        encoding="utf-8",
+    )
+    declaration = _declaration(
+        tmp_path,
+        "package: polylogue\n"
+        "runtime_tables:\n"
+        '  - file: "polylogue/storage/sqlite/archive_tiers/write.py"\n'
+        '    function: "Scratch.__init__"\n'
+        '    table: "scratch_rows"\n'
+        "    disposition: disposable_scratch\n"
+        '    reason: "A private per-operation scratch connection."\n'
+        "writes: []\n",
+    )
+    assert _rules(tmp_path, declaration) == set()
+
+    declaration.write_text(
+        declaration.read_text(encoding="utf-8").replace("disposable_scratch", "disposable_ops"),
+        encoding="utf-8",
+    )
+    assert _rules(tmp_path, declaration) == {
+        "runtime_table_disposition_invalid",
+        "runtime_persistent_table_rewrite_undeclared",
+    }
+
+
 def test_no_effect_lock_upgrade_requires_its_exact_constant_false_predicate(tmp_path: Path) -> None:
     """The lock upgrade is accepted only while its SQL remains rowless.
 

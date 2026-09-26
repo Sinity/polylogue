@@ -13,7 +13,9 @@ import inspect
 import json
 import re
 import sqlite3
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from enum import Enum
@@ -23,6 +25,8 @@ from typing import Any
 from polylogue.storage.fts.sql import FTS_INDEXABLE_MESSAGE_COUNT_SQL
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from tests.infra.workload_artifacts import FinishedBuildResourceMeasurement, FinishedBuildResourceProbe
 
 SqlValue = str | int | float | bytes | None
@@ -179,7 +183,13 @@ class SealedRawInput:
 
 def seal_raw_input(archive_root: Path) -> SealedRawInput:
     """Read the durable raw identity/byte manifest without changing it."""
-    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
+    with closing(
+        open_readonly_connection(
+            archive_root / "source.db",
+            tier=ArchiveTier.SOURCE,
+            timeout_class="background-read",
+        )
+    ) as conn:
         rows = conn.execute("SELECT raw_id, blob_hash FROM raw_sessions ORDER BY raw_id").fetchall()
     digest = hashlib.sha256()
     byte_count = 0
@@ -246,6 +256,21 @@ class FinishedBuildOutput:
             raise ValueError("finished-build output counts cannot be negative")
 
 
+@dataclass(frozen=True, slots=True)
+class StreamedFinishedBuildFingerprint:
+    """Bounded-memory canonical identity for a completed archive generation."""
+
+    canonical_logical_digest: str
+    schema_object_census: tuple[tuple[str, str], ...]
+    schema_identity: str
+    output_session_count: int
+    output_message_count: int
+    output_block_count: int
+    fts_source_rows: int
+    fts_indexed_rows: int
+    public_index_count: int
+
+
 def compared_table_census() -> tuple[str, ...]:
     """Return all ordinary current-DDL index tables with a declared policy."""
     tables = frozenset(_CREATE_TABLE.findall(INDEX_DDL))
@@ -266,6 +291,7 @@ def snapshot_derived_model(
     *,
     session_ids: tuple[str, ...],
     search_queries: tuple[str, ...],
+    include_threads: bool = True,
 ) -> DerivedModelSnapshot:
     """Read one archive generation without mutating any archive tier."""
     census = compared_table_census()
@@ -274,7 +300,7 @@ def snapshot_derived_model(
         source_rows = int(conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone()[0])
         indexed_rows = int(conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0])
     with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
-        public_reads = _public_reads(archive, session_ids)
+        public_reads = _public_reads(archive, session_ids, include_threads=include_threads)
         searches = tuple((query, tuple(archive.search_blocks(query))) for query in search_queries)
         public_index_count = int(archive.index_status()["count"])
     return DerivedModelSnapshot(
@@ -288,6 +314,142 @@ def snapshot_derived_model(
         ),
         open_debt=_open_debt_rows(archive_root / "ops.db"),
     )
+
+
+def capture_streamed_finished_build_fingerprint(
+    archive_root: Path,
+    index_path: Path,
+    *,
+    scratch_root: Path,
+    session_ids: tuple[str, ...],
+    search_queries: tuple[str, ...] = (),
+    include_threads: bool = False,
+) -> StreamedFinishedBuildFingerprint:
+    """Hash a finished index without retaining its rows in memory.
+
+    Row ordering, volatile-column exclusions, schema coverage and canonical
+    JSON match :func:`_canonical_logical_digest`. A disk-backed SQLite sorter
+    keeps the cost proportional to output bytes on scratch storage rather than
+    retaining every index row in the supervisor. ``include_threads`` is for
+    small differential fixtures; production qualification leaves it false
+    because thread listings are archive-wide.
+    """
+    census = compared_table_census()
+    read_conn = _connect(index_path)
+    spool_dir = tempfile.TemporaryDirectory(prefix="finished-build-fingerprint-", dir=scratch_root)
+    try:
+        spool_path = Path(spool_dir.name) / "rows.sqlite"
+        with sqlite3.connect(spool_path) as spool:
+            spool.execute("PRAGMA journal_mode=OFF")
+            spool.execute("PRAGMA temp_store=FILE")
+            spool.execute("PRAGMA cache_size=-8192")
+            spool.execute("PRAGMA synchronous=OFF")
+            spool.execute(
+                "CREATE TABLE row_facts (table_name TEXT NOT NULL, sort_key TEXT NOT NULL, payload TEXT NOT NULL)"
+            )
+            for table in census:
+                volatile = _VOLATILE_COLUMNS[table]
+                table_info = tuple(read_conn.execute(f'PRAGMA table_xinfo("{table}")'))
+                actual_columns = {str(row["name"]) for row in table_info}
+                if unknown := volatile - actual_columns:
+                    raise AssertionError(f"volatile declaration for {table} names missing columns: {sorted(unknown)}")
+                columns = tuple(str(row["name"]) for row in table_info if str(row["name"]) not in volatile)
+                selected_columns = ", ".join(f'"{column}"' for column in columns)
+                cursor = read_conn.execute(f'SELECT {selected_columns} FROM "{table}"')
+                for row in cursor:
+                    fact = _fact_row(row)
+                    spool.execute(
+                        "INSERT INTO row_facts(table_name, sort_key, payload) VALUES (?, ?, ?)",
+                        (
+                            table,
+                            repr(fact),
+                            json.dumps(fact, ensure_ascii=True, separators=(",", ":")),
+                        ),
+                    )
+            spool.execute("CREATE INDEX row_facts_order ON row_facts(table_name, sort_key, payload)")
+
+            fts_source_rows = int(read_conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone()[0])
+            fts_indexed_rows = int(read_conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0])
+            output_session_count, output_message_count, output_block_count = (
+                int(read_conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                for table in ("sessions", "messages", "blocks")
+            )
+            if fts_source_rows != fts_indexed_rows:
+                raise AssertionError(
+                    f"finished fingerprint requires exact FTS readiness: source={fts_source_rows}, "
+                    f"indexed={fts_indexed_rows}"
+                )
+            schema_object_census, schema_identity = _finished_schema_census(index_path)
+            with closing(
+                open_readonly_connection(
+                    archive_root / "ops.db",
+                    tier=ArchiveTier.OPS,
+                    timeout_class="background-read",
+                )
+            ) as ops:
+                debt_table = ops.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='convergence_debt'"
+                ).fetchone()
+                open_debt = (
+                    int(ops.execute("SELECT COUNT(*) FROM convergence_debt WHERE status != 'resolved'").fetchone()[0])
+                    if debt_table is not None
+                    else 0
+                )
+            if open_debt:
+                raise AssertionError(f"finished fingerprint requires zero convergence debt; found {open_debt}")
+
+            with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
+                public_reads = _public_reads(archive, session_ids, include_threads=include_threads)
+                public_searches = tuple((query, tuple(archive.search_blocks(query))) for query in search_queries)
+                public_index_count = int(archive.index_status()["count"])
+            fts_payload = {
+                "indexed_rows": fts_indexed_rows,
+                "public_index_count": public_index_count,
+                "public_searches": public_searches,
+                "source_rows": fts_source_rows,
+            }
+            digest = hashlib.sha256()
+            digest.update(
+                b'{"fts":'
+                + _canonical_json(fts_payload)
+                + b',"open_debt":[],"public_reads":'
+                + _canonical_json(public_reads)
+                + b',"tables":['
+            )
+            for table_index, table in enumerate(census):
+                if table_index:
+                    digest.update(b",")
+                volatile = _VOLATILE_COLUMNS[table]
+                columns = tuple(
+                    str(row["name"])
+                    for row in read_conn.execute(f'PRAGMA table_xinfo("{table}")')
+                    if str(row["name"]) not in volatile
+                )
+                digest.update(b"[" + _canonical_json(table) + b',{"columns":' + _canonical_json(columns) + b',"rows":[')
+                first = True
+                for (payload,) in spool.execute(
+                    "SELECT payload FROM row_facts WHERE table_name = ? ORDER BY sort_key, payload", (table,)
+                ):
+                    if not first:
+                        digest.update(b",")
+                    digest.update(str(payload).encode("ascii"))
+                    first = False
+                digest.update(b"]}]")
+            digest.update(b"]}")
+            return StreamedFinishedBuildFingerprint(
+                canonical_logical_digest=digest.hexdigest(),
+                schema_object_census=schema_object_census,
+                schema_identity=schema_identity,
+                output_session_count=output_session_count,
+                output_message_count=output_message_count,
+                output_block_count=output_block_count,
+                fts_source_rows=fts_source_rows,
+                fts_indexed_rows=fts_indexed_rows,
+                public_index_count=public_index_count,
+            )
+    finally:
+        read_conn.close()
+        spool_dir.cleanup()
 
 
 def capture_finished_build_output(
@@ -427,8 +589,17 @@ def _canonical_logical_digest(snapshot: DerivedModelSnapshot) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def _canonical_json(value: object) -> bytes:
+    def default(item: object) -> str:
+        if isinstance(item, bytes):
+            return item.hex()
+        raise TypeError(f"cannot canonically encode {type(item).__name__}")
+
+    return json.dumps(value, default=default, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode()
+
+
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn = open_readonly_connection(path, tier=ArchiveTier.INDEX, timeout_class="background-read")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -449,7 +620,7 @@ def _project_table(conn: sqlite3.Connection, table: str) -> TableProjection:
 def _open_debt_rows(ops_path: Path) -> tuple[FactRow, ...]:
     if not ops_path.exists():
         return ()
-    with sqlite3.connect(ops_path) as conn:
+    with closing(open_readonly_connection(ops_path, tier=ArchiveTier.OPS, timeout_class="background-read")) as conn:
         row = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'convergence_debt'").fetchone()
         if row is None:
             return ()
@@ -465,11 +636,17 @@ def _open_debt_rows(ops_path: Path) -> tuple[FactRow, ...]:
         return tuple(tuple(_normalize(value) for value in row) for row in rows)
 
 
-def _public_reads(archive: ArchiveStore, session_ids: tuple[str, ...]) -> tuple[tuple[str, object], ...]:
+def _public_reads(
+    archive: ArchiveStore,
+    session_ids: tuple[str, ...],
+    *,
+    include_threads: bool = True,
+) -> tuple[tuple[str, object], ...]:
     values: list[tuple[str, object]] = []
     for session_id in session_ids:
         values.extend(((f"profile:{session_id}", _freeze_public(archive.get_session_profile_insight(session_id))),))
-    values.append(("threads", _freeze_public(archive.list_thread_insights(limit=None))))
+    if include_threads:
+        values.append(("threads", _freeze_public(archive.list_thread_insights(limit=None))))
     return tuple(values)
 
 

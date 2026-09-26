@@ -6,15 +6,19 @@ never pays the ~600ms import cost. Only configure_logging() triggers the import.
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import contextvars
 import json
 import logging
+import math
 import os
+import re
 import sys
 import threading
 import time
 import uuid
+from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping
 from dataclasses import dataclass
 from dataclasses import field as _dc_field
@@ -26,6 +30,7 @@ from polylogue.logging_fields import (
     OUTCOMES,
     QUARANTINED_FIELDS,
     TEXT_FIELD_MAX_CHARS,
+    field_kind,
     rejection_reason,
 )
 
@@ -148,6 +153,48 @@ class _StderrProxy(TextIO):
 
 _stderr_proxy = _StderrProxy()
 
+
+class _EventStreamProxy(_StderrProxy):
+    """Carry rendered legacy structlog lines into the configured event sink."""
+
+    def __init__(self) -> None:
+        self._local = threading.local()
+
+    def write(self, s: str) -> int:
+        with _sinks_lock:
+            configured = bool(_sinks)
+        if not configured:
+            return _stderr_proxy.write(s)
+        pending = getattr(self._local, "pending", "") + s
+        *lines, remainder = pending.split("\n")
+        self._local.pending = remainder[-EVENT_MAX_BYTES:]
+        for line in lines:
+            if not line:
+                continue
+            payload: dict[str, object] = {}
+            try:
+                decoded = json.loads(line)
+            except (ValueError, TypeError):
+                decoded = None
+            if isinstance(decoded, dict):
+                payload = {
+                    key: value
+                    for key, value in decoded.items()
+                    if key not in {"event", "level", "timestamp", "error_detail"}
+                }
+                message = decoded.get("event", "")
+                level_name = decoded.get("level", "info")
+            else:
+                message = line
+                match = re.search(r"\[(trace|debug|info|warning|error|critical)\]", line)
+                level_name = match.group(1) if match else "info"
+            level = _LEVEL_VALUES.get(level_name, INFO) if isinstance(level_name, str) else INFO
+            emit("structlog.record", level=level, error_detail=str(message), **payload)
+        return len(s)
+
+
+_event_stream_proxy = _EventStreamProxy()
+
 _structlog_configured = False
 _log_level = logging.INFO
 
@@ -201,8 +248,10 @@ def get_logger(name: str | None = None) -> BoundLoggerLike:
 
     stdlib_logger = logging.getLogger(name)
     stdlib_logger.setLevel(_log_level)
-    if not stdlib_logger.handlers:
-        stdlib_logger.addHandler(logging.StreamHandler(sys.stderr))
+    if not stdlib_logger.handlers and _stdlib_bridge is None:
+        handler = logging.StreamHandler(_stderr_proxy)
+        handler._polylogue_fallback = True  # type: ignore[attr-defined]
+        stdlib_logger.addHandler(handler)
     return _StdlibBoundLogger(stdlib_logger)
 
 
@@ -248,7 +297,7 @@ def configure_logging(verbose: bool = False, json_logs: bool = False) -> None:
         processors=processors,
         wrapper_class=structlog.make_filtering_bound_logger(_log_level),
         context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(file=_stderr_proxy),
+        logger_factory=structlog.PrintLoggerFactory(file=_event_stream_proxy),
         cache_logger_on_first_use=True,
     )
 
@@ -285,6 +334,13 @@ Sink = Callable[[Event], None]
 
 _sinks: list[Sink] = []
 _sinks_lock = threading.Lock()
+_sync_sink_failures = 0
+_retired_sink_totals = {"delivered": 0, "dropped": 0, "failures": 0, "undrained": 0}
+FIELD_MAX_CHARS = 256
+EVENT_MAX_FIELDS = 32
+EVENT_MAX_BYTES = 4096
+_PHASE_NAME = re.compile(r"[a-z][a-z0-9_.]{0,47}\Z")
+_REASON_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_.:-]{0,127}\Z")
 
 # The correlation carrier. A ContextVar propagates automatically across
 # ``await`` boundaries and across ``asyncio.to_thread`` (which copies the
@@ -350,15 +406,81 @@ def _validate(fields: Mapping[str, object]) -> tuple[dict[str, object], dict[str
     accepted: dict[str, object] = {}
     rejected: dict[str, str] = {}
     for name, value in fields.items():
+        # Three envelope keys (timestamp, level, event) are added at emit.
+        if len(accepted) >= EVENT_MAX_FIELDS - 3:
+            rejected[name] = "event_field_limit"
+            continue
         reason = rejection_reason(name)
         if reason is not None:
             rejected[name] = reason
             continue
-        if name in QUARANTINED_FIELDS:
-            accepted[name] = _truncate(value)
-        else:
-            accepted[name] = _scalar(value)
+        kind = field_kind(name)
+        if (
+            kind == "count"
+            and value is not None
+            and (isinstance(value, bool) or not isinstance(value, int) or value < 0)
+        ):
+            rejected[name] = "invalid_count"
+            continue
+        if (
+            kind in {"duration", "epoch"}
+            and value is not None
+            and (isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value < 0)
+        ):
+            rejected[name] = "invalid_duration" if kind == "duration" else "invalid_epoch"
+            continue
+        if kind == "flag" and not isinstance(value, bool):
+            rejected[name] = "invalid_flag"
+            continue
+        if kind == "timings":
+            if not isinstance(value, Mapping):
+                rejected[name] = "invalid_timings"
+                continue
+            try:
+                valid_timings = len(value) <= 12 and all(
+                    isinstance(key, str)
+                    and _PHASE_NAME.fullmatch(key) is not None
+                    and not isinstance(milliseconds, bool)
+                    and isinstance(milliseconds, int | float)
+                    and math.isfinite(milliseconds)
+                    and milliseconds >= 0
+                    for key, milliseconds in value.items()
+                )
+            except Exception:
+                valid_timings = False
+            if not valid_timings:
+                rejected[name] = "invalid_timings"
+                continue
+            try:
+                accepted[name] = {str(key): round(float(milliseconds), 3) for key, milliseconds in value.items()}
+            except Exception:
+                rejected[name] = "invalid_timings"
+            continue
+        if name == "outcome" and (not isinstance(value, str) or value not in OUTCOMES):
+            rejected[name] = "invalid_outcome"
+            continue
+        if name == "reason" and (not isinstance(value, str) or _REASON_TOKEN.fullmatch(value) is None):
+            rejected[name] = "invalid_reason"
+            continue
+        if isinstance(value, float) and not math.isfinite(value):
+            rejected[name] = "invalid_value"
+            continue
+        try:
+            if name in QUARANTINED_FIELDS:
+                accepted[name] = _truncate(value)
+            elif isinstance(value, os.PathLike):
+                accepted[name] = _truncate_scalar(os.fsdecode(value))
+            elif isinstance(value, str):
+                accepted[name] = _truncate_scalar(value)
+            else:
+                accepted[name] = _scalar(value)
+        except Exception:
+            rejected[name] = "invalid_value"
     return accepted, rejected
+
+
+def _truncate_scalar(value: str) -> str:
+    return value if len(value) <= FIELD_MAX_CHARS else value[: FIELD_MAX_CHARS - 14] + "...<truncated>"
 
 
 def _truncate(value: object) -> str:
@@ -366,6 +488,13 @@ def _truncate(value: object) -> str:
     if len(text) <= TEXT_FIELD_MAX_CHARS:
         return text
     return text[:TEXT_FIELD_MAX_CHARS] + "...<truncated>"
+
+
+def _exception_detail(exc: BaseException) -> str:
+    try:
+        return str(exc)
+    except Exception:
+        return f"<unprintable {type(exc).__name__}>"
 
 
 def _scalar(value: object) -> object:
@@ -383,18 +512,27 @@ def _scalar(value: object) -> object:
 
 
 def _emit_raw(level: int, event: str, fields: Mapping[str, object]) -> None:
+    global _sync_sink_failures
     record: dict[str, object] = dict(fields)
     # Reserved keys are assigned last: a caller field can never rename the
     # event, restate its level, or forge its timestamp.
     record["ts"] = _now()
     record["level"] = _LEVEL_NAMES.get(level, "info")
-    record["event"] = event
+    record["event"] = _truncate_scalar(event)
+    while len(json.dumps(record, default=str)) > EVENT_MAX_BYTES and fields:
+        removable = next((key for key in reversed(record) if key not in {"ts", "level", "event"}), None)
+        if removable is None:
+            break
+        record.pop(removable)
     with _sinks_lock:
         sinks = tuple(_sinks)
     for sink in sinks:
         # A broken sink must never break the caller it is observing.
-        with contextlib.suppress(Exception):
+        try:
             sink(record)
+        except Exception:
+            with _sinks_lock:
+                _sync_sink_failures += 1
 
 
 def emit(event: str, /, level: int = INFO, **fields: object) -> None:
@@ -410,6 +548,9 @@ def emit(event: str, /, level: int = INFO, **fields: object) -> None:
         _emit_raw(WARNING, "log.field_rejected", {"reason": reason, "field": name, "source_event": event})
     merged = dict(current_context())
     merged.update(accepted)
+    merged, overflow = _validate(merged)
+    for name, reason in overflow.items():
+        _emit_raw(WARNING, "log.field_rejected", {"reason": reason, "field": name, "source_event": event})
     _emit_raw(level, event, merged)
 
 
@@ -497,36 +638,27 @@ def span(name: str, /, **fields: object) -> Iterator[Span]:
         yield active
     except BaseException as exc:
         duration_ms = round((time.perf_counter() - active._start) * 1000, 3)
-        emit(
-            f"{name}.error",
-            level=ERROR,
+        terminal = {key: value for key, value in active.fields.items() if key not in {"level", "event"}}
+        terminal.update(
             outcome="error",
             duration_ms=duration_ms,
             error_type=type(exc).__name__,
-            error_detail=str(exc),
-            **active.fields,
+            error_detail=_exception_detail(exc),
         )
+        with contextlib.suppress(Exception):
+            emit(f"{name}.error", level=ERROR, **terminal)
         raise
     else:
         duration_ms = round((time.perf_counter() - active._start) * 1000, 3)
         outcome = active._outcome
         if outcome is None:
-            emit(
-                f"{name}.unmeasured",
-                level=WARNING,
-                outcome="unmeasured",
-                reason="span_exited_without_outcome",
-                duration_ms=duration_ms,
-                **active.fields,
-            )
+            terminal = {key: value for key, value in active.fields.items() if key not in {"level", "event"}}
+            terminal.update(outcome="unmeasured", reason="span_exited_without_outcome", duration_ms=duration_ms)
+            emit(f"{name}.unmeasured", level=WARNING, **terminal)
         else:
-            emit(
-                f"{name}.{outcome}",
-                level=active._level,
-                outcome=outcome,
-                duration_ms=duration_ms,
-                **active.fields,
-            )
+            terminal = {key: value for key, value in active.fields.items() if key not in {"level", "event"}}
+            terminal.update(outcome=outcome, duration_ms=duration_ms)
+            emit(f"{name}.{outcome}", level=active._level, **terminal)
     finally:
         _context.reset(token)
 
@@ -588,7 +720,7 @@ def render_console(record: Event, *, redact: bool = False) -> str:
 # -- configuration surface --------------------------------------------------
 
 
-def make_stream_sink(stream: object, *, fmt: str = "json", redact: bool = False) -> Sink:
+def make_stream_sink(stream: object, *, fmt: str = "json", redact: bool = False, flush_each: bool = True) -> Sink:
     """Build a sink writing rendered records to ``stream``, one line each."""
 
     def sink(record: Event) -> None:
@@ -598,10 +730,127 @@ def make_stream_sink(stream: object, *, fmt: str = "json", redact: bool = False)
             return
         write(line + "\n")
         flush = getattr(stream, "flush", None)
-        if flush is not None:
+        if flush_each and flush is not None:
             flush()
 
     return sink
+
+
+class _QueuedSink:
+    """Bound the producer's exposure to a slow or failed diagnostic device."""
+
+    def __init__(self, sink: Sink, stream: object, *, capacity: int = 256, owns_stream: bool = False) -> None:
+        self._sink = sink
+        self._stream = stream
+        self._capacity = capacity
+        self._owns_stream = owns_stream
+        self._pending: deque[dict[str, object]] = deque()
+        self._condition = threading.Condition()
+        self._closing = False
+        self.dropped = 0
+        self.failures = 0
+        self.delivered = 0
+        self.undrained = 0
+        self.high_water = 0
+        self._dirty = False
+        self._in_flight = False
+        self._worker = threading.Thread(target=self._run, name="polylogue-diagnostic-sink", daemon=True)
+        self._worker.start()
+
+    def __call__(self, record: Event) -> None:
+        with self._condition:
+            if self._closing:
+                self.dropped += 1
+                return
+            if len(self._pending) >= self._capacity:
+                if record.get("level") in {"error", "warning"}:
+                    victim = next(
+                        (item for item in self._pending if item.get("level") not in {"error", "warning"}),
+                        None,
+                    )
+                    if victim is not None:
+                        self._pending.remove(victim)
+                    else:
+                        self.dropped += 1
+                        return
+                else:
+                    self.dropped += 1
+                    return
+                self.dropped += 1
+            self._pending.append(dict(record))
+            self.high_water = max(self.high_water, len(self._pending))
+            self._condition.notify()
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                if not self._pending and not self._closing:
+                    self._condition.wait(timeout=0.5)
+                if not self._pending:
+                    if self._closing:
+                        break
+                    record = None
+                else:
+                    record = self._pending.popleft()
+                    self._in_flight = True
+            if record is None:
+                self._flush()
+                continue
+            try:
+                self._sink(record)
+            except Exception:
+                with self._condition:
+                    self.failures += 1
+                    self._in_flight = False
+            else:
+                with self._condition:
+                    self.delivered += 1
+                    self._dirty = True
+                    self._in_flight = False
+        self._flush()
+
+    def _flush(self) -> None:
+        with self._condition:
+            if not self._dirty:
+                return
+            self._dirty = False
+        try:
+            flush = getattr(self._stream, "flush", None)
+            if flush is not None:
+                flush()
+        except Exception:
+            with self._condition:
+                self.failures += 1
+
+    def close(self, *, timeout_s: float = 0.25) -> None:
+        with self._condition:
+            self._closing = True
+            self._condition.notify()
+        self._worker.join(timeout=timeout_s)
+        if self._worker.is_alive():
+            with self._condition:
+                self.undrained += len(self._pending) + int(self._in_flight)
+                self.dropped += len(self._pending)
+                self._pending.clear()
+        elif self._owns_stream:
+            close = getattr(self._stream, "close", None)
+            if close is not None:
+                try:
+                    close()
+                except Exception:
+                    with self._condition:
+                        self.failures += 1
+
+    def snapshot(self) -> dict[str, int]:
+        with self._condition:
+            return {
+                "queued": len(self._pending),
+                "dropped": self.dropped,
+                "failures": self.failures,
+                "delivered": self.delivered,
+                "undrained": self.undrained,
+                "high_water": self.high_water,
+            }
 
 
 def add_sink(sink: Sink) -> Sink:
@@ -644,15 +893,39 @@ def reset_events() -> None:
     known state, or one command's sink renders into the next command's
     captured output.
     """
-    global _default_sink, _stdlib_bridge, _threshold
+    global _default_sink, _stdlib_bridge, _threshold, _sync_sink_failures
     with _sinks_lock:
         _sinks.clear()
+    if isinstance(_default_sink, _QueuedSink):
+        _default_sink.close()
     _default_sink = None
+    _sync_sink_failures = 0
+    with _sinks_lock:
+        for key in _retired_sink_totals:
+            _retired_sink_totals[key] = 0
     if _stdlib_bridge is not None:
         logging.getLogger().removeHandler(_stdlib_bridge)
         _stdlib_bridge = None
     _context.set({})
     _threshold = INFO
+
+
+def shutdown_events(*, timeout_s: float = 0.25) -> dict[str, int]:
+    """Drain the configured sink for a bounded interval at process shutdown."""
+    global _default_sink
+    with _sinks_lock:
+        sink = _default_sink
+        if sink in _sinks:
+            _sinks.remove(sink)
+        _default_sink = None
+    if isinstance(sink, _QueuedSink):
+        sink.close(timeout_s=timeout_s)
+        result = sink.snapshot()
+        with _sinks_lock:
+            for key in _retired_sink_totals:
+                _retired_sink_totals[key] += result[key]
+        return result
+    return diagnostic_snapshot()
 
 
 class _StdlibBridge(logging.Handler):
@@ -680,6 +953,23 @@ class _StdlibBridge(logging.Handler):
 
 _stdlib_bridge: _StdlibBridge | None = None
 _default_sink: Sink | None = None
+
+
+def diagnostic_snapshot() -> dict[str, int]:
+    """Return maintained delivery counters without probing the sink device."""
+    with _sinks_lock:
+        sink = _default_sink
+        sync_failures = _sync_sink_failures
+        retired = dict(_retired_sink_totals)
+    result = (
+        sink.snapshot()
+        if isinstance(sink, _QueuedSink)
+        else {"queued": 0, "dropped": 0, "failures": 0, "delivered": 0, "undrained": 0, "high_water": 0}
+    )
+    result["failures"] += sync_failures
+    for key, value in retired.items():
+        result[key] += value
+    return result
 
 
 def set_run_context(**fields: object) -> None:
@@ -719,18 +1009,42 @@ def configure_events(
     set_level(resolved_level)
 
     target = stream
+    owns_stream = False
     if target is None:
         log_file = os.environ.get("POLYLOGUE_LOG_FILE")
         target = open(log_file, "a", encoding="utf-8") if log_file else _stderr_proxy  # noqa: SIM115
+        owns_stream = bool(log_file)
 
     # Replace rather than stack: a second call (a test, a re-entered CLI
     # command in the same process) must not double every event.
     global _default_sink
-    if _default_sink is not None:
-        remove_sink(_default_sink)
-    _default_sink = add_sink(make_stream_sink(target, fmt=resolved_fmt, redact=resolved_redact))
+    previous = _default_sink
+    if previous is not None:
+        remove_sink(previous)
+    _default_sink = add_sink(
+        _QueuedSink(
+            make_stream_sink(target, fmt=resolved_fmt, redact=resolved_redact, flush_each=False),
+            target,
+            owns_stream=owns_stream,
+        )
+    )
+    if isinstance(previous, _QueuedSink):
+        previous.close()
+        retired = previous.snapshot()
+        with _sinks_lock:
+            for key in _retired_sink_totals:
+                _retired_sink_totals[key] += retired[key]
 
     if bridge_stdlib and _stdlib_bridge is None:
         _stdlib_bridge = _StdlibBridge()
         logging.getLogger().addHandler(_stdlib_bridge)
+        for logger in logging.Logger.manager.loggerDict.values():
+            if isinstance(logger, logging.Logger):
+                for handler in tuple(logger.handlers):
+                    if getattr(handler, "_polylogue_fallback", False):
+                        logger.removeHandler(handler)
+    if bridge_stdlib:
         logging.getLogger().setLevel(logging.DEBUG if _threshold <= DEBUG else logging.INFO)
+
+
+atexit.register(shutdown_events)

@@ -13,10 +13,9 @@
     ]
   },
   {
-    "file": "polylogue/api/archive.py",
-    "tiers": [
-      "index"
-    ]
+    "file": "polylogue/archive/session_revision_membership.py",
+    "tiers": [],
+    "authority": "scratch"
   },
   {
     "file": "polylogue/archive/write_effects.py",
@@ -82,6 +81,17 @@
     ]
   },
   {
+    "file": "polylogue/operations/facade_writers.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/pipeline/ids.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/pipeline/services/ingest_batch/_core.py",
     "tiers": [
       "index",
@@ -134,6 +144,11 @@
     ]
   },
   {
+    "file": "polylogue/sources/assembly_claude_code.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/sources/codex_state_evidence.py",
     "tiers": [
       "source"
@@ -152,6 +167,36 @@
     ]
   },
   {
+    "file": "polylogue/sources/live/tool_result_sidecars.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/parsers/claude/stream_scratch.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/parsers/codex.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/prepared_jsonl.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/prepared_merge.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/prepared_message_sink.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/sources/revision_backfill.py",
     "tiers": [
       "source"
@@ -160,6 +205,11 @@
   {
     "file": "polylogue/sources/sqlite_export.py",
     "tiers": []
+  },
+  {
+    "file": "polylogue/sources/tool_outcomes.py",
+    "tiers": [],
+    "authority": "scratch"
   },
   {
     "file": "polylogue/storage/accepted_marker_inputs.py",

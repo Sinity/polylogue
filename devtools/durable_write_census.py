@@ -248,6 +248,9 @@ class RuntimeTableDeclaration:
     """An explicitly non-durable runtime relation outside canonical tier DDL."""
 
     key: str
+    file: str
+    function: str
+    table: str
     disposition: str
     reason: str
 
@@ -893,7 +896,14 @@ def load_declaration(path: Path) -> CensusDeclaration:
             malformed.append(f"runtime_tables[{index}]")
             continue
         key = f"{file}::{function}::{table}::persistent"
-        runtime_tables[key] = RuntimeTableDeclaration(key=key, disposition=disposition, reason=reason)
+        runtime_tables[key] = RuntimeTableDeclaration(
+            key=key,
+            file=str(file),
+            function=str(function),
+            table=str(table),
+            disposition=disposition,
+            reason=reason,
+        )
 
     return CensusDeclaration(
         package=str(data.get("package") or "polylogue"),
@@ -929,26 +939,57 @@ def collect_violations(*, repo_root: Path, declaration_path: Path | None = None)
         creation = runtime_creations.get(key)
         if creation is None:
             continue
-        if (
-            runtime_entry.disposition != "disposable_ops"
-            or not creation.file.endswith("/ops_write.py")
-            or not runtime_entry.reason
-        ):
+        valid_disposable_ops = runtime_entry.disposition == "disposable_ops" and creation.file.endswith("/ops_write.py")
+        valid_disposable_scratch = (
+            runtime_entry.disposition == "disposable_scratch"
+            and creation.file == "polylogue/storage/sqlite/archive_tiers/write.py"
+        )
+        if not (valid_disposable_ops or valid_disposable_scratch) or not runtime_entry.reason:
             violations.append(
                 {
                     "rule": "runtime_table_disposition_invalid",
                     "key": key,
                     "file": creation.file,
-                    "detail": "only an explained runtime relation in ops_write.py may be declared disposable_ops",
+                    "detail": (
+                        "only an explained runtime relation in ops_write.py may be disposable_ops, or an explicitly "
+                        "declared private scratch relation in archive_tiers/write.py may be disposable_scratch"
+                    ),
                 }
             )
+
+    declared_scratch_tables = {
+        (entry.file, entry.table)
+        for entry in declaration.runtime_tables.values()
+        if entry.disposition == "disposable_scratch"
+    }
+    valid_scratch_tables: set[tuple[str, str]] = set()
+    for file, table in sorted(declared_scratch_tables):
+        creators = [
+            creation for creation in runtime_creations.values() if creation.file == file and creation.table == table
+        ]
+        if not creators or any(
+            (creator_entry := declaration.runtime_tables.get(creation.key)) is None
+            or creator_entry.disposition != "disposable_scratch"
+            or not creator_entry.reason
+            for creation in creators
+        ):
+            violations.append(
+                {
+                    "rule": "runtime_scratch_table_authority_incomplete",
+                    "key": f"{file}::{table}",
+                    "file": file,
+                    "detail": "every runtime creator for this scratch table needs its own explained declaration",
+                }
+            )
+        else:
+            valid_scratch_tables.add((file, table))
 
     observed = {site.key: site for site in observation.sites}
     for key in sorted(observed.keys() - declaration.entries.keys()):
         site = observed[key]
         if site.tier == "runtime":
             creation_key = f"{site.file}::{site.function}::{site.table}::persistent"
-            if creation_key in declaration.runtime_tables:
+            if creation_key in declaration.runtime_tables or (site.file, site.table) in valid_scratch_tables:
                 continue
             violations.append(
                 {

@@ -787,6 +787,18 @@ def workspace_env(
 
 
 @pytest.fixture
+def one_shot_workspace_env(
+    workspace_env: dict[str, Path],
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, Path]:
+    """Give a synthetic ingest test a fresh root it can claim before bootstrap."""
+    archive_root = tmp_path_factory.mktemp("one-shot-archive")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    return {**workspace_env, "archive_root": archive_root}
+
+
+@pytest.fixture
 def db_without_fts(tmp_path: Path) -> Path:
     """Database with schema but WITHOUT the FTS table (simulates fresh install)."""
     from polylogue.storage.sqlite.connection import open_connection

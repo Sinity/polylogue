@@ -33,6 +33,8 @@ FieldKind = Literal[
     "token",  # closed vocabulary member: outcome, level, stage
     "path",  # filesystem path — local-only, see SENSITIVITY notes
     "text",  # quarantined free text, truncated on emit
+    "timings",  # bounded phase-name -> finite milliseconds
+    "epoch",  # finite Unix timestamp
 ]
 
 #: Free-text fields. These are truncated to :data:`TEXT_FIELD_MAX_CHARS` and are
@@ -115,6 +117,7 @@ def _fields() -> dict[str, FieldKind]:
         "blob_hash",
         "content_hash",
         "source_id",
+        "source_name",
         "member_id",
         "cursor_id",
         "tool_id",
@@ -177,6 +180,7 @@ def _fields() -> dict[str, FieldKind]:
         # only that some were.
         "config_keys",
         "source_event",
+        "evidence",
     )
 
     # -- measurements ----------------------------------------------------
@@ -191,12 +195,15 @@ def _fields() -> dict[str, FieldKind]:
         "ingested",
         "skipped",
         "failed",
+        "succeeded",
+        "refused",
         "deferred",
         "pending",
         "retried",
         "queued",
         "active",
         "bytes",
+        "size",
         "rows",
         "attempts",
         "errors",
@@ -253,6 +260,7 @@ def _fields() -> dict[str, FieldKind]:
         "cohorts",
         "transport_failures",
         "payload_failures",
+        "stage_timings_omitted",
     )
 
     add(
@@ -265,6 +273,9 @@ def _fields() -> dict[str, FieldKind]:
         "hold_ms",
         "budget_ms",
     )
+
+    add("timings", "stage_timings_ms")
+    add("epoch", "mtime")
 
     add(
         "flag",

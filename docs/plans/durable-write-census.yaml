@@ -12,6 +12,71 @@ runtime_tables:
     table: "polylogue_ops_schema_state"
     disposition: disposable_ops
     reason: "The relation records only the current DDL digest of disposable ops.db. It is created by the OPS writer itself, is neither source/user/audit state nor an archive authority, and is deliberately excluded from canonical durable-tier ownership."
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_DiskDuplicateNativeIds.__init__"
+    table: "ids"
+    disposition: disposable_scratch
+    reason: "The table is created in native-ids.db under this object's TemporaryDirectory and stores only duplicate counts for one prepared session; the connection and directory are closed and removed with the object."
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_DiskMessageEventIndex.__init__"
+    table: "boundary"
+    disposition: disposable_scratch
+    reason: "The table is created in owners.db under this object's TemporaryDirectory and indexes one prepared session's message boundaries; its connection and directory are private scratch."
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_DiskMessageEventIndex.__init__"
+    table: "owner"
+    disposition: disposable_scratch
+    reason: "The table is created in owners.db under this object's TemporaryDirectory and maps one prepared session's provider ids to message ids; its connection and directory are private scratch."
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_DiskSourceMessageIds.__init__"
+    table: "refs"
+    disposition: disposable_scratch
+    reason: "The table is created in refs.db under this object's TemporaryDirectory and holds prefix references for one prepared session; the connection and directory are removed with the object."
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_UnionScratch.__init__"
+    table: "block_remap"
+    disposition: disposable_scratch
+    reason: "The table is in union.db under _UnionScratch's TemporaryDirectory and maps block ids during one cross-acquisition preparation; close() removes the private scratch store."
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_UnionScratch.__init__"
+    table: "message_remap"
+    disposition: disposable_scratch
+    reason: "The table is in union.db under _UnionScratch's TemporaryDirectory and maps message ids during one cross-acquisition preparation; close() removes the private scratch store."
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_UnionScratch.__init__"
+    table: "native_message"
+    disposition: disposable_scratch
+    reason: "The table is in union.db under _UnionScratch's TemporaryDirectory and indexes merged message ids during one cross-acquisition preparation; close() removes the private scratch store."
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_UnionScratch.__init__"
+    table: "restored_attachment_ref"
+    disposition: disposable_scratch
+    reason: "The table is in union.db under _UnionScratch's TemporaryDirectory and tracks restored attachment references during one merge; close() removes the private scratch store."
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_acompact_content_membership_ratio"
+    table: "membership"
+    disposition: disposable_scratch
+    reason: "The table is created only on a _DiskSignatureSequence connection backed by a TemporaryDirectory and counts one parent's signatures for one comparison; sequence cleanup closes and removes it."
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_prepare_cross_acquisition_union"
+    table: "new_block_structural"
+    disposition: disposable_scratch
+    reason: "The table is created on _UnionScratch.conn in union.db under a TemporaryDirectory and indexes one incoming session's structural block keys; scratch.close() removes it."
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_prepare_cross_acquisition_union"
+    table: "old_block_structural"
+    disposition: disposable_scratch
+    reason: "The table is created on _UnionScratch.conn in union.db under a TemporaryDirectory and indexes one predecessor session's structural block keys; scratch.close() removes it."
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_prepare_cross_acquisition_union"
+    table: "old_block_only"
+    disposition: disposable_scratch
+    reason: "The table is created on _UnionScratch.conn in union.db under a TemporaryDirectory and indexes unmatched predecessor blocks for one merge; scratch.close() removes it."
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_restore_captured_provider_usage_rows_disk"
+    table: "usage_count"
+    disposition: disposable_scratch
+    reason: "The table is created on _UnionScratch.conn in union.db under a TemporaryDirectory and counts event identities for one merge; scratch.close() removes it."
 writes:
   - file: "polylogue/storage/sqlite/archive_tiers/user_write.py"
     function: "advance_session_marker_delivery"
@@ -595,6 +660,13 @@ writes:
     classification: declared_retention
     reason: "cleanup_superseded_raw_snapshots deletes only raws that superseded_raw_snapshot_candidates ranked outside the declared keep_full_snapshots/keep_append_snapshots window, minus the caller's protected_raw_ids and outside its eligible_raw_ids set; it is dry-run by default and reports skipped_referenced_count rather than deleting a protected row"
   - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
+    function: "apply_prepared_raw_revision_classification"
+    table: "raw_sessions"
+    kind: "update"
+    tier: "source"
+    classification: lifecycle_transition
+    reason: "Applies a prepared full-raw byte-classification proof only after rechecking its exact raw_sessions and membership/census source binding plus every retained blob's stat identity. It updates only proof-listed raw revision authority/predecessor/baseline/generation fields in the source-writer phase, then promotes contiguous append authority through the existing guard; a stale proof is rejected before mutation."
+  - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
     function: "_classify_raw_revision_cohort"
     table: "raw_sessions"
     kind: "update"
@@ -1048,6 +1120,14 @@ writes:
     classification: lifecycle_transition
     reason: "finalization inserts or verifies the immutable accepted marker input and deletes only the pending row for that exact request_key in the same caller-owned source transaction; a rollback therefore retains the pending carrier and cannot split accepted bytes from obligation removal"
 caller_supplied_sql:
+  - file: "polylogue/storage/io_phase_metrics.py"
+    function: "_MeasuredConnection.execute"
+    parameter: "sql"
+    reason: "This wrapper delegates SQL to the caller-supplied SQLite connection and adds timing only for transaction statements; archive write authority remains with the connection owner, which is censused at its storage boundary."
+  - file: "polylogue/storage/io_phase_metrics.py"
+    function: "_MeasuredCursor.execute"
+    parameter: "sql"
+    reason: "This cursor delegates SQL to its caller-owned measured connection and adds timing only for transaction statements; it introduces no database or archive authority."
   - file: "polylogue/api/archive.py"
     function: "_archive_aggregate_facet_families.scoped_rows"
     parameter: "global_sql"

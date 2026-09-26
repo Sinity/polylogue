@@ -1,8 +1,8 @@
 # Structured logging
 
-Polylogue emits **events**, not sentences. An event is a record with a stable
-dotted name and allowlisted scalar fields; the human-readable line an operator
-reads is a *rendering* of that record, never its storage form.
+Polylogue emits events with stable dotted names and allowlisted fields. Legacy
+prose is bridged into the same configured sink with its message quarantined in
+`error_detail`; the rendered line is a view of the event record.
 
 The design target is one specific reader: someone scrolling a completed
 fresh-start rebuild log — a long unattended convergence over the whole archive
@@ -34,7 +34,7 @@ to a reader, from a line that meant nothing.
 ```python
 from polylogue.logging import emit, span, bind
 
-with bind(run_id=run_id, component="daemon"):     # correlation scope
+with bind(run_id=run_id, component="daemon"):  # correlation scope
     with span("daemon.converge.file", path=path) as pass_span:
         emit("daemon.stage.executed", stage=name, outcome="ok", duration_ms=ms)
         pass_span.ok(files=1)
@@ -59,12 +59,13 @@ one unit of work followable across the daemon's concurrency:
 - **The writer lease** — `write_coordinator._run_in_daemon_thread` already calls
   `contextvars.copy_context()` before the thread hop, so correlation crosses the
   lease for free.
-- **New `threading.Thread`** — on Python 3.14 (this repo's interpreter) a new
-  thread inherits its creator's context. Automatic.
-- **Pooled threads** — *not* automatic. A `ThreadPoolExecutor` thread created
-  before the bind carries no context. This is the one real trap, and it is
-  exactly the shape of `daemon/execution.py`'s long-lived pool. Wrap those
-  callables with `propagate(fn)`.
+- **New `threading.Thread`** — inheritance depends on the interpreter's
+  `thread_inherit_context` setting. Explicitly wrap a new target when its
+  correlation must survive both GIL-enabled and free-threaded builds.
+- **Pooled threads** — a reused worker does not acquire the submitter's current
+  context automatically. `propagate(fn)` copies the full context, including
+  any writer authority, so it belongs only at an intentional full-context
+  handoff.
 
 `span` also issues `trace_id` / `span_id` / `parent_span_id`, so nested work
 forms a tree within one `run_id`.
@@ -85,16 +86,18 @@ success. Three mechanisms push back:
   probe returned nothing" cannot collapse into the same reading.
 
 Reserved keys (`ts`, `level`, `event`) are assigned after caller fields, so a
-call site cannot rename its own event or restate its own level.
+call site cannot rename its own event or restate its own level. Terminal span
+facts also win over caller metadata without masking an operation exception.
 
 ### Cost
 
 `emit` compares one integer before doing anything else, so a suppressed event
-costs the caller's kwargs dict and nothing more. Nothing is serialized unless a
-sink consumes it; rendering happens in the sink, once, only for records that
-survive the threshold. There is no tree walk, no handler chain, and no
-per-emit formatting of fields that no one reads. (The suite-cost plugin's
-O(tests²) walk is the cautionary tale this rule exists to avoid.)
+costs the caller's kwargs dict and nothing more. The configured sink uses a
+bounded queue and a daemon worker. A blocked device therefore costs the caller
+an enqueue, and `diagnostic_snapshot()` reports queue depth, drops, delivery
+failures, and delivered records. Warning and error records can displace queued
+routine records. Flush happens on idle and shutdown; shutdown waits briefly,
+then reports queued drops and any in-flight record it could not prove drained.
 
 Guard genuinely expensive field computation with `is_enabled(level)`.
 
@@ -123,6 +126,11 @@ Consequences:
   storage form and the console view -- and `render_json(record, redact=True)` /
   `render_console(record, redact=True)` do the same directly. A test asserts the
   quarantine set stays at one entry, so this property cannot drift.
+- Counts require non-negative integers, durations require finite non-negative
+  numbers, and outcomes use the declared vocabulary. A `stage_timings_ms` map
+  admits at most 12 short phase names with finite millisecond values. Scalar
+  strings and whole records are bounded before dispatch. `reason` must be a
+  short token; diagnostic prose belongs in quarantined `error_detail`.
 
 Filesystem paths *are* allowed — the rebuild reader needs "where did it stop" —
 but are marked `LOCAL_ONLY_FIELDS` for any future export path.
@@ -142,7 +150,21 @@ but are marked `LOCAL_ONLY_FIELDS` for any future export path.
 `jq`-able). `console` is the operator view. For an unattended rebuild, run with
 `POLYLOGUE_LOG_FORMAT=json POLYLOGUE_LOG_FILE=<path>` and render afterwards.
 
-Additional sinks: `add_sink` / `remove_sink`, and `capture()` for tests.
+Additional sinks: `add_sink` / `remove_sink`, and `capture()` for tests. Those
+explicit sinks run on the caller thread; the configured stream is queued.
+The configured stream receives `emit`, pre-configuration stdlib loggers,
+post-configuration structlog loggers, and third-party stdlib records. Audit
+receipts remain in their durable tier, separate from disposable diagnostics.
+Delivery is best effort: a failed device can lose events, and the loss counters
+must be read before treating a file log as a complete diagnostic record.
+
+The source call-site audit kept `value`, `context`, and `stage_payload` rejected:
+they can carry raw provider or request data. `source_path` remains rejected in
+favor of the bounded registered `path` field. Acquisition gained typed `size`,
+`mtime`, `source_name`, `evidence`, and `stage_timings_ms` fields because those
+are the measured decision and timing units used by its real producer. Other
+unregistered legacy call-site fields still produce `log.field_rejected`; a
+warning about such a field is diagnostic loss, not a failed input file.
 
 ### Relationship to `devtools` receipts
 

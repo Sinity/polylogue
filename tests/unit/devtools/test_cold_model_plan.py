@@ -19,6 +19,7 @@ from devtools.continuity_cold_model import (
     ColdModelPlan,
     ColdModelPlanStep,
     ColdModelVariancePolicy,
+    HTTPColdModelBackend,
     ScriptedColdModelBackend,
     WireDiscoveryCapture,
     build_cold_prompt,
@@ -30,7 +31,7 @@ from devtools.continuity_cold_model import (
 from devtools.continuity_scenarios import CONTINUITY_SCENARIOS, continuity_scenario
 
 _MODULE = Path(__file__).resolve().parents[3] / "devtools" / "continuity_cold_model.py"
-_PLANS = Path(__file__).resolve().parents[2] / "data" / "continuity" / "cold-model-plans.json"
+_AUTHOR_PLANS = Path(__file__).resolve().parents[2] / "data" / "continuity" / "author-recorded-plans.json"
 
 
 def _capture(tools: tuple[str, ...] = ("query", "status", "explain", "read", "get", "context")) -> WireDiscoveryCapture:
@@ -96,6 +97,17 @@ class TestPlanContract:
         assert plan.tools == ("status",)
 
 
+def test_author_recorded_plans_remain_synthetic_parseable_fixtures() -> None:
+    """Keep the recorded plans usable without presenting them as model output."""
+    fixture = json.loads(_AUTHOR_PLANS.read_text(encoding="utf-8"))
+    assert fixture["family"] == "synthetic"
+    assert fixture["generation"]["kind"] == "author-written"
+    assert fixture["generation"]["model_evidence"] is False
+    assert set(fixture["plans"]) == {scenario.scenario_id for scenario in CONTINUITY_SCENARIOS}
+    for answer in fixture["plans"].values():
+        assert parse_cold_model_plan(json.dumps(answer)).steps
+
+
 class TestColdness:
     """The prompt carries sparse wording and public discovery, nothing else."""
 
@@ -124,12 +136,6 @@ class TestColdness:
                 imported.update(alias.name for alias in node.names)
         assert "QUERY_DISCOVERY_EXAMPLES" not in imported
         assert not any(name.startswith("polylogue.archive.query.discovery") for name in imported)
-
-    def test_plan_artifact_declares_model_generation(self) -> None:
-        """The checked-in answers must identify model output, not author recording."""
-        payload = json.loads(_PLANS.read_text(encoding="utf-8"))
-        assert payload["generation"]["kind"] == "model-output"
-        assert payload["model"] != "author-recorded-v1"
 
 
 class TestGrading:
@@ -219,21 +225,20 @@ class TestRegistryCoverage:
 
 
 class TestVariancePolicy:
-    """Model variance never launders a product-route failure."""
+    """A failed attempt remains a failure; the lane never retries silently."""
 
     def test_product_failure_not_variance(self) -> None:
-        policy = ColdModelVariancePolicy(attempts=3, required_passes=2)
-        assert policy.disposition(passes=3, product_failure=True) == "fail"
+        policy = ColdModelVariancePolicy()
+        assert policy.disposition(passes=1, product_failure=True) == "fail"
 
-    def test_partial_passes_are_variance(self) -> None:
-        policy = ColdModelVariancePolicy(attempts=3, required_passes=2)
-        assert policy.disposition(passes=1, product_failure=False) == "model_variance"
-        assert policy.disposition(passes=2, product_failure=False) == "pass"
+    def test_single_attempt_outcomes(self) -> None:
+        policy = ColdModelVariancePolicy()
+        assert policy.disposition(passes=1, product_failure=False) == "pass"
         assert policy.disposition(passes=0, product_failure=False) == "fail"
 
-    def test_incoherent_policy_is_rejected(self) -> None:
+    def test_retry_policy_is_rejected(self) -> None:
         with pytest.raises(ValueError):
-            ColdModelVariancePolicy(attempts=2, required_passes=3)
+            ColdModelVariancePolicy(attempts=2, required_passes=1)
 
 
 class TestScriptedBackend:
@@ -241,7 +246,55 @@ class TestScriptedBackend:
 
     def test_unknown_scenario_raises(self) -> None:
         backend = ScriptedColdModelBackend(answers={"known question": "{}"})
+        assert backend.identity.family == "scripted"
+        assert backend.identity.model == "synthetic-test-plan"
         prompt = build_cold_prompt("unknown question", _capture(), max_calls=4)
         with pytest.raises(ColdModelLaneError) as excinfo:
             backend.answer(prompt)
         assert excinfo.value.kind == "scripted_answer_missing"
+
+
+class TestResponsesBackend:
+    def test_no_tools_request_and_native_receipt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import httpx
+
+        requests: list[dict[str, object]] = []
+
+        def fake_post(url: str, *, json: dict[str, object], headers: dict[str, str], timeout: float) -> httpx.Response:
+            requests.append({"url": url, "body": json, "headers": headers, "timeout": timeout})
+            return httpx.Response(
+                200,
+                json={
+                    "id": "resp-synthetic",
+                    "model": "gpt-6-sol",
+                    "status": "completed",
+                    "output": [{"type": "message", "content": [{"type": "output_text", "text": "{}"}]}],
+                    "usage": {"input_tokens": 12, "output_tokens": 3, "output_tokens_details": {"reasoning_tokens": 1}},
+                },
+            )
+
+        monkeypatch.setattr(httpx, "post", fake_post)
+        backend = HTTPColdModelBackend("openai-responses", "gpt-6-sol", "https://api.openai.com/v1", "test")
+        answer = backend.answer("synthetic prompt")
+
+        assert requests[0]["url"] == "https://api.openai.com/v1/responses"
+        body = requests[0]["body"]
+        assert isinstance(body, dict)
+        assert body["model"] == "gpt-6-sol"
+        assert "tools" not in body
+        assert body["store"] is False
+        assert answer.reported_model == "gpt-6-sol"
+        assert answer.native_token_counts["output_tokens_details"] == {"reasoning_tokens": 1}
+
+    def test_incomplete_response_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import httpx
+
+        monkeypatch.setattr(
+            httpx,
+            "post",
+            lambda *args, **kwargs: httpx.Response(200, json={"status": "incomplete", "output": []}),
+        )
+        backend = HTTPColdModelBackend("openai-responses", "gpt-6-sol", "https://api.openai.com/v1", "test")
+        with pytest.raises(ColdModelLaneError) as excinfo:
+            backend.answer("synthetic prompt")
+        assert excinfo.value.kind == "backend_answer_incomplete"

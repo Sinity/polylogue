@@ -9,6 +9,13 @@
 # fits is a finding, not pending work.
 package: polylogue
 sites:
+  - file: "polylogue/operations/daemon_ingest.py"
+    function: "IngestExecution.recover_machine_request"
+    subject: "archive_identity"
+    kind: "read_path_substitution"
+    scope: "read_only_module"
+    classification: operator_mutation
+    reason: "This explicit machine-request recovery route rebinds only the in-memory operation binding to the identity already stored on that request's durable audit row. The audit record is the authority for resuming that request after a derived index generation changes; it does not rewrite or mask any archive-derived producer value."
   - file: "polylogue/coordination/envelope.py"
     function: "_compact_coordination_payload"
     subject: "archive"

@@ -56,44 +56,57 @@ sites:
       republication that landed mid-pin rather than serving a torn read.
 
   # ── Python API facade mutations ──────────────────────────────────────
-  - site: polylogue/api/archive.py::_archive_capture_assertion_candidate
+  - site: polylogue/operations/archive_mutation.py::execute_archive_mutation
     classification: writer
     role: facade_mutation
     reason: >-
-      Captures a terminal note into the durable user tier. The reference
-      resolution it performs runs inside the same writer transaction that
-      stores the assertion, so the read is part of the write, not a bypass.
-    debt: >-
-      A facade mutation that takes the writer lease in-process rather than
-      admitting through the daemon write coordinator. Completion work for the
-      sole-writer contract, not an alternate write policy.
+      Checks scoped daemon-lease or exclusive offline-owner authority, then
+      prepares, authorizes and executes one bound facade mutation while the
+      archive is open for writing.
 
-  - site: polylogue/api/archive.py::PolylogueArchiveMixin._execute_facade_mutation
+  - site: polylogue/operations/facade_mutations.py::delete_session_product
     classification: writer
     role: facade_mutation
     reason: >-
-      The shared facade mutation body: opens writable, builds the actuator
-      args, then previews, authorizes and executes through the one bound
-      mutation executor.
-    debt: >-
-      Same sole-writer completion work as the other facade mutations.
+      Checks archive-write authority, resolves the API delete target, then
+      previews, authorizes and executes its bound-token mutation in one
+      writable archive context.
 
-  - site: polylogue/api/archive.py::PolylogueArchiveMixin.record_work_event
+  - site: polylogue/operations/facade_mutations.py::record_work_event_product
     classification: writer
     role: facade_mutation
     reason: >-
-      Appends one typed live-agent work event through the archive writer.
-    debt: >-
-      Same sole-writer completion work as the other facade mutations.
+      Checks archive-write authority before appending the typed work event to
+      the durable archive through the facade product helper.
 
-  - site: polylogue/api/archive.py::PolylogueArchiveMixin.delete_session_safe
+  - site: polylogue/operations/facade_writers.py::_archive_capture_assertion_candidate
     classification: writer
     role: facade_mutation
     reason: >-
-      Resolves the delete target and runs the shared
-      preview/authorize/receipt delete contract inside one writer hold.
-    debt: >-
-      Same sole-writer completion work as the other facade mutations.
+      Checks archive-write authority and resolves candidate references in the
+      same writable archive context that stores the durable user assertion.
+
+  - site: polylogue/operations/facade_mutations.py::_daemon_product
+    classification: writer
+    role: daemon_write
+    reason: >-
+      A declared daemon facade operation opens under its runtime write context
+      and executes through the daemon's audited mutation executor.
+
+  - site: polylogue/operations/facade_mutations.py::facade_delete_session
+    classification: writer
+    role: daemon_write
+    reason: >-
+      The daemon delete handler resolves the target and consumes its bound
+      authorization under the runtime principal and audited executor.
+
+  - site: polylogue/operations/user_overlay_mutations.py::_execute
+    classification: writer
+    role: daemon_write
+    reason: >-
+      The declared user-overlay mutation executor opens under the daemon
+      runtime and applies the authorized operation through its audit-bound
+      executor.
 
   # ── Declared mutation and delete routes ──────────────────────────────
   - site: polylogue/archive/query/archive_execution.py::_open_archive_for_write
@@ -166,11 +179,12 @@ sites:
       The declared ingest operation's publish step: the writer hold that lands
       parsed sessions into the archive.
 
-  - site: polylogue/pipeline/services/archive_ingest.py::parse_sources_archive
+  - site: polylogue/operations/canonical_archive_ingest.py::ingest_sources_archive.initialize
     classification: writer
     role: ingest_write
     reason: >-
-      The pipeline's own archive write for a parse pass over acquired sources.
+      The one-shot ingestion owner proves no resident daemon owns the archive
+      before initializing it through the write coordinator.
 
   - site: polylogue/sources/live/archive_open.py::_open_archive_for_live_write
     classification: writer

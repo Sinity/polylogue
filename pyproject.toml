@@ -25,6 +25,8 @@ dependencies = [
   "google-api-python-client",
   "google-auth-httplib2",
   "httpx[http2]>=0.28.1,<1.0",
+  "starlette>=1.3.1,<2.0",  # Isolated browser ASGI host
+  "uvicorn>=0.42.0,<1.0",  # Browser host process server
   "rich>=15.0.0",
   "jinja2",
   "markdown-it-py>=4.2.0",
@@ -147,6 +149,7 @@ plg = "polylogue.cli:main"
 plog = "polylogue.cli:main"
 polylogue-hook = "polylogue.sources.hook_producer:main"
 polylogued = "polylogue.daemon.cli:main"
+polylogue-browser-host = "polylogue.daemon.browser_host:main"
 polylogue-browser-capture-native-host = "polylogue.browser_capture.native_host:main"
 polylogue-mcp = "polylogue.mcp.cli:main"
 

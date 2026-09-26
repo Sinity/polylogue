@@ -77,11 +77,6 @@
   {
     "target": "polylogue/api",
     "file": "polylogue/api/archive.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
-  },
-  {
-    "target": "polylogue/api",
-    "file": "polylogue/api/archive.py",
     "import": "polylogue.storage.sqlite.archive_tiers.context_delivery_write"
   },
   {
@@ -142,11 +137,6 @@
   {
     "target": "polylogue/api",
     "file": "polylogue/api/ingest.py",
-    "import": "polylogue.pipeline.services.archive_ingest"
-  },
-  {
-    "target": "polylogue/api",
-    "file": "polylogue/api/ingest.py",
     "import": "polylogue.pipeline.services.parsing_models"
   },
   {
@@ -198,11 +188,6 @@
     "target": "polylogue/cli",
     "file": "polylogue/cli/commands/embed.py",
     "import": "polylogue.storage.archive_identity"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/embed.py",
-    "import": "polylogue.storage.embeddings.materialization"
   },
   {
     "target": "polylogue/cli",
@@ -368,16 +353,6 @@
     "target": "polylogue/cli",
     "file": "polylogue/cli/query_output.py",
     "import": "polylogue.storage.runtime"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/read_views/chronicle.py",
-    "import": "polylogue.storage.archive_identity"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/read_views/chronicle.py",
-    "import": "polylogue.storage.sqlite.async_sqlite"
   },
   {
     "target": "polylogue/cli",
@@ -742,11 +717,6 @@
   {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/http.py",
-    "import": "polylogue.sources.live.watcher"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/http.py",
     "import": "polylogue.storage.archive_identity"
   },
   {
@@ -783,11 +753,6 @@
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/http.py",
     "import": "polylogue.storage.sqlite.archive_tiers.types"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/http.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.write"
   },
   {
     "target": "polylogue/daemon",

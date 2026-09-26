@@ -76,6 +76,23 @@ def test_webui_client_generator_fails_closed_for_request_bodies(tmp_path: Path) 
         generate(schema)
 
 
+def test_webui_client_skips_declared_routes_without_a_client_request_schema(tmp_path: Path) -> None:
+    document = yaml.safe_load(FIXTURE_SCHEMA.read_text(encoding="utf-8"))
+    document["paths"]["/api/compatibility"] = {
+        "post": {
+            "operationId": "writeCompatibility",
+            "x-polylogue-client-generation": False,
+            "requestBody": {"content": {"application/json": {"schema": {"type": "object"}}}},
+            "responses": {"200": {"description": "compatibility response"}},
+        }
+    }
+    schema = tmp_path / "compatibility.yaml"
+    schema.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+    generated = generate(schema)
+    assert "writeCompatibility" not in generated
+
+
 def test_webui_client_generator_fails_closed_for_unknown_coverage_qualification(
     tmp_path: Path,
 ) -> None:

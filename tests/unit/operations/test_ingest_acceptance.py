@@ -135,7 +135,9 @@ def test_runtime_authority_replay_preserves_frozen_ids_and_machine_part(
     publisher.flush()
     receipt = publisher.receipt_id(blob_hash)
     assert receipt is not None
-    manifest = FrozenSourceManifest("generation:good", "d" * 64, (FrozenSourceInput("in", "/in", blob_hash, receipt),))
+    manifest = FrozenSourceManifest(
+        "generation:good", "d" * 64, (FrozenSourceInput("in", "/in", blob_hash, receipt),), "codex"
+    )
     principal = MutationPrincipal("actor:test", frozenset({"archive.ingest"}), "cli", "user")
     now_ms = int(frozen_clock.time() * 1000)
     plan = ingest_plan(
@@ -166,6 +168,8 @@ def test_runtime_authority_replay_preserves_frozen_ids_and_machine_part(
     recovered = AuditRepository.for_archive_root(tmp_path)
     recovered.reconcile_continuity()
     part = recovered.machine_parts(binding)[0]
+    recovered_preview, _ = recovered.authorization_for_principal(str(part["authorization_ref"]), principal)
+    assert recovered_preview.plan.context["source_name"] == "codex"
     assert (part["preview_ref"], part["authorization_ref"], part["operation_id"]) == (
         expected["preview_id"],
         expected["authorization_id"],
@@ -180,6 +184,27 @@ def test_runtime_authority_replay_preserves_frozen_ids_and_machine_part(
             expected["issued_at_ms"],
             expected["authorization_token_sha256"],
         )
+
+
+def test_source_name_changes_accepted_manifest_and_preview_identity(frozen_clock: FrozenClock) -> None:
+    input_ref = FrozenSourceInput("in", "/in", "a" * 64, "receipt")
+    unnamed = FrozenSourceManifest("generation:source", "d" * 64, (input_ref,))
+    named = FrozenSourceManifest("generation:source", "d" * 64, (input_ref,), "codex")
+    another = FrozenSourceManifest("generation:source", "d" * 64, (input_ref,), "claude-code")
+
+    assert FrozenSourceManifest.from_dict(named.to_dict()) == named
+    assert len({unnamed.manifest_digest, named.manifest_digest, another.manifest_digest}) == 3
+    plans = [
+        ingest_plan(
+            manifest,
+            archive_instance_id="archive:test",
+            archive_identity_digest="archive:test",
+            now_ms=int(frozen_clock.time() * 1000),
+            expires_at_ms=int(frozen_clock.time() * 1000) + 300_000,
+        )
+        for manifest in (unnamed, named, another)
+    ]
+    assert len({plan.plan_hash for plan in plans}) == 3
 
 
 def test_runtime_authority_normal_accept_commits_linked_run(tmp_path: Path, frozen_clock: FrozenClock) -> None:

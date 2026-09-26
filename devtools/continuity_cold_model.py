@@ -7,10 +7,11 @@ import asyncio
 import hashlib
 import json
 import os
+import platform
 import sys
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal, Protocol, TypeAlias, cast
@@ -25,6 +26,7 @@ from devtools.continuity_replay import (
 )
 from devtools.continuity_scenarios import (
     CONTINUITY_SCENARIOS,
+    ContinuityRouteStep,
     ContinuityScenarioSpec,
     ContinuityTool,
     continuity_scenario,
@@ -32,7 +34,7 @@ from devtools.continuity_scenarios import (
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 from tests.infra.continuity import load_continuity_catalog, seed_continuity_archive
 
-COLD_MODEL_LANE_SCHEMA_VERSION = 1
+COLD_MODEL_LANE_SCHEMA_VERSION = 2
 
 ColdModelAxis = Literal[
     "discovery",
@@ -56,8 +58,8 @@ COLD_MODEL_AXES: tuple[ColdModelAxis, ...] = (
 )
 
 ColdModelUncertainty = Literal["low", "medium", "high"]
-ColdModelDialect = Literal["openai", "anthropic"]
-ColdModelDisposition = Literal["pass", "model_variance", "fail"]
+ColdModelDialect = Literal["openai", "openai-responses", "anthropic"]
+ColdModelDisposition = Literal["pass", "fail"]
 
 PlanArguments: TypeAlias = dict[str, JSONValue]
 
@@ -86,6 +88,10 @@ def _digest(value: object) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
+def _file_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 # ── Typed plan contract ───────────────────────────────────────────────
 
 
@@ -93,6 +99,7 @@ def _digest(value: object) -> str:
 class ColdModelPlanStep:
     tool: ContinuityTool
     arguments: PlanArguments
+    paginate: bool = False
 
     @property
     def plan_atom(self) -> str:
@@ -103,7 +110,12 @@ class ColdModelPlanStep:
         return self.tool
 
     def to_payload(self) -> JSONDocument:
-        return {"tool": self.tool, "arguments": dict(self.arguments), "plan_atom": self.plan_atom}
+        return {
+            "tool": self.tool,
+            "arguments": dict(self.arguments),
+            "paginate": self.paginate,
+            "plan_atom": self.plan_atom,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,7 +223,14 @@ def parse_cold_model_plan(text: str) -> ColdModelPlan:
                 kind="plan_step_arguments_invalid",
                 axis="formulation",
             )
-        steps.append(ColdModelPlanStep(tool=_as_tool(tool), arguments=dict(arguments)))
+        paginate = raw_step.get("paginate", False)
+        if not isinstance(paginate, bool):
+            raise ColdModelLaneError(
+                f"plan step {index} paginate was not a boolean",
+                kind="plan_step_pagination_invalid",
+                axis="formulation",
+            )
+        steps.append(ColdModelPlanStep(tool=_as_tool(tool), arguments=dict(arguments), paginate=paginate))
 
     uncertainty = raw.get("uncertainty")
     if not isinstance(uncertainty, str) or uncertainty not in _ALLOWED_UNCERTAINTY:
@@ -292,7 +311,7 @@ async def capture_wire_discovery(
 
     for subject in subjects:
         arguments: PlanArguments = {"subject": subject}
-        seen_offsets: set[int] = set()
+        last_offset = 0
         for _ in range(max_hops):
             hops += 1
             raw = await route.invoke("explain", arguments)
@@ -348,19 +367,13 @@ async def capture_wire_discovery(
                     axis="discovery",
                 )
             offset = next_arguments.get("offset")
-            if not isinstance(offset, int) or isinstance(offset, bool) or offset <= 0:
+            if not isinstance(offset, int) or isinstance(offset, bool) or offset <= last_offset:
                 raise ColdModelLaneError(
                     f"explain continuation did not advance an offset: {next_arguments!r}",
                     kind="discovery_continuation_not_advancing",
                     axis="discovery",
                 )
-            if offset in seen_offsets:
-                raise ColdModelLaneError(
-                    f"explain continuation repeated offset {offset}",
-                    kind="discovery_continuation_not_advancing",
-                    axis="discovery",
-                )
-            seen_offsets.add(offset)
+            last_offset = offset
             arguments = {str(key): value for key, value in next_arguments.items()}
         else:
             raise ColdModelLaneError(
@@ -384,7 +397,7 @@ async def capture_wire_discovery(
         examples=ordered,
         hops=hops,
         schema_digest=_digest(schemas),
-        catalog_digest=_digest([sorted(examples)]),
+        catalog_digest=_digest(ordered),
     )
 
 
@@ -419,6 +432,8 @@ class ColdModelAnswer:
     answer_bytes: int
     wall_ms: float
     native_token_counts: JSONDocument
+    response_id: str | None = None
+    reported_model: str | None = None
 
     def to_payload(self) -> JSONDocument:
         return {
@@ -426,6 +441,8 @@ class ColdModelAnswer:
             "answer_bytes": self.answer_bytes,
             "wall_ms": self.wall_ms,
             "native_token_counts": dict(self.native_token_counts),
+            "response_id": self.response_id,
+            "reported_model": self.reported_model,
         }
 
 
@@ -438,12 +455,12 @@ class ColdModelBackend(Protocol):
         raise NotImplementedError
 
 
-PROMPT_VERSION = "cold-continuity-plan-v1"
+PROMPT_VERSION = "cold-continuity-plan-v2"
 
 
 def build_cold_prompt(sparse_prompt: str, discovery: WireDiscoveryCapture, *, max_calls: int) -> str:
     contract = {
-        "steps": [{"tool": "<one of the tools below>", "arguments": {"<argument>": "<value>"}}],
+        "steps": [{"tool": "<one of the tools below>", "arguments": {"<argument>": "<value>"}, "paginate": True}],
         "stop_conditions": ["<when you would stop calling>"],
         "citation_fields": ["<result field you would cite>"],
         "uncertainty": "low|medium|high",
@@ -452,6 +469,7 @@ def build_cold_prompt(sparse_prompt: str, discovery: WireDiscoveryCapture, *, ma
         (
             "You are a cold client of an MCP archive server. You have never seen this archive.",
             "Answer the operator's question by formulating a plan of tool calls.",
+            "Set paginate=true when you must follow continuations to cover the full result population.",
             "",
             f"Operator question: {sparse_prompt}",
             f"Call budget: at most {max_calls} tool calls.",
@@ -469,7 +487,7 @@ def build_cold_prompt(sparse_prompt: str, discovery: WireDiscoveryCapture, *, ma
 class ScriptedColdModelBackend:
     answers: Mapping[str, str]
     model_identity: ColdModelIdentity = ColdModelIdentity(
-        family="scripted", model="recorded-plan-artifact", prompt_version=PROMPT_VERSION
+        family="scripted", model="synthetic-test-plan", prompt_version=PROMPT_VERSION
     )
 
     @property
@@ -514,7 +532,7 @@ class HTTPColdModelBackend:
     model: str
     base_url: str
     api_key: str
-    timeout_seconds: float = 120.0
+    timeout_seconds: float = 180.0
 
     @property
     def identity(self) -> ColdModelIdentity:
@@ -523,10 +541,20 @@ class HTTPColdModelBackend:
     def answer(self, prompt: str) -> ColdModelAnswer:
         import httpx
 
-        if self.dialect == "openai":
-            url = f"{self.base_url.rstrip('/')}/chat/completions"
+        if self.dialect == "openai-responses":
+            url = f"{self.base_url.rstrip('/')}/responses"
             headers = {"Authorization": f"Bearer {self.api_key}"}
             payload: JSONDocument = {
+                "model": self.model,
+                "input": prompt,
+                "store": False,
+                "reasoning": {"effort": "medium"},
+                "max_output_tokens": 8192,
+            }
+        elif self.dialect == "openai":
+            url = f"{self.base_url.rstrip('/')}/chat/completions"
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+            payload = {
                 "model": self.model,
                 "messages": [{"role": "user", "content": prompt}],
             }
@@ -540,7 +568,14 @@ class HTTPColdModelBackend:
             }
 
         started = time.perf_counter_ns()
-        response = httpx.post(url, json=payload, headers=headers, timeout=self.timeout_seconds)
+        try:
+            response = httpx.post(url, json=payload, headers=headers, timeout=self.timeout_seconds)
+        except httpx.RequestError as exc:
+            raise ColdModelLaneError(
+                f"{self.dialect} backend transport failed: {type(exc).__name__}",
+                kind="backend_transport_error",
+                axis="formulation",
+            ) from exc
         wall_ms = round((time.perf_counter_ns() - started) / 1_000_000, 3)
         if response.status_code >= 400:
             raise ColdModelLaneError(
@@ -548,7 +583,14 @@ class HTTPColdModelBackend:
                 kind="backend_http_error",
                 axis="formulation",
             )
-        body = response.json()
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise ColdModelLaneError(
+                f"{self.dialect} backend returned non-JSON",
+                kind="backend_answer_malformed",
+                axis="formulation",
+            ) from exc
         text = self._extract_text(body)
         return ColdModelAnswer(
             text=text,
@@ -556,6 +598,8 @@ class HTTPColdModelBackend:
             answer_bytes=len(text.encode("utf-8")),
             wall_ms=wall_ms,
             native_token_counts=self._native_counts(body),
+            response_id=body.get("id") if isinstance(body, dict) and isinstance(body.get("id"), str) else None,
+            reported_model=body.get("model") if isinstance(body, dict) and isinstance(body.get("model"), str) else None,
         )
 
     def _extract_text(self, body: object) -> str:
@@ -565,6 +609,26 @@ class HTTPColdModelBackend:
                 kind="backend_answer_malformed",
                 axis="formulation",
             )
+        if self.dialect == "openai-responses":
+            if body.get("status") != "completed":
+                raise ColdModelLaneError(
+                    f"Responses API answer ended with status {body.get('status')!r}",
+                    kind="backend_answer_incomplete",
+                    axis="formulation",
+                )
+            output = body.get("output")
+            if isinstance(output, list):
+                text = "".join(
+                    part["text"]
+                    for item in output
+                    if isinstance(item, dict) and item.get("type") == "message"
+                    for part in item.get("content", [])
+                    if isinstance(part, dict)
+                    and part.get("type") == "output_text"
+                    and isinstance(part.get("text"), str)
+                )
+                if text:
+                    return text
         if self.dialect == "openai":
             choices = body.get("choices")
             if isinstance(choices, list) and choices and isinstance(choices[0], dict):
@@ -592,7 +656,7 @@ class HTTPColdModelBackend:
         usage = body.get("usage")
         if not isinstance(usage, dict):
             return {}
-        return {str(key): value for key, value in usage.items() if isinstance(value, int)}
+        return require_json_document(usage, context="backend usage counters")
 
 
 # ── Evaluator ─────────────────────────────────────────────────────────
@@ -728,20 +792,14 @@ class ColdModelVariancePolicy:
     required_passes: int = 1
 
     def __post_init__(self) -> None:
-        if self.attempts < 1:
-            raise ValueError("variance policy needs at least one attempt")
-        if not 1 <= self.required_passes <= self.attempts:
-            raise ValueError("required_passes must be between 1 and attempts")
+        if (self.attempts, self.required_passes) != (1, 1):
+            raise ValueError("cold replay permits exactly one declared attempt per scenario")
 
     def disposition(self, *, passes: int, product_failure: bool) -> ColdModelDisposition:
         """A product-route failure is never excused as model variance."""
         if product_failure:
             return "fail"
-        if passes >= self.required_passes:
-            return "pass"
-        if passes > 0:
-            return "model_variance"
-        return "fail"
+        return "pass" if passes == 1 else "fail"
 
     def to_payload(self) -> JSONDocument:
         return {"attempts": self.attempts, "required_passes": self.required_passes}
@@ -807,8 +865,16 @@ async def run_cold_model_lane(
     report: dict[str, object] = {
         "schema_version": COLD_MODEL_LANE_SCHEMA_VERSION,
         "fixture_id": fixture.get("fixture_id"),
+        "archive_fixture_digest": _digest(fixture),
+        "registry_digest": _digest([asdict(scenario) for scenario in CONTINUITY_SCENARIOS]),
         "archive_root": str(archive_root.resolve()),
         "model": backend.identity.to_payload(),
+        "runtime": {
+            "python": platform.python_version(),
+            "implementation": platform.python_implementation(),
+            "evaluator_digest": _file_digest(Path(__file__)),
+            "replay_digest": _file_digest(Path(__file__).with_name("continuity_replay.py")),
+        },
         "variance_policy": policy.to_payload(),
         "discovery_receipt": capture.receipt(),
         "registry_scenario_count": len(CONTINUITY_SCENARIOS),
@@ -832,32 +898,57 @@ async def _run_one_scenario(
     scenario = continuity_scenario(scenario_name)
     prompt = build_cold_prompt(scenario.sparse_prompt, capture, max_calls=scenario.budget.max_calls)
 
-    attempts: list[JSONValue] = []
-    passes = 0
-    for attempt_index in range(policy.attempts):
-        status, payload = _attempt(scenario, backend, prompt, capture, attempt_index)
-        attempts.append(payload)
-        if status == "pass":
-            passes += 1
+    formulation_status, attempt, model_plan = _attempt(scenario, backend, prompt, capture, 0)
+    passes = int(formulation_status == "pass")
 
     replay_result = await execute_continuity_scenario(scenario_name, fixture, route)
     execution_grades = grade_execution(replay_result)
     product_failure = any(grade.status == "fail" for grade in execution_grades)
-    disposition = policy.disposition(passes=passes, product_failure=product_failure)
+    model_result: JSONDocument | None = None
+    model_grades: tuple[ColdModelAxisGrade, ...] = ()
+    if model_plan is not None and passes == 1:
+        planned_steps = _planned_route_steps(scenario, model_plan)
+        if planned_steps is not None:
+            model_result = await execute_continuity_scenario(scenario_name, fixture, route, route_steps=planned_steps)
+            model_grades = grade_execution(model_result)
+    model_failure = model_result is None or any(grade.status == "fail" for grade in model_grades)
+    disposition = policy.disposition(passes=passes, product_failure=product_failure or model_failure)
 
     return {
         "scenario": scenario_name,
         "sparse_prompt": scenario.sparse_prompt,
         "prompt_bytes": len(prompt.encode("utf-8")),
+        "prompt_digest": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
         "discovery_bytes": len(json.dumps(capture.public_payload(), sort_keys=True).encode("utf-8")),
-        "attempts": attempts,
-        "attempt_count": len(attempts),
+        "attempts": [attempt],
+        "attempt_count": 1,
         "formulation_passes": passes,
         "execution_grades": [grade.to_payload() for grade in execution_grades],
         "product_status": replay_result.get("status"),
+        "model_execution_grades": [grade.to_payload() for grade in model_grades],
+        "model_execution_status": model_result.get("status") if model_result is not None else "not_run",
+        "model_route_receipts": model_result.get("route_receipts", []) if model_result is not None else [],
+        "model_execution_diagnostics": model_result.get("diagnostics", []) if model_result is not None else [],
+        "model_observed_facts": model_result.get("observed_facts", {}) if model_result is not None else {},
         "disposition": disposition,
-        "correction_cost": len(attempts) - passes,
+        "correction_cost": 1 - passes,
     }
+
+
+def _planned_route_steps(
+    scenario: ContinuityScenarioSpec, plan: ColdModelPlan
+) -> tuple[ContinuityRouteStep, ...] | None:
+    if len(plan.steps) != len(scenario.route_steps):
+        return None
+    remaining = list(scenario.route_steps)
+    planned: list[ContinuityRouteStep] = []
+    for step in plan.steps:
+        match = next((candidate for candidate in remaining if candidate.plan_atom == step.plan_atom), None)
+        if match is None:
+            return None
+        remaining.remove(match)
+        planned.append(replace(match, arguments=tuple(step.arguments.items()), paginate=step.paginate))
+    return tuple(planned)
 
 
 def _attempt(
@@ -866,64 +957,77 @@ def _attempt(
     prompt: str,
     capture: WireDiscoveryCapture,
     attempt_index: int,
-) -> tuple[str, JSONDocument]:
+) -> tuple[str, JSONDocument, ColdModelPlan | None]:
     try:
         answer = backend.answer(prompt)
     except ColdModelLaneError as exc:
-        return "fail", {
-            "attempt": attempt_index,
-            "formulation_status": "fail",
-            "failure_kind": exc.kind,
-            "failure_axis": exc.axis,
-            "grades": [],
-            "plan": None,
-            "resources": {},
-        }
+        return (
+            "fail",
+            {
+                "attempt": attempt_index,
+                "formulation_status": "fail",
+                "failure_kind": exc.kind,
+                "failure_axis": exc.axis,
+                "grades": [],
+                "plan": None,
+                "resources": {},
+            },
+            None,
+        )
+    if answer.reported_model is not None and not (
+        answer.reported_model == backend.identity.model
+        or answer.reported_model.startswith(f"{backend.identity.model}-")
+    ):
+        return (
+            "fail",
+            {
+                "attempt": attempt_index,
+                "formulation_status": "fail",
+                "failure_kind": "backend_model_mismatch",
+                "failure_axis": "formulation",
+                "grades": [],
+                "plan": None,
+                "resources": answer.to_payload(),
+                "raw_answer": answer.text,
+            },
+            None,
+        )
     try:
         plan = parse_cold_model_plan(answer.text)
     except ColdModelLaneError as exc:
-        return "fail", {
-            "attempt": attempt_index,
-            "formulation_status": "fail",
-            "failure_kind": exc.kind,
-            "failure_axis": exc.axis,
-            "grades": [],
-            "plan": None,
-            "resources": answer.to_payload(),
-        }
+        return (
+            "fail",
+            {
+                "attempt": attempt_index,
+                "formulation_status": "fail",
+                "failure_kind": exc.kind,
+                "failure_axis": exc.axis,
+                "grades": [],
+                "plan": None,
+                "resources": answer.to_payload(),
+                "raw_answer": answer.text,
+            },
+            None,
+        )
     grades = grade_formulation(scenario, plan, capture)
     status = "pass" if all(grade.status == "pass" for grade in grades) else "fail"
-    return status, {
-        "attempt": attempt_index,
-        "formulation_status": status,
-        "failure_kind": None,
-        "failure_axis": None,
-        "grades": [grade.to_payload() for grade in grades],
-        "plan": plan.to_payload(),
-        "resources": answer.to_payload(),
-    }
+    return (
+        status,
+        {
+            "attempt": attempt_index,
+            "formulation_status": status,
+            "failure_kind": None,
+            "failure_axis": None,
+            "grades": [grade.to_payload() for grade in grades],
+            "plan": plan.to_payload(),
+            "resources": answer.to_payload(),
+            "raw_answer": answer.text,
+        },
+        plan,
+    )
 
 
 # ── Command entry point ───────────────────────────────────────────────
-
-
-def _load_scripted_backend(path: Path) -> ScriptedColdModelBackend:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise SystemExit(f"plan artifact {path} is not a JSON object")
-    answers: dict[str, str] = {}
-    identity = ColdModelIdentity(
-        family=str(payload.get("family", "scripted")),
-        model=str(payload.get("model", "recorded-plan-artifact")),
-        prompt_version=PROMPT_VERSION,
-    )
-    raw_plans = payload.get("plans")
-    if not isinstance(raw_plans, dict):
-        raise SystemExit(f"plan artifact {path} declared no 'plans' object")
-    for scenario_id, plan in raw_plans.items():
-        scenario = continuity_scenario(str(scenario_id))
-        answers[scenario.sparse_prompt] = json.dumps(plan)
-    return ScriptedColdModelBackend(answers=answers, model_identity=identity)
 
 
 def _http_backend(dialect: ColdModelDialect, model: str, base_url: str, key_env: str) -> HTTPColdModelBackend:
@@ -937,29 +1041,22 @@ def main(argv: list[str] | None = None) -> int:
     """Run the cold, wire-only model planning lane."""
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--backend", choices=("scripted", "openai", "anthropic"), default="scripted")
-    parser.add_argument("--plans", type=Path, help="Recorded plan artifact for the scripted backend.")
+    parser.add_argument("--backend", choices=("openai", "openai-responses", "anthropic"), required=True)
     parser.add_argument("--model", default="", help="Model id for an HTTP backend.")
     parser.add_argument("--base-url", default="", help="API base URL for an HTTP backend.")
     parser.add_argument("--api-key-env", default="", help="Environment variable holding the API key.")
-    parser.add_argument("--attempts", type=int, default=1)
-    parser.add_argument("--required-passes", type=int, default=1)
-    parser.add_argument("--scenario", action="append", default=None)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--json", action="store_true", help="Print the report as JSON.")
     args = parser.parse_args(argv)
+    if args.output is not None and args.output.exists():
+        raise SystemExit(f"receipt already exists: {args.output}")
 
-    if args.backend == "scripted":
-        if args.plans is None:
-            raise SystemExit("--backend scripted requires --plans")
-        backend: ColdModelBackend = _load_scripted_backend(args.plans)
-    else:
-        if not args.model or not args.base_url or not args.api_key_env:
-            raise SystemExit(f"--backend {args.backend} requires --model, --base-url and --api-key-env")
-        dialect: ColdModelDialect = "openai" if args.backend == "openai" else "anthropic"
-        backend = _http_backend(dialect, args.model, args.base_url, args.api_key_env)
+    if not args.model or not args.base_url or not args.api_key_env:
+        raise SystemExit(f"--backend {args.backend} requires --model, --base-url and --api-key-env")
+    dialect: ColdModelDialect = args.backend
+    backend: ColdModelBackend = _http_backend(dialect, args.model, args.base_url, args.api_key_env)
 
-    policy = ColdModelVariancePolicy(attempts=args.attempts, required_passes=args.required_passes)
+    policy = ColdModelVariancePolicy()
     with TemporaryDirectory(prefix="polylogue-cold-model-") as workdir:
         archive_root = Path(workdir) / "archive"
         catalog = load_continuity_catalog()
@@ -970,15 +1067,22 @@ def main(argv: list[str] | None = None) -> int:
                 catalog,
                 backend,
                 variance=policy,
-                scenario_names=tuple(args.scenario) if args.scenario else None,
             )
         )
 
     rendered = json.dumps(report, indent=2, sort_keys=True)
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(rendered + "\n", encoding="utf-8")
-    print(rendered)
+        with args.output.open("x", encoding="utf-8") as receipt_file:
+            receipt_file.write(rendered + "\n")
+    if args.json or args.output is None:
+        print(rendered)
+    else:
+        print(
+            json.dumps(
+                {"status": report["status"], "output": str(args.output), "scenario_count": report["scenario_count"]}
+            )
+        )
     return 0 if report["status"] == "pass" else 1
 
 

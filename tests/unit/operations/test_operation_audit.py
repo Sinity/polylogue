@@ -25,11 +25,22 @@ from polylogue.operations.audit import (
     token_sha256,
 )
 from polylogue.operations.bindings import OperationBinding
+from polylogue.operations.ingest_acceptance import INGEST_OPERATION
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.machine_receipts import (
+    IngestHistoricalReceipt,
+    IngestInputHistoricalReceipt,
+    IngestInputPageHistoricalReceipt,
+    IngestInputRawMemberHistorical,
+    IngestInputRawPageHistoricalReceipt,
+    IngestInsightPageHistoricalReceipt,
+    IngestTerminalSummaryHistorical,
     InsightCertifiedCountsHistorical,
     InsightPartHistoricalReceipt,
     InsightTargetHistoricalReceipt,
+    ingest_input_raw_pages_digest,
+    ingest_insight_pages_digest,
+    ingest_session_ids_digest,
 )
 from polylogue.operations.mutation_transaction import (
     AuditFinalizationError,
@@ -2865,3 +2876,360 @@ def test_machine_request_dedup_survives_an_index_generation_promotion(tmp_path: 
         )
     with sqlite3.connect(tmp_path / "audit.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM machine_requests").fetchone()[0] == 1
+
+
+@dataclass
+class _IngestPageActuator(_Actuator):
+    operation: str = INGEST_OPERATION
+
+    def prepare(self, _args: object) -> MutationPlan:
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=self.target_refs,
+            affected_tiers=("user",),
+            reversible=True,
+            context={
+                "source_generation_id": "source-generation:fixture",
+                "manifest_digest": "a" * 64,
+                "enumeration_fingerprint": "b" * 64,
+                "input_count": 1,
+                "recipe_version": "fixture-recipe",
+            },
+        )
+
+
+def test_ingest_session_id_pages_survive_restart_and_validate_identity(tmp_path: Path) -> None:
+    """A terminal page reference resolves every changed ID from audit history."""
+
+    audit = _audit(tmp_path)
+    actuator = _IngestPageActuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "ingest-page-token")
+    preview = executor.prepare_bound(
+        _binding(actuator, operation_name=INGEST_OPERATION),
+        object(),
+        _principal(),
+        archive_instance_id="archive:ingest-pages",
+        archive_identity_digest="identity:ingest-pages",
+        parameter_digest="params:ingest-pages",
+    )
+    authorization = executor.authorize_bound(_binding(actuator, operation_name=INGEST_OPERATION), preview, _principal())
+    started = executor.begin_bound(
+        _binding(actuator, operation_name=INGEST_OPERATION), preview, authorization, object()
+    )
+    assert started.operation_id is not None
+    session_ids = [f"chatgpt:{index:05d}" for index in range(257)]
+    audit.append_ingest_session_id_page(started.operation_id, 0, tuple(session_ids[:256]))
+    audit.append_ingest_session_id_page(started.operation_id, 1, tuple(session_ids[256:]))
+
+    restarted = AuditRepository.for_archive_root(tmp_path)
+    assert (
+        restarted.read_ingest_session_id_pages(
+            started.operation_id,
+            page_count=2,
+            session_count=257,
+            digest=ingest_session_ids_digest(session_ids),
+        )
+        == session_ids
+    )
+    with pytest.raises(ValueError, match="differ from terminal receipt"):
+        restarted.read_ingest_session_id_pages(
+            started.operation_id,
+            page_count=2,
+            session_count=257,
+            digest="a" * 64,
+        )
+    with pytest.raises(ValueError, match="contiguous"):
+        audit.append_ingest_session_id_page(started.operation_id, 3, ("chatgpt:00258",))
+
+
+def test_ingest_session_id_page_replays_after_source_prepare_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit = _audit(tmp_path)
+    actuator = _IngestPageActuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "replayed-ingest-page-token")
+    preview = executor.prepare_bound(
+        _binding(actuator, operation_name=INGEST_OPERATION),
+        object(),
+        _principal(),
+        archive_instance_id="archive:replayed-ingest-page",
+        archive_identity_digest="identity:replayed-ingest-page",
+        parameter_digest="params:replayed-ingest-page",
+    )
+    authorization = executor.authorize_bound(_binding(actuator, operation_name=INGEST_OPERATION), preview, _principal())
+    started = executor.begin_bound(
+        _binding(actuator, operation_name=INGEST_OPERATION), preview, authorization, object()
+    )
+    assert started.operation_id is not None
+    original_phase = AuditContinuityCoordinator._phase
+
+    def interrupt_page(self: AuditContinuityCoordinator, phase: str, mutation: AuditMutation) -> None:
+        if mutation.kind == "append_ingest_session_id_page" and phase == "after_source_prepare":
+            raise RuntimeError("crash after ingest ID page prepare")
+        original_phase(self, phase, mutation)
+
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", interrupt_page)
+    with pytest.raises(RuntimeError, match="crash after ingest ID page prepare"):
+        audit.append_ingest_session_id_page(started.operation_id, 0, ("chatgpt:00000",))
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", original_phase)
+    restarted = AuditRepository.for_archive_root(tmp_path)
+    restarted.reconcile_continuity()
+    assert restarted.read_ingest_session_id_pages(
+        started.operation_id,
+        page_count=1,
+        session_count=1,
+        digest=ingest_session_ids_digest(["chatgpt:00000"]),
+    ) == ["chatgpt:00000"]
+    restarted.append_ingest_session_id_page(started.operation_id, 0, ("chatgpt:00000",))
+    assert (
+        len(
+            [
+                event
+                for event in restarted.list_events(started.operation_id)
+                if event["event_type"] == "ingest_session_id_page"
+            ]
+        )
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_paged_ingest_projection_restores_full_public_parse_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Four changed IDs cross a three-ID inline threshold without losing the fourth."""
+
+    from polylogue.api import Polylogue
+    from polylogue.operations import machine_receipts
+
+    monkeypatch.setattr(machine_receipts, "MAX_INLINE_INGEST_SESSION_IDS", 3)
+    audit = _audit(tmp_path)
+    actuator = _IngestPageActuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "api-ingest-page-token")
+    preview = executor.prepare_bound(
+        _binding(actuator, operation_name=INGEST_OPERATION),
+        object(),
+        _principal(),
+        archive_instance_id="archive:api-ingest-pages",
+        archive_identity_digest="identity:api-ingest-pages",
+        parameter_digest="params:api-ingest-pages",
+    )
+    authorization = executor.authorize_bound(_binding(actuator, operation_name=INGEST_OPERATION), preview, _principal())
+    started = executor.begin_bound(
+        _binding(actuator, operation_name=INGEST_OPERATION), preview, authorization, object()
+    )
+    assert started.operation_id is not None
+    session_ids = [f"chatgpt:{index:05d}" for index in range(4)]
+    audit.append_ingest_session_id_page(started.operation_id, 0, tuple(session_ids))
+    digest = ingest_session_ids_digest(session_ids)
+    summary = {
+        "enumeration_complete": True,
+        "parse_projection_known": True,
+        "processed_session_ids": [],
+        "processed_session_id_pages_ref": started.operation_id,
+        "processed_session_id_page_count": 1,
+        "processed_session_ids_digest": digest,
+        "processed_message_count": 4,
+        "changed_session_count": 4,
+        "changed_message_count": 4,
+        "confirmed_raw_count": 1,
+        "unresolved_raw_count": 0,
+    }
+    envelope: dict[str, object] = {"outcome": "completed", "result": {"historical_receipt": {"summary": summary}}}
+
+    class FakeClient:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def operation_to_completion(self, *_args: object, **_kwargs: object) -> dict[str, object]:
+            return envelope
+
+    monkeypatch.setattr("polylogue.daemon_client.DaemonClient", FakeClient)
+    source = tmp_path / "fixture.json"
+    source.write_text("{}", encoding="utf-8")
+    archive = Polylogue(archive_root=tmp_path)
+    try:
+        result = await archive.parse_file(source, source_name="chatgpt")
+        assert result.processed_ids == set(session_ids)
+        assert result.counts["sessions"] == 4
+        assert result.changed_counts["sessions"] == 4
+
+        summary["processed_session_id_page_count"] = 2
+        with pytest.raises(ValueError, match="page count differs"):
+            await archive.parse_file(source, source_name="chatgpt")
+        summary["processed_session_id_page_count"] = 1
+        summary["processed_session_ids_digest"] = "a" * 64
+        with pytest.raises(ValueError, match="differ from terminal receipt"):
+            await archive.parse_file(source, source_name="chatgpt")
+    finally:
+        await archive.close()
+
+
+def test_ingest_insight_pages_replay_and_reject_missing_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.operations import machine_receipts
+
+    audit = _audit(tmp_path)
+    actuator = _IngestPageActuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "replayed-insight-page-token")
+    binding = _binding(actuator, operation_name=INGEST_OPERATION)
+    preview = executor.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:replayed-insight-page",
+        archive_identity_digest="identity:replayed-insight-page",
+        parameter_digest="params:replayed-insight-page",
+    )
+    authorization = executor.authorize_bound(binding, preview, _principal())
+    started = executor.begin_bound(binding, preview, authorization, object())
+    assert started.operation_id is not None
+    pages = [
+        IngestInsightPageHistoricalReceipt(
+            ordinal=ordinal,
+            targets=[
+                InsightTargetHistoricalReceipt(
+                    target_ref=f"session:fixture-{ordinal}",
+                    disposition="published",
+                    certified_counts=InsightCertifiedCountsHistorical(profiles=1),
+                    publication_known_committed=True,
+                )
+            ],
+        )
+        for ordinal in range(2)
+    ]
+    audit.append_ingest_insight_page(started.operation_id, pages[0])
+    original_phase = AuditContinuityCoordinator._phase
+
+    def interrupt_page(self: AuditContinuityCoordinator, phase: str, mutation: AuditMutation) -> None:
+        if mutation.kind == "append_ingest_insight_page" and phase == "after_source_prepare":
+            raise RuntimeError("crash after insight page prepare")
+        original_phase(self, phase, mutation)
+
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", interrupt_page)
+    with pytest.raises(RuntimeError, match="crash after insight page prepare"):
+        audit.append_ingest_insight_page(started.operation_id, pages[1])
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", original_phase)
+    restarted = AuditRepository.for_archive_root(tmp_path)
+    restarted.reconcile_continuity()
+    monkeypatch.setattr(machine_receipts, "MAX_MACHINE_RECEIPT_PAGES", 1)
+    receipt = IngestHistoricalReceipt(
+        source_generation_id="generation:fixture",
+        final_sequence=1,
+        input_count=1,
+        input_pages=[
+            IngestInputPageHistoricalReceipt.from_items(
+                0,
+                [
+                    IngestInputHistoricalReceipt(
+                        source_item_id="source-item:fixture",
+                        logical_coordinate="fixture.json",
+                        denominator=1,
+                        raw_ids=["raw:fixture"],
+                    )
+                ],
+            )
+        ],
+        insight_pages_ref=started.operation_id,
+        insight_page_count=2,
+        insight_pages_digest=ingest_insight_pages_digest(pages),
+        summary=IngestTerminalSummaryHistorical(
+            enumeration_complete=True,
+            source_complete=True,
+            confirmed_raw_count=1,
+            unresolved_raw_count=0,
+            profile_targets_observed=2,
+        ),
+    )
+    assert restarted.resolve_ingest_insight_pages(receipt) == pages
+    assert (
+        restarted.read_ingest_insight_pages(
+            started.operation_id,
+            page_count=2,
+            target_count=2,
+            digest=ingest_insight_pages_digest(pages),
+        )
+        == pages
+    )
+    restarted.append_ingest_insight_page(started.operation_id, pages[1])
+    with pytest.raises(ValueError, match="page count differs"):
+        restarted.read_ingest_insight_pages(
+            started.operation_id,
+            page_count=3,
+            target_count=2,
+            digest=ingest_insight_pages_digest(pages),
+        )
+    with pytest.raises(ValueError, match="differ from terminal receipt"):
+        restarted.read_ingest_insight_pages(
+            started.operation_id,
+            page_count=2,
+            target_count=2,
+            digest="a" * 64,
+        )
+
+
+def test_ingest_input_raw_page_replays_and_verifies_unresolved_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit = _audit(tmp_path)
+    actuator = _IngestPageActuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "replayed-input-raw-page-token")
+    binding = _binding(actuator, operation_name=INGEST_OPERATION)
+    preview = executor.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:replayed-input-raw-page",
+        archive_identity_digest="identity:replayed-input-raw-page",
+        parameter_digest="params:replayed-input-raw-page",
+    )
+    authorization = executor.authorize_bound(binding, preview, _principal())
+    started = executor.begin_bound(binding, preview, authorization, object())
+    assert started.operation_id is not None
+    page = IngestInputRawPageHistoricalReceipt(
+        source_item_id="source-item:zip",
+        ordinal=0,
+        raws=[IngestInputRawMemberHistorical(raw_id=f"raw:{index}", unresolved=index == 3) for index in range(4)],
+    )
+    original_phase = AuditContinuityCoordinator._phase
+
+    def interrupt_page(self: AuditContinuityCoordinator, phase: str, mutation: AuditMutation) -> None:
+        if mutation.kind == "append_ingest_input_raw_page" and phase == "after_source_prepare":
+            raise RuntimeError("crash after input raw page prepare")
+        original_phase(self, phase, mutation)
+
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", interrupt_page)
+    with pytest.raises(RuntimeError, match="crash after input raw page prepare"):
+        audit.append_ingest_input_raw_page(started.operation_id, page)
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", original_phase)
+    restarted = AuditRepository.for_archive_root(tmp_path)
+    restarted.reconcile_continuity()
+    assert restarted.read_ingest_input_raw_pages(
+        started.operation_id,
+        source_item_id="source-item:zip",
+        page_count=1,
+        raw_count=4,
+        unresolved_count=1,
+        digest=ingest_input_raw_pages_digest([page]),
+    ) == [page]
+    restarted.append_ingest_input_raw_page(started.operation_id, page)
+    with pytest.raises(ValueError, match="page count differs"):
+        restarted.read_ingest_input_raw_pages(
+            started.operation_id,
+            source_item_id="source-item:zip",
+            page_count=2,
+            raw_count=4,
+            unresolved_count=1,
+            digest=ingest_input_raw_pages_digest([page]),
+        )
+    with pytest.raises(ValueError, match="differ from terminal receipt"):
+        restarted.read_ingest_input_raw_pages(
+            started.operation_id,
+            source_item_id="source-item:zip",
+            page_count=1,
+            raw_count=4,
+            unresolved_count=0,
+            digest=ingest_input_raw_pages_digest([page]),
+        )

@@ -107,6 +107,13 @@ class WriterModuleDeclaration:
     well_formed: bool
 
 
+@dataclass(frozen=True)
+class WriterModuleCensusEntry:
+    tiers: tuple[str, ...]
+    authority: str | None = None
+    validation_error: str | None = None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Enforce inter-package layering rules.")
     parser.add_argument("--json", action="store_true", help="Output machine-readable JSON.")
@@ -724,7 +731,7 @@ def _contract_is_audited(
     )
 
 
-def _load_writer_module_census_baseline(baseline_path: Path) -> dict[str, tuple[str, ...]]:
+def _load_writer_module_census_baseline(baseline_path: Path) -> dict[str, WriterModuleCensusEntry]:
     """Load the out-of-root DML census ratchet.
 
     ``mutation_roots`` proves the *inventory* inside the archive-tier facade.
@@ -733,22 +740,36 @@ def _load_writer_module_census_baseline(baseline_path: Path) -> dict[str, tuple[
     baseline is the exact, checked-in census of DML-bearing modules that sit
     outside the inventory today, keyed by path with the tiers observed at the
     time it was written. A file may leave the census (its DML moved behind an
-    inventoried entrypoint) but a file that is not byte-for-byte in this file
-    fails the gate, so a new unpoliced write path cannot appear silently.
+    inventoried entrypoint) but a file that is not in this file fails the
+    gate, so a new unpoliced write path cannot appear silently. A scratch
+    entry must say ``authority: scratch`` and declare no archive tiers; the
+    gate rejects it if known archive-table DML later appears in that module.
     """
     if not baseline_path.exists():
         return {}
     with open(baseline_path, encoding="utf-8") as f:
         raw = json.load(f)
-    entries: dict[str, tuple[str, ...]] = {}
+    entries: dict[str, WriterModuleCensusEntry] = {}
     if isinstance(raw, list):
         for item in raw:
             if not isinstance(item, dict):
                 continue
             file_rel = item.get("file")
             if isinstance(file_rel, str):
-                tiers = item.get("tiers")
-                entries[file_rel] = tuple(t for t in tiers if isinstance(t, str)) if isinstance(tiers, list) else ()
+                raw_tiers = item.get("tiers")
+                tiers = tuple(t for t in raw_tiers if isinstance(t, str)) if isinstance(raw_tiers, list) else ()
+                authority = item.get("authority")
+                validation_error = None
+                if "authority" in item:
+                    if authority != "scratch":
+                        validation_error = "authority must be 'scratch' when present"
+                    elif not isinstance(raw_tiers, list) or raw_tiers:
+                        validation_error = "scratch authority requires an explicit empty tiers list"
+                entries[file_rel] = WriterModuleCensusEntry(
+                    tiers=tiers,
+                    authority=authority if isinstance(authority, str) else None,
+                    validation_error=validation_error,
+                )
     return entries
 
 
@@ -783,6 +804,25 @@ def _collect_writer_module_census_violations(
     baseline = _load_writer_module_census_baseline(repo_root / policy.census_baseline)
     observed = _census_mutation_files(repo_root, policy)
     violations: list[dict[str, object]] = []
+    for rel, declaration in sorted(baseline.items()):
+        if declaration.validation_error is not None:
+            violations.append(
+                {
+                    "file": rel,
+                    "rule": "writer_module_census_declaration_invalid",
+                    "detail": declaration.validation_error,
+                    "baseline": policy.census_baseline,
+                }
+            )
+        elif declaration.authority == "scratch" and observed.get(rel):
+            violations.append(
+                {
+                    "file": rel,
+                    "rule": "writer_module_scratch_archive_tier_mutation",
+                    "tiers": sorted(observed[rel]),
+                    "baseline": policy.census_baseline,
+                }
+            )
     for rel in sorted(set(observed) - set(baseline)):
         violations.append(
             {

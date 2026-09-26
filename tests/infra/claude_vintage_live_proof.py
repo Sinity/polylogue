@@ -25,7 +25,6 @@ from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.sources.parsers.claude.ai_parser import parse_ai
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.convergence_harness import converge_session_profiles
 
 ReceiptVerdict = Literal["equivalent", "conflict", "unresolved"]
@@ -148,7 +147,6 @@ def run_claude_vintage_live_proof(archive_root: Path) -> ClaudeVintageReclassifi
     """Run the sanitized pair through production parse, ingest, replay, and convergence."""
     wire_root = archive_root / "wire"
     old_path, new_path = write_claude_vintage_live_proof_pair(wire_root)
-    initialize_active_archive_root(archive_root)
 
     ingest = asyncio.run(
         parse_sources_archive(

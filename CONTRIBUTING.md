@@ -262,22 +262,26 @@ Choose verification that proves the changed contract. Do not duplicate the
 hosted candidate gate locally unless the task specifically needs that evidence.
 
 ```bash
-devtools test <selection>  # targeted behavioral evidence when needed
-devtools verify            # affected/static verification when explicitly selected
-devtools verify --quick    # optional local static check
+devtools test <selection>  # focused behavioral evidence
+devtools verify            # static gates plus one bounded testmon selection
+devtools verify --quick    # static gates only
+devtools verify --all      # complete corpus when scheduled or explicitly requested
 devtools bench slo --include-lab  # explicit benchmark tier
 ```
 
 The quick gate runs on the pull request (hosted). `devtools verify --quick`
 is available on demand; it is not a second publication requirement.
 
-`devtools verify` does not replay a prior verify result. It always runs the
-static gates, then pytest over unit, property, fuzz, and integration tests,
-excluding the separately operated `tests/benchmarks` performance surface. It
-selects from the checkout's testmon datafile and writes back; a checkout with
-no datafile seeds it by running everything. `--all` runs every test and still
-updates fingerprints. The corpus runs as one collection, never partitioned:
-testmon drops every recorded test a run did not collect.
+`devtools verify` runs static gates and uses one bounded selection from a
+usable checkout testmon datafile. Its result covers that selection only, and
+normal development accepts that it can miss affected tests. A zero-test
+selection is reported as zero. If the graph is unavailable, run an explicitly
+supplied focused selection when useful or leave broad seeding to the scheduled
+or explicitly requested run; verification does not seed the graph by running
+the corpus. Do not repeat an unavailable seed or green verification on the
+same revision to obtain a larger selection. `--all` runs the complete corpus
+and updates fingerprints. The corpus runs as one collection: testmon drops
+every recorded test a run did not collect.
 
 Add `nix build` or `nix flake check` when touching packaging or Nix expressions. See [TESTING.md](TESTING.md) and [docs/devtools.md](docs/devtools.md)
 for details.

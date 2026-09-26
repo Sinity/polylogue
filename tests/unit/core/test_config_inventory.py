@@ -70,6 +70,24 @@ blob_integrity_sample_size = 7
     assert "<set>" in rendered
 
 
+def test_retired_whale_escalation_setting_does_not_reject_existing_config(
+    tmp_path: Path, workspace_env: dict[str, Path]
+) -> None:
+    """Old TOML and environment values are ignored after raw admission unified."""
+    from polylogue.config import config_inventory_by_key, load_polylogue_config
+
+    config_path = tmp_path / "polylogue.toml"
+    config_path.write_text("[pipeline.raw_authority]\nwhale_payload_bytes = 4096\n", encoding="utf-8")
+    config = load_polylogue_config(
+        config_path=config_path,
+        site_config_path=tmp_path / "absent.toml",
+        environment={"POLYLOGUE_RAW_AUTHORITY_WHALE_PAYLOAD_BYTES": "8192"},
+    )
+
+    assert "raw_authority_whale_payload_bytes" not in config_inventory_by_key()
+    assert "raw_authority_whale_payload_bytes" not in config.raw
+
+
 def test_inventory_env_mapping_is_executable(monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]) -> None:
     from polylogue.config import config_inventory_by_key, load_polylogue_config
 
