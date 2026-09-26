@@ -58,6 +58,9 @@ def test_baseline_uses_typed_acceptance_before_cursor_and_requires_retained_revi
     ]
     old_revision = baseline.accepted[0].revision
     assert old_revision == hashlib.sha256(b'{"session":1}').hexdigest()
+    assert baseline.prospective_material_bytes == len(b'{"session":1}')
+    assert baseline.prospective_retained_allocation_bytes(4096) == 4096
+    assert baseline.prospective_source_db_allocation_bytes(4096) == 4096
     accepted.write_bytes(b'{"session":2}')
     new_revision = hashlib.sha256(accepted.read_bytes()).hexdigest()
     source_db = _source_db(tmp_path / "source.db", ((str(accepted), new_revision),))
@@ -138,6 +141,12 @@ def test_history_rule_and_codex_sqlite_use_their_typed_revisions(tmp_path: Path)
     )
     assert {row.path for row in baseline.accepted} == {str(history), str(state)}
     assert next(row.revision for row in baseline.accepted if row.path == str(state)) == sqlite_member_revision(state)
+    from polylogue.sources.sqlite_export import logical_export_bytes
+    from polylogue.sources.sqlite_snapshot import member_export_scope
+
+    assert next(row.material_bytes for row in baseline.accepted if row.path == str(state)) == len(
+        logical_export_bytes(state, scope=member_export_scope(state))
+    )
 
 
 def test_zip_members_keep_live_coordinates_and_exclusions(tmp_path: Path) -> None:
@@ -154,6 +163,7 @@ def test_zip_members_keep_live_coordinates_and_exclusions(tmp_path: Path) -> Non
         row.path == f"{bundle}:conversations.json" and row.disposition == "accepted" for row in baseline.decisions
     )
     assert any(row.path == f"{bundle}:README.txt" and row.disposition == "excluded" for row in baseline.decisions)
+    assert baseline.prospective_material_bytes == len(b"[]")
     source_db = _source_db(
         tmp_path / "source.db", ((f"{bundle}:conversations.json", hashlib.sha256(b"[]").hexdigest()),)
     )

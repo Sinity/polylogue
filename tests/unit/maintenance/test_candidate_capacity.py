@@ -21,6 +21,7 @@ from polylogue.maintenance.candidate_capacity import (
     RESERVE_FLOOR_BYTES,
     ArchiveCapacityError,
     CandidateCapacityProjection,
+    CapacityDestination,
     InsufficientCapacityError,
     calibrated_index_ratio,
     measure_archive_capacity,
@@ -30,6 +31,7 @@ from polylogue.maintenance.candidate_capacity import (
     record_capacity_prediction,
     require_candidate_capacity,
 )
+from polylogue.sources.live.production_baseline import SourceDecision, _seal
 from polylogue.storage.archive_identity import (
     ACTIVE_POINTER_FILENAME,
     GENERATIONS_DIRNAME,
@@ -247,7 +249,10 @@ def test_projection_refuses_when_the_hidden_generation_does_not_fit(
     assert projection.shortfall_bytes > 0
     with pytest.raises(InsufficientCapacityError, match="insufficient free space"):
         require_candidate_capacity(root, operation_id="refused-op")
-    assert read_capacity_receipts(root) == ()
+    refused = read_capacity_receipts(root)
+    assert len(refused) == 1
+    assert refused[0].status == "refused"
+    assert refused[0].actual_evidence_bytes == 0
 
 
 def test_projection_accepts_when_free_space_covers_the_projected_peak(
@@ -302,7 +307,8 @@ def test_projection_includes_wal_temporary_receipt_and_reserve_terms(
     assert projection.receipt_growth_bytes > 0
     assert projection.reserve_bytes >= RESERVE_FLOOR_BYTES
     assert projection.required_free_bytes == (
-        projection.projected_index_bytes
+        projection.prospective_retained_allocation_bytes
+        + projection.projected_index_bytes
         + projection.wal_amplification_bytes
         + projection.temporary_amplification_bytes
         + projection.receipt_growth_bytes
@@ -330,8 +336,10 @@ def test_prediction_and_observed_peak_are_recorded_and_calibrate_the_next_estima
     assert observed is not None
     assert observed.as_dict()["schema"] == CAPACITY_RECEIPT_SCHEMA
     assert observed.predicted_peak_allocated_bytes == projection.predicted_peak_allocated_bytes
-    assert observed.actual_peak_index_bytes >= 32 * 1024 * 1024
-    assert observed.actual_peak_allocated_bytes == observed.baseline_allocated_bytes + observed.actual_peak_index_bytes
+    assert observed.final_candidate_allocated_bytes >= 32 * 1024 * 1024
+    assert observed.candidate_generation_id == candidate.name
+    assert "actual_peak_allocated_bytes" not in observed.as_dict()
+    assert observed.actual_evidence_bytes >= _allocated(root / "source.db")
 
     ratio, source = calibrated_index_ratio(root)
     assert source == "recorded"
@@ -339,7 +347,86 @@ def test_prediction_and_observed_peak_are_recorded_and_calibrate_the_next_estima
     assert generation.exists()
 
 
-def test_observed_peak_never_regresses_across_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_prospective_material_changes_fresh_admission_and_binds_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "archive"
+    _archive_with_generation(root, generation_bytes=1024)
+    monkeypatch.setattr("polylogue.maintenance.candidate_capacity._available_bytes", lambda _path: 1024**3)
+    small = require_candidate_capacity(
+        root,
+        operation_id="small",
+        prospective_material_bytes=1024,
+        baseline_digest="small-digest",
+        material_byte_definition="retained-canonical-payload-v1",
+    )
+    assert small.sufficient
+    with pytest.raises(InsufficientCapacityError) as refusal:
+        require_candidate_capacity(
+            root,
+            operation_id="large",
+            prospective_material_bytes=2 * 1024**3,
+            baseline_digest="large-digest",
+            material_byte_definition="retained-canonical-payload-v1",
+        )
+    assert refusal.value.projection.shortfall_bytes > 0
+    receipt = next(row for row in read_capacity_receipts(root) if row.operation_id == "large")
+    assert receipt.status == "refused"
+    assert receipt.shortfall_bytes == refusal.value.projection.shortfall_bytes
+    assert receipt.prospective_material_bytes == 2 * 1024**3
+    assert receipt.baseline_digest == "large-digest"
+    assert receipt.observations == 0
+
+
+def test_many_tiny_sealed_payloads_are_charged_as_retained_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "archive"
+    _archive_with_generation(root, generation_bytes=1024)
+    baseline = _seal(
+        "tiny",
+        "synthetic-source",
+        tuple(
+            SourceDecision("synthetic", f"item-{index}.json", "accepted", "file", f"{index:064x}", 0, 8)
+            for index in range(10_000)
+        ),
+    )
+    assert baseline.prospective_material_bytes == 80_000
+    allocated = baseline.prospective_retained_allocation_bytes(4096)
+    assert allocated == 10_000 * 4096
+    monkeypatch.setattr("polylogue.maintenance.candidate_capacity._available_bytes", lambda _path: 350 * 1024**2)
+    assert project_candidate_capacity(root, prospective_material_bytes=80_000).sufficient
+    with pytest.raises(InsufficientCapacityError):
+        require_candidate_capacity(
+            root,
+            operation_id="tiny",
+            prospective_material_bytes=80_000,
+            prospective_retained_allocation_bytes=allocated,
+            baseline_digest=baseline.digest,
+            material_byte_definition="retained-canonical-payload-v1",
+        )
+    receipt = read_capacity_receipts(root)[0]
+    assert receipt.prospective_retained_allocation_bytes == allocated
+
+
+def test_completed_fresh_build_uses_completed_evidence_for_calibration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "archive"
+    _archive_with_generation(root, generation_bytes=1024)
+    monkeypatch.setattr("polylogue.maintenance.candidate_capacity._available_bytes", lambda _path: 16 * 1024**3)
+    require_candidate_capacity(root, operation_id="fresh", prospective_material_bytes=4 * 1024**2)
+    candidate = root / GENERATIONS_DIRNAME / "gen-2-bbbbbbbb"
+    _dense(candidate / "index.db", 128 * 1024)
+    _dense(root / "source.db", 128 * 1024)
+    _dense(root / "blob" / "payload", 4 * 1024**2)
+    observed = record_capacity_observation(root, operation_id="fresh", candidate_root=candidate)
+    assert observed is not None
+    assert observed.evidence_bytes < observed.actual_evidence_bytes
+    assert calibrated_index_ratio(root)[0] < 1
+
+
+def test_final_candidate_allocation_tracks_latest_observation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "archive"
     _archive_with_generation(root, generation_bytes=1024 * 1024)
     projection = _projection_with_free_space(monkeypatch, root, 64 * 1024 * 1024 * 1024)
@@ -349,14 +436,15 @@ def test_observed_peak_never_regresses_across_passes(tmp_path: Path, monkeypatch
     _dense(candidate / "index.db", 8 * 1024 * 1024)
     high = record_capacity_observation(root, operation_id="op-2", candidate_root=candidate)
     assert high is not None
-    peak = high.actual_peak_index_bytes
+    high_allocation = high.final_candidate_allocated_bytes
 
     (candidate / "index.db").unlink()
     _dense(candidate / "index.db", 1024)
     later = record_capacity_observation(root, operation_id="op-2", candidate_root=candidate)
 
     assert later is not None
-    assert later.actual_peak_index_bytes == peak
+    assert later.final_candidate_allocated_bytes < high_allocation
+    assert later.candidate_generation_id == candidate.name
     assert later.observations == 2
 
 
@@ -410,7 +498,42 @@ def test_available_bytes_is_measured_where_generations_are_written(
     monkeypatch.setattr(capacity_module, "_available_bytes", _recording_available)
     measure_archive_capacity(root)
 
-    assert probed == [(real_location / GENERATIONS_DIRNAME).resolve()]
+    assert probed[0] == (real_location / GENERATIONS_DIRNAME).resolve()
+    assert (root / "blob").resolve(strict=False).parent in probed
+
+
+def test_split_filesystem_refuses_when_blob_destination_lacks_space(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A roomy candidate filesystem cannot fund retained evidence on another device."""
+    import polylogue.maintenance.candidate_capacity as capacity_module
+
+    root = tmp_path / "archive"
+    _archive_with_generation(root, generation_bytes=1024)
+    real_destination = capacity_module._capacity_destination
+
+    def split_destination(name: str, path: Path) -> CapacityDestination:
+        actual = real_destination(name, path)
+        if name == "candidate":
+            return CapacityDestination(name, actual.probe, 1, 8 * 1024**3, actual.block_bytes)
+        return CapacityDestination(name, actual.probe, 2, 64 * 1024**2, actual.block_bytes)
+
+    monkeypatch.setattr(capacity_module, "_capacity_destination", split_destination)
+    with pytest.raises(InsufficientCapacityError) as refusal:
+        require_candidate_capacity(
+            root,
+            operation_id="split",
+            prospective_material_bytes=128 * 1024**2,
+            prospective_retained_allocation_bytes=128 * 1024**2,
+            prospective_source_db_allocation_bytes=4096,
+            baseline_digest="sealed-split",
+        )
+    assert refusal.value.projection.available_bytes > refusal.value.projection.required_free_bytes
+    assert refusal.value.projection.shortfall_bytes > 0
+    receipt = read_capacity_receipts(root)[0]
+    assert receipt.status == "refused"
+    assert receipt.baseline_digest == "sealed-split"
+    assert any("blob" in row.destinations and row.shortfall_bytes > 0 for row in receipt.filesystem_requirements)
 
 
 def test_symlink_farm_inventory_counts_retained_generations_at_the_pointer_target(tmp_path: Path) -> None:

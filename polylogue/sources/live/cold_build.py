@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING
 from polylogue.logging import ERROR, WARNING, emit
 from polylogue.maintenance.candidate_capacity import (
     InsufficientCapacityError,
+    evidence_allocation_block_bytes,
     require_candidate_capacity,
 )
 from polylogue.storage.index_generation import (
@@ -392,6 +393,8 @@ class ColdBuildGeneration:
             wanted_source_receipt_is_published,
         )
         from polylogue.sources.live.production_baseline import (
+            MATERIAL_BYTE_DEFINITION,
+            ProductionBaselineError,
             capture_production_source_baseline,
             load_pending_production_baseline,
             merge_pending_production_baseline,
@@ -408,8 +411,25 @@ class ColdBuildGeneration:
             load_pending_production_baseline(archive_root),
         )
         publish_pending_production_baseline(archive_root, baseline)
+        prospective_material_bytes = baseline.prospective_material_bytes
+        if prospective_material_bytes is None:
+            raise ProductionBaselineError("accepted production material has unknown retained byte size")
+        blob_block_bytes, source_db_block_bytes = evidence_allocation_block_bytes(archive_root)
+        prospective_retained_allocation_bytes = baseline.prospective_retained_allocation_bytes(blob_block_bytes)
+        if prospective_retained_allocation_bytes is None:
+            raise ProductionBaselineError("accepted production material has unknown retained allocation")
         try:
-            require_candidate_capacity(archive_root, operation_id=operation_id)
+            require_candidate_capacity(
+                archive_root,
+                operation_id=operation_id,
+                prospective_material_bytes=prospective_material_bytes,
+                prospective_retained_allocation_bytes=prospective_retained_allocation_bytes,
+                prospective_source_db_allocation_bytes=baseline.prospective_source_db_allocation_bytes(
+                    source_db_block_bytes
+                ),
+                baseline_digest=baseline.digest,
+                material_byte_definition=MATERIAL_BYTE_DEFINITION,
+            )
         except InsufficientCapacityError as refusal:
             # The projection's numbers ride in ``error_detail`` rather than in
             # named fields: ``logging_fields`` registers no byte-sized capacity
@@ -573,10 +593,10 @@ class ColdBuildGeneration:
             archive.run_generation_readiness_pass()
         self.source_baseline.verify(self.archive_root / "source.db")
         # Measured here and nowhere else: after the readiness pass the
-        # candidate carries its rows, its deferred indexes and its FTS, which
-        # is this build's real peak, and ``promote`` is about to start moving
-        # the tree around. Without this the recorded receipt keeps
-        # ``actual_peak_index_bytes == 0`` and ``calibrated_index_ratio``
+        # candidate carries its rows, its deferred indexes and its FTS.
+        # This samples final candidate allocation before pointer promotion;
+        # it is not a measured all-build peak. Without this the receipt keeps
+        # ``final_candidate_allocated_bytes == 0`` and ``calibrated_index_ratio``
         # returns its unmeasured default forever.
         self._store.observe_candidate_capacity(operation_id=self.operation_id, generation_id=self.generation_id)
         promoted = self._store.promote(self.generation)
