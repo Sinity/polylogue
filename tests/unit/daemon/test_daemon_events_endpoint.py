@@ -20,6 +20,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import dataclasses
+import hashlib
 import importlib
 import inspect
 import json
@@ -318,10 +319,12 @@ class TestStatusEventEtag:
         assert b'ETag: W/"status-' in out
         assert b'"last_event_id":' in out
 
-    def test_status_returns_304_when_etag_matches(self, empty_events_db: Path) -> None:
+    def test_status_returns_304_when_etag_matches(self, empty_events_db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         from polylogue.daemon.events import emit_daemon_event
         from polylogue.daemon.status_snapshot import refresh_status_snapshot
 
+        monkeypatch.setattr("polylogue.daemon.status_snapshot.time.monotonic", lambda: 100.0)
+        monkeypatch.setattr("polylogue.daemon.status_snapshot._status_frame", lambda: "frame-A")
         emit_daemon_event("ingestion_batch", payload={})
         refresh_status_snapshot(payload={"ok": False, "daemon_liveness": True})
         first = _make_handler("GET", "/api/status")
@@ -377,6 +380,7 @@ class TestStatusEventEtag:
         from polylogue.daemon.status_snapshot import refresh_status_snapshot
 
         frame = {"value": "A"}
+        monkeypatch.setattr("polylogue.daemon.status_snapshot.time.monotonic", lambda: 100.0)
         monkeypatch.setattr("polylogue.daemon.status_snapshot._status_frame", lambda: frame["value"])
         emit_daemon_event("ingestion_batch", payload={})
         refresh_status_snapshot(payload={"ok": False, "checked_at": "A"})
@@ -392,6 +396,52 @@ class TestStatusEventEtag:
         assert b" 200 " in response
         assert cast(dict[str, object], payload["status_snapshot"])["state"] == "stale"
         assert cast(dict[str, object], payload["status_snapshot"])["current_frame"] == "B"
+
+        frame["value"] = "C"
+        third = _make_handler("GET", "/api/status", extra_headers={"If-None-Match": _response_etag(response)})
+        third.do_GET()
+        third_response = cast("BytesIO", third.wfile).getvalue()
+        assert b" 200 " in third_response
+        assert cast(dict[str, object], _response_json(third_response)["status_snapshot"])["current_frame"] == "C"
+
+    def test_status_etag_changes_with_live_discovery_without_event(
+        self,
+        empty_events_db: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from polylogue.daemon.discovery_progress import (
+            advance_discovery,
+            begin_discovery,
+            end_discovery,
+            reset_discovery_progress,
+        )
+        from polylogue.daemon.status_snapshot import refresh_status_snapshot
+
+        monkeypatch.setattr("polylogue.daemon.status_snapshot.time.monotonic", lambda: 100.0)
+        monkeypatch.setattr("polylogue.daemon.status_snapshot._status_frame", lambda: "frame-A")
+        refresh_status_snapshot(payload={"ok": False, "catchup": {"mode": "idle"}})
+        token = begin_discovery("synthetic")
+        try:
+            first = _make_handler("GET", "/api/status")
+            first.do_GET()
+            first_payload = _response_json(cast("BytesIO", first.wfile).getvalue())
+            first_etag = _response_etag(cast("BytesIO", first.wfile).getvalue())
+            advance_discovery(token, inspected=1, disposition="accepted")
+
+            second = _make_handler("GET", "/api/status", extra_headers={"If-None-Match": first_etag})
+            second.do_GET()
+            response = cast("BytesIO", second.wfile).getvalue()
+            second_payload = _response_json(response)
+            assert b" 200 " in response
+            assert second_payload["last_event_id"] == first_payload["last_event_id"]
+            assert cast(dict[str, object], first_payload["catchup"])["discovery_inspected_count"] == 0
+            assert cast(dict[str, object], second_payload["catchup"])["discovery_inspected_count"] == 1
+            assert _response_etag(response) != first_etag
+            body = response.split(b"\r\n\r\n", 1)[1]
+            assert _response_etag(response) == f'W/"status-{hashlib.sha256(body).hexdigest()[:24]}"'
+        finally:
+            end_discovery(token)
+            reset_discovery_progress()
 
     def test_status_etag_changes_when_snapshot_refreshes_to_violation(
         self,

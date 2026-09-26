@@ -69,7 +69,14 @@ class StatusSnapshot:
         age_s = max(0.0, time.monotonic() - self.captured_monotonic)
         current_frame = _status_frame()
         frame_changed = current_frame != self.frame
-        state = "stale" if self.frame_error or frame_changed or age_s > STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S else "fresh"
+        frame_unavailable = self.frame is None or current_frame is None
+        frame_error = "archive frame unavailable" if frame_unavailable else self.frame_error
+        if frame_unavailable:
+            state = "unavailable"
+        elif frame_error or frame_changed or age_s > STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S:
+            state = "stale"
+        else:
+            state = "fresh"
         base_payload: dict[str, object] = dict(self.payload)
         base_payload.setdefault("component_readiness", _minimal_component_readiness(base_payload))
         payload: dict[str, object] = normalize_raw_frontier_status_payload(
@@ -87,12 +94,13 @@ class StatusSnapshot:
             "current_frame": current_frame,
             "frame_changed": frame_changed,
             "refresh_error": self.refresh_error,
-            "frame_error": self.frame_error,
+            "frame_error": frame_error,
             "state_evidence": _status_snapshot_state_evidence(
                 state=state,
                 captured_at=self.captured_at,
                 evaluated_at=evaluated_at,
-                stale_cause=self.frame_error or ("snapshot-frame-changed" if frame_changed else None),
+                stale_cause=frame_error or ("snapshot-frame-changed" if frame_changed else None),
+                unavailable_cause=frame_error,
             ).to_dict(),
         }
         payload["daemon_write_coordinator"] = _daemon_write_coordinator_payload()
@@ -103,9 +111,8 @@ def _status_frame() -> str | None:
     """Return a cheap identity for the active index generation.
 
     This deliberately performs metadata inspection only.  A missing or
-    unreadable path returns ``None`` and therefore cannot make an old frame
-    look current; the snapshot remains age-bounded and its detail is marked
-    unavailable by the owning component collectors.
+    unreadable path returns ``None``; callers report the frame as unavailable
+    rather than certifying the cached payload.
     """
 
     try:
@@ -122,6 +129,7 @@ def _status_snapshot_state_evidence(
     captured_at: str,
     evaluated_at: str,
     stale_cause: str | None = None,
+    unavailable_cause: str | None = None,
 ) -> EvidenceValue[str]:
     snapshot_ref = ObjectRef(kind="run", object_id=f"status-snapshot:{captured_at}")
     if state == "fresh":
@@ -138,7 +146,8 @@ def _status_snapshot_state_evidence(
         freshness = FreshnessProvenance(
             state="unavailable",
             evaluated_at=evaluated_at,
-            cause="rich-status-refresh-in-progress" if state == "refreshing" else "rich-status-unavailable",
+            cause=unavailable_cause
+            or ("rich-status-refresh-in-progress" if state == "refreshing" else "rich-status-unavailable"),
         )
     evidence = EvidenceValue(
         family=STATUS_SNAPSHOT_STATE_FAMILY.family,
@@ -502,6 +511,7 @@ def refresh_status_snapshot(*, payload: JSONDocument | None = None, rich: bool =
                 captured_at=captured_at,
                 refresh_error=refresh_error,
                 frame=start_frame,
+                frame_error="archive frame unavailable" if start_frame is None else None,
             )
         with _SNAPSHOT_LOCK:
             _SNAPSHOT = snapshot
@@ -538,17 +548,23 @@ def snapshot_state_for_metrics() -> dict[str, Any]:
     age_s = max(0.0, time.monotonic() - snapshot.captured_monotonic)
     current_frame = _status_frame()
     frame_changed = current_frame != snapshot.frame
+    frame_unavailable = snapshot.frame is None or current_frame is None
+    frame_error = "archive frame unavailable" if frame_unavailable else snapshot.frame_error
+    if frame_unavailable:
+        state = "unavailable"
+    elif frame_error or frame_changed or age_s > STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S:
+        state = "stale"
+    else:
+        state = "fresh"
     return {
         "age_s": round(age_s, 3),
-        "state": "stale"
-        if snapshot.frame_error or frame_changed or age_s > STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S
-        else "fresh",
+        "state": state,
         "captured_at": snapshot.captured_at,
         "frame": snapshot.frame,
         "current_frame": current_frame,
         "frame_changed": frame_changed,
         "refresh_error": snapshot.refresh_error or "",
-        "frame_error": snapshot.frame_error or "",
+        "frame_error": frame_error or "",
     }
 
 
