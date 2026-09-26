@@ -32,23 +32,11 @@ the number there, not from a prose table that goes stale.
 | `audit.py` | `audit.db` | `ARCHIVE_FORMAT_FLOOR_VERSION` |
 | `ops.py` | `ops.db` | `OPS_SCHEMA_VERSION` |
 
-There is no single global "schema version" number. Each tier is versioned and
-bootstrapped independently. The durable tiers (`source`, `user`, `audit`)
-deliberately declare no version constant inside their own DDL module: they were
-renumbered from one by the archive format floor, and the only number that
-describes them is the one `ARCHIVE_VERSION_BY_TIER` maps them to. `audit` still
-sits at the floor; `source` is at `SOURCE_TIER_VERSION` because slot 002 registered
-`excision_policy_projections` in canonical DDL, and `user` is at
-`USER_TIER_VERSION` because slot 002 rebuilt `assertions` with a NOT NULL
-`status`.
+There is no single global "schema version" number. Each tier is versioned and bootstrapped independently. In the fresh archive format, all six tier files begin at `PRAGMA user_version=1`. The prior archive is moved aside intact solely as salvage evidence; the fresh-start operation does not migrate, import, carry forward, or read it. Declared external source files may be ingested into the empty archive. Later durable evolution remains governed by the additive migration policy below when an archive is intentionally retained and operated.
 
 ### Durable migration change trains
 
-`source.db`, `user.db` and `audit.db` migrations above the adoption floors --
-`ARCHIVE_FORMAT_FLOOR_VERSION` for all three, so the first numbered slot on any
-durable tier is `002` -- require a deterministic package sidecar beside the SQL
-resource:
-`migrations/{source,user,audit}/NNN.train.json`. The sidecar is a frozen manifest,
+`source.db`, `user.db` and `audit.db` migrations in an intentionally retained archive require a deterministic package sidecar beside the SQL resource. This future evolution policy is separate from the fresh-start reset, which creates six version-1 tiers and leaves the previous archive untouched. Each migration requires a sidecar at `migrations/{source,user,audit}/NNN.train.json`. The sidecar is a frozen manifest,
 not a second migration store. It binds the tier, shipped and target versions,
 slot, exact SQL filename and SHA-256, owner/reference, schema objects, runtime
 consumers, behavior proofs, dependency order, row-count exceptions, restart
@@ -278,12 +266,9 @@ for the drift-detection and repair behavior.
 On startup each tier's on-disk `PRAGMA user_version` is compared against its
 tier constant:
 
-- **Empty file** (`user_version == 0`): bootstrap fresh.
+- **Fresh archive format**: create all six tier files at `user_version=1`.
 - **Version match**: open as-is.
-- **Older durable tier** (`source.db` or `user.db`): ordinary open is rejected;
-  an explicit additive numbered migration may proceed only after a backup was
-  scratch-restored, integrity-checked, and authenticated by the archive's
-  local verification key.
+- **Older durable tier in an archive intentionally retained for operation**: ordinary open is rejected; a future additive numbered migration may proceed only after a backup was scratch-restored, integrity-checked, and authenticated by the archive's local verification key. The fresh-start reset does not open or migrate the previous archive.
 - **Derived mismatch or newer durable tier**: reject and require rebuild or a
   newer runtime as appropriate.
 

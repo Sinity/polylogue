@@ -53,6 +53,30 @@ Custom watch roots with `--root` (repeatable):
 polylogued run --root /path/to/exports --root /another/path
 ```
 
+Use `--default-source NAME` repeatedly to select whole typed provider sources
+from the defaults. Other defaults, including `browser-capture`, `inbox`,
+`inbox-legacy`, and hook carriers, are omitted. Explicit `--root` values still
+add ordinary export roots. The available names are reported if a name is
+misspelled. For an archive fed by provider directories and account exports:
+
+```bash
+polylogued run \
+  --default-source claude-code --default-source claude-code-todos \
+  --default-source claude-code-history \
+  --default-source codex --default-source codex-state \
+  --default-source codex-memories --default-source gemini-cli \
+  --default-source hermes --default-source antigravity \
+  --root /path/to/account-exports \
+  --no-browser-capture
+```
+
+`--default-source` preserves each source's path and artifact rules. `--root`
+uses ordinary export detection and cannot stand in for Codex state, Codex
+memories, or Claude history. `--no-default-sources` remains available for a
+watch set made only of explicit roots and cannot be combined with
+`--default-source`. The standalone `polylogued watch` command accepts the same
+source selection flags.
+
 ## Configuration Flags
 
 By default `polylogued run` enables every component (watch, browser capture, HTTP API). Pass the corresponding `--no-*` flag to disable any one.
@@ -60,6 +84,8 @@ By default `polylogued run` enables every component (watch, browser capture, HTT
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--root` | (auto) | Add an export watch root alongside typed defaults (repeatable) |
+| `--default-source` | all defaults | Select a named typed default source (repeatable) |
+| `--no-default-sources` | off | Watch only explicit `--root` values |
 | `--no-watch` | off | Disable the live source watcher |
 | `--no-browser-capture` | off | Disable the browser-capture receiver |
 | `--no-api` | off | Disable the HTTP API + web reader |

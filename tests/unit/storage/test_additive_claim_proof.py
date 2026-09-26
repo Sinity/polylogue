@@ -21,10 +21,8 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import (
     MigrationError,
-    _load_migrations,
     _requires_migration_backup,
 )
 
@@ -63,13 +61,3 @@ class TestAdditiveClaimIsProven:
     def test_an_unmarked_migration_still_requires_a_backup(self) -> None:
         """Opposite direction: the guard must not waive anything on its own."""
         assert _requires_migration_backup(Path("099_plain.sql"), "ALTER TABLE t ADD COLUMN b TEXT;\n") is True
-
-    def test_the_shipped_source_slot_still_waives_the_backup(self) -> None:
-        """The shipped durable migration's classification is unchanged and now proven."""
-        steps = _load_migrations(ArchiveTier.SOURCE)
-        assert steps, "the source tier declares no numbered migration"
-        assert [(step.name, step.requires_backup) for step in steps] == [
-            ("002_excision_policy_projections.sql", False),
-            ("003_raw_member_identity.sql", True),
-            ("004_revision_authority_codes.sql", True),
-        ]

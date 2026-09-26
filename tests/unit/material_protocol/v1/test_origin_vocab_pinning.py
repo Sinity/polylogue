@@ -33,6 +33,12 @@ def test_check_origin_vocabulary_accepts_the_current_pair() -> None:
     check_origin_vocabulary(version, digest)  # must not raise
 
 
+def test_check_origin_vocabulary_keeps_prior_version_admissible() -> None:
+    # Existing material-protocol/v1 revisions remain verifiable after a
+    # vocabulary extension; new encodes use v4, while v3 remains frozen.
+    check_origin_vocabulary(3, "f05126b022becf8fcebe9622919465b5e1f86163c25ecdda9d7e1259caba3512")
+
+
 def test_check_origin_vocabulary_rejects_unknown_version() -> None:
     from polylogue.material_protocol.v1.errors import UnknownOriginVocabularyError
 

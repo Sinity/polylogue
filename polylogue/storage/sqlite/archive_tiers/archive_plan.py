@@ -16,7 +16,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 ARCHIVE_FORMAT_MARKER_NAME = ".polylogue-format.json"
-ARCHIVE_FORMAT_LINEAGE = "polylogue.archive-format.v1"
+ARCHIVE_FORMAT_LINEAGE = "polylogue.archive-format.v2"
 _DURABLE_FORMAT_TIERS = frozenset({ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT})
 
 
@@ -68,16 +68,16 @@ class ArchiveInitPlan:
 
 
 def archive_format_marker_path(archive_root: Path) -> Path:
-    """Return the marker that distinguishes this reset v1 from historical v1 files."""
+    """Return the marker that distinguishes the current format lineage."""
     return archive_root / ARCHIVE_FORMAT_MARKER_NAME
 
 
 def record_fresh_archive_format(archive_root: Path) -> Path:
     """Publish the format identity for a completely bootstrapped fresh archive.
 
-    The marker records the schema shape of the durable floor rather than a
-    path or inode.  A copied historical v1 source/user/audit file consequently
-    cannot become a member of this lineage merely by sharing ``user_version``.
+    The marker records the schema shape of the durable tiers rather than a
+    path or inode. A copied historical file consequently cannot become a
+    member of this lineage merely by sharing ``user_version``.
     """
     marker_path = archive_format_marker_path(archive_root)
     if marker_path.exists():
@@ -125,7 +125,7 @@ def assert_archive_format_lineage(
     *,
     tiers: frozenset[ArchiveTier] = _DURABLE_FORMAT_TIERS,
 ) -> None:
-    """Refuse an unmarked or historical v1 archive before bootstrap can write.
+    """Refuse an unmarked or historical archive before bootstrap can write.
 
     This uses read-only SQLite catalog access only.  In particular it neither
     opens nor initializes optional derived services while reporting a format
@@ -165,13 +165,10 @@ def assert_archive_format_lineage(
     versions = payload.get("tier_versions")
     fingerprints = payload.get("durable_schema_fingerprints")
     # ``tier_versions`` is this archive's birth record: the durable version
-    # each tier was bootstrapped at. The lineage floor is the lower bound of
-    # that record, not a permanent pin -- a numbered migration raises the
-    # runtime's durable target, and every archive bootstrapped afterwards is
-    # born above the floor. Requiring exact equality here would make a fresh
-    # archive refuse its own freshly written marker the moment the first
-    # durable migration lands, which is the evolution regime this floor was
-    # introduced to restart, not to forbid.
+    # each tier was bootstrapped at. The lineage floor is a lower bound, not a
+    # permanent pin. A numbered migration can raise the runtime target while
+    # the birth record and its schema fingerprints continue to identify the
+    # archive's original tier shapes.
     if (
         not isinstance(versions, dict)
         or set(versions) != {tier.value for tier in ArchiveTier}
@@ -198,21 +195,12 @@ def assert_archive_format_lineage(
             raise RuntimeError(f"archive format marker names a missing durable tier: {path}")
         if version < ARCHIVE_FORMAT_FLOOR_VERSION:
             raise RuntimeError(f"{path.name} predates the {ARCHIVE_FORMAT_LINEAGE} floor")
-        # The recorded fingerprint describes this tier at its birth version, so
-        # it is evidence exactly while the file still sits there. Binding the
-        # check to the birth version rather than to the floor keeps that
-        # discrimination alive once archives are born above the floor: without
-        # it, a lineage whose durable target has moved would admit any file
-        # carrying the right integer, which is the historical-version-1
-        # confusion this marker exists to prevent.
-        # At or *below* the recorded birth version, not only at it. A durable
-        # tier only ever moves up, so a file below its birth version is either
-        # this lineage's own one numbered slot behind -- which still carries
-        # the recorded schema and is owed the migration route -- or a
-        # transplanted older-lineage file. Testing equality alone skipped the
-        # fingerprint on the version mismatch, so once a tier is born above
-        # the floor (the source tier is, at slot 002) a historical version-1
-        # file cleared the floor and was accepted as lineage evidence.
+        # The fingerprint identifies the tier shape recorded at birth. Check
+        # it whenever a file's version is at or below that birth version: a
+        # transplanted older-lineage file can share the same version integer
+        # while carrying a different schema. Files advanced by a numbered
+        # migration are above their birth version and follow the migration
+        # lineage's normal admission rules.
         if version <= versions[tier.value] and fingerprints[tier.value] != _tier_schema_fingerprint(path):
             raise RuntimeError(
                 f"{path.name} has a historical version-{version} schema and is not part of {ARCHIVE_FORMAT_LINEAGE}"

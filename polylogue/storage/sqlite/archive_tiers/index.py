@@ -589,7 +589,7 @@ def _profile_demand_sql(session_id: str) -> str:
 # is ADDITIVE_DERIVED: existing index rows remain valid data, but the changed
 # DDL/schema identity requires the normal daemon reconvergence before a
 # generation is served.
-INDEX_SCHEMA_VERSION = 109
+INDEX_SCHEMA_VERSION = 1
 
 INDEX_DDL = f"""
 {DERIVED_SCHEMA_META_DDL}

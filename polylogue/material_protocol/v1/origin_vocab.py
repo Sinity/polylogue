@@ -21,7 +21,7 @@ from polylogue.material_protocol.v1.canonical import canonical_bytes
 from polylogue.material_protocol.v1.errors import UnknownOriginVocabularyError
 
 #: Version currently emitted by the encoder.
-CURRENT_ORIGIN_VOCABULARY_VERSION = 3
+CURRENT_ORIGIN_VOCABULARY_VERSION = 4
 
 #: Frozen (version -> sha256 hex digest of the sorted canonical Origin value
 #: list) registry. Only versions listed here are admissible on decode/verify.
@@ -34,6 +34,8 @@ KNOWN_ORIGIN_VOCABULARIES: dict[int, str] = {
     2: "c7a7c679adf2b9d6997d7dd9f0a71160f11f215cd1cd0024ee4d777fa1a85c96",
     # v3: claude-design-session added as a distinct origin (#3422).
     3: "f05126b022becf8fcebe9622919465b5e1f86163c25ecdda9d7e1259caba3512",
+    # v4: otel-genai added as a distinct public origin.
+    4: "f2413435b8a49c0bd5425dd04616d3ced4f2e44419b66858b1de04ed281a6036",
 }
 
 

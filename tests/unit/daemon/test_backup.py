@@ -1218,32 +1218,12 @@ def test_full_evidence_backup_keeps_index_only_attachment(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
-    """A non-authoritative source projection must retain the index attachment owner.
+    """A complete source projection must retain an attachment owned by index.db.
 
-    ``_source_schema_capabilities`` refuses to grant canonical authority to a
-    source tier that carries a stamp this runtime did not write *and* lacks a
-    current blob carrier -- a branch the format-floor reset deliberately kept
-    (``blob_integrity.py``, PR #5369). This fixture produces exactly that
-    file: ``raw_hook_events.blob_hash`` removed, and a stamp at the floor
-    rather than the source tier's current target.
-
-    The pre-reset version stamped ``21``, a version this lineage cannot hold;
-    ``_open_backup_readonly_connection`` now refuses it outright, so the
-    backup never ran. The stamp is expressed against
-    ``ARCHIVE_FORMAT_FLOOR_VERSION`` here, and the format marker is restated
-    because the fixture edits the tier's schema on purpose.
-
-    Anti-vacuity: removing ``raw_hook_events.blob_hash`` makes the current
-    source capability projection non-authoritative.  The attachment exists
-    only in index.db, so a fallback that substitutes source carriers for the
-    complete projection produces a verified-looking backup with missing bytes.
+    Anti-vacuity: the payload has no source owner or blob_refs row. Omitting
+    index attachment owners from the full-evidence projection leaves its bytes
+    out of the backup.
     """
-    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_FORMAT_FLOOR_VERSION, ARCHIVE_VERSION_BY_TIER
-
-    assert ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE] > ARCHIVE_FORMAT_FLOOR_VERSION, (
-        "the source tier is at the floor, so the stamp below is the one this runtime writes "
-        "and the projection stays authoritative"
-    )
     archive_root = workspace_env["archive_root"]
     payload = b"historical-source index-only attachment evidence"
     session = ParsedSession(
@@ -1263,13 +1243,9 @@ def test_full_evidence_backup_keeps_index_only_attachment(
 
     blob_hash = hashlib.sha256(payload).hexdigest()
     with seed_durable_tier(archive_root / "source.db") as source:
-        source.execute("DROP INDEX idx_raw_hook_events_source_hash")
-        source.execute("ALTER TABLE raw_hook_events DROP COLUMN blob_hash")
-        source.execute(f"PRAGMA user_version = {ARCHIVE_FORMAT_FLOOR_VERSION}")
         assert source.execute(
             "SELECT COUNT(*) FROM blob_refs WHERE blob_hash = ?", (bytes.fromhex(blob_hash),)
         ).fetchone() == (0,)
-    refresh_archive_format_marker(archive_root)
 
     result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
 
@@ -2183,38 +2159,26 @@ def test_backup_evidence_opens_stamped_durable_tier_versions(
     tmp_path: Path,
     tier: ArchiveTier,
 ) -> None:
-    """A pre-migration backup is readable evidence for every durable tier.
+    """The current v2 tier is readable; unstamped and future versions are not.
 
-    The readable window is every stamped version of this lineage at or below
-    the tier's expected one; ``0`` (unstamped) and anything above it are
-    refused. The window is derived from ``ARCHIVE_VERSION_BY_TIER`` rather
-    than written out, because the format floor reset made ``expected - 1``
-    equal ``0`` for the audit tier -- which the loop below then required to be
-    both readable and refused, and which is why the audit case was red.
+    Fresh v2 archives begin at version 1 across all six tiers, so the former
+    below-current backup window is empty for each durable tier.
 
     Anti-vacuity: keying the allowance on ``source.db`` again makes the user
-    case raise SchemaSkew at version 1, and dropping the ordering guard makes
-    the newer-version and unstamped cases stop raising. The module-level
-    assertion below keeps the readable-below leg from silently emptying out if
-    every durable tier ever returns to the floor.
+    case impossible to distinguish here while the six tiers share the same
+    current version; the newer-version and unstamped cases still prove the
+    admission guard on each durable tier.
     """
     from polylogue.core.errors import SchemaSkew
     from polylogue.storage.sqlite.archive_tiers import ARCHIVE_FORMAT_FLOOR_VERSION, ARCHIVE_VERSION_BY_TIER
 
     expected = ARCHIVE_VERSION_BY_TIER[tier]
-    assert any(
-        ARCHIVE_VERSION_BY_TIER[durable] > ARCHIVE_FORMAT_FLOOR_VERSION
-        for durable in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT)
-    ), "no durable tier sits above the floor, so no case here reads a version below its expected one"
+    assert expected == ARCHIVE_FORMAT_FLOOR_VERSION == 1
     path = tmp_path / f"{tier.value}.db"
     initialize_archive_database(path, tier)
 
-    for stamped in range(ARCHIVE_FORMAT_FLOOR_VERSION, expected + 1):
-        with sqlite3.connect(path) as stamp:
-            stamp.execute(f"PRAGMA user_version = {stamped}")
-        checkpoint_durable_tier(path)
-        with backup_mod._open_backup_readonly_connection(path, immutable=True, timeout_class="offline-bulk") as conn:
-            assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == stamped
+    with backup_mod._open_backup_readonly_connection(path, immutable=True, timeout_class="offline-bulk") as conn:
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == expected
 
     for refused in (expected + 1, 0):
         with sqlite3.connect(path) as stamp:
