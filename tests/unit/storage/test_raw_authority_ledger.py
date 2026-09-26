@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.config import Config
 from polylogue.core.enums import Provider
@@ -63,6 +64,15 @@ def _derived_count(report: DerivationReport, outcome: Outcome = Outcome.DONE) ->
     return report.count(outcome)
 
 
+def _derive_after_source_stages(root: Path) -> DerivationReport:
+    for _ in range(4):
+        report = _derive_raw_observations(root)
+        assert report.failed == 0, report.outcomes
+        if report.pending == 0:
+            return report
+    pytest.fail("raw observation did not converge after its committed source stages")
+
+
 def _raw_ids(root: Path) -> tuple[str, ...]:
     with sqlite3.connect(root / "source.db") as conn:
         return tuple(str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions ORDER BY raw_id"))
@@ -75,6 +85,7 @@ def _write_codex_raw(
     source_path: str,
     acquired_at_ms: int,
     text: str = "authored content",
+    byte_proven: bool = False,
 ) -> str:
     payload = (
         f'{{"type":"session_meta","payload":{{"id":"{native_id}"}}}}\n'
@@ -87,6 +98,17 @@ def _write_codex_raw(
             payload=payload,
             source_path=source_path,
             acquired_at_ms=acquired_at_ms,
+            revision=(
+                RawRevisionEnvelope(
+                    logical_source_key=f"codex-session:{native_id}",
+                    kind=RawRevisionKind.FULL,
+                    source_revision=f"{native_id}-v1",
+                    acquisition_generation=0,
+                    authority=RawRevisionAuthority.BYTE_PROVEN,
+                )
+                if byte_proven
+                else None
+            ),
         )
 
 
@@ -178,12 +200,84 @@ def test_application_receipt_requires_exact_application_authority(tmp_path: Path
     assert any("no application accepted authority matches" in problem for problem in problems)
 
 
+def test_historical_application_does_not_override_exact_current_generation(tmp_path: Path) -> None:
+    """An older receipt for the same raw/content remains valid history after promotion."""
+    bootstrap_archive_root(tmp_path)
+    raw_id = _write_codex_raw(tmp_path, native_id="generation-history", source_path="history.jsonl", acquired_at_ms=1)
+    assert _derived_success(_derive_raw_observations(tmp_path))
+    plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
+    receipt = dict(raw_authority_mod.raw_replay_application_receipt(tmp_path, plan))
+    applications = cast(list[dict[str, object]], receipt["application_rows"])
+    heads = cast(list[dict[str, object]], receipt["head_rows"])
+    assert len(applications) == len(heads) == 1
+    historical = dict(applications[0])
+    current = applications[0]
+    current["acquisition_generation"] = 1
+    heads[0]["acquisition_generation"] = 1
+    current_receipt = RevisionApplicationReceipt(
+        raw_id=cast(str, current["raw_id"]),
+        session_id=cast(str, current["session_id"]),
+        logical_source_key=cast(str, current["logical_source_key"]),
+        source_revision=cast(str, current["source_revision"]),
+        acquisition_generation=1,
+        decision=ApplicationDecision(cast(str, current["decision"])),
+        accepted_raw_id=cast(str | None, current["accepted_raw_id"]),
+        accepted_source_revision=cast(str | None, current["accepted_source_revision"]),
+        accepted_content_hash=bytes.fromhex(cast(str, current["accepted_content_hash"])),
+        accepted_frontier_kind=cast(str | None, current["accepted_frontier_kind"]),
+        accepted_frontier=cast(int | None, current["accepted_frontier"]),
+        baseline_raw_id=cast(str | None, current["baseline_raw_id"]),
+        predecessor_raw_id=cast(str | None, current["predecessor_raw_id"]),
+        append_end_offset=cast(int | None, current["append_end_offset"]),
+    )
+    current["decision_id"] = current_receipt.decision_id
+    applications.append(historical)
+
+    valid, problems = raw_authority_mod.validate_raw_replay_application_receipt(plan, receipt)
+    assert valid, problems
+    historical_source_revision = historical["accepted_source_revision"]
+    historical_decision_id = historical["decision_id"]
+    historical["accepted_source_revision"] = "unwitnessed-history"
+    historical["decision_id"] = replace(
+        current_receipt,
+        acquisition_generation=0,
+        accepted_source_revision="unwitnessed-history",
+    ).decision_id
+    valid_forged_history, forged_problems = raw_authority_mod.validate_raw_replay_application_receipt(plan, receipt)
+    assert not valid_forged_history
+    assert any("accepted source revision has no source evidence" in problem for problem in forged_problems)
+    historical["accepted_source_revision"] = historical_source_revision
+    historical["decision_id"] = historical_decision_id
+    applications.pop(0)
+    valid_without_current, problems_without_current = raw_authority_mod.validate_raw_replay_application_receipt(
+        plan, receipt
+    )
+    assert not valid_without_current
+    assert any("no application accepted authority matches" in problem for problem in problems_without_current)
+
+
+def test_terminal_membership_cannot_replace_missing_head_application(tmp_path: Path) -> None:
+    bootstrap_archive_root(tmp_path)
+    raw_id = _write_codex_raw(tmp_path, native_id="missing-application", source_path="missing.jsonl", acquired_at_ms=1)
+    assert _derived_success(_derive_raw_observations(tmp_path))
+    plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
+    receipt = dict(raw_authority_mod.raw_replay_application_receipt(tmp_path, plan))
+    assert receipt["membership_rows"]
+    assert receipt["application_rows"]
+    receipt["application_rows"] = []
+
+    valid, problems = raw_authority_mod.validate_raw_replay_application_receipt(plan, receipt)
+
+    assert not valid
+    assert any("no application accepted authority matches" in problem for problem in problems)
+
+
 @pytest.mark.parametrize(
     ("field", "replacement"),
     [
         ("source_revision", "wrong-source-revision"),
         ("accepted_source_revision", "wrong-accepted-source-revision"),
-        ("accepted_frontier_kind", "semantic"),
+        ("accepted_frontier_kind", "byte"),
         ("accepted_frontier", 999),
         ("acquisition_generation", 999),
         ("append_end_offset", 999),
@@ -202,6 +296,7 @@ def test_application_receipt_recovery_rejects_malformed_authority_evidence(
     receipt = dict(raw_authority_mod.raw_replay_application_receipt(tmp_path, plan))
     application_rows = cast(list[dict[str, object]], receipt["application_rows"])
     assert application_rows
+    assert application_rows[0][field] != replacement
     application_rows[0][field] = replacement
 
     valid, problems = raw_authority_mod.validate_raw_replay_application_receipt(plan, receipt)
@@ -531,9 +626,14 @@ def test_verified_blob_receipt_invalidates_when_blob_bytes_change_underneath_it(
     """
     bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(
-        tmp_path, native_id="tamper-target", source_path="tamper.jsonl", acquired_at_ms=1, text="hello"
+        tmp_path,
+        native_id="tamper-target",
+        source_path="tamper.jsonl",
+        acquired_at_ms=1,
+        text="hello",
+        byte_proven=True,
     )
-    assert _derived_count(_derive_raw_observations(tmp_path)) == 1
+    assert _derived_count(_derive_after_source_stages(tmp_path)) == 1
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         blob_hash_hex = str(
@@ -575,9 +675,14 @@ def test_verified_blob_receipt_skips_rehash_on_unchanged_blob_across_census_pass
     """
     bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(
-        tmp_path, native_id="unchanged-target", source_path="unchanged.jsonl", acquired_at_ms=1, text="hello"
+        tmp_path,
+        native_id="unchanged-target",
+        source_path="unchanged.jsonl",
+        acquired_at_ms=1,
+        text="hello",
+        byte_proven=True,
     )
-    assert _derived_count(_derive_raw_observations(tmp_path)) == 1
+    assert _derived_count(_derive_after_source_stages(tmp_path)) == 1
 
     verify_calls: list[str] = []
     real_verify = BlobStore.verify

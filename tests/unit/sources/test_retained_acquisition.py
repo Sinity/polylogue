@@ -9,11 +9,41 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.zip_admission import MAX_REPORTED_MEMBER_DETAIL_CHARS, MAX_REPORTED_MEMBER_DETAILS
+from polylogue.core.enums import Provider
 from polylogue.core.raw_coordinates import MemberAddressingMode
+from polylogue.sources import retained_acquisition
+from polylogue.sources.parsers.base import RawSessionData
 from polylogue.sources.retained_acquisition import iter_retained_source_records
+from polylogue.sources.source_acquisition_components import SourceReadContext
 from polylogue.storage.blob_store import BlobStore
 
 _MEMBER = "projects/synthetic/session.jsonl"
+
+
+def test_declared_source_name_preserves_label_and_exact_provider_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = BlobStore(tmp_path / "blob")
+    blob_hash, blob_size = store.write_from_bytes(b"synthetic retained input")
+    observed: list[tuple[str, Provider]] = []
+
+    def capture(context: SourceReadContext) -> RawSessionData:
+        observed.append((context.source.name, context.provider_hint))
+        return RawSessionData(raw_bytes=b"synthetic retained input", source_path=str(tmp_path / "capture.jsonl"))
+
+    monkeypatch.setattr(retained_acquisition, "read_plain_source_file", capture)
+    for name in ("codex", "my_custom_source"):
+        list(
+            iter_retained_source_records(
+                source_path=str(tmp_path / "capture.jsonl"),
+                blob_hash=blob_hash,
+                blob_size=blob_size,
+                blob_store=store,
+                source_name=name,
+            )
+        )
+
+    assert observed == [("codex", Provider.CODEX), ("my_custom_source", Provider.UNKNOWN)]
 
 
 def _write_duplicate_zip(path: Path) -> tuple[bytes, bytes]:

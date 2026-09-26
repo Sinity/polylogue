@@ -315,6 +315,9 @@ class _FullIngestResult:
     # Accepted raw bytes awaiting worker completion or capacity. The cursor
     # schedules a full retry without consuming its finite failure budget.
     preparation_deferred: list[Path] = field(default_factory=list)
+    # Durably acquired source observations whose index authority is still
+    # pending. They must wake the raw owner even with zero session writes.
+    raw_deferred: list[Path] = field(default_factory=list)
     #: Planned paths this pass deliberately admitted nothing for, each with
     #: the typed reason. A planned path must land in exactly one of
     #: succeeded, failed, preparation_deferred, or here: one that lands in none is
@@ -332,6 +335,7 @@ class _FullIngestResult:
     ingested_session_count: int = 0
     ingested_message_count: int = 0
     changed_session_count: int = 0
+    excised_skips: int = 0
     stage_timings_s: dict[str, float] = field(default_factory=dict)
     # Real session ids materialized by this full-ingest group (polylogue-20d.13),
     # threaded from ``_IngestBatchSummary.changed_session_ids`` so callers can
@@ -354,6 +358,7 @@ def _full_ingest_result_from_summary(
     succeeded: list[Path],
     failed: list[Path],
     preparation_deferred: list[Path] | None = None,
+    raw_deferred: list[Path] | None = None,
     source_payload_read_bytes: int,
     excluded: dict[Path, str] | None = None,
     raw_fingerprints: dict[Path, str],
@@ -365,6 +370,7 @@ def _full_ingest_result_from_summary(
     captured_content_hashes: dict[Path, str] | None = None,
     captured_file_observations: dict[Path, tuple[int, int, int, int, int]] | None = None,
     summary: object | None,
+    excised_skips: int = 0,
     time_budget_exceeded: bool = False,
     write_hold_exhausted: bool = False,
 ) -> _FullIngestResult:
@@ -372,6 +378,7 @@ def _full_ingest_result_from_summary(
         succeeded=succeeded,
         failed=failed,
         preparation_deferred=list(preparation_deferred or ()),
+        raw_deferred=list(raw_deferred or ()),
         source_payload_read_bytes=source_payload_read_bytes,
         excluded=dict(excluded or {}),
         raw_fingerprints=raw_fingerprints,
@@ -386,6 +393,7 @@ def _full_ingest_result_from_summary(
         ingested_session_count=int(getattr(summary, "total_convos", 0)) if summary is not None else 0,
         ingested_message_count=int(getattr(summary, "total_msgs", 0)) if summary is not None else 0,
         changed_session_count=len(getattr(summary, "changed_session_ids", ())) if summary is not None else 0,
+        excised_skips=excised_skips,
         changed_session_ids=tuple(getattr(summary, "changed_session_ids", ()) or ()) if summary is not None else (),
         stage_timings_s=dict(getattr(summary, "stage_timings_s", {})) if summary is not None else {},
         time_budget_exceeded=time_budget_exceeded,
@@ -499,6 +507,40 @@ def jsonl_complete_prefix(payload: bytes) -> JsonlBoundary:
     if unterminated_tail:
         return JsonlBoundary(len(payload), _jsonl_record_count(payload), False)
     return JsonlBoundary(complete_end, _jsonl_record_count(payload[:complete_end]), complete_end != len(payload))
+
+
+def jsonl_complete_prefix_path(path: Path) -> JsonlBoundary:
+    """Find the same JSONL frontier from a sealed blob without loading its session."""
+    size = path.stat().st_size
+    offset = 0
+    complete_end = 0
+    record_count = 0
+    preceding_count = 0
+    candidate_start = 0
+    candidate = b""
+    candidate_terminated = False
+    with path.open("rb") as handle:
+        for line in handle:
+            terminated = line.endswith(b"\n")
+            if terminated:
+                complete_end = offset + len(line)
+            stripped = line.strip()
+            if stripped:
+                preceding_count = record_count
+                record_count += 1
+                candidate_start = offset
+                candidate = stripped
+                candidate_terminated = terminated
+            offset += len(line)
+    if not candidate:
+        return JsonlBoundary(complete_end, 0, complete_end != size)
+    try:
+        json.loads(candidate)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return JsonlBoundary(candidate_start, preceding_count, True, candidate_terminated)
+    if candidate_terminated:
+        return JsonlBoundary(complete_end, record_count, complete_end != size)
+    return JsonlBoundary(size, record_count, False)
 
 
 def fingerprint_file(path: Path, *, chunk_size: int = _FINGERPRINT_STREAM_CHUNK) -> tuple[str, int]:

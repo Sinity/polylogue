@@ -2514,7 +2514,7 @@ def test_full_ingest_writes_archive_with_route_observability(
     assert result.raw_fingerprints[source]
     assert {
         "full.provider_parse",
-        "full.source_raw_write",
+        "full.source_raw_blob_ref_write",
         "full.index_parsed_write",
         "full.index.session_upsert",
         "full.index.full_replace",
@@ -2559,9 +2559,9 @@ def test_full_ingest_writes_archive_with_route_observability(
         "storage_tiers": _ARCHIVE_STORAGE_TIERS,
         "storage_write_tiers": "source,index",
         "input_file_count": 1,
-        "payload_available_file_count": 1,
-        "payload_unavailable_file_count": 0,
-        "payload_replayed_from_blob_file_count": 0,
+        "payload_available_file_count": 0,
+        "payload_unavailable_file_count": 1,
+        "payload_replayed_from_blob_file_count": 1,
     }
     completed_event = next(payload for phase, payload in stage_events if phase == "full_archive_write_completed")
     assert completed_event == {
@@ -2571,8 +2571,8 @@ def test_full_ingest_writes_archive_with_route_observability(
         "written_raw_count": 1,
         "ingested_session_count": 1,
         "ingested_message_count": 1,
-        "payload_unavailable_file_count": 0,
-        "payload_replayed_from_blob_file_count": 0,
+        "payload_unavailable_file_count": 1,
+        "payload_replayed_from_blob_file_count": 1,
         # polylogue-i07pw AC1. This route hands the writer no prepared rows,
         # so the page's one session write records the gate that declined.
         # Its presence is the observability; its value is the finding.
@@ -4404,13 +4404,19 @@ def test_live_append_chain_survives_post_ingest_compaction(
         parser_fingerprint="test-parser",
     )
     original_publish = ArchiveBlobPublisher.write_from_bytes
+    original_path_publish = ArchiveBlobPublisher.write_from_path
     published_payloads: list[bytes] = []
 
     def counted_publish(publisher: ArchiveBlobPublisher, raw: bytes) -> tuple[str, int]:
         published_payloads.append(raw)
         return original_publish(publisher, raw)
 
+    def counted_path_publish(publisher: ArchiveBlobPublisher, source: Path, **kwargs: object) -> tuple[str, int]:
+        published_payloads.append(source.read_bytes())
+        return original_path_publish(publisher, source, **kwargs)  # type: ignore[arg-type]
+
     monkeypatch.setattr(ArchiveBlobPublisher, "write_from_bytes", counted_publish)
+    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_path", counted_path_publish)
     if not protect_chain:
         from polylogue.storage.raw_retention import RawRetentionAuthority
 
@@ -6446,7 +6452,7 @@ def test_full_archive_lock_propagates_for_watcher_retry(
     )
     monkeypatch.setattr(
         ArchiveStore,
-        "write_raw_payload",
+        "write_raw_blob_ref",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked")),
     )
 
@@ -9046,6 +9052,47 @@ def test_raw_retention_refusal_is_recorded_not_only_logged(tmp_path: Path, monke
     debt = _retention_debt(processor._cursor)
     assert [(item.subject_id, item.status) for item in debt] == [(str(path), "failed")]
     assert "index has no raw authority" in (debt[0].last_error or "")
+
+
+def test_raw_retention_waits_for_inactive_generation_promotion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Candidate index rows cannot authorize deletion before promotion."""
+    from polylogue.sources.live import cold_build
+    from polylogue.storage import raw_retention
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    bootstrap_archive_root(tmp_path)
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "session.jsonl"
+    path.write_text("{}\n", encoding="utf-8")
+    processor = _retention_processor(tmp_path, root)
+    superseded = _seed_superseded_raw_snapshots(processor, tmp_path / "source.db", path, count=2)
+    candidate = object()
+    monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root: candidate)
+
+    def wrong_active_authority(*_args: object, **_kwargs: object) -> raw_retention.RawRetentionAuthority:
+        raise AssertionError("active index authority was inspected before candidate promotion")
+
+    monkeypatch.setattr(raw_retention, "active_raw_retention_authority", wrong_active_authority)
+    processor._compact_superseded_raw_snapshots([path])
+    with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 3
+    debt = _retention_debt(processor._cursor)
+    assert [(item.subject_id, item.status) for item in debt] == [(str(path), "deferred")]
+    assert "until inactive index generation is promoted" in (debt[0].last_error or "")
+
+    monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root: None)
+    _grant_full_retention_authority(monkeypatch, superseded)
+    with closing(sqlite3.connect(tmp_path / "ops.db")) as conn:
+        conn.execute(
+            "UPDATE convergence_debt SET next_retry_at = ? WHERE stage = ?",
+            ("2000-01-01T00:00:00+00:00", RAW_RETENTION_STAGE),
+        )
+        conn.commit()
+    processor._compact_superseded_raw_snapshots([])
+    with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
+    assert _retention_debt(processor._cursor) == []
 
 
 def test_deferred_cursor_records_when_the_tail_cannot_be_reopened(

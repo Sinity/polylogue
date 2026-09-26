@@ -26,13 +26,22 @@ from polylogue.operations.ingest_inputs import (
 from polylogue.operations.insight_acceptance import SessionInsightPartReceipt
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.machine_receipts import (
+    MAX_INLINE_INGEST_SESSION_IDS,
+    MAX_INLINE_RAW_IDS_PER_INPUT,
+    MAX_MACHINE_RECEIPT_PAGES,
+    MAX_PAGE_ITEMS,
     IngestHistoricalReceipt,
     IngestInputHistoricalReceipt,
     IngestInputPageHistoricalReceipt,
+    IngestInputRawMemberHistorical,
+    IngestInputRawPageHistoricalReceipt,
     IngestInsightPageHistoricalReceipt,
     IngestRefusedMembershipHistorical,
     IngestTerminalSummaryHistorical,
     InsightTargetHistoricalReceipt,
+    ingest_input_raw_pages_digest,
+    ingest_insight_pages_digest,
+    ingest_session_ids_digest,
 )
 from polylogue.operations.mutation_transaction import (
     MutationPreview,
@@ -111,6 +120,14 @@ class IngestExecution:
         # polylogue-163ku: per-key cohort refusals collected while the rest of
         # the generation continues; surfaced counted in the terminal receipt.
         self.refused_memberships: list[CohortMembershipRefusalError] = []
+        self.changed_session_messages: dict[str, int] = {}
+        self.session_id_pages_ref: str | None = None
+        self.session_id_page_count = 0
+        self.session_ids_digest: str | None = None
+        self.insight_pages_ref: str | None = None
+        self.insight_page_count = 0
+        self.insight_pages_digest: str | None = None
+        self.input_raw_page_metadata: dict[str, tuple[str, int, int, int, str]] = {}
         self.publisher = ArchiveBlobPublisher(context.archive_root / "source.db", context.archive_root / "blob")
 
     def stop_reason(self) -> str | None:
@@ -236,10 +253,14 @@ class IngestExecution:
             source_path = self.request.payload.get("source_path")
             if source_path is not None and not isinstance(source_path, str):
                 raise ValueError("ingest source path is not a string")
+            source_name = self.request.payload.get("source_name")
+            if source_name is not None and not isinstance(source_name, str):
+                raise ValueError("ingest source name is not a string")
             manifest = await self.runtime.compute_phase(
                 lambda: prepare_ingest_inputs(
                     Path(str(self.request.payload["path"])),
                     source_path=source_path,
+                    source_name=source_name,
                     source_generation_id=str(uuid4()),
                     publisher=self.publisher,
                     check_stop=self.check_stop,
@@ -329,12 +350,19 @@ class IngestExecution:
             return
         assert self.record is not None
         acquired_at_ms = _record_int(self.record["accepted_at_ms"], field="accepted timestamp")
+        source_name = self.request.payload.get("source_name")
+        if source_name is not None and not isinstance(source_name, str):
+            raise ValueError("accepted ingest source name is not a string")
+        assert self.started_mutation is not None
+        if source_name != self.started_mutation.plan.context.get("source_name"):
+            raise ValueError("accepted ingest source name changed after manifest binding")
         iterator = enumerate_ingest_input(
             item,
             source_generation_id=generation.source_generation_id,
             publisher=self.publisher,
             acquired_at_ms=acquired_at_ms,
             check_stop=self.check_stop,
+            source_name=source_name,
         )
         coordinates: list[str] = []
         member_ordinals: set[int] = set()
@@ -524,10 +552,27 @@ class IngestExecution:
 
                 def publish_cohort(
                     archive: ArchiveStore, *, cohort: PreparedIngestCohort = prepared_cohort
-                ) -> CohortPublication:
-                    return publish_ingest_cohort(archive, cohort)
+                ) -> tuple[CohortPublication, int | None]:
+                    before = {
+                        session_id: archive._conn.execute(
+                            "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
+                        ).fetchone()
+                        for session_id in cohort.affected_session_ids
+                    }
+                    published = publish_ingest_cohort(archive, cohort)
+                    if not published.published or published.session_id is None:
+                        return published, None
+                    after = archive._conn.execute(
+                        "SELECT content_hash, message_count FROM sessions WHERE session_id = ?",
+                        (published.session_id,),
+                    ).fetchone()
+                    if after is None:
+                        raise RuntimeError("published ingest cohort has no session row")
+                    prior = before.get(published.session_id)
+                    changed = prior is None or prior[0] != after[0]
+                    return published, int(after[1]) if changed else None
 
-                publication: CohortPublication = await self.archive_write(publish_cohort)
+                publication, changed_message_count = await self.archive_write(publish_cohort)
             finally:
 
                 def discard_cohort(*, cohort: PreparedIngestCohort = prepared_cohort) -> None:
@@ -537,6 +582,8 @@ class IngestExecution:
             if publication.reprepare_required:
                 pending_keys.add(key)
                 pending_keys.update(publication.reprepare_logical_source_keys)
+            if changed_message_count is not None and publication.session_id is not None:
+                self.changed_session_messages[publication.session_id] = changed_message_count
         # A published classification may still be ambiguous or incomplete.
         # Only exact source/application/head witnesses can certify it.
         return await self.receipt(generation_id)
@@ -573,11 +620,12 @@ class IngestExecution:
         generation: RetainedSourceGeneration,
         receipt: SourceGenerationReceipt,
         profile_parts: tuple[SessionInsightPartReceipt, ...],
+        insight_pages: list[IngestInsightPageHistoricalReceipt] | None = None,
     ) -> IngestHistoricalReceipt:
         """Freeze the final observation while its source/index snapshots exist.
 
-        The returned receipt is intentionally self-contained.  Later reads use
-        the audit event and never call ``source_generation_receipt`` again.
+        Larger ID sets use immutable audit page references. Later reads never
+        call ``source_generation_receipt`` to reconstruct changed identities.
         """
 
         observed = {item.source_item_id: item for item in receipt.items}
@@ -601,13 +649,19 @@ class IngestExecution:
             raw_ids = sorted({raw.raw_id for raw in item_receipt.raws})
             unresolved = sorted({raw.raw_id for raw in item_receipt.raws if not raw.complete})
             retired_count = retired_by_item.get(item.source_item_id, 0)
+            page_metadata = self.input_raw_page_metadata.get(item.source_item_id)
             inputs.append(
                 IngestInputHistoricalReceipt(
                     source_item_id=item.source_item_id,
                     logical_coordinate=item_receipt.logical_coordinate,
                     denominator=len(raw_ids) + retired_count,
-                    raw_ids=raw_ids,
-                    unresolved_raw_ids=unresolved,
+                    raw_ids=None if page_metadata is not None else raw_ids,
+                    unresolved_raw_ids=[] if page_metadata is not None else unresolved,
+                    raw_id_pages_ref=None if page_metadata is None else page_metadata[0],
+                    raw_id_page_count=0 if page_metadata is None else page_metadata[1],
+                    raw_id_count=0 if page_metadata is None else page_metadata[2],
+                    unresolved_raw_count=0 if page_metadata is None else page_metadata[3],
+                    raw_ids_digest=None if page_metadata is None else page_metadata[4],
                     unknown_attribution=("retired source record has no raw identity" if retired_count else None),
                 )
             )
@@ -615,20 +669,17 @@ class IngestExecution:
             IngestInputPageHistoricalReceipt.from_items(ordinal, inputs[offset : offset + 256])
             for ordinal, offset in enumerate(range(0, len(inputs), 256))
         ]
-        insight_pages = [
-            IngestInsightPageHistoricalReceipt(
-                ordinal=ordinal,
-                targets=[InsightTargetHistoricalReceipt.model_validate(asdict(target)) for target in part.targets],
-                unattempted_target_refs=list(part.remaining_unattempted_target_refs),
-            )
-            for ordinal, part in enumerate(profile_parts)
-        ]
+        if insight_pages is None:
+            insight_pages = self._insight_pages(profile_parts)
         return IngestHistoricalReceipt(
             source_generation_id=generation.source_generation_id,
             final_sequence=1,
             input_count=len(inputs),
             input_pages=pages,
-            insight_pages=insight_pages,
+            insight_pages=[] if self.insight_pages_ref is not None else insight_pages,
+            insight_pages_ref=self.insight_pages_ref,
+            insight_page_count=self.insight_page_count,
+            insight_pages_digest=self.insight_pages_digest,
             summary=IngestTerminalSummaryHistorical(
                 enumeration_complete=receipt.enumeration_complete,
                 source_complete=receipt.complete,
@@ -644,8 +695,31 @@ class IngestExecution:
                     )
                     for refusal in self.refused_memberships[:256]
                 ],
+                parse_projection_known=True,
+                processed_session_ids=(
+                    sorted(self.changed_session_messages) if self.session_id_pages_ref is None else []
+                ),
+                processed_session_id_pages_ref=self.session_id_pages_ref,
+                processed_session_id_page_count=self.session_id_page_count,
+                processed_session_ids_digest=self.session_ids_digest,
+                processed_message_count=sum(self.changed_session_messages.values()),
+                changed_session_count=len(self.changed_session_messages),
+                changed_message_count=sum(self.changed_session_messages.values()),
             ),
         )
+
+    @staticmethod
+    def _insight_pages(
+        profile_parts: tuple[SessionInsightPartReceipt, ...],
+    ) -> list[IngestInsightPageHistoricalReceipt]:
+        return [
+            IngestInsightPageHistoricalReceipt(
+                ordinal=ordinal,
+                targets=[InsightTargetHistoricalReceipt.model_validate(asdict(target)) for target in part.targets],
+                unattempted_target_refs=list(part.remaining_unattempted_target_refs),
+            )
+            for ordinal, part in enumerate(profile_parts)
+        ]
 
     async def finalize(
         self,
@@ -655,7 +729,70 @@ class IngestExecution:
     ) -> IngestHistoricalReceipt:
         assert self.started_mutation is not None
         started = self.started_mutation
-        history = self.historical_receipt(generation, receipt, profile_parts)
+        operation_id = started.operation_id
+        assert operation_id is not None
+        observed_items = {item.source_item_id: item for item in receipt.items}
+        for item in generation.inputs:
+            observed_item = observed_items.get(item.source_item_id)
+            if observed_item is None:
+                continue
+            raws = sorted(observed_item.raws, key=lambda raw: raw.raw_id)
+            if len(raws) <= MAX_INLINE_RAW_IDS_PER_INPUT:
+                continue
+            raw_pages = [
+                IngestInputRawPageHistoricalReceipt(
+                    source_item_id=item.source_item_id,
+                    ordinal=ordinal,
+                    raws=[
+                        IngestInputRawMemberHistorical(raw_id=raw.raw_id, unresolved=not raw.complete)
+                        for raw in raws[offset : offset + MAX_PAGE_ITEMS]
+                    ],
+                )
+                for ordinal, offset in enumerate(range(0, len(raws), MAX_PAGE_ITEMS))
+            ]
+            self.input_raw_page_metadata[item.source_item_id] = (
+                operation_id,
+                len(raw_pages),
+                len(raws),
+                sum(not raw.complete for raw in raws),
+                ingest_input_raw_pages_digest(raw_pages),
+            )
+            for raw_page in raw_pages:
+
+                def persist_raw_page(page: IngestInputRawPageHistoricalReceipt = raw_page) -> None:
+                    self.audit.append_ingest_input_raw_page(operation_id, page)
+
+                await self.runtime.write_phase("ingest.input_raw_page", persist_raw_page)
+        session_ids = sorted(self.changed_session_messages)
+        if len(session_ids) > MAX_INLINE_INGEST_SESSION_IDS:
+            self.session_id_pages_ref = operation_id
+            self.session_id_page_count = (len(session_ids) + MAX_PAGE_ITEMS - 1) // MAX_PAGE_ITEMS
+            self.session_ids_digest = ingest_session_ids_digest(session_ids)
+            for ordinal, offset in enumerate(range(0, len(session_ids), MAX_PAGE_ITEMS)):
+                id_page = tuple(session_ids[offset : offset + MAX_PAGE_ITEMS])
+
+                def persist_id_page(page: tuple[str, ...] = id_page, page_ordinal: int = ordinal) -> None:
+                    self.audit.append_ingest_session_id_page(operation_id, page_ordinal, page)
+
+                await self.runtime.write_phase(
+                    "ingest.session_ids",
+                    persist_id_page,
+                )
+        insight_pages = self._insight_pages(profile_parts)
+        if len(insight_pages) > MAX_MACHINE_RECEIPT_PAGES:
+            self.insight_pages_ref = operation_id
+            self.insight_page_count = len(insight_pages)
+            self.insight_pages_digest = ingest_insight_pages_digest(insight_pages)
+            for insight_page in insight_pages:
+
+                def persist_insight_page(page: IngestInsightPageHistoricalReceipt = insight_page) -> None:
+                    self.audit.append_ingest_insight_page(operation_id, page)
+
+                await self.runtime.write_phase(
+                    "ingest.insight_page",
+                    persist_insight_page,
+                )
+        history = self.historical_receipt(generation, receipt, profile_parts, insight_pages)
         final = MutationReceipt(
             operation=started.plan.operation,
             plan_hash=started.plan.plan_hash,

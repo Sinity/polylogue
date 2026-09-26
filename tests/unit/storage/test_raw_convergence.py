@@ -19,13 +19,19 @@ from polylogue.archive.revision_authority import append_source_revision
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider
 from polylogue.core.errors import RawCASFrontierError
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
-from polylogue.daemon.derivation import Budget, DerivationRegistry, DerivationReport, PassCursor, converge
+from polylogue.daemon.derivation import (
+    Budget,
+    DerivationRegistry,
+    DerivationReport,
+    PassCursor,
+    PendingReason,
+    converge,
+)
 from polylogue.daemon.status import raw_failure_info_for_root
 from polylogue.operations.raw_observation_derivation import (
     converge_raw_observations,
     raw_observation_frame,
 )
-from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.derived.raw import RawObservationDerivation
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
@@ -45,6 +51,19 @@ def _codex_conversation_bytes(session_id: str = "session", text: str = "hi") -> 
         + b'","role":"user","content":[{"type":"input_text","text":"'
         + text.encode()
         + b'"}]}}\n'
+    )
+
+
+def _codex_fork_bytes(session_id: str, parent_id: str, shared_record: bytes) -> bytes:
+    return (
+        json.dumps(
+            {"type": "session_meta", "payload": {"id": session_id, "forked_from_id": parent_id}},
+            separators=(",", ":"),
+        ).encode()
+        + b"\n"
+        + shared_record
+        + b'{"type":"response_item","payload":{"type":"message","id":"child-tail",'
+        b'"role":"assistant","content":[{"type":"output_text","text":"child only"}]}}\n'
     )
 
 
@@ -115,40 +134,6 @@ def _inspect(root: Path, raw_id: str) -> str:
     return adapter.inspect(raw_observation_frame(root), (raw_id,))[raw_id]
 
 
-def _seed_expanded_component(root: Path, source_paths: tuple[str, ...]) -> tuple[str, ...]:
-    from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
-
-    key = "codex-session:expanded-stream-safety"
-    with ArchiveStore.open_existing(root, read_only=False) as store:
-        raw_ids = []
-        for index, source_path in enumerate(source_paths):
-            raw_id = store.write_raw_payload(
-                provider=Provider.CODEX,
-                payload=_codex_conversation_bytes("expanded-stream-safety", f"member-{index}"),
-                source_path=source_path,
-                acquired_at_ms=index + 1,
-            )
-            store.bind_raw_revision(
-                raw_id,
-                RawRevisionEnvelope(
-                    key,
-                    RawRevisionKind.FULL,
-                    f"revision-{index}",
-                    index,
-                    authority=RawRevisionAuthority.QUARANTINED,
-                ),
-            )
-            raw_ids.append(raw_id)
-        store.commit()
-    with sqlite3.connect(root / "source.db") as conn:
-        conn.executemany(
-            "UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?",
-            ((40 * 1024 * 1024, raw_id) for raw_id in raw_ids),
-        )
-        conn.commit()
-    return tuple(raw_ids)
-
-
 def test_canonical_replay_replaces_lost_output_without_touching_foreign_output(tmp_path: Path) -> None:
     """Output loss replays the owning component and preserves unrelated output."""
     bootstrap_archive_root(tmp_path)
@@ -171,6 +156,74 @@ def test_canonical_replay_replaces_lost_output_without_touching_foreign_output(t
             ("target-b",),
         ]
         assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (foreign,)).fetchone() == (1,)
+
+
+def test_prepared_retained_replay_slices_fresh_and_same_raw_fork_prefix(tmp_path: Path) -> None:
+    """A retained fork reaches the writer with a precomputed tail on both replay paths."""
+    bootstrap_archive_root(tmp_path)
+    shared = (
+        b'{"type":"response_item","payload":{"type":"message","id":"shared-user",'
+        b'"role":"user","content":[{"type":"input_text","text":"shared parent text"}]}}\n'
+    )
+    parent_id = _admit(
+        tmp_path,
+        (),
+        path="parent.jsonl",
+        provider=Provider.CODEX,
+        payload=b'{"type":"session_meta","payload":{"id":"retained-parent"}}\n' + shared,
+    )
+    parent_report = _derive(tmp_path, limit=1)
+    assert parent_report.failed == parent_report.pending == 0, parent_report.outcomes
+    assert _inspect(tmp_path, parent_id) == "valid"
+
+    child_id = _admit(
+        tmp_path,
+        (),
+        path="child.jsonl",
+        provider=Provider.CODEX,
+        payload=_codex_fork_bytes("retained-child", "retained-parent", shared),
+    )
+    first = _derive(tmp_path)
+    assert first.failed == 0 and first.pending == 1, first.outcomes
+    assert first.outcomes[0].reason is PendingReason.BINDING_MOVED
+    for _ in range(4):
+        retry = _derive(tmp_path)
+        assert retry.failed == 0, retry.outcomes
+        if retry.pending == 0 and _inspect(tmp_path, child_id) == "valid":
+            break
+    else:
+        pytest.fail("retained fork did not converge after its committed source census")
+    assert _inspect(tmp_path, child_id) == "valid"
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        child_row = conn.execute(
+            "SELECT session_id, raw_id FROM sessions WHERE native_id = ?", ("retained-child",)
+        ).fetchone()
+        assert child_row is not None and child_row[1] == child_id
+        lineage = conn.execute(
+            "SELECT resolved_dst_session_id, branch_point_message_id FROM session_links WHERE src_session_id = ?",
+            (child_row[0],),
+        ).fetchone()
+        assert lineage is not None and lineage[0] == "codex-session:retained-parent"
+        assert lineage[1] is not None
+        assert conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?", ("codex-session:retained-child",)
+        ).fetchone() == (1,)
+        conn.execute("DELETE FROM raw_revision_applications WHERE raw_id = ?", (child_id,))
+        conn.commit()
+
+    assert _inspect(tmp_path, child_id) != "valid"
+    for _ in range(4):
+        second = _derive(tmp_path)
+        assert second.failed == 0, second.outcomes
+        if second.pending == 0 and _inspect(tmp_path, child_id) == "valid":
+            break
+    else:
+        pytest.fail("same-raw fork replay did not converge")
+    assert _inspect(tmp_path, child_id) == "valid"
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?", ("codex-session:retained-child",)
+        ).fetchone() == (1,)
 
 
 def test_canonical_replay_cleans_orphaned_messages_before_replacement(tmp_path: Path) -> None:
@@ -307,38 +360,8 @@ def test_canonical_component_budget_fails_only_the_oversized_component(tmp_path:
         assert conn.execute("SELECT native_id FROM sessions").fetchall() == [("healthy",)]
 
 
-def test_canonical_compute_expands_every_stream_safe_member_descriptor(tmp_path: Path) -> None:
-    """Whale preparation must inspect the complete expanded stream-safe component."""
-    bootstrap_archive_root(tmp_path)
-    raw_ids = _seed_expanded_component(tmp_path, ("rollout-a.jsonl", "rollout-b.jsonl"))
-    adapter = RawObservationDerivation(tmp_path, max_payload_bytes=8 * 1024 * 1024 * 1024, stream_safe_only=True)
-
-    replacement = adapter.compute(raw_observation_frame(tmp_path), raw_ids[0])
-
-    assert set(replacement.raw_ids) == set(raw_ids)
-    assert replacement.raw_ids
-
-
-def test_canonical_compute_excludes_a_non_stream_safe_expanded_member_before_blob_open(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A non-stream-safe expanded sibling cannot enter the widened envelope."""
-    bootstrap_archive_root(tmp_path)
-    raw_ids = _seed_expanded_component(tmp_path, ("rollout-a.jsonl", "export-b.json"))
-    adapter = RawObservationDerivation(tmp_path, max_payload_bytes=8 * 1024 * 1024 * 1024, stream_safe_only=True)
-
-    def forbidden_verify(*_args: object, **_kwargs: object) -> bool:
-        raise AssertionError("stream-safety refusal must precede blob verification")
-
-    monkeypatch.setattr(BlobStore, "verify", forbidden_verify)
-    for _ in range(2):
-        with pytest.raises(ValueError, match="stream-safe"):
-            adapter.compute(raw_observation_frame(tmp_path), raw_ids[0])
-    assert all(_inspect(tmp_path, raw_id) != "valid" for raw_id in raw_ids)
-
-
 def test_canonical_oversized_component_remains_failed_across_repeated_envelopes(tmp_path: Path) -> None:
-    """A terminal resource envelope cannot turn an unmaterialized raw into done."""
+    """A nonprepared parser keeps its protective resource envelope."""
     bootstrap_archive_root(tmp_path)
     raw_id = _admit(
         tmp_path,
@@ -902,7 +925,13 @@ def test_canonical_replay_does_not_replace_newer_index_authority(tmp_path: Path)
         payload=new_payload,
         acquired_at_ms=2,
     )
-    assert _derive(tmp_path).failed == 0
+    for _ in range(4):
+        report = _derive(tmp_path)
+        assert report.failed == 0, report.outcomes
+        if _inspect(tmp_path, new_raw_id) == "valid":
+            break
+    else:
+        pytest.fail("new retained raw did not converge after source classification")
 
     with sqlite3.connect(tmp_path / "index.db") as conn:
         head = conn.execute(
@@ -919,102 +948,6 @@ def test_canonical_replay_does_not_replace_newer_index_authority(tmp_path: Path)
             "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
             ("codex-session:same-head",),
         ).fetchone() == (new_raw_id,)
-
-
-def test_canonical_expanded_component_budget_blocks_before_blob_open(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Aggregate payload limits inspect every component member before parsing any blob."""
-    from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
-
-    bootstrap_archive_root(tmp_path)
-    key = "codex-session:aggregate-budget"
-    payload = _codex_conversation_bytes("aggregate-budget")
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as store:
-        raw_ids = []
-        for index in range(2):
-            raw_id = store.write_raw_payload(
-                provider=Provider.CODEX,
-                payload=payload,
-                source_path="aggregate.jsonl",
-                acquired_at_ms=index + 1,
-            )
-            store.bind_raw_revision(
-                raw_id,
-                RawRevisionEnvelope(
-                    key,
-                    RawRevisionKind.FULL,
-                    raw_id,
-                    0,
-                    authority=RawRevisionAuthority.QUARANTINED,
-                ),
-            )
-            raw_ids.append(raw_id)
-        store.commit()
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        conn.executemany(
-            "UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?",
-            ((600, raw_id) for raw_id in raw_ids),
-        )
-        conn.commit()
-
-    def forbidden_verify(*_args: object, **_kwargs: object) -> bool:
-        raise AssertionError("aggregate resource refusal must precede blob verification")
-
-    monkeypatch.setattr(BlobStore, "verify", forbidden_verify)
-    report = _derive(tmp_path, max_payload_bytes=1_000)
-    assert report.failed >= 1
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
-
-
-def test_canonical_already_valid_oversized_sibling_blocks_component_replay_before_blob_open(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A valid sibling is still part of the replay component's resource proof."""
-    from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
-
-    bootstrap_archive_root(tmp_path)
-    key = "codex-session:oversized-sibling"
-    payloads = (_codex_conversation_bytes("small-gap"), _codex_conversation_bytes("large-done"))
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as store:
-        raw_ids = []
-        for index, payload in enumerate(payloads):
-            raw_id = store.write_raw_payload(
-                provider=Provider.CODEX,
-                payload=payload,
-                source_path="shared.jsonl",
-                acquired_at_ms=index + 1,
-            )
-            store.bind_raw_revision(
-                raw_id,
-                RawRevisionEnvelope(
-                    key,
-                    RawRevisionKind.FULL,
-                    raw_id,
-                    0,
-                    authority=RawRevisionAuthority.QUARANTINED,
-                ),
-            )
-            raw_ids.append(raw_id)
-        store.commit()
-    assert _derive(tmp_path, max_payload_bytes=10_000).failed == 0
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        conn.execute("UPDATE raw_sessions SET blob_size = 2_000 WHERE raw_id = ?", (raw_ids[1],))
-        conn.commit()
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        conn.execute("DELETE FROM sessions WHERE raw_id = ?", (raw_ids[0],))
-        conn.execute("DELETE FROM raw_revision_applications WHERE raw_id = ?", (raw_ids[0],))
-        conn.commit()
-
-    def forbidden_verify(*_args: object, **_kwargs: object) -> bool:
-        raise AssertionError("expanded oversized sibling must block before blob verification")
-
-    monkeypatch.setattr(BlobStore, "verify", forbidden_verify)
-    report = _derive(tmp_path, max_payload_bytes=1_000)
-    assert report.failed >= 1
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (raw_ids[0],)).fetchone() == (0,)
 
 
 def test_canonical_append_fragment_does_not_livelock_component_discovery(tmp_path: Path) -> None:

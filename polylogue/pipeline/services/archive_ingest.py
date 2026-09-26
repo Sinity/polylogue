@@ -1,737 +1,112 @@
-"""source parsing helpers."""
+"""Compatibility entry point for one-shot source ingestion.
+
+Acquisition, cursor commits, replay, and convergence are owned by the live
+batch processor. This module keeps the established Python API name while
+callers migrate; it contains no independent archive publisher.
+"""
 
 from __future__ import annotations
 
-import json
-import time
-import zipfile
-from collections.abc import Callable, Mapping
-from concurrent.futures import as_completed
-from contextlib import suppress
-from dataclasses import dataclass
-from datetime import UTC, datetime
-from functools import partial
+import os
+import sqlite3
+from contextlib import closing
 from pathlib import Path
-from typing import Any
 
-from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.config import Source
-from polylogue.core.enums import Provider
-from polylogue.core.sources import origin_from_provider
-from polylogue.core.timestamp_authority import normalize_session_timestamps, timestamp_millis
-from polylogue.logging import WARNING, emit, get_logger
+from polylogue.maintenance import offline_guard
+from polylogue.maintenance.offline_guard import ArchiveWriterOwnershipError
+from polylogue.operations.canonical_archive_ingest import (
+    ingest_sources_archive,
+    scoped_one_shot_archive_owner,
+)
 from polylogue.pipeline.services.parsing_models import ParseResult
-from polylogue.pipeline.services.process_pool import (
-    PoolKind,
-    process_pool_executor,
-    resolve_archive_ingest_dispatch,
-    resolve_parse_worker_count,
-)
-from polylogue.sources.artifact_observations import record_session_artifact_observation
-from polylogue.sources.decoder_zip import (
-    ZipBombError,
-    ZipEntryValidator,
-    open_bounded_zip_entry,
-    zip_entry_session_artifact,
-)
-from polylogue.sources.dispatch import require_positive_conversational_evidence
-from polylogue.sources.parsers import antigravity
-from polylogue.sources.parsers.base import ParsedSession, RawSessionData
-from polylogue.sources.source_parsing import (
-    has_decoded_session_evidence,
-    iter_antigravity_language_server_sessions,
-    iter_source_sessions_with_raw,
-    parse_one_source_path,
-)
-from polylogue.sources.source_root_admission import refuse_non_capture_source_root
-from polylogue.sources.source_walk import _setup_source_walk
-from polylogue.sources.sqlite_snapshot import hermes_profile_raw_id, retained_content_revision
-from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError, deterministic_raw_session_id
-from polylogue.storage.sqlite.maintenance import maybe_optimize_archive_tiers
+from polylogue.storage.archive_identity import resolve_active_index_path
 
-logger = get_logger(__name__)
-
-# Work-based commit batching (#dogfood ingest-commit-batching). Re-ingest is
-# I/O-wait-bound index writes benefit from committing once ~8000 accumulated
-# messages (validated ~1.37x throughput, ~4x fewer bytes, peak WAL ~14 MB <<
-# 40 MB autocheckpoint). Durable source references commit per raw artifact so
-# parallel workers can establish pre-publication reservations without blocking
-# behind a long source transaction. Session-count batching was rejected (uneven
-# index transaction size -> larger WAL); one-shot was rejected (slower + large
-# WAL). Override with POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES; a value <= 0
-# restores per-session index commit (escape hatch).
-COMMIT_BATCH_MESSAGE_THRESHOLD = 8000
-POST_COMMIT_UPKEEP_REASON = "archive_ingest_commit"
+_ONE_SHOT_MARKER = ".one-shot-ingest-owner"
 
 
-@dataclass(frozen=True, slots=True)
-class _ParseSubmission:
-    """One walked source file and everything its parse worker needs."""
-
-    source: Source
-    path: Path
-    file_mtime: Any
-    sidecar_data: Mapping[str, Any] | None
-
-
-def _record_stage(result: ParseResult, name: str, started_at: float) -> None:
-    """Accumulate one ingest phase into the run's stage ledger.
-
-    Keeps the walk and parse phases inside the same ``append.*`` namespace the
-    archive write path already reports, so the ledger sums toward wall time
-    instead of describing the write alone.
-    """
-    key = f"append.{name}"
-    result.stage_timings_s[key] = result.stage_timings_s.get(key, 0.0) + (time.perf_counter() - started_at)
-
-
-def _submission_payload_bytes(submissions: list[_ParseSubmission]) -> int:
-    """Total on-disk size of the files this walk will parse.
-
-    Sizes the parse dispatch. A path that vanished between the walk and here
-    contributes nothing, which biases the plan toward sequential -- the safe
-    direction, since the pool only pays off above the byte tiers.
-    """
-    total = 0
-    for submission in submissions:
-        with suppress(OSError):
-            total += submission.path.stat().st_size
-    return total
-
-
-def _commit_batch_message_threshold() -> int:
-    from polylogue.config import load_polylogue_config
-
-    try:
-        return load_polylogue_config().ingest_commit_batch_messages
-    except ValueError:
-        return COMMIT_BATCH_MESSAGE_THRESHOLD
-
-
-def _parse_source_path_worker(
-    path_str: str,
-    file_mtime: str | None,
-    source_name: str,
-    sidecar_data: Any,
-    capture_raw: bool,
-    blob_root_str: str,
-    source_db_path_str: str,
-) -> list[tuple[RawSessionData | None, ParsedSession]]:
-    """ProcessPool worker: parse one file and return materialized tuples.
-
-    Materializing into a list is required so the worker can pickle results back
-    to the main process. Errors propagate via the future and are caught by the
-    driver. ``cursor_state`` is intentionally ``None``: re-ingest does not use
-    cursor state, and it could not cross the process boundary anyway.
-    """
-    from polylogue.storage.blob_publication import ArchiveBlobPublisher
-
-    publisher = ArchiveBlobPublisher(Path(source_db_path_str), Path(blob_root_str))
-    try:
-        return list(
-            parse_one_source_path(
-                path_str,
-                file_mtime=file_mtime,
-                source_name=source_name,
-                sidecar_data=sidecar_data,
-                capture_raw=capture_raw,
-                cursor_state=None,
-                blob_root=Path(blob_root_str),
-                blob_store=publisher,
-            )
+def _admit_one_shot_root(root: Path) -> None:
+    """Claim an empty root once; subsequent calls may only reuse that claim."""
+    pid = offline_guard.resident_daemon_pid(root)
+    if pid is not None:
+        raise ArchiveWriterOwnershipError(
+            f"polylogued PID {pid} owns {root}; submit ingestion to that daemon",
+            archive_root=root,
+            resident_writer=f"polylogued PID {pid}",
         )
-    finally:
-        publisher.discard_pending()
+    marker = root / _ONE_SHOT_MARKER
+    root_stat = root.stat()
+    claim = f"canonical-one-shot-v1 {root_stat.st_dev}:{root_stat.st_ino}\n"
+    if marker.exists():
+        try:
+            if marker.read_text(encoding="utf-8") != claim:
+                raise ArchiveWriterOwnershipError(
+                    f"{root} has an invalid one-shot owner claim; refusing an offline write",
+                    archive_root=root,
+                )
+        except OSError as exc:
+            raise ArchiveWriterOwnershipError(
+                f"cannot verify the one-shot owner claim for {root}", archive_root=root
+            ) from exc
+        return
+    prior_tiers = tuple(
+        name
+        for name in (
+            "source.db",
+            "index.db",
+            "user.db",
+            "embeddings.db",
+            "audit.db",
+            "ops.db",
+            ".index-active-pointer",
+        )
+        if (root / name).exists()
+    )
+    for db_path, table in (
+        (root / "source.db", "raw_sessions"),
+        (root / "user.db", "assertions"),
+        (resolve_active_index_path(root), "sessions"),
+    ):
+        if not db_path.exists():
+            continue
+        try:
+            with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
+                present = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+                if present and conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():
+                    raise ArchiveWriterOwnershipError(
+                        f"{root} already contains archive content; submit ingestion to the resident daemon",
+                        archive_root=root,
+                    )
+        except sqlite3.Error as exc:
+            raise ArchiveWriterOwnershipError(
+                f"cannot prove {root} is an empty one-shot archive",
+                archive_root=root,
+            ) from exc
+    if prior_tiers:
+        raise ArchiveWriterOwnershipError(
+            f"{root} is an existing archive ({', '.join(prior_tiers)}); "
+            "one-shot ingestion requires a newly isolated root",
+            archive_root=root,
+        )
+    with marker.open("x", encoding="utf-8") as handle:
+        handle.write(claim)
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 async def parse_sources_archive(
-    archive_root: Path, sources: list[Source], *, parse_workers: int | None = None
-) -> ParseResult:
-    """Parse configured sources directly into archive source/index tiers.
-
-    Source files are parsed across a process pool (``POLYLOGUE_INGEST_PARSE_WORKERS``)
-    while the main process remains the single SQLite writer. Write order does
-    not matter: archive writes are idempotent by content hash and session links
-    resolve out-of-order. Blob writes from workers are
-    content-addressed and atomic, so concurrent worker writes are process-safe.
-
-    The pool is sized from the work the walk actually found
-    (:func:`resolve_archive_ingest_dispatch`), so a small walk parses
-    in-process instead of paying a spawn per worker for it.
-
-    ``parse_workers`` overrides the ambient/env-resolved worker count for this
-    call only (used by the demo seeder to force sequential parsing -- see
-    ``polylogue/demo/seed.py``). ``None`` preserves the normal
-    ``POLYLOGUE_INGEST_PARSE_WORKERS``/cpu-count resolution.
-    """
-    result = ParseResult()
-    for source in sources:
-        if source.path:
-            refuse_non_capture_source_root(source.path, destination=archive_root)
-    acquired_at_ms = int(datetime.now(UTC).timestamp() * 1000)
-    threshold = _commit_batch_message_threshold()
-    batched = threshold > 0
-    workers = resolve_parse_worker_count() if parse_workers is None else max(1, parse_workers)
-    blob_root = archive_root / "blob"
-    from polylogue.storage.blob_publication import ArchiveBlobPublisher
-
-    parse_blob_publisher = ArchiveBlobPublisher(archive_root / "source.db", blob_root)
-    counters = {"raw_rows": 0, "index_rows": 0, "pending_messages": 0}
-    # A grouped JSONL file (Claude Code/Codex resume-fork chains, Gemini/Drive
-    # bundles) can parse into MULTIPLE sessions that all share the identical
-    # captured raw bytes (`_SessionEmitter._emit_grouped` yields the SAME
-    # `raw_data` for every session in the group). Without this cache, each
-    # session's write independently derives its raw_id from
-    # `deterministic_raw_session_id(..., native_id=session.provider_session_id)`
-    # (see write_source_raw_session), so byte-identical content produces a
-    # DIFFERENT raw_sessions row per split session -- and a second, unrelated
-    # raw row for the same bytes reappears on every re-ingest. The live daemon
-    # watcher instead writes ONE raw per file (`write_raw_payload`, no
-    # native_id) and defers session identity to membership-census
-    # classification; this cache makes the one-shot importer converge on that
-    # SAME single-raw-per-bytes model, keyed by the raw's own (origin,
-    # source_path, source_index, blob_hash) so a later re-ingest of identical
-    # bytes resolves to the SAME raw_id every time. Ref polylogue-sjf6.
-    shared_raw_ids: dict[tuple[str, str, int, str], str] = {}
-    shared_raw_memberships: dict[tuple[str, str, int, str], dict[str, ParsedSession]] = {}
-
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        counters["raw_rows"] += _admit_non_session_origin_artifacts(
-            archive,
-            sources,
-            acquired_at_ms=acquired_at_ms,
-        )
-
-        async def write_pair(
-            source: Source,
-            raw_data: RawSessionData | None,
-            session: ParsedSession,
-        ) -> None:
-            # polylogue-b508: a session requires positive evidence of a
-            # conversation. The daemon decode worker, live batch convergence,
-            # the incremental append route, and offline replay each apply this
-            # law right after dispatch returns; this one-shot importer is the
-            # remaining production write path and must agree, or a document
-            # that merely satisfies dispatch's loose messages-list shape is
-            # written as a session keyed on its own filename stem -- identity
-            # the discovery walk invented, not identity a provider asserted.
-            if not require_positive_conversational_evidence(
-                [session],
-                provider=session.source_name,
-                source_path=_archive_raw_source_path(raw_data, source),
-            ):
-                return
-            session = normalize_session_timestamps(
-                session,
-                fallback_timestamp=raw_data.file_mtime if raw_data is not None else None,
-            )
-            payload = _archive_raw_payload(raw_data, session, blob_root=blob_root)
-            source_path = _archive_raw_source_path(raw_data, source)
-            source_index = _archive_raw_source_index(raw_data)
-            raw_id = None
-            blob_hash = getattr(raw_data, "blob_hash", None)
-            blob_hash_str = blob_hash if isinstance(blob_hash, str) and blob_hash else None
-            if session.source_name is Provider.HERMES and blob_hash_str is not None:
-                from polylogue.storage.blob_store import BlobStore
-
-                raw_id = hermes_profile_raw_id(
-                    source_path,
-                    source_index,
-                    retained_content_revision(BlobStore(blob_root).blob_path(blob_hash_str), blob_hash_str),
-                )
-            shared_key: tuple[str, str, int, str] | None = None
-            if blob_hash_str is not None:
-                # Keyed by origin (not provider) to match deterministic_raw_session_id
-                # below -- origin_from_provider is non-injective (GEMINI and DRIVE
-                # both collapse to AISTUDIO_DRIVE), so two sessions with different
-                # `source_name` but the same origin must still share one raw_id.
-                #
-                # polylogue-1fijp: this deliberately does NOT skip a payload that
-                # already has an explicit raw_id. A Hermes state.db is exactly the
-                # grouped shape -- hermes_profile_raw_id is keyed per SNAPSHOT and
-                # excludes the session id (Hermes session ids are unique only
-                # within a profile), so one snapshot carries N sessions under one
-                # acquisition id. Treating each as its own BASELINE observation
-                # made the second one collide with the first's row and abort the
-                # whole batch.
-                shared_key = (
-                    origin_from_provider(session.source_name).value,
-                    source_path,
-                    source_index,
-                    blob_hash_str,
-                )
-            existing_raw_id = shared_raw_ids.get(shared_key) if shared_key is not None else None
-            try:
-                if existing_raw_id is not None:
-                    # A prior session parsed from this exact raw already
-                    # committed the raw row this batch; index this session
-                    # against that SAME raw_id instead of writing a duplicate.
-                    retained_result = archive.write_parsed_for_retained_raw_result(
-                        session,
-                        raw_id=existing_raw_id,
-                        source_path=source_path,
-                        acquired_at_ms=acquired_at_ms,
-                        source_index=source_index,
-                        stage_timings_s=result.stage_timings_s,
-                        manage_transaction=not batched,
-                    )
-                    write_result = retained_result
-                else:
-                    if shared_key is not None and blob_hash_str is not None and raw_id is None:
-                        # A route that already computed a snapshot-scoped identity
-                        # (Hermes) keeps it; only routes with no identity of their
-                        # own derive the generic native_id-free one here.
-                        raw_id = deterministic_raw_session_id(
-                            origin_from_provider(session.source_name),
-                            source_path,
-                            source_index,
-                            bytes.fromhex(blob_hash_str),
-                            None,
-                        )
-                    write_result = archive.admit_raw_and_parsed_result(
-                        session,
-                        payload=payload,
-                        source_path=source_path,
-                        acquired_at_ms=acquired_at_ms,
-                        file_mtime_ms=timestamp_millis(raw_data.file_mtime) if raw_data is not None else None,
-                        source_index=source_index,
-                        raw_id=raw_id,
-                        shared_raw=shared_key is not None,
-                        logical_source_key=(
-                            f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
-                        ),
-                        stage_timings_s=result.stage_timings_s,
-                        manage_transaction=not batched,
-                        blob_publication_receipt_id=(
-                            raw_data.blob_publication_receipt_id if raw_data is not None else None
-                        ),
-                    )
-                if shared_key is not None:
-                    shared_raw_ids[shared_key] = write_result.raw_id
-                    memberships = shared_raw_memberships.setdefault(shared_key, {})
-                    memberships[session.provider_session_id] = session
-                    archive.replace_raw_membership_census(
-                        write_result.raw_id,
-                        list(memberships.values()),
-                        parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
-                        censused_at_ms=acquired_at_ms,
-                        # This mutates durable source.db state. Its transaction
-                        # must close before the next grouped raw publisher can
-                        # reserve through its separate source connection;
-                        # index message batching applies only to index.db.
-                        manage_transaction=True,
-                    )
-            except ContentExcisedError as exc:
-                # The archive can forget on purpose (polylogue-27m): this raw
-                # payload's content hash is durably excised, so acquire
-                # refuses to re-store it. This is deliberate, not a failure --
-                # skip only this one file and continue the batch (unlike the
-                # broad except below, do NOT roll back prior sessions already
-                # staged in this batch).
-                result.excised_skips += 1
-                # The payload was already published (staged and reserved)
-                # before the write refused it. The success path's receipt
-                # consumption never runs, so the orphaned reservation would
-                # keep blob GC away from the excised hash permanently. Release
-                # it and let ordinary GC reclaim the unreferenced bytes.
-                from polylogue.storage.blob_publication import release_refused_publication_receipt
-
-                released = release_refused_publication_receipt(
-                    archive.source_db_path,
-                    raw_data.blob_publication_receipt_id if raw_data is not None else None,
-                    blob_hash_str,
-                )
-                logger.info("Skipping durably excised content: %s", exc)
-                emit(
-                    "pipeline.archive_ingest.excised_publication_released",
-                    level=WARNING,
-                    outcome="degraded",
-                    released=released,
-                    blob_hash=blob_hash_str,
-                )
-                return
-            except Exception:
-                # Discard the in-flight uncommitted batch so a failed write
-                # never leaves prior sessions in this batch half-applied.
-                # Re-ingest is restartable from durable source evidence.
-                if batched:
-                    archive.rollback()
-                raise
-            record_session_artifact_observation(
-                archive,
-                raw_id=write_result.raw_id,
-                provider=Provider.from_string(session.source_name),
-                source_path=source_path,
-                source_index=source_index,
-                observed_at_ms=acquired_at_ms,
-                # Blob publication reserves through another source connection
-                # before the next file is parsed. Close this source write now;
-                # the batching threshold applies to index.db only.
-                manage_transaction=True,
-            )
-            counters["raw_rows"] += 1
-            index_changed = (
-                write_result.counts.get("sessions", 0)
-                + write_result.counts.get("messages", 0)
-                + write_result.counts.get("attachments", 0)
-                + write_result.counts.get("session_events", 0)
-                + write_result.counts.get("raw_links", 0)
-            ) > 0
-            counters["index_rows"] += int(index_changed)
-            await result.merge_result(
-                write_result.session_id,
-                write_result.counts,
-                content_changed=write_result.content_changed,
-            )
-            if batched:
-                counters["pending_messages"] += len(session.messages)
-                if counters["pending_messages"] >= threshold:
-                    archive.commit()
-                    _record_post_commit_upkeep(archive_root, result, reason=POST_COMMIT_UPKEEP_REASON)
-                    counters["pending_messages"] = 0
-            else:
-                _record_post_commit_upkeep(archive_root, result, reason=POST_COMMIT_UPKEEP_REASON)
-
-        if workers <= 1:
-            # Escape hatch: exact sequential behavior, no pool.
-            for source in sources:
-                for raw_data, session in iter_source_sessions_with_raw(
-                    source,
-                    capture_raw=True,
-                    blob_root=blob_root,
-                    blob_store=parse_blob_publisher,
-                ):
-                    await write_pair(source, raw_data, session)
-        else:
-            # Antigravity language-server export stays sequential (it drives a
-            # local loopback subprocess); only the file-walk parallelizes.
-            # `capture_raw=True` is required here (polylogue-3m3de): without
-            # it every exported session's `raw_data` is `None`, so
-            # `_archive_raw_payload`/`_archive_raw_source_path` fall back to
-            # a JSON dump of the parsed session and the shared source root
-            # path -- collapsing every conversation's raw provenance onto one
-            # non-unique source_path instead of its actual `.pb` file and
-            # real bytes.
-            for source in sources:
-                for raw_data, session in iter_antigravity_language_server_sessions(
-                    source,
-                    capture_raw=True,
-                    blob_root=blob_root,
-                    blob_store=parse_blob_publisher,
-                ):
-                    await write_pair(source, raw_data, session)
-
-            failed = 0
-            submissions: list[_ParseSubmission] = []
-            walk_started_at = time.perf_counter()
-            for source in sources:
-                walk = _setup_source_walk(
-                    source,
-                    cursor_state=None,
-                    include_mtime=True,
-                    known_mtimes=None,
-                    discover_sidecars=True,
-                    blob_store=parse_blob_publisher,
-                )
-                if walk is None:
-                    continue
-                for path, file_mtime in walk.paths_to_process:
-                    if (
-                        Provider.from_string(source.name) is Provider.ANTIGRAVITY
-                        and path.suffix.lower() == ".pb"
-                        and antigravity.classify_source_path(path).role
-                        is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
-                    ):
-                        # The language-server prepass emits ``.pb``
-                        # conversations only; a schema-verified trajectory
-                        # ``.db`` shares the role name and must still reach
-                        # ``parse_one_source_path``.
-                        continue
-                    submissions.append(_ParseSubmission(source, path, file_mtime, walk.sidecar_data))
-            total_paths = len(submissions)
-            _record_stage(result, "walk", walk_started_at)
-
-            def _parse_args(submission: _ParseSubmission) -> tuple[Any, ...]:
-                return (
-                    str(submission.path),
-                    submission.file_mtime,
-                    submission.source.name,
-                    submission.sidecar_data,
-                    True,
-                    str(blob_root),
-                    str(archive_root / "source.db"),
-                )
-
-            async def consume(source: Source, path: Path, produce: Callable[[], Any]) -> None:
-                nonlocal failed
-                parse_started_at = time.perf_counter()
-                try:
-                    pairs = produce()
-                except Exception as exc:
-                    # Worker error isolation: one bad file must not kill the
-                    # run. Mirror the sequential iterator's failure handling.
-                    _record_stage(result, "parse", parse_started_at)
-                    failed += 1
-                    result.parse_failures += 1
-                    logger.error("Failed to parse %s in worker: %s", path, exc)
-                    return
-                _record_stage(result, "parse", parse_started_at)
-                for raw_data, session in pairs:
-                    await write_pair(source, raw_data, session)
-
-            plan = resolve_archive_ingest_dispatch(
-                path_count=total_paths,
-                total_bytes=_submission_payload_bytes(submissions),
-                worker_ceiling=workers,
-            )
-            if plan.pool_kind is PoolKind.SEQUENTIAL:
-                for submission in submissions:
-                    await consume(
-                        submission.source,
-                        submission.path,
-                        partial(_parse_source_path_worker, *_parse_args(submission)),
-                    )
-            elif submissions:
-                pool_started_at = time.perf_counter()
-                with process_pool_executor(max_workers=plan.worker_count) as pool:
-                    future_to_source: dict[Any, tuple[Source, Path]] = {
-                        pool.submit(_parse_source_path_worker, *_parse_args(submission)): (
-                            submission.source,
-                            submission.path,
-                        )
-                        for submission in submissions
-                    }
-                    _record_stage(result, "parse_pool_submit", pool_started_at)
-                    # Workers spawn lazily behind ``submit``.  Advance the
-                    # completion iterator manually so the timer starts after
-                    # the previous writer hold: a completed parse that was
-                    # overlapped by SQLite writes must not charge that writer
-                    # time to ``append.parse``.  The resulting value is the
-                    # non-overlapped parse wait on the critical path, while
-                    # the per-session ``append.index_*`` stages retain the
-                    # serialized writer totals.
-                    completed = iter(as_completed(future_to_source))
-                    while True:
-                        wait_started_at = time.perf_counter()
-                        try:
-                            future = next(completed)
-                        except StopIteration:
-                            break
-                        _record_stage(result, "parse", wait_started_at)
-                        source, path = future_to_source[future]
-                        await consume(source, path, future.result)
-                    shutdown_started_at = time.perf_counter()
-                _record_stage(result, "parse_pool_shutdown", shutdown_started_at)
-
-            if failed > 0:
-                logger.warning(
-                    "Skipped %d of %d files due to parse/read errors during parallel ingest.",
-                    failed,
-                    total_paths,
-                )
-
-        if batched and counters["pending_messages"] > 0:
-            archive.commit()
-            _record_post_commit_upkeep(archive_root, result, reason=POST_COMMIT_UPKEEP_REASON)
-        parse_blob_publisher.discard_pending()
-
-    raw_rows_written = counters["raw_rows"]
-    index_rows_written = counters["index_rows"]
-    if any(Provider.from_string(source.name) is Provider.CLAUDE_CODE for source in sources):
-        try:
-            from polylogue.analysis.claude_workflow_materializer import materialize_claude_workflow_archive
-
-            workflow_summary = materialize_claude_workflow_archive(archive_root)
-            result.batch_observations.append(
-                {
-                    "claude_workflow_materialization": True,
-                    "claude_workflow_summary": workflow_summary.as_dict(),
-                }
-            )
-        except Exception as exc:
-            logger.error("Claude Workflow materialization failed after direct archive ingest", exc_info=True)
-            result.batch_observations.append(
-                {
-                    "claude_workflow_materialization": True,
-                    "failed": True,
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
-            )
-
-    result.batch_observations.append(
-        {
-            "primary_ingest_store": "archive_file_set",
-            "archive_primary_write": True,
-            "archive_write_mode": "archive",
-            "archive_root": str(archive_root),
-            "archive_write_targets": ["source.db", "index.db"],
-            "archive_source_rows": raw_rows_written,
-            "archive_index_rows": index_rows_written,
-            "records": len(result.processed_ids),
-            "sessions": result.counts["sessions"],
-            "messages": result.counts["messages"],
-            "changed_sessions": result.changed_counts["sessions"],
-            "excised_skips": result.excised_skips,
-        }
-    )
-    return result
-
-
-def _admit_non_session_origin_artifacts(
-    archive: ArchiveStore,
+    archive_root: Path,
     sources: list[Source],
     *,
-    acquired_at_ms: int,
-) -> int:
-    """Retain configured OriginSpec fact artifacts skipped by session parsing."""
-
-    admitted = 0
-    for source in sources:
-        provider = Provider.from_string(source.name)
-        if provider not in {Provider.CLAUDE_CODE, Provider.ANTIGRAVITY}:
-            continue
-        walk = _setup_source_walk(
-            source,
-            cursor_state=None,
-            include_mtime=True,
-            known_mtimes=None,
-            discover_sidecars=True,
-        )
-        if walk is None:
-            continue
-        for candidate, _mtime in walk.paths_to_process:
-            if candidate.suffix.lower() == ".zip":
-                admitted += _admit_non_session_zip_artifacts(
-                    archive,
-                    candidate,
-                    provider=provider,
-                    acquired_at_ms=acquired_at_ms,
-                    file_mtime_ms=timestamp_millis(_mtime),
-                )
-                continue
-            classification = classify_artifact_path(candidate, provider=source.name)
-            if (
-                classification is None
-                or classification.parse_as_session
-                or has_decoded_session_evidence(candidate, provider=provider)
-            ):
-                continue
-            try:
-                # polylogue-1fijp arm 4: route through the raw-admission
-                # chokepoint so this configured fact artifact gets its
-                # raw_artifacts classification row immediately, instead of
-                # only a bare raw_sessions row waiting on the next offline
-                # materialize_artifact_observations sweep.
-                archive.admit_raw_artifact_payload(
-                    provider=provider,
-                    payload=Path(candidate).read_bytes(),
-                    source_path=str(candidate),
-                    source_index=0,
-                    acquired_at_ms=acquired_at_ms,
-                    file_mtime_ms=timestamp_millis(_mtime),
-                    classification=classification,
-                )
-                admitted += 1
-            except Exception:
-                logger.error("Failed to admit configured source artifact %s", candidate, exc_info=True)
-    return admitted
-
-
-def _admit_non_session_zip_artifacts(
-    archive: ArchiveStore,
-    zip_path: Path,
-    *,
-    provider: Provider,
-    acquired_at_ms: int,
-    file_mtime_ms: int | None,
-) -> int:
-    """Retain ZIP member artifacts only after decoded JSONL evidence is absent."""
-    from polylogue.storage.blob_publication import ArchiveBlobPublisher
-
-    admitted = 0
-    publisher = ArchiveBlobPublisher(archive.source_db_path, archive.archive_root / "blob")
-    try:
-        with zipfile.ZipFile(zip_path) as zf:
-            validator = ZipEntryValidator(provider, cursor_state=None, zip_path=zip_path)
-            for info in validator.filter_entries(zf.infolist()):
-                classification = classify_artifact_path(info.filename, provider=provider)
-                if (
-                    classification is None
-                    or classification.parse_as_session
-                    or zip_entry_session_artifact(zf, info, provider=provider) is not None
-                ):
-                    continue
-                with open_bounded_zip_entry(zf, info) as payload:
-                    blob_hash, blob_size = publisher.write_from_fileobj(payload)
-                receipt_id = publisher.receipt_id(blob_hash)
-                publisher.flush()
-                archive.admit_raw_artifact_blob_ref(
-                    provider=provider,
-                    blob_hash_hex=blob_hash,
-                    blob_size=blob_size,
-                    source_path=f"{zip_path}:{info.filename}",
-                    source_index=0,
-                    acquired_at_ms=acquired_at_ms,
-                    file_mtime_ms=file_mtime_ms,
-                    classification=classification,
-                    blob_publication_receipt_id=receipt_id,
-                )
-                admitted += 1
-    except (OSError, ZipBombError, zipfile.BadZipFile):
-        logger.error("Failed to admit configured ZIP artifacts from %s", zip_path, exc_info=True)
-    finally:
-        publisher.discard_pending()
-    return admitted
-
-
-def _record_post_commit_upkeep(archive_root: Path, result: ParseResult, *, reason: str) -> None:
-    """Run bounded archive-tier upkeep after a direct archive ingest commit.
-
-    Direct re-ingest writes through ``ArchiveStore`` instead of the daemon's
-    ingest-batch core, so planner statistics still need refreshing here. WAL
-    checkpointing does not belong on this path: the daemon's recurring
-    coordinator is the only ordinary checkpoint owner, and where no daemon is
-    running the writer's own bounded ``wal_autocheckpoint`` caps the WAL.
-    """
-
-    optimize_observations = maybe_optimize_archive_tiers(archive_root, reason=reason)
-    result.batch_observations.append(
-        {
-            "archive_post_commit_upkeep": True,
-            "reason": reason,
-            "archive_root": str(archive_root),
-            "sqlite_optimize_ran": sum(1 for observation in optimize_observations if observation.ran),
-            "sqlite_optimize_errors": [observation.error for observation in optimize_observations if observation.error],
-        }
-    )
-
-
-def _archive_raw_payload(raw_data: object, session: Any, *, blob_root: Path) -> bytes:
-    from polylogue.storage.blob_store import BlobStore
-
-    raw_bytes = getattr(raw_data, "raw_bytes", None)
-    if isinstance(raw_bytes, bytes) and raw_bytes:
-        return raw_bytes
-    blob_hash = getattr(raw_data, "blob_hash", None)
-    if isinstance(blob_hash, str) and blob_hash:
-        return BlobStore(blob_root).read_all(blob_hash)
-    if callable(getattr(session, "model_dump_json", None)):
-        return str(session.model_dump_json()).encode("utf-8")
-    return json.dumps(str(session), sort_keys=True).encode("utf-8")
-
-
-def _archive_raw_source_path(raw_data: object, source: Source) -> str:
-    source_path = getattr(raw_data, "source_path", None)
-    if source_path is not None:
-        return str(source_path)
-    return str(source.path)
-
-
-def _archive_raw_source_index(raw_data: object) -> int:
-    source_index = getattr(raw_data, "source_index", None)
-    return int(source_index) if source_index is not None else 0
+    parse_workers: int | None = None,
+) -> ParseResult:
+    """Offer local sources to the canonical acquisition and convergence owner."""
+    if not any(source.path is not None for source in sources):
+        return ParseResult()
+    root = archive_root.expanduser().resolve()
+    with scoped_one_shot_archive_owner(root):
+        _admit_one_shot_root(root)
+        return await ingest_sources_archive(root, sources, parse_workers=parse_workers)
 
 
 __all__ = ["parse_sources_archive"]

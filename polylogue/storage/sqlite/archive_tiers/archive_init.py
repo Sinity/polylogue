@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -59,7 +60,9 @@ def initialize_archive_tier_files(
     return initialize_archive_tier_files_from_plan(plan)
 
 
-def initialize_archive_tier_files_from_plan(plan: ArchiveInitPlan) -> ArchiveInitResult:
+def initialize_archive_tier_files_from_plan(
+    plan: ArchiveInitPlan, *, owner: OwnedArchiveLocation | None = None
+) -> ArchiveInitResult:
     """Execute a previously inspected archive initialization plan."""
     # A marker is an authority record, not a disposable initialization hint.
     # Validate it before taking any replacement action so a partial/corrupt
@@ -76,14 +79,23 @@ def initialize_archive_tier_files_from_plan(plan: ArchiveInitPlan) -> ArchiveIni
     # a live daemon (or a competing rebuild) is refused before any backup,
     # unlink, or initialization can touch a target.
     plan.archive_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    owner = OwnedArchiveLocation.acquire(
-        ArchiveLocation.resolve(plan.archive_root),
-        owner_id=f"archive-init:{os.getpid()}",
-    )
-    with owner:
+    owner_scope: AbstractContextManager[OwnedArchiveLocation]
+    if owner is None:
+        acquired_owner = OwnedArchiveLocation.acquire(
+            ArchiveLocation.resolve(plan.archive_root),
+            owner_id=f"archive-init:{os.getpid()}",
+        )
+        active_owner = acquired_owner
+        owner_scope = acquired_owner
+    else:
+        assert_owns_archive_location(owner, ArchiveLocation.resolve(plan.archive_root))
+        active_owner = owner
+        owner_scope = nullcontext(owner)
+    with owner_scope:
         generation_rotated = [False]
         tier_results = tuple(
-            _initialize_tier(tier_plan, owner=owner, generation_rotated=generation_rotated) for tier_plan in plan.tiers
+            _initialize_tier(tier_plan, owner=active_owner, generation_rotated=generation_rotated)
+            for tier_plan in plan.tiers
         )
         record_fresh_archive_format(plan.archive_root)
     return ArchiveInitResult(

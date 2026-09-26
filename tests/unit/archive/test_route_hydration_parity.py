@@ -334,6 +334,24 @@ def _canonical_messages(seeded: _Seeded) -> tuple[tuple[ArchiveMessageRow, ...],
     return rows, [archive_message_to_domain(row, origin=origin) for row in rows]
 
 
+def _http_detail_messages(seeded: _Seeded) -> list[dict[str, object]]:
+    """Exercise the pinned product read used by the HTTP detail adapter."""
+    from polylogue.daemon.webui_data import attachment_to_envelope, envelope_paste_spans
+    from polylogue.operations.http_session_reads import HttpSessionProjectionAdapters, execute_http_session_detail
+
+    with ArchiveStore(seeded.archive_root, initialize=False, read_only=True) as archive:
+        payload = execute_http_session_detail(
+            {"session_id": seeded.session_id, "shape": "full", "limit": None, "offset": 0},
+            archive=archive,
+            adapters=HttpSessionProjectionAdapters(
+                attachment=attachment_to_envelope,
+                paste_spans=envelope_paste_spans,
+            ),
+        )
+    assert payload is not None
+    return cast("list[dict[str, object]]", payload["messages"])
+
+
 def _summary_facts(summary: object) -> dict[str, object]:
     """Read the declared summary-mask fields off any hydrated summary."""
     return {domain_name: getattr(summary, domain_name) for domain_name, _surface in _SESSION_SUMMARY_MASK}
@@ -494,7 +512,6 @@ async def test_message_and_block_hydration_parity_across_api_query_mcp_and_http(
 ) -> None:
     """Every message route reports the canonical message under its own mask."""
     from polylogue.api import Polylogue
-    from polylogue.daemon.http import DaemonAPIHandler
     from polylogue.mcp.archive_support import archive_message_payload
 
     seeded = _seed(workspace_env)
@@ -557,8 +574,7 @@ async def test_message_and_block_hydration_parity_across_api_query_mcp_and_http(
     } in mcp_blocks
 
     # HTTP detail: exposes the terminal signal it claims to render.
-    handler = object.__new__(DaemonAPIHandler)
-    http_messages = [handler._archive_message_payload(seeded.session_id, row) for row in rows]
+    http_messages = _http_detail_messages(seeded)
     assert [payload["stop_reason"] for payload in http_messages] == [
         message.stop_reason for message in canonical_messages
     ]
@@ -759,13 +775,11 @@ async def test_dropping_the_block_outcome_disposition_breaks_the_http_detail_rou
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The keystone tool outcome must not be droppable without a red route."""
-    from polylogue.daemon.http import DaemonAPIHandler
 
     seeded = _seed(workspace_env)
-    rows, canonical_messages = _canonical_messages(seeded)
+    _rows, canonical_messages = _canonical_messages(seeded)
     expected = [_block_outcome_facts(message) for message in canonical_messages]
-    handler = object.__new__(DaemonAPIHandler)
-    before_text = [handler._archive_message_payload(seeded.session_id, row)["text"] for row in rows]
+    before_text = [message["text"] for message in _http_detail_messages(seeded)]
 
     monkeypatch.setattr(
         hydration,
@@ -777,7 +791,7 @@ async def test_dropping_the_block_outcome_disposition_breaks_the_http_detail_rou
     # The mutation is confined to the structured outcome: the HTTP detail
     # route's flattened text is unchanged, so this test is not merely
     # observing "some payload differs".
-    assert [handler._archive_message_payload(seeded.session_id, row)["text"] for row in rows] == before_text
+    assert [message["text"] for message in _http_detail_messages(seeded)] == before_text
 
 
 @pytest.mark.asyncio

@@ -52,13 +52,13 @@ def _status_gaps(status: dict[str, object]) -> list[str]:
 
 @pytest.mark.asyncio
 async def test_configured_claude_workflow_admission_preserves_raw_revisions_and_rebuilds(
-    workspace_env: dict[str, Path],
+    one_shot_workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The mandate fixture traverses the production configured-source route."""
 
-    archive_root = workspace_env["archive_root"]
-    claude_root, run_path, first_meta_path = _write_fixture(workspace_env["data_root"] / ".claude")
+    archive_root = one_shot_workspace_env["archive_root"]
+    claude_root, run_path, first_meta_path = _write_fixture(one_shot_workspace_env["data_root"] / ".claude")
     monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "1")
 
     result = await parse_sources_archive(
@@ -330,7 +330,7 @@ def test_materializer_does_not_repair_pending_source_artifact_inventory(
 
 @pytest.mark.asyncio
 async def test_claude_workflow_convergence_stage_surfaces_gap_through_readiness(
-    workspace_env: dict[str, Path],
+    one_shot_workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The claude_workflow convergence stage's gap count must reach doctor readiness.
@@ -355,8 +355,8 @@ async def test_claude_workflow_convergence_stage_surfaces_gap_through_readiness(
     from polylogue.readiness import VerifyStatus, get_readiness
     from polylogue.storage.archive_readiness import claude_workflow_materialization_status
 
-    archive_root = workspace_env["archive_root"]
-    claude_root, run_path, first_meta_path = _write_fixture(workspace_env["data_root"] / ".claude")
+    archive_root = one_shot_workspace_env["archive_root"]
+    claude_root, run_path, first_meta_path = _write_fixture(one_shot_workspace_env["data_root"] / ".claude")
     monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "1")
 
     result = await parse_sources_archive(

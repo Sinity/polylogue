@@ -7,14 +7,13 @@ import json
 import pickle
 import re
 import shlex
-import sys
-import tempfile
+import sqlite3
 import unicodedata
-from collections import defaultdict, deque
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Container, Iterable, Iterator, Mapping, MutableSequence, Sequence
+from contextlib import closing
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import BinaryIO
+from typing import cast
 
 from pydantic import ValidationError
 
@@ -86,7 +85,7 @@ _CODE_MODE_RESULT_COLLECTION_KEYS = (
 # cwd, the full stdout, and -- the part no other record in this wire generation
 # carries -- the exit code. The transport ``custom_tool_call_output`` states
 # only what the model was shown. Each item type maps to the child registry
-# types it can be the execution of; see ``_match_code_mode_items`` for how one
+# types it can be the execution of; see ``_codex_lookahead`` for how one
 # is attributed to a child.
 _CODE_MODE_ITEM_CHILD_TYPES: dict[str, frozenset[str]] = {
     "CommandExecution": frozenset({"exec_command", "write_stdin", "wait"}),
@@ -98,47 +97,126 @@ _CODE_MODE_ITEM_CHILD_TYPES: dict[str, frozenset[str]] = {
 _CODE_MODE_ITEM_TEXT_KEYS = ("aggregated_output", "stdout", "formatted_output", "stderr")
 _STRUCTURAL_PATH_KEYS = frozenset({"path", "file_path", "paths", "file_paths", "image_path"})
 _STRUCTURAL_BYTE_KEYS = frozenset({"bytes", "byte_count", "bytes_written", "size_bytes", "written_bytes"})
-_CODEX_REPLAY_MEMORY_BUDGET_BYTES = 8 * 1024 * 1024
-_LIST_REFERENCE_BYTES = 8
 
 
-def _retained_record_bytes(value: object, seen: set[int]) -> int:
-    """Estimate the graph retained by the in-memory replay tier.
+class _CodexLookaheadIndex:
+    """Disk-backed facts shared by the two passes over one rollout."""
 
-    Codex stream records are JSON-shaped mappings and sequences.  Counting
-    their reachable Python objects prevents one giant nested payload from
-    silently evading the replay byte budget, while ``seen`` avoids charging a
-    shared object more than once.
-    """
-    value_id = id(value)
-    if value_id in seen:
-        return 0
-    seen.add(value_id)
-    size = sys.getsizeof(value)
-    if isinstance(value, Mapping):
-        for key, child in value.items():
-            size += _retained_record_bytes(key, seen)
-            size += _retained_record_bytes(child, seen)
-    elif isinstance(value, (list, tuple)):
-        for child in value:
-            size += _retained_record_bytes(child, seen)
-    return size
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.connection = connection
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS codex_records (
+                record_index INTEGER PRIMARY KEY, record BLOB NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS codex_signatures (value BLOB PRIMARY KEY);
+            CREATE TABLE IF NOT EXISTS codex_calls (
+                record_index INTEGER PRIMARY KEY, tool_id BLOB, occurrence INTEGER,
+                envelope BLOB NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS codex_outputs (
+                record_index INTEGER PRIMARY KEY, tool_id BLOB NOT NULL,
+                occurrence INTEGER NOT NULL, output BLOB NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS codex_outputs_pair
+                ON codex_outputs(tool_id, occurrence);
+            CREATE TABLE IF NOT EXISTS codex_occurrences (
+                kind TEXT NOT NULL, tool_id BLOB NOT NULL, count INTEGER NOT NULL,
+                PRIMARY KEY (kind, tool_id)
+            );
+            CREATE TABLE IF NOT EXISTS codex_items (
+                item_order INTEGER PRIMARY KEY, item BLOB NOT NULL,
+                open_call_index INTEGER, last_call_index INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS codex_slots (
+                slot INTEGER PRIMARY KEY, call_index INTEGER NOT NULL,
+                child_index INTEGER NOT NULL, registry_type TEXT NOT NULL,
+                command BLOB, claimed INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS codex_slots_command
+                ON codex_slots(command, claimed, slot);
+            CREATE INDEX IF NOT EXISTS codex_slots_call
+                ON codex_slots(call_index, claimed, slot);
+            CREATE TABLE IF NOT EXISTS codex_matched (
+                call_index INTEGER NOT NULL, child_index INTEGER NOT NULL,
+                item BLOB NOT NULL, PRIMARY KEY (call_index, child_index)
+            );
+            CREATE TABLE IF NOT EXISTS codex_appended (
+                call_index INTEGER NOT NULL, item_order INTEGER NOT NULL,
+                item BLOB NOT NULL, PRIMARY KEY (call_index, item_order)
+            );
+            CREATE TABLE IF NOT EXISTS codex_resolved (
+                record_index INTEGER PRIMARY KEY, envelope BLOB NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS codex_instruction_revisions (
+                kind TEXT NOT NULL, value BLOB NOT NULL,
+                PRIMARY KEY (kind, value)
+            );
+            CREATE TABLE IF NOT EXISTS codex_workdirs (value BLOB PRIMARY KEY);
+            CREATE TABLE IF NOT EXISTS codex_task_texts (
+                key BLOB PRIMARY KEY, text BLOB NOT NULL,
+                retained INTEGER NOT NULL DEFAULT 0, stored INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS codex_task_keys (
+                value BLOB PRIMARY KEY, candidate_key BLOB NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS codex_task_events (
+                event_index INTEGER PRIMARY KEY, key BLOB NOT NULL,
+                text_chars INTEGER NOT NULL
+            );
+            """
+        )
 
+    def spool_records(self, records: Iterable[object]) -> None:
+        for record_index, record in enumerate(records, start=1):
+            self.connection.execute(
+                "INSERT INTO codex_records VALUES (?, ?)",
+                (record_index, pickle.dumps(record, protocol=pickle.HIGHEST_PROTOCOL)),
+            )
 
-@dataclass(slots=True)
-class _PickleRecordReplay:
-    """Re-iterable disk spool for preserving parser lookahead without retaining records."""
-
-    handle: BinaryIO
+    def replay_records(self) -> Iterator[object]:
+        for (record,) in self.connection.execute("SELECT record FROM codex_records ORDER BY record_index"):
+            yield pickle.loads(record)
 
     def __iter__(self) -> Iterator[object]:
-        self.handle.seek(0)
-        while True:
-            try:
-                # This reads only the private spool written immediately above.
-                yield pickle.load(self.handle)
-            except EOFError:
-                return
+        return self.replay_records()
+
+    def occurrence(self, kind: str, tool_id: str) -> int:
+        row = self.connection.execute(
+            """INSERT INTO codex_occurrences(kind, tool_id, count) VALUES (?, ?, 1)
+               ON CONFLICT(kind, tool_id) DO UPDATE SET count = count + 1
+               RETURNING count""",
+            (kind, _sql_key(tool_id)),
+        ).fetchone()
+        assert row is not None
+        return int(row[0]) - 1
+
+    def add_signature(self, signature: tuple[str, str]) -> None:
+        self.connection.execute(
+            "INSERT OR IGNORE INTO codex_signatures(value) VALUES (?)",
+            (_sql_key(signature),),
+        )
+
+    def __contains__(self, signature: object) -> bool:
+        return (
+            self.connection.execute(
+                "SELECT 1 FROM codex_signatures WHERE value = ?",
+                (_sql_key(signature),),
+            ).fetchone()
+            is not None
+        )
+
+    def get(self, record_index: int) -> _CodexExecEnvelope | None:
+        row = self.connection.execute(
+            "SELECT envelope FROM codex_resolved WHERE record_index = ?", (record_index,)
+        ).fetchone()
+        return pickle.loads(row[0]) if row is not None else None
+
+    def add_workdir(self, value: str) -> None:
+        self.connection.execute("INSERT OR IGNORE INTO codex_workdirs VALUES (?)", (_sql_key(value),))
+
+    def working_directories(self) -> list[str]:
+        return sorted(pickle.loads(value) for (value,) in self.connection.execute("SELECT value FROM codex_workdirs"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,6 +317,10 @@ class _CodexExecChildResult:
 _CODE_MODE_ITEM_MATCH_KEYS = ("type", "id", "command", "parsed_cmd", "cwd", "changes", "exit_code", "status")
 
 
+def _sql_key(value: object) -> bytes:
+    return pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+
+
 def _reduced_code_mode_item(item: dict[str, object]) -> dict[str, object]:
     """Reduce one ``item_completed`` payload to the evidence the parser reads.
 
@@ -268,22 +350,6 @@ def _reduced_code_mode_item(item: dict[str, object]) -> dict[str, object]:
             reduced[key] = value
             break
     return reduced
-
-
-@dataclass(frozen=True, slots=True)
-class _CodexExecItemRecord:
-    """One ``item_completed`` execution plus the transport calls around it.
-
-    ``item`` is the reduction from :func:`_reduced_code_mode_item`, not the
-    acquired mapping.
-    """
-
-    item: dict[str, object]
-    # The call whose record span contains this item, and the most recent call
-    # at or before it. They differ when a command outlived the transport output
-    # that yielded on it.
-    open_call_index: int | None
-    last_call_index: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1185,7 +1251,7 @@ def _compact_response_payload(
 #   item_completed -- `item.text` on a `Plan` item (full plan content) and the
 #     `Extension`/`CollabAgentToolCall` item shapes. The `CommandExecution` and
 #     `FileChange` shapes ARE read: they become code-mode child tool_results
-#     with the producer's own exit code (see ``_match_code_mode_items``).
+#     with the producer's own exit code (see ``_codex_lookahead``).
 #   entered_review_mode / exited_review_mode (13 each) --
 #     `target.instructions`/`user_facing_hint` and
 #     `review_output.findings`/`overall_correctness`/`overall_explanation`/
@@ -1334,28 +1400,55 @@ class _CodexInstructionRevisions:
     rollout with T turns over R distinct revisions asks "have I seen this
     one?" T times.  A list scan makes that O(T*R) string comparisons over
     values that are routinely tens of kilobytes (AGENTS.md-style prompts);
-    membership through the set is one hash.  The ordered list is kept because
-    the revision number carried on the emitted event is a value's 1-based
-    first-seen position, which a set alone cannot state.
+    membership uses a set for direct object parsing and a scratch SQLite
+    index for streamed parsing. The revision number is its first-seen rank.
     """
 
-    __slots__ = ("_order", "_seen")
+    __slots__ = ("_order", "_seen", "_index", "_kind")
 
-    def __init__(self) -> None:
+    def __init__(self, index: _CodexLookaheadIndex | None = None, kind: str = "") -> None:
         self._order: list[str] = []
         self._seen: set[str] = set()
+        self._index = index
+        self._kind = kind
 
     def __contains__(self, value: object) -> bool:
+        if self._index is not None:
+            return (
+                self._index.connection.execute(
+                    "SELECT 1 FROM codex_instruction_revisions WHERE kind = ? AND value = ?",
+                    (self._kind, _sql_key(value)),
+                ).fetchone()
+                is not None
+            )
         return value in self._seen
 
     def __len__(self) -> int:
+        if self._index is not None:
+            row = self._index.connection.execute(
+                "SELECT count(*) FROM codex_instruction_revisions WHERE kind = ?", (self._kind,)
+            ).fetchone()
+            assert row is not None
+            return int(row[0])
         return len(self._order)
 
     def add(self, value: str) -> None:
+        if self._index is not None:
+            self._index.connection.execute(
+                "INSERT OR IGNORE INTO codex_instruction_revisions VALUES (?, ?)", (self._kind, _sql_key(value))
+            )
+            return
         self._order.append(value)
         self._seen.add(value)
 
     def values(self) -> tuple[str, ...]:
+        if self._index is not None:
+            return tuple(
+                pickle.loads(value)
+                for (value,) in self._index.connection.execute(
+                    "SELECT value FROM codex_instruction_revisions WHERE kind = ? ORDER BY rowid", (self._kind,)
+                )
+            )
         return tuple(self._order)
 
 
@@ -1397,15 +1490,83 @@ class _CodexTextConservation:
     that carries them.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, index: _CodexLookaheadIndex | None = None) -> None:
         self._by_text: dict[str, _CodexTextCandidate] = {}
         self._unresolved = 0
+        self._index = index
+        self._task_unresolved = 0
+
+    def _candidate(self, text: str) -> _CodexTextCandidate | None:
+        candidate = self._by_text.get(text)
+        if candidate is None and not text.isascii():
+            candidate = self._by_text.get(unicodedata.normalize("NFC", text))
+        return candidate
+
+    def _task_key(self, text: str) -> bytes:
+        return _sql_key(text)
+
+    def _task_lookup(self, text: str, *, normalize: bool) -> bytes | None:
+        if self._index is None:
+            return None
+        connection = self._index.connection
+        row = connection.execute(
+            "SELECT candidate_key FROM codex_task_keys WHERE value = ?", (self._task_key(text),)
+        ).fetchone()
+        if row is None and normalize and not text.isascii():
+            row = connection.execute(
+                "SELECT candidate_key FROM codex_task_keys WHERE value = ?",
+                (self._task_key(unicodedata.normalize("NFC", text)),),
+            ).fetchone()
+        return row[0] if row is not None else None
+
+    def add_task_completion(self, text: str, event_index: int) -> None:
+        if self._index is None:
+            raise RuntimeError("task completion scratch index is required")
+        key = self._task_lookup(text, normalize=False)
+        connection = self._index.connection
+        if key is None:
+            key = self._task_key(text)
+            connection.execute("INSERT INTO codex_task_texts(key, text) VALUES (?, ?)", (key, _sql_key(text)))
+            connection.execute("INSERT INTO codex_task_keys VALUES (?, ?)", (key, key))
+            normalized = unicodedata.normalize("NFC", text)
+            if normalized != text:
+                connection.execute(
+                    "INSERT OR IGNORE INTO codex_task_keys VALUES (?, ?)",
+                    (self._task_key(normalized), key),
+                )
+            self._task_unresolved += 1
+        connection.execute("INSERT INTO codex_task_events VALUES (?, ?, ?)", (event_index, key, len(text)))
+
+    def finish_task_completions(self, events: MutableSequence[ParsedSessionEvent]) -> None:
+        if self._index is None:
+            return
+        connection = self._index.connection
+        for event_index, key, text_chars in connection.execute(
+            "SELECT event_index, key, text_chars FROM codex_task_events ORDER BY event_index"
+        ):
+            row = connection.execute(
+                "SELECT text, retained, stored FROM codex_task_texts WHERE key = ?", (key,)
+            ).fetchone()
+            assert row is not None
+            text = pickle.loads(row[0])
+            retained, stored = row[1], row[2]
+            candidate = self._by_text.get(text)
+            event = events[event_index]
+            event.payload["last_agent_message_chars"] = text_chars
+            if retained or stored or (candidate is not None and (candidate.retained or candidate.stored)):
+                event.payload["last_agent_message_retained"] = True
+            else:
+                event.payload["last_agent_message"] = text
+                connection.execute("UPDATE codex_task_texts SET stored = 1 WHERE key = ?", (key,))
+                if candidate is not None:
+                    candidate.stored = True
+            events[event_index] = event
 
     def contains(self, text: str) -> bool:
         """Report whether ``text`` is already a registered candidate."""
-        if text in self._by_text:
+        if self._candidate(text) is not None:
             return True
-        return not text.isascii() and unicodedata.normalize("NFC", text) in self._by_text
+        return self._task_lookup(text, normalize=True) is not None
 
     def add(self, text: str) -> tuple[_CodexTextCandidate, bool]:
         """Register ``text``; the flag reports whether this value is new."""
@@ -1413,6 +1574,8 @@ class _CodexTextConservation:
         if existing is not None:
             existing.occurrences += 1
             return existing, False
+        if self._task_lookup(text, normalize=False) is not None:
+            return _CodexTextCandidate(text=text, retained=True), False
         candidate = _CodexTextCandidate(text=text)
         self._by_text[text] = candidate
         # A value normalized differently on the two sides would otherwise read
@@ -1426,14 +1589,19 @@ class _CodexTextConservation:
         return candidate, True
 
     def _mark(self, text: str) -> None:
-        if not text or not self._unresolved:
+        if not text or not (self._unresolved or self._task_unresolved):
             return
-        candidate = self._by_text.get(text)
-        if candidate is None and not text.isascii():
-            candidate = self._by_text.get(unicodedata.normalize("NFC", text))
+        candidate = self._candidate(text)
         if candidate is not None and not candidate.retained:
             candidate.retained = True
             self._unresolved -= 1
+        if self._index is not None and self._task_unresolved:
+            task_key = self._task_lookup(text, normalize=True)
+            if task_key is not None:
+                updated = self._index.connection.execute(
+                    "UPDATE codex_task_texts SET retained = 1 WHERE key = ? AND retained = 0", (task_key,)
+                )
+                self._task_unresolved -= updated.rowcount
 
     def _mark_nested(self, value: object) -> None:
         if isinstance(value, str):
@@ -1452,7 +1620,7 @@ class _CodexTextConservation:
         events: Iterable[ParsedSessionEvent],
         instructions_text: str | None,
     ) -> None:
-        if not self._unresolved:
+        if not (self._unresolved or self._task_unresolved):
             return
         if instructions_text:
             self._mark(instructions_text)
@@ -1464,11 +1632,13 @@ class _CodexTextConservation:
                     self._mark(block.text)
                 if block.tool_input:
                     self._mark_nested(dict(block.tool_input))
-            if not self._unresolved:
+            if not (self._unresolved or self._task_unresolved):
                 return
         for event in events:
+            if event.event_type == _CODEX_REPLACEMENT_CONTEXT_OMITTED_EVENT_TYPE:
+                continue
             self._mark_nested(event.payload)
-            if not self._unresolved:
+            if not (self._unresolved or self._task_unresolved):
                 return
 
 
@@ -2749,27 +2919,13 @@ def _response_inner_record(item: object) -> dict[str, object] | None:
 
 def _codex_lookahead(
     records: Iterable[object],
-) -> tuple[dict[int, _CodexExecEnvelope], set[tuple[str, str]]]:
-    """Build the bounded indexes needed before materializing Codex records.
-
-    Code-mode calls need their later output and execution evidence, while
-    ``event_msg`` messages need the response-message signatures for duplicate
-    suppression.  Both facts are derived from the same replay so a streamed
-    source needs one lookahead traversal, rather than one traversal per fact.
-    """
-    call_occurrences: dict[str, list[tuple[int, _CodexExecEnvelope]]] = defaultdict(list)
-    output_occurrences: dict[str, list[tuple[int, dict[str, object]]]] = defaultdict(list)
-    envelopes_by_call: dict[int, _CodexExecEnvelope] = {}
-    output_index_by_call: dict[int, int] = {}
-    response_signatures: set[tuple[str, str]] = set()
-    # ``event_msg`` -> ``payload.item`` records the operations the code-mode
-    # program actually performed. Nothing links them to the transport call by
-    # id -- an item is keyed ``exec-<uuid>`` and shares no space with
-    # ``call_id`` -- so they are matched below, after every call is known.
-    executed_items: list[_CodexExecItemRecord] = []
+    index_store: _CodexLookaheadIndex,
+) -> _CodexLookaheadIndex:
+    """Resolve code-mode calls and duplicate signatures with disk-backed indexes."""
+    connection = index_store.connection
     open_call_index: int | None = None
     last_call_index: int | None = None
-    for index, item in enumerate(records, start=1):
+    for record_index, item in enumerate(records, start=1):
         record = _dict_record(item)
         if record is not None:
             message_record = _message_record(record)
@@ -2777,7 +2933,7 @@ def _codex_lookahead(
                 raw_role = _effective_role(message_record)
                 if raw_role and raw_role != "unknown":
                     text = extract_codex_text(_effective_content(message_record))
-                    response_signatures.add(_message_signature(Role.normalize(raw_role), text))
+                    index_store.add_signature(_message_signature(Role.normalize(raw_role), text))
         inner = _response_inner_record(item)
         if inner is None:
             continue
@@ -2786,12 +2942,14 @@ def _codex_lookahead(
         if record_type == "item_completed":
             executed = _dict_record(payload.get("item"))
             if executed is not None and str(executed.get("type") or "") in _CODE_MODE_ITEM_CHILD_TYPES:
-                executed_items.append(
-                    _CodexExecItemRecord(
-                        item=_reduced_code_mode_item(executed),
-                        open_call_index=open_call_index,
-                        last_call_index=last_call_index,
-                    )
+                connection.execute(
+                    "INSERT INTO codex_items VALUES (?, ?, ?, ?)",
+                    (
+                        record_index,
+                        pickle.dumps(_reduced_code_mode_item(executed), protocol=pickle.HIGHEST_PROTOCOL),
+                        open_call_index,
+                        last_call_index,
+                    ),
                 )
             continue
         if record_type in {
@@ -2816,22 +2974,24 @@ def _codex_lookahead(
                 continue
             raw_tool_id = payload.get("call_id") or payload.get("id")
             tool_id = str(raw_tool_id) if raw_tool_id else None
-            # polylogue-slshy: no positional fallback -- an empty id lets
-            # _message_revision_match_id's content-anchor (role + timestamp)
-            # fallback run instead of a position-derived string that would
-            # change identity when array order shifts across re-acquisitions.
-            provider_message_id = str(payload.get("id") or raw_tool_id or "")
             envelope = _CodexExecEnvelope(
                 transport_tool_name=tool_name,
                 transport_tool_id=tool_id,
-                transport_provider_message_id=provider_message_id,
+                transport_provider_message_id=str(payload.get("id") or raw_tool_id or ""),
                 children=children,
             )
-            envelopes_by_call[index] = envelope
-            open_call_index = index
-            last_call_index = index
-            if tool_id:
-                call_occurrences[tool_id].append((index, envelope))
+            occurrence = index_store.occurrence("call", tool_id) if tool_id else None
+            connection.execute(
+                "INSERT INTO codex_calls VALUES (?, ?, ?, ?)",
+                (
+                    record_index,
+                    _sql_key(tool_id) if tool_id is not None else None,
+                    occurrence,
+                    pickle.dumps(envelope, protocol=pickle.HIGHEST_PROTOCOL),
+                ),
+            )
+            open_call_index = record_index
+            last_call_index = record_index
         elif record_type in {
             "function_call_output",
             "custom_tool_call_output",
@@ -2841,118 +3001,109 @@ def _codex_lookahead(
             open_call_index = None
             raw_tool_id = payload.get("call_id") or payload.get("id")
             if raw_tool_id:
-                output_occurrences[str(raw_tool_id)].append((index, inner))
+                tool_id = str(raw_tool_id)
+                connection.execute(
+                    "INSERT INTO codex_outputs VALUES (?, ?, ?, ?)",
+                    (
+                        record_index,
+                        _sql_key(tool_id),
+                        index_store.occurrence("output", tool_id),
+                        pickle.dumps(inner, protocol=pickle.HIGHEST_PROTOCOL),
+                    ),
+                )
 
-    for tool_id, calls in call_occurrences.items():
-        outputs = output_occurrences.get(tool_id, [])
-        for occurrence, (call_index, envelope) in enumerate(calls):
-            if occurrence >= len(outputs):
-                continue
-            output_index, output_record = outputs[occurrence]
-            output = output_record.get("output")
-            if output is None:
-                output = output_record.get("tools")
-            if output is None:
-                output = output_record.get("result")
-            envelopes_by_call[call_index] = replace(
-                envelope,
-                results=_code_mode_child_results(output, child_count=len(envelope.children)),
-            )
-            output_index_by_call[call_index] = output_index
-
-    matched, appended = _match_code_mode_items(envelopes_by_call, executed_items)
-    envelopes_by_record: dict[int, _CodexExecEnvelope] = {}
-    for call_index, envelope in envelopes_by_call.items():
-        resolved = _apply_code_mode_item_evidence(
-            envelope,
-            matched.get(call_index, {}),
-            appended.get(call_index, ()),
-        )
-        envelopes_by_record[call_index] = resolved
-        resolved_output_index = output_index_by_call.get(call_index)
-        if resolved_output_index is not None:
-            envelopes_by_record[resolved_output_index] = resolved
-    return envelopes_by_record, response_signatures
-
-
-def _match_code_mode_items(
-    envelopes_by_call: Mapping[int, _CodexExecEnvelope],
-    executed_items: Sequence[_CodexExecItemRecord],
-) -> tuple[dict[int, dict[int, dict[str, object]]], dict[int, list[dict[str, object]]]]:
-    """Attribute each recorded execution to the child call it is the execution of.
-
-    Three tiers, each exact:
-
-    1. The command. A child names its command literally, the item records the
-       argv the shell ran; both spellings are compared for equality, earliest
-       unclaimed child first. This survives a long-running command whose item
-       lands after the transport output that yielded on it.
-    2. The record span. An item with no command match (``write_stdin``, a
-       patch) goes to an unclaimed compatible child of the transport call whose
-       span it fell inside.
-    3. Its own child. A program that runs commands in a loop emits one call
-       site and one item per iteration; the surplus items are executions in
-       their own right and are recorded as such, on the most recent transport
-       call. Only an execution recorded before any code-mode call in the
-       session has nowhere to go.
-    """
-    matched: dict[int, dict[int, dict[str, object]]] = defaultdict(dict)
-    appended: dict[int, list[dict[str, object]]] = defaultdict(list)
-    if not executed_items:
-        return matched, appended
-    slots: list[tuple[int, int, str]] = []
-    slots_by_command: dict[str, deque[int]] = defaultdict(deque)
-    slots_by_call: dict[int, list[int]] = defaultdict(list)
-    for call_index in sorted(envelopes_by_call):
-        envelope = envelopes_by_call[call_index]
+    slot = 0
+    for call_index, envelope_blob in connection.execute(
+        "SELECT record_index, envelope FROM codex_calls ORDER BY record_index"
+    ):
+        envelope = pickle.loads(envelope_blob)
         for child_index, child in enumerate(envelope.children):
-            new_slot = len(slots)
-            slots.append((call_index, child_index, child.registry_type))
-            slots_by_call[call_index].append(new_slot)
-            command = _code_mode_child_command(child)
-            if command is not None:
-                slots_by_command[command].append(new_slot)
-    claimed: set[int] = set()
-
-    def first_unclaimed(queue: deque[int]) -> int | None:
-        while queue:
-            head = queue[0]
-            if head in claimed:
-                queue.popleft()
-                continue
-            return head
-        return None
-
-    for record in executed_items:
-        item = record.item
-        compatible = _CODE_MODE_ITEM_CHILD_TYPES[str(item.get("type") or "")]
-        slot: int | None = None
-        for command in _code_mode_item_commands(item):
-            queue = slots_by_command.get(command)
-            if queue is None:
-                continue
-            candidate = first_unclaimed(queue)
-            if candidate is not None and slots[candidate][2] in compatible and (slot is None or candidate < slot):
-                slot = candidate
-        if slot is None and record.open_call_index is not None:
-            slot = next(
+            connection.execute(
+                "INSERT INTO codex_slots(slot, call_index, child_index, registry_type, command) VALUES (?, ?, ?, ?, ?)",
                 (
-                    candidate
-                    for candidate in slots_by_call.get(record.open_call_index, ())
-                    if candidate not in claimed and slots[candidate][2] in compatible
+                    slot,
+                    call_index,
+                    child_index,
+                    child.registry_type,
+                    _sql_key(command) if (command := _code_mode_child_command(child)) is not None else None,
                 ),
-                None,
             )
-        if slot is None:
-            host = record.open_call_index if record.open_call_index is not None else record.last_call_index
-            if host is None:
-                continue
-            appended[host].append(item)
+            slot += 1
+
+    for item_order, item_blob, open_index, last_index in connection.execute(
+        "SELECT item_order, item, open_call_index, last_call_index FROM codex_items ORDER BY item_order"
+    ):
+        executed = pickle.loads(item_blob)
+        compatible = _CODE_MODE_ITEM_CHILD_TYPES[str(executed.get("type") or "")]
+        chosen: tuple[int, int, int] | None = None
+        for command in _code_mode_item_commands(executed):
+            candidate = connection.execute(
+                "SELECT slot, call_index, child_index, registry_type FROM codex_slots "
+                "WHERE command = ? AND claimed = 0 ORDER BY slot LIMIT 1",
+                (_sql_key(command),),
+            ).fetchone()
+            if candidate is not None and candidate[3] in compatible and (chosen is None or candidate[0] < chosen[0]):
+                chosen = (candidate[0], candidate[1], candidate[2])
+        if chosen is None and open_index is not None:
+            candidate = connection.execute(
+                "SELECT slot, call_index, child_index, registry_type FROM codex_slots "
+                "WHERE call_index = ? AND claimed = 0 ORDER BY slot",
+                (open_index,),
+            )
+            for candidate_slot, call_index, child_index, registry_type in candidate:
+                if registry_type in compatible:
+                    chosen = (candidate_slot, call_index, child_index)
+                    break
+        if chosen is None:
+            host = open_index if open_index is not None else last_index
+            if host is not None:
+                connection.execute("INSERT INTO codex_appended VALUES (?, ?, ?)", (host, item_order, item_blob))
             continue
-        claimed.add(slot)
-        call_index, child_index, _ = slots[slot]
-        matched[call_index][child_index] = item
-    return matched, appended
+        connection.execute("UPDATE codex_slots SET claimed = 1 WHERE slot = ?", (chosen[0],))
+        connection.execute("INSERT INTO codex_matched VALUES (?, ?, ?)", (chosen[1], chosen[2], item_blob))
+
+    for call_index, tool_id, occurrence, envelope_blob in connection.execute(
+        "SELECT record_index, tool_id, occurrence, envelope FROM codex_calls ORDER BY record_index"
+    ):
+        envelope = pickle.loads(envelope_blob)
+        output_index = None
+        if tool_id is not None:
+            output_row = connection.execute(
+                "SELECT record_index, output FROM codex_outputs WHERE tool_id = ? AND occurrence = ?",
+                (tool_id, occurrence),
+            ).fetchone()
+            if output_row is not None:
+                output_index, output_blob = output_row
+                output_record = pickle.loads(output_blob)
+                output = output_record.get("output")
+                if output is None:
+                    output = output_record.get("tools")
+                if output is None:
+                    output = output_record.get("result")
+                envelope = replace(
+                    envelope,
+                    results=_code_mode_child_results(output, child_count=len(envelope.children)),
+                )
+        matched = {
+            child_index: pickle.loads(item_blob)
+            for child_index, item_blob in connection.execute(
+                "SELECT child_index, item FROM codex_matched WHERE call_index = ? ORDER BY child_index",
+                (call_index,),
+            )
+        }
+        appended = [
+            pickle.loads(item_blob)
+            for (item_blob,) in connection.execute(
+                "SELECT item FROM codex_appended WHERE call_index = ? ORDER BY item_order",
+                (call_index,),
+            )
+        ]
+        resolved = _apply_code_mode_item_evidence(envelope, matched, appended)
+        resolved_blob = pickle.dumps(resolved, protocol=pickle.HIGHEST_PROTOCOL)
+        connection.execute("INSERT INTO codex_resolved VALUES (?, ?)", (call_index, resolved_blob))
+        if output_index is not None:
+            connection.execute("INSERT INTO codex_resolved VALUES (?, ?)", (output_index, resolved_blob))
+    return index_store
 
 
 def _normalized_command(value: object) -> str | None:
@@ -3599,7 +3750,7 @@ def _codex_event_message(
     *,
     index: int,
     position: int,
-    response_signatures: set[tuple[str, str]],
+    response_signatures: Container[tuple[str, str]],
     timestamp_fallback: str | int | float | None = None,
 ) -> ParsedMessage | None:
     record_type = _record_type(record)
@@ -3793,7 +3944,14 @@ def _account_codex_outer_record(
         ledger.unknown(AdmissionUnit.OUTER_RECORD, index, record_type or "unsupported")
 
 
-def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: bool = False) -> ParsedSession:
+def _parse_records(
+    records: Iterable[object],
+    fallback_id: str,
+    *,
+    message_sink: MutableSequence[ParsedMessage] | None = None,
+    event_sink: MutableSequence[ParsedSessionEvent] | None = None,
+    _index: _CodexLookaheadIndex | None = None,
+) -> ParsedSession:
     """Parse Codex JSONL session file using typed CodexRecord model.
 
     Supports two format generations via CodexRecord.format_type:
@@ -3806,33 +3964,38 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
     - text_content: Extracted text from any format
     - format_type: Detected format generation
     """
-    if not isinstance(records, Sequence) and not _reiterable:
-        # The parser needs two lookahead-derived indexes before the materializing
-        # pass. Most session streams fit a bounded in-memory record list and
-        # avoid serializing every decoded record through pickle. Large streams
-        # retain the existing disk replay behavior after that byte budget.
-        replay: list[object] = []
-        replay_bytes = sys.getsizeof(replay)
-        seen: set[int] = set()
-        records_iterator = iter(records)
-        for item in records_iterator:
-            item_bytes = _retained_record_bytes(item, seen)
-            if replay_bytes + _LIST_REFERENCE_BYTES + item_bytes <= _CODEX_REPLAY_MEMORY_BUDGET_BYTES:
-                replay.append(item)
-                replay_bytes += _LIST_REFERENCE_BYTES + item_bytes
-                continue
-            with tempfile.TemporaryFile(mode="w+b") as spool:
-                for retained_item in replay:
-                    pickle.dump(retained_item, spool, protocol=pickle.HIGHEST_PROTOCOL)
-                pickle.dump(item, spool, protocol=pickle.HIGHEST_PROTOCOL)
-                for remaining_item in records_iterator:
-                    pickle.dump(remaining_item, spool, protocol=pickle.HIGHEST_PROTOCOL)
-                return _parse_records(_PickleRecordReplay(spool), fallback_id, _reiterable=True)
-        return _parse_records(replay, fallback_id, _reiterable=True)
+    if _index is None:
+        with closing(sqlite3.connect("")) as connection:
+            connection.execute("PRAGMA cache_size = -8192")
+            connection.execute("PRAGMA temp_store = FILE")
+            connection.execute("PRAGMA journal_mode = OFF")
+            connection.execute("PRAGMA synchronous = OFF")
+            index_store = _CodexLookaheadIndex(connection)
+            if isinstance(records, Sequence):
+                return _parse_records(
+                    records,
+                    fallback_id,
+                    message_sink=message_sink,
+                    event_sink=event_sink,
+                    _index=index_store,
+                )
+            index_store.spool_records(records)
+            return _parse_records(
+                index_store,
+                fallback_id,
+                message_sink=message_sink,
+                event_sink=event_sink,
+                _index=index_store,
+            )
 
-    code_mode_envelopes, response_signatures = _codex_lookahead(records)
-    messages: list[ParsedMessage] = []
-    session_events: list[ParsedSessionEvent] = []
+    code_mode_envelopes = _codex_lookahead(records, _index)
+    response_signatures = code_mode_envelopes
+    messages: MutableSequence[ParsedMessage] = message_sink if message_sink is not None else []
+    session_events: MutableSequence[ParsedSessionEvent] = event_sink if event_sink is not None else []
+
+    def append_message(message: ParsedMessage) -> None:
+        messages.append(message.model_copy(update={"is_active_leaf": False}) if message_sink is not None else message)
+
     session_id = fallback_id
     session_timestamp: str | None = None
     session_timestamp_pair: _TimestampPair | None = None
@@ -3863,7 +4026,6 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
     second_meta_repo_url: str | None = None
     session_git: dict[str, object] | None = None  # Git context from session metadata
     session_instructions: str | None = None  # System instructions from session metadata
-    working_directories: set[str] = set()
     current_model_name: str | None = None
     current_model_effort: str | None = None
     message_position = 0
@@ -3881,19 +4043,17 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
     # that filled the session's own slot. Conserving these is what keeps a
     # session whose system prompt was edited mid-run from storing only the
     # prompt it started with.
-    changed_user_instructions = _CodexInstructionRevisions()
-    changed_developer_instructions = _CodexInstructionRevisions()
+    changed_user_instructions = _CodexInstructionRevisions(_index, "user")
+    changed_developer_instructions = _CodexInstructionRevisions(_index, "developer")
     # Text values Codex re-embeds rather than emits on the live stream. Each is
     # registered here as it is met and resolved once, after the last event, so
     # only a value the session retains nowhere else is stored again.
-    conservation = _CodexTextConservation()
+    conservation = _CodexTextConservation(_index)
     pending_replacement_context: list[_CodexReplacementContext] = []
-    pending_replacement_omissions: dict[tuple[int, str], _CodexReplacementContextOmission] = {}
     # Session-wide ceiling on distinct replacement-context candidates; see
     # _CODEX_REPLACEMENT_CONTEXT_MAX_DISTINCT.
     replacement_context_count = 0
     replacement_context_chars = 0
-    pending_task_complete: list[tuple[ParsedSessionEvent, _CodexTextCandidate]] = []
     admission = AdmissionLedger()
 
     for idx, item in enumerate(records, start=1):
@@ -3904,6 +4064,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
 
         # Handle compaction events (before message check so they don't fall through)
         if _record_type(record) == "compacted":
+            pending_replacement_omissions: dict[tuple[int, str], _CodexReplacementContextOmission] = {}
             timestamp = _iso_or_none(_record_timestamp(record))
             payload = _payload_record(record) or {}
             history = payload.get("replacement_history")
@@ -4039,6 +4200,8 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
             if image_count:
                 compaction_event.payload["replacement_history_image_count"] = image_count
             session_events.append(compaction_event)
+            for omission in pending_replacement_omissions.values():
+                session_events.append(_codex_replacement_context_omission_event(omission))
             # Context events are spliced in directly after their own compaction
             # event, so a reader meets the text where the compaction dropped it.
             for candidate, entry_type, entry_role, entry_phase in history_contexts:
@@ -4060,7 +4223,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
             # pre-compaction messages stay stored once; the boundary marks where
             # context discontinues.
             if summary_text:
-                messages.append(
+                append_message(
                     ParsedMessage(
                         provider_message_id="",
                         role=Role.SYSTEM,
@@ -4088,7 +4251,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                 cwd = _extract_cwd(turn_payload)
                 if cwd:
                     tc_payload["cwd"] = cwd
-                    working_directories.add(cwd)
+                    _index.add_workdir(cwd)
                 if model_name := _string_field(normalized_turn_context, "model", "model_name"):
                     current_model_name = model_name
                     tc_payload["model"] = model_name
@@ -4256,9 +4419,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                 if _record_type(inner) == "task_complete":
                     last_agent_message = inner.get("last_agent_message")
                     if isinstance(last_agent_message, str) and last_agent_message:
-                        candidate, _ = conservation.add(last_agent_message)
-                        response_event.payload["last_agent_message_chars"] = len(last_agent_message)
-                        pending_task_complete.append((response_event, candidate))
+                        conservation.add_task_completion(last_agent_message, len(session_events) - 1)
                 timestamp_fallback = _record_timestamp(record)
                 tool_message = _codex_tool_message(
                     inner,
@@ -4268,7 +4429,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                     exec_envelope=code_mode_envelopes.get(idx),
                 )
                 if tool_message is not None:
-                    messages.append(tool_message)
+                    append_message(tool_message)
                     message_position += 1
                     latest_message_timestamp = _newer_timestamp(latest_message_timestamp, tool_message.timestamp)
                     # code_mode_envelopes maps BOTH the call record's index
@@ -4299,7 +4460,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                     timestamp_fallback=timestamp_fallback,
                 )
                 if event_message is not None:
-                    messages.append(event_message)
+                    append_message(event_message)
                     message_position += 1
                     latest_message_timestamp = _newer_timestamp(latest_message_timestamp, event_message.timestamp)
                 reasoning_message = _codex_reasoning_message(
@@ -4309,7 +4470,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                     timestamp_fallback=timestamp_fallback,
                 )
                 if reasoning_message is not None:
-                    messages.append(reasoning_message)
+                    append_message(reasoning_message)
                     message_position += 1
                     latest_message_timestamp = _newer_timestamp(latest_message_timestamp, reasoning_message.timestamp)
                 mcp_messages = _codex_mcp_tool_call_messages(
@@ -4319,13 +4480,14 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                     timestamp_fallback=timestamp_fallback,
                 )
                 if mcp_messages is not None:
-                    messages.extend(mcp_messages)
+                    for mcp_message in mcp_messages:
+                        append_message(mcp_message)
                     message_position += len(mcp_messages)
                     for mcp_message in mcp_messages:
                         latest_message_timestamp = _newer_timestamp(latest_message_timestamp, mcp_message.timestamp)
                 cwd = _extract_cwd(event_payload)
                 if cwd:
-                    working_directories.add(cwd)
+                    _index.add_workdir(cwd)
                 continue
 
         # These newer producer records are top-level envelopes rather than
@@ -4375,7 +4537,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
         session_meta = _session_meta_record(record)
         if session_meta is not None:
             meta_id = _record_id(session_meta)
-            if meta_id and meta_id not in session_metas_seen:
+            if meta_id and len(session_metas_seen) < 2 and meta_id not in session_metas_seen:
                 session_metas_seen.append(meta_id)
                 if len(session_metas_seen) == 1:
                     session_id = meta_id
@@ -4482,7 +4644,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
             duration_ms = _optional_int_field(message_record, "duration_ms", "durationMs", "elapsed_ms")
 
             message_type = _message_type_from_codex_message(message_record, text)
-            messages.append(
+            append_message(
                 ParsedMessage(
                     provider_message_id=msg_id,
                     role=role,
@@ -4582,13 +4744,8 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
         events=session_events,
         instructions_text=session_instructions,
     )
-    for completion_event, completion_candidate in pending_task_complete:
-        if completion_candidate.retained or completion_candidate.stored:
-            completion_event.payload["last_agent_message_retained"] = True
-        else:
-            completion_candidate.stored = True
-            completion_event.payload["last_agent_message"] = completion_candidate.text
-    if pending_replacement_context or pending_replacement_omissions:
+    conservation.finish_task_completions(session_events)
+    if pending_replacement_context:
         context_insertions: dict[int, list[ParsedSessionEvent]] = {}
         for context in pending_replacement_context:
             if context.candidate.retained or context.candidate.stored:
@@ -4599,17 +4756,13 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
             context.compaction_event.payload["replacement_history_context_count"] = (
                 stored_here if isinstance(stored_here, int) else 0
             ) + 1
-        for omission in pending_replacement_omissions.values():
-            context_insertions.setdefault(omission.insert_at, []).append(
-                _codex_replacement_context_omission_event(omission)
-            )
+            session_events[context.insert_at - 1] = context.compaction_event
         if context_insertions:
-            spliced: list[ParsedSessionEvent] = []
-            for event_index, event in enumerate(session_events):
-                spliced.extend(context_insertions.pop(event_index, ()))
-                spliced.append(event)
-            spliced.extend(context_insertions.pop(len(session_events), ()))
-            session_events = spliced
+            offset = 0
+            for event_index, insertions in sorted(context_insertions.items()):
+                for insertion in insertions:
+                    session_events.insert(event_index + offset, insertion)
+                    offset += 1
 
     # Lineage: prefer the explicit markers on the child's own session_meta.
     #   - `source.subagent.thread_spawn` → spawned subagent (positive evidence
@@ -4674,27 +4827,36 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
     active_leaf_message_provider_id = (
         messages[-1].provider_message_id if messages and messages[-1].provider_message_id else None
     )
-    messages = mark_last_occurrence_as_active_leaf(messages)
+    if message_sink is None:
+        messages = mark_last_occurrence_as_active_leaf(cast(list[ParsedMessage], messages))
+    elif messages:
+        messages[-1] = messages[-1].model_copy(update={"is_active_leaf": True})
     unit_accounting = admission.close()
 
-    return ParsedSession(
+    session = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id=session_id,
         title=session_id,
         created_at=session_timestamp,
         updated_at=updated_at_pair[1] if updated_at_pair is not None else None,
-        messages=messages,
+        messages=cast(list[ParsedMessage], messages) if message_sink is None else [],
         active_leaf_message_provider_id=active_leaf_message_provider_id,
-        session_events=session_events,
+        session_events=cast(list[ParsedSessionEvent], session_events) if event_sink is None else [],
         parent_session_provider_id=parent_id,
         branch_type=branch_type,
         instructions_text=session_instructions,
-        working_directories=sorted(working_directories),
+        working_directories=_index.working_directories(),
         git_branch=git_branch_typed,
         git_repository_url=git_repo_url_typed,
         git_commit_hash=git_commit_hash_typed,
         unit_accounting=unit_accounting,
     )
+    updates: dict[str, object] = {}
+    if message_sink is not None:
+        updates["messages"] = messages
+    if event_sink is not None:
+        updates["session_events"] = session_events
+    return session.model_copy(update=updates) if updates else session
 
 
 @parser_admission("codex")
@@ -4702,5 +4864,11 @@ def parse(payload: Sequence[object], fallback_id: str) -> ParsedSession:
     return _parse_records(payload, fallback_id)
 
 
-def parse_stream(records: Iterable[object], fallback_id: str) -> ParsedSession:
-    return _parse_records(records, fallback_id)
+def parse_stream(
+    records: Iterable[object],
+    fallback_id: str,
+    *,
+    message_sink: MutableSequence[ParsedMessage] | None = None,
+    event_sink: MutableSequence[ParsedSessionEvent] | None = None,
+) -> ParsedSession:
+    return _parse_records(records, fallback_id, message_sink=message_sink, event_sink=event_sink)

@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.storage.io_phase_metrics import timed_io_phase
 from polylogue.storage.sqlite.connection_profile import (
     CHECKPOINT_ESCALATION_MODES,
     CHECKPOINT_HOLD_BUDGET_S,
@@ -23,7 +24,7 @@ from polylogue.storage.sqlite.connection_profile import (
     pinning_read_frames,
 )
 
-ARCHIVE_TIER_WAL_FILES = ("source.db", "index.db", "embeddings.db", "user.db", "ops.db")
+ARCHIVE_TIER_WAL_FILES = ("source.db", "index.db", "embeddings.db", "user.db", "audit.db", "ops.db")
 
 #: Checkpoint modes in escalation order, so an observation can report how far
 #: an escalation actually reached.
@@ -91,7 +92,8 @@ def checkpoint_connection(
     """
     if mode not in CHECKPOINT_MODES or mode not in CHECKPOINT_ESCALATION_MODES[boundary]:
         raise ValueError(f"checkpoint mode {mode} is not permitted at {boundary} boundary")
-    row = conn.execute(f"PRAGMA wal_checkpoint({mode})").fetchone()
+    with timed_io_phase(getattr(conn, "_metric_tier", None), "checkpoint"):
+        row = conn.execute(f"PRAGMA wal_checkpoint({mode})").fetchone()
     if row is None:
         raise sqlite3.OperationalError(f"checkpoint returned no result for {mode}")
     return tuple(int(value or 0) for value in row)  # type: ignore[return-value]

@@ -40,6 +40,7 @@ from polylogue.storage.sqlite.connection_profile import (
     READ_PROFILES,
     SEALED_READ_CONNECTION_PROFILE,
     ReadFrame,
+    ReadFrameCancelledError,
     ReadFrameExpiredError,
     live_read_frames,
     pinning_read_frames,
@@ -170,6 +171,50 @@ def test_stream_refuses_past_the_declared_age_and_ends_the_pin(wal_db: Path, mon
         released = _recurring_checkpoint(wal_db)
         assert not released.blocked, "the typed expiry must end the pin, not just report it"
         assert released.checkpointed_pages == released.log_pages > 0
+
+
+def test_one_expensive_sqlite_step_cannot_outlive_the_frame(wal_db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with read_frame(wal_db, timeout_class="interactive-read") as frame:
+        age_checks = 0
+
+        def age_during_step(_frame: ReadFrame) -> float:
+            nonlocal age_checks
+            age_checks += 1
+            return 0.0 if age_checks < 3 else 1_000.0
+
+        monkeypatch.setattr(ReadFrame, "age_s", property(age_during_step))
+        with pytest.raises(ReadFrameExpiredError):
+            list(
+                frame.stream(
+                    "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 100000) "
+                    "SELECT sum(x) FROM n"
+                )
+            )
+        assert age_checks >= 3
+        assert not frame.streaming
+
+
+def test_cancellation_during_one_expensive_sqlite_step_is_typed(wal_db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with read_frame(wal_db, timeout_class="interactive-read") as frame:
+        age_checks = 0
+
+        def cancel_during_step(_frame: ReadFrame) -> float:
+            nonlocal age_checks
+            age_checks += 1
+            if age_checks == 3:
+                frame.cancel()
+            return 0.0
+
+        monkeypatch.setattr(ReadFrame, "age_s", property(cancel_during_step))
+        with pytest.raises(ReadFrameCancelledError):
+            list(
+                frame.stream(
+                    "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 100000) "
+                    "SELECT sum(x) FROM n"
+                )
+            )
+        assert age_checks >= 3
+        assert not frame.streaming
 
 
 def test_a_frame_cannot_rebind_out_from_under_an_in_flight_stream(wal_db: Path) -> None:

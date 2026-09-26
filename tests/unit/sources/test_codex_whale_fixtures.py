@@ -2,103 +2,20 @@
 
 from __future__ import annotations
 
-import pickle
 from collections.abc import Iterator
-from typing import Any
-
-from pytest import MonkeyPatch
 
 from polylogue.sources.parsers.base import AdmissionDisposition, AdmissionUnit, ParsedSession
 from tests.infra.whale_fixtures import WHALE_FIXTURE_DIMENSIONS, multi_million_codex_stream
 
 
-def test_small_codex_stream_replays_from_memory_before_spilling(monkeypatch: MonkeyPatch) -> None:
-    """Anti-vacuity: restoring eager pickle spooling raises before the real parser runs.
-
-    The ordinary streaming dispatch path must retain a small decoded stream in
-    memory for its lookahead and materializing passes.  A disk replay remains
-    available only after the parser's bounded memory tier fills.
-    """
-    from polylogue.sources.dispatch import parse_stream_payload
-
-    payload = [
-        {"type": "session_meta", "payload": {"id": "memory-replay"}},
-        {
-            "type": "response_item",
-            "payload": {
-                "type": "message",
-                "id": "memory-replay-message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": "retain this stream"}],
-            },
-        },
-    ]
-    expected = parse_stream_payload("codex", payload, "memory-replay", source_path="memory-replay.jsonl")
-
-    def fail_eager_spool(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("small stream was serialized to the disk replay spool")
-
-    monkeypatch.setattr(pickle, "dump", fail_eager_spool)
-
-    sessions = parse_stream_payload("codex", iter(payload), "memory-replay", source_path="memory-replay.jsonl")
-
-    assert sessions == expected
-
-
-def test_codex_stream_spills_after_replay_memory_budget(monkeypatch: MonkeyPatch) -> None:
-    """The bounded tier keeps replay semantics when a stream must spill."""
-    from polylogue.sources.dispatch import parse_stream_payload
-    from polylogue.sources.parsers import codex
-
-    payload = [
-        {"type": "session_meta", "payload": {"id": "spilled-replay"}},
-        {
-            "type": "response_item",
-            "payload": {
-                "type": "message",
-                "id": "spilled-replay-message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": "preserve this stream"}],
-            },
-        },
-    ]
-    expected = parse_stream_payload("codex", payload, "spilled-replay", source_path="spilled-replay.jsonl")
-    original_dump = pickle.dump
-    dumped = 0
-
-    def count_dump(*args: Any, **kwargs: Any) -> None:
-        nonlocal dumped
-        dumped += 1
-        original_dump(*args, **kwargs)
-
-    monkeypatch.setattr(codex, "_CODEX_REPLAY_MEMORY_BUDGET_BYTES", 1)
-    monkeypatch.setattr(pickle, "dump", count_dump)
-
-    sessions = parse_stream_payload("codex", iter(payload), "spilled-replay", source_path="spilled-replay.jsonl")
-
-    assert sessions == expected
-    assert dumped == len(payload)
-
-
-def test_multi_million_codex_stream_uses_real_stream_dispatch_without_truncation(monkeypatch: MonkeyPatch) -> None:
+def test_multi_million_codex_stream_uses_real_stream_dispatch_without_truncation() -> None:
     """Anti-vacuity: bypassing ``parse_stream_payload`` or shrinking the event boundary fails.
 
     State records are deliberately reused immutable evidence.  The parser must
-    consume exactly two million of them through its streaming entry point,
-    while materializing only the one authored message in the resulting session.
+    consume the complete fixture through its streaming entry point, while
+    materializing only the one authored message in the resulting session.
     """
     from polylogue.sources.dispatch import parse_stream_payload
-    from polylogue.sources.parsers import codex
-
-    original_iter = codex._PickleRecordReplay.__iter__
-    replay_passes = 0
-
-    def count_replay_passes(replay: codex._PickleRecordReplay) -> Iterator[object]:
-        nonlocal replay_passes
-        replay_passes += 1
-        yield from original_iter(replay)
-
-    monkeypatch.setattr(codex._PickleRecordReplay, "__iter__", count_replay_passes)
 
     class CountingStream:
         def __init__(self) -> None:
@@ -128,18 +45,17 @@ def test_multi_million_codex_stream_uses_real_stream_dispatch_without_truncation
     assert len(outer) == stream.yielded
     assert outer[0].disposition is AdmissionDisposition.MATERIALIZED
     assert outer[-1].disposition is AdmissionDisposition.MATERIALIZED
-    assert replay_passes <= 2
+    assert outer[WHALE_FIXTURE_DIMENSIONS.stream_event_count].disposition is AdmissionDisposition.MATERIALIZED
 
 
-#: One ~1 KB state record. 120,000 of them is about 110 MB of input, an
-#: order of magnitude past ``_CODEX_REPLAY_MEMORY_BUDGET_BYTES``.
+#: One ~1 KB state record. 120,000 of them is about 110 MB of input.
 _BUDGET_STREAM_RECORD_FILLER = "s" * 900
 _BUDGET_STREAM_SMALL_RECORDS = 12_000
 _BUDGET_STREAM_LARGE_RECORDS = 120_000
 # Measured 2026-09-22 on this fixture. Head: 11.2 MB traced peak at BOTH
-# record counts -- the peak is the declared replay budget, not the input.
-# With the byte-budgeted list replaced by ``list(records)``: 137.6 MB at
-# 120,000 records, and rising with the count. The bound sits between them.
+# record counts -- lookahead facts are held in the parser's disk-backed index,
+# not as a second in-memory copy of the source stream. With ``list(records)``
+# retained for the lookahead pass, the peak was 137.6 MB at 120,000 records.
 _BUDGET_STREAM_PEAK_BYTES_MAX = 40 * 1024 * 1024
 
 
@@ -183,14 +99,11 @@ def _parse_budget_stream(record_count: int) -> tuple[list[ParsedSession], int]:
     return list(sessions), peak
 
 
-def test_stream_dispatch_retention_stays_inside_its_declared_replay_budget() -> None:
-    """Lookahead retention is bounded by the declared budget, not by input size.
+def test_stream_dispatch_retention_stays_within_memory_bound() -> None:
+    """Lookahead retention is bounded, not proportional to the input size.
 
-    The parser needs two lookahead-derived indexes before its materializing
-    pass, so it must be able to see the record sequence twice. It keeps a
-    byte-budgeted in-memory list and spools to disk above that budget
-    (``_CODEX_REPLAY_MEMORY_BUDGET_BYTES``, polylogue-s8x8s AC2), rather than
-    serializing every decoded record through pickle unconditionally.
+    The parser needs lookahead-derived indexes before its materializing pass,
+    so it stores the source records and derived facts in a disk-backed index.
 
     This replaces an earlier control that asserted *zero* retention by
     counting simultaneously-live decoded records (at most four). That
@@ -227,9 +140,9 @@ def test_stream_dispatch_retention_does_not_grow_with_the_record_count() -> None
     """Ten times the input, the same peak: the budget is what bounds it.
 
     A bound that a larger stream can still satisfy by accident is not a
-    bound. This compares two stream sizes an order of magnitude apart, both
-    well past the replay budget, and requires the peak not to track the
-    input. ``list(records)`` fails it by construction: 11.3 MB at 12,000
+    bound. This compares two stream sizes an order of magnitude apart and
+    requires the traced peak not to track the input. ``list(records)`` fails
+    it by construction: 11.3 MB at 12,000
     records and 137.6 MB at 120,000 (measured 2026-09-22).
     """
     _small_sessions, small_peak = _parse_budget_stream(_BUDGET_STREAM_SMALL_RECORDS)

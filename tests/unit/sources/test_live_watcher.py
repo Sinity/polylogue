@@ -3782,6 +3782,49 @@ async def test_ingest_files_max_pass_seconds_bounds_one_pass_and_preserves_progr
 
 
 @pytest.mark.asyncio
+async def test_archive_write_budget_leaves_unwritten_page_tail_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.sources.live.metrics import REFUSED_UNATTEMPTED_TIME_BUDGET
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    paths = [root / f"session-{index}.jsonl" for index in range(3)]
+    for index, path in enumerate(paths):
+        _write_jsonl(
+            path,
+            [
+                _codex_session_meta(f"write-budget-{index}"),
+                _codex_message(
+                    message_id=f"message-{index}",
+                    role="user",
+                    text=f"write budget {index}",
+                    timestamp="2026-08-02T00:00:00Z",
+                ),
+            ],
+        )
+    cursor = CursorStore(tmp_path / "live.sqlite")
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=None)),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+
+    monkeypatch.setattr(
+        live_batch,
+        "_ingest_pass_exhausted",
+        lambda *, max_pass_seconds, pass_started, checkpoint: checkpoint == "archive_write_record",
+    )
+    bounded = await processor.ingest_files(paths, emit_event=False, max_pass_seconds=30.0)
+
+    assert bounded.succeeded_file_count == 1
+    assert bounded.time_budget_exceeded is True
+    assert bounded.excluded_paths == {str(path): REFUSED_UNATTEMPTED_TIME_BUDGET for path in paths[1:]}
+    assert [path for path in paths if cursor.get_record(path) is not None] == [paths[0]]
+
+
+@pytest.mark.asyncio
 async def test_acquisition_is_checkpointed_per_file_not_once_per_batch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

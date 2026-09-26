@@ -57,7 +57,7 @@ from polylogue.sources.live.cursor import (
 )
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics
-from polylogue.sources.live.parse_prefetch import LiveParseStage
+from polylogue.sources.live.parse_prefetch import LiveParseStage, ReadSnapshot
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.sqlite_snapshot import (
     is_sqlite_path,
@@ -375,6 +375,7 @@ class LiveWatcher:
         event_emitter: LiveBatchEventEmitter | None = None,
         write_coordinator: WriteCoordinator | None = None,
         parse_stage: LiveParseStage | None = None,
+        read_snapshot: ReadSnapshot | None = None,
         embedding_owner: EmbeddingConvergenceOwner | None = None,
         session_profile_callback: SessionProfileConvergenceCallback | None = None,
         intake_wakeup: asyncio.Event | None = None,
@@ -425,12 +426,6 @@ class LiveWatcher:
         self._stop = asyncio.Event()
         self._watcher_ready = asyncio.Event()
         self._archived_cursor_conns: tuple[sqlite3.Connection, sqlite3.Connection] | None = None
-        # Set once per reconciliation scope: True when the index tier has no
-        # materialized sessions at all despite source.db holding successfully
-        # parsed raw material -- the post-index-reset signature (polylogue-emx2).
-        # While true, cursor-trust skip decisions must be corroborated
-        # per-candidate against index presence instead of being taken on faith.
-        self._archived_cursor_index_untrusted = False
         self._batch_processor = LiveBatchProcessor(
             polylogue,
             self._sources,
@@ -441,6 +436,7 @@ class LiveWatcher:
             event_emitter=event_emitter,
             sync_runner=self._run_writer_sync,
             parse_stage=self._parse_stage,
+            read_snapshot=read_snapshot,
         )
 
     async def _run_writer_sync(
@@ -612,17 +608,16 @@ class LiveWatcher:
 
         Delegates the byte/fingerprint-level decision to
         :meth:`_needs_work_from_state_uncorroborated`. When that would skip
-        the file (trusting a cursor claim) but the index tier globally shows
-        no corroborating material (:attr:`_archived_cursor_index_untrusted`,
-        set once per catch-up scan), the skip is demoted to "needed" unless a
-        per-file existence check on ``path`` specifically finds its raw
-        material already materialized -- see polylogue-emx2.
+        the file (trusting a cursor claim), check that file's parsed raw
+        against the active index. A single materialized session does not
+        corroborate other files after a partial index rebuild. The scope
+        shares one connection pair across the bounded intake page.
         """
         needs_work = self._needs_work_from_state_uncorroborated(
             path, stat=stat, cursor=cursor, rebase_queue=rebase_queue
         )
-        if needs_work or not self._archived_cursor_index_untrusted:
-            return needs_work
+        if needs_work:
+            return True
         if self._cursor_skip_corroborated_by_index(path):
             return False
         logger.warning(
@@ -929,7 +924,6 @@ class LiveWatcher:
         """
         if _source_tier_acquisition_required():
             self._archived_cursor_conns = None
-            self._archived_cursor_index_untrusted = False
             yield
             return
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
@@ -938,7 +932,6 @@ class LiveWatcher:
             index_db = resolve_active_index_path(archive_root)
         except (ArchiveLocationError, OSError, UnicodeError):
             self._archived_cursor_conns = None
-            self._archived_cursor_index_untrusted = False
             yield
             return
         conns: tuple[sqlite3.Connection, sqlite3.Connection] | None = None
@@ -954,45 +947,14 @@ class LiveWatcher:
             except sqlite3.Error:
                 conns = None
         self._archived_cursor_conns = conns
-        self._archived_cursor_index_untrusted = (
-            self._index_lacks_all_corroboration(source_conn=conns[0], index_conn=conns[1])
-            if conns is not None
-            else False
-        )
         try:
             yield
         finally:
             self._archived_cursor_conns = None
-            self._archived_cursor_index_untrusted = False
             if conns is not None:
                 for conn in conns:
                     with suppress(sqlite3.Error):
                         conn.close()
-
-    @staticmethod
-    def _index_lacks_all_corroboration(
-        *,
-        source_conn: sqlite3.Connection,
-        index_conn: sqlite3.Connection,
-    ) -> bool:
-        """True when the index tier holds zero sessions despite acquired raw material.
-
-        A full ``index.db`` reset/rebuild leaves ``ops.db`` ingest cursors
-        pointing at file offsets the daemon already acquired and parsed --
-        cursor state that catch-up's cursor-trust fast paths would otherwise
-        take on faith and skip re-materializing (polylogue-emx2, Finding 8:
-        14,879 cursors skipped 100% of files against an empty post-reset
-        index). One cheap pair of existence probes per catch-up scan detects
-        this and forces every candidate through a per-file corroboration
-        check instead.
-        """
-        has_parsed_raw = source_conn.execute(
-            "SELECT 1 FROM raw_sessions WHERE parsed_at_ms IS NOT NULL AND parse_error IS NULL LIMIT 1"
-        ).fetchone()
-        if has_parsed_raw is None:
-            return False
-        has_any_session = index_conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone()
-        return has_any_session is None
 
     @staticmethod
     def _archived_cursor_row(
@@ -1001,14 +963,14 @@ class LiveWatcher:
         source_conn: sqlite3.Connection,
         index_conn: sqlite3.Connection,
     ) -> tuple[object, ...] | None:
-        """Newest parsed raw row for ``path`` that the index actually contains."""
+        """Newest session-bearing raw for ``path`` that the index contains."""
         rows = source_conn.execute(
             """
             SELECT raw_id, origin, blob_hash, blob_size
             FROM raw_sessions
             WHERE source_path = ?
               AND COALESCE(source_index, 0) >= 0
-              AND parsed_at_ms IS NOT NULL
+              AND (parsed_at_ms IS NOT NULL OR revision_authority IN ('asserted', 'byte_proven'))
               AND parse_error IS NULL
             ORDER BY acquired_at_ms DESC, raw_id DESC
             """,
@@ -1069,31 +1031,31 @@ class LiveWatcher:
         source_conn: sqlite3.Connection,
         index_conn: sqlite3.Connection,
     ) -> bool:
-        """True unless ``path`` has parsed raw material the index cannot show."""
-        has_parsed_raw = source_conn.execute(
+        """True unless ``path`` has session authority the index cannot show."""
+        has_session_raw = source_conn.execute(
             """
             SELECT 1 FROM raw_sessions
             WHERE source_path = ?
               AND COALESCE(source_index, 0) >= 0
-              AND parsed_at_ms IS NOT NULL
+              AND (parsed_at_ms IS NOT NULL OR revision_authority IN ('asserted', 'byte_proven'))
               AND parse_error IS NULL
             LIMIT 1
             """,
             (str(path),),
         ).fetchone()
-        if has_parsed_raw is None:
-            # Nothing parsed for this path yet -- not this check's concern.
+        if has_session_raw is None:
+            # A killed candidate can leave a proven revision before its
+            # source parse marker commits. Raw-only paths have no session
+            # authority to corroborate.
             return True
         return cls._archived_cursor_row(path, source_conn=source_conn, index_conn=index_conn) is not None
 
     def _cursor_skip_corroborated_by_index(self, path: Path) -> bool:
         """Whether a cursor-trust skip for ``path`` is backed by a materialized session.
 
-        Only consulted while :attr:`_archived_cursor_index_untrusted` is set
-        (index tier globally empty relative to acquired source material). A
-        path with no successfully parsed raw row yet is not this bead's
-        concern (nothing for the index to have lost) and is treated as
-        corroborated so unrelated cursor kinds are unaffected.
+        Called for each cursor-based skip, including when the index holds
+        sessions for other paths. A path with no parsed or proven session raw
+        is treated as corroborated so unrelated cursor kinds are unaffected.
         """
         shared = self._archived_cursor_conns
         try:

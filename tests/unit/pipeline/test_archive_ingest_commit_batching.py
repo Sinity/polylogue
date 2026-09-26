@@ -1,643 +1,130 @@
-"""Work-based commit batching for the re-ingest path (parse_sources_archive).
-
-Covers:
-- (a) batched mode: a tiny message threshold commits in several batches yet the
-  final archive contains every session and message.
-- (b) per-session escape hatch (threshold <= 0) still ingests everything.
-- (c) atomicity: a write that raises mid-batch rolls back the uncommitted batch
-  so no partial rows from that batch survive, and rollback() is invoked.
-"""
+"""The one-shot compatibility API uses the canonical live intake owner."""
 
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import multiprocessing
 import os
 import sqlite3
-from collections.abc import Sequence
-from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from polylogue.config import Source
-from polylogue.pipeline.services import archive_ingest
+from polylogue.maintenance.offline_guard import ArchiveWriterOwnershipError
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
-from polylogue.pipeline.services.process_pool import _initialize_worker_logging
-from polylogue.scenarios import build_default_corpus_specs
-from polylogue.schemas.synthetic import SyntheticCorpus
-from polylogue.storage.blob_gc import BlobGCResult, run_blob_gc_report
-from polylogue.storage.blob_publication import (
-    ArchiveBlobPublisher,
-    BlobPublicationReceipt,
-    BlobPublicationReservationStore,
-)
-from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveRawParsedWriteResult, ArchiveStore
-from polylogue.storage.sqlite.maintenance import SqliteOptimizeObservation
 
 
-def _build_sources(tmp_path: Path, *, count: int, seed: int = 7) -> list[Source]:
-    available = set(SyntheticCorpus.available_providers())
-    providers = [p for p in ("chatgpt", "claude-ai") if p in available]
-    specs = build_default_corpus_specs(
-        providers=providers,
-        count=count,
-        messages_min=4,
-        messages_max=11,
-        seed=seed,
-    )
-    corpus_dir = tmp_path / "corpus"
-    corpus_dir.mkdir(exist_ok=True)
-    sources: list[Source] = []
-    for spec in specs:
-        provider_dir = corpus_dir / spec.provider
-        # Prefix is seed-qualified: some providers (e.g. claude-ai) derive
-        # their session native_id from the artifact filename, not its
-        # content. A fixed "corpus" prefix across two `_build_sources` calls
-        # with different seeds against the same archive_root (as
-        # test_parse_workers_override_bypasses_process_pool does) collides
-        # on session_id despite genuinely different generated content. The
-        # write path's freshness guard then compares each call's
-        # independently-random synthetic timestamp and can skip the second
-        # write outright when it draws an earlier one -- not a bug, just an
-        # unintended interaction this helper must not create.
-        written = SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix=f"corpus-{seed}")
-        sources.extend(Source(name=spec.provider, path=file_path) for file_path in written.files)
-    return sources
-
-
-def _counts(index_db: Path) -> tuple[int, int]:
-    conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
-    try:
-        sessions = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
-        messages = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
-    finally:
-        conn.close()
-    return sessions, messages
-
-
-def _expected_session_count(sources: Sequence[Source]) -> int:
-    # Each synthetic artifact in this corpus produces exactly one session.
-    return len(sources)
-
-
-def test_batched_commit_persists_all_sessions(
-    tmp_path: Path,
-    workspace_env: dict[str, Path],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A tiny threshold forces multiple batch commits; all data still lands."""
-    monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "5")
-    archive_root = workspace_env["archive_root"]
-    sources = _build_sources(tmp_path, count=4)
-    assert len(sources) >= 4  # multiple batches given >=4 msgs/session and threshold 5
-
-    result = asyncio.run(parse_sources_archive(archive_root, sources))
-
-    index_db = archive_root / "index.db"
-    sessions, messages = _counts(index_db)
-    assert sessions == _expected_session_count(sources)
-    assert sessions == result.counts["sessions"]
-    assert messages == result.counts["messages"]
-    assert messages > 0
-
-
-def test_per_session_escape_hatch(
-    tmp_path: Path,
-    workspace_env: dict[str, Path],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """threshold <= 0 preserves per-session commit behavior and ingests all."""
-    monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "0")
-    archive_root = workspace_env["archive_root"]
-    sources = _build_sources(tmp_path, count=3, seed=11)
-
-    result = asyncio.run(parse_sources_archive(archive_root, sources))
-
-    sessions, messages = _counts(archive_root / "index.db")
-    assert sessions == _expected_session_count(sources)
-    assert sessions == result.counts["sessions"]
-    assert messages == result.counts["messages"]
-
-
-def test_direct_grouped_reingest_reserves_raw_blob_until_source_commit(
-    tmp_path: Path,
-    workspace_env: dict[str, Path],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "1")
-    monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "0")
-    archive_root = workspace_env["archive_root"]
-    source_path = tmp_path / "session.jsonl"
-    source_path.write_text(
+def _session_file(root: Path) -> Path:
+    source = root / "session.jsonl"
+    source.write_text(
         '{"type":"user","uuid":"u1","sessionId":"s1","message":{"content":"hello"}}\n'
         '{"type":"assistant","uuid":"a1","sessionId":"s1","message":{"content":"hi"}}\n',
         encoding="utf-8",
     )
-    gc_reports: list[BlobGCResult] = []
-    original_flush = ArchiveBlobPublisher.flush
-
-    def flush_then_gc(publisher: ArchiveBlobPublisher) -> tuple[BlobPublicationReceipt, ...]:
-        receipts = original_flush(publisher)
-        if receipts and not gc_reports:
-            os.utime(publisher.blob_path(receipts[0].blob_hash), (1_700_000_000, 1_700_000_000))
-            gc_reports.append(run_blob_gc_report(archive_root / "source.db", archive_root / "blob"))
-        return receipts
-
-    monkeypatch.setattr(ArchiveBlobPublisher, "flush", flush_then_gc)
-    result = asyncio.run(parse_sources_archive(archive_root, [Source(name="claude-code", path=source_path)]))
-
-    assert result.counts["sessions"] == 1
-    assert len(gc_reports) == 1
-    assert gc_reports[0].deleted_count == 0
-    assert gc_reports[0].skipped_reserved == 1
-    with sqlite3.connect(archive_root / "source.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
-    final_gc = run_blob_gc_report(archive_root / "source.db", archive_root / "blob")
-    assert final_gc.deleted_count == 0
-    assert final_gc.skipped_reserved == 0
-    assert final_gc.skipped_referenced >= 1
+    return source
 
 
-@pytest.mark.asyncio
-async def test_batched_session_artifact_observation_releases_source_writer_before_next_reservation(
-    tmp_path: Path,
-    workspace_env: dict[str, Path],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "8000")
-    source_root = tmp_path / ".claude" / "projects" / "example"
-    source_root.mkdir(parents=True)
-    for number in (1, 2):
-        (source_root / f"session-{number}.jsonl").write_text(
-            f'{{"type":"user","uuid":"u{number}","sessionId":"s{number}",'
-            f'"message":{{"content":"hello {number}"}}}}\n'
-            f'{{"type":"assistant","uuid":"a{number}","sessionId":"s{number}",'
-            '"message":{"content":"reply"}}\n',
-            encoding="utf-8",
-        )
-
-    original_open = BlobPublicationReservationStore._open_connection
-    reservations = 0
-
-    def open_without_lock_wait(store: BlobPublicationReservationStore) -> sqlite3.Connection:
-        nonlocal reservations
-        reservations += 1
-        conn = original_open(store)
-        conn.execute("PRAGMA busy_timeout = 0")
-        return conn
-
-    monkeypatch.setattr(BlobPublicationReservationStore, "_open_connection", open_without_lock_wait)
-    archive_root = workspace_env["archive_root"]
-    result = await parse_sources_archive(
-        archive_root,
-        [Source(name="claude-code", path=source_root)],
-        parse_workers=1,
-    )
-
-    assert result.parse_failures == 0
-    assert result.counts["sessions"] == 2
-    assert reservations == 2
-    with sqlite3.connect(archive_root / "source.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (2,)
-
-
-def test_process_pool_reingest_reserves_before_publish_and_consumes_with_source_ref(
-    tmp_path: Path,
-    workspace_env: dict[str, Path],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # This test observes the *real* archive_ingest.py process-pool path.
-    # `parse_sources_archive` builds its pool via
-    # `process_pool.process_pool_executor()`, which pins the "spawn" start
-    # method (polylogue-7saq: it used to construct a bare
-    # `ProcessPoolExecutor(max_workers=workers)` with no explicit
-    # `mp_context`, picking up whatever the platform default happened to be
-    # -- "fork" on 3.13, "forkserver" on 3.14 -- and that gap is what this
-    # test's fork-context trickery below works around). Each parse worker
-    # builds its own ArchiveBlobPublisher and flushes it -- i.e.
-    # `BlobStore.publish_many` actually runs *inside the worker process*,
-    # not the main pytest process -- so this test's `monkeypatch.setattr(
-    # BlobStore, "publish_many", ...)` (applied only to the main process's
-    # in-memory class object) only reaches the worker if the worker process
-    # is fork()ed from this already-patched main process: a fork()ed child
-    # inherits a copy-on-write snapshot of the parent's class objects,
-    # patched attribute included. Neither "spawn" (fresh re-import of
-    # `polylogue.storage.blob_publication`, never sees the patch) nor
-    # "forkserver" (forks from an earlier, unpatched preload) would let the
-    # worker observe this test's monkeypatch -- only an explicit
-    # `multiprocessing.get_context("fork")` does, deliberately, for
-    # observability purposes only.
-    #
-    # The fix: this test's own observer primitives (Events/Pipe/Process)
-    # already use an explicit `multiprocessing.get_context("fork")`
-    # (`fork_ctx` below) so they behave identically across Python versions.
-    # Monkeypatching `archive_ingest.process_pool_executor` (the shared
-    # helper the production code now calls, per polylogue-7saq) to force
-    # `mp_context=fork_ctx` makes the real parse workers fork from this
-    # patched process on every supported Python version, restoring the
-    # cross-process observability this test needs -- without touching
-    # archive_ingest.py's production pool-construction behavior for real
-    # callers, who never monkeypatch this helper.
-    fork_ctx = multiprocessing.get_context("fork")
-
-    def _forked_process_pool_executor(*, max_workers: int) -> ProcessPoolExecutor:
-        return ProcessPoolExecutor(
-            max_workers=max_workers,
-            initializer=_initialize_worker_logging,
-            mp_context=fork_ctx,
-        )
-
-    monkeypatch.setattr(archive_ingest, "process_pool_executor", _forked_process_pool_executor)
-    monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "2")
-    monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "0")
-    archive_root = workspace_env["archive_root"]
-    source_path = tmp_path / "process-session.jsonl"
-    source_path.write_text(
-        '{"type":"user","uuid":"u1","sessionId":"s1","message":{"content":"hello"}}\n'
-        '{"type":"assistant","uuid":"a1","sessionId":"s1","message":{"content":"hi"}}\n',
-        encoding="utf-8",
-    )
-    reservation_committed = fork_ctx.Event()
-    allow_publication = fork_ctx.Event()
-    source_write_entered = fork_ctx.Event()
-    allow_source_write = fork_ctx.Event()
-    original_publish_many = BlobStore.publish_many
-    original_write = ArchiveStore.admit_raw_and_parsed_result
-
-    def pause_worker_publication(store: BlobStore, prepared):  # type: ignore[no-untyped-def]
-        batch = tuple(prepared)
-        reservation_committed.set()
-        assert allow_publication.wait(timeout=10)
-        return original_publish_many(store, batch)
-
-    def pause_main_source_write(archive: ArchiveStore, *args, **kwargs):  # type: ignore[no-untyped-def]
-        source_write_entered.set()
-        assert allow_source_write.wait(timeout=10)
-        return original_write(archive, *args, **kwargs)
-
-    monkeypatch.setattr(BlobStore, "publish_many", pause_worker_publication)
-    monkeypatch.setattr(ArchiveStore, "admit_raw_and_parsed_result", pause_main_source_write)
-
-    read_result, write_result = fork_ctx.Pipe(duplex=False)
-
-    def observe_real_process_route() -> None:
-        error = ""
-        try:
-            assert reservation_committed.wait(timeout=10)
-            with sqlite3.connect(archive_root / "source.db") as conn:
-                row = conn.execute(
-                    "SELECT publication_id, lower(hex(blob_hash)) FROM blob_publication_reservations"
-                ).fetchone()
-                assert row is not None
-                _publication_id, blob_hash = row
-                assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
-                assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone()[0] == 0
-            store = BlobStore(archive_root / "blob")
-            assert not store.exists(blob_hash)
-
-            allow_publication.set()
-            assert source_write_entered.wait(timeout=10)
-            assert store.exists(blob_hash)
-            with sqlite3.connect(archive_root / "source.db") as conn:
-                assert (
-                    conn.execute(
-                        "SELECT COUNT(*) FROM blob_publication_reservations WHERE blob_hash = ?",
-                        (bytes.fromhex(blob_hash),),
-                    ).fetchone()[0]
-                    == 1
-                )
-                assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
-                assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone()[0] == 0
-            os.utime(store.blob_path(blob_hash), (1_700_000_000, 1_700_000_000))
-            protected = run_blob_gc_report(archive_root / "source.db", store.root)
-            assert protected.deleted_count == 0
-            assert protected.skipped_reserved == 1
-        except BaseException as exc:
-            error = f"{type(exc).__name__}: {exc}"
-        finally:
-            allow_publication.set()
-            allow_source_write.set()
-            write_result.send(error)
-            write_result.close()
-
-    observation = fork_ctx.Process(target=observe_real_process_route)
-    observation.start()
+def _hold_daemon_pidfile(root: str, channel: multiprocessing.connection.Connection) -> None:
+    path = Path(root) / "daemon.pid"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        result = asyncio.run(parse_sources_archive(archive_root, [Source(name="claude-code", path=source_path)]))
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        os.write(fd, str(os.getpid()).encode())
+        os.fsync(fd)
+        channel.send(True)
+        channel.recv()
     finally:
-        allow_publication.set()
-        allow_source_write.set()
-    observation.join(timeout=10)
-    if observation.is_alive():
-        observation.terminate()
-        observation.join(timeout=2)
-        pytest.fail("process-route observer did not terminate")
-    error = read_result.recv() if read_result.poll() else "observer exited without a result"
-    assert observation.exitcode == 0
-    assert not error, error
-
-    assert result.counts["sessions"] == 1
-    with sqlite3.connect(archive_root / "source.db") as conn:
-        row = conn.execute(
-            """
-            SELECT lower(hex(raw_sessions.blob_hash))
-            FROM raw_sessions
-            JOIN blob_refs ON blob_refs.blob_hash = raw_sessions.blob_hash
-            """
-        ).fetchone()
-        assert row is not None
-        blob_hash = row[0]
-        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
-    assert BlobStore(archive_root / "blob").exists(blob_hash)
-    final_gc = run_blob_gc_report(archive_root / "source.db", archive_root / "blob")
-    assert final_gc.deleted_count == 0
-    assert final_gc.skipped_referenced >= 1
+        os.close(fd)
+        channel.close()
 
 
-def test_archive_ingest_raw_payload_uses_explicit_archive_blob_root(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    archive_root = tmp_path / "explicit-archive"
-    ambient_blob_root = tmp_path / "ambient-xdg" / "blob"
-    blob_hash, _blob_size = BlobStore(archive_root / "blob").write_from_bytes(b'{"mapping":{"from":"archive"}}')
-    raw_data = SimpleNamespace(raw_bytes=b"", blob_hash=blob_hash)
-    session = SimpleNamespace(model_dump_json=lambda: '{"fallback": true}')
+def test_one_shot_ingest_uses_durable_raw_and_cursor_authority(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    source_root = tmp_path / "sources"
+    source_root.mkdir()
+    source = _session_file(source_root)
+    declaration = [Source(name="claude-code", path=source)]
 
-    monkeypatch.setattr("polylogue.paths.blob_store_root", lambda: ambient_blob_root)
-    monkeypatch.setattr("polylogue.storage.blob_store.blob_store_root", lambda: ambient_blob_root, raising=False)
+    first = asyncio.run(parse_sources_archive(archive_root, declaration))
+    second = asyncio.run(parse_sources_archive(archive_root, declaration))
 
-    assert archive_ingest._archive_raw_payload(raw_data, session, blob_root=archive_root / "blob") == (
-        b'{"mapping":{"from":"archive"}}'
-    )
-
-
-def test_failed_write_rolls_back_uncommitted_batch(
-    tmp_path: Path,
-    workspace_env: dict[str, Path],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A mid-batch failure rolls back so no prior session in the batch survives."""
-    # Large threshold so nothing commits until the (never reached) tail flush:
-    # the whole run is one uncommitted batch.
-    monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "1000000")
-    archive_root = workspace_env["archive_root"]
-    sources = _build_sources(tmp_path, count=4, seed=23)
-    assert len(sources) >= 2
-
-    original_write = ArchiveStore.admit_raw_and_parsed_result
-    calls = {"n": 0}
-
-    def failing_write(self: ArchiveStore, *args: object, **kwargs: object) -> ArchiveRawParsedWriteResult:
-        calls["n"] += 1
-        if calls["n"] == 2:
-            raise RuntimeError("simulated mid-batch write failure")
-        return original_write(self, *args, **kwargs)  # type: ignore[arg-type]
-
-    rollbacks = {"n": 0}
-    original_rollback = ArchiveStore.rollback
-
-    def spy_rollback(self: ArchiveStore) -> None:
-        rollbacks["n"] += 1
-        original_rollback(self)
-
-    monkeypatch.setattr(ArchiveStore, "admit_raw_and_parsed_result", failing_write)
-    monkeypatch.setattr(ArchiveStore, "rollback", spy_rollback)
-
-    with pytest.raises(RuntimeError, match="simulated mid-batch write failure"):
-        asyncio.run(parse_sources_archive(archive_root, sources))
-
-    assert calls["n"] == 2
-    assert rollbacks["n"] == 1
-    # The first session's index rows were written but never committed; rollback
-    # must have discarded them so the archive carries no partial batch rows.
-    sessions, messages = _counts(archive_root / "index.db")
-    assert sessions == 0
-    assert messages == 0
+    assert first.processed_ids == {"claude-code:s1"}
+    assert second.processed_ids == set()
+    with sqlite3.connect(archive_root / "source.db") as raw:
+        assert raw.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (1,)
+    with sqlite3.connect(archive_root / "index.db") as index:
+        assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
+        assert index.execute("SELECT COUNT(*) FROM messages").fetchone() == (2,)
+    with sqlite3.connect(archive_root / "ops.db") as ops:
+        assert ops.execute("SELECT COUNT(*) FROM ingest_cursor").fetchone() == (1,)
 
 
-def test_invalid_env_falls_back_to_default_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "not-an-int")
-    assert archive_ingest._commit_batch_message_threshold() == archive_ingest.COMMIT_BATCH_MESSAGE_THRESHOLD
-    monkeypatch.delenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", raising=False)
-    assert archive_ingest._commit_batch_message_threshold() == archive_ingest.COMMIT_BATCH_MESSAGE_THRESHOLD
+def test_one_shot_ingest_refuses_resident_daemon(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.maintenance import offline_guard
+
+    archive_root = tmp_path / "archive"
+    source_root = tmp_path / "sources"
+    source_root.mkdir()
+    source = _session_file(source_root)
+    monkeypatch.setattr(offline_guard, "resident_daemon_pid", lambda _root: 31415)
+
+    with pytest.raises(ArchiveWriterOwnershipError, match="polylogued PID 31415"):
+        asyncio.run(parse_sources_archive(archive_root, [Source(name="claude-code", path=source)]))
+    assert not (archive_root / "source.db").exists()
 
 
-def test_batched_archive_ingest_runs_post_commit_upkeep(
-    tmp_path: Path,
-    workspace_env: dict[str, Path],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "5")
-    archive_root = workspace_env["archive_root"]
-    sources = _build_sources(tmp_path, count=4, seed=31)
-    optimize_calls: list[Path] = []
-
-    def fake_optimize_archive_tiers(root: Path, *, reason: str, **_: object) -> tuple[SqliteOptimizeObservation, ...]:
-        assert root == archive_root
-        assert reason == archive_ingest.POST_COMMIT_UPKEEP_REASON
-        optimize_calls.append(root)
-        return (SqliteOptimizeObservation(reason=reason, ran=True, analysis_limit=1000),)
-
-    monkeypatch.setattr(archive_ingest, "maybe_optimize_archive_tiers", fake_optimize_archive_tiers)
-
-    result = asyncio.run(parse_sources_archive(archive_root, sources))
-
-    upkeep_observations = [item for item in result.batch_observations if item.get("archive_post_commit_upkeep")]
-    assert len(optimize_calls) >= 2
-    assert len(upkeep_observations) == len(optimize_calls)
-    assert upkeep_observations[0]["sqlite_optimize_ran"] == 1
-    # Upkeep refreshes planner statistics only: checkpointing belongs to the
-    # daemon's recurring coordinator, not to whichever ingest happened to commit.
-    assert "wal_checkpoint_modes" not in upkeep_observations[0]
-    assert result.batch_observations[-1]["primary_ingest_store"] == "archive_file_set"
+def test_one_shot_ingest_refuses_daemon_held_pidfile(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    source_root = tmp_path / "sources"
+    source_root.mkdir()
+    source = _session_file(source_root)
+    context = multiprocessing.get_context("spawn")
+    parent, child = context.Pipe()
+    holder = context.Process(target=_hold_daemon_pidfile, args=(str(archive_root), child))
+    holder.start()
+    child.close()
+    try:
+        assert parent.poll(10), "daemon lock holder did not start"
+        assert parent.recv() is True
+        with pytest.raises(ArchiveWriterOwnershipError, match="polylogued PID"):
+            asyncio.run(parse_sources_archive(archive_root, [Source(name="claude-code", path=source)]))
+    finally:
+        parent.send(True)
+        parent.close()
+        holder.join(timeout=10)
+        if holder.is_alive():
+            holder.terminate()
+            holder.join(timeout=10)
+    assert holder.exitcode == 0
+    assert not (archive_root / "source.db").exists()
+    assert not (archive_root / ".one-shot-ingest-owner").exists()
 
 
-def test_per_session_archive_ingest_runs_post_commit_upkeep(
-    tmp_path: Path,
-    workspace_env: dict[str, Path],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "0")
-    archive_root = workspace_env["archive_root"]
-    sources = _build_sources(tmp_path, count=2, seed=41)
-    optimize_calls = 0
-
-    def fake_optimize_archive_tiers(root: Path, *, reason: str, **_: object) -> tuple[SqliteOptimizeObservation, ...]:
-        nonlocal optimize_calls
-        assert root == archive_root
-        assert reason == archive_ingest.POST_COMMIT_UPKEEP_REASON
-        optimize_calls += 1
-        return ()
-
-    monkeypatch.setattr(archive_ingest, "maybe_optimize_archive_tiers", fake_optimize_archive_tiers)
-
-    result = asyncio.run(parse_sources_archive(archive_root, sources))
-
-    assert optimize_calls == len(sources)
-    assert sum(1 for item in result.batch_observations if item.get("archive_post_commit_upkeep")) == len(sources)
-    assert result.batch_observations[-1]["archive_write_targets"] == ["source.db", "index.db"]
+def test_one_shot_ingest_refuses_unclaimed_populated_archive(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    source_root = tmp_path / "sources"
+    source_root.mkdir()
+    source = _session_file(source_root)
+    with sqlite3.connect(archive_root / "source.db") as raw:
+        raw.execute("CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY)")
+        raw.execute("INSERT INTO raw_sessions VALUES ('real-session')")
+    with pytest.raises(ArchiveWriterOwnershipError, match="already contains archive content"):
+        asyncio.run(parse_sources_archive(archive_root, [Source(name="claude-code", path=source)]))
+    assert not (archive_root / ".one-shot-ingest-owner").exists()
 
 
-def test_parse_workers_override_bypasses_process_pool(
-    tmp_path: Path,
-    workspace_env: dict[str, Path],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``parse_workers`` overrides the ambient worker count for one call.
-
-    Guards polylogue-b054.1.1.1: the demo seeder now passes ``parse_workers=1``
-    so the small, fixed demo corpus never goes through the real process-pool
-    path, whose per-worker failures were previously swallowed by the pool
-    driver's ``except Exception: failed += 1; continue`` and silently dropped
-    a fixture file's sessions under host load (the observed nondeterministic
-    declared-construct loss under xdist). This spies on the exact
-    ``process_pool_executor()`` construction that path uses (polylogue-7saq:
-    the shared helper, not a bare ``ProcessPoolExecutor``): if the override
-    stopped reaching ``workers`` -- e.g. the ``max(1, parse_workers)`` branch
-    in ``parse_sources_archive`` were reverted to always call
-    ``_parse_worker_count()`` -- the ``parse_workers=1`` call below would
-    still construct the pool (ambient worker count on any multi-core
-    CI/dev host is > 1), and this test would fail.
-    """
-
-    from polylogue.pipeline.services.process_pool import process_pool_executor as real_process_pool_executor
-
-    pool_calls: list[int | None] = []
-
-    def fake_process_pool_executor(*, max_workers: int) -> ProcessPoolExecutor:
-        pool_calls.append(max_workers)
-        return real_process_pool_executor(max_workers=max_workers)
-
-    monkeypatch.setattr(archive_ingest, "process_pool_executor", fake_process_pool_executor)
-    # No POLYLOGUE_INGEST_PARSE_WORKERS override: the ambient default is
-    # min(8, cpus-1), which is >= 2 on any real multi-core CI/dev host, so
-    # an un-overridden call below would exercise the pool branch.
-    monkeypatch.delenv("POLYLOGUE_INGEST_PARSE_WORKERS", raising=False)
-    # The walk-size tiering would send this synthetic corpus down the
-    # in-process branch on bytes alone; report a bulk-sized walk so the
-    # override, not the tier, is what this test measures.
-    monkeypatch.setattr(archive_ingest, "_submission_payload_bytes", lambda _submissions: 128 * 1024 * 1024)
-    archive_root = workspace_env["archive_root"]
-
-    sequential_sources = _build_sources(tmp_path, count=2, seed=97)
-    result = asyncio.run(parse_sources_archive(archive_root, sequential_sources, parse_workers=1))
-    assert pool_calls == []  # workers<=1 takes the sequential for-loop, no pool constructed
-    assert result.counts["sessions"] == _expected_session_count(sequential_sources)
-
-    pooled_sources = _build_sources(tmp_path, count=4, seed=98)
-    result = asyncio.run(parse_sources_archive(archive_root, pooled_sources, parse_workers=3))
-    assert pool_calls == [3]  # explicit override reaches the pool construction exactly
-    assert result.counts["sessions"] == _expected_session_count(pooled_sources)
-
-
-def test_parallel_ingest_pool_uses_shared_safe_process_pool_executor(
-    tmp_path: Path,
-    workspace_env: dict[str, Path],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """polylogue-7saq: the parallel-parse pool must go through the shared helper.
-
-    Before this fix, ``parse_sources_archive`` built its pool via a bare
-    ``ProcessPoolExecutor(max_workers=workers)`` with no ``mp_context`` --
-    unlike every other production process-pool call site (``ingest_batch/
-    _core.py``, ``revision_backfill.py``), which already route through
-    ``process_pool.process_pool_executor()`` to pin the "spawn" start method
-    and avoid fork()ing a live, possibly multi-threaded async process. This
-    test spies on ``archive_ingest.process_pool_executor`` (the shared
-    helper's module-level name, imported directly rather than constructing
-    ``ProcessPoolExecutor`` inline) with a wrapper that asserts every
-    invocation resolves to the "spawn" context and records that it was
-    called at all -- if the fix regressed back to a direct
-    ``ProcessPoolExecutor(...)`` construction, this spy would simply never
-    fire and the ``calls`` assertion below would fail.
-    """
-    from polylogue.pipeline.services.process_pool import process_pool_executor as real_process_pool_executor
-
-    calls: list[int] = []
-
-    def spying_process_pool_executor(*, max_workers: int) -> ProcessPoolExecutor:
-        calls.append(max_workers)
-        executor = real_process_pool_executor(max_workers=max_workers)
-        mp_context = executor._mp_context
-        assert mp_context is not None
-        assert mp_context.get_start_method() == "spawn"
-        return executor
-
-    monkeypatch.setattr(archive_ingest, "process_pool_executor", spying_process_pool_executor)
-    monkeypatch.delenv("POLYLOGUE_INGEST_PARSE_WORKERS", raising=False)
-    # Report a bulk-sized walk so the dispatch tiering selects the pool this
-    # test exists to inspect (see _submission_payload_bytes).
-    monkeypatch.setattr(archive_ingest, "_submission_payload_bytes", lambda _submissions: 128 * 1024 * 1024)
-    archive_root = workspace_env["archive_root"]
-    sources = _build_sources(tmp_path, count=2, seed=113)
-
-    result = asyncio.run(parse_sources_archive(archive_root, sources, parse_workers=2))
-
-    assert calls == [2]
-    assert result.counts["sessions"] == _expected_session_count(sources)
-    assert result.stage_timings_s["append.parse"] >= 0.0
-    assert result.stage_timings_s["append.parse_pool_submit"] >= 0.0
-    assert result.stage_timings_s["append.parse_pool_shutdown"] >= 0.0
-    assert "append.parse_pool" not in result.stage_timings_s
-    assert not hasattr(archive_ingest, "ProcessPoolExecutor")
-
-
-def _walk_bytes(sources: Sequence[Source]) -> int:
-    return sum(source.path.stat().st_size for source in sources if source.path is not None)
-
-
-def test_small_walk_parses_in_process_with_identical_results(
-    tmp_path: Path,
-    workspace_env: dict[str, Path],
-    empty_archive_template: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An ordinary small walk parses in-process and lands exactly what the pool lands.
-
-    ``resolve_archive_ingest_dispatch`` used to read CPU count alone, so a walk
-    of a handful of small files spawned one fresh interpreter per ambient
-    worker -- a full ``polylogue`` import each -- to parse them. Measured on a
-    24-thread host, six one-file walks went 33-41 messages/s with the pool and
-    401-424 messages/s without it, at 0.06 versus 0.84 process CPU utilization.
-
-    Anti-vacuity, two ways: reverting the tiering makes the first arm construct
-    a pool and fail on ``pool_calls``; routing the in-process branch through
-    anything other than the same ``_parse_source_path_worker`` call makes the
-    two arms' session and message counts diverge.
-    """
-    from polylogue.pipeline.services.process_pool import process_pool_executor as real_process_pool_executor
-    from tests.infra.archive_templates import clone_archive_template
-
-    pool_calls: list[int] = []
-
-    def spying_process_pool_executor(*, max_workers: int) -> ProcessPoolExecutor:
-        pool_calls.append(max_workers)
-        return real_process_pool_executor(max_workers=max_workers)
-
-    monkeypatch.setattr(archive_ingest, "process_pool_executor", spying_process_pool_executor)
-    monkeypatch.delenv("POLYLOGUE_INGEST_PARSE_WORKERS", raising=False)
-
-    in_process_root = workspace_env["archive_root"]
-    sources = _build_sources(tmp_path, count=3, seed=211)
-    assert _walk_bytes(sources) <= 8 * 1024 * 1024  # the tier the first arm relies on
-
-    in_process = asyncio.run(parse_sources_archive(in_process_root, sources))
-    assert pool_calls == []
-    assert in_process.counts["sessions"] == _expected_session_count(sources)
-
-    pooled_root = tmp_path / "pooled-archive"
-    clone_archive_template(empty_archive_template, pooled_root)
-    monkeypatch.setattr(archive_ingest, "_submission_payload_bytes", lambda _submissions: 128 * 1024 * 1024)
-    pooled = asyncio.run(parse_sources_archive(pooled_root, sources))
-    # One pool, sized by min(path_count, cpus, ceiling) -- bounded by the walk
-    # rather than fixed, so this holds on a narrower host too.
-    assert len(pool_calls) == 1
-    assert 2 <= pool_calls[0] <= len(sources)
-
-    assert _counts(pooled_root / "index.db") == _counts(in_process_root / "index.db")
-    assert pooled.counts["sessions"] == in_process.counts["sessions"]
-    assert pooled.counts["messages"] == in_process.counts["messages"]
+def test_one_shot_ingest_refuses_unclaimed_initialized_archive(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    with sqlite3.connect(archive_root / "source.db") as raw:
+        raw.execute("CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY)")
+    source_root = tmp_path / "sources"
+    source_root.mkdir()
+    source = _session_file(source_root)
+    with pytest.raises(ArchiveWriterOwnershipError, match="existing archive"):
+        asyncio.run(parse_sources_archive(archive_root, [Source(name="claude-code", path=source)]))
+    assert not (archive_root / ".one-shot-ingest-owner").exists()

@@ -149,6 +149,7 @@ from polylogue.storage.fts.sql import (
     delete_session_rows_sql,
 )
 from polylogue.storage.hook_event_authority import HookEventAuthorityCensus, census_hook_event_authority
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.search.query_support import normalize_fts5_query
@@ -930,7 +931,7 @@ class ArchiveStore:
                 path = archive_root / spec.filename
                 if not path.exists():
                     raise RuntimeError(f"source-tier acquisition refused: durable tier {spec.filename} is missing")
-                with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=read_timeout)) as vconn:
+                with closing(open_readonly_connection(path, timeout=read_timeout, validate_schema=False)) as vconn:
                     current = int(vconn.execute("PRAGMA user_version").fetchone()[0])
                 if current != spec.version:
                     raise RuntimeError(
@@ -1004,13 +1005,13 @@ class ArchiveStore:
                 archive_root=self._write_lease_archive_root,
             )
             self._conn = (
-                sqlite3.connect(f"file:{self.index_db_path}?mode=rw", uri=True)
+                connect_measured(f"file:{self.index_db_path}?mode=rw", uri=True)
                 if self._inactive_candidate_durable_read_only
                 # URI filenames are inert for a plain path -- SQLite only
                 # parses one when it starts with ``file:`` -- and the flag is
                 # what lets this connection ATTACH a stage-A shard read-only
                 # (polylogue-bp12n.6, ``archive_tiers/write_shard.py``).
-                else sqlite3.connect(self.index_db_path, uri=True)
+                else connect_measured(self.index_db_path, uri=True)
             )
             write_profile = BULK_BUILD_WRITE_CONNECTION_PROFILE if bulk_build_profile else WRITE_CONNECTION_PROFILE
             if active_cold_build and not bulk_build_profile:
@@ -1468,8 +1469,7 @@ class ArchiveStore:
         """Return the persistent source.db connection, opening it lazily."""
         if self._source_conn is None:
             if self._read_only or self._inactive_candidate_durable_read_only:
-                conn = sqlite3.connect(f"file:{quote(str(self.source_db_path))}?mode=ro", uri=True)
-                conn.execute("PRAGMA query_only = ON")
+                conn = open_readonly_connection(self.source_db_path, validate_schema=False)
             else:
                 # The persistent owner reuses this compatible handle. Its
                 # factory intentionally excludes journal_mode: bootstrap made
@@ -2434,6 +2434,7 @@ class ArchiveStore:
         preacquired_attachment_refs: tuple[ArchiveSourceBlobRef, ...] | None = None,
         prepared_by_raw_id: Mapping[str, PreparedRows] | None = None,
         prepared_required_raw_ids: frozenset[str] = frozenset(),
+        prepared_write: PreparedSessionWrite | None = None,
     ) -> str | None:
         self._require_writable("apply source.db membership classification")
         return apply_raw_membership_classification(
@@ -2455,6 +2456,7 @@ class ArchiveStore:
             preacquired_attachment_refs=preacquired_attachment_refs,
             prepared_by_raw_id=prepared_by_raw_id,
             prepared_required_raw_ids=prepared_required_raw_ids,
+            prepared_write=prepared_write,
         )
 
     def finalize_raw_parse_state(self, raw_id: str, *, state: RawSessionStateUpdate) -> None:
@@ -2845,7 +2847,7 @@ class ArchiveStore:
         if raw_row is None or raw_row["raw_id"] is None or not self.source_db_path.exists():
             return [], 0
         raw_id = str(raw_row["raw_id"])
-        source_conn = sqlite3.connect(f"file:{self.source_db_path}?mode=ro", uri=True)
+        source_conn = open_readonly_connection(self.source_db_path, validate_schema=False)
         source_conn.row_factory = sqlite3.Row
         try:
             total = int(
@@ -2901,7 +2903,7 @@ class ArchiveStore:
             return None
         origin = str(row["origin"])
         native_id = str(row["native_id"])
-        source_conn = sqlite3.connect(f"file:{self.source_db_path}?mode=ro", uri=True)
+        source_conn = open_readonly_connection(self.source_db_path, validate_schema=False)
         source_conn.row_factory = sqlite3.Row
         try:
             events = list_hook_events(source_conn, origin=origin, session_native_id=native_id)
@@ -5713,7 +5715,7 @@ class ArchiveStore:
         resolved_session_ids = tuple(dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids))
         if not resolved_session_ids:
             return 0
-        conn = sqlite3.connect(self.index_db_path)
+        conn = connect_measured(self.index_db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         deleted = 0
@@ -6069,7 +6071,7 @@ class ArchiveStore:
         """Return retryable operation debt without using it as readiness truth."""
         if not self.ops_db_path.exists():
             return ()
-        conn = sqlite3.connect(f"file:{self.ops_db_path}?mode=ro", uri=True)
+        conn = open_readonly_connection(self.ops_db_path, validate_schema=False)
         try:
             present = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'convergence_debt'"

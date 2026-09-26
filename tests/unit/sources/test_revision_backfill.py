@@ -362,6 +362,17 @@ def test_frozen_inactive_generation_refuses_corrupt_required_shard(
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
 
+def test_active_prepared_replay_requires_captured_authority_plan(tmp_path: Path) -> None:
+    """A sealed active replay cannot classify large raw bytes under the writer."""
+    with pytest.raises(ValueError, match="captured source authority plan"):
+        backfill_historical_revision_evidence(
+            tmp_path,
+            selected_raw_ids=[],
+            prepared_inputs={},
+            use_session_shards=True,
+        )
+
+
 def test_browser_snapshot_fidelity_derives_from_parser_ingest_flags() -> None:
     """``MembershipRevision.browser_snapshot_fidelity`` must reflect the parser's
     own ingest flags -- until this was wired up, every ``MembershipRevision``

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import polylogue.paths as _paths
 from polylogue.logging import get_logger
 from polylogue.storage.fts.pl_fold import register_pl_fold
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.connection_profile import (
     DB_TIMEOUT,
     READ_CACHE_SIZE_KIB,
@@ -120,7 +121,7 @@ def _get_cached_connection(path: Path) -> sqlite3.Connection:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     require_write_lease(f"cached write connection({path})")
-    conn = sqlite3.connect(path, timeout=DB_TIMEOUT)
+    conn = connect_measured(path, timeout=DB_TIMEOUT)
     try:
         os.chmod(path, 0o600)
         conn.row_factory = sqlite3.Row

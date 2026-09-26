@@ -9,6 +9,8 @@ runner.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import os
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +24,7 @@ from polylogue.daemon.intake import (
     FairIntakeDispatcher,
     IntakeAdapter,
     IntakeItem,
+    IntakePass,
 )
 from polylogue.logging import WARNING, emit
 from polylogue.sources.live.cold_build import (
@@ -31,7 +34,12 @@ from polylogue.sources.live.cold_build import (
     register_cold_build_generation,
 )
 from polylogue.sources.live.discovery import _bounded_source_paths as _bounded_source_paths
-from polylogue.sources.live.metrics import REFUSED_DAEMON_DEGRADED
+from polylogue.sources.live.metrics import (
+    REFUSED_DAEMON_DEGRADED,
+    REFUSED_UNATTEMPTED,
+    REFUSED_UNATTEMPTED_TIME_BUDGET,
+)
+from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource, _log_ingest_metrics
 
 _T = TypeVar("_T")
@@ -78,25 +86,52 @@ class FileIntakeAdapter(IntakeAdapter):
         self.source = source
         self.class_name = class_name or source.name
         self._after: str | None = None
+        self._retry_after: str | None = None
+        self._retry_skip_after: str | None = None
+        self._retry_through: str | None = None
+        self._retry_turn = False
+        self._retry_page = False
+        self._retry_page_paths: tuple[Path, ...] = ()
+        self._retry_page_pending = False
+        self._ops_ledger_generation = self._ledger_generation()
         self._last_root_mtime_ns: int | None = None
+        self._last_source_entries = self._source_entries()
         self._last_hint_revision = context.watcher.intake_revision(source)
 
     async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+        generation = self._ledger_generation()
+        if generation != self._ops_ledger_generation:
+            # ops.db is disposable. Losing or replacing its inode invalidates
+            # the scheduling hints even when no source directory changed.
+            self._after = None
+            self._retry_after = None
+            self._retry_skip_after = None
+            self._retry_through = None
+            self._ops_ledger_generation = generation
+        if self._retry_page_pending and self._retry_page_paths:
+            # No item from the previous page reached admission or ack (for
+            # example every item was in the dispatcher's cooldown). Rotate
+            # past it within a finite sweep; the next sweep revisits it.
+            self._retry_skip_after = str(self._retry_page_paths[-1])
+        self._retry_page_pending = False
+        self._retry_page_paths = ()
         hint_revision = self.context.watcher.intake_revision(self.source)
         if hint_revision != self._last_hint_revision:
             self._after = None
             self._last_hint_revision = hint_revision
-        # A filesystem cursor is only a scheduling hint.  A producer may add
-        # an item lexicographically before the previous position; restart the
-        # bounded walk when the root changed so that insertion is revisited.
-        # Durable cursor/raw identity makes revisiting already admitted files
-        # harmless and avoids treating this hint as queue authority.
+        # A producer may add a file before the walk's position. Root mtime
+        # catches direct additions without a watcher hint, but SQLite sidecars
+        # in a coincident archive/source root change that mtime too. Compare
+        # source-visible entries before restarting the walk.
         try:
             root_mtime_ns = self.source.root.stat().st_mtime_ns
         except OSError:
             root_mtime_ns = None
         if root_mtime_ns is not None and root_mtime_ns != self._last_root_mtime_ns:
-            self._after = None
+            entries = self._source_entries()
+            if entries != self._last_source_entries:
+                self._after = None
+            self._last_source_entries = entries
             self._last_root_mtime_ns = root_mtime_ns
         # The cursor advances in ``acknowledge``, over items the dispatcher
         # actually consumed -- never here, over everything merely discovered.
@@ -107,7 +142,18 @@ class FileIntakeAdapter(IntakeAdapter):
         # session. Revisiting an already-admitted file is explicitly harmless
         # (durable cursor/raw identity, see above), so the conservative
         # direction here is to re-discover, never to skip.
-        paths = _bounded_source_paths(self.source, self.context.sources, limit=limit, after=self._after)
+        retry_turn = self._retry_turn
+        self._retry_turn = not retry_turn
+        paths = self._due_retry_paths(limit) if retry_turn else []
+        self._retry_page = bool(paths)
+        if not paths:
+            paths = _bounded_source_paths(self.source, self.context.sources, limit=limit, after=self._after)
+        if not paths and not retry_turn:
+            paths = self._due_retry_paths(limit)
+            self._retry_page = bool(paths)
+        if self._retry_page:
+            self._retry_page_paths = tuple(paths)
+            self._retry_page_pending = True
         items: list[IntakeItem] = []
         for path in paths:
             try:
@@ -123,6 +169,87 @@ class FileIntakeAdapter(IntakeAdapter):
                 )
             )
         return tuple(items)
+
+    def _ledger_generation(self) -> tuple[int, int] | None:
+        cursor = getattr(self.context.watcher, "_cursor", None)
+        generation = getattr(cursor, "ops_ledger_generation", None)
+        return generation() if callable(generation) else None
+
+    def _source_entries(self) -> tuple[int, int] | None:
+        """Bounded-memory signature of direct source entries."""
+        internal_paths = self._internal_ledger_paths()
+        try:
+            with os.scandir(self.source.root) as entries:
+                count = 0
+                signature = 0
+                for entry in entries:
+                    path = Path(entry.path)
+                    if path in internal_paths:
+                        continue
+                    if not (
+                        (entry.is_dir() and not self.source.ignores_directory(path))
+                        or (entry.is_file(follow_symlinks=False) and self.source.accepts(path))
+                    ):
+                        continue
+                    # XOR makes the result independent of scandir order;
+                    # count prevents an unchanged value after paired changes.
+                    token = entry.name.encode("utf-8", "surrogateescape") + b"\0" + str(entry.inode()).encode()
+                    signature ^= int.from_bytes(hashlib.blake2b(token, digest_size=16).digest())
+                    count += 1
+                return count, signature
+        except OSError:
+            return None
+
+    def _internal_ledger_paths(self) -> frozenset[Path]:
+        cursor = getattr(self.context.watcher, "_cursor", None)
+        path = getattr(cursor, "_ops_db_path", None)
+        if not isinstance(path, Path):
+            return frozenset()
+        return frozenset((path, Path(f"{path}-wal"), Path(f"{path}-shm")))
+
+    def _owns_retry_path(self, path: Path) -> bool:
+        return (
+            path.is_file()
+            and deepest_source_for_path(path, self.context.sources) is self.source
+            and self.source.accepts(path)
+        )
+
+    def _due_retry_paths(self, limit: int) -> list[Path]:
+        cursor = getattr(self.context.watcher, "_cursor", None)
+        due_retries = getattr(cursor, "list_due_retry_paths", None)
+        if not callable(due_retries):
+            return []
+        # Acknowledged deferrals can sit before the filesystem walk's
+        # position forever. Retry and fresh discovery alternate so a growing
+        # source cannot starve either side; both walks stay bounded.
+        if self._retry_through is None:
+            high_water = getattr(cursor, "due_retry_high_water", None)
+            self._retry_through = high_water(self.source.root) if callable(high_water) else None
+        resume_positions = tuple(value for value in (self._retry_after, self._retry_skip_after) if value is not None)
+        candidates = due_retries(
+            self.source.root,
+            after=max(resume_positions) if resume_positions else None,
+            limit=limit,
+            through=self._retry_through,
+            owns=self._owns_retry_path,
+        )
+        if not candidates:
+            self._retry_after = None
+            self._retry_skip_after = None
+            self._retry_through = None
+            return []
+        return list(candidates)
+
+    def _consume_retry_item(self, item: IntakeItem) -> None:
+        if not self._retry_page or not isinstance(item.payload, (str, Path)):
+            return
+        path = Path(item.payload)
+        if path not in self._retry_page_paths:
+            return
+        position = str(path)
+        if self._retry_after is None or position > self._retry_after:
+            self._retry_after = position
+        self._retry_page_pending = False
 
     async def admit(self, item: IntakeItem) -> AdmissionResult:
         outcomes = await self.admit_page((item,))
@@ -143,6 +270,8 @@ class FileIntakeAdapter(IntakeAdapter):
         ``retry_after`` and isolation accounting are exactly what they were
         under per-file admission.
         """
+        for item in items:
+            self._consume_retry_item(item)
         outcomes: dict[str, AdmissionResult] = {}
         batch: list[IntakeItem] = []
         for item in items:
@@ -276,6 +405,12 @@ class FileIntakeAdapter(IntakeAdapter):
             actual_cost = max(1, round(read_bytes * item_estimate / estimated_total)) if read_bytes else item_estimate
             if key in succeeded:
                 outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.ADMITTED, actual_cost=actual_cost)
+            elif excluded_by_path.get(key) in {REFUSED_UNATTEMPTED, REFUSED_UNATTEMPTED_TIME_BUDGET}:
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.RETRYABLE,
+                    reason=f"source admission left {key} unattempted: {excluded_by_path[key]}",
+                    actual_cost=0,
+                )
             elif key in excluded_by_path:
                 # polylogue-onbz3: a durable refusal is not "already admitted
                 # under this identity". Reporting DUPLICATE here advanced the
@@ -302,6 +437,7 @@ class FileIntakeAdapter(IntakeAdapter):
                 outcomes[item.item_id] = AdmissionResult(
                     AdmissionOutcome.RETRYABLE,
                     reason=f"source admission left {key} unattempted",
+                    actual_cost=0,
                 )
             elif not succeeded:
                 # A zero-success, zero-failure batch supplied no per-item
@@ -333,6 +469,11 @@ class FileIntakeAdapter(IntakeAdapter):
         # cursor/raw commit is the acknowledgement projection.  The scheduling
         # cursor advances here, monotonically, so an item dropped by the class
         # deficit is rediscovered on the next pass instead of being skipped.
+        # Retry rows may be ahead of ordinary discovery. They cannot advance
+        # that walk past files it has not offered yet.
+        if self._retry_page:
+            self._consume_retry_item(item)
+            return
         payload = item.payload
         if isinstance(payload, (str, Path)):
             position = str(payload)
@@ -583,11 +724,16 @@ class RawMaterializationIntakeAdapter(IntakeAdapter):
         self,
         discover_ids: Callable[[int], Awaitable[Sequence[tuple[str, int]]] | Sequence[tuple[str, int]]],
         admit_id: Callable[[str], Awaitable[AdmissionResult | int] | AdmissionResult | int],
+        *,
+        suspended: Callable[[], bool] | None = None,
     ) -> None:
         self._discover_ids = discover_ids
         self._admit_id = admit_id
+        self._suspended = suspended
 
     async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+        if self._suspended is not None and self._suspended():
+            return ()
         raw_ids = self._discover_ids(limit)
         if isinstance(raw_ids, Awaitable):
             raw_ids = await raw_ids
@@ -817,6 +963,8 @@ class DaemonIntakeService:
         idle_delay_s: float = 5.0,
         wakeup: asyncio.Event | None = None,
         on_backlog_drained: Callable[[], Awaitable[None] | None] | None = None,
+        has_pending_backlog: Callable[[], Awaitable[bool] | bool] | None = None,
+        on_pass_complete: Callable[[IntakePass], Awaitable[None] | None] | None = None,
     ) -> None:
         self.dispatcher = dispatcher
         # A count-scale budget (the previous literal 64) left a class's
@@ -831,6 +979,8 @@ class DaemonIntakeService:
         # finished is a pass that found nothing to do AFTER a pass that did
         # something. Fired once; a later backlog is ordinary live ingest.
         self._on_backlog_drained = on_backlog_drained
+        self._has_pending_backlog = has_pending_backlog
+        self._on_pass_complete = on_pass_complete
         self._progressed_once = False
 
     async def run(self) -> None:
@@ -839,11 +989,21 @@ class DaemonIntakeService:
             result = await self.dispatcher.run_once(budget=self.budget)
             if result.progressed:
                 self._progressed_once = True
-            elif self._progressed_once and self._on_backlog_drained is not None:
-                drained, self._on_backlog_drained = self._on_backlog_drained, None
-                outcome = drained()
-                if isinstance(outcome, Awaitable):
-                    await outcome
+                if self._on_pass_complete is not None:
+                    outcome = self._on_pass_complete(result)
+                    if isinstance(outcome, Awaitable):
+                        await outcome
+            elif self._progressed_once and result.quiescent and self._on_backlog_drained is not None:
+                pending = self._has_pending_backlog() if self._has_pending_backlog is not None else False
+                if isinstance(pending, Awaitable):
+                    pending = await pending
+                if not pending:
+                    outcome = self._on_backlog_drained()
+                    if isinstance(outcome, Awaitable):
+                        await outcome
+                    # A failed promotion must be retried, not mistaken for a
+                    # completed one-shot callback.
+                    self._on_backlog_drained = None
             try:
                 async with asyncio.timeout(0.05 if result.progressed else self.idle_delay_s):
                     await self._wakeup.wait()
@@ -857,6 +1017,7 @@ def build_intake_adapters(
     remote_callback: Callable[[], Awaitable[int] | int] | None = None,
     raw_callback: Callable[..., Awaitable[AdmissionResult | int] | AdmissionResult | int] | None = None,
     raw_discover: Callable[[int], Awaitable[Sequence[tuple[str, int]]] | Sequence[tuple[str, int]]] | None = None,
+    raw_suspended: Callable[[], bool] | None = None,
     hook_events_callback: Callable[..., Awaitable[AdmissionResult | int] | AdmissionResult | int] | None = None,
     hook_events_discover: Callable[[int], Awaitable[Sequence[tuple[str, int]]] | Sequence[tuple[str, int]]]
     | None = None,
@@ -896,7 +1057,12 @@ def build_intake_adapters(
                     value = await value
                 return value
 
-            result.append(("raw_materialization", RawMaterializationIntakeAdapter(raw_discover, admit_raw)))
+            result.append(
+                (
+                    "raw_materialization",
+                    RawMaterializationIntakeAdapter(raw_discover, admit_raw, suspended=raw_suspended),
+                )
+            )
     if hook_events_callback is not None and hook_events_discover is not None:
         # Hook-event materialization is keyed by carrier raw id exactly as raw
         # materialization is keyed by session raw id, so it reuses the same

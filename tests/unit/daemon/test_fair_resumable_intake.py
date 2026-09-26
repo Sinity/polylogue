@@ -47,6 +47,8 @@ from polylogue.operations.intake_adapters import (
     _bounded_source_paths,
     discover_pending_raw_ids,
 )
+from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.live.metrics import REFUSED_UNATTEMPTED, REFUSED_UNATTEMPTED_TIME_BUDGET
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -85,6 +87,51 @@ class FakeAdapter:
         # Atomic and idempotent: acknowledging twice releases one entry.
         if item.item_id in self.pending:
             self.pending.remove(item.item_id)
+
+
+@pytest.mark.asyncio
+async def test_cold_build_file_pages_drain_before_raw_materialization_resumes() -> None:
+    """The candidate must reach its final file page before raw work can occupy the pass."""
+    files = FakeAdapter("configured_local", [f"file-{index:02d}" for index in range(33)])
+    cold_build_active = True
+    raw_discoveries = 0
+    raw_admissions: list[str] = []
+
+    def discover_raw(limit: int) -> tuple[tuple[str, int], ...]:
+        nonlocal raw_discoveries
+        raw_discoveries += 1
+        return tuple((f"raw-{index:02d}", 1) for index in range(min(32, limit)))
+
+    def admit_raw(raw_id: str) -> int:
+        raw_admissions.append(raw_id)
+        return 1
+
+    raw = RawMaterializationIntakeAdapter(
+        discover_raw,
+        admit_raw,
+        suspended=lambda: cold_build_active,
+    )
+    dispatcher = FairIntakeDispatcher(
+        (
+            IntakeClassSpec("configured_local", files, page_size=32),
+            IntakeClassSpec("raw_materialization", raw, page_size=32),
+        )
+    )
+
+    first = await dispatcher.run_once()
+    second = await dispatcher.run_once()
+    drained = await dispatcher.run_once()
+    assert first.require_report("configured_local").admitted == 32
+    assert second.require_report("configured_local").admitted == 1
+    assert drained.quiescent
+    assert files.pending == []
+    assert raw_discoveries == 0
+    assert raw_admissions == []
+
+    cold_build_active = False
+    resumed = await dispatcher.run_once()
+    assert resumed.require_report("raw_materialization").admitted == 32
+    assert len(raw_admissions) == 32
 
 
 def test_bounded_source_paths_prunes_ignored_subtrees_and_keeps_nested_sources(tmp_path: Path) -> None:
@@ -1259,6 +1306,377 @@ async def test_zero_success_file_intake_is_retryable_not_duplicate(tmp_path: Pat
     report = intake_pass.require_report("capture")
     assert (report.retried, report.duplicates) == (1, 0)
     assert adapter._after is None
+
+
+@pytest.mark.asyncio
+async def test_unattempted_file_refunds_estimate_so_next_pass_can_discover(tmp_path: Path) -> None:
+    """A batch refusal costs no bytes for a file the watcher never attempted.
+
+    Without the refund, the oversized page leaves a negative deficit and the
+    next pass skips discovery even though its deferred file is ready.
+    """
+    first, deferred = (tmp_path / name for name in ("a.json", "b.json"))
+    for path in (first, deferred):
+        path.write_bytes(b"x" * 40)
+    source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
+
+    class PartlyRefusedWatcher:
+        def __init__(self) -> None:
+            self.batches: list[list[Path]] = []
+
+        def intake_revision(self, _source: WatchSource) -> int:
+            return 0
+
+        async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+            self.batches.append(list(paths))
+            if len(self.batches) == 1:
+                # The first file grew after discovery. Its measured charge
+                # overdraws the share unless the unattempted file is refunded.
+                first.write_bytes(b"x" * 120)
+                return SimpleNamespace(
+                    succeeded_paths=(str(first),),
+                    excluded_paths={str(deferred): REFUSED_UNATTEMPTED},
+                    source_payload_read_bytes=120,
+                )
+            return SimpleNamespace(succeeded_paths=(str(deferred),), source_payload_read_bytes=40)
+
+    watcher = PartlyRefusedWatcher()
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="capture", adapter=adapter, page_size=2)])
+
+    first_pass = await dispatcher.run_once(budget=80)
+    report = first_pass.require_report("capture")
+    assert (report.admitted, report.retried, report.estimated_cost, report.actual_cost) == (1, 1, 80, 60)
+
+    second_pass = await dispatcher.run_once(budget=1)
+    assert second_pass.require_report("capture").admitted == 1
+    assert watcher.batches == [[first, deferred], [deferred]]
+
+
+@pytest.mark.asyncio
+async def test_attempted_retry_keeps_its_estimated_charge() -> None:
+    """An ordinary retry cannot claim zero cost merely because admission failed."""
+    item = IntakeItem(item_id="retry", class_name="files", estimated_cost=40)
+
+    class RetryAdapter:
+        def __init__(self) -> None:
+            self.discover_calls = 0
+
+        async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+            self.discover_calls += 1
+            return [item]
+
+        async def admit(self, _item: IntakeItem) -> AdmissionResult:
+            return AdmissionResult(AdmissionOutcome.RETRYABLE, reason="attempted")
+
+        async def acknowledge(self, _item: IntakeItem) -> None:
+            raise AssertionError("retry was acknowledged")
+
+    adapter = RetryAdapter()
+    dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="files", adapter=adapter)])
+    first_pass = await dispatcher.run_once(budget=1)
+    assert first_pass.require_report("files").actual_cost == 40
+    second_pass = await dispatcher.run_once(budget=1)
+    assert second_pass.require_report("files").budget_blocked
+    assert adapter.discover_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_deferred_file_is_reoffered_when_cursor_retry_is_due(tmp_path: Path) -> None:
+    """A static root must not strand a deferred file behind the acknowledged walk position.
+
+    Anti-vacuity: removing the due-cursor discovery leaves the second ingest
+    batch absent even after its retry time has elapsed.
+    """
+    deferred_path = tmp_path / "a.json"
+    sibling_path = tmp_path / "z.json"
+    for path in (deferred_path, sibling_path):
+        path.write_text("{}")
+    source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
+    cursor = CursorStore(tmp_path / "index.db")
+
+    class DeferredWatcher:
+        def __init__(self) -> None:
+            self._cursor = cursor
+            self.batches: list[list[Path]] = []
+
+        def intake_revision(self, _source: WatchSource) -> int:
+            return 0
+
+        async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+            self.batches.append(list(paths))
+            if len(self.batches) == 1:
+                cursor.set(deferred_path, 2, next_retry_at="2999-01-01T00:00:00+00:00")
+                return SimpleNamespace(
+                    succeeded_paths=(str(sibling_path),),
+                    deferred_paths=(str(deferred_path),),
+                    failed_paths=(str(deferred_path),),
+                    source_payload_read_bytes=2,
+                )
+            cursor.set(deferred_path, 2, content_fingerprint="admitted", next_retry_at=None)
+            return SimpleNamespace(succeeded_paths=(str(deferred_path),), source_payload_read_bytes=2)
+
+    watcher = DeferredWatcher()
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="capture", adapter=adapter, page_size=2)])
+
+    first = await dispatcher.run_once()
+    assert first.require_report("capture").deferred == 1
+    assert adapter._after == str(sibling_path)
+    assert (await dispatcher.run_once()).require_report("capture").discovered == 0
+    assert watcher.batches == [[deferred_path, sibling_path]]
+
+    cursor.set(deferred_path, 2, next_retry_at="1970-01-01T00:00:00+00:00")
+    retried = await dispatcher.run_once()
+    assert retried.require_report("capture").admitted == 1
+    assert watcher.batches == [[deferred_path, sibling_path], [deferred_path]]
+    assert (await dispatcher.run_once()).require_report("capture").discovered == 0
+
+
+@pytest.mark.asyncio
+async def test_archive_sidecars_do_not_restart_a_file_sweep_but_new_source_files_do(tmp_path: Path) -> None:
+    paths = [tmp_path / name for name in ("a.json", "c.json")]
+    for path in paths:
+        path.write_text("{}")
+    source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
+    cursor = CursorStore(tmp_path / "index.db")
+    watcher = SimpleNamespace(_cursor=cursor, intake_revision=lambda _source: 0)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+
+    first = await adapter.discover(limit=1)
+    assert [item.payload for item in first] == [paths[0]]
+    await adapter.acknowledge(first[0])
+    Path(f"{cursor._ops_db_path}-wal").write_text("")
+    second = await adapter.discover(limit=1)
+    assert [item.payload for item in second] == [paths[1]]
+    await adapter.acknowledge(second[0])
+
+    # An insertion behind the current position needs a fresh source walk.
+    earlier = tmp_path / "b.json"
+    earlier.write_text("{}")
+    restarted = await adapter.discover(limit=1)
+    assert [item.payload for item in restarted] == [paths[0]]
+    await adapter.acknowledge(restarted[0])
+    inserted = await adapter.discover(limit=1)
+    assert [item.payload for item in inserted] == [earlier]
+
+
+@pytest.mark.asyncio
+async def test_acquisition_budget_retains_unattempted_file_page_tail(tmp_path: Path) -> None:
+    paths = [tmp_path / name for name in ("a.json", "b.json", "c.json")]
+    for path in paths:
+        path.write_text("{}")
+    source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
+
+    class BudgetWatcher:
+        def __init__(self) -> None:
+            self.batches: list[list[Path]] = []
+
+        def intake_revision(self, _source: WatchSource) -> int:
+            return 0
+
+        async def _ingest_files(self, batch: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+            self.batches.append(list(batch))
+            if len(self.batches) == 1:
+                return SimpleNamespace(
+                    succeeded_paths=(str(paths[0]),),
+                    excluded_paths={str(path): REFUSED_UNATTEMPTED_TIME_BUDGET for path in paths[1:]},
+                    time_budget_exceeded=True,
+                    source_payload_read_bytes=2,
+                )
+            return SimpleNamespace(
+                succeeded_paths=tuple(str(path) for path in batch),
+                source_payload_read_bytes=2 * len(batch),
+            )
+
+    watcher = BudgetWatcher()
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    dispatcher = FairIntakeDispatcher(
+        [IntakeClassSpec(name="capture", adapter=adapter, page_size=3, retry_cooldown_s=0)]
+    )
+
+    first = await dispatcher.run_once()
+    assert (first.require_report("capture").admitted, first.require_report("capture").retried) == (1, 2)
+    assert adapter._after == str(paths[0])
+    second = await dispatcher.run_once()
+    assert second.require_report("capture").admitted == 2
+    assert watcher.batches == [paths, paths[1:]]
+    assert adapter._after == str(paths[-1])
+
+
+@pytest.mark.asyncio
+async def test_retry_page_does_not_skip_fresh_files_or_starve_discovery(tmp_path: Path) -> None:
+    """Acknowledging a late retry cannot move ordinary discovery past fresh files."""
+    paths = [tmp_path / name for name in ("a.json", "b.json", "c.json", "z.json")]
+    for path in paths:
+        path.write_text("{}")
+    source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
+    cursor = CursorStore(tmp_path / "index.db")
+    cursor.set(paths[-1], 2, next_retry_at="1970-01-01T00:00:00+00:00")
+    watcher = SimpleNamespace(_cursor=cursor, intake_revision=lambda _source: 0)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    offered: list[Path] = []
+    for _ in range(5):
+        page = await adapter.discover(limit=1)
+        assert len(page) == 1
+        assert isinstance(page[0].payload, Path)
+        offered.append(page[0].payload)
+        await adapter.acknowledge(page[0])
+    assert offered == [paths[0], paths[-1], paths[1], paths[2], paths[3]]
+
+
+@pytest.mark.asyncio
+async def test_retry_cursor_keeps_unoffered_page_tail_under_a_byte_budget(tmp_path: Path) -> None:
+    """A due page may be larger than the dispatcher's planned admission."""
+    paths = [tmp_path / name for name in ("a.json", "b.json", "c.json", "d.json")]
+    for path in paths[:3]:
+        path.write_text("{}")
+    source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
+    cursor = CursorStore(tmp_path / "index.db")
+    for path in paths[:3]:
+        cursor.set(path, 2, next_retry_at="1970-01-01T00:00:00+00:00")
+    watcher = SimpleNamespace(_cursor=cursor, intake_revision=lambda _source: 0)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    adapter._after = str(paths[2])
+    adapter._retry_turn = True
+
+    page = await adapter.discover(limit=3)
+    assert [item.payload for item in page] == paths[:3]
+    await adapter.acknowledge(page[0])  # only this item fit the byte plan
+    assert adapter._retry_after == str(paths[0])
+
+    paths[3].write_text("{}")
+    cursor.set(paths[3], 2, next_retry_at="1970-01-01T00:00:00+00:00")
+    adapter._retry_turn = True
+    tail = await adapter.discover(limit=3)
+    assert [item.payload for item in tail] == paths[1:3]
+    assert paths[3] not in [item.payload for item in tail]
+
+
+@pytest.mark.asyncio
+async def test_cooldown_only_retry_page_rotates_within_a_finite_sweep(tmp_path: Path) -> None:
+    paths = [tmp_path / name for name in ("a.json", "b.json", "c.json")]
+    for path in paths:
+        path.write_text("{}")
+    source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
+    cursor = CursorStore(tmp_path / "index.db")
+    for path in paths:
+        cursor.set(path, 2, next_retry_at="1970-01-01T00:00:00+00:00")
+    watcher = SimpleNamespace(_cursor=cursor, intake_revision=lambda _source: 0)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    adapter._after = str(paths[-1])
+    adapter._last_root_mtime_ns = source.root.stat().st_mtime_ns
+    adapter._retry_turn = True
+
+    cooled_page = await adapter.discover(limit=2)
+    assert [item.payload for item in cooled_page] == paths[:2]
+    # The dispatcher planned nothing because these identities are cooling
+    # down, so neither admit_page nor acknowledge is called.
+    assert adapter._retry_after is None
+    next_page = await adapter.discover(limit=2)
+    assert [item.payload for item in next_page] == [paths[2]]
+    assert adapter._retry_after is None
+    await adapter.acknowledge(next_page[0])
+    assert adapter._retry_after == str(paths[2])
+
+    assert (await adapter.discover(limit=2)) == ()
+    revisit = await adapter.discover(limit=2)
+    assert [item.payload for item in revisit] == paths[:2]
+
+
+@pytest.mark.asyncio
+async def test_parent_retry_query_filters_nested_source_before_limit(tmp_path: Path) -> None:
+    parent_root = tmp_path / "capture"
+    child_root = parent_root / "child"
+    child_root.mkdir(parents=True)
+    child_paths = [child_root / f"{n}.json" for n in range(4)]
+    parent_path = parent_root / "z.json"
+    for path in (*child_paths, parent_path):
+        path.write_text("{}")
+    parent = WatchSource(name="parent", root=parent_root, suffixes=(".json",))
+    child = WatchSource(name="child", root=child_root, suffixes=(".json",))
+    cursor = CursorStore(tmp_path / "index.db")
+    for path in (*child_paths, parent_path):
+        cursor.set(path, 2, next_retry_at="1970-01-01T00:00:00+00:00")
+    watcher = SimpleNamespace(_cursor=cursor, intake_revision=lambda _source: 0)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(parent, child)),  # type: ignore[arg-type]
+        parent,
+    )
+    adapter._retry_turn = True
+    page = await adapter.discover(limit=1)
+    assert [item.payload for item in page] == [parent_path]
+
+
+@pytest.mark.asyncio
+async def test_missing_ops_ledger_resets_the_ordinary_walk(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    paths = [source_root / name for name in ("a.json", "z.json")]
+    for path in paths:
+        path.write_text("{}")
+    source = WatchSource(name="capture", root=source_root, suffixes=(".json",))
+    cursor = CursorStore(tmp_path / "index.db")
+    watcher = SimpleNamespace(_cursor=cursor, intake_revision=lambda _source: 0)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    for path in paths:
+        page = await adapter.discover(limit=1)
+        assert [item.payload for item in page] == [path]
+        await adapter.acknowledge(page[0])
+    assert adapter._after == str(paths[-1])
+    assert (await adapter.discover(limit=1)) == ()
+
+    root_mtime_ns = source_root.stat().st_mtime_ns
+    cursor._ops_db_path.unlink()
+    assert source_root.stat().st_mtime_ns == root_mtime_ns
+    page = await adapter.discover(limit=1)
+    assert [item.payload for item in page] == [paths[0]]
+
+
+def test_due_retry_discovery_is_bounded_scoped_and_read_only(tmp_path: Path) -> None:
+    """Retry paging excludes future/quarantined rows and neighboring roots."""
+    root = tmp_path / "source"
+    cursor = CursorStore(tmp_path / "index.db")
+    for name in ("a.json", "b.json"):
+        cursor.set(root / name, 2, next_retry_at="1970-01-01T00:00:00+00:00")
+    cursor.set(root / "future.json", 2, next_retry_at="2999-01-01T00:00:00+00:00")
+    cursor.set(root / "done.json", 2, content_fingerprint="done")
+    cursor.set(root / "excluded.json", 2, next_retry_at="1970-01-01T00:00:00+00:00")
+    cursor.mark_excluded(root / "excluded.json")
+    cursor.set(tmp_path / "source-other" / "a.json", 2, next_retry_at="1970-01-01T00:00:00+00:00")
+    assert cursor.list_due_retry_paths(root, after=None, limit=1) == (root / "a.json",)
+    assert cursor.list_due_retry_paths(root, after=str(root / "a.json"), limit=2) == (root / "b.json",)
+    assert cursor.list_due_retry_paths(root, after=None, limit=0) == ()
+    assert cursor.has_pending_retries((root,)) is True
+    assert cursor.has_pending_retries((tmp_path / "empty",)) is False
+    absent = CursorStore(tmp_path / "absent" / "index.db", initialize=False)
+    assert absent.list_due_retry_paths(root, after=None, limit=1) == ()
+    assert absent.has_pending_retries((root,)) is None
+    assert not (tmp_path / "absent").exists()
 
 
 @pytest.mark.asyncio

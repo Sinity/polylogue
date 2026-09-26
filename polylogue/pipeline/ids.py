@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import sqlite3
+import tempfile
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping, Sequence, Set
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from decimal import Decimal
 from enum import Enum
-from typing import TYPE_CHECKING, TypeAlias, cast
+from pathlib import Path
+from typing import TYPE_CHECKING, TypeAlias, TypeVar, cast, overload
 
+from polylogue.core.digest import QUERY
 from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.core.hashing import hash_bytes, hash_payload
 from polylogue.core.json import JSONValue, dumps
@@ -212,6 +219,7 @@ _NULL_SENTINEL = "__POLYLOGUE_NULL__"
 _EMPTY_SENTINEL = "__POLYLOGUE_EMPTY__"
 HashScalar: TypeAlias = str | int | float | bool | None
 MessageContent: TypeAlias = tuple[bytes, bytes, int]
+_T = TypeVar("_T")
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,25 +275,25 @@ class SessionRevisionProjection:
     duration change, or newly-acquired bytes still change the session's
     content hash and still trigger a re-write (idempotency is a different
     question from revision *comparison*, and only the latter is
-    content-only). ``attachment_identities`` is kept as a plain
-    ``frozenset[bytes]`` of the same content-derived keys, read by
-    ``storage/archive.py`` only via ``len()`` for a frontier count.
+    content-only). ``attachment_identities`` retains the same unordered set
+    of content-derived keys; prepared disk sessions may keep it in scratch
+    storage so frontier counting does not require resident rows.
     """
 
     session_hash: bytes
-    message_hashes: tuple[bytes, ...]
+    message_hashes: Sequence[bytes]
     # Each item carries its unordered multiplicity. Repeated timestamp-less
     # id-less messages can have the same content-derived identity and content;
     # collapsing them into a set would falsely make one and two turns equal.
-    message_contents: frozenset[MessageContent]
-    attachment_identities: frozenset[bytes]
-    attachment_contents: frozenset[tuple[bytes, bytes]]
-    event_hashes: tuple[bytes, ...]
-    event_contents: frozenset[tuple[bytes, bytes]]
+    message_contents: Set[MessageContent]
+    attachment_identities: Set[bytes]
+    attachment_contents: Set[tuple[bytes, bytes]]
+    event_hashes: Sequence[bytes]
+    event_contents: Set[tuple[bytes, bytes]]
     # Timestamped id-less messages intentionally share a revision axis even
     # when their mutable content changes. Native-id axes retain strict content
     # conflict semantics in ``session_revision_membership``.
-    mutable_message_identities: frozenset[bytes] = frozenset()
+    mutable_message_identities: Set[bytes] = frozenset()
     #: ``(event_identity, anchor_free_identity)`` for events whose anchoring
     #: message is provider-remeasured rather than content. ChatGPT re-anchors
     #: a ``generation_lifecycle`` event to a different
@@ -297,7 +305,128 @@ class SessionRevisionProjection:
     #: the moved event as the same slot. Comparison-layer only: this value is
     #: never persisted and never enters ``session_hash``, so nothing here
     #: changes stored identity or requires a reparse.
-    anchor_free_event_identities: frozenset[tuple[bytes, bytes]] = frozenset()
+    anchor_free_event_identities: Set[tuple[bytes, bytes]] = frozenset()
+
+
+class _DiskRevisionStore:
+    """Disposable owner for one prepared revision's projected evidence."""
+
+    def __init__(self, parent: Path | None) -> None:
+        self._scratch = tempfile.TemporaryDirectory(prefix="polylogue-revision-", dir=parent)
+        self.conn = sqlite3.connect(Path(self._scratch.name) / "projection.db")
+        self.conn.execute("CREATE TABLE message_hash (ordinal INTEGER PRIMARY KEY, digest BLOB NOT NULL)")
+        self.conn.execute("CREATE TABLE event_hash (ordinal INTEGER PRIMARY KEY, digest BLOB NOT NULL)")
+        self.conn.execute(
+            "CREATE TABLE message_content (identity BLOB NOT NULL, content BLOB NOT NULL, "
+            "multiplicity INTEGER NOT NULL, PRIMARY KEY(identity, content)) WITHOUT ROWID"
+        )
+        for table in ("mutable_message", "attachment_identity"):
+            self.conn.execute(f"CREATE TABLE {table} (identity BLOB PRIMARY KEY) WITHOUT ROWID")
+        for table in ("attachment_content", "event_content", "anchor_free_event"):
+            second = "anchor_free" if table == "anchor_free_event" else "content"
+            self.conn.execute(
+                f"CREATE TABLE {table} (identity BLOB NOT NULL, {second} BLOB NOT NULL, "
+                f"PRIMARY KEY(identity, {second})) WITHOUT ROWID"
+            )
+
+    def close(self) -> None:
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+        if hasattr(self, "conn"):
+            self.conn.close()
+        if hasattr(self, "_scratch"):
+            self._scratch.cleanup()
+
+    def __del__(self) -> None:
+        self.close()
+
+
+class _DiskRevisionHashes(Sequence[bytes]):
+    def __init__(self, store: _DiskRevisionStore, table: str, count: int) -> None:
+        self._store = store
+        self._table = table
+        self._count = count
+
+    def __len__(self) -> int:
+        return self._count
+
+    @overload
+    def __getitem__(self, index: int) -> bytes: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[bytes]: ...
+
+    def __getitem__(self, index: int | slice) -> bytes | list[bytes]:
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(self._count))]
+        ordinal = index + self._count if index < 0 else index
+        if ordinal < 0 or ordinal >= self._count:
+            raise IndexError(index)
+        row = self._store.conn.execute(f"SELECT digest FROM {self._table} WHERE ordinal = ?", (ordinal,)).fetchone()
+        if row is None:
+            raise ValueError("prepared revision hash row disappeared")
+        return bytes(row[0])
+
+    def __iter__(self) -> Iterator[bytes]:
+        for (digest,) in self._store.conn.execute(f"SELECT digest FROM {self._table} ORDER BY ordinal"):
+            yield bytes(digest)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Sequence) or len(self) != len(other):
+            return False
+        return all(left == right for left, right in zip(self, other, strict=True))
+
+
+class _DiskRevisionSet(Set[_T]):
+    _TABLE_COLUMNS = {
+        "message_content": ("identity", "content", "multiplicity"),
+        "mutable_message": ("identity",),
+        "attachment_identity": ("identity",),
+        "attachment_content": ("identity", "content"),
+        "event_content": ("identity", "content"),
+        "anchor_free_event": ("identity", "anchor_free"),
+    }
+
+    def __init__(self, store: _DiskRevisionStore, table: str) -> None:
+        self._store = store
+        self._table = table
+        self._columns = self._TABLE_COLUMNS[table]
+
+    @property
+    def scratch_parent(self) -> Path:
+        return Path(self._store._scratch.name).parent
+
+    def __len__(self) -> int:
+        return int(self._store.conn.execute(f"SELECT COUNT(*) FROM {self._table}").fetchone()[0])
+
+    def __contains__(self, value: object) -> bool:
+        parts = value if isinstance(value, tuple) else (value,)
+        if len(parts) != len(self._columns):
+            return False
+        where = " AND ".join(f"{column} = ?" for column in self._columns)
+        return (
+            self._store.conn.execute(f"SELECT 1 FROM {self._table} WHERE {where} LIMIT 1", parts).fetchone() is not None
+        )
+
+    def __iter__(self) -> Iterator[_T]:
+        yield from self.iter_sorted()
+
+    def iter_sorted(self) -> Iterator[_T]:
+        columns = ", ".join(self._columns)
+        order = ", ".join(self._columns)
+        for row in self._store.conn.execute(f"SELECT {columns} FROM {self._table} ORDER BY {order}"):
+            values = tuple(int(item) if isinstance(item, int) else bytes(item) for item in row)
+            yield cast(_T, values[0] if len(values) == 1 else values)
+
+    def lookup_second(self, identity: bytes) -> bytes | None:
+        if self._table != "anchor_free_event":
+            raise TypeError("second-value lookup is only defined for anchor-free events")
+        row = self._store.conn.execute(
+            "SELECT anchor_free FROM anchor_free_event WHERE identity = ? ORDER BY anchor_free LIMIT 1",
+            (identity,),
+        ).fetchone()
+        return bytes(row[0]) if row is not None else None
 
 
 class UnhashablePayloadValueError(TypeError):
@@ -612,7 +741,7 @@ def message_content_identity(message: ParsedMessage) -> str:
 
 
 def message_content_identities(
-    messages: list[ParsedMessage],
+    messages: Sequence[ParsedMessage],
     *,
     occurrence_offsets: Mapping[str, int] | None = None,
 ) -> tuple[MessageContentIdentity, ...]:
@@ -636,6 +765,74 @@ def message_content_identities(
         identities.append((digest, counts[digest]))
         counts[digest] += 1
     return tuple(identities)
+
+
+class _DiskMessageContentIdentities(Sequence[MessageContentIdentity]):
+    def __init__(self, conn: sqlite3.Connection, count: int) -> None:
+        self._conn = conn
+        self._count = count
+
+    def __len__(self) -> int:
+        return self._count
+
+    @overload
+    def __getitem__(self, index: int) -> MessageContentIdentity: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[MessageContentIdentity]: ...
+
+    def __getitem__(self, index: int | slice) -> MessageContentIdentity | list[MessageContentIdentity]:
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(self._count))]
+        ordinal = index + self._count if index < 0 else index
+        if ordinal < 0 or ordinal >= self._count:
+            raise IndexError(index)
+        row = self._conn.execute("SELECT digest, occurrence FROM identity WHERE ordinal = ?", (ordinal,)).fetchone()
+        if row is None:
+            raise ValueError("prepared message identity row disappeared")
+        return str(row[0]), int(row[1])
+
+    def __iter__(self) -> Iterator[MessageContentIdentity]:
+        for digest, occurrence in self._conn.execute("SELECT digest, occurrence FROM identity ORDER BY ordinal"):
+            yield str(digest), int(occurrence)
+
+
+@contextmanager
+def disk_message_content_identities(
+    messages: Sequence[ParsedMessage],
+    *,
+    occurrence_offsets: Mapping[str, int] | None = None,
+) -> Iterator[Sequence[MessageContentIdentity]]:
+    """Spool canonical fallback identities for bounded random-access lowering.
+
+    The scratch database lives beside a prepared message sink when one is
+    present. Its rows, including per-digest occurrence counts, are disposable;
+    the caller must consume the sequence inside this context.
+    """
+    parent = getattr(messages, "path", None)
+    directory = Path(parent).parent if parent is not None else None
+    with (
+        tempfile.TemporaryDirectory(prefix="polylogue-ids-", dir=directory) as scratch,
+        closing(sqlite3.connect(Path(scratch) / "identities.db")) as conn,
+    ):
+        conn.execute("CREATE TABLE count (digest TEXT PRIMARY KEY, value INTEGER NOT NULL) WITHOUT ROWID")
+        conn.execute(
+            "CREATE TABLE identity (ordinal INTEGER PRIMARY KEY, digest TEXT NOT NULL, occurrence INTEGER NOT NULL)"
+        )
+        if occurrence_offsets:
+            conn.executemany("INSERT INTO count VALUES (?, ?)", occurrence_offsets.items())
+        count = 0
+        for count, message in enumerate(messages, start=1):
+            digest = message_content_identity(message)
+            row = conn.execute("SELECT value FROM count WHERE digest = ?", (digest,)).fetchone()
+            occurrence = int(row[0]) if row is not None else 0
+            conn.execute(
+                "INSERT INTO count (digest, value) VALUES (?, ?) "
+                "ON CONFLICT(digest) DO UPDATE SET value = excluded.value",
+                (digest, occurrence + 1),
+            )
+            conn.execute("INSERT INTO identity VALUES (?, ?, ?)", (count - 1, digest, occurrence))
+        yield _DiskMessageContentIdentities(conn, count)
 
 
 def _message_comparison_payload(message: ParsedMessage) -> dict[str, JSONValue]:
@@ -695,14 +892,190 @@ def _message_revision_match_id(message: ParsedMessage) -> str:
 class MessageOwnerResolution:
     """One shared private owner-resolution contract for hash and write paths."""
 
-    keys: tuple[str, ...]
+    keys: Sequence[str]
     by_physical_coordinate: Mapping[tuple[int, int], str]
-    ambiguous_physical_coordinates: frozenset[tuple[int, int]]
+    ambiguous_physical_coordinates: Set[tuple[int, int]]
     by_stable_key: Mapping[str, str]
-    ambiguous_stable_keys: frozenset[str]
-    ambiguous_keys: frozenset[str]
+    ambiguous_stable_keys: Set[str]
+    ambiguous_keys: Set[str]
     unique_provider_keys: Mapping[str, str]
-    ambiguous_provider_ids: frozenset[str]
+    ambiguous_provider_ids: Set[str]
+
+
+class _SqliteOwnerKeys(Sequence[str]):
+    def __init__(self, conn: sqlite3.Connection, count: int) -> None:
+        self._conn = conn
+        self._count = count
+
+    def __len__(self) -> int:
+        return self._count
+
+    @overload
+    def __getitem__(self, index: int) -> str: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[str]: ...
+
+    def __getitem__(self, index: int | slice) -> str | list[str]:
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(self._count))]
+        ordinal = index + self._count if index < 0 else index
+        if ordinal < 0 or ordinal >= self._count:
+            raise IndexError(index)
+        row = self._conn.execute("SELECT owner_key FROM owner_message WHERE ordinal = ?", (ordinal,)).fetchone()
+        if row is None or row[0] is None:
+            raise ValueError("prepared message owner key row disappeared")
+        return str(row[0])
+
+    def __iter__(self) -> Iterator[str]:
+        for (key,) in self._conn.execute("SELECT owner_key FROM owner_message ORDER BY ordinal"):
+            if key is None:
+                raise ValueError("prepared message owner key row is unresolved")
+            yield str(key)
+
+
+class _SqliteOwnerLookup(Mapping[_T, str]):
+    def __init__(self, conn: sqlite3.Connection, kind: str) -> None:
+        self._conn = conn
+        self._kind = kind
+
+    def __getitem__(self, key: _T) -> str:
+        row = self._conn.execute(
+            "SELECT value FROM owner_lookup WHERE kind = ? AND key = ?",
+            (self._kind, json.dumps(key, separators=(",", ":"))),
+        ).fetchone()
+        if row is None:
+            raise KeyError(key)
+        return str(row[0])
+
+    def __iter__(self) -> Iterator[_T]:
+        for (key,) in self._conn.execute("SELECT key FROM owner_lookup WHERE kind = ?", (self._kind,)):
+            value = json.loads(key)
+            yield cast(_T, tuple(value) if self._kind == "physical" else value)
+
+    def __len__(self) -> int:
+        return int(self._conn.execute("SELECT COUNT(*) FROM owner_lookup WHERE kind = ?", (self._kind,)).fetchone()[0])
+
+
+class _SqliteOwnerAmbiguities(Set[_T]):
+    def __init__(self, conn: sqlite3.Connection, kind: str) -> None:
+        self._conn = conn
+        self._kind = kind
+
+    def __contains__(self, key: object) -> bool:
+        row = self._conn.execute(
+            "SELECT count FROM owner_count WHERE kind = ? AND key = ?",
+            (self._kind, json.dumps(key, separators=(",", ":"))),
+        ).fetchone()
+        return row is not None and int(row[0]) > 1
+
+    def __iter__(self) -> Iterator[_T]:
+        for (key,) in self._conn.execute("SELECT key FROM owner_count WHERE kind = ? AND count > 1", (self._kind,)):
+            value = json.loads(key)
+            yield cast(_T, tuple(value) if self._kind == "physical" else value)
+
+    def __len__(self) -> int:
+        return int(
+            self._conn.execute(
+                "SELECT COUNT(*) FROM owner_count WHERE kind = ? AND count > 1", (self._kind,)
+            ).fetchone()[0]
+        )
+
+
+@contextmanager
+def disk_message_owner_resolution(messages: Sequence[ParsedMessage]) -> Iterator[MessageOwnerResolution]:
+    """Resolve attachment anchors with disk-backed counts and lookup maps."""
+    parent = getattr(messages, "path", None)
+    directory = Path(parent).parent if parent is not None else None
+    with (
+        tempfile.TemporaryDirectory(prefix="polylogue-owners-", dir=directory) as scratch,
+        closing(sqlite3.connect(Path(scratch) / "owners.db")) as conn,
+    ):
+        conn.execute(
+            "CREATE TABLE owner_count (kind TEXT NOT NULL, key TEXT NOT NULL, count INTEGER NOT NULL, "
+            "PRIMARY KEY (kind, key)) WITHOUT ROWID"
+        )
+        conn.execute(
+            "CREATE TABLE owner_message (ordinal INTEGER PRIMARY KEY, revision TEXT NOT NULL, "
+            "content TEXT NOT NULL, stable TEXT, physical TEXT, provider TEXT, owner_key TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE owner_lookup (kind TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, "
+            "PRIMARY KEY (kind, key)) WITHOUT ROWID"
+        )
+
+        def encoded(value: object) -> str:
+            return json.dumps(value, separators=(",", ":"))
+
+        def increment(kind: str, value: object) -> None:
+            conn.execute(
+                "INSERT INTO owner_count VALUES (?, ?, 1) ON CONFLICT(kind, key) DO UPDATE SET count = count + 1",
+                (kind, encoded(value)),
+            )
+
+        def count(kind: str, value: object) -> int:
+            row = conn.execute(
+                "SELECT count FROM owner_count WHERE kind = ? AND key = ?", (kind, encoded(value))
+            ).fetchone()
+            return int(row[0]) if row is not None else 0
+
+        total = 0
+        for ordinal, message in enumerate(messages):
+            total = ordinal + 1
+            revision = _message_revision_match_id(message)
+            content = f"{_CONTENT_ANCHOR_PREFIX}:{hash_payload(_message_comparison_payload(message))}"
+            coordinate = _message_owner_coordinate(message, ordinal)
+            stable = coordinate.stable_key
+            physical = coordinate.physical_key
+            provider = message.provider_message_id.strip() or None
+            conn.execute(
+                "INSERT INTO owner_message VALUES (?, ?, ?, ?, ?, ?, NULL)",
+                (ordinal, revision, content, stable, encoded(physical) if physical is not None else None, provider),
+            )
+            increment("revision", revision)
+            increment("content", content)
+            if stable is not None:
+                increment("stable", stable)
+            if physical is not None:
+                increment("physical", physical)
+            if provider is not None:
+                increment("provider", provider)
+        for ordinal in range(total):
+            revision, content, stable = conn.execute(
+                "SELECT revision, content, stable FROM owner_message WHERE ordinal = ?", (ordinal,)
+            ).fetchone()
+            if stable is not None and count("stable", stable) == 1:
+                key = stable
+            elif count("revision", revision) == 1:
+                key = revision
+            elif count("content", content) == 1:
+                key = content
+            elif stable is not None:
+                key = stable
+            else:
+                key = revision
+            conn.execute("UPDATE owner_message SET owner_key = ? WHERE ordinal = ?", (key, ordinal))
+            increment("key", key)
+        for ordinal in range(total):
+            stable, physical, provider, key = conn.execute(
+                "SELECT stable, physical, provider, owner_key FROM owner_message WHERE ordinal = ?", (ordinal,)
+            ).fetchone()
+            if physical is not None and count("physical", json.loads(physical)) == 1:
+                conn.execute("INSERT INTO owner_lookup VALUES (?, ?, ?)", ("physical", physical, key))
+            if stable is not None and count("stable", stable) == 1 and count("key", key) == 1:
+                conn.execute("INSERT INTO owner_lookup VALUES (?, ?, ?)", ("stable", encoded(stable), key))
+            if provider is not None and count("provider", provider) == 1:
+                conn.execute("INSERT INTO owner_lookup VALUES (?, ?, ?)", ("provider", encoded(provider), key))
+        yield MessageOwnerResolution(
+            keys=_SqliteOwnerKeys(conn, total),
+            by_physical_coordinate=_SqliteOwnerLookup[tuple[int, int]](conn, "physical"),
+            ambiguous_physical_coordinates=_SqliteOwnerAmbiguities[tuple[int, int]](conn, "physical"),
+            by_stable_key=_SqliteOwnerLookup[str](conn, "stable"),
+            ambiguous_stable_keys=_SqliteOwnerAmbiguities[str](conn, "stable"),
+            ambiguous_keys=_SqliteOwnerAmbiguities[str](conn, "key"),
+            unique_provider_keys=_SqliteOwnerLookup[str](conn, "provider"),
+            ambiguous_provider_ids=_SqliteOwnerAmbiguities[str](conn, "provider"),
+        )
 
 
 def _message_owner_coordinate(message: ParsedMessage, fallback_position: int) -> MessageOwnerCoordinate:
@@ -1180,6 +1553,73 @@ def _session_tree_hash(
     )
 
 
+def _stream_session_tree_hash(convo: ParsedSession) -> str:
+    """Encode each prepared item through the QUERY codec without a tree list."""
+    if QUERY.encoder != "stdlib" or QUERY.normalize_unicode or not QUERY.ensure_ascii:
+        raise AssertionError("session hash streaming requires the declared QUERY codec")
+    encoder = json.JSONEncoder(sort_keys=True, separators=(",", ":"), ensure_ascii=QUERY.ensure_ascii)
+    digest = hashlib.sha256()
+
+    def write(value: object) -> None:
+        for chunk in encoder.iterencode(value):
+            digest.update(chunk.encode("utf-8"))
+
+    def literal(value: str) -> None:
+        digest.update(value.encode("ascii"))
+
+    # The top-level keys are in the same sorted order as hash_payload's
+    # JSONEncoder. Item encoding is delegated to that encoder as well.
+    literal('{"attachments":[')
+    if convo.attachments:
+        attachments_payload: list[dict[str, JSONValue]] = []
+        with disk_message_owner_resolution(convo.messages) as resolution:
+            for attachment in convo.attachments:
+                try:
+                    owner_anchor = attachment_message_owner_key(attachment, resolution)
+                except MessageOwnerAmbiguityError:
+                    owner_anchor = None
+                attachments_payload.append(_attachment_hash_payload(attachment, message_owner_anchor=owner_anchor))
+        attachments_payload.sort(
+            key=lambda item: (
+                str(item.get("message_id") or ""),
+                str(item.get("id") or ""),
+                str(item.get("name") or ""),
+            )
+        )
+        for index, payload in enumerate(attachments_payload):
+            if index:
+                literal(",")
+            write(payload)
+    literal('],"created_at":')
+    write(_normalize_for_hash(convo.created_at))
+    literal(',"messages":[')
+    for index, message in enumerate(convo.messages):
+        if index:
+            literal(",")
+        write(_message_hash_payload(message, _message_revision_match_id(message)))
+    literal('],"semantic_session_fields":')
+    write(_model_hash_payload(convo, _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"}))
+    literal(',"session_events":[')
+    for event_index, event in enumerate(convo.session_events):
+        if event_index:
+            literal(",")
+        write(
+            {
+                "event_index": event_index,
+                "event_type": _normalize_for_hash(event.event_type),
+                "timestamp": _normalize_for_hash(event.timestamp),
+                "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
+                "payload": hash_payload(_normalize_nested_for_hash(event.payload)),
+            }
+        )
+    literal('],"title":')
+    write(_normalize_for_hash(convo.title))
+    literal(',"updated_at":')
+    write(_normalize_for_hash(convo.updated_at))
+    literal("}")
+    return digest.hexdigest()
+
+
 def session_content_hash(convo: ParsedSession) -> ContentHash:
     """Generate semantic content identity from the declared field partition.
 
@@ -1187,6 +1627,8 @@ def session_content_hash(convo: ParsedSession) -> ContentHash:
     ``_EXCLUDED_FIELDS``; parsed fields may not silently fall through.
     """
     validate_semantic_hash_partition()
+    if hasattr(convo.messages, "path") or hasattr(convo.session_events, "path"):
+        return ContentHash(_stream_session_tree_hash(convo))
     messages_payload, attachments_payload, session_events_payload = _session_hash_components(
         convo, tolerate_ambiguous_attachment_owners=True
     )
@@ -1198,6 +1640,85 @@ def session_content_hash(convo: ParsedSession) -> ContentHash:
             session_events_payload=session_events_payload,
         )
     )
+
+
+def _disk_session_revision_projection(convo: ParsedSession) -> SessionRevisionProjection:
+    """Project a prepared session without resident per-item collections."""
+    bound_hash = bound_session_content_hash(convo)
+    session_hash_hex = bound_hash if bound_hash is not None else session_content_hash(convo)
+    parent = getattr(convo.messages, "path", None)
+    store = _DiskRevisionStore(Path(parent).parent if parent is not None else None)
+    conn = store.conn
+    try:
+        message_count = 0
+        for message_count, message in enumerate(convo.messages, start=1):
+            payload = _message_hash_payload(message, _message_revision_match_id(message))
+            native_id = payload["id"]
+            assert isinstance(native_id, str)
+            identity = message_identity_hash(id=native_id)
+            content = bytes.fromhex(hash_payload(payload))
+            conn.execute("INSERT INTO message_hash VALUES (?, ?)", (message_count - 1, content))
+            conn.execute(
+                "INSERT INTO message_content VALUES (?, ?, 1) ON CONFLICT(identity, content) "
+                "DO UPDATE SET multiplicity = multiplicity + 1",
+                (identity, content),
+            )
+            if not message.provider_message_id.strip() and message.timestamp is not None:
+                conn.execute("INSERT OR IGNORE INTO mutable_message VALUES (?)", (identity,))
+
+        if convo.attachments:
+            with disk_message_owner_resolution(convo.messages) as resolution:
+                for attachment in convo.attachments:
+                    owner_anchor = attachment_message_owner_key(attachment, resolution)
+                    payload = _attachment_hash_payload(attachment, message_owner_anchor=owner_anchor)
+                    identity = attachment_identity_hash(
+                        message_id=payload["message_id"], name=payload["name"], mime_type=payload["mime_type"]
+                    )
+                    conn.execute("INSERT OR IGNORE INTO attachment_identity VALUES (?)", (identity,))
+                    inline_hash = payload.get("inline_content_hash")
+                    if isinstance(inline_hash, str):
+                        conn.execute(
+                            "INSERT OR IGNORE INTO attachment_content VALUES (?, ?)",
+                            (identity, bytes.fromhex(inline_hash)),
+                        )
+
+        event_count = 0
+        for event_count, event in enumerate(convo.session_events, start=1):
+            payload = {
+                "event_index": event_count - 1,
+                "event_type": _normalize_for_hash(event.event_type),
+                "timestamp": _normalize_for_hash(event.timestamp),
+                "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
+                "payload": hash_payload(_normalize_nested_for_hash(event.payload)),
+            }
+            conn.execute(
+                "INSERT INTO event_hash VALUES (?, ?)", (event_count - 1, bytes.fromhex(hash_payload(payload)))
+            )
+            content_payload = _event_content_payload(event)
+            base_identity = event_base_identity_hash(
+                event_type=content_payload["event_type"],
+                source_message_provider_id=content_payload["source_message_provider_id"],
+            )
+            content = bytes.fromhex(hash_payload(content_payload))
+            canonical_identity = event_canonical_identity_hash(base_identity=base_identity, content_hash=content)
+            conn.execute("INSERT OR IGNORE INTO event_content VALUES (?, ?)", (canonical_identity, content))
+            if _anchor_is_remeasured(event):
+                anchor_free = event_anchor_free_identity_hash(content_payload)
+                conn.execute("INSERT OR IGNORE INTO anchor_free_event VALUES (?, ?)", (canonical_identity, anchor_free))
+        return SessionRevisionProjection(
+            session_hash=bytes.fromhex(session_hash_hex),
+            message_hashes=_DiskRevisionHashes(store, "message_hash", message_count),
+            message_contents=_DiskRevisionSet[MessageContent](store, "message_content"),
+            attachment_identities=_DiskRevisionSet[bytes](store, "attachment_identity"),
+            attachment_contents=_DiskRevisionSet[tuple[bytes, bytes]](store, "attachment_content"),
+            event_hashes=_DiskRevisionHashes(store, "event_hash", event_count),
+            event_contents=_DiskRevisionSet[tuple[bytes, bytes]](store, "event_content"),
+            anchor_free_event_identities=_DiskRevisionSet[tuple[bytes, bytes]](store, "anchor_free_event"),
+            mutable_message_identities=_DiskRevisionSet[bytes](store, "mutable_message"),
+        )
+    except BaseException:
+        store.close()
+        raise
 
 
 def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjection:
@@ -1225,6 +1746,8 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
     ``attachment_identities`` / ``attachment_contents`` / ``event_contents``
     -- the *revision comparison* axes -- are content-only (polylogue-aggz).
     """
+    if hasattr(convo.messages, "path") or hasattr(convo.session_events, "path"):
+        return _disk_session_revision_projection(convo)
     messages_payload, attachments_payload, session_events_payload = _session_hash_components(convo)
     bound_hash = bound_session_content_hash(convo)
     session_hash_hex = (

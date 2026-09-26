@@ -50,6 +50,7 @@ def prepare_ingest_inputs(
     path: Path,
     *,
     source_path: str | None,
+    source_name: str | None = None,
     source_generation_id: str,
     publisher: ArchiveBlobPublisher,
     check_stop: Callable[[], None],
@@ -111,7 +112,7 @@ def prepare_ingest_inputs(
         coordinate = str(physical.relative_to(root)) if root is not None else "input:0"
         inputs.append(FrozenSourceInput(coordinate, source_path or str(physical), blob_hash, publication_id))
     check_stop()
-    return FrozenSourceManifest(source_generation_id, retained_enumeration_fingerprint(), tuple(inputs))
+    return FrozenSourceManifest(source_generation_id, retained_enumeration_fingerprint(), tuple(inputs), source_name)
 
 
 def enumerate_ingest_input(
@@ -121,6 +122,7 @@ def enumerate_ingest_input(
     publisher: ArchiveBlobPublisher,
     acquired_at_ms: int,
     check_stop: Callable[[], None],
+    source_name: str | None = None,
 ) -> Generator[PreparedSourceRecord | PreparedSourceMemberDisposition, None, None]:
     """Yield canonical admission plans; only normal exhaustion closes the item."""
     item_id = source_item_id(
@@ -135,6 +137,7 @@ def enumerate_ingest_input(
         blob_hash=item.blob_hash,
         blob_size=blob_size,
         blob_store=publisher,
+        source_name=source_name,
         on_member_disposition=lambda *_fields: None,
     ):
         check_stop()

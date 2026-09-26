@@ -82,11 +82,15 @@ here as the path law both resolvers share.
 
 from __future__ import annotations
 
+import json
 import os
 import re
-from collections.abc import Callable, Iterable, Iterator, Sequence
+import sqlite3
+from collections.abc import Callable, ItemsView, Iterable, Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Any, cast
 
 from polylogue.core.hashing import hash_text
 from polylogue.sources.sidecar_evidence import (
@@ -169,9 +173,41 @@ class ToolResultIndexAccumulator:
     full record list.
     """
 
-    def __init__(self) -> None:
-        self._by_tool_use_id: dict[str, tuple[int, bool]] = {}
-        self._by_persisted_name: dict[str, str] = {}
+    def __init__(self, *, disk_backed: bool = False) -> None:
+        scratch_root = Path("/realm/tmp/work")
+        self._directory = (
+            TemporaryDirectory(prefix="polylogue-sidecar-", dir=scratch_root if scratch_root.is_dir() else None)
+            if disk_backed
+            else None
+        )
+        self._db = sqlite3.connect(Path(self._directory.name) / "index.sqlite") if self._directory else None
+        if self._db is not None:
+            self._db.execute("PRAGMA journal_mode=OFF")
+            self._db.execute("PRAGMA synchronous=OFF")
+            self._db.execute("PRAGMA cache_size=-2048")
+            self._db.execute("PRAGMA temp_store=FILE")
+            self._db.execute(
+                "CREATE TABLE entries (scope TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, "
+                "PRIMARY KEY (scope, key)) WITHOUT ROWID"
+            )
+        self._by_tool_use_id: MutableMapping[str, tuple[int, bool]] = (
+            _SqliteIndexMap(self._db, "tool") if self._db is not None else {}
+        )
+        self._by_persisted_name: MutableMapping[str, str] = (
+            _SqliteIndexMap(self._db, "name") if self._db is not None else {}
+        )
+
+    def close(self) -> None:
+        if self._db is not None:
+            self._db.close()
+        if self._directory is not None:
+            self._directory.cleanup()
+
+    def __enter__(self) -> ToolResultIndexAccumulator:
+        return self
+
+    def __exit__(self, _kind: object, _value: object, _traceback: object) -> None:
+        self.close()
 
     def observe(self, item: object) -> None:
         if not isinstance(item, dict):
@@ -208,7 +244,74 @@ class ToolResultIndexAccumulator:
 
     def join_session_scoped(self, scope: RetainedSidecarScope, source_path: str | Path) -> SidecarJoinResult:
         """Session-scoped variant of :meth:`join`. See ``join_tool_result_sidecars_session_scoped``."""
+        if self._db is not None:
+            return _session_scoped_join_disk(self._by_tool_use_id, self._by_persisted_name, scope, source_path)
         return _session_scoped_join(self._by_tool_use_id, self._by_persisted_name, scope, source_path)
+
+
+class _SqliteIndexMap(MutableMapping[str, Any]):
+    def __init__(self, db: sqlite3.Connection, scope: str) -> None:
+        self.db = db
+        self.scope = scope
+
+    def __getitem__(self, key: str) -> Any:
+        row = self.db.execute("SELECT value FROM entries WHERE scope = ? AND key = ?", (self.scope, key)).fetchone()
+        if row is None:
+            raise KeyError(key)
+        return json.loads(row[0])
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self.db.execute(
+            "INSERT OR REPLACE INTO entries (scope, key, value) VALUES (?, ?, ?)",
+            (self.scope, key, json.dumps(value)),
+        )
+
+    def __delitem__(self, key: str) -> None:
+        cursor = self.db.execute("DELETE FROM entries WHERE scope = ? AND key = ?", (self.scope, key))
+        if cursor.rowcount == 0:
+            raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        for (key,) in self.db.execute("SELECT key FROM entries WHERE scope = ? ORDER BY key", (self.scope,)):
+            yield key
+
+    def __len__(self) -> int:
+        row = self.db.execute("SELECT COUNT(*) FROM entries WHERE scope = ?", (self.scope,)).fetchone()
+        return int(row[0]) if row else 0
+
+    def __contains__(self, key: object) -> bool:
+        return (
+            isinstance(key, str)
+            and self.db.execute("SELECT 1 FROM entries WHERE scope = ? AND key = ?", (self.scope, key)).fetchone()
+            is not None
+        )
+
+    def get(self, key: str, default: Any = None) -> Any:
+        row = self.db.execute("SELECT value FROM entries WHERE scope = ? AND key = ?", (self.scope, key)).fetchone()
+        return json.loads(row[0]) if row else default
+
+    def setdefault(self, key: str, default: Any = None) -> Any:
+        self.db.execute(
+            "INSERT OR IGNORE INTO entries (scope, key, value) VALUES (?, ?, ?)",
+            (self.scope, key, json.dumps(default)),
+        )
+        return self[key]
+
+    def items(self) -> ItemsView[str, Any]:
+        return _SqliteIndexItems(self)
+
+
+class _SqliteIndexItems(ItemsView[str, Any]):
+    def __init__(self, index: _SqliteIndexMap) -> None:
+        super().__init__(index)
+        self.index = index
+
+    def __iter__(self) -> Iterator[tuple[str, Any]]:
+        index = self.index
+        for key, value in index.db.execute(
+            "SELECT key, value FROM entries WHERE scope = ? ORDER BY key", (index.scope,)
+        ):
+            yield key, json.loads(value)
 
 
 def observe_tool_result_stream(records: Iterable[object], accumulator: ToolResultIndexAccumulator) -> Iterator[object]:
@@ -229,7 +332,9 @@ def _tool_result_index(payload: Sequence[object]) -> tuple[dict[str, tuple[int, 
     accumulator = ToolResultIndexAccumulator()
     for item in payload:
         accumulator.observe(item)
-    return accumulator._by_tool_use_id, accumulator._by_persisted_name
+    return cast(dict[str, tuple[int, bool]], accumulator._by_tool_use_id), cast(
+        dict[str, str], accumulator._by_persisted_name
+    )
 
 
 def _index_from_sibling(sibling: SiblingTranscript) -> tuple[dict[str, tuple[int, bool]], dict[str, str]]:
@@ -249,7 +354,9 @@ def _index_from_sibling(sibling: SiblingTranscript) -> tuple[dict[str, tuple[int
             accumulator.observe(item)
     except OSError:
         return {}, {}
-    return accumulator._by_tool_use_id, accumulator._by_persisted_name
+    return cast(dict[str, tuple[int, bool]], accumulator._by_tool_use_id), cast(
+        dict[str, str], accumulator._by_persisted_name
+    )
 
 
 def resolve_tool_results_dir(source_path: str | Path | None) -> Path | None:
@@ -345,8 +452,8 @@ def join_tool_result_sidecars_session_scoped(
 
 
 def _session_scoped_join(
-    own_by_id: dict[str, tuple[int, bool]],
-    own_by_name: dict[str, str],
+    own_by_id: Mapping[str, tuple[int, bool]],
+    own_by_name: Mapping[str, str],
     scope: RetainedSidecarScope,
     source_path: str | Path,
 ) -> SidecarJoinResult:
@@ -374,13 +481,49 @@ def _session_scoped_join(
     return SidecarJoinResult(matched=own_result.matched, debt=own_absence)
 
 
-def _join_from_index(
-    by_tool_use_id: dict[str, tuple[int, bool]],
-    by_persisted_name: dict[str, str],
+def _session_scoped_join_disk(
+    own_by_id: Mapping[str, tuple[int, bool]],
+    own_by_name: Mapping[str, str],
     scope: RetainedSidecarScope,
-    expected_by_persisted_name: dict[str, str],
+    source_path: str | Path,
+) -> SidecarJoinResult:
+    if not _is_root_transcript(source_path):
+        own_result = _join_from_index(own_by_id, own_by_name, scope, own_by_name)
+        own_absence = tuple(debt for debt in own_result.debt if debt.reason == _EXPECTED_SIDECAR_ABSENT)
+        return SidecarJoinResult(matched=own_result.matched, debt=own_absence)
+
+    with ToolResultIndexAccumulator(disk_backed=True) as union:
+        for key, value in own_by_id.items():
+            union._by_tool_use_id[key] = value
+        for name, tool_use_id in own_by_name.items():
+            union._by_persisted_name[name] = tool_use_id
+        for sibling in scope.siblings:
+            with ToolResultIndexAccumulator(disk_backed=True) as sibling_index:
+                try:
+                    for item in sibling.open_records():
+                        sibling_index.observe(item)
+                except OSError:
+                    continue
+                for key, value in sibling_index._by_tool_use_id.items():
+                    union._by_tool_use_id.setdefault(key, value)
+                for name, tool_use_id in sibling_index._by_persisted_name.items():
+                    union._by_persisted_name.setdefault(name, tool_use_id)
+        return _join_from_index(
+            union._by_tool_use_id,
+            union._by_persisted_name,
+            scope,
+            own_by_name,
+            owned_by_tool_use_id=own_by_id,
+        )
+
+
+def _join_from_index(
+    by_tool_use_id: Mapping[str, tuple[int, bool]],
+    by_persisted_name: Mapping[str, str],
+    scope: RetainedSidecarScope,
+    expected_by_persisted_name: Mapping[str, str],
     *,
-    owned_by_tool_use_id: dict[str, tuple[int, bool]] | None = None,
+    owned_by_tool_use_id: Mapping[str, tuple[int, bool]] | None = None,
 ) -> SidecarJoinResult:
     """Join one ownership index against the files ``scope`` retained.
 
@@ -480,7 +623,12 @@ def _join_from_index(
             )
         )
 
-    for expected_name, expected_tool_use_id in sorted(expected_by_persisted_name.items()):
+    expected_items = (
+        expected_by_persisted_name.items()
+        if isinstance(expected_by_persisted_name, _SqliteIndexMap)
+        else sorted(expected_by_persisted_name.items())
+    )
+    for expected_name, expected_tool_use_id in expected_items:
         if expected_name in present or expected_name.startswith(_HOOK_FILE_PREFIX):
             continue
         if expected_tool_use_id in resolved_ids:

@@ -490,11 +490,9 @@ def validate_raw_replay_application_receipt(
         existing_session = sessions_by_id.setdefault(session_id, session)
         if existing_session != session:
             problems.append(f"materialized session receipt conflicts for {session_id}")
-    application_keys: set[str] = set()
     applications_matching_current_head: set[str] = set()
     for application in application_rows:
         key = str(application.get("logical_source_key"))
-        application_keys.add(key)
         raw_id = str(application.get("raw_id"))
         source = source_by_raw_id.get(raw_id)
         if source is None:
@@ -508,6 +506,21 @@ def validate_raw_replay_application_receipt(
             problems.append(f"application has no source revision evidence for {raw_id}/{key}")
         elif str(application.get("source_revision")) not in source_revisions:
             problems.append(f"application source revision does not match membership evidence for {raw_id}/{key}")
+        accepted_raw_id = str(application.get("accepted_raw_id"))
+        accepted_source = source_by_raw_id.get(accepted_raw_id)
+        if accepted_source is None:
+            problems.append(f"application accepted raw is outside the immutable component for {raw_id}/{key}")
+        else:
+            accepted_revisions = set(membership_revisions_by_raw_and_key.get((accepted_raw_id, key), set()))
+            accepted_source_revision = accepted_source.get("source_revision")
+            if accepted_source_revision is not None:
+                accepted_revisions.add(str(accepted_source_revision))
+            if str(application.get("accepted_source_revision")) not in accepted_revisions:
+                problems.append(f"application accepted source revision has no source evidence for {raw_id}/{key}")
+        frontier_kind = application.get("accepted_frontier_kind")
+        frontier = application.get("accepted_frontier")
+        if frontier_kind not in {"byte", "semantic"} or type(frontier) is not int or frontier < 0:
+            problems.append(f"application accepted frontier is malformed for {raw_id}/{key}")
         for field in ("baseline_raw_id", "predecessor_raw_id"):
             if application.get(field) != source.get(field):
                 problems.append(f"application {field} does not match source evidence for {raw_id}")
@@ -552,17 +565,21 @@ def validate_raw_replay_application_receipt(
             str(head.get("accepted_raw_id")),
             str(head.get("accepted_content_hash")),
         )
-        if application_authority == head_authority:
-            applications_matching_current_head.add(key)
+        # A prior application of this same raw/content may survive a later
+        # membership reclassification that advances its generation. It is
+        # still an exact historical decision, but only a row matching the
+        # entire current frontier can certify the accepted head.
+        if application_authority == head_authority and all(
+            application.get(field) == head.get(field)
             for field in (
                 "accepted_source_revision",
                 "accepted_frontier_kind",
                 "accepted_frontier",
                 "acquisition_generation",
                 "append_end_offset",
-            ):
-                if application.get(field) != head.get(field):
-                    problems.append(f"application {field} does not match the accepted head for {key}")
+            )
+        ):
+            applications_matching_current_head.add(key)
         materialized_session = sessions_by_id.get(str(head.get("session_id")))
         if materialized_session is None:
             continue
@@ -570,7 +587,7 @@ def validate_raw_replay_application_receipt(
             materialized_session.get("content_hash")
         ) != str(head.get("accepted_content_hash")):
             problems.append(f"materialized session authority does not match the head for {key}")
-    for key in sorted(application_keys - applications_matching_current_head):
+    for key in sorted(expected_keys - applications_matching_current_head):
         problems.append(f"no application accepted authority matches the current head for {key}")
     return not problems, tuple(problems)
 

@@ -36,7 +36,8 @@ from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.ids import session_content_hash
-from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -225,6 +226,113 @@ def test_shard_and_inline_writes_produce_identical_rows(tmp_path: Path) -> None:
         shard_conn.close()
 
 
+def test_sealed_message_sink_replaces_same_raw_from_streamed_shard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="streamed-reparse",
+        messages=[ParsedMessage(provider_message_id="m0", role=Role.USER, text="old")],
+    )
+    revised = original.model_copy(
+        update={
+            "messages": [
+                ParsedMessage(provider_message_id="m0", role=Role.USER, text="new"),
+                ParsedMessage(provider_message_id="m1", role=Role.ASSISTANT, text="answer"),
+            ]
+        }
+    )
+    store = SqliteMessageStore(tmp_path / "prepared.db")
+    sink = store.new_sink()
+    sink.extend(revised.messages)
+    worker_session = revised.model_copy(update={"messages": sink, "content_hash": str(session_content_hash(revised))})
+    shard = prepare_session_shard(tmp_path / "shards", [worker_session])
+    store.conn.commit()
+    store.close()
+    sealed = SqliteMessageSink(store.path, sink.session_ordinal, count=len(sink))
+    publication = worker_session.model_copy(update={"messages": sealed})
+
+    conn = _connect(tmp_path / "index.db")
+    try:
+        write_parsed_session_to_archive(conn, original, raw_id="same-acquisition")
+        with attached_session_shard(conn, shard) as schema:
+            prepared = bind_session_shard(schema, shard)[_session_key(publication)]
+
+            def forbid_inline(*_args: object, **_kwargs: object) -> object:
+                raise AssertionError("writer rebuilt canonical rows instead of copying the shard")
+
+            monkeypatch.setattr(archive_tier_write, "_iter_message_rows", forbid_inline)
+            monkeypatch.setattr(archive_tier_write, "_iter_block_rows", forbid_inline)
+            write_parsed_session_to_archive(
+                conn,
+                publication,
+                content_hash=publication.content_hash,
+                raw_id="same-acquisition",
+                prepared=prepared,
+            )
+        rows = conn.execute(
+            "SELECT native_id, text FROM messages JOIN blocks USING (message_id) "
+            "WHERE messages.session_id = ? ORDER BY messages.position",
+            (_session_key(publication),),
+        ).fetchall()
+        assert [tuple(row) for row in rows] == [("m0", "new"), ("m1", "answer")]
+    finally:
+        conn.close()
+
+
+def test_sealed_message_sink_preserves_attachment_owner_projection(tmp_path: Path) -> None:
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="streamed-attachment-owner",
+        messages=[
+            ParsedMessage(provider_message_id="m0", role=Role.USER, text="request", position=0),
+            ParsedMessage(provider_message_id="m1", role=Role.ASSISTANT, text="answer", position=1),
+        ],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id="attachment-1",
+                message_position=1,
+                name="answer.txt",
+                mime_type="text/plain",
+            )
+        ],
+    )
+    store = SqliteMessageStore(tmp_path / "attachment-prepared.db")
+    sink = store.new_sink()
+    sink.extend(session.messages)
+    worker_session = session.model_copy(update={"messages": sink, "content_hash": str(session_content_hash(session))})
+    shard = prepare_session_shard(tmp_path / "attachment-shards", [worker_session])
+    store.conn.commit()
+    store.close()
+    sealed = SqliteMessageSink(store.path, sink.session_ordinal, count=len(sink))
+    publication = worker_session.model_copy(update={"messages": sealed})
+
+    inline = _connect(tmp_path / "inline-attachment.db")
+    streamed = _connect(tmp_path / "streamed-attachment.db")
+    try:
+        write_parsed_session_to_archive(inline, session, content_hash=str(session_content_hash(session)))
+        with attached_session_shard(streamed, shard) as schema:
+            prepared = bind_session_shard(schema, shard)[_session_key(publication)]
+            write_parsed_session_to_archive(
+                streamed,
+                publication,
+                content_hash=publication.content_hash,
+                prepared=prepared,
+            )
+        for table, order_by in (
+            ("sessions", "session_id"),
+            ("messages", "message_id"),
+            ("blocks", "block_id"),
+            ("attachments", "attachment_id"),
+            ("attachment_refs", "message_id, position"),
+        ):
+            assert _dump_table(inline, table, order_by) == _dump_table(streamed, table, order_by), table
+        assert streamed.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()[0] == 1
+    finally:
+        inline.close()
+        streamed.close()
+
+
 def test_shard_copy_replaces_the_row_binding_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Anti-vacuity: with the binding writers poisoned, only a real copy can succeed."""
     sessions = _synthetic_sessions()[:2]
@@ -287,12 +395,8 @@ def test_shard_copy_preserves_search_text_and_fts(tmp_path: Path) -> None:
         conn.close()
 
 
-def test_shard_falls_back_when_the_session_already_has_rows(tmp_path: Path) -> None:
-    """A rewrite has prior rows to reconcile, which a shard cannot carry.
-
-    The second write must land the new content anyway, through the inline
-    builders, exactly as ``prepared=None`` would.
-    """
+def test_shard_replaces_prior_rows_from_the_same_acquisition(tmp_path: Path) -> None:
+    """A same-acquisition reparse replaces the old rows from the shard."""
     original = _synthetic_sessions()[0]
     conn = _connect(tmp_path / "index.db")
     try:

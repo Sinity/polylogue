@@ -38,25 +38,18 @@ class RawObservationConvergenceOwner:
         max_payload_bytes: int,
     ) -> None:
         self._archive_root = archive_root
-        self._compute_adapter = compute_adapter
-        self._write_bridge = write_bridge
         self._max_payload_bytes = max_payload_bytes
         adapter = make_raw_observation_derivation(archive_root, max_payload_bytes=max_payload_bytes)
         self._converger = DaemonConverger((), derivations=(adapter,))
-        self._owners_by_payload_limit = {
-            max_payload_bytes: DerivationConvergenceOwner(
-                self._converger, compute_adapter=compute_adapter, write_bridge=write_bridge
-            )
-        }
+        self._owner = DerivationConvergenceOwner(
+            self._converger, compute_adapter=compute_adapter, write_bridge=write_bridge
+        )
         self._converge_lock = asyncio.Lock()
 
-    async def converge_raw_id(self, raw_id: str, *, max_payload_bytes: int | None = None) -> DerivationReport:
+    async def converge_raw_id(self, raw_id: str) -> DerivationReport:
         """Prepare, revalidate, and publish exactly ``raw_id`` if still pending."""
         if not raw_id:
             raise ValueError("raw observation id must be non-empty")
-        payload_limit = self._max_payload_bytes if max_payload_bytes is None else max_payload_bytes
-        if payload_limit < 1:
-            raise ValueError("raw observation payload limit must be positive")
         async with self._converge_lock:
             from polylogue.daemon.write_coordinator import daemon_write_lease_active
 
@@ -67,23 +60,7 @@ class RawObservationConvergenceOwner:
                 self._archive_root,
                 raw_ids=(raw_id,),
             )
-            owner = self._owners_by_payload_limit.get(payload_limit)
-            if owner is None:
-                converger = DaemonConverger(
-                    (),
-                    derivations=(
-                        make_raw_observation_derivation(
-                            self._archive_root,
-                            max_payload_bytes=payload_limit,
-                            stream_safe_only=payload_limit > self._max_payload_bytes,
-                        ),
-                    ),
-                )
-                owner = DerivationConvergenceOwner(
-                    converger, compute_adapter=self._compute_adapter, write_bridge=self._write_bridge
-                )
-                self._owners_by_payload_limit[payload_limit] = owner
-            return await owner.converge(
+            return await self._owner.converge(
                 frame,
                 budget=Budget(page=1, discovery=1, inspection=2, compute=1, publication=1),
                 domains=(RAW_OBSERVATION_DOMAIN,),

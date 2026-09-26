@@ -235,6 +235,25 @@ class FrozenSourceRemediationRequiredError(RuntimeError):
     """Candidate replay found source authority that phase 2 must update."""
 
 
+class PreparedRawClassificationStaleError(RuntimeError):
+    """Off-writer byte classification no longer describes the durable source."""
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedRawRevisionClassification:
+    """Sealed source-row dependency and byte decisions for one rebuild key."""
+
+    logical_source_key: str
+    source_binding: str
+    full_updates: tuple[tuple[str, str, str | None, str | None, int], ...]
+    blob_stats: tuple[tuple[str, tuple[int, int, int, int, int]], ...]
+
+
+def _blob_stat_identity(path: Path) -> tuple[int, int, int, int, int]:
+    stat = path.stat()
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
 def _is_frozen_candidate(store: RawRevisionGovernanceHost) -> bool:
     """Return whether this host is the owned inactive-generation adapter."""
     return bool(getattr(store, "_inactive_candidate_durable_read_only", False))
@@ -1409,6 +1428,136 @@ def classify_raw_revision_cohort_for_live_watch_in_transaction(
     )
 
 
+def _raw_classification_source_binding(store: RawRevisionGovernanceHost, logical_source_key: str) -> str:
+    """Bind every source row that can change rebuild byte classification."""
+    source_conn = store._ensure_source_conn()
+    digest = hashlib.sha256()
+    relevant_raws = """
+        SELECT r.raw_id FROM raw_sessions AS r
+        WHERE r.logical_source_key = ?
+           OR r.source_path IN (
+               SELECT source_path FROM raw_sessions
+               WHERE logical_source_key = ? AND revision_kind = 'full'
+           )
+           OR r.raw_id IN (
+               SELECT raw_id FROM raw_session_memberships WHERE logical_source_key = ?
+           )
+    """
+    for query, params in (
+        (
+            f"SELECT r.* FROM raw_sessions AS r WHERE r.raw_id IN ({relevant_raws}) ORDER BY r.raw_id",
+            (logical_source_key,) * 3,
+        ),
+        (
+            "SELECT m.* FROM raw_session_memberships AS m "
+            f"WHERE m.logical_source_key = ? OR m.raw_id IN ({relevant_raws}) "
+            "ORDER BY m.raw_id, m.logical_source_key",
+            (logical_source_key,) * 4,
+        ),
+        (
+            "SELECT c.* FROM raw_membership_census AS c "
+            f"WHERE c.raw_id IN ({relevant_raws}) "
+            "OR c.raw_id IN (SELECT raw_id FROM raw_session_memberships WHERE logical_source_key = ?) "
+            "ORDER BY c.raw_id",
+            (logical_source_key,) * 4,
+        ),
+    ):
+        digest.update(query.encode())
+        for row in source_conn.execute(query, params):
+            encoded = repr(tuple(row)).encode()
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+    return digest.hexdigest()
+
+
+def prepare_raw_revision_rebuild_classification(
+    store: RawRevisionGovernanceHost, logical_source_key: str
+) -> PreparedRawRevisionClassification:
+    """Stream full-raw byte comparisons on a read-only source snapshot."""
+    binding = _raw_classification_source_binding(store, logical_source_key)
+    updates: list[tuple[str, str, str | None, str | None, int]] = []
+    _classify_raw_revision_cohort(
+        store,
+        logical_source_key,
+        check_source_path_identity_split=True,
+        source_effects=False,
+        prepared_updates=updates,
+    )
+    payload_store = _retained_blob_store(store)
+    blob_stats: list[tuple[str, tuple[int, int, int, int, int]]] = []
+    for row in store._ensure_source_conn().execute(
+        "SELECT lower(hex(blob_hash)) FROM raw_sessions WHERE logical_source_key = ? AND revision_kind = 'full'",
+        (logical_source_key,),
+    ):
+        blob_hash = str(row[0])
+        path = payload_store.blob_path(blob_hash)
+        try:
+            before = _blob_stat_identity(path)
+            verified = payload_store.verify(blob_hash)
+            after = _blob_stat_identity(path)
+        except OSError as exc:
+            raise PreparedRawClassificationStaleError(
+                f"retained full raw disappeared during byte classification for {logical_source_key}"
+            ) from exc
+        if not verified or before != after:
+            raise PreparedRawClassificationStaleError(
+                f"retained full raw changed during byte classification for {logical_source_key}"
+            )
+        blob_stats.append((blob_hash, after))
+    if _raw_classification_source_binding(store, logical_source_key) != binding:
+        raise PreparedRawClassificationStaleError("source changed during byte classification")
+    return PreparedRawRevisionClassification(logical_source_key, binding, tuple(updates), tuple(blob_stats))
+
+
+def prepared_raw_revision_classification_current(
+    store: RawRevisionGovernanceHost, proof: PreparedRawRevisionClassification
+) -> bool:
+    """Check persisted authority against a prepared proof without blob reads."""
+    if _raw_classification_source_binding(store, proof.logical_source_key) != proof.source_binding:
+        raise PreparedRawClassificationStaleError(
+            f"source changed after byte classification for {proof.logical_source_key}"
+        )
+    source_conn = store._ensure_source_conn()
+    for raw_id, authority, predecessor, baseline, generation in proof.full_updates:
+        row = source_conn.execute(
+            "SELECT revision_authority, predecessor_raw_id, baseline_raw_id, acquisition_generation "
+            "FROM raw_sessions WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone()
+        if row is None or tuple(row) != (authority, predecessor, baseline, generation):
+            return False
+    return not _contiguous_append_authority_drift_exists(source_conn, proof.logical_source_key)
+
+
+def apply_prepared_raw_revision_classification(
+    store: RawRevisionGovernanceHost, proof: PreparedRawRevisionClassification
+) -> RevisionReplayPlan:
+    """Apply an off-writer byte proof after checking its exact source rows."""
+    if _raw_classification_source_binding(store, proof.logical_source_key) != proof.source_binding:
+        raise PreparedRawClassificationStaleError(
+            f"source changed before byte classification for {proof.logical_source_key}"
+        )
+    payload_store = _retained_blob_store(store)
+    try:
+        if any(_blob_stat_identity(payload_store.blob_path(blob_hash)) != stat for blob_hash, stat in proof.blob_stats):
+            raise PreparedRawClassificationStaleError(
+                f"retained blob changed before byte classification for {proof.logical_source_key}"
+            )
+    except OSError as exc:
+        raise PreparedRawClassificationStaleError(
+            f"retained blob disappeared before byte classification for {proof.logical_source_key}"
+        ) from exc
+    source_conn = store._ensure_source_conn()
+    for raw_id, authority, predecessor, baseline, generation in proof.full_updates:
+        source_conn.execute(
+            "UPDATE raw_sessions SET revision_authority = ?, predecessor_raw_id = ?, "
+            "baseline_raw_id = ?, acquisition_generation = ? WHERE raw_id = ?",
+            (authority, predecessor, baseline, generation, raw_id),
+        )
+    _promote_contiguous_append_evidence(source_conn, proof.logical_source_key)
+    return raw_revision_replay_plan(store, proof.logical_source_key)
+
+
 def _classify_raw_revision_cohort(
     store: RawRevisionGovernanceHost,
     logical_source_key: str,
@@ -1416,6 +1565,7 @@ def _classify_raw_revision_cohort(
     check_source_path_identity_split: bool,
     manage_transaction: bool = True,
     source_effects: bool,
+    prepared_updates: list[tuple[str, str, str | None, str | None, int]] | None = None,
 ) -> RevisionReplayPlan:
     """Promote only a unique byte-prefix full chain and contiguous appends.
 
@@ -1431,8 +1581,11 @@ def _classify_raw_revision_cohort(
     ``source_path`` under a DIFFERENT key (see
     ``_raw_revision_source_path_has_divergent_evidence``).
     """
-    if store._blob_publisher is None:
+    if source_effects and store._blob_publisher is None:
         raise RuntimeError("raw revision classification requires a writable blob publisher")
+    if source_effects and prepared_updates is not None:
+        raise ValueError("prepared byte classification cannot mutate source")
+    payload_store = _retained_blob_store(store)
     source_conn = store._ensure_source_conn()
     full_rows = source_conn.execute(
         """
@@ -1494,8 +1647,7 @@ def _classify_raw_revision_cohort(
     for row in full_rows:
 
         def open_payload(blob_hash: str = str(row[1])) -> BinaryIO:
-            assert store._blob_publisher is not None
-            return store._blob_publisher.open(blob_hash)
+            return payload_store.open(blob_hash)
 
         historical.append(
             HistoricalRawRevisionStream(
@@ -1535,7 +1687,21 @@ def _classify_raw_revision_cohort(
     for dup_decision in decisions:
         if dup_decision.relation == "duplicate" and dup_decision.duplicate_of_raw_id is not None:
             generation_by_raw_id[dup_decision.raw_id] = generation_by_raw_id.get(dup_decision.duplicate_of_raw_id, 0)
-    if source_effects:
+    if prepared_updates is not None:
+        for row in full_rows:
+            raw_id = str(row[0])
+            decision = by_raw_id.get(raw_id)
+            authority = decision.authority if decision is not None else RawRevisionAuthority.QUARANTINED
+            prepared_updates.append(
+                (
+                    raw_id,
+                    authority.value,
+                    decision.predecessor_raw_id if decision is not None else None,
+                    baseline_raw_id if authority is RawRevisionAuthority.BYTE_PROVEN else None,
+                    generation_by_raw_id.get(raw_id, 0),
+                )
+            )
+    elif source_effects:
         with source_conn if manage_transaction else nullcontext():
             for row in full_rows:
                 raw_id = str(row[0])
@@ -2859,7 +3025,7 @@ def raw_revision_replay_adoptable(store: RawRevisionGovernanceHost, sessions: Se
     # (~0.26s); this write-path-only helper must not tax read-path imports.
     from polylogue.sources.dispatch import merge_parsed_session_chunks
 
-    aggregate = merge_parsed_session_chunks(sessions)
+    aggregate = [sessions[0]] if len(sessions) == 1 else merge_parsed_session_chunks(sessions)
     if len(aggregate) != 1:
         return False
     session = aggregate[0]
@@ -2894,7 +3060,7 @@ def defer_raw_revision_adoption(
     decided_at_ms = int(time.time() * 1000)
     from polylogue.sources.dispatch import merge_parsed_session_chunks
 
-    aggregate = merge_parsed_session_chunks(sessions)
+    aggregate = [sessions[0]] if len(sessions) == 1 else merge_parsed_session_chunks(sessions)
     if len(aggregate) != 1:
         raise RuntimeError("deferred revision cohort did not compose to one session")
     session = aggregate[0]
@@ -3093,7 +3259,11 @@ def apply_raw_revision_replay(
     aggregate_sessions = (
         [prepared_aggregate_session]
         if prepared_aggregate_session is not None
-        else merge_parsed_session_chunks(parsed_by_raw_id[raw_id] for raw_id in plan.accepted_raw_ids)
+        else (
+            [parsed_by_raw_id[plan.accepted_raw_ids[0]]]
+            if len(plan.accepted_raw_ids) == 1
+            else merge_parsed_session_chunks(parsed_by_raw_id[raw_id] for raw_id in plan.accepted_raw_ids)
+        )
     )
     if len(aggregate_sessions) != 1:
         raise RuntimeError("one logical revision chain did not compose to exactly one session")
@@ -3222,7 +3392,11 @@ def apply_raw_revision_replay(
             composed_sessions = (
                 [prepared_pending_session]
                 if prepared_pending_session is not None
-                else merge_parsed_session_chunks(parsed_by_raw_id[raw_id] for raw_id in pending_raw_ids)
+                else (
+                    [parsed_by_raw_id[pending_raw_ids[0]]]
+                    if len(pending_raw_ids) == 1
+                    else merge_parsed_session_chunks(parsed_by_raw_id[raw_id] for raw_id in pending_raw_ids)
+                )
             )
             if len(composed_sessions) != 1:
                 raise RuntimeError("one logical revision chain did not compose to exactly one session")
@@ -3481,6 +3655,7 @@ def apply_raw_membership_classification(
     preacquired_attachment_refs: tuple[ArchiveSourceBlobRef, ...] | None = None,
     prepared_by_raw_id: Mapping[str, PreparedRows] | None = None,
     prepared_required_raw_ids: frozenset[str] = frozenset(),
+    prepared_write: PreparedSessionWrite | None = None,
 ) -> str | None:
     """Apply one semantic member head and persist every membership decision.
 
@@ -3756,7 +3931,8 @@ def apply_raw_membership_classification(
                     fresh_build_batch=fresh_build_batch,
                     defer_fts_rebuild=not bulk_build,
                     prepared=(prepared_by_raw_id or {}).get(accepted_raw_id),
-                    prepared_required=accepted_raw_id in prepared_required_raw_ids,
+                    prepared_required=accepted_raw_id in prepared_required_raw_ids or prepared_write is not None,
+                    prepared_write=prepared_write,
                     content_hash=projections_by_raw_id[accepted_raw_id].session_hash.hex(),
                 )
                 if stage_timings_s is not None:

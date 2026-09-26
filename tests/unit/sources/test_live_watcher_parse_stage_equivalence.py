@@ -24,17 +24,20 @@ uses), not a reimplementation of either.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import time
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 
 from polylogue import Polylogue
 from polylogue.core.enums import Provider
+from polylogue.operations.operation_context import PinnedOperationRead, open_operation_read
 from polylogue.sources.live.batch import LiveBatchProcessor, _live_parse_stage_candidates
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.parse_prefetch import LiveParseStage
@@ -49,6 +52,32 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
 def _stalled_process_worker(marker: str) -> None:
     Path(marker).write_text("started")
     time.sleep(30)
+
+
+def _dead_process_worker() -> None:
+    import os
+
+    os._exit(7)
+
+
+def _delayed_path_worker(
+    provider_value: str,
+    source_path: str,
+    fallback_id: str,
+    *,
+    is_stream: bool,
+    shard_directory: str,
+) -> object:
+    from polylogue.sources.live.parse_prefetch import live_parse_path_worker
+
+    time.sleep(0.25)
+    return live_parse_path_worker(
+        provider_value,
+        source_path,
+        fallback_id,
+        is_stream=is_stream,
+        shard_directory=shard_directory,
+    )
 
 
 def _codex_session_bytes(native_id: str, messages: tuple[tuple[str, str], ...]) -> bytes:
@@ -141,6 +170,7 @@ async def _ingest(archive_root: Path, paths: list[Path], *, parse_stage: LivePar
         cursor=cursor,
         parser_fingerprint=_PARSER_FINGERPRINT,
         parse_stage=parse_stage,
+        read_snapshot=open_operation_read,
     )
     metrics = await processor.ingest_files(paths, emit_event=False)
     assert metrics.failed_file_count == 0
@@ -294,18 +324,57 @@ async def test_path_worker_failure_retains_raw_for_retry(tmp_path: Path, monkeyp
         cursor=cursor,
         parser_fingerprint=_PARSER_FINGERPRINT,
         parse_stage=stage,
+        read_snapshot=open_operation_read,
     )
     try:
         metrics = await processor.ingest_files(paths, emit_event=False)
     finally:
         stage.shutdown()
-    assert metrics.failed_file_count == 1
+    assert metrics.failed_file_count == 0
+    assert metrics.deferred_file_count == 1
     with _connect(archive_root / "source.db") as conn:
         row = conn.execute("SELECT parse_error FROM raw_sessions").fetchone()
         assert row is not None
-        assert "worker failed" in str(row[0])
+        assert row[0] is None
+    with _connect(archive_root / "ops.db") as conn:
+        row = conn.execute("SELECT stage, status FROM convergence_debt WHERE target_type = 'source_path'").fetchone()
+        assert row is not None
+        assert tuple(row) == ("live_ingest_deferred", "deferred")
     with _connect(archive_root / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_incomplete_jsonl_uses_sealed_prefix_without_large_inline_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polylogue.sources.live.batch as batch
+
+    path = _write_fixture_corpus(tmp_path / "sessions", count=1)[0]
+    complete_prefix = path.read_bytes()
+    path.write_bytes(complete_prefix + b'{"type":"response_item","payload":{"type":"message"')
+    monkeypatch.setattr(batch, "_STREAMING_FULL_INGEST_BYTES", 1)
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    processor = LiveBatchProcessor(
+        Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
+        (WatchSource(name="codex", root=path.parent),),
+        cursor=CursorStore(archive_root / "index.db"),
+        parser_fingerprint=_PARSER_FINGERPRINT,
+        parse_stage=stage,
+        read_snapshot=open_operation_read,
+    )
+    try:
+        result = await processor.ingest_files([path], emit_event=False)
+    finally:
+        stage.shutdown()
+    assert result.succeeded_file_count == 1
+    cursor = processor._cursor.get_record(path)
+    assert cursor is not None and cursor.byte_offset == len(complete_prefix)
+    assert cursor.deferred_end_offset == path.stat().st_size
+    with _connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] > 0
 
 
 @pytest.mark.asyncio
@@ -340,6 +409,7 @@ async def test_pending_preparation_does_not_spend_cursor_failure_budget(
         cursor=cursor,
         parser_fingerprint=_PARSER_FINGERPRINT,
         parse_stage=stage,
+        read_snapshot=open_operation_read,
     )
     try:
         for _ in range(6):
@@ -431,6 +501,149 @@ def test_path_stage_shutdown_terminates_stalled_process(tmp_path: Path) -> None:
     finally:
         if not future.done():
             stage.shutdown()
+
+
+@pytest.mark.uses_real_clock("proves a healthy process result survives the warm deadline")
+def test_path_worker_timeout_preserves_late_process_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import hashlib
+
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+
+    path = _write_fixture_corpus(tmp_path / "sessions", count=1)[0]
+    directory = tmp_path / "parse-shards"
+    stage = LiveParseStage(max_workers=1, warm_timeout_seconds=0.02, shard_directory=directory, use_processes=True)
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", _delayed_path_worker)
+    candidate = (str(path), Provider.CODEX, True)
+    original_verify = PreparedJsonl.verify_files
+    inside_writer = False
+    full_verifications = 0
+
+    def verify_outside_writer(self: PreparedJsonl, *, full: bool) -> None:
+        nonlocal full_verifications
+        if full:
+            assert not inside_writer, "full artifact digest ran under writer admission"
+            full_verifications += 1
+        original_verify(self, full=full)
+
+    monkeypatch.setattr(PreparedJsonl, "verify_files", verify_outside_writer)
+    try:
+        assert stage.warm_paths([candidate]) == 1
+        future = stage._path_futures[str(path)]
+        future.result(timeout=10)
+        inside_writer = True
+        pending = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+        inside_writer = False
+        assert pending is not None and pending.deferred and pending.error == "worker preparation pending"
+        assert full_verifications == 0
+        stage._warm_timeout_seconds = 10
+        assert stage.warm_paths([candidate]) == 1
+        assert future.done()
+        assert full_verifications == 1
+        result = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+        assert result is not None and result.error is None
+        assert len(list(result.iter_sessions())) == 1
+        result.discard()
+    finally:
+        stage.shutdown()
+    assert list(directory.iterdir()) == []
+
+
+def test_path_worker_death_is_retryable_and_shutdown_cleans_only_owned_files(tmp_path: Path) -> None:
+    import hashlib
+
+    path = _write_fixture_corpus(tmp_path / "sessions", count=1)[0]
+    directory = tmp_path / "parse-shards"
+    stage = LiveParseStage(max_workers=1, shard_directory=directory, use_processes=True)
+    unrelated = directory / "operator-note.txt"
+    unrelated.write_text("keep")
+    (directory / "prepared-orphan.db").write_bytes(b"partial")
+    (directory / "shard-orphan.db").write_bytes(b"partial")
+    try:
+        future = stage._executor.submit(_dead_process_worker)
+        stage._path_futures["dead"] = future  # type: ignore[assignment]
+        try:
+            future.result(timeout=5)
+        except Exception:
+            pass
+        stage.warm_paths([])
+        failed = stage.pop_path("dead", blob_hash="0" * 64)
+        assert failed is not None and failed.deferred
+        assert "worker process died" in str(failed.error)
+
+        candidate = (str(path), Provider.CODEX, True)
+        assert stage.warm_paths([candidate]) == 1
+        retry = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+        assert retry is not None and retry.error is None
+        retry.discard()
+    finally:
+        stage.shutdown()
+    assert unrelated.read_text() == "keep"
+    assert sorted(item.name for item in directory.iterdir()) == ["operator-note.txt"]
+
+
+def test_path_preparation_refuses_source_changed_after_worker_seal(tmp_path: Path) -> None:
+    import hashlib
+
+    path = _write_fixture_corpus(tmp_path / "sessions", count=1)[0]
+    directory = tmp_path / "parse-shards"
+    stage = LiveParseStage(max_workers=1, shard_directory=directory)
+    try:
+        assert stage.warm_paths([(str(path), Provider.CODEX, True)]) == 1
+        path.write_bytes(path.read_bytes() + b' {"type":"event_msg","payload":{}}\n')
+        result = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+        assert result is not None and result.deferred
+        assert result.error == "captured source changed after preparation"
+    finally:
+        stage.shutdown()
+    assert list(directory.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_existing_session_preparation_uses_controlled_pinned_snapshot(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    path = _write_fixture_corpus(tmp_path / "sessions", count=1)[0]
+    await _ingest(archive_root, [path], parse_stage=None)
+    path.write_bytes(_codex_session_bytes("session-0", (("user", "revised question"), ("assistant", "revised answer"))))
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    snapshots = 0
+
+    def controlled_read(root: Path) -> AbstractContextManager[PinnedOperationRead]:
+        nonlocal snapshots
+        snapshots += 1
+        return open_operation_read(root)
+
+    try:
+        assert (
+            stage.warm_paths(
+                [(str(path), Provider.CODEX, True)], archive_root=archive_root, read_snapshot=controlled_read
+            )
+            == 1
+        )
+        prepared = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+        assert snapshots == 1
+        assert prepared is not None and not prepared.deferred
+        assert len(prepared.prepared_writes) == 1
+        assert prepared.prepared_writes[0].session_id == "codex-session:session-0"
+        prepared.discard()
+    finally:
+        stage.shutdown()
+
+
+def test_existing_session_preparation_defers_when_controlled_snapshot_unavailable(tmp_path: Path) -> None:
+    path = _write_fixture_corpus(tmp_path / "sessions", count=1)[0]
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+
+    def unavailable(_root: Path) -> NoReturn:
+        raise RuntimeError("snapshot unavailable")
+
+    try:
+        stage.warm_paths([(str(path), Provider.CODEX, True)], archive_root=tmp_path, read_snapshot=unavailable)
+        result = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+        assert result is not None and result.deferred
+        assert result.error == "read-only preparation snapshot unavailable: RuntimeError"
+    finally:
+        stage.shutdown()
 
 
 @pytest.mark.asyncio

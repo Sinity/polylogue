@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, MutableSequence
+from contextlib import ExitStack
 from dataclasses import dataclass
 from io import BytesIO
 from itertools import islice
@@ -52,6 +53,7 @@ from .parsers.base import (
 )
 from .parsers.claude import code_parser as claude_code_parser
 from .parsers.claude.code_parser import apply_tool_result_sidecars
+from .parsers.claude.stream_scratch import ClaudeStreamScratch, SqliteStringSet
 from .sidecar_evidence import SidecarResolver
 
 if TYPE_CHECKING:
@@ -891,7 +893,7 @@ def _claude_code_new_group_identity(
     is_agent_fallback: bool,
     is_first_group: bool,
     primary_started: bool,
-    primary_uuids: set[str],
+    primary_uuids: set[str] | SqliteStringSet,
 ) -> tuple[str, bool, bool]:
     """Resolve a newly-encountered Claude Code group's identity.
 
@@ -954,6 +956,40 @@ def _claude_code_multiway_parse(
     *,
     source_path: str | None = None,
     sidecar_resolver: SidecarResolver | None = None,
+    message_sink_factory: Callable[[], MutableSequence[ParsedMessage]] | None = None,
+    event_sink_factory: Callable[[], MutableSequence[ParsedSessionEvent]] | None = None,
+) -> Iterator[ParsedSession]:
+    if message_sink_factory is None:
+        yield from _claude_code_multiway_parse_inner(
+            payloads,
+            fallback_id,
+            source_path=source_path,
+            sidecar_resolver=sidecar_resolver,
+        )
+    else:
+        with ClaudeStreamScratch() as scratch, ExitStack() as sidecar_stack:
+            yield from _claude_code_multiway_parse_inner(
+                payloads,
+                fallback_id,
+                source_path=source_path,
+                sidecar_resolver=sidecar_resolver,
+                message_sink_factory=message_sink_factory,
+                event_sink_factory=event_sink_factory,
+                scratch=scratch,
+                sidecar_stack=sidecar_stack,
+            )
+
+
+def _claude_code_multiway_parse_inner(
+    payloads: Iterable[object],
+    fallback_id: str,
+    *,
+    source_path: str | None = None,
+    sidecar_resolver: SidecarResolver | None = None,
+    message_sink_factory: Callable[[], MutableSequence[ParsedMessage]] | None = None,
+    event_sink_factory: Callable[[], MutableSequence[ParsedSessionEvent]] | None = None,
+    scratch: ClaudeStreamScratch | None = None,
+    sidecar_stack: ExitStack | None = None,
 ) -> Iterator[ParsedSession]:
     """Walk a Claude Code record stream exactly once, routing every record to
     a per-session ``_SessionAccumulator`` keyed by its own ``sessionId``, and
@@ -1015,7 +1051,8 @@ def _claude_code_multiway_parse(
     def new_sidecar_accumulator() -> ToolResultIndexAccumulator:
         from polylogue.sources.live.tool_result_sidecars import ToolResultIndexAccumulator
 
-        return ToolResultIndexAccumulator()
+        accumulator = ToolResultIndexAccumulator(disk_backed=scratch is not None)
+        return sidecar_stack.enter_context(accumulator) if sidecar_stack is not None else accumulator
 
     sidecar_accumulators: dict[str, ToolResultIndexAccumulator] | None = {} if sidecar_scope is not None else None
 
@@ -1025,15 +1062,26 @@ def _claude_code_multiway_parse(
     pending_prefix: list[tuple[object, PayloadRecord | None]] = []
     current_group_id: str | None = None
     primary_started = False
-    primary_uuids: set[str] = set()
+    primary_uuids: set[str] | SqliteStringSet = scratch.string_set("primary") if scratch is not None else set()
 
     def new_accumulator(group_fallback_id: str, trust: bool) -> claude_code_parser._SessionAccumulator:
-        return claude_code_parser._SessionAccumulator(
+        acc = claude_code_parser._SessionAccumulator(
             fallback_id=group_fallback_id,
             trust_fallback_id=trust,
             is_agent=group_fallback_id.startswith("agent-"),
             is_acompact=group_fallback_id.startswith("agent-acompact-"),
         )
+        if message_sink_factory is not None:
+            acc.messages = message_sink_factory()
+        if event_sink_factory is not None:
+            acc.session_events = event_sink_factory()
+        if scratch is not None:
+            acc.scratch = scratch
+            acc.scratch_scope = group_fallback_id
+            acc.seen_uuids = scratch.string_set(f"seen:{group_fallback_id}")
+            acc.background_notifications = scratch.notifications(group_fallback_id)
+            acc.delegation_progress = scratch.mapped(f"delegation:{group_fallback_id}")
+        return acc
 
     def fold_into(group_id: str, index: int, item: object, record: PayloadRecord | None) -> None:
         # ``record`` is the caller's already-coerced view of ``item``. Coercing
@@ -1056,7 +1104,10 @@ def _claude_code_multiway_parse(
 
         if session_id is None:
             if current_group_id is None:
-                pending_prefix.append((item, record))
+                if scratch is None:
+                    pending_prefix.append((item, record))
+                else:
+                    scratch.add_prefix(record_index, item, record)
                 continue
             fold_into(current_group_id, record_index, item, record)
             continue
@@ -1079,10 +1130,17 @@ def _claude_code_multiway_parse(
                 provisional_groups.add(session_id)
             if not is_agent_fallback and session_id == fallback_id:
                 primary_started = True
-            prefix_index = record_index - len(pending_prefix)
-            for prefix_item, prefix_record in pending_prefix:
-                prefix_index += 1
-                fold_into(session_id, prefix_index, prefix_item, prefix_record)
+            if scratch is None:
+                prefix_index = record_index - len(pending_prefix)
+                for prefix_item, prefix_record in pending_prefix:
+                    prefix_index += 1
+                    fold_into(session_id, prefix_index, prefix_item, prefix_record)
+            else:
+                prefix_index = record_index - scratch.prefix_count()
+                for _, prefix_item, prefix_record in scratch.iter_prefix():
+                    prefix_index += 1
+                    fold_into(session_id, prefix_index, prefix_item, prefix_record)
+                scratch.clear_prefix()
             pending_prefix = []
 
         current_group_id = session_id
@@ -1097,8 +1155,12 @@ def _claude_code_multiway_parse(
         group_order.append(fallback_id)
         if sidecar_accumulators is not None:
             sidecar_accumulators[fallback_id] = new_sidecar_accumulator()
-        for index, (prefix_item, prefix_record) in enumerate(pending_prefix, start=1):
-            fold_into(fallback_id, index, prefix_item, prefix_record)
+        if scratch is None:
+            for index, (prefix_item, prefix_record) in enumerate(pending_prefix, start=1):
+                fold_into(fallback_id, index, prefix_item, prefix_record)
+        else:
+            for index, prefix_item, prefix_record in scratch.iter_prefix():
+                fold_into(fallback_id, index, prefix_item, prefix_record)
 
     # Provisional groups (non-agent, own sessionId != fallback_id, first
     # encountered before the primary group had started) can only be
@@ -2036,6 +2098,8 @@ def parse_stream_payload(
     *,
     source_path: str | None = None,
     sidecar_resolver: SidecarResolver | None = None,
+    message_sink_factory: Callable[[], MutableSequence[ParsedMessage]] | None = None,
+    event_sink_factory: Callable[[], MutableSequence[ParsedSessionEvent]] | None = None,
 ) -> list[ParsedSession]:
     """Parse a grouped record stream.
 
@@ -2051,10 +2115,19 @@ def parse_stream_payload(
                 fallback_id,
                 source_path=source_path,
                 sidecar_resolver=sidecar_resolver,
+                message_sink_factory=message_sink_factory,
+                event_sink_factory=event_sink_factory,
             )
         )
     if runtime_provider is Provider.CODEX:
-        return [codex.parse_stream(payloads, fallback_id)]
+        return [
+            codex.parse_stream(
+                payloads,
+                fallback_id,
+                message_sink=message_sink_factory() if message_sink_factory is not None else None,
+                event_sink=event_sink_factory() if event_sink_factory is not None else None,
+            )
+        ]
     if runtime_provider is Provider.HERMES:
         return hermes_spans.parse_atof_stream(
             payloads,

@@ -58,6 +58,7 @@ def iter_retained_source_records(
     blob_hash: str,
     blob_size: int,
     blob_store: BlobStore,
+    source_name: str | None = None,
     on_member_disposition: Callable[[int, str, str, str], None] | None = None,
 ) -> Iterator[RetainedRawRecord]:
     """Use canonical bounded decoders over the exact retained physical blob.
@@ -67,9 +68,13 @@ def iter_retained_source_records(
     names as separate central-directory coordinates.
     """
     logical_path = Path(source_path)
-    source = Source(name="machine-ingest", path=logical_path)
+    source = Source(name=source_name or "machine-ingest", path=logical_path)
     binding = database_member_for_filename(logical_path.name)
-    provider = binding.provider if binding is not None else Provider.UNKNOWN
+    try:
+        declared_provider = Provider(source.name)
+    except ValueError:
+        declared_provider = Provider.UNKNOWN
+    provider = binding.provider if binding is not None else declared_provider
     if logical_path.suffix.lower() != ".zip":
         data = read_plain_source_file(
             SourceReadContext(

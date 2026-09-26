@@ -17,6 +17,8 @@ import pytest
 
 from polylogue.daemon.write_coordinator import write_hold_budget_s
 from polylogue.storage.sqlite import connection_profile, wal_checkpoint
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import (
     CHECKPOINT_ESCALATION_MODES,
     CHECKPOINT_HOLD_BUDGET_S,
@@ -203,6 +205,18 @@ def test_missing_tiers_are_skipped_rather_than_failing_the_sweep(
     seed_wal(tmp_path / "index.db", rows=1)
     observations = wal_checkpoint.checkpoint_archive_wals(tmp_path, reason="unit", warn_bytes=1)
     assert len(observations) == 1
+
+
+def test_recurring_owner_includes_the_durable_audit_wal(
+    tmp_path: Path, seed_wal: Callable[..., sqlite3.Connection]
+) -> None:
+    audit_db = tmp_path / "audit.db"
+    writer = seed_wal(audit_db, rows=64)
+    writer.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT]}")
+    observations = wal_checkpoint.checkpoint_archive_wals(tmp_path, reason="unit", warn_bytes=1)
+    assert len(observations) == 1
+    assert observations[0].mode == "passive"
+    assert observations[0].log_pages > 0
 
 
 def test_a_failed_open_reports_no_mode_and_the_error(

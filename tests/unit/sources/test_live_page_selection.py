@@ -409,15 +409,29 @@ def _seed_healthy_hot_skip_cursor(cursor: CursorStore, path: Path, *, source_nam
     )
 
 
-def _seed_parsed_source_raw(conn: sqlite3.Connection, *, path: Path, native_id: str, raw_id: str) -> None:
+def _seed_parsed_source_raw(
+    conn: sqlite3.Connection, *, path: Path, native_id: str, raw_id: str, parsed_at_ms: int | None = 1
+) -> None:
     conn.execute(
         """
         INSERT INTO raw_sessions (
             raw_id, origin, native_id, source_path, source_index,
-            blob_hash, blob_size, acquired_at_ms, parsed_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            blob_hash, blob_size, acquired_at_ms, parsed_at_ms, revision_kind, revision_authority
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (raw_id, "codex-session", native_id, str(path), 0, b"a" * 32, path.stat().st_size, 1, 1),
+        (
+            raw_id,
+            "codex-session",
+            native_id,
+            str(path),
+            0,
+            b"a" * 32,
+            path.stat().st_size,
+            1,
+            parsed_at_ms,
+            "full",
+            "byte_proven",
+        ),
     )
 
 
@@ -496,50 +510,47 @@ def test_page_selection_trusts_hot_skip_cursor_when_index_corroborates_it(tmp_pa
     assert plan.skipped_file_count == 1
 
 
-def test_page_selection_index_lacks_all_corroboration_detects_empty_index_with_parsed_raw(tmp_path: Path) -> None:
-    """Unit-level pin on the cheap global gate itself, independent of the
-    higher-level planning flow exercised above."""
+def test_page_selection_replays_missing_raw_when_index_has_another_session(tmp_path: Path) -> None:
+    """A partial index rebuild must not let one session certify another file's cursor."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root = tmp_path / "src"
+    root.mkdir()
+    indexed = root / "a-indexed.jsonl"
+    missing = root / "b-missing.jsonl"
+    for path in (indexed, missing):
+        path.write_text('{"role":"user","content":"hello"}\n', encoding="utf-8")
+
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    cursor = CursorStore(tmp_path / "cursor.sqlite")
+    for path in (indexed, missing):
+        _seed_healthy_hot_skip_cursor(cursor, path, source_name="test")
 
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     initialize_archive_database(source_db, ArchiveTier.SOURCE)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    with sqlite3.connect(source_db) as source_conn, sqlite3.connect(index_db) as index_conn:
-        assert (
-            live_watcher.LiveWatcher._index_lacks_all_corroboration(source_conn=source_conn, index_conn=index_conn)
-            is False
-        ), "no parsed raw material yet -- nothing for the index to corroborate"
-
-        source_conn.execute(
-            """
-            INSERT INTO raw_sessions (
-                raw_id, origin, native_id, source_path, source_index,
-                blob_hash, blob_size, acquired_at_ms, parsed_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            ("raw-1", "codex-session", "conv-1", "/tmp/does-not-matter.jsonl", 0, b"a" * 32, 2, 1, 1),
-        )
-        source_conn.commit()
-        assert (
-            live_watcher.LiveWatcher._index_lacks_all_corroboration(source_conn=source_conn, index_conn=index_conn)
-            is True
-        ), "parsed raw exists but index.db has zero sessions -- the post-reset signature"
-
-        index_conn.execute(
+    with sqlite3.connect(source_db) as conn:
+        _seed_parsed_source_raw(conn, path=indexed, native_id="indexed", raw_id="raw-indexed")
+        _seed_parsed_source_raw(conn, path=missing, native_id="missing", raw_id="raw-missing", parsed_at_ms=None)
+        conn.commit()
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
             """
             INSERT INTO sessions (
                 native_id, origin, raw_id, message_count, content_hash, created_at_ms, updated_at_ms
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            ("conv-1", "codex-session", "raw-1", 1, b"b" * 32, 1, 1),
+            ("indexed", "codex-session", "raw-indexed", 1, b"c" * 32, 1, 1),
         )
-        index_conn.commit()
-        assert (
-            live_watcher.LiveWatcher._index_lacks_all_corroboration(source_conn=source_conn, index_conn=index_conn)
-            is False
-        ), "index now shows at least one materialized session -- corroborated again"
+        conn.commit()
+
+    watcher = LiveWatcher(cast(Any, polylogue), (WatchSource(name="test", root=root),), cursor=cursor)
+    plan = _select_plan(watcher, root)
+
+    assert plan.needed == (missing,)
+    assert plan.skipped_file_count == 1
 
 
 # ---------------------------------------------------------------------------

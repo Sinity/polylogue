@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload
+from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteSessionEventSink
 
 INGEST_RELEASE_BLOB_MB_THRESHOLD = 16.0
 INGEST_RELEASE_MESSAGE_THRESHOLD = 1_000
@@ -24,9 +25,14 @@ def ingest_result_needs_memory_release(ir: IngestRecordResult) -> bool:
 
 
 def discard_session_data_payload(cdata: SessionWritePayload) -> None:
-    cdata.parsed_session.messages.clear()
+    if cdata.prepared_write is not None:
+        cdata.prepared_write.close()
+        cdata.prepared_write = None
+    if not isinstance(cdata.parsed_session.messages, SqliteMessageSink):
+        cdata.parsed_session.messages.clear()
     cdata.parsed_session.attachments.clear()
-    cdata.parsed_session.session_events.clear()
+    if not isinstance(cdata.parsed_session.session_events, SqliteSessionEventSink):
+        cdata.parsed_session.session_events.clear()
 
 
 def discard_ingest_result_payload(ir: IngestRecordResult) -> None:

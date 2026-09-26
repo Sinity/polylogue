@@ -224,7 +224,7 @@ def _write_brain_population(root: Path, cascade_id: str, *names: str) -> None:
 
 @pytest.mark.asyncio
 async def test_brain_population_types_as_non_session_artifact_not_as_a_session(
-    tmp_path: Path, workspace_env: dict[str, Path]
+    tmp_path: Path, one_shot_workspace_env: dict[str, Path]
 ) -> None:
     """Reacquiring a brain population owes the conservation equation a term.
 
@@ -246,7 +246,7 @@ async def test_brain_population_types_as_non_session_artifact_not_as_a_session(
     (root / "conversations").mkdir(parents=True)
     _write_brain_population(root, "aaaaaaaa-0000-4000-8000-000000000001", "plan", "report")
 
-    archive_root = workspace_env["archive_root"]
+    archive_root = one_shot_workspace_env["archive_root"]
     result = await parse_sources_archive(archive_root, [Source(name="antigravity", path=root)], parse_workers=1)
 
     assert result.parse_failures == 0

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue import logging as plog
 from polylogue.core.enums import Origin, Provider
 from polylogue.sources.hooks import (
     HookSpoolSourceSpec,
@@ -124,15 +125,17 @@ def test_a_non_default_archive_does_not_implicitly_acquire_the_global_hook_spool
     elsewhere = tmp_path / "other-archive" / "hooks"
     elsewhere.mkdir(parents=True)
 
-    events: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr("polylogue.sources.hooks.emit", lambda event, **fields: events.append((event, fields)))
-    specs = hook_spool_sources(primary_root=elsewhere)
+    with plog.capture() as events:
+        specs = hook_spool_sources(primary_root=elsewhere)
 
     assert [(spec.role, spec.root) for spec in specs] == [("primary-writable", elsewhere.resolve())]
     # The skip is reported as a structured event, never silent.
-    assert [event for event, _ in events] == ["source.hook_spool.implicit_legacy_root_skipped"]
-    assert events[0][1]["legacy_root"] == str(global_spool.resolve())
-    assert events[0][1]["primary_root"] == str(elsewhere.resolve())
+    skipped = [event for event in events if event["event"] == "source.hook_spool.implicit_legacy_root_skipped"]
+    assert len(skipped) == 1
+    assert skipped[0]["path"] == str(global_spool.resolve())
+    assert skipped[0]["root"] == str(elsewhere.resolve())
+    assert skipped[0]["reason"] == "primary_not_default_xdg_hook_spool"
+    assert not [event for event in events if event["event"] == "log.field_rejected"]
 
     # The archive that IS the global spool still gets it, and an explicit
     # opt-in still works for any archive.

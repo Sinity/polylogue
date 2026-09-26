@@ -125,9 +125,16 @@ class RetainedSidecarResolver:
     this resolver exists to prevent.
     """
 
-    def __init__(self, archive_root: Path, *, blob_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        archive_root: Path,
+        *,
+        blob_root: Path | None = None,
+        source_conn: sqlite3.Connection | None = None,
+    ) -> None:
         self._archive_root = Path(archive_root)
         self._blob_root = blob_root
+        self._pinned_source_conn = source_conn
 
     def claude_code_scope(self, source_path: str | Path | None) -> RetainedSidecarScope:
         tool_results_dir = resolve_tool_results_dir(source_path)
@@ -173,6 +180,9 @@ class RetainedSidecarResolver:
         scope traced back to here names *why* the tier did not answer rather
         than being indistinguishable from a scope holding no retained members.
         """
+        if self._pinned_source_conn is not None:
+            yield self._pinned_source_conn
+            return
         source_db = self._archive_root / ARCHIVE_TIER_SPECS[ArchiveTier.SOURCE].filename
         with open_tier_reader(ArchiveTier.SOURCE, source_db) as acquired:
             if isinstance(acquired, TierRefusal):

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -31,6 +33,7 @@ class CatchupStageEvent(BaseModel):
     skipped_file_count: int = 0
     succeeded_file_count: int = 0
     failed_file_count: int = 0
+    deferred_file_count: int = 0
     input_bytes: int = 0
     ingested_bytes: int = 0
     failed_bytes: int = 0
@@ -86,11 +89,34 @@ class CatchupStatus(BaseModel):
     convergence_time_s: float = 0.0
     total_time_s: float = 0.0
     latest_event_age_s: float | None = None
+    cumulative_succeeded_file_count: int | None = 0
+    cumulative_failed_file_attempts: int | None = 0
+    cumulative_failed_ingest_attempt_count: int | None = 0
+    cumulative_unmeasured_failed_ingest_attempt_count: int | None = 0
+    cumulative_refused_file_count: int | None = 0
+    cumulative_deferred_file_count: int | None = 0
+    cumulative_ingested_bytes: int | None = 0
+    cumulative_failed_bytes: int | None = 0
+    cumulative_refused_bytes: int | None = 0
+    running_mb_per_second: float | None = 0.0
+    planned_file_count: int | None = None
+    planned_raw_revision_count: int | None = None
+    completed_raw_revision_count: int | None = None
+    raw_revisions_per_second: float | None = None
+    eta_s: float | None = None
+    last_advanced_age_s: float | None = None
+    cumulative_available: bool = True
+    cumulative_unavailable_reason: str | None = None
     #: Sources the running daemon refuses to ingest until restart. Empty is
     #: the healthy answer; a non-empty list means catch-up is skipping that
     #: source's backlog on purpose, not idling.
     halted_sources: list[HaltedSourceStatus] = Field(default_factory=list)
     recent_events: list[CatchupStageEvent] = Field(default_factory=list)
+
+
+def _catchup_status(**fields: object) -> CatchupStatus:
+    """Validate the dynamic cumulative projection with the static status fields."""
+    return CatchupStatus.model_validate(fields)
 
 
 def catchup_status_info(
@@ -106,9 +132,20 @@ def catchup_status_info(
     now = datetime.now(UTC)
     mode = _catchup_mode(latest, latest_attempt, convergence)
     halted = _halted_sources(ops_db if ops_db is not None else dbf.with_name("ops.db"))
+    try:
+        cumulative: dict[str, object] = dict(
+            _cumulative_attempts(ops_db if ops_db is not None else dbf.with_name("ops.db"), now=now)
+        )
+    except CatchupProgressUnavailableError as exc:
+        cumulative = _unavailable_cumulative(str(exc))
+    completed_raw, planned_raw, raw_rate, raw_eta = _cold_build_progress()
+    cumulative["planned_raw_revision_count"] = planned_raw
+    cumulative["completed_raw_revision_count"] = completed_raw
+    cumulative["raw_revisions_per_second"] = raw_rate
+    cumulative["eta_s"] = raw_eta
     if latest is not None:
         total_time_s = latest.total_time_s or latest.parse_time_s + latest.convergence_time_s
-        return CatchupStatus(
+        return _catchup_status(
             mode=mode,
             current_phase=latest.phase,
             current_source=latest.current_source,
@@ -136,11 +173,12 @@ def catchup_status_info(
             latest_event_age_s=_iso_age_s(latest.observed_at, now=now),
             halted_sources=halted,
             recent_events=events,
+            **cumulative,
         )
     if latest_attempt is None:
-        return CatchupStatus(mode=mode, halted_sources=halted)
+        return _catchup_status(mode=mode, halted_sources=halted, **cumulative)
     total_time_s = _float_attr(latest_attempt, "parse_time_s") + _float_attr(latest_attempt, "convergence_time_s")
-    return CatchupStatus(
+    return _catchup_status(
         mode=mode,
         current_phase=_str_attr(latest_attempt, "phase"),
         current_source=_str_attr(latest_attempt, "current_source"),
@@ -166,19 +204,42 @@ def catchup_status_info(
         total_time_s=total_time_s,
         latest_event_age_s=_optional_float_attr(latest_attempt, "updated_age_s"),
         halted_sources=halted,
+        **cumulative,
     )
 
 
 def format_catchup_status_lines(payload: object) -> list[str]:
     if not isinstance(payload, dict):
         return []
+    available = payload.get("cumulative_available", True) is True
+
+    def cumulative_value(name: str) -> object:
+        return payload.get(name, 0) if available else "unavailable"
+
     lines = [
         "Catch-up: "
         f"{payload.get('mode', 'idle')} "
-        f"{payload.get('succeeded_file_count', 0)}/{payload.get('needed_file_count', 0)} files, "
+        f"{cumulative_value('cumulative_succeeded_file_count')} files accepted, "
         f"read amp {payload.get('read_amplification', 0)}x, "
-        f"{payload.get('ingested_mb_per_second', 0)} MB/s ingested"
+        f"{cumulative_value('running_mb_per_second')} MB/s ingested"
     ]
+    lines.append(
+        "  cumulative "
+        f"failed_file_attempts={cumulative_value('cumulative_failed_file_attempts')} "
+        f"failed_ingest_attempts={cumulative_value('cumulative_failed_ingest_attempt_count')} "
+        f"unmeasured_failed_ingest_attempts={cumulative_value('cumulative_unmeasured_failed_ingest_attempt_count')} "
+        f"refused={cumulative_value('cumulative_refused_file_count')} "
+        f"deferred={cumulative_value('cumulative_deferred_file_count')} "
+        f"eta={payload.get('eta_s') if payload.get('eta_s') is not None else 'unavailable'}"
+    )
+    if not available:
+        lines.append(f"  cumulative unavailable: {payload.get('cumulative_unavailable_reason') or 'unreadable'}")
+    if payload.get("planned_raw_revision_count") is not None:
+        complete = payload.get("completed_raw_revision_count")
+        lines.append(
+            f"  accepted baseline={complete if complete is not None else '?'}"
+            f"/{payload['planned_raw_revision_count']} raw revisions"
+        )
     refused_by_reason = payload.get("refused_bytes_by_reason")
     if isinstance(refused_by_reason, dict) and refused_by_reason:
         lines.append(
@@ -205,6 +266,47 @@ def format_catchup_status_lines(payload: object) -> list[str]:
 
 
 HALT_EVENT_KIND = "source_ingest_halted"
+
+_attempt_aggregate_lock = threading.Lock()
+_attempt_aggregate_cache: tuple[tuple[object, ...], tuple[object, ...]] | None = None
+_cold_build_progress_provider: Callable[[], tuple[int | None, int, float | None, float | None]] | None = None
+
+
+def set_cold_build_progress_provider(
+    provider: Callable[[], tuple[int | None, int, float | None, float | None]] | None,
+) -> None:
+    """Install the daemon lifecycle's active generation projection."""
+    global _cold_build_progress_provider
+    _cold_build_progress_provider = provider
+
+
+def _cold_build_progress() -> tuple[int | None, int | None, float | None, float | None]:
+    provider = _cold_build_progress_provider
+    if provider is None:
+        return None, None, None, None
+    return provider()
+
+
+class CatchupProgressUnavailableError(RuntimeError):
+    """Current-run attempt totals could not be measured."""
+
+
+def _unavailable_cumulative(reason: str) -> dict[str, object]:
+    return {
+        "cumulative_available": False,
+        "cumulative_unavailable_reason": reason,
+        "cumulative_succeeded_file_count": None,
+        "cumulative_failed_file_attempts": None,
+        "cumulative_failed_ingest_attempt_count": None,
+        "cumulative_unmeasured_failed_ingest_attempt_count": None,
+        "cumulative_refused_file_count": None,
+        "cumulative_deferred_file_count": None,
+        "cumulative_ingested_bytes": None,
+        "cumulative_failed_bytes": None,
+        "cumulative_refused_bytes": None,
+        "running_mb_per_second": None,
+        "last_advanced_age_s": None,
+    }
 
 
 def _halted_sources(ops_db: Path) -> list[HaltedSourceStatus]:
@@ -262,6 +364,134 @@ def _halted_sources(ops_db: Path) -> list[HaltedSourceStatus]:
             observed_at=cast(str, iso_from_epoch_ms(max(_row_int(row[0]), 0))),
         )
     return [latest_by_source[name] for name in sorted(latest_by_source)]
+
+
+def _cumulative_attempts(ops_db: Path, *, now: datetime) -> dict[str, int | float | None]:
+    """Roll up the current daemon run's attempt receipts, one final snapshot per attempt."""
+    empty: dict[str, int | float | None] = {
+        "cumulative_succeeded_file_count": 0,
+        "cumulative_failed_file_attempts": 0,
+        "cumulative_failed_ingest_attempt_count": 0,
+        "cumulative_unmeasured_failed_ingest_attempt_count": 0,
+        "cumulative_refused_file_count": 0,
+        "cumulative_deferred_file_count": 0,
+        "cumulative_ingested_bytes": 0,
+        "cumulative_failed_bytes": 0,
+        "cumulative_refused_bytes": 0,
+        "running_mb_per_second": 0.0,
+        "planned_file_count": None,
+        "planned_raw_revision_count": None,
+        "eta_s": None,
+        "last_advanced_age_s": None,
+    }
+    if not ops_db.exists():
+        raise CatchupProgressUnavailableError("ops tier missing")
+    global _attempt_aggregate_cache
+    try:
+        conn = open_readonly_connection(ops_db, validate_schema=False)
+        try:
+            if not table_exists(conn, "ingest_attempts") or not table_exists(conn, "daemon_stage_events"):
+                raise CatchupProgressUnavailableError("ingest attempt receipts missing")
+            floor = 0
+            if table_exists(conn, "daemon_lifecycle"):
+                row = conn.execute("SELECT MAX(started_at_ms) FROM daemon_lifecycle").fetchone()
+                floor = _row_int(row[0]) if row and row[0] is not None else 0
+            head = conn.execute("SELECT MAX(rowid) FROM daemon_stage_events").fetchone()
+            event_head = _row_int(head[0]) if head and head[0] is not None else 0
+            with _attempt_aggregate_lock:
+                cached = _attempt_aggregate_cache
+            # Attempt status is updated in place at finish, without requiring
+            # another stage event. Both the main file and WAL are part of the
+            # bounded cache key, so such a terminal update invalidates totals.
+            db_stat = ops_db.stat()
+            try:
+                wal_stat = ops_db.with_name(ops_db.name + "-wal").stat()
+                wal_identity: tuple[int, int] | None = (wal_stat.st_mtime_ns, wal_stat.st_size)
+            except FileNotFoundError:
+                wal_identity = None
+            key = (
+                str(ops_db),
+                db_stat.st_dev,
+                db_stat.st_ino,
+                db_stat.st_mtime_ns,
+                db_stat.st_size,
+                wal_identity,
+                floor,
+                event_head,
+            )
+            if cached is not None and cached[0] == key:
+                values = cached[1]
+            else:
+                row = conn.execute(
+                    """
+                WITH latest AS (
+                    SELECT a.attempt_id, a.status AS attempt_status,
+                           a.started_at_ms, a.heartbeat_at_ms, a.finished_at_ms,
+                           e.observed_at_ms, e.stage AS event_stage, e.payload_json,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY a.attempt_id
+                               ORDER BY CASE WHEN json_valid(e.payload_json)
+                                                  AND json_type(e.payload_json, '$.succeeded_file_count') IS NOT NULL
+                                             THEN 0 ELSE 1 END,
+                                        e.observed_at_ms DESC, e.rowid DESC
+                           ) AS rn
+                    FROM ingest_attempts a
+                    LEFT JOIN daemon_stage_events e ON e.attempt_id = a.attempt_id
+                        AND json_valid(e.payload_json)
+                    WHERE a.started_at_ms >= ?
+                )
+                SELECT COUNT(*), MIN(started_at_ms),
+                       MAX(COALESCE(finished_at_ms, heartbeat_at_ms, observed_at_ms)),
+                       MAX(CASE WHEN COALESCE(
+                           CAST(json_extract(payload_json, '$.succeeded_file_count') AS INTEGER), 0
+                       ) > 0 THEN observed_at_ms END),
+                       SUM(COALESCE(CAST(json_extract(payload_json, '$.succeeded_file_count') AS INTEGER), 0)),
+                       SUM(COALESCE(CAST(json_extract(payload_json, '$.failed_file_count') AS INTEGER), 0)),
+                       SUM(COALESCE(CAST(json_extract(payload_json, '$.excluded_file_count') AS INTEGER), 0)),
+                       SUM(COALESCE(CAST(json_extract(payload_json, '$.deferred_file_count') AS INTEGER), 0)),
+                       SUM(COALESCE(CAST(json_extract(payload_json, '$.ingested_bytes') AS INTEGER), 0)),
+                       SUM(COALESCE(CAST(json_extract(payload_json, '$.failed_bytes') AS INTEGER), 0)),
+                       SUM(COALESCE(CAST(json_extract(payload_json, '$.refused_bytes') AS INTEGER), 0)),
+                       SUM(CASE WHEN attempt_status IN ('failed', 'interrupted', 'completed_with_failures')
+                                THEN 1 ELSE 0 END),
+                       SUM(CASE WHEN attempt_status IN ('failed', 'interrupted', 'completed_with_failures')
+                                      AND (event_stage IS NULL OR event_stage <> 'completed')
+                                THEN 1 ELSE 0 END)
+                FROM latest WHERE rn = 1
+                """,
+                    (floor,),
+                ).fetchone()
+                values = tuple(row) if row is not None else ()
+                with _attempt_aggregate_lock:
+                    _attempt_aggregate_cache = (key, values)
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error) as exc:
+        raise CatchupProgressUnavailableError(f"attempt totals unreadable: {type(exc).__name__}: {exc}") from exc
+    if not values or not _row_int(values[0]):
+        return empty
+    succeeded = _row_int(values[4])
+    ingested_bytes = _row_int(values[8])
+    started_ms = _row_int(values[1])
+    ended_ms = _row_int(values[2])
+    elapsed_s = max(0.0, (ended_ms - started_ms) / 1000) if started_ms and ended_ms else 0.0
+    last_advanced_ms = _row_int(values[3]) if values[3] is not None else None
+    return {
+        "cumulative_succeeded_file_count": succeeded,
+        "cumulative_failed_file_attempts": _row_int(values[5]),
+        "cumulative_failed_ingest_attempt_count": _row_int(values[11]),
+        "cumulative_unmeasured_failed_ingest_attempt_count": _row_int(values[12]),
+        "cumulative_refused_file_count": _row_int(values[6]),
+        "cumulative_deferred_file_count": _row_int(values[7]),
+        "cumulative_ingested_bytes": ingested_bytes,
+        "cumulative_failed_bytes": _row_int(values[9]),
+        "cumulative_refused_bytes": _row_int(values[10]),
+        "running_mb_per_second": round(_ratio(ingested_bytes / 1_000_000, elapsed_s), 3),
+        "planned_file_count": None,
+        "planned_raw_revision_count": None,
+        "eta_s": None,
+        "last_advanced_age_s": max(0.0, now.timestamp() - last_advanced_ms / 1000) if last_advanced_ms else None,
+    }
 
 
 def _recent_stage_events(dbf: Path, *, ops_db: Path | None = None) -> list[CatchupStageEvent]:
@@ -361,6 +591,7 @@ def _archive_catchup_stage_event_from_row(row: sqlite3.Row | tuple[object, ...])
         skipped_file_count=_payload_int(payload, "skipped_file_count"),
         succeeded_file_count=_payload_int(payload, "succeeded_file_count"),
         failed_file_count=_payload_int(payload, "failed_file_count"),
+        deferred_file_count=_payload_int(payload, "deferred_file_count"),
         input_bytes=_payload_int(payload, "input_bytes"),
         ingested_bytes=_payload_int(payload, "ingested_bytes"),
         failed_bytes=_payload_int(payload, "failed_bytes"),

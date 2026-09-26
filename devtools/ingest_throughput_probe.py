@@ -468,6 +468,8 @@ def measure_ingest_throughput(
     os.environ["POLYLOGUE_ARCHIVE_ROOT"] = str(archive_root)
 
     try:
+        from polylogue.operations.canonical_archive_ingest import scoped_one_shot_archive_owner
+        from polylogue.pipeline.services.archive_ingest import _admit_one_shot_root
         from polylogue.storage.blob_store import reset_blob_store
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -475,7 +477,9 @@ def measure_ingest_throughput(
 
         # Bootstrap the archive file set up front so per-batch timings
         # exclude the one-time schema-DDL cost.
-        ArchiveStore.open_existing(archive_root, read_only=False).close()
+        with scoped_one_shot_archive_owner(archive_root):
+            _admit_one_shot_root(archive_root)
+            ArchiveStore.open_existing(archive_root, read_only=False).close()
 
         source_files: list[Path] = []
         prefix_len = messages_max
