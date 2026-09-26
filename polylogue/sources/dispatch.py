@@ -195,8 +195,7 @@ def _looks_like_gemini_mapping(record: PayloadRecord) -> bool:
     is the documented canonical member of that fiber, so auto-detection has
     no shape-based reason to distinguish them. ``Provider.DRIVE`` remains a
     reachable value elsewhere -- pre-existing raw rows and explicit source
-    configs, see ``revision_backfill._PATH_INDEPENDENT_PARSE_PROVIDERS`` and
-    ``live/batch_support._large_non_jsonl_path_can_stream`` -- it is simply
+    configs and retained raw rows, see ``revision_backfill._PATH_INDEPENDENT_PARSE_PROVIDERS`` -- it is simply
     never *produced* by this detector.
     """
     return drive.looks_like(record)

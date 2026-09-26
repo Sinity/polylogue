@@ -37,11 +37,15 @@ import pytest
 
 from polylogue import Polylogue
 from polylogue.core.enums import Provider
+from polylogue.core.sources import origin_from_provider
+from polylogue.daemon.intake import FairIntakeDispatcher, IntakeClassSpec
+from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
 from polylogue.operations.operation_context import PinnedOperationRead, open_operation_read
 from polylogue.sources.live.batch import LiveBatchProcessor, _live_parse_stage_candidates
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.parse_prefetch import LiveParseStage
-from polylogue.sources.live.watcher import _PARSER_FINGERPRINT, WatchSource
+from polylogue.sources.live.watcher import _PARSER_FINGERPRINT, LiveWatcher, WatchSource
+from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 
 _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
@@ -302,6 +306,354 @@ async def test_path_worker_publishes_prepared_rows_from_captured_blob(
 
 
 @pytest.mark.asyncio
+async def test_json_document_uses_prepared_rows_and_preserves_detected_origin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polylogue.storage.sqlite.archive_tiers.write as archive_tier_write
+
+    source = tmp_path / "inbox" / "session.json"
+    source.parent.mkdir()
+    source.write_text(
+        json.dumps(
+            {
+                "sessionId": "gemini-prepared-json",
+                "startTime": "2026-03-16T09:40:00.000Z",
+                "lastUpdated": "2026-03-16T09:41:00.000Z",
+                "kind": "chat",
+                "messages": [
+                    {"id": "u1", "timestamp": "2026-03-16T09:40:01.000Z", "type": "user", "content": ["hello"]},
+                    {
+                        "id": "a1",
+                        "timestamp": "2026-03-16T09:40:02.000Z",
+                        "type": "gemini",
+                        "content": "world",
+                        "model": "gemini-test",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    copies = 0
+    real_copy = archive_tier_write.copy_shard_session_rows
+
+    def count_copy(*args: object, **kwargs: object) -> object:
+        nonlocal copies
+        copies += 1
+        return real_copy(*args, **kwargs)  # type: ignore[arg-type]
+
+    async def ingest(root: Path, stage: LiveParseStage | None) -> None:
+        root.mkdir()
+        processor = LiveBatchProcessor(
+            Polylogue(archive_root=root, db_path=root / "index.db"),
+            (WatchSource(name="inbox", root=source.parent),),
+            cursor=CursorStore(root / "index.db"),
+            parser_fingerprint=_PARSER_FINGERPRINT,
+            parse_stage=stage,
+            read_snapshot=open_operation_read,
+        )
+        result = await processor.ingest_files([source], emit_event=False)
+        assert result.succeeded_file_count == 1
+        assert result.ingested_session_count == 1
+
+    await ingest(tmp_path / "baseline", None)
+    monkeypatch.setattr(archive_tier_write, "copy_shard_session_rows", count_copy)
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "shards")
+    try:
+        await ingest(tmp_path / "prepared", stage)
+    finally:
+        stage.shutdown()
+    assert copies == 1
+    assert _canonical_snapshot(tmp_path / "baseline") == _canonical_snapshot(tmp_path / "prepared")
+    with _connect(tmp_path / "prepared" / "source.db") as conn:
+        assert conn.execute("SELECT origin FROM raw_sessions").fetchone()[0] == "gemini-cli-session"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("malformed_initial", [False, True])
+async def test_changed_json_after_preparation_uses_captured_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, malformed_initial: bool
+) -> None:
+    """A stale worker's provider or parse error cannot label captured bytes."""
+    import polylogue.sources.live.cursor as cursor_module
+
+    monkeypatch.setattr(cursor_module, "_FULL_CURSOR_RECONCILIATION_RETRY_DELAY_S", 0)
+    source = tmp_path / "inbox" / "session.json"
+    source.parent.mkdir()
+    source.write_text(
+        json.dumps(
+            {
+                "sessionId": "gemini-before-copy",
+                "startTime": "2026-03-16T09:40:00.000Z",
+                "lastUpdated": "2026-03-16T09:41:00.000Z",
+                "kind": "chat",
+                "messages": [
+                    {"id": "u1", "timestamp": "2026-03-16T09:40:01.000Z", "type": "user", "content": ["hello"]}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    if malformed_initial:
+        source.write_bytes(b'{"broken":')
+    chatgpt = json.dumps(
+        [
+            {
+                "id": "chatgpt-after-copy",
+                "title": "captured chat",
+                "create_time": 1,
+                "current_node": "m",
+                "mapping": {
+                    "m": {
+                        "id": "m",
+                        "parent": None,
+                        "children": [],
+                        "message": {
+                            "id": "m",
+                            "author": {"role": "user"},
+                            "create_time": 1,
+                            "content": {"content_type": "text", "parts": ["captured content"]},
+                        },
+                    }
+                },
+            }
+        ]
+    ).encode()
+    original_copy = ArchiveBlobPublisher.write_from_path
+    changed = False
+
+    def change_before_copy(store: ArchiveBlobPublisher, path: Path, **kwargs: object) -> tuple[str, int]:
+        nonlocal changed
+        if path == source and not changed:
+            if malformed_initial:
+                assert stage._path_results[str(source)].error is not None
+            else:
+                assert stage.resolved_path_provider(str(source)) is Provider.GEMINI_CLI
+            source.write_bytes(chatgpt)
+            changed = True
+        return original_copy(store, path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_path", change_before_copy)
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "shards")
+    processor = LiveBatchProcessor(
+        Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
+        (WatchSource(name="inbox", root=source.parent),),
+        cursor=CursorStore(archive_root / "index.db"),
+        parser_fingerprint=_PARSER_FINGERPRINT,
+        parse_stage=stage,
+        read_snapshot=open_operation_read,
+    )
+    try:
+        first = await processor.ingest_files([source], emit_event=False)
+        assert changed and str(source) in first.deferred_paths
+        with _connect(archive_root / "source.db") as conn:
+            assert [row["origin"] for row in conn.execute("SELECT origin FROM raw_sessions")] == [
+                origin_from_provider(Provider.CHATGPT).value
+            ]
+        second = await processor.ingest_files([source], emit_event=False)
+        assert second.ingested_session_count == 1
+        with _connect(archive_root / "source.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
+    finally:
+        stage.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_identical_json_paths_keep_distinct_prepared_fallback_ids(tmp_path: Path) -> None:
+    """Equal blob hashes cannot exchange path-bound prepared sessions."""
+    source_root = tmp_path / "inbox"
+    source_root.mkdir()
+    paths = [source_root / "a.json", source_root / "b.json"]
+    payload = json.dumps(
+        [
+            {
+                "title": "same bytes",
+                "create_time": 1,
+                "current_node": "m",
+                "mapping": {
+                    "m": {
+                        "id": "m",
+                        "parent": None,
+                        "children": [],
+                        "message": {
+                            "id": "m",
+                            "author": {"role": "user"},
+                            "create_time": 1,
+                            "content": {"content_type": "text", "parts": ["same content"]},
+                        },
+                    }
+                },
+            }
+        ]
+    ).encode()
+    for path in paths:
+        path.write_bytes(payload)
+
+    stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "shards")
+    try:
+        await _ingest(tmp_path / "prepared", paths, parse_stage=stage)
+    finally:
+        stage.shutdown()
+    with _connect(tmp_path / "prepared" / "index.db") as conn:
+        assert {row["native_id"] for row in conn.execute("SELECT native_id FROM sessions")} == {"a-0", "b-0"}
+    with _connect(tmp_path / "prepared" / "source.db") as conn:
+        assert {row["source_path"] for row in conn.execute("SELECT source_path FROM raw_sessions")} == {
+            str(path) for path in paths
+        }
+    cursors = CursorStore(tmp_path / "prepared" / "index.db")
+    assert all((record := cursors.get_record(path)) is not None and record.content_fingerprint for path in paths)
+
+
+@pytest.mark.asyncio
+async def test_identical_json_paths_keep_independent_pending_outcomes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One pending worker cannot make its equal-byte sibling's cursor settle."""
+    import threading
+
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    source_root = tmp_path / "inbox"
+    source_root.mkdir()
+    pending_path, ready_path = source_root / "a.json", source_root / "b.json"
+    payload = json.dumps(
+        [
+            {
+                "title": "same bytes",
+                "create_time": 1,
+                "current_node": "m",
+                "mapping": {
+                    "m": {
+                        "id": "m",
+                        "parent": None,
+                        "children": [],
+                        "message": {
+                            "id": "m",
+                            "author": {"role": "user"},
+                            "create_time": 1,
+                            "content": {"content_type": "text", "parts": ["same content"]},
+                        },
+                    }
+                },
+            }
+        ]
+    ).encode()
+    pending_path.write_bytes(payload)
+    ready_path.write_bytes(payload)
+    released = threading.Event()
+    original_worker = parse_prefetch.live_parse_path_worker
+
+    def delayed_worker(*args: object, **kwargs: object) -> object:
+        if str(args[1]) == str(pending_path):
+            released.wait(timeout=30)
+        return original_worker(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", delayed_worker)
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    stage = LiveParseStage(max_workers=2, warm_timeout_seconds=2, shard_directory=tmp_path / "shards")
+    processor = LiveBatchProcessor(
+        Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
+        (WatchSource(name="inbox", root=source_root),),
+        cursor=CursorStore(archive_root / "index.db"),
+        parser_fingerprint=_PARSER_FINGERPRINT,
+        parse_stage=stage,
+        read_snapshot=open_operation_read,
+    )
+    try:
+        result = await processor.ingest_files([pending_path, ready_path], emit_event=False)
+        assert str(pending_path) in result.deferred_paths
+        assert result.succeeded_file_count == 1
+        with _connect(archive_root / "index.db") as conn:
+            assert [row["native_id"] for row in conn.execute("SELECT native_id FROM sessions")] == ["b-0"]
+        cursors = CursorStore(archive_root / "index.db")
+        pending_cursor = cursors.get_record(pending_path)
+        ready_cursor = cursors.get_record(ready_path)
+        assert pending_cursor is None or pending_cursor.content_fingerprint is None
+        assert ready_cursor is not None and ready_cursor.content_fingerprint is not None
+        with _connect(archive_root / "source.db") as conn:
+            assert {row["source_path"] for row in conn.execute("SELECT source_path FROM raw_sessions")} == {
+                str(pending_path),
+                str(ready_path),
+            }
+    finally:
+        released.set()
+        stage.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_pending_json_worker_retains_bytes_before_source_disappears(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A slow worker defers parsing after durable acquisition of the observed JSON."""
+    import threading
+
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+    from polylogue.storage.blob_store import BlobStore
+
+    source = tmp_path / "inbox" / "session.json"
+    source.parent.mkdir()
+    payload = json.dumps(
+        [
+            {
+                "id": "retained-while-pending",
+                "title": "retained while pending",
+                "create_time": 1,
+                "current_node": "m",
+                "mapping": {
+                    "m": {
+                        "id": "m",
+                        "parent": None,
+                        "children": [],
+                        "message": {
+                            "id": "m",
+                            "author": {"role": "user"},
+                            "create_time": 1,
+                            "content": {"content_type": "text", "parts": ["preserved content"]},
+                        },
+                    }
+                },
+            }
+        ]
+    ).encode()
+    source.write_bytes(payload)
+    released = threading.Event()
+    original_worker = parse_prefetch.live_parse_path_worker
+
+    def delayed_worker(*args: object, **kwargs: object) -> object:
+        released.wait(timeout=30)
+        return original_worker(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", delayed_worker)
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    stage = LiveParseStage(max_workers=1, warm_timeout_seconds=0.01, shard_directory=tmp_path / "shards")
+    processor = LiveBatchProcessor(
+        Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
+        (WatchSource(name="inbox", root=source.parent),),
+        cursor=CursorStore(archive_root / "index.db"),
+        parser_fingerprint=_PARSER_FINGERPRINT,
+        parse_stage=stage,
+        read_snapshot=open_operation_read,
+    )
+    try:
+        result = await processor.ingest_files([source], emit_event=False)
+        assert str(source) in result.deferred_paths
+        source.unlink()
+        blob_hash = hashlib.sha256(payload).hexdigest()
+        assert BlobStore(archive_root / "blob").read_all(blob_hash) == payload
+        with _connect(archive_root / "source.db") as conn:
+            assert [row["origin"] for row in conn.execute("SELECT origin FROM raw_sessions")] == [
+                origin_from_provider(Provider.CHATGPT).value
+            ]
+    finally:
+        released.set()
+        stage.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_path_worker_failure_retains_raw_for_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import polylogue.sources.live.batch as batch
     import polylogue.sources.live.parse_prefetch as parse_prefetch
@@ -423,6 +775,65 @@ async def test_pending_preparation_does_not_spend_cursor_failure_budget(
         stage._warm_timeout_seconds = 5
         metrics = await processor.ingest_files([path], emit_event=False)
         assert metrics.succeeded_file_count == 1
+    finally:
+        released.set()
+        stage.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_unchanged_preparation_defer_retries_through_fair_intake(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A static source retries after worker preparation defers behind the walk cursor."""
+    import threading
+
+    import polylogue.sources.live.cursor as cursor_module
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    deferred_path, later_path = _write_fixture_corpus(tmp_path / "sessions", count=2)
+    monkeypatch.setattr(cursor_module, "_FULL_CURSOR_RECONCILIATION_RETRY_DELAY_S", 0)
+    released = threading.Event()
+    original_worker = parse_prefetch.live_parse_path_worker
+
+    def delayed_worker(*args: object, **kwargs: object) -> object:
+        if str(args[1]) == str(deferred_path):
+            released.wait(timeout=30)
+        return original_worker(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", delayed_worker)
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    source = WatchSource(name="codex", root=deferred_path.parent)
+    polylogue = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    cursor = CursorStore(archive_root / "index.db")
+    stage = LiveParseStage(max_workers=2, warm_timeout_seconds=0.01, shard_directory=tmp_path / "parse-shards")
+    watcher = LiveWatcher(polylogue, (source,), cursor=cursor, parse_stage=stage, read_snapshot=open_operation_read)
+    adapter = FileIntakeAdapter(DaemonIntakeContext(archive_root, watcher, (source,)), source)
+    dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="codex", adapter=adapter, page_size=1)])
+    source_mtime = source.root.stat().st_mtime_ns
+    try:
+        first = await dispatcher.run_once()
+        assert first.require_report("codex").deferred == 1
+        assert adapter._after == str(deferred_path)
+        pending = cursor.get_record(deferred_path)
+        assert pending is not None and pending.next_retry_at is not None
+        assert pending.content_fingerprint is None and pending.failure_count == 0
+
+        released.set()
+        stage._warm_timeout_seconds = 5
+        for _ in range(6):
+            await dispatcher.run_once()
+            with _connect(archive_root / "index.db") as conn:
+                if conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 2:
+                    break
+        else:
+            pytest.fail("deferred source and later file did not both reach the archive")
+        assert source.root.stat().st_mtime_ns == source_mtime
+        settled = cursor.get_record(deferred_path)
+        assert settled is not None and settled.next_retry_at is None
+        assert settled.content_fingerprint is not None
+        later = cursor.get_record(later_path)
+        assert later is not None and later.content_fingerprint is not None
     finally:
         released.set()
         stage.shutdown()

@@ -1,4 +1,4 @@
-"""Sealed, source-bound preparation for JSONL session captures."""
+"""Sealed, source-bound preparation for JSON and JSONL session captures."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import json
 import os
 import sqlite3
 import uuid
-from collections.abc import Callable, Generator, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from contextlib import closing
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -17,6 +17,7 @@ from urllib.parse import quote
 
 from polylogue.core.enums import Provider
 from polylogue.core.identity_law import session_id as archive_session_id
+from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoders import _iter_json_stream
@@ -105,7 +106,7 @@ def _file_identity(stat: os.stat_result) -> tuple[int, int, int, int, int]:
 
 @dataclass(frozen=True, slots=True)
 class PreparedJsonl:
-    """A disposable artifact tied to one retained source revision."""
+    """A disposable artifact tied to one retained JSON source revision."""
 
     blob_hash: str | None
     sessions_path: Path | None
@@ -118,6 +119,7 @@ class PreparedJsonl:
     shard_seal: PreparedFileSeal | None = None
     prepared_writes: tuple[PreparedSessionWrite, ...] = ()
     parsed_prefix_size: int | None = None
+    resolved_provider: Provider | None = None
 
     @classmethod
     def seal(
@@ -129,6 +131,7 @@ class PreparedJsonl:
         enrichment_digest: str | None = None,
         enrichment_index_path: str | None = None,
         parsed_prefix_size: int | None = None,
+        resolved_provider: Provider | None = None,
     ) -> PreparedJsonl:
         """Take custody only after both SQLite writers have closed."""
         return cls(
@@ -140,6 +143,7 @@ class PreparedJsonl:
             sessions_seal=PreparedFileSeal.capture(sessions_path),
             shard_seal=PreparedFileSeal.capture(shard_path),
             parsed_prefix_size=parsed_prefix_size,
+            resolved_provider=resolved_provider,
         )
 
     def verify_files(self, *, full: bool) -> None:
@@ -328,6 +332,7 @@ def prepare_jsonl_blob(
     prepare_sessions: Callable[[list[ParsedSession]], list[ParsedSession]] | None = None,
     preparation_dependency: Callable[[], tuple[str | None, str | None]] | None = None,
     parse_prefix_size: int | None = None,
+    prepare_records: Callable[[Iterable[JSONValue]], Iterable[JSONValue]] | None = None,
 ) -> PreparedJsonl:
     """Parse and seal one source without transferring a parsed tree over IPC."""
     directory = Path(shard_directory)
@@ -336,10 +341,11 @@ def prepare_jsonl_blob(
     shard_path: Path | None = None
     store: SqliteMessageStore | None = None
     sealed = False
+    source = Path(blob_path)
+    before_hash: str | None = None
     try:
         provider = Provider.from_string(provider_value)
         store = SqliteMessageStore(sessions_path)
-        source = Path(blob_path)
         before_hash = _source_digest(source)
         with source.open("rb") as handle:
             record_input = _iter_prefix_lines(handle, parse_prefix_size) if parse_prefix_size is not None else handle
@@ -348,6 +354,8 @@ def prepare_jsonl_blob(
                 Path(source_path).name,
                 fail_on_decode_error=provider is Provider.UNKNOWN,
             )
+            if prepare_records is not None:
+                records = prepare_records(records)
             if is_stream:
                 sessions = parse_stream_payload(
                     provider,
@@ -393,6 +401,7 @@ def prepare_jsonl_blob(
             enrichment_digest=enrichment_digest,
             enrichment_index_path=enrichment_index_path,
             parsed_prefix_size=parse_prefix_size,
+            resolved_provider=provider,
         )
         sealed = True
         return result
@@ -400,7 +409,18 @@ def prepare_jsonl_blob(
         if shard_path is not None:
             discard_session_shard(shard_path)
         retryable = isinstance(exc, (OSError, sqlite3.OperationalError, _SourceChangedDuringPreparationError))
-        return PreparedJsonl(None, None, None, f"{type(exc).__name__}: {exc}"[:500], deferred=retryable)
+        error_hash: str | None = None
+        if before_hash is not None:
+            try:
+                after_error_hash = _source_digest(source)
+            except OSError:
+                retryable = True
+            else:
+                if after_error_hash == before_hash:
+                    error_hash = before_hash
+                else:
+                    retryable = True
+        return PreparedJsonl(error_hash, None, None, f"{type(exc).__name__}: {exc}"[:500], deferred=retryable)
     finally:
         if store is not None:
             store.close()

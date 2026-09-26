@@ -92,7 +92,6 @@ from polylogue.sources.decoder_zip import (
 )
 from polylogue.sources.decoders import JsonlDecodeError, _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import (
-    _detect_provider_from_raw_bytes,
     is_jsonl_source_path,
     is_stream_record_provider,
     parse_payload,
@@ -142,7 +141,6 @@ from polylogue.sources.live.batch_support import (
     fingerprint_file,
     jsonl_complete_prefix,
     jsonl_complete_prefix_path,
-    large_json_document_refusal_reason,
     last_complete_newline_from_tail,
     sha256_range_from_path,
     tail_hash_from_path,
@@ -198,7 +196,6 @@ from polylogue.sources.source_acquisition_components import (
     sniff_zip_provider,
     stream_preserved_zip_entry_raw_data,
 )
-from polylogue.sources.source_parsing import has_decoded_session_evidence
 from polylogue.sources.sqlite_snapshot import (
     codex_state_raw_id,
     hermes_profile_raw_id,
@@ -558,29 +555,10 @@ def _shard_prepared_by_raw_id(
 
 
 def _live_parse_stage_candidates(paths: list[Path], *, fallback_provider: Provider) -> list[LiveParseCandidate]:
-    """Select and read eligible files for off-writer-hold pre-parse (polylogue-wf8a).
-
-    Deliberately narrow scope: only JSONL/NDJSON provider-session files
-    below ``_STREAMING_FULL_INGEST_BYTES`` are eligible -- exactly the branch
-    at lines ~1377-1425 of ``_ingest_full_paths_sync`` that reads the whole
-    payload into memory and later parses it via ``parse_payload``/
-    ``parse_stream_payload``. Zip bundles, Hermes state/verification
-    databases, browser-capture snapshots, and streaming-threshold files are
-    left untouched (never selected here) -- they keep parsing inline exactly
-    as before; this is a strict subset, not a rewrite, of the existing
-    file-type dispatch. Uses the SAME detection helpers
-    (``_jsonl_provider_and_session_artifact``) the writer-held pass uses, so
-    provider identity can never diverge between prewarm and the real parse.
-    """
+    """Build byte-backed JSONL candidates for legacy prefetch callers."""
     candidates: list[LiveParseCandidate] = []
     for path in paths:
         if not is_jsonl_source_path(str(path)):
-            continue
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-        if stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
             continue
         provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
         if not parse_as_session:
@@ -606,14 +584,18 @@ def _live_parse_stage_candidates(paths: list[Path], *, fallback_provider: Provid
 def _live_parse_stage_path_candidates(
     paths: list[Path], *, fallback_provider: Provider
 ) -> list[tuple[str, Provider, bool]]:
-    """Select JSONL session paths for file-backed worker preparation."""
+    """Select JSON and JSONL paths for file-backed worker preparation."""
     candidates: list[tuple[str, Provider, bool]] = []
     for path in paths:
-        if not is_jsonl_source_path(str(path)):
-            continue
-        provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
-        if parse_as_session:
-            candidates.append((str(path), provider, is_stream_record_provider(str(path), str(provider))))
+        if is_jsonl_source_path(str(path)):
+            provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
+            if parse_as_session or provider is Provider.UNKNOWN:
+                candidates.append((str(path), provider, is_stream_record_provider(str(path), str(provider))))
+        elif path.suffix.lower() == ".json":
+            rule = artifact_rule_for_path(fallback_provider, str(path))
+            strong = strong_path_classification(path, provider=fallback_provider)
+            if (rule is None or rule.parse_policy == "session") and (strong is None or strong.parse_as_session):
+                candidates.append((str(path), fallback_provider, False))
     return candidates
 
 
@@ -666,17 +648,24 @@ def _captured_jsonl_ends_at_record_boundary(
     return True
 
 
+_FullRecordKey = tuple[str, str, int | None]
+
+
+def _full_record_key(record: RawSessionRecord) -> _FullRecordKey:
+    return record.raw_id, record.source_path, record.source_index
+
+
 @dataclass(slots=True)
 class _ArchiveFullWriteResult:
-    raw_ids: dict[str, str] = field(default_factory=dict)
+    raw_ids: dict[_FullRecordKey, str] = field(default_factory=dict)
     # Accepted raw bytes whose selected preparation is still running or
     # awaiting worker capacity. The cursor must defer without spending its
     # finite parse-failure budget.
-    preparation_deferred_raw_ids: dict[str, str] = field(default_factory=dict)
+    preparation_deferred_raw_ids: dict[_FullRecordKey, str] = field(default_factory=dict)
     # Terminal refusals are durably retained and therefore handled by this
     # observation. Keep them separate from accepted raw ids so deferred
     # authority failures remain retryable.
-    terminal_raw_ids: dict[str, str] = field(default_factory=dict)
+    terminal_raw_ids: dict[_FullRecordKey, str] = field(default_factory=dict)
     # A raw whose membership census does not produce an accepted session is
     # still a durably acquired, successfully parsed source observation. The
     # decision can be pending for the materialization conveyor or already
@@ -685,7 +674,7 @@ class _ArchiveFullWriteResult:
     # supplying new authority evidence. Track it separately from ``raw_ids``
     # so the cursor records the observation as complete while the durable raw
     # membership state remains queryable and a later file change reopens it.
-    deferred_raw_ids: dict[str, str] = field(default_factory=dict)
+    deferred_raw_ids: dict[_FullRecordKey, str] = field(default_factory=dict)
     session_ids: list[str] = field(default_factory=list)
     session_count: int = 0
     message_count: int = 0
@@ -705,7 +694,7 @@ class _ArchiveFullWriteResult:
     # entirely. It remains ordinary backlog: the next catch-up scan or watch
     # tick re-discovers it via the unchanged cursor, exactly like any other
     # untouched file.
-    skipped_raw_ids: set[str] = field(default_factory=set)
+    skipped_raw_ids: set[_FullRecordKey] = field(default_factory=set)
     time_budget_exceeded: bool = False
     # polylogue-3ijaa: the writer hold was already past its declared bound when
     # this pass finished writing. The archive is committed, so this is reported
@@ -756,14 +745,8 @@ class LiveBatchProcessor:
         # calling it, so neither outlives a single planning attempt.
         self._pending_legacy_promotions: dict[Path, Callable[[], bool]] = {}
         self._resynthesized_cursors: dict[Path, CursorRecord] = {}
-        # polylogue-wf8a: when set (the watcher always sets one; a caller
-        # that wants the unmodified in-hold parse path passes ``None``
-        # explicitly, e.g. an equivalence test's baseline run),
-        # ``_ingest_full_paths`` pre-parses eligible small JSONL candidates
-        # in this stage's bounded thread pool BEFORE
-        # ``_ingest_full_paths_sync`` ever requests the writer hold -- see
-        # ``polylogue.sources.live.parse_prefetch`` for the full safety
-        # argument (identical shape to ``DaemonParseStage``).
+        # The watcher supplies a parse stage for JSON/JSONL preparation before
+        # the writer hold. Direct callers may pass None for baseline parity.
         self._parse_stage = parse_stage
         self._read_snapshot = read_snapshot
 
@@ -2554,14 +2537,10 @@ class LiveBatchProcessor:
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
     ) -> _FullIngestResult:
+        prepared_json_paths: frozenset[str] = frozenset()
         if self._parse_stage is not None and not _source_tier_acquisition_required():
-            # polylogue-wf8a: pre-parse eligible candidates BEFORE ever
-            # asking the write coordinator for the writer hold below --
-            # identical sequencing guarantee to ``DaemonParseStage.warm``
-            # (see ``polylogue.sources.live.parse_prefetch``). A warm()
-            # failure here must never abort ingestion; it only means every
-            # candidate falls back to being parsed inline, exactly as if the
-            # flag were off.
+            # Prepare JSON/JSONL before asking the coordinator for a writer
+            # hold. A failed prewarm leaves the regular recorded parse outcome.
             fallback_provider = Provider.from_string(
                 canonical_acquisition_provider(source_name, source_name=source_name)
             )
@@ -2570,6 +2549,11 @@ class LiveBatchProcessor:
                     _live_parse_stage_path_candidates, paths, fallback_provider=fallback_provider
                 )
                 if path_candidates:
+                    prepared_json_paths = frozenset(
+                        source_path
+                        for source_path, _provider, _is_stream in path_candidates
+                        if Path(source_path).suffix.lower() == ".json"
+                    )
                     archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
                     await asyncio.to_thread(
                         self._parse_stage.warm_paths,
@@ -2578,6 +2562,7 @@ class LiveBatchProcessor:
                         read_snapshot=self._read_snapshot,
                     )
             except Exception:
+                prepared_json_paths = frozenset()
                 logger.warning(
                     "live.watcher: parse-stage prefetch failed; falling back to in-hold parse",
                     exc_info=True,
@@ -2591,6 +2576,7 @@ class LiveBatchProcessor:
             attempt_id=attempt_id,
             max_pass_seconds=max_pass_seconds,
             pass_started=pass_started,
+            prepared_json_paths=prepared_json_paths,
         )
 
     async def _run_sync(
@@ -2631,6 +2617,7 @@ class LiveBatchProcessor:
         attempt_id: str | None = None,
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
+        prepared_json_paths: frozenset[str] = frozenset(),
     ) -> _FullIngestResult:
         if not paths:
             return _FullIngestResult(succeeded=[], failed=[], source_payload_read_bytes=0)
@@ -2638,13 +2625,13 @@ class LiveBatchProcessor:
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         blob_root = archive_root / "blob"
         raw_records: list[RawSessionRecord] = []
-        raw_by_id: dict[str, Path] = {}
+        raw_by_record: dict[_FullRecordKey, Path] = {}
         raw_byte_sizes: dict[Path, int] = {}
         raw_frontier_sizes: dict[Path, int] = {}
         raw_payloads: dict[str, bytes] = {}
         parsed_sessions_by_raw_id: dict[str, list[ParsedSession]] = {}
         shard_paths_by_raw_id: dict[str, Path] = {}
-        path_preparations_by_raw_id: dict[str, PreparedJsonl] = {}
+        path_preparations_by_source_path: dict[str, PreparedJsonl] = {}
         raw_source_names: dict[Path, str] = {}
         raw_source_revisions: dict[Path, str] = {}
         raw_source_fingerprints: dict[Path, str] = {}
@@ -2769,6 +2756,7 @@ class LiveBatchProcessor:
                         captured_file_observation=captured_file_observations[path],
                     )
                 )
+                raw_by_record[_full_record_key(raw_records[-1])] = path
                 ingested.append(path)
 
         # Every planned path this pass admits nothing for, and why. A path
@@ -2849,7 +2837,6 @@ class LiveBatchProcessor:
                 )
                 continue
             origin_artifact_rule = artifact_rule_for_path(fallback_provider, str(path))
-            path_artifact = classify_artifact_path(path, provider=fallback_provider)
             strong_path_artifact = strong_path_classification(path, provider=fallback_provider)
             if heartbeat is not None:
                 heartbeat(
@@ -2886,9 +2873,9 @@ class LiveBatchProcessor:
                         excluded=excluded_paths,
                     )
                     continue
-                for member_raw_id, member_record in zip_records:
+                for _member_raw_id, member_record in zip_records:
                     raw_records.append(member_record)
-                    raw_by_id[member_raw_id] = path
+                    raw_by_record[_full_record_key(member_record)] = path
                 source_payload_read_bytes += zip_bytes
                 if heartbeat is not None:
                     heartbeat(
@@ -3135,25 +3122,12 @@ class LiveBatchProcessor:
             elif (
                 origin_artifact_rule is None
                 and not is_jsonl_source_path(str(path))
-                and path_artifact is not None
-                and not path_artifact.parse_as_session
-                and stat.st_size < _STREAMING_FULL_INGEST_BYTES
-                # An unknown JSON payload under the weak ``analysis/`` path
-                # heuristic must reach the generic JSON route. That route
-                # retains raw bytes and records a typed terminal outcome for
-                # malformed or empty input. Strong named sidecars such as
-                # ``sessions-index.json`` remain excluded before acquisition.
-                and not (
-                    fallback_provider is Provider.UNKNOWN
-                    and path.suffix.lower() == ".json"
-                    and path_artifact.kind is ArtifactKind.METADATA_DOCUMENT
-                    and (strong_path_artifact is None or strong_path_artifact.parse_as_session)
-                )
-                and not has_decoded_session_evidence(path, provider=fallback_provider)
+                and strong_path_artifact is not None
+                and not strong_path_artifact.parse_as_session
             ):
-                # Keep path-only metadata out of the generic JSON fallback,
-                # but let real decoded session evidence outrank a stale or
-                # overbroad filename rule just as offline source parsing does.
+                # Only definitive sidecar paths are excluded before retained
+                # acquisition. Weak locations reach the same parser at every
+                # size, where decoded evidence determines their disposition.
                 self._mark_excluded_cursor(
                     path,
                     stat,
@@ -3165,37 +3139,20 @@ class LiveBatchProcessor:
             elif origin_artifact_rule is not None and origin_artifact_rule.parse_policy != "session":
                 provider = fallback_provider
                 source_name = provider.value
-                if stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
-                    try:
-                        if heartbeat is not None:
-                            heartbeat(
-                                "full_blob_copy",
-                                current_path=path,
-                                source_payload_read_bytes=source_payload_read_bytes,
-                            )
-                        raw_id, blob_size = blob_store.write_from_path(
-                            path,
-                            heartbeat=_blob_copy_heartbeat(
-                                heartbeat,
-                                path=path,
-                                source_payload_read_bytes=source_payload_read_bytes,
-                            ),
-                        )
-                        blob_publication_receipt_id = blob_store.receipt_id(raw_id)
-                    except OSError:
-                        failed.append(path)
-                        continue
-                    source_payload_read_bytes += blob_size
-                else:
-                    try:
-                        payload = path.read_bytes()
-                    except OSError:
-                        failed.append(path)
-                        continue
-                    raw_id, blob_size = blob_store.write_from_bytes(payload)
+                try:
+                    raw_id, blob_size = blob_store.write_from_path(
+                        path,
+                        heartbeat=_blob_copy_heartbeat(
+                            heartbeat,
+                            path=path,
+                            source_payload_read_bytes=source_payload_read_bytes,
+                        ),
+                    )
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
-                    raw_payloads[raw_id] = payload
-                    source_payload_read_bytes += len(payload)
+                except OSError:
+                    failed.append(path)
+                    continue
+                source_payload_read_bytes += blob_size
                 if heartbeat is not None:
                     heartbeat(
                         "full_blob_copy",
@@ -3242,64 +3199,27 @@ class LiveBatchProcessor:
                 if self._parse_stage is not None:
                     preparation = self._parse_stage.pop_path(str(path), blob_hash=raw_id)
                     if preparation is not None:
-                        path_preparations_by_raw_id[raw_id] = preparation
+                        path_preparations_by_source_path[str(path)] = preparation
                 if heartbeat is not None:
                     heartbeat(
                         "full_blob_copy",
                         current_path=path,
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
-            elif source_name == "browser-capture" and path.suffix.lower() == ".json":
-                try:
-                    payload = path.read_bytes()
-                except OSError:
-                    failed.append(path)
-                    continue
-                provider = _detect_provider_from_raw_bytes(payload, path.name, fallback_provider)
+            else:
+                json_document = path.suffix.lower() == ".json"
+                provider = (
+                    fallback_provider if json_document else _detect_provider_from_path_sample(path, fallback_provider)
+                )
                 source_name = provider.value
-                if (
-                    not _parse_payload_as_session_artifact(path, provider=provider, payload=payload)
-                    and provider is not Provider.UNKNOWN
-                ):
+                if path.suffix.lower() != ".json" and not _parse_path_as_session_artifact(path, provider=provider):
                     self._mark_excluded_cursor(
                         path,
                         stat,
                         source_name=source_name,
-                        reason="payload carries no session evidence",
+                        reason="path rule refuses session parsing",
                         excluded=excluded_paths,
                     )
-                    continue
-                raw_id, blob_size = blob_store.write_from_bytes(payload)
-                blob_publication_receipt_id = blob_store.receipt_id(raw_id)
-                raw_payloads[raw_id] = payload
-                source_payload_read_bytes += len(payload)
-                if heartbeat is not None:
-                    heartbeat(
-                        "full_blob_copy",
-                        current_path=path,
-                        source_payload_read_bytes=source_payload_read_bytes,
-                    )
-            elif stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
-                provider = _detect_provider_from_path_sample(path, fallback_provider)
-                source_name = provider.value
-                if not _parse_path_as_session_artifact(path, provider=provider):
-                    undeclared_large_document = large_json_document_refusal_reason(path, provider=provider)
-                    if undeclared_large_document is not None:
-                        self._mark_refused_cursor(
-                            path,
-                            stat,
-                            source_name=source_name,
-                            reason=undeclared_large_document,
-                            excluded=excluded_paths,
-                        )
-                    else:
-                        self._mark_excluded_cursor(
-                            path,
-                            stat,
-                            source_name=source_name,
-                            reason="path rule refuses session parsing",
-                            excluded=excluded_paths,
-                        )
                     continue
                 try:
                     if heartbeat is not None:
@@ -3321,36 +3241,22 @@ class LiveBatchProcessor:
                     failed.append(path)
                     continue
                 source_payload_read_bytes += blob_size
-                if heartbeat is not None:
-                    heartbeat(
-                        "full_blob_copy",
-                        current_path=path,
-                        source_payload_read_bytes=source_payload_read_bytes,
+                preparation = None
+                if json_document and self._parse_stage is not None:
+                    preparation = self._parse_stage.pop_path(str(path), blob_hash=raw_id)
+                    if preparation is not None:
+                        path_preparations_by_source_path[str(path)] = preparation
+                if json_document:
+                    # The captured blob, rather than the pre-copy path, owns
+                    # provider identity when the source changes after prewarm.
+                    provider = (
+                        preparation.resolved_provider
+                        if preparation is not None and not preparation.deferred and preparation.error is None
+                        else None
+                    ) or _detect_provider_from_path_sample(
+                        blob_store.blob_path(raw_id), fallback_provider, json_document=True
                     )
-            else:
-                try:
-                    payload = path.read_bytes()
-                except OSError:
-                    failed.append(path)
-                    continue
-                provider = _detect_provider_from_raw_bytes(payload, path.name, fallback_provider)
-                source_name = provider.value
-                if (
-                    not _parse_payload_as_session_artifact(path, provider=provider, payload=payload)
-                    and provider is not Provider.UNKNOWN
-                ):
-                    self._mark_excluded_cursor(
-                        path,
-                        stat,
-                        source_name=source_name,
-                        reason="payload carries no session evidence",
-                        excluded=excluded_paths,
-                    )
-                    continue
-                raw_id, blob_size = blob_store.write_from_bytes(payload)
-                blob_publication_receipt_id = blob_store.receipt_id(raw_id)
-                raw_payloads[raw_id] = payload
-                source_payload_read_bytes += len(payload)
+                    source_name = provider.value
                 if heartbeat is not None:
                     heartbeat(
                         "full_blob_copy",
@@ -3407,7 +3313,7 @@ class LiveBatchProcessor:
                 )
             )
             raw_source_revisions.setdefault(path, raw_id)
-            raw_by_id[raw_id] = path
+            raw_by_record[_full_record_key(raw_records[-1])] = path
 
         # A one-item pass has no next-item checkpoint. Check once after the
         # acquisition loop so its final item cannot release an over-budget
@@ -3460,7 +3366,7 @@ class LiveBatchProcessor:
                     blob_store,
                     parsed_sessions_by_raw_id,
                     shard_paths_by_raw_id,
-                    path_preparations_by_raw_id,
+                    path_preparations_by_source_path,
                     max_pass_seconds=max_pass_seconds,
                     pass_started=pass_clock_started,
                 )
@@ -3468,41 +3374,31 @@ class LiveBatchProcessor:
                 for residue in shard_paths_by_raw_id.values():
                     discard_session_shard(residue)
                 shard_paths_by_raw_id.clear()
-                for preparation in path_preparations_by_raw_id.values():
+                for preparation in path_preparations_by_source_path.values():
                     preparation.discard()
-                path_preparations_by_raw_id.clear()
+                path_preparations_by_source_path.clear()
             # skipped_raw_ids (polylogue-11cg9) are records the time budget
             # never let the archive-write loop reach at all -- neither a
             # failure nor a conveyor hand-off, so they must be excluded from
             # ``failed`` the same way ``deferred_raw_ids`` already is, and
             # then also excluded from ``succeeded`` below (unlike
             # deferred_raw_ids, whose raw row IS durably written this pass).
-            skipped_paths = {raw_by_id[raw_id] for raw_id in archive_write.skipped_raw_ids if raw_id in raw_by_id}
+            skipped_paths = {raw_by_record[key] for key in archive_write.skipped_raw_ids if key in raw_by_record}
             preparation_deferred_paths = [
-                raw_by_id[raw_id] for raw_id in archive_write.preparation_deferred_raw_ids if raw_id in raw_by_id
+                raw_by_record[key] for key in archive_write.preparation_deferred_raw_ids if key in raw_by_record
             ]
-            raw_deferred_paths = [raw_by_id[raw_id] for raw_id in archive_write.deferred_raw_ids if raw_id in raw_by_id]
+            raw_deferred_paths = [raw_by_record[key] for key in archive_write.deferred_raw_ids if key in raw_by_record]
             # deferred_raw_ids is a conveyor hand-off, not a failure -- only
             # raws in neither map (a real exception was raised) count below.
             failed.extend(
-                raw_by_id[raw_id]
-                for raw_id in raw_by_id
-                if raw_id not in archive_write.raw_ids
-                and raw_id not in archive_write.deferred_raw_ids
-                and raw_id not in archive_write.terminal_raw_ids
-                and raw_id not in archive_write.skipped_raw_ids
-                and raw_id not in archive_write.preparation_deferred_raw_ids
+                raw_by_record[key]
+                for key in raw_by_record
+                if key not in archive_write.raw_ids
+                and key not in archive_write.deferred_raw_ids
+                and key not in archive_write.terminal_raw_ids
+                and key not in archive_write.skipped_raw_ids
+                and key not in archive_write.preparation_deferred_raw_ids
             )
-            raw_by_id = {
-                (
-                    archive_write.raw_ids.get(raw_id)
-                    or archive_write.deferred_raw_ids.get(raw_id)
-                    or archive_write.terminal_raw_ids.get(raw_id)
-                    or archive_write.preparation_deferred_raw_ids.get(raw_id)
-                    or raw_id
-                ): path
-                for raw_id, path in raw_by_id.items()
-            }
             if heartbeat is not None:
                 heartbeat(
                     "full_archive_write_completed",
@@ -3534,7 +3430,20 @@ class LiveBatchProcessor:
             write_hold_exhausted = write_hold_exhausted or archive_write.write_hold_exhausted
 
         failed_set = set(failed)
-        raw_fingerprints = {path: raw_id for raw_id, path in raw_by_id.items()}
+        raw_fingerprints = (
+            {
+                path: (
+                    archive_write.raw_ids.get(key)
+                    or archive_write.deferred_raw_ids.get(key)
+                    or archive_write.terminal_raw_ids.get(key)
+                    or archive_write.preparation_deferred_raw_ids.get(key)
+                    or key[0]
+                )
+                for key, path in raw_by_record.items()
+            }
+            if archive_write is not None
+            else {}
+        )
         succeeded_paths = [
             path
             for path in ingested
@@ -3577,7 +3486,7 @@ class LiveBatchProcessor:
             write_hold_exhausted=write_hold_exhausted,
         )
         raw_records.clear()
-        raw_by_id.clear()
+        raw_by_record.clear()
         blob_store.discard_pending()
         return result
 
@@ -3648,7 +3557,7 @@ class LiveBatchProcessor:
         blob_store: BlobStore,
         parsed_sessions_by_raw_id: dict[str, list[ParsedSession]] | None = None,
         shard_paths_by_raw_id: dict[str, Path] | None = None,
-        path_preparations_by_raw_id: dict[str, PreparedJsonl] | None = None,
+        path_preparations_by_source_path: dict[str, PreparedJsonl] | None = None,
         *,
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
@@ -3735,7 +3644,7 @@ class LiveBatchProcessor:
                         pass_exhausted = True
                     if pass_exhausted:
                         for remaining in records[record_index:]:
-                            result.skipped_raw_ids.add(remaining.raw_id)
+                            result.skipped_raw_ids.add(_full_record_key(remaining))
                         result.time_budget_exceeded = True
                         break
                 provider: Provider | None = None
@@ -3765,7 +3674,7 @@ class LiveBatchProcessor:
                     )
                     payload = raw_payloads.get(record.raw_id)
                     parse_payload_bytes = payload
-                    selected_preparation = (path_preparations_by_raw_id or {}).get(record.raw_id)
+                    selected_preparation = (path_preparations_by_source_path or {}).get(record.source_path)
                     partial_prefix = (
                         record.complete_prefix_size is not None and record.complete_prefix_size < record.blob_size
                     )
@@ -3787,12 +3696,10 @@ class LiveBatchProcessor:
                         and partial_prefix
                         and record.complete_prefix_size is not None
                         and not prepared_partial_prefix
-                        and record.complete_prefix_size < _STREAMING_FULL_INGEST_BYTES
+                        and self._parse_stage is None
                     ):
-                        # Large captures stay blob-backed; a bounded prefix is
-                        # still the only parser input allowed past the
-                        # boundary classifier.  The full blob remains the
-                        # conserved source evidence.
+                        # Direct callers without a worker stage parse the
+                        # proven complete prefix from retained bytes.
                         with blob_store.open(record.blob_hash or record.raw_id) as handle:
                             parse_payload_bytes = handle.read(record.complete_prefix_size)
                     source_name = Path(record.source_path).name
@@ -3877,7 +3784,7 @@ class LiveBatchProcessor:
                             source_raw_id=source_raw_id,
                             blob_hash=blob_hash,
                         )
-                        result.raw_ids[record.raw_id] = source_raw_id
+                        result.raw_ids[_full_record_key(record)] = source_raw_id
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
                     source_write_started = time.perf_counter()
@@ -3937,9 +3844,9 @@ class LiveBatchProcessor:
                         and payload is None
                         and not prepared_partial_prefix
                         and record.complete_prefix_size is not None
-                        and record.complete_prefix_size >= _STREAMING_FULL_INGEST_BYTES
+                        and self._parse_stage is not None
                     ):
-                        result.preparation_deferred_raw_ids[record.raw_id] = source_raw_id
+                        result.preparation_deferred_raw_ids[_full_record_key(record)] = source_raw_id
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
                     degraded = degraded_reason()
@@ -3951,7 +3858,7 @@ class LiveBatchProcessor:
                         # touches the stale derived tier. Same admit-and-skip
                         # shape as the OriginSpec fact-artifact branch below,
                         # just a different reason for stopping short of parse.
-                        result.raw_ids[record.raw_id] = source_raw_id
+                        result.raw_ids[_full_record_key(record)] = source_raw_id
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
                     incomplete_tail = (
@@ -4014,7 +3921,7 @@ class LiveBatchProcessor:
                                 error=ValueError("captured JSONL payload ends before a complete record boundary"),
                                 preserve_existing_failure_evidence=True,
                             )
-                            result.raw_ids[record.raw_id] = source_raw_id
+                            result.raw_ids[_full_record_key(record)] = source_raw_id
                             _accumulate_stage_timings(result.stage_timings_s, record_timings)
                             continue
                         archive.record_raw_failure_evidence(
@@ -4031,7 +3938,7 @@ class LiveBatchProcessor:
                             error=ValueError("captured JSONL payload ends before a complete record boundary"),
                             preserve_existing_failure_evidence=True,
                         )
-                        result.raw_ids[record.raw_id] = source_raw_id
+                        result.raw_ids[_full_record_key(record)] = source_raw_id
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
                     t0 = time.perf_counter()
@@ -4044,13 +3951,13 @@ class LiveBatchProcessor:
                         else None
                     )
                     path_preparation = (
-                        (path_preparations_by_raw_id or {}).get(record.raw_id)
+                        (path_preparations_by_source_path or {}).get(record.source_path)
                         if not partial_prefix or prepared_partial_prefix
                         else None
                     )
                     if path_preparation is not None:
                         if path_preparation.deferred:
-                            result.preparation_deferred_raw_ids[record.raw_id] = source_raw_id
+                            result.preparation_deferred_raw_ids[_full_record_key(record)] = source_raw_id
                             _accumulate_stage_timings(result.stage_timings_s, record_timings)
                             continue
                         if path_preparation.error is not None:
@@ -4118,7 +4025,7 @@ class LiveBatchProcessor:
                         # would ever commit the thread-state projection it just
                         # recomputed.
                         archive.commit()
-                        result.terminal_raw_ids[record.raw_id] = source_raw_id
+                        result.terminal_raw_ids[_full_record_key(record)] = source_raw_id
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
                     elif is_stream_record_provider(record.source_path, str(provider)):
@@ -4202,7 +4109,7 @@ class LiveBatchProcessor:
                             ),
                             preserve_existing_failure_evidence=True,
                         )
-                        result.raw_ids[record.raw_id] = source_raw_id
+                        result.raw_ids[_full_record_key(record)] = source_raw_id
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
                     record_session_artifact_observation(
@@ -4287,7 +4194,7 @@ class LiveBatchProcessor:
                                     # chain from sealed worker artifacts on its
                                     # next pass; rebuilding old full sessions
                                     # here would defeat bounded preparation.
-                                    result.deferred_raw_ids[record.raw_id] = source_raw_id
+                                    result.deferred_raw_ids[_full_record_key(record)] = source_raw_id
                                     _accumulate_stage_timings(result.stage_timings_s, record_timings)
                                     continue
                                 parsed_by_raw_id = self._parse_raw_revision_chain(
@@ -4387,7 +4294,7 @@ class LiveBatchProcessor:
                                         acquired_at_ms=acquired_at_ms,
                                         kind=RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER,
                                     )
-                                    result.deferred_raw_ids[record.raw_id] = source_raw_id
+                                    result.deferred_raw_ids[_full_record_key(record)] = source_raw_id
                                     _accumulate_stage_timings(result.stage_timings_s, record_timings)
                                     continue
                                 logger.info(
@@ -4440,13 +4347,13 @@ class LiveBatchProcessor:
                             prepared_writes=prepared_writes,
                         )
                     if raw_authority_complete:
-                        result.raw_ids[record.raw_id] = record_raw_id
+                        result.raw_ids[_full_record_key(record)] = record_raw_id
                     elif archive.raw_membership_decision_pending(source_raw_id):
                         # Census recorded, no exception, decision IS NULL -- the
                         # raw-authority protocol's own async classification (the
                         # raw-materialization conveyor) hasn't arbitrated this
                         # raw yet. Not a failure; see deferred_raw_ids.
-                        result.deferred_raw_ids[record.raw_id] = record_raw_id
+                        result.deferred_raw_ids[_full_record_key(record)] = record_raw_id
                     else:
                         # A decided ambiguous/deferred classification is
                         # fail-closed for materialization, but it is not a
@@ -4457,7 +4364,7 @@ class LiveBatchProcessor:
                         # decision and make the live cursor idempotent. Any
                         # changed observation returns through full ingest and
                         # may supply the evidence needed to arbitrate it.
-                        result.deferred_raw_ids[record.raw_id] = record_raw_id
+                        result.deferred_raw_ids[_full_record_key(record)] = record_raw_id
                         logger.info(
                             "live.watcher: membership decision remains unresolved for %s "
                             "raw=%s; preserving durable authority debt without retrying unchanged bytes",
@@ -4507,7 +4414,7 @@ class LiveBatchProcessor:
                     )
                 except PreparedSessionWriteRefusedError as exc:
                     if source_raw_id is not None:
-                        result.preparation_deferred_raw_ids[record.raw_id] = source_raw_id
+                        result.preparation_deferred_raw_ids[_full_record_key(record)] = source_raw_id
                     logger.info(
                         "live.watcher: prepared write became stale for %s: %s",
                         record.source_path,
@@ -4533,7 +4440,7 @@ class LiveBatchProcessor:
                                 acquired_at_ms=acquired_at_ms,
                                 kind=RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE,
                             )
-                            result.terminal_raw_ids[record.raw_id] = source_raw_id
+                            result.terminal_raw_ids[_full_record_key(record)] = source_raw_id
                             preserve_existing_failure_evidence = True
                         archive.mark_raw_parse_failed(
                             source_raw_id,
