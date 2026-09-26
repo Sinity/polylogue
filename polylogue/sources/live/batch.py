@@ -4204,6 +4204,24 @@ class LiveBatchProcessor:
                                     current_session=session,
                                 )
                                 replay_fresh = _fresh_build_admits(parsed_by_raw_id.values(), fresh_build_batch)
+                                index_conn = archive.index_connection
+                                prior_row = (
+                                    index_conn.execute(
+                                        "SELECT raw_id, content_hash FROM sessions WHERE session_id = ?",
+                                        (
+                                            str(
+                                                archive_session_id(
+                                                    origin_from_provider(provider).value, session.provider_session_id
+                                                )
+                                            ),
+                                        ),
+                                    ).fetchone()
+                                    if index_conn is not None
+                                    else None
+                                )
+                                prior_signature = (
+                                    (prior_row["raw_id"], prior_row["content_hash"]) if prior_row is not None else None
+                                )
                                 with archive.attached_session_shard(
                                     (shard_paths_by_raw_id or {}).get(source_raw_id)
                                 ) as shard_bindings:
@@ -4221,7 +4239,20 @@ class LiveBatchProcessor:
                                         ),
                                         prepared_write=prepared_writes.get(logical_source_key),
                                     )
-                                record_session_ids.append(session_id)
+                                current_row = (
+                                    index_conn.execute(
+                                        "SELECT raw_id, content_hash FROM sessions WHERE session_id = ?", (session_id,)
+                                    ).fetchone()
+                                    if index_conn is not None
+                                    else None
+                                )
+                                current_signature = (
+                                    (current_row["raw_id"], current_row["content_hash"])
+                                    if current_row is not None
+                                    else None
+                                )
+                                if current_signature != prior_signature:
+                                    record_session_ids.append(session_id)
                                 record_session_count = 1
                                 record_message_count = sum(
                                     len(parsed_by_raw_id[raw_id].messages) for raw_id in applied_raw_ids

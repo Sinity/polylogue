@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import threading
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from polylogue.config import Source
 from polylogue.pipeline.services.parsing_models import ParseResult
@@ -15,6 +16,76 @@ from polylogue.pipeline.services.parsing_models import ParseResult
 _OWNED_ROOT: contextvars.ContextVar[tuple[Path, int, int] | None] = contextvars.ContextVar(
     "canonical_one_shot_archive_owner", default=None
 )
+
+
+async def _ingest_selected_paths(
+    paths: list[Path],
+    ingest_pass: Callable[[list[Path]], Awaitable[Any]],
+) -> tuple[Any, ...]:
+    """Drain bounded unattempted paths, refusing any other incomplete result."""
+    from polylogue.sources.live.metrics import REFUSED_UNATTEMPTED_TIME_BUDGET
+
+    pending = list(dict.fromkeys(paths))
+    receipts: list[Any] = []
+    # A productive pass must settle at least one path. This permits the
+    # slowest possible one-file progress while making a stuck route finite.
+    for _ in range(max(1, len(pending))):
+        offered = list(pending)
+        metrics = await ingest_pass(offered)
+        receipts.append(metrics)
+
+        if metrics.failed_file_count or metrics.deferred_file_count:
+            raise RuntimeError(
+                "canonical ingestion did not settle every selected source file: "
+                f"failed={metrics.failed_file_count}, deferred={metrics.deferred_file_count}"
+            )
+
+        succeeded = set(metrics.succeeded_paths)
+        excluded = {Path(path): reason for path, reason in metrics.excluded_paths.items()}
+        if len(succeeded) != metrics.succeeded_file_count:
+            raise RuntimeError(
+                "canonical ingestion returned incomplete succeeded-path evidence: "
+                f"count={metrics.succeeded_file_count}, paths={len(succeeded)}"
+            )
+        if len(excluded) != metrics.excluded_file_count:
+            raise RuntimeError(
+                "canonical ingestion returned incomplete excluded-path evidence: "
+                f"count={metrics.excluded_file_count}, paths={len(excluded)}"
+            )
+
+        offered_set = set(offered)
+        if not succeeded <= offered_set or not set(excluded) <= offered_set:
+            raise RuntimeError("canonical ingestion reported a path that was not offered in this pass")
+        if succeeded & set(excluded):
+            raise RuntimeError("canonical ingestion both succeeded and excluded a selected source file")
+        accounted = succeeded | set(excluded)
+        if accounted != offered_set:
+            raise RuntimeError(
+                "canonical ingestion left selected source files without terminal evidence: "
+                f"unaccounted={len(offered_set - accounted)}"
+            )
+
+        if not excluded:
+            return tuple(receipts)
+
+        non_retryable = {path: reason for path, reason in excluded.items() if reason != REFUSED_UNATTEMPTED_TIME_BUDGET}
+        if non_retryable:
+            reasons = ", ".join(sorted(set(non_retryable.values())))
+            raise RuntimeError(
+                "canonical ingestion excluded selected source files for a non-retryable reason: "
+                f"count={len(non_retryable)}, reasons={reasons}"
+            )
+
+        if not succeeded:
+            raise RuntimeError(
+                f"canonical ingestion made no progress on selected source files: unattempted={len(excluded)}"
+            )
+        pending = [path for path in offered if path in excluded]
+
+    raise RuntimeError(
+        "canonical ingestion exhausted its bounded passes with selected source files remaining: "
+        f"unattempted={len(pending)}"
+    )
 
 
 @contextmanager
@@ -146,23 +217,23 @@ async def ingest_sources_archive(
                 ),
             ),
         )
-        metrics = await processor.ingest_files(paths, emit_event=False)
+        metrics_by_pass = await _ingest_selected_paths(
+            paths,
+            lambda offered: processor.ingest_files(offered, emit_event=False),
+        )
     finally:
         parse_stage.shutdown()
         await archive.close()
         await coordinator.shutdown(timeout=30.0)
 
-    if metrics.failed_file_count or metrics.deferred_file_count:
-        raise RuntimeError(
-            "canonical ingestion did not settle every selected source file: "
-            f"failed={metrics.failed_file_count}, deferred={metrics.deferred_file_count}"
-        )
-    result.counts["sessions"] = metrics.ingested_session_count
-    result.counts["messages"] = metrics.ingested_message_count
-    result.changed_counts["sessions"] = metrics.changed_session_count
-    result.processed_ids = {session_id for _, session_id in (*metrics.new_sessions, *metrics.updated_sessions)}
-    result.stage_timings_s = dict(metrics.stage_timings_s)
-    result.excised_skips = metrics.excised_skips
+    for metrics in metrics_by_pass:
+        result.counts["sessions"] = result.counts.get("sessions", 0) + metrics.ingested_session_count
+        result.counts["messages"] = result.counts.get("messages", 0) + metrics.ingested_message_count
+        result.changed_counts["sessions"] = result.changed_counts.get("sessions", 0) + metrics.changed_session_count
+        result.processed_ids.update(metrics.changed_session_ids)
+        for name, elapsed in metrics.stage_timings_s.items():
+            result.stage_timings_s[name] = result.stage_timings_s.get(name, 0.0) + elapsed
+        result.excised_skips += metrics.excised_skips
     return result
 
 

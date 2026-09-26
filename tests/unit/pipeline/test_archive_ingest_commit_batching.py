@@ -50,14 +50,23 @@ def test_one_shot_ingest_uses_durable_raw_and_cursor_authority(tmp_path: Path) -
 
     first = asyncio.run(parse_sources_archive(archive_root, declaration))
     second = asyncio.run(parse_sources_archive(archive_root, declaration))
-
-    assert first.processed_ids == {"claude-code:s1"}
-    assert second.processed_ids == set()
     with sqlite3.connect(archive_root / "source.db") as raw:
-        assert raw.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (1,)
+        assert raw.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+    source.write_text(
+        source.read_text(encoding="utf-8")
+        + '{"type":"user","uuid":"u2","sessionId":"s1","message":{"content":"another turn"}}\n',
+        encoding="utf-8",
+    )
+    third = asyncio.run(parse_sources_archive(archive_root, declaration))
+
+    assert first.processed_ids == {"claude-code-session:s1"}
+    assert second.processed_ids == set()
+    assert third.processed_ids == {"claude-code-session:s1"}
+    with sqlite3.connect(archive_root / "source.db") as raw:
+        assert raw.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (2,)
     with sqlite3.connect(archive_root / "index.db") as index:
         assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
-        assert index.execute("SELECT COUNT(*) FROM messages").fetchone() == (2,)
+        assert index.execute("SELECT COUNT(*) FROM messages").fetchone() == (3,)
     with sqlite3.connect(archive_root / "ops.db") as ops:
         assert ops.execute("SELECT COUNT(*) FROM ingest_cursor").fetchone() == (1,)
 

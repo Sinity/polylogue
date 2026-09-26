@@ -536,6 +536,7 @@ class LiveParseStage:
         """Reconcile prior acquisitions on a read-only index before admission."""
         from polylogue.core.identity_law import session_id as archive_session_id
         from polylogue.core.sources import origin_from_provider
+        from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_raw_session_id
         from polylogue.storage.sqlite.archive_tiers.write import (
             prepare_session_write,
             prepared_session_rows_from_shard,
@@ -566,10 +567,16 @@ class LiveParseStage:
                                 origin_from_provider(session.source_name).value,
                                 session.provider_session_id,
                             )
+                            expected_raw_id = deterministic_raw_session_id(
+                                origin_from_provider(session.source_name),
+                                str(path),
+                                0,
+                                bytes.fromhex(result.blob_hash),
+                            )
                             row = index_conn.execute(
                                 "SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)
                             ).fetchone()
-                            if row is None or row[0] is None or row[0] == result.blob_hash:
+                            if row is None or row[0] is None or row[0] == expected_raw_id:
                                 continue
                             writes.append(
                                 prepare_session_write(
@@ -577,7 +584,7 @@ class LiveParseStage:
                                     session,
                                     merge_append=False,
                                     source_conn=source_conn,
-                                    raw_id=result.blob_hash,
+                                    raw_id=expected_raw_id,
                                     prepared_rows=prepared_session_rows_from_shard(result.shard_path, session_id)
                                     if result.shard_path is not None
                                     else None,
