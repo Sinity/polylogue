@@ -29,7 +29,7 @@ import pytest
 
 from polylogue.daemon.convergence import DaemonConverger
 from polylogue.daemon.convergence_stages import make_default_convergence_stages
-from polylogue.daemon.intake import FairIntakeDispatcher, IntakeClassSpec
+from polylogue.daemon.intake import FairIntakeDispatcher, IntakeClassReport, IntakeClassSpec, IntakePass
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
 from polylogue.schemas.synthetic import SyntheticCorpus
@@ -38,9 +38,10 @@ from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.parse_prefetch import LiveParseStage
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
 from polylogue.storage import raw_retention
+from tests.infra.daemon_cold_start import write_fixture
 from tests.infra.workload_declarations import convergence_corpus_specs
 
-_MAX_DISPATCHER_PASSES = 32
+_MAX_DISPATCHER_PASSES = 64
 _THROUGHPUT_BOUND = 1.5
 _MEASUREMENT_PAIRS = 3
 _MEASURED_PAGE_FILES = 5
@@ -55,6 +56,8 @@ class _DispatcherMeasurement:
     end_to_end_mb_s: float
     succeeded_files: int
     failed_files: int
+    retried_files: int
+    deferred_files: int
     files: int
     passes: int
     writer_hold_s: float | None = None
@@ -108,23 +111,16 @@ def _run_direct_ingest(corpus_root: Path, archive_root: Path) -> dict[str, float
     archive-wide convergence on one arm only, so the two arms would not be
     the same unit of work.
 
-    The processor is built with the same owned ``LiveParseStage`` that
-    ``LiveWatcher.__init__`` always constructs for its own batch processor
-    (polylogue-wf8a: it is unconditional, and an explicit stage only takes
-    over the lifecycle). Left at ``parse_stage=None`` this arm parses inline
-    while the dispatcher arm pre-parses off the writer hold, so the two arms
-    would be running different parsing implementations and the ratio would
-    move with parse-stage changes alone -- contradicting the named
-    anti-vacuity claim that removing the dispatcher makes the probes
-    identical. The stage is shut down inside the measured interval because
-    the dispatcher arm's ``watcher.stop()`` -- which shuts down the stage it
-    owns -- is inside its own.
+    Both arms use the same test-owned parse stage. This isolated unit harness
+    has no daemon raw-materialization owner to drain a shard preparation that
+    is deferred pending authority, so the stage has no shard directory. The
+    stage is shut down inside each measured interval.
     """
     files = _jsonl_files(corpus_root)
     db_path = archive_root / "index.db"
     converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
     polylogue = SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=db_path))
-    parse_stage = LiveParseStage(shard_directory=archive_root / "parse-shards")
+    parse_stage = LiveParseStage()
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="claude-code", root=corpus_root),),
@@ -172,6 +168,7 @@ def _run_dispatcher_ingest(
     polylogue = SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=db_path))
     writer_events: list[DaemonWriteEvent] = []
     batch_payloads: list[dict[str, object]] = []
+    parse_stage = LiveParseStage()
 
     def record_batch_event(name: str, payload: dict[str, object]) -> None:
         if name == "ingestion_batch":
@@ -189,6 +186,7 @@ def _run_dispatcher_ingest(
         converger=converger,
         write_coordinator=coordinator,
         event_emitter=record_batch_event if observe_writer_holds else None,
+        parse_stage=parse_stage,
     )
     adapter = FileIntakeAdapter(
         DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=(source,)),
@@ -200,26 +198,39 @@ def _run_dispatcher_ingest(
         frame="test:dispatcher-measure",
     )
 
-    async def drain() -> tuple[int, int]:
+    async def drain() -> tuple[int, int, int, int, int]:
         admitted = 0
+        failed = 0
+        retried = 0
+        deferred = 0
         passes = 0
         try:
             while passes < _MAX_DISPATCHER_PASSES:
                 result = await dispatcher.run_once()
                 passes += 1
                 admitted += result.admitted
-                if not result.progressed:
-                    break
+                for report in result.classes:
+                    retried += report.retried
+                    deferred += report.deferred
+                    failed += report.retried + report.isolated
+                if result.quiescent and not adapter.discovery_pending:
+                    if admitted == len(files):
+                        break
+                    # A preparation deferral can leave a retry cursor due
+                    # after this otherwise idle pass. Give it a bounded turn.
+                    await asyncio.sleep(0.25)
             else:
                 raise AssertionError(f"dispatcher did not drain in {_MAX_DISPATCHER_PASSES} passes")
         finally:
             watcher.stop()
+            parse_stage.shutdown()
             if coordinator is not None:
                 assert await coordinator.shutdown(timeout=1.0)
-        return admitted, passes
+        return admitted, failed, retried, deferred, passes
 
     started = time.perf_counter()
-    admitted, passes = asyncio.run(drain())
+    admitted, failed, retried, deferred, passes = asyncio.run(drain())
+    assert admitted == len(files), f"dispatcher published {admitted} of {len(files)} expected files"
     elapsed = time.perf_counter() - started
     payload = _payload_bytes(files)
     released = [event for event in writer_events if event.phase == "released"]
@@ -243,7 +254,9 @@ def _run_dispatcher_ingest(
         payload_bytes=payload,
         end_to_end_mb_s=_mb_s(payload, elapsed),
         succeeded_files=admitted,
-        failed_files=0,
+        failed_files=failed,
+        retried_files=retried,
+        deferred_files=deferred,
         files=len(files),
         passes=passes,
         writer_hold_s=writer_hold_s,
@@ -252,6 +265,49 @@ def _run_dispatcher_ingest(
         raw_compaction_runs=raw_compaction_runs if isinstance(raw_compaction_runs, int) else 0,
         raw_compaction_time_s=float(raw_compaction_time_s) if isinstance(raw_compaction_time_s, (int, float)) else None,
     )
+
+
+def test_dispatcher_measurement_drains_rejected_prefix_and_counts_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejected first page cannot complete the witness; a retry cannot read as zero failures."""
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
+    corpus = tmp_path / "source"
+    write_fixture(corpus, rejected=300)
+
+    rejected: list[Path] = []
+    monkeypatch.setattr(
+        "polylogue.sources.live.discovery._log_unclaimed_intake_candidate",
+        lambda path, **_kwargs: rejected.append(path),
+    )
+    original_run_once = FairIntakeDispatcher.run_once
+    calls = 0
+    first_pass_pending = False
+
+    async def observed_pass(self: FairIntakeDispatcher, *, budget: int = 0) -> IntakePass:
+        nonlocal calls, first_pass_pending
+        if calls == 1:
+            calls += 1
+            return IntakePass(classes=(IntakeClassReport(name="configured_local", retried=1, deferred=1),))
+        result = await original_run_once(self, budget=budget) if budget else await original_run_once(self)
+        calls += 1
+        if calls == 1:
+            first_pass_pending = not result.progressed and any(
+                bool(getattr(spec.adapter, "discovery_pending", False)) for spec in self.classes
+            )
+            assert len(rejected) == 256
+        return result
+
+    monkeypatch.setattr(FairIntakeDispatcher, "run_once", observed_pass)
+    result = _run_dispatcher_ingest(corpus, tmp_path / "archive")
+
+    assert first_pass_pending
+    assert len(rejected) == 300
+    assert result.files == result.succeeded_files == 3
+    assert result.passes >= 4
+    assert result.failed_files == result.retried_files >= 1
+    assert result.deferred_files >= 1
 
 
 @pytest.mark.timeout(600)
