@@ -14,7 +14,7 @@ import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from multiprocessing import get_context
 from pathlib import Path
@@ -484,7 +484,7 @@ class RawObservationDerivation:
 
     def compute(self, frame: RawFrame, key: str) -> RawObservationReplacement:
         from polylogue.operations.operation_context import open_operation_read
-        from polylogue.sources.dispatch import is_stream_record_provider
+        from polylogue.sources.dispatch import is_jsonl_source_path
         from polylogue.sources.revision_backfill import (
             PreparedRetainedInput,
             RawParsePrefetchCache,
@@ -492,6 +492,7 @@ class RawObservationDerivation:
             parse_retained_raw_sessions,
             prepare_retained_jsonl_artifact,
         )
+        from polylogue.sources.sqlite_export import looks_like_logical_source_path
 
         # One component replay settles every member. The kernel classified the
         # page before it began publishing, so a sibling can still arrive here
@@ -514,9 +515,10 @@ class RawObservationDerivation:
             raw_ids, logical_keys = archive.expand_raw_membership_selection([key])
             binding = self._binding(raw_ids)
             descriptors = {raw_id: archive.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
-            process_prepared = all(
-                is_stream_record_provider(path, str(provider)) and provider.value in {"codex", "claude-code"}
-                for provider, _blob_hash, path, _kind, _size in descriptors.values()
+            process_prepared = bool(descriptors) and all(
+                (is_jsonl_source_path(path) or Path(path).suffix.lower() == ".json")
+                and not looks_like_logical_source_path(BlobStore(self.archive_root / "blob").blob_path(blob_hash))
+                for _provider, blob_hash, path, _kind, _size in descriptors.values()
             )
             if process_prepared:
                 from polylogue.core.sources import origin_from_provider
@@ -583,6 +585,7 @@ class RawObservationDerivation:
                 aggregates: dict[str, PreparedRetainedAggregate] = {}
                 prepared_writes: dict[str, PreparedSessionWrite] = {}
                 verified_blob_stats: dict[str, tuple[int, int, int, int, int]] = {}
+                prepared_artifacts: dict[tuple[object, ...], PreparedJsonl] = {}
                 try:
                     with ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn")) as pool:
                         for raw_id in raw_ids:
@@ -599,30 +602,33 @@ class RawObservationDerivation:
                                 raise RetainedPreparationRetryableError(f"retained raw blob changed: {raw_id}")
                             native_id = archive.raw_native_id(raw_id) if kind.value == "append" else None
                             fallback_timestamp = archive.raw_revision_file_mtime(raw_id)
-                            try:
-                                artifact = pool.submit(
-                                    prepare_retained_jsonl_artifact,
-                                    raw_id,
-                                    provider.value,
-                                    blob_hash,
-                                    path,
-                                    kind.value,
-                                    native_id,
-                                    str(self.archive_root / "blob"),
-                                    str(self.archive_root / "source.db"),
-                                    frame.source_revision,
-                                    str(scratch),
-                                    fallback_timestamp,
-                                ).result(timeout=600)
-                            except TimeoutError as exc:
-                                terminate_process_pool(pool)
-                                raise RetainedPreparationRetryableError(
-                                    f"retained JSONL preparation timed out for raw {raw_id}"
-                                ) from exc
-                            except BrokenProcessPool as exc:
-                                raise RetainedPreparationRetryableError(
-                                    f"retained JSONL worker exited before preparing raw {raw_id}"
-                                ) from exc
+                            artifact_key = (provider, blob_hash, path, kind, native_id, fallback_timestamp)
+                            artifact = prepared_artifacts.get(artifact_key)
+                            if artifact is None:
+                                try:
+                                    artifact = pool.submit(
+                                        prepare_retained_jsonl_artifact,
+                                        raw_id,
+                                        provider.value,
+                                        blob_hash,
+                                        path,
+                                        kind.value,
+                                        native_id,
+                                        str(self.archive_root / "blob"),
+                                        str(self.archive_root / "source.db"),
+                                        frame.source_revision,
+                                        str(scratch),
+                                        fallback_timestamp,
+                                    ).result(timeout=600)
+                                except TimeoutError as exc:
+                                    terminate_process_pool(pool)
+                                    raise RetainedPreparationRetryableError(
+                                        f"retained JSON preparation timed out for raw {raw_id}"
+                                    ) from exc
+                                except BrokenProcessPool as exc:
+                                    raise RetainedPreparationRetryableError(
+                                        f"retained JSON worker exited before preparing raw {raw_id}"
+                                    ) from exc
                             if not blob_store.verify(blob_hash):
                                 raise RetainedPreparationRetryableError(f"retained raw blob changed: {raw_id}")
                             try:
@@ -636,19 +642,20 @@ class RawObservationDerivation:
                             verified_blob_stats[raw_id] = after
                             if artifact.deferred:
                                 raise RetainedPreparationRetryableError(
-                                    f"retained JSONL preparation deferred for raw {raw_id}: {artifact.error}"
+                                    f"retained JSON preparation deferred for raw {raw_id}: {artifact.error}"
                                 )
                             if artifact.error is None and artifact.blob_hash != blob_hash:
                                 raise RetainedPreparationRetryableError(
-                                    f"retained JSONL preparation hash changed for raw {raw_id}"
+                                    f"retained JSON preparation hash changed for raw {raw_id}"
                                 )
                             if artifact.error is None:
                                 try:
-                                    artifact.verify_files(full=True)
+                                    artifact.verify_files(full=artifact_key not in prepared_artifacts)
                                 except (OSError, ValueError) as exc:
                                     raise RetainedPreparationRetryableError(
-                                        f"retained JSONL preparation seal changed for raw {raw_id}"
+                                        f"retained JSON preparation seal changed for raw {raw_id}"
                                     ) from exc
+                            prepared_artifacts[artifact_key] = artifact
                             prepared[raw_id] = PreparedRetainedInput(
                                 raw_id,
                                 provider,
@@ -663,6 +670,16 @@ class RawObservationDerivation:
                                 artifact.error,
                                 prepared_artifact=artifact if artifact.error is None else None,
                             )
+                        if needs_source_census and not planned_accepted_raw_ids:
+
+                            def empty_artifact(artifact: PreparedJsonl) -> bool:
+                                if artifact.error is not None:
+                                    return False
+                                with closing(artifact.iter_sessions()) as sessions:
+                                    return next(sessions, None) is None
+
+                            if all(empty_artifact(artifact) for artifact in prepared_artifacts.values()):
+                                needs_source_census = False
                         if not needs_source_census and len(complete_census) != len(raw_ids):
                             for raw_id, retained in prepared.items():
                                 retained_artifact = retained.prepared_artifact

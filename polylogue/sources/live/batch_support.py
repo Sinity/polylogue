@@ -35,7 +35,10 @@ from polylogue.storage.runtime import RawSessionRecord
 _LARGE_FULL_PARSE_PROGRESS_BYTES = 64 * 1024 * 1024
 _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES = 64 * 1024 * 1024
 _SMALL_FULL_PARSE_PROGRESS_MAX_FILES = 64
+# Retained for callers that synthesize former-threshold fixtures. Production
+# JSON/JSONL admission and preparation no longer consult this value.
 _STREAMING_FULL_INGEST_BYTES = 8 * 1024 * 1024
+_NON_JSON_PROBE_BYTES = 1024 * 1024
 _MAX_APPEND_PLAN_PAYLOAD_BYTES = 64 * 1024 * 1024
 _MAX_APPEND_PLAN_GROUP_PAYLOAD_BYTES = 64 * 1024 * 1024
 _MAX_APPEND_PLAN_GROUP_FILES = 64
@@ -895,7 +898,9 @@ def _jsonl_sample_from_path(path: Path, *, max_records: int = 32) -> list[JSONVa
     return records
 
 
-def _detect_provider_from_path_sample(path: Path, fallback_provider: Provider) -> Provider:
+def _detect_provider_from_path_sample(
+    path: Path, fallback_provider: Provider, *, json_document: bool = False
+) -> Provider:
     if fallback_provider is Provider.ANTIGRAVITY and antigravity.looks_like_trajectory_db_path(path):
         return Provider.ANTIGRAVITY
     if hermes_state.looks_like_state_db_path(path) or hermes_verification.looks_like_verification_evidence_db_path(
@@ -907,12 +912,31 @@ def _detect_provider_from_path_sample(path: Path, fallback_provider: Provider) -
         if records:
             return detect_provider(records) or fallback_provider
         return fallback_provider
-    if _path_size(path) > _STREAMING_FULL_INGEST_BYTES:
-        browser_capture, provider = _browser_capture_prefix_probe(path)
-        return provider or fallback_provider if browser_capture else fallback_provider
+    if json_document or path.suffix.lower() == ".json":
+        browser_capture, capture_provider = _browser_capture_prefix_probe(path)
+        if browser_capture and capture_provider is not None:
+            return capture_provider
+        from polylogue.sources.decoders import _iter_json_stream
+
+        sample: list[JSONValue] = []
+        try:
+            with path.open("rb") as handle:
+                for record in _iter_json_stream(handle, path.name):
+                    detected = detect_provider(record)
+                    if detected is not None:
+                        return detected
+                    sample.append(record)
+                    if len(sample) >= 32:
+                        break
+        except (OSError, ValueError):
+            return fallback_provider
+        return detect_provider(sample) or fallback_provider
     try:
-        payload = path.read_bytes()
+        with path.open("rb") as handle:
+            payload = handle.read(_NON_JSON_PROBE_BYTES + 1)
     except OSError:
+        return fallback_provider
+    if len(payload) > _NON_JSON_PROBE_BYTES:
         return fallback_provider
     return _detect_provider_from_raw_bytes(payload, path.name, fallback_provider)
 
@@ -968,68 +992,19 @@ def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
     path_classification = strong_path_classification(path, provider=provider)
     if path_classification is not None:
         return path_classification.parse_as_session
-    if _path_size(path) > _STREAMING_FULL_INGEST_BYTES:
-        browser_capture, _browser_provider = _browser_capture_prefix_probe(path)
-        if browser_capture:
-            return True
-        return _large_non_jsonl_path_can_stream(path, provider=provider)
+    if path.suffix.lower() == ".json":
+        # The parser records terminal unsupported-shape evidence from retained
+        # bytes. Size and provider labels do not decide whether JSON is valid.
+        return True
     try:
-        document = json_loads(path.read_bytes())
+        with path.open("rb") as handle:
+            payload = handle.read(_NON_JSON_PROBE_BYTES + 1)
+        if len(payload) > _NON_JSON_PROBE_BYTES:
+            return False
+        document = json_loads(payload)
     except JSONDecodeError:
         return False
     return classify_artifact(document, provider=provider, source_path=path).parse_as_session
-
-
-#: Providers whose sessions arrive as one ``.json`` document that can exceed
-#: ``_STREAMING_FULL_INGEST_BYTES``. Above that bound the payload is never read
-#: for admission, so membership here is the only thing that admits such a file:
-#: a provider missing from this set loses its large sessions silently, with the
-#: cursor advanced to EOF and no failure recorded. Every provider whose parser
-#: accepts a whole-document ``.json`` session belongs here.
-_LARGE_JSON_DOCUMENT_PROVIDERS: frozenset[Provider] = frozenset(
-    {
-        Provider.CHATGPT,
-        Provider.CLAUDE_AI,
-        Provider.DRIVE,
-        Provider.GEMINI,
-        Provider.GEMINI_CLI,
-    }
-)
-
-
-def _large_non_jsonl_path_can_stream(path: Path, *, provider: Provider) -> bool:
-    if path.suffix.lower() != ".json":
-        return False
-    return provider in _LARGE_JSON_DOCUMENT_PROVIDERS
-
-
-def large_json_document_refusal_reason(path: Path, *, provider: Provider) -> str | None:
-    """Why an oversized ``.json`` path was refused, when only this rule refused it.
-
-    ``_parse_path_as_session_artifact`` collapses every refusal to ``False``,
-    but this one is a property of the current admission rules rather than of
-    the bytes: declaring the provider in ``_LARGE_JSON_DOCUMENT_PROVIDERS``, or
-    building a streaming route for it, admits the same file unchanged. The
-    caller therefore records a retryable typed refusal instead of advancing the
-    cursor to EOF and quarantining the path (polylogue-dznyt).
-
-    ``None`` means some other rule refused the path (or nothing did), and the
-    caller keeps its ordinary exclusion.
-    """
-    if provider in _LARGE_JSON_DOCUMENT_PROVIDERS:
-        return None
-    if path.suffix.lower() != ".json":
-        return None
-    if is_jsonl_source_path(str(path)):
-        return None
-    if _path_size(path) <= _STREAMING_FULL_INGEST_BYTES:
-        return None
-    if strong_path_classification(path, provider=provider) is not None:
-        return None
-    browser_capture, _browser_provider = _browser_capture_prefix_probe(path)
-    if browser_capture:
-        return None
-    return f"large JSON document provider not declared for streaming ingest: {provider.value}"
 
 
 def _parse_payload_as_session_artifact(path: Path, *, provider: Provider, payload: bytes) -> bool:

@@ -45,7 +45,6 @@ from polylogue.sources.live.batch import (
 from polylogue.sources.live.batch_support import (
     _BROWSER_CAPTURE_PREFIX_PROBE_BYTES,
     _DEFER_APPEND,
-    _LARGE_JSON_DOCUMENT_PROVIDERS,
     _STREAMING_FULL_INGEST_BYTES,
     JsonlBoundary,
     _AppendPlan,
@@ -969,11 +968,7 @@ def test_full_ingest_acquires_but_does_not_parse_when_derived_tier_degraded(
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not classify source-only JSONL")),
     )
     monkeypatch.setattr(
-        "polylogue.sources.live.batch.has_decoded_session_evidence",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not inspect source-only JSON evidence")),
-    )
-    monkeypatch.setattr(
-        "polylogue.sources.live.batch._detect_provider_from_raw_bytes",
+        "polylogue.sources.live.batch._detect_provider_from_path_sample",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not detect source-only provider")),
     )
     try:
@@ -2413,10 +2408,14 @@ def test_large_weak_path_uses_streaming_route_before_decoded_evidence(
     )
     monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", 1)
     monkeypatch.setattr("polylogue.sources.live.batch_support._STREAMING_FULL_INGEST_BYTES", 1)
-    monkeypatch.setattr(
-        "polylogue.sources.live.batch.has_decoded_session_evidence",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("large input decoded before streaming route")),
-    )
+    original_read_bytes = Path.read_bytes
+
+    def refuse_source_read_bytes(candidate: Path) -> bytes:
+        if candidate == path:
+            raise AssertionError("source was read into one byte buffer")
+        return original_read_bytes(candidate)
+
+    monkeypatch.setattr(Path, "read_bytes", refuse_source_read_bytes)
     phases: list[str] = []
 
     def heartbeat(phase: str, **_kwargs: object) -> None:
@@ -2450,9 +2449,9 @@ def test_threshold_crossing_strong_sidecar_is_excluded_before_streaming(
     monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", 1)
     monkeypatch.setattr("polylogue.sources.live.batch_support._STREAMING_FULL_INGEST_BYTES", 1)
     monkeypatch.setattr(
-        "polylogue.sources.live.batch_support._large_non_jsonl_path_can_stream",
+        "polylogue.sources.live.batch._detect_provider_from_path_sample",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("strong sidecar reached large-file streaming admission")
+            AssertionError("strong sidecar reached JSON provider detection")
         ),
     )
 
@@ -8488,14 +8487,7 @@ def _gemini_cli_checkpoint(padding: str) -> dict[str, Any]:
 
 
 def test_gemini_cli_checkpoint_over_the_streaming_bound_reaches_the_archive(tmp_path: Path) -> None:
-    """A Gemini CLI checkpoint must acquire whatever its size.
-
-    Above ``_STREAMING_FULL_INGEST_BYTES`` admission is decided from the path
-    alone, so a provider absent from ``_LARGE_JSON_DOCUMENT_PROVIDERS`` has its
-    file excluded with the cursor advanced to EOF and no failure recorded --
-    the loss leaves no trace to find later. Dropping ``Provider.GEMINI_CLI``
-    from that set turns this red.
-    """
+    """A Gemini CLI checkpoint is retained and parsed above the former bound."""
     root = tmp_path / "chats"
     source = root / "session-2026-03-16T09-40-5c12869b.json"
     source.parent.mkdir(parents=True)
@@ -8575,28 +8567,13 @@ _LARGE_JSON_SESSION_DOCUMENTS: dict[Provider, Any] = {
 }
 
 
-def test_large_json_document_providers_each_have_an_admission_witness() -> None:
-    """Every provider the streaming bound admits carries a witness document.
-
-    Without this the parity test below silently stops covering a provider the
-    moment one is added to ``_LARGE_JSON_DOCUMENT_PROVIDERS``.
-    """
-    assert set(_LARGE_JSON_SESSION_DOCUMENTS) == set(_LARGE_JSON_DOCUMENT_PROVIDERS)
-
-
-@pytest.mark.parametrize("provider", sorted(_LARGE_JSON_DOCUMENT_PROVIDERS))
+@pytest.mark.parametrize("provider", sorted(_LARGE_JSON_SESSION_DOCUMENTS))
 def test_json_session_admission_does_not_depend_on_file_size(
     provider: Provider,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Path-only admission above the bound must agree with payload admission.
-
-    ``_parse_path_as_session_artifact`` cannot read a file above
-    ``_STREAMING_FULL_INGEST_BYTES``, so it decides from the provider alone.
-    Where the two predicates disagree, a session is acquired below the bound
-    and silently dropped above it.
-    """
+    """A supported JSON document remains eligible on either side of the old bound."""
     document = _LARGE_JSON_SESSION_DOCUMENTS[provider]
     target = tmp_path / "chats" / "session.json"
     target.parent.mkdir(parents=True)
@@ -8649,21 +8626,10 @@ def _live_processor(tmp_path: Path, root: Path, *, source_name: str) -> tuple[Li
     return processor, cursor
 
 
-def test_undeclared_large_json_document_is_refused_visibly_and_stays_retryable(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+def test_json_document_provider_detection_does_not_depend_on_file_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A large ``.json`` session for an undeclared provider must leave a trace.
-
-    Above ``_STREAMING_FULL_INGEST_BYTES`` admission is decided from the path
-    alone, so a provider outside ``_LARGE_JSON_DOCUMENT_PROVIDERS`` used to have
-    its cursor advanced to EOF and quarantined with no failure count and no
-    debt row -- invisible to ``list_retry_records`` and to status
-    (polylogue-dznyt). Restoring that silent exclusion (marking the path
-    excluded at EOF instead of refusing it) turns this red: the cursor would be
-    excluded with ``byte_offset`` at EOF, no retry record and no debt row.
-    """
-    monkeypatch.setattr("polylogue.sources.live.batch_support._LARGE_JSON_DOCUMENT_PROVIDERS", frozenset())
+    """A generic inbox detects the same provider across the former size bound."""
     root = tmp_path / "chats"
     source = root / "session-2026-03-16T09-40-5c12869b.json"
     source.parent.mkdir(parents=True)
@@ -8672,61 +8638,18 @@ def test_undeclared_large_json_document_is_refused_visibly_and_stays_retryable(
         encoding="utf-8",
     )
     assert source.stat().st_size > _STREAMING_FULL_INGEST_BYTES
-    processor, cursor = _live_processor(tmp_path, root, source_name="gemini-cli")
+    processor, cursor = _live_processor(tmp_path, root, source_name="inbox")
 
     result = asyncio.run(processor.ingest_files([source], emit_event=False))
 
-    assert result.ingested_session_count == 0
-    assert result.excluded_file_count == 1
-    reason = next(iter(result.excluded_reasons))
-    assert reason.startswith("large JSON document provider not declared for streaming ingest")
+    assert result.ingested_session_count == 1
+    assert result.excluded_file_count == 0
 
     record = cursor.get_record(source)
     assert record is not None
-    assert not record.excluded
-    assert record.failure_count == 1
-    assert record.byte_offset == 0
-    assert [Path(retry.source_path) for retry in cursor.list_retry_records()] == [source]
-
-    with sqlite3.connect(cursor._ops_db_path) as conn:
-        debt = conn.execute(
-            "SELECT stage, target_id, last_error FROM convergence_debt WHERE stage = 'live_ingest_admission'"
-        ).fetchall()
-    assert len(debt) == 1
-    assert debt[0][1] == str(source)
-    assert debt[0][2].startswith("large JSON document provider not declared for streaming ingest")
-
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.logging import capture
-
-    # A due admission refusal belongs to the source-path retry loop, so the
-    # generic stage drain must leave its diagnostic untouched and stay quiet.
-    with sqlite3.connect(cursor._ops_db_path) as conn:
-        conn.execute(
-            "UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00' "
-            "WHERE stage = 'live_ingest_admission'"
-        )
-        conn.commit()
-    with capture() as events:
-        assert daemon_cli._drain_convergence_debt_once(tmp_path / "index.db") == 0
-
-    stage_warnings = [event for event in events if event.get("event") == "daemon.convergence_debt.stage_unimplemented"]
-    assert stage_warnings == []
-    pending_debt = cursor.list_convergence_debt(stage="live_ingest_admission")
-    assert len(pending_debt) == 1
-    assert pending_debt[0].subject_id == str(source)
-    assert pending_debt[0].last_error == debt[0][2]
-
-    # The ordinary source-path pass rechecks admission; once the provider is
-    # declared, it ingests and convergence outcome recording clears the row.
-    monkeypatch.setattr(
-        "polylogue.sources.live.batch_support._LARGE_JSON_DOCUMENT_PROVIDERS",
-        frozenset({Provider.GEMINI_CLI}),
-    )
-    retry = asyncio.run(processor.ingest_files([source], emit_event=False))
-    assert retry.succeeded_file_count == 1
-    assert retry.ingested_session_count == 1
-    assert cursor.list_convergence_debt(stage="live_ingest_admission") == []
+    assert record.byte_offset == source.stat().st_size
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT origin FROM raw_sessions").fetchone() == ("gemini-cli-session",)
 
 
 def test_hold_budget_spent_after_the_commit_still_records_the_cursor(

@@ -13,13 +13,14 @@ import threading
 import time
 import uuid
 from collections import Counter, OrderedDict
-from collections.abc import Callable, Iterator, Mapping, Sequence, Set
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Set
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import wraps
 from io import BytesIO
+from itertools import chain, islice
 from pathlib import Path
 from types import TracebackType
 from typing import BinaryIO, Final, Literal, Protocol, cast
@@ -48,6 +49,7 @@ from polylogue.archive.revision_authority import (
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.core.binary_signatures import looks_like_sqlite_bytes
 from polylogue.core.enums import Origin, PolylogueStrEnum, Provider
+from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.pipeline.batch_policy import WriteDestination, select_cold_build_shape
@@ -864,6 +866,10 @@ class RetainedPreparationRetryableError(RuntimeError):
     """A supplied retained parse cannot be trusted; retry without quarantining bytes."""
 
 
+class UnsupportedRetainedJsonShapeError(ValueError):
+    """Bounded retained detection found no supported provider for textual JSON."""
+
+
 @dataclass(slots=True)
 class PreparedRetainedInput:
     raw_id: str
@@ -956,13 +962,30 @@ def prepare_retained_jsonl_artifact(
     directory: str,
     fallback_timestamp: str | None,
 ) -> PreparedJsonl:
-    """Prepare the final retained session view on a read-only evidence snapshot."""
+    """Prepare a retained JSON or JSONL session view on a read-only snapshot."""
     from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
     from polylogue.storage.blob_store import BlobStore
 
     provider = Provider(provider_token)
-    if not is_stream_record_provider(source_path, str(provider)):
-        raise RetainedPreparationRetryableError(f"retained JSONL worker cannot parse {raw_id}")
+    if not (is_jsonl_source_path(source_path) or Path(source_path).suffix.lower() == ".json"):
+        raise RetainedPreparationRetryableError(f"retained JSON worker cannot parse {raw_id}")
+    blob_path = BlobStore(Path(blob_root)).blob_path(blob_hash)
+    if provider is Provider.UNKNOWN:
+        try:
+            with blob_path.open("rb") as payload:
+                provider, _evidence = _detect_unknown_retained_provider(payload, source_path)
+        except OSError as exc:
+            raise RetainedPreparationRetryableError(f"retained JSON evidence read failed for raw {raw_id}") from exc
+        if provider is Provider.UNKNOWN:
+            refusal = UnsupportedRetainedJsonShapeError(
+                f"retained UNKNOWN provider remained unresolved after bounded scan: {source_path}"
+            )
+            return PreparedJsonl(
+                None,
+                None,
+                None,
+                f"{type(refusal).__name__}: {refusal}",
+            )
     kind = RawRevisionKind(kind_token)
     fallback_id = (native_id or Path(source_path).stem) if kind is RawRevisionKind.APPEND else Path(source_path).stem
     source_uri = f"file:{quote(source_db_path)}?mode=ro"
@@ -997,12 +1020,19 @@ def prepare_retained_jsonl_artifact(
                     evidence_observer=capture_evidence,
                 )
 
+            def classify_records(records: Iterable[JSONValue]) -> Iterable[JSONValue]:
+                source = iter(records)
+                sample = tuple(islice(source, 64))
+                if _declared_non_session_artifact_classification(provider, source_path, sample=sample) is not None:
+                    return iter(())
+                return chain(sample, source)
+
             artifact = prepare_jsonl_blob(
-                str(BlobStore(Path(blob_root)).blob_path(blob_hash)),
+                str(blob_path),
                 source_path,
                 provider.value,
                 fallback_id,
-                is_stream=True,
+                is_stream=is_stream_record_provider(source_path, provider),
                 shard_directory=directory,
                 sidecar_resolver=RetainedSidecarResolver(
                     Path(blob_root).parent,
@@ -1010,6 +1040,7 @@ def prepare_retained_jsonl_artifact(
                     source_conn=source_conn,
                 ),
                 prepare_sessions=finalize,
+                prepare_records=classify_records,
                 preparation_dependency=lambda: (
                     _retained_dependency_digest(
                         evidence_digest,
@@ -1019,10 +1050,10 @@ def prepare_retained_jsonl_artifact(
                 ),
             )
     except (OSError, sqlite3.OperationalError) as exc:
-        raise RetainedPreparationRetryableError(f"retained JSONL evidence read failed for raw {raw_id}") from exc
+        raise RetainedPreparationRetryableError(f"retained JSON evidence read failed for raw {raw_id}") from exc
     if artifact.blob_hash is not None and artifact.blob_hash != blob_hash:
         artifact.discard()
-        raise RetainedPreparationRetryableError(f"retained JSONL blob changed for raw {raw_id}")
+        raise RetainedPreparationRetryableError(f"retained JSON blob changed for raw {raw_id}")
     return artifact
 
 
@@ -1080,7 +1111,6 @@ def _prepared_retained_outcome(
     fallback_timestamp = archive.raw_revision_file_mtime(raw_id)
     mismatched = (
         ("raw_id", prepared.raw_id, raw_id),
-        ("provider", prepared.provider, provider),
         ("blob_hash", prepared.blob_hash, blob_hash),
         ("source_path", prepared.source_path, source_path),
         ("payload_bytes", prepared.payload_bytes, size),
@@ -1089,6 +1119,12 @@ def _prepared_retained_outcome(
         ("fallback_timestamp", prepared.fallback_timestamp, fallback_timestamp),
     )
     changed = [name for name, expected, actual in mismatched if expected != actual]
+    if prepared.provider != provider and not (
+        prepared.provider is Provider.UNKNOWN
+        and prepared.prepared_artifact is not None
+        and prepared.prepared_artifact.resolved_provider is provider
+    ):
+        changed.append("provider")
     if prepared.revision_kind != kind and not (
         prepared.revision_kind is RawRevisionKind.UNKNOWN and kind is RawRevisionKind.FULL
     ):

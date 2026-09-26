@@ -191,17 +191,22 @@ def live_parse_path_worker(
     is_stream: bool,
     shard_directory: str,
 ) -> LivePathPreparation:
-    from polylogue.sources.live.batch_support import jsonl_complete_prefix_path
+    from polylogue.sources.dispatch import is_jsonl_source_path
+    from polylogue.sources.live.batch_support import _detect_provider_from_path_sample, jsonl_complete_prefix_path
 
-    boundary = jsonl_complete_prefix_path(Path(source_path))
-    source_size = Path(source_path).stat().st_size
+    source = Path(source_path)
+    provider = _detect_provider_from_path_sample(source, Provider.from_string(provider_value))
+    boundary = jsonl_complete_prefix_path(source) if is_jsonl_source_path(source_path) else None
+    source_size = source.stat().st_size
     parse_prefix_size = (
-        boundary.prefix_size if 0 < boundary.prefix_size < source_size and not boundary.malformed_record else None
+        boundary.prefix_size
+        if boundary is not None and 0 < boundary.prefix_size < source_size and not boundary.malformed_record
+        else None
     )
     return prepare_jsonl_blob(
         source_path,
         source_path,
-        provider_value,
+        provider.value,
         fallback_id,
         is_stream=is_stream,
         shard_directory=shard_directory,
@@ -440,7 +445,7 @@ class LiveParseStage:
         archive_root: Path | None = None,
         read_snapshot: ReadSnapshot | None = None,
     ) -> int:
-        """Prepare path-backed JSONL outside the writer lease.
+        """Prepare path-backed JSON/JSONL outside the writer lease.
 
         Every selected path gets a result, including worker death and timeout.
         The publisher can therefore retain raw bytes and retry without an
@@ -660,7 +665,7 @@ class LiveParseStage:
         result = self._path_results.pop(source_path, None)
         if result is None:
             return None
-        if result.error is None and result.blob_hash != blob_hash:
+        if result.blob_hash != blob_hash:
             result.discard()
             return LivePathPreparation(None, None, None, "captured source changed after preparation", deferred=True)
         if result.error is None:
@@ -676,6 +681,18 @@ class LiveParseStage:
                     deferred=True,
                 )
         return result
+
+    def resolved_path_provider(self, source_path: str) -> Provider | None:
+        """Return a sealed worker's detection before durable source admission."""
+        if source_path in self._path_futures:
+            return None
+        result = self._path_results.get(source_path)
+        if result is None or result.error is not None:
+            return None
+        return result.resolved_provider
+
+    def path_preparation_pending(self, source_path: str) -> bool:
+        return source_path in self._path_futures
 
     def warm(self, candidates: Sequence[LiveParseCandidate]) -> int:
         """Pre-parse ``candidates`` outside any writer hold.

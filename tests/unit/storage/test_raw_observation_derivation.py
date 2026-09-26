@@ -138,6 +138,56 @@ def test_one_pass_replays_a_shared_raw_component_once(tmp_path: Path, monkeypatc
     assert adapter.inspect(raw_observation_frame(tmp_path), raw_ids) == dict.fromkeys(raw_ids, "valid")
 
 
+def test_duplicate_raws_share_preparation_but_keep_distinct_census(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Identical bytes need one worker parse while both raw IDs reach authority."""
+    from polylogue.storage.derived import raw as raw_module
+
+    worker_calls: list[str] = []
+
+    class InlinePool:
+        def __init__(self, **_kwargs: object) -> None:
+            self._result: object = None
+
+        def __enter__(self) -> InlinePool:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def submit(self, task: Callable[..., object], *args: object) -> InlinePool:
+            worker_calls.append(str(args[0]))
+            self._result = task(*args)
+            return self
+
+        def result(self, **_kwargs: object) -> object:
+            return self._result
+
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_ids = tuple(
+            archive.write_raw_payload(
+                provider=Provider.CHATGPT,
+                payload=b"[]",
+                source_path="duplicate-component.json",
+                source_index=index,
+                acquired_at_ms=1,
+            )
+            for index in range(2)
+        )
+    monkeypatch.setattr(raw_module, "ProcessPoolExecutor", InlinePool)
+    adapter = RawObservationDerivation(tmp_path)
+    frame = raw_observation_frame(tmp_path)
+    replacement = adapter.compute(frame, raw_ids[0])
+    assert replacement.prepared_inputs is not None
+    assert len(worker_calls) == 1 and worker_calls[0] in raw_ids
+    assert replacement.prepared_inputs[raw_ids[0]].raw_id == raw_ids[0]
+    assert replacement.prepared_inputs[raw_ids[1]].raw_id == raw_ids[1]
+    assert adapter.publish(frame, replacement)
+    assert adapter.inspect(frame, raw_ids) == dict.fromkeys(raw_ids, "valid")
+
+
 def test_restart_without_ops_hints_recovers_index_loss_and_new_admission(tmp_path: Path) -> None:
     """Anti-vacuity: retained pending caches hide reset or later admissions."""
     bootstrap_archive_root(tmp_path)
@@ -204,6 +254,117 @@ def test_retained_jsonl_replay_consumes_worker_carrier_without_inline_parse(
         assert conn.execute("SELECT native_id FROM sessions").fetchone() == ("prepared-session",)
 
 
+def test_retained_json_document_uses_prepared_carrier_past_cache_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A whole-document raw larger than the cache budget still reaches replay."""
+    from polylogue.sources import revision_backfill
+
+    bootstrap_archive_root(tmp_path)
+    raw_id = _admit(tmp_path, ("large-document",))
+    adapter = RawObservationDerivation(tmp_path, max_payload_bytes=1)
+    frame = raw_observation_frame(tmp_path)
+    replacement = adapter.compute(frame, raw_id)
+    assert replacement.prepared_inputs is not None
+    monkeypatch.setattr(
+        revision_backfill,
+        "parse_retained_raw_sessions",
+        lambda *_args: pytest.fail("retained JSON replay parsed inline"),
+    )
+    assert adapter.publish(frame, replacement)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT native_id FROM sessions").fetchall() == [("large-document",)]
+
+
+def test_retained_fact_json_is_terminal_without_a_session(tmp_path: Path) -> None:
+    """The prepared document route keeps declared sidecar evidence out of the index."""
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=b'{"agentId":"synthetic-agent","toolUseId":"synthetic-tool"}',
+            source_path="subagents/agent-synthetic.meta.json",
+            acquired_at_ms=1,
+        )
+    adapter = RawObservationDerivation(tmp_path, max_payload_bytes=1)
+    frame = raw_observation_frame(tmp_path)
+    replacement = adapter.compute(frame, raw_id)
+    assert replacement.prepared_inputs is not None
+    assert replacement.prepared_inputs[raw_id].parser_error is None
+    assert adapter.publish(frame, replacement)
+    assert adapter.inspect(frame, (raw_id,))[raw_id] == "valid"
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+
+
+def test_unknown_retained_json_resolves_on_prepared_route_past_cache_budget(tmp_path: Path) -> None:
+    """Source-only acquisition keeps its raw identity while replay detects JSON shape."""
+    bootstrap_archive_root(tmp_path)
+    payload = {
+        "id": "detected-json",
+        "title": "detected-json",
+        "create_time": 1,
+        "current_node": "m",
+        "mapping": {
+            "m": {
+                "id": "m",
+                "parent": None,
+                "children": [],
+                "message": {
+                    "id": "m",
+                    "author": {"role": "user"},
+                    "create_time": 1,
+                    "content": {"content_type": "text", "parts": ["detected content"]},
+                },
+            }
+        },
+    }
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.UNKNOWN,
+            payload=json.dumps([payload]).encode(),
+            source_path="unknown-capture.json",
+            acquired_at_ms=1,
+        )
+    adapter = RawObservationDerivation(tmp_path, max_payload_bytes=1)
+    frame = raw_observation_frame(tmp_path)
+    replacement = adapter.compute(frame, raw_id)
+    assert replacement.prepared_inputs is not None
+    assert replacement.prepared_inputs[raw_id].provider is Provider.UNKNOWN
+    artifact = replacement.prepared_inputs[raw_id].prepared_artifact
+    assert artifact is not None
+    assert artifact.resolved_provider is Provider.CHATGPT
+    assert adapter.publish(frame, replacement)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT native_id FROM sessions").fetchall() == [("detected-json",)]
+
+
+def test_unsupported_unknown_json_records_typed_failure_past_cache_budget(tmp_path: Path) -> None:
+    """An unrecognized text shape gets a parser receipt instead of a size refusal."""
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.UNKNOWN,
+            payload=b'{"unrecognized":"synthetic"}',
+            source_path="unknown-shape.json",
+            acquired_at_ms=1,
+        )
+    adapter = RawObservationDerivation(tmp_path, max_payload_bytes=1)
+    frame = raw_observation_frame(tmp_path)
+    replacement = adapter.compute(frame, raw_id)
+    assert replacement.prepared_inputs is not None
+    parser_error = replacement.prepared_inputs[raw_id].parser_error
+    assert parser_error is not None
+    assert parser_error.startswith("UnsupportedRetainedJsonShapeError:")
+    assert adapter.publish(frame, replacement)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT status FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone() == (
+            "failed",
+        )
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+
+
 def test_retained_worker_exit_keeps_raw_retryable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A dead process reports preparation failure without a source parser refusal."""
     from concurrent.futures.process import BrokenProcessPool
@@ -246,13 +407,13 @@ def test_retained_worker_exit_keeps_raw_retryable(tmp_path: Path, monkeypatch: p
 
 def test_retained_blob_io_failure_retries_without_quarantine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A transient blob read error must not become a durable parser refusal."""
+    from polylogue.sources import revision_backfill
     from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
-    from polylogue.storage.blob_publication import ArchiveBlobPublisher
     from polylogue.storage.derived import raw as raw_module
 
     class InlinePool:
         def __init__(self, **_kwargs: object) -> None:
-            self._task: Callable[..., tuple[str | None, str | None]] | None = None
+            self._task: Callable[..., object] | None = None
             self._args: tuple[object, ...] = ()
 
         def __enter__(self) -> InlinePool:
@@ -261,11 +422,11 @@ def test_retained_blob_io_failure_retries_without_quarantine(tmp_path: Path, mon
         def __exit__(self, *_args: object) -> None:
             pass
 
-        def submit(self, task: Callable[..., tuple[str | None, str | None]], *args: object) -> InlinePool:
+        def submit(self, task: Callable[..., object], *args: object) -> InlinePool:
             self._task, self._args = task, args
             return self
 
-        def result(self, **_kwargs: object) -> tuple[str | None, str | None]:
+        def result(self, **_kwargs: object) -> object:
             assert self._task is not None
             return self._task(*self._args)
 
@@ -278,11 +439,11 @@ def test_retained_blob_io_failure_retries_without_quarantine(tmp_path: Path, mon
             acquired_at_ms=1,
         )
 
-    def fail_blob_open(*_args: object) -> None:
+    def fail_blob_open(*_args: object, **_kwargs: object) -> None:
         raise OSError(errno.EMFILE, "too many open files")
 
     monkeypatch.setattr(raw_module, "ProcessPoolExecutor", InlinePool)
-    monkeypatch.setattr(ArchiveBlobPublisher, "open", fail_blob_open)
+    monkeypatch.setattr(revision_backfill, "prepare_jsonl_blob", fail_blob_open)
     with pytest.raises(RetainedPreparationRetryableError, match="read failed"):
         RawObservationDerivation(tmp_path).compute(raw_observation_frame(tmp_path), raw_id)
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -292,6 +453,7 @@ def test_retained_blob_io_failure_retries_without_quarantine(tmp_path: Path, mon
 
 def test_retained_parser_error_keeps_semantic_quarantine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A parser verdict from a live worker follows the canonical source census."""
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
     from polylogue.storage.derived import raw as raw_module
 
     class ParserRefusalPool:
@@ -307,8 +469,8 @@ def test_retained_parser_error_keeps_semantic_quarantine(tmp_path: Path, monkeyp
         def submit(self, *_args: object) -> ParserRefusalPool:
             return self
 
-        def result(self, **_kwargs: object) -> tuple[None, str]:
-            return None, "synthetic parser refusal"
+        def result(self, **_kwargs: object) -> PreparedJsonl:
+            return PreparedJsonl(None, None, None, "synthetic parser refusal")
 
     bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
