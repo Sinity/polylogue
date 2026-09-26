@@ -881,6 +881,38 @@ def test_read_verb_all_non_summary_invokes_query_set_read_view() -> None:
     assert run_read_set.call_args.kwargs["output_format"] == "json"
 
 
+def test_new_declared_option_reaches_query_set_and_single_read_routes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A new view option reaches both runtime routes without a value-map edit."""
+
+    declaration = READ_VIEW_HANDLER_METADATA["messages"]
+    monkeypatch.setitem(
+        READ_VIEW_HANDLER_METADATA,
+        "messages",
+        replace(
+            declaration,
+            declared_options=(
+                *declaration.declared_options,
+                ReadViewOptionDeclaration("declared_probe", ("--declared-probe",), "Synthetic read option."),
+            ),
+        ),
+    )
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+    _, child = _context_pair(query_terms=("session:codex-session:example",))
+
+    with patch("polylogue.cli.query_verbs.run_query_set_read_view") as run_read_set:
+        wrapped(child, **_read_verb_kwargs(view="messages", all_matches=True, declared_probe="marker"))
+    assert run_read_set.call_args.kwargs["option_values"]["declared_probe"] == "marker"
+
+    with (
+        patch("polylogue.cli.query_verbs._resolve_query_action_session_id", return_value="codex-session:example"),
+        patch("polylogue.cli.query_verbs.read_view_options_for_view") as build_options,
+        patch("polylogue.cli.query_verbs.run_read_view"),
+    ):
+        wrapped(child, **_read_verb_kwargs(view="messages", declared_probe="marker"))
+    assert build_options.call_args.args[1]["declared_probe"] == "marker"
+
+
 def test_read_verb_dialogue_query_set_uses_selection_limit() -> None:
     _, child = _context_pair(params={"origin": "claude-code-session"}, query_terms=("alpha",))
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
