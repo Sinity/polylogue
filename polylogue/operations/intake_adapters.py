@@ -891,9 +891,8 @@ class RawMaterializationDiscovery:
     unbroken stream of arrivals cannot stall the sweep either.
     """
 
-    def __init__(self, archive_root: Path, *, max_payload_bytes: int) -> None:
+    def __init__(self, archive_root: Path) -> None:
         self._archive_root = archive_root
-        self._max_payload_bytes = max_payload_bytes
         self._binding: _RawDiscoveryBinding | None = None
         self._cursor: str | None = None
         #: The continuation start of the page currently being offered and the
@@ -975,7 +974,7 @@ class RawMaterializationDiscovery:
             self._arrivals_first = False
 
         inspected_limit = min(limit, _RAW_DISCOVERY_INSPECTION_LIMIT)
-        adapter = RawObservationDerivation(self._archive_root, max_payload_bytes=self._max_payload_bytes)
+        adapter = RawObservationDerivation(self._archive_root)
         self._arrivals_first = not self._arrivals_first
         lanes: tuple[Callable[[Any, Any, int], tuple[str, ...]], ...] = (
             (self._arrival_selected, self._sweep_selected)
@@ -1043,17 +1042,14 @@ class RawMaterializationDiscovery:
         return tuple((raw_id, max(1, int(sizes.get(raw_id, 1)))) for raw_id in selected)
 
 
-def discover_pending_raw_ids(archive_root: Path, limit: int, max_payload_bytes: int) -> tuple[tuple[str, int], ...]:
+def discover_pending_raw_ids(archive_root: Path, limit: int) -> tuple[tuple[str, int], ...]:
     """Discover one bounded raw page for callers without an intake lifetime.
 
     The daemon owns a ``RawMaterializationDiscovery`` instance for its whole
     fair-intake lifetime. This compatibility helper deliberately has no
     continuation because it cannot retain one across independent callers.
     """
-    return RawMaterializationDiscovery(
-        archive_root,
-        max_payload_bytes=max_payload_bytes,
-    ).discover_pending_raw_ids(limit)
+    return RawMaterializationDiscovery(archive_root).discover_pending_raw_ids(limit)
 
 
 class DaemonIntakeService:

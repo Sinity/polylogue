@@ -244,7 +244,7 @@ def test_frontier_census_reports_a_blocked_head_without_promising_a_remedy(tmp_p
     """
     bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="blocked-head", source_path="blocked.jsonl")
-    report = converge_raw_observations(tmp_path, source_roots=(), limit=128, max_payload_bytes=64 * 1024 * 1024)
+    report = converge_raw_observations(tmp_path, source_roots=(), limit=128)
     assert report.failed == 0 and report.pending == 0
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:

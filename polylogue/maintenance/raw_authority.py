@@ -10,17 +10,13 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 from polylogue.config import Config, active_archive_root
 from polylogue.core.json import JSONDocument
 
 if TYPE_CHECKING:
     from polylogue.storage.raw_reconciler import RawAuthorityFrontierCensus
-
-
-RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES: Final = 64 * 1024 * 1024
-RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES: Final = 8 * 1024 * 1024 * 1024
 
 
 def inspect_frontier(config: Config) -> RawAuthorityFrontierCensus:

@@ -72,6 +72,153 @@ def _snapshot(root: Path) -> tuple[tuple[tuple[object, ...], ...], ...]:
         )
 
 
+def test_non_json_retained_worker_replays_past_old_payload_limit(tmp_path: Path) -> None:
+    """A 64 MiB cache ceiling must not block a retained non-JSON path.
+
+    The small semantic payload has large JSON whitespace so the test reaches
+    the former byte boundary without constructing a large parsed session.
+    Losing the sealed worker path makes the old component-size check fail.
+    """
+    bootstrap_archive_root(tmp_path)
+    payload = json.dumps(
+        [
+            {
+                "id": "large-text-route",
+                "create_time": 1,
+                "current_node": "m",
+                "mapping": {
+                    "m": {
+                        "id": "m",
+                        "parent": None,
+                        "children": [],
+                        "message": {
+                            "id": "m",
+                            "author": {"role": "user"},
+                            "create_time": 1,
+                            "content": {"content_type": "text", "parts": ["retained"]},
+                        },
+                    },
+                },
+            }
+        ]
+    ).encode()
+    payload += b" " * (64 * 1024 * 1024 + 1 - len(payload))
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=payload,
+            source_path="bundle.txt",
+            acquired_at_ms=1,
+        )
+    del payload
+
+    adapter = RawObservationDerivation(tmp_path)
+    frame = raw_observation_frame(tmp_path)
+    replacement = adapter.compute(frame, raw_id)
+    try:
+        assert replacement.prepared_inputs is not None
+        assert replacement.payload is None
+        assert adapter.publish(frame, replacement)
+    finally:
+        if replacement.scratch_owner is not None:
+            replacement.scratch_owner.cleanup()
+    assert adapter.inspect(raw_observation_frame(tmp_path), (raw_id,))[raw_id] == "valid"
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT native_id FROM sessions").fetchall() == [("large-text-route",)]
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (1,)
+
+
+def test_retained_text_path_matches_json_session_output(tmp_path: Path) -> None:
+    """The isolated non-JSON carrier preserves the canonical parser output."""
+    outputs: list[tuple[list[tuple[str]], list[tuple[str]]]] = []
+    for suffix in ("txt", "json"):
+        root = tmp_path / suffix
+        bootstrap_archive_root(root)
+        raw_id = _admit(root, ("same-session",), path=f"bundle.{suffix}")
+        adapter = RawObservationDerivation(root)
+        frame = raw_observation_frame(root)
+        replacement = adapter.compute(frame, raw_id)
+        assert adapter.publish(frame, replacement)
+        with sqlite3.connect(root / "index.db") as conn:
+            outputs.append(
+                (
+                    conn.execute("SELECT native_id FROM sessions ORDER BY native_id").fetchall(),
+                    conn.execute("SELECT search_text FROM blocks ORDER BY block_id").fetchall(),
+                )
+            )
+    assert outputs[0] == outputs[1]
+
+
+def test_sqlite_page_image_uses_worker_without_materializing_a_session(tmp_path: Path) -> None:
+    """SQLite-shaped retained evidence also stays outside the daemon parse cache."""
+    bootstrap_archive_root(tmp_path)
+    source = tmp_path / "opaque.db"
+    with sqlite3.connect(source) as conn:
+        conn.execute("CREATE TABLE unrelated (value TEXT)")
+        conn.execute("INSERT INTO unrelated VALUES ('synthetic')")
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.ANTIGRAVITY,
+            payload=source.read_bytes(),
+            source_path=str(source),
+            acquired_at_ms=1,
+        )
+    adapter = RawObservationDerivation(tmp_path)
+    frame = raw_observation_frame(tmp_path)
+    replacement = adapter.compute(frame, raw_id)
+    assert replacement.prepared_inputs is not None
+    assert replacement.payload is None
+    assert adapter.publish(frame, replacement)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+
+
+@pytest.mark.parametrize("retained_name", ("state.db", "backup.json"))
+def test_logical_sqlite_export_uses_worker_and_replays_session(tmp_path: Path, retained_name: str) -> None:
+    """Logical export bytes outrank a JSON suffix when choosing the worker."""
+    from polylogue.sources.sqlite_export import logical_export_bytes
+    from polylogue.sources.sqlite_snapshot import member_export_scope
+
+    bootstrap_archive_root(tmp_path)
+    source = tmp_path / "hermes-home" / "state.db"
+    source.parent.mkdir()
+    with sqlite3.connect(source) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE schema_version(version INTEGER NOT NULL);
+            INSERT INTO schema_version VALUES (19);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, source TEXT, model_config TEXT, parent_session_id TEXT,
+                started_at REAL, ended_at REAL, end_reason TEXT, title TEXT
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT,
+                timestamp REAL NOT NULL, tool_calls TEXT, observed INTEGER DEFAULT 0,
+                active INTEGER DEFAULT 1, compacted INTEGER DEFAULT 0
+            );
+            INSERT INTO sessions VALUES ('root', 'cli', '{}', NULL, 1.0, 8.0, 'completed', 'root');
+            INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (1, 'root', 'user', 'hi', 2.0);
+            """
+        )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.HERMES,
+            payload=logical_export_bytes(source, scope=member_export_scope(source)),
+            source_path=str(source.with_name(retained_name)),
+            acquired_at_ms=1,
+        )
+    adapter = RawObservationDerivation(tmp_path)
+    frame = raw_observation_frame(tmp_path)
+    replacement = adapter.compute(frame, raw_id)
+    assert replacement.prepared_inputs is not None
+    assert replacement.payload is None
+    assert adapter.publish(frame, replacement)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        native_ids = [str(row[0]) for row in conn.execute("SELECT native_id FROM sessions")]
+        assert len(native_ids) == 1 and native_ids[0].startswith("root@profile-")
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (1,)
+
+
 def test_split_member_loss_is_recovered_by_kernel_without_legacy_scanner(tmp_path: Path) -> None:
     """Anti-vacuity: a raw-id/session-exists probe misses the lost split member."""
     bootstrap_archive_root(tmp_path)
@@ -262,7 +409,7 @@ def test_retained_json_document_uses_prepared_carrier_past_cache_budget(
 
     bootstrap_archive_root(tmp_path)
     raw_id = _admit(tmp_path, ("large-document",))
-    adapter = RawObservationDerivation(tmp_path, max_payload_bytes=1)
+    adapter = RawObservationDerivation(tmp_path)
     frame = raw_observation_frame(tmp_path)
     replacement = adapter.compute(frame, raw_id)
     assert replacement.prepared_inputs is not None
@@ -286,7 +433,7 @@ def test_retained_fact_json_is_terminal_without_a_session(tmp_path: Path) -> Non
             source_path="subagents/agent-synthetic.meta.json",
             acquired_at_ms=1,
         )
-    adapter = RawObservationDerivation(tmp_path, max_payload_bytes=1)
+    adapter = RawObservationDerivation(tmp_path)
     frame = raw_observation_frame(tmp_path)
     replacement = adapter.compute(frame, raw_id)
     assert replacement.prepared_inputs is not None
@@ -326,7 +473,7 @@ def test_unknown_retained_json_resolves_on_prepared_route_past_cache_budget(tmp_
             source_path="unknown-capture.json",
             acquired_at_ms=1,
         )
-    adapter = RawObservationDerivation(tmp_path, max_payload_bytes=1)
+    adapter = RawObservationDerivation(tmp_path)
     frame = raw_observation_frame(tmp_path)
     replacement = adapter.compute(frame, raw_id)
     assert replacement.prepared_inputs is not None
@@ -349,7 +496,7 @@ def test_unsupported_unknown_json_records_typed_failure_past_cache_budget(tmp_pa
             source_path="unknown-shape.json",
             acquired_at_ms=1,
         )
-    adapter = RawObservationDerivation(tmp_path, max_payload_bytes=1)
+    adapter = RawObservationDerivation(tmp_path)
     frame = raw_observation_frame(tmp_path)
     replacement = adapter.compute(frame, raw_id)
     assert replacement.prepared_inputs is not None
@@ -365,7 +512,10 @@ def test_unsupported_unknown_json_records_typed_failure_past_cache_budget(tmp_pa
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
 
-def test_retained_worker_exit_keeps_raw_retryable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("source_path", ("worker-exit.jsonl", "worker-exit.txt"))
+def test_retained_worker_exit_keeps_raw_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source_path: str
+) -> None:
     """A dead process reports preparation failure without a source parser refusal."""
     from concurrent.futures.process import BrokenProcessPool
 
@@ -396,7 +546,7 @@ def test_retained_worker_exit_keeps_raw_retryable(tmp_path: Path, monkeypatch: p
     )
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=payload, source_path="worker-exit.jsonl", acquired_at_ms=1
+            provider=Provider.CODEX, payload=payload, source_path=source_path, acquired_at_ms=1
         )
     monkeypatch.setattr(raw_module, "ProcessPoolExecutor", DeadPool)
     with pytest.raises(RetainedPreparationRetryableError, match="worker exited"):
@@ -620,7 +770,7 @@ def test_bounded_source_pass_publishes_every_selected_observation(tmp_path: Path
         _admit(tmp_path, (f"selected-{index}",), path=str(source / f"{index}.json"))
     _admit(tmp_path, ("outside",), path=str(tmp_path / "outside.json"))
 
-    report = converge_raw_observations(tmp_path, source_roots=(source,), limit=limit, max_payload_bytes=1_000_000)
+    report = converge_raw_observations(tmp_path, source_roots=(source,), limit=limit)
 
     assert report.failed == report.pending == 0
     assert report.done == report.work.computed == report.work.published == limit
@@ -631,7 +781,7 @@ def test_bounded_source_pass_publishes_every_selected_observation(tmp_path: Path
             (f"selected-{index}",) for index in range(limit)
         ]
     before = _snapshot(tmp_path)
-    unchanged = converge_raw_observations(tmp_path, source_roots=(source,), limit=limit, max_payload_bytes=1_000_000)
+    unchanged = converge_raw_observations(tmp_path, source_roots=(source,), limit=limit)
     assert unchanged.made_no_publication_attempts
     assert _snapshot(tmp_path) == before
 
@@ -800,9 +950,7 @@ def test_all_valid_prefix_has_a_total_discovery_bound_and_continuation(
             limit=128,
         ) == {source}
     assert seen[-1] == late
-    report = converge_raw_observations(
-        tmp_path, source_roots=(source / "zz-late.json",), limit=2, max_payload_bytes=64 * 1024 * 1024
-    )
+    report = converge_raw_observations(tmp_path, source_roots=(source / "zz-late.json",), limit=2)
     assert report.done == 1 and report.failed == report.pending == 0
     assert (
         raw_observation_pending_roots(

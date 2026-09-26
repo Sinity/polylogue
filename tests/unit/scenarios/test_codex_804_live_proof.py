@@ -89,8 +89,6 @@ _BASELINE_MESSAGE_TIMESTAMPS = ("2026-07-31T04:25:20Z", "2026-07-31T04:25:20Z")
 
 async def _admit_large_component(
     root: Path,
-    *,
-    max_payload_bytes: int,
 ) -> tuple[str, DerivationReport, DerivationReport]:
     """Discover retained work and publish through ordinary raw convergence."""
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
@@ -99,9 +97,8 @@ async def _admit_large_component(
         root,
         compute_adapter=compute,
         write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
-        max_payload_bytes=max_payload_bytes,
     )
-    discovery = RawMaterializationDiscovery(root, max_payload_bytes=max_payload_bytes)
+    discovery = RawMaterializationDiscovery(root)
     try:
         pending = discovery.discover_pending_raw_ids(limit=1)
         assert pending, "canonical discovery must find a pending raw component"
@@ -504,7 +501,6 @@ async def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monke
         assert int(conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]) == expected_raw_count
     _candidate, completed_repair, followup_repair = await _admit_large_component(
         source_ready_root,
-        max_payload_bytes=WHALE_FIXTURE_DIMENSIONS.ordinary_blob_limit_bytes,
     )
     assert completed_repair.failed == 0
     assert completed_repair.pending == 0

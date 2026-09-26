@@ -35,11 +35,9 @@ class RawObservationConvergenceOwner:
         *,
         compute_adapter: BoundedComputeAdapter,
         write_bridge: DaemonWriteThreadBridge,
-        max_payload_bytes: int,
     ) -> None:
         self._archive_root = archive_root
-        self._max_payload_bytes = max_payload_bytes
-        adapter = make_raw_observation_derivation(archive_root, max_payload_bytes=max_payload_bytes)
+        adapter = make_raw_observation_derivation(archive_root)
         self._converger = DaemonConverger((), derivations=(adapter,))
         self._owner = DerivationConvergenceOwner(
             self._converger, compute_adapter=compute_adapter, write_bridge=write_bridge
@@ -83,14 +81,7 @@ class RawObservationConvergenceOwner:
             raise RuntimeError(f"raw observation source-selection gate blocked: {refusal.unattributed_reason}")
         if not refusal.source_paths:
             return
-        source_path = (
-            make_raw_observation_derivation(
-                self._archive_root,
-                max_payload_bytes=self._max_payload_bytes,
-            )
-            .source_paths((raw_id,))
-            .get(raw_id)
-        )
+        source_path = make_raw_observation_derivation(self._archive_root).source_paths((raw_id,)).get(raw_id)
         if source_path in refusal.source_paths:
             raise RuntimeError(
                 f"raw observation source-selection gate blocked: raw {raw_id} is on refused source path {source_path}"

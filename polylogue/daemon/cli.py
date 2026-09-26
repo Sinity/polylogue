@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from functools import partial
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import click
 
@@ -82,7 +82,6 @@ from polylogue.logging import (
     shutdown_events,
     span,
 )
-from polylogue.maintenance.raw_authority import RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES
 from polylogue.operations.embedding_lifecycle import (
     ensure_embedding_lifecycle_startup as _ensure_embedding_lifecycle_startup_sync,
 )
@@ -145,7 +144,6 @@ _OWNED_DEBT_STAGES = frozenset(
 
 T = TypeVar("T")
 _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS = 30
-_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES: Final = RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES
 
 # An additional root is content-detected by the ordinary export route. SQLite
 # remains admitted only by typed provider sources such as Hermes and Codex.
@@ -2493,13 +2491,11 @@ async def _run_daemon_services_under_active_writer_lease(
                 archive_root_path,
                 compute_adapter=daemon_compute,
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
-                max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
             )
             from polylogue.daemon.intake_adapters import RawMaterializationDiscovery
 
             raw_intake_discovery = RawMaterializationDiscovery(
                 archive_root_path,
-                max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
             )
 
             from polylogue.daemon.convergence import DerivationConvergenceOwner

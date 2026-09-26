@@ -22,9 +22,9 @@ RAW_OBSERVATION_DOMAIN = _RAW_OBSERVATION_DOMAIN
 _RAW_OBSERVATION_RECIPE_VERSION = RawObservationDerivation.recipe_version
 
 
-def make_raw_observation_derivation(archive_root: Path, *, max_payload_bytes: int) -> RawObservationDerivation:
+def make_raw_observation_derivation(archive_root: Path) -> RawObservationDerivation:
     """Construct the storage-owned raw adapter from the operations boundary."""
-    return RawObservationDerivation(archive_root, max_payload_bytes=max_payload_bytes)
+    return RawObservationDerivation(archive_root)
 
 
 def raw_observation_output_session_ids(archive_root: Path, raw_id: str) -> tuple[str, ...]:
@@ -78,7 +78,7 @@ def raw_observation_pending_roots(
     A page containing pending work is revisited until publication resolves it.
     No partial all-valid prefix can certify the entire selected source scope.
     """
-    adapter = make_raw_observation_derivation(archive_root, max_payload_bytes=64 * 1024 * 1024)
+    adapter = make_raw_observation_derivation(archive_root)
     pending: set[Path] = set()
     ordered = tuple(dict.fromkeys(paths))
     if not ordered:
@@ -129,7 +129,7 @@ def raw_observation_backlog_snapshot(archive_root: Path, *, limit: int) -> dict[
             "page_complete": True,
         }
 
-    adapter = make_raw_observation_derivation(archive_root, max_payload_bytes=64 * 1024 * 1024)
+    adapter = make_raw_observation_derivation(archive_root)
     frame = raw_observation_frame(archive_root)
     try:
         raw_ids, next_cursor = adapter.required_page(frame, cursor=None, limit=limit)
@@ -199,10 +199,9 @@ def converge_raw_observations(
     *,
     source_roots: Sequence[Path],
     limit: int,
-    max_payload_bytes: int,
     cursor: PassCursor | None = None,
 ) -> DerivationReport:
-    adapter = make_raw_observation_derivation(archive_root, max_payload_bytes=max_payload_bytes)
+    adapter = make_raw_observation_derivation(archive_root)
     return converge(
         DerivationRegistry((adapter,)),
         raw_observation_frame(archive_root, source_roots=source_roots),

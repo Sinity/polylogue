@@ -61,7 +61,6 @@ async def _owner(root: Path) -> tuple[RawObservationConvergenceOwner, BoundedCom
             root,
             compute_adapter=compute,
             write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
-            max_payload_bytes=1_000_000,
         ),
         compute,
         coordinator,
@@ -89,11 +88,10 @@ async def test_exact_raw_admission_uses_canonical_derivation_not_legacy_authorit
 
 
 @pytest.mark.asyncio
-async def test_retained_jsonl_converges_above_cache_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A retained JSONL raw uses prepared publication regardless of byte size.
+async def test_retained_jsonl_converges_from_sealed_carrier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A retained JSONL raw publishes through its prepared carrier.
 
-    Anti-vacuity: restoring the component payload refusal makes this raw fail
-    before its retained bytes can establish a parser census and revision head.
+    The merge spy fails if this route reconstructs a whole session inline.
     """
     bootstrap_archive_root(tmp_path)
     payload = (
@@ -114,7 +112,6 @@ async def test_retained_jsonl_converges_above_cache_budget(tmp_path: Path, monke
         tmp_path,
         compute_adapter=compute,
         write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
-        max_payload_bytes=1,
     )
 
     def no_singleton_merge(*_args: object, **_kwargs: object) -> object:

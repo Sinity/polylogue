@@ -1,4 +1,4 @@
-"""The ordinary fair intake admits a retained component above its cache budget."""
+"""The ordinary fair intake admits a retained multi-blob component."""
 
 from __future__ import annotations
 
@@ -46,8 +46,8 @@ def _blob_sizes(archive_root: Path) -> list[int]:
 
 
 @pytest.mark.asyncio
-async def test_fair_intake_converges_component_above_cache_budget_with_profiles(tmp_path: Path) -> None:
-    """Fair intake retries a component larger than its cache budget.
+async def test_fair_intake_converges_multiblob_component_with_profiles(tmp_path: Path) -> None:
+    """Fair intake publishes a component whose blobs span multiple admissions.
 
     Anti-vacuity: restoring the aggregate payload refusal leaves the index
     without sessions or profiles. Omitting the post-publication handoff leaves
@@ -69,8 +69,8 @@ async def test_fair_intake_converges_component_above_cache_budget_with_profiles(
 
     sizes = _blob_sizes(archive_root)
     assert len(sizes) == 2
-    cache_bytes = max(sizes)
-    assert sum(sizes) > cache_bytes, "the fixture must carry the component/seed skew"
+    largest_blob_bytes = max(sizes)
+    assert sum(sizes) > largest_blob_bytes, "the fixture must carry the component/seed skew"
 
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
     coordinator = DaemonWriteCoordinator()
@@ -80,7 +80,6 @@ async def test_fair_intake_converges_component_above_cache_budget_with_profiles(
             archive_root,
             compute_adapter=compute,
             write_bridge=bridge,
-            max_payload_bytes=cache_bytes,
         )
         profiles = compose_session_profile_callback(
             archive_root,
@@ -88,7 +87,7 @@ async def test_fair_intake_converges_component_above_cache_budget_with_profiles(
             write_bridge=bridge,
             now=lambda: 0.0,
         )
-        discovery = RawMaterializationDiscovery(archive_root, max_payload_bytes=cache_bytes)
+        discovery = RawMaterializationDiscovery(archive_root)
 
         async def admit(raw_id: str) -> AdmissionResult:
             report = await owner.converge_raw_id(raw_id)
@@ -107,7 +106,7 @@ async def test_fair_intake_converges_component_above_cache_budget_with_profiles(
                 )
             ]
         )
-        passes = [await dispatcher.run_once(budget=cache_bytes) for _ in range(4)]
+        passes = [await dispatcher.run_once(budget=largest_blob_bytes) for _ in range(4)]
         assert any(passed.progressed for passed in passes)
         with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
             published = sorted(str(row[0]) for row in conn.execute("SELECT session_id FROM sessions"))

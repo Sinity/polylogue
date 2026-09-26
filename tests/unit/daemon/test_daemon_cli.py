@@ -3483,7 +3483,6 @@ def test_raw_observation_owner_preserves_source_frontier_refusal(
         tmp_path,
         compute_adapter=cast(BoundedComputeAdapter, object()),
         write_bridge=cast(DaemonWriteThreadBridge, object()),
-        max_payload_bytes=4096,
     )
 
     with pytest.raises(RuntimeError, match=pattern):
@@ -3557,7 +3556,7 @@ def test_raw_observation_publication_holds_writer_lease_through_replay(
     monkeypatch.setattr("polylogue.storage.blob_store.BlobStore.verify", lambda _self, _blob_hash: True)
     monkeypatch.setattr("polylogue.sources.revision_backfill.backfill_historical_revision_evidence", fake_replay)
 
-    adapter = RawObservationDerivation(tmp_path, max_payload_bytes=4096)
+    adapter = RawObservationDerivation(tmp_path)
     monkeypatch.setattr(adapter, "_current", lambda _frame: True)
     monkeypatch.setattr(adapter, "_binding", lambda _raw_ids: "binding")
     monkeypatch.setattr(adapter, "source_paths", lambda _raw_ids: {"raw-1": "/archive/source.jsonl"})
@@ -3633,7 +3632,6 @@ def test_raw_owner_cancellation_settles_publication_and_fts(
             tmp_path,
             compute_adapter=compute,
             write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
-            max_payload_bytes=1_000_000,
         )
         adapter = owner._converger._derivation_adapter("raw_observation")
         original_compute = adapter.compute

@@ -390,7 +390,7 @@ def test_raw_discovery_uses_canonical_adapter_and_returns_payload_costs(
         raise AssertionError("legacy raw census selector was called")
 
     monkeypatch.setattr("polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot", forbidden)
-    result = discover_pending_raw_ids(tmp_path, limit=2, max_payload_bytes=1024)
+    result = discover_pending_raw_ids(tmp_path, limit=2)
 
     expected = tuple(
         (raw_id, len(payloads[path])) for path, raw_id in sorted(raw_ids.items(), key=lambda item: item[1])[:2]
@@ -432,7 +432,7 @@ def test_raw_discovery_bounds_valid_prefix_and_resumes_after_it(
             return {key: "valid" if key == valid else "missing" for key in keys}
 
     monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationDerivation", FakeRawObservationDerivation)
-    discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
+    discovery = RawMaterializationDiscovery(tmp_path)
 
     assert discovery.discover_pending_raw_ids(1) == ()
     assert calls == [(None, 1)]
@@ -493,7 +493,7 @@ async def test_raw_discovery_moves_past_a_cooled_down_poison_in_the_fair_dispatc
         admitted.append(raw_id)
         return AdmissionResult(AdmissionOutcome.ADMITTED)
 
-    discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
+    discovery = RawMaterializationDiscovery(tmp_path)
     dispatcher = FairIntakeDispatcher(
         [
             IntakeClassSpec(
@@ -561,7 +561,7 @@ def test_raw_discovery_resets_only_for_a_new_generation_binding(
         lambda _archive_root: next(frames),
     )
     monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationDerivation", FakeRawObservationDerivation)
-    discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
+    discovery = RawMaterializationDiscovery(tmp_path)
 
     assert discovery.discover_pending_raw_ids(1)[0][0] == first
     materialized.add(first)
@@ -611,7 +611,7 @@ def test_raw_discovery_cursor_stays_behind_ids_the_dispatcher_never_admitted(
             return {key: "valid" if key in materialized else "missing" for key in keys}
 
     monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationDerivation", FakeRawObservationDerivation)
-    discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
+    discovery = RawMaterializationDiscovery(tmp_path)
 
     assert [raw_id for raw_id, _cost in discovery.discover_pending_raw_ids(8)] == ["a", "b", "c"]
     materialized.add("a")  # the class budget covered exactly one admission
@@ -647,7 +647,7 @@ def test_raw_discovery_restarts_for_a_new_raw_before_its_cursor(tmp_path: Path) 
             == first
         )
 
-    discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
+    discovery = RawMaterializationDiscovery(tmp_path)
     assert discovery.discover_pending_raw_ids(1) == ((first, len(first_payload)),)
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
@@ -690,7 +690,7 @@ def test_raw_discovery_second_idle_pass_stays_one_page_at_large_scope(
             return dict.fromkeys(keys, "valid")
 
     monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationDerivation", FakeRawObservationDerivation)
-    discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
+    discovery = RawMaterializationDiscovery(tmp_path)
 
     assert discovery.discover_pending_raw_ids(32) == ()
     assert discovery.discover_pending_raw_ids(32) == ()
@@ -1268,7 +1268,7 @@ def test_raw_discovery_sweep_advances_under_a_sustained_arrival_rate(
             return {key: "valid" if key.startswith("page") else "missing" for key in keys}
 
     monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationDerivation", FakeRawObservationDerivation)
-    discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
+    discovery = RawMaterializationDiscovery(tmp_path)
 
     assert discovery.discover_pending_raw_ids(4) == ()
     for index in range(5):
@@ -1296,7 +1296,7 @@ def test_raw_discovery_is_an_empty_page_before_the_raw_tier_exists(tmp_path: Pat
     Anti-vacuity: removing the missing-tier guard makes this raise
     ``sqlite3.OperationalError`` rather than return an empty page.
     """
-    discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
+    discovery = RawMaterializationDiscovery(tmp_path)
 
     assert not (tmp_path / "source.db").exists()
     assert discovery.discover_pending_raw_ids(4) == ()
@@ -1309,7 +1309,7 @@ def test_raw_discovery_admits_work_once_the_tier_appears_without_a_restart(tmp_p
     check this bead replaces -- keeps the second call empty and makes this
     test red.
     """
-    discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
+    discovery = RawMaterializationDiscovery(tmp_path)
     assert discovery.discover_pending_raw_ids(4) == ()
 
     bootstrap_archive_root(tmp_path)

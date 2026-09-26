@@ -16,15 +16,11 @@ from polylogue.archive.raw_materialization import (
     source_path_native_id_candidates,
 )
 from polylogue.archive.revision_authority import RawRevisionAuthority
-from polylogue.core.enums import Origin
 from polylogue.core.errors import SchemaSkew
-from polylogue.core.sources import provider_from_origin
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.daemon.fts_status import fts_readiness_info
-from polylogue.maintenance.raw_authority import RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES
-from polylogue.sources.dispatch import is_stream_record_provider
 from polylogue.sources.parsers.local_agent import gemini_cli_chat_identity
 from polylogue.storage.archive_readiness import RAW_ALIAS_BLOB_MISSING_CATEGORY
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
@@ -623,11 +619,6 @@ def _format_bytes(value: int) -> str:
     return f"{value:,} bytes"
 
 
-def _raw_materialization_row_stream_safe(*, origin: str, row: sqlite3.Row) -> bool:
-    provider = provider_from_origin(Origin.from_string(origin))
-    return is_stream_record_provider(str(row["source_path"] or ""), provider)
-
-
 def _raw_materialization_debt_row(
     archive_root: Path,
     *,
@@ -640,17 +631,6 @@ def _raw_materialization_debt_row(
     sample_rows = rows[:5]
     max_blob_size = max(_int_value(row["blob_size"]) or 0 for row in rows)
     max_blob_size_text = _format_bytes(max_blob_size)
-    # An all-prepared stream-record JSONL component uses sealed shards at any
-    # retained size. Other parsers still use the bounded payload cache and can
-    # refuse an oversized component. This row-level projection cannot prove
-    # all members of a mixed component use the prepared route.
-    oversized_rows = [
-        row for row in rows if (_int_value(row["blob_size"]) or 0) > RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES
-    ]
-    stream_safe_oversized_rows = [
-        row for row in oversized_rows if _raw_materialization_row_stream_safe(origin=origin, row=row)
-    ]
-    blocked_oversized_count = len(oversized_rows) - len(stream_safe_oversized_rows)
     validation_counts = _count_values(row["validation_status"] for row in rows)
     source_available = any(_source_artifact_exists(str(row["source_path"])) for row in rows)
     severity: ArchiveDebtSeverity
@@ -826,33 +806,12 @@ def _raw_materialization_debt_row(
         stage = "parse"
         summary = f"{count} {origin} raw artifact(s) are acquired but not yet parsed"
         details = f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}."
-        if blocked_oversized_count:
-            status = "blocked"
-            details += (
-                " Actual replay is blocked by the "
-                f"{_format_bytes(RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES)} ordinary raw-materialization "
-                f"cache limit for {blocked_oversized_count:,} oversized nonprepared row(s)."
-            )
-            actions = (
-                ArchiveDebtActionPayload(
-                    label="Explain parser output",
-                    command=("polylogue", "import", "--explain"),
-                    description="Inspect one sampled source path; this parser requires a bounded retained payload.",
-                ),
-            )
-        else:
-            if stream_safe_oversized_rows:
-                details += (
-                    f" {len(stream_safe_oversized_rows):,} oversized row(s) are stream-record JSONL sources "
-                    "and can use prepared streaming raw materialization when every member of their expanded "
-                    "component uses that format."
-                )
-            actions = (
-                ArchiveDebtActionPayload(
-                    label="Run daemon convergence",
-                    command=("polylogued", "run"),
-                ),
-            )
+        actions = (
+            ArchiveDebtActionPayload(
+                label="Run daemon convergence",
+                command=("polylogued", "run"),
+            ),
+        )
 
     return ArchiveDebtRowPayload(
         debt_ref=f"debt:raw-materialization:{origin}:{category}",

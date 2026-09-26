@@ -116,7 +116,6 @@ def test_flag_on_prefetch_and_flag_off_produce_identical_archive_content(tmp_pat
         baseline_root,
         source_roots=(),
         limit=100,
-        max_payload_bytes=10_000_000,
     )
     assert baseline_result.failed == 0 and baseline_result.done == 4
 
@@ -163,7 +162,6 @@ async def test_raw_materialization_hands_current_output_to_the_canonical_session
         archive_root,
         source_roots=(),
         limit=1,
-        max_payload_bytes=10_000_000,
     )
     assert result.done == 1 and result.failed == 0
     session_ids = daemon_cli._raw_materialized_session_ids(archive_root, raw_id)
@@ -367,7 +365,6 @@ def test_raw_materialized_session_ids_exclude_stale_component_sessions_without_c
         archive_root,
         source_roots=(),
         limit=1,
-        max_payload_bytes=10_000_000,
     )
     assert result.done == 1 and result.failed == 0
     with sqlite3.connect(archive_root / "index.db") as index:

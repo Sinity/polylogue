@@ -114,7 +114,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     prepare_session_rows,
     prepare_session_shard,
 )
-from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError
+from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError, discard_session_shard
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
 _LOGGER = _polylogue_logging.get_logger(__name__)
@@ -1055,6 +1055,114 @@ def prepare_retained_jsonl_artifact(
         artifact.discard()
         raise RetainedPreparationRetryableError(f"retained JSON blob changed for raw {raw_id}")
     return artifact
+
+
+def prepare_retained_non_json_artifact(
+    raw_id: str,
+    provider_token: str,
+    blob_hash: str,
+    source_path: str,
+    kind_token: str,
+    native_id: str | None,
+    blob_root: str,
+    source_db_path: str,
+    index_db_path: str,
+    directory: str,
+    fallback_timestamp: str | None,
+) -> PreparedJsonl:
+    """Seal a non-JSON retained parse inside the isolated preparation worker."""
+    from polylogue.pipeline.ids import session_content_hash
+    from polylogue.sources.prepared_jsonl import PreparedJsonl, _write_artifact
+    from polylogue.sources.prepared_message_sink import SqliteMessageStore
+    from polylogue.storage.blob_store import BlobStore
+
+    archive_root = Path(source_db_path).parent
+    if archive_root / "blob" != Path(blob_root):
+        raise RetainedPreparationRetryableError(f"retained archive binding changed for raw {raw_id}")
+    sessions_path = Path(directory) / f"prepared-{uuid.uuid4().hex}.db"
+    shard_path: Path | None = None
+    store: SqliteMessageStore | None = None
+    sealed = False
+    parsed = False
+    try:
+        with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
+            provider, current_hash, current_path, kind, _size = archive.raw_revision_descriptor(raw_id)
+            if (
+                archive.index_db_path.resolve() != Path(index_db_path).resolve()
+                or provider != Provider(provider_token)
+                or current_hash != blob_hash
+                or current_path != source_path
+                or kind != RawRevisionKind(kind_token)
+                or (archive.raw_native_id(raw_id) if kind is RawRevisionKind.APPEND else None) != native_id
+                or archive.raw_revision_file_mtime(raw_id) != fallback_timestamp
+            ):
+                raise RetainedPreparationRetryableError(f"retained descriptor changed for raw {raw_id}")
+            sessions = parse_retained_raw_sessions(archive, raw_id)
+            outcome = _enrich_retained_parse_outcome(
+                archive,
+                raw_id,
+                descriptor=(provider, blob_hash, source_path, kind, _size, native_id),
+                outcome=(sessions, _size, kind),
+            )
+            if isinstance(outcome, Exception):
+                raise outcome
+            sessions = outcome[0]
+            resolved_provider = Provider.from_string(sessions[0].source_name) if sessions else provider
+            evidence = _retained_enrichment_sidecar_data(
+                provider=resolved_provider,
+                sessions=sessions,
+                index_conn=archive.index_connection,
+                source_conn=archive._ensure_source_conn(),
+                blob_root=Path(blob_root),
+                source_path=source_path,
+            )
+            dependency = _retained_dependency_digest(
+                _enrichment_evidence_digest(evidence),
+                _retained_parser_sidecar_digest(
+                    archive._ensure_source_conn(), provider=resolved_provider, source_path=source_path
+                ),
+            )
+            parsed = True
+        if not BlobStore(Path(blob_root)).verify(blob_hash):
+            raise RetainedPreparationRetryableError(f"retained blob changed for raw {raw_id}")
+        store = SqliteMessageStore(sessions_path)
+        for session in sessions:
+            session.content_hash = session_content_hash(session)
+        shard_path = prepare_session_shard(Path(directory), sessions).path
+        _write_artifact(
+            store,
+            blob_hash,
+            sessions,
+            enrichment_digest=dependency,
+            enrichment_index_path=str(Path(index_db_path).resolve()),
+        )
+        store.close()
+        store = None
+        artifact = PreparedJsonl.seal(
+            blob_hash,
+            sessions_path,
+            shard_path,
+            enrichment_digest=dependency,
+            enrichment_index_path=str(Path(index_db_path).resolve()),
+            resolved_provider=resolved_provider,
+        )
+        sealed = True
+        return artifact
+    except RetainedPreparationRetryableError:
+        raise
+    except (OSError, sqlite3.OperationalError, MemoryError) as exc:
+        raise RetainedPreparationRetryableError(f"retained worker could not prepare raw {raw_id}") from exc
+    except Exception as exc:
+        if parsed:
+            raise RetainedPreparationRetryableError(f"retained worker artifact failed for raw {raw_id}") from exc
+        return PreparedJsonl(blob_hash, None, None, f"{type(exc).__name__}: {exc}"[:500])
+    finally:
+        if store is not None:
+            store.close()
+        if not sealed:
+            sessions_path.unlink(missing_ok=True)
+            if shard_path is not None:
+                discard_session_shard(shard_path)
 
 
 def prepare_retained_jsonl_carrier(
