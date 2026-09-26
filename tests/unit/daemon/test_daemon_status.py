@@ -132,6 +132,46 @@ def test_status_snapshot_serves_cached_payload_without_rebuilding_status(monkeyp
     assert "queued_actors" in writer
 
 
+def test_status_snapshot_rejects_payload_collected_across_frame_promotion(monkeypatch: pytest.MonkeyPatch) -> None:
+    frame = {"value": "A"}
+    monkeypatch.setattr("polylogue.daemon.status_snapshot._status_frame", lambda: frame["value"])
+    refresh_status_snapshot(payload={"ok": False, "checked_at": "coherent-A"})
+
+    def promote(**_kwargs: object) -> JSONDocument:
+        frame["value"] = "B"
+        return {"ok": True, "checked_at": "mixed-A-B"}
+
+    monkeypatch.setattr("polylogue.daemon.status.daemon_status_payload", promote)
+    refresh_status_snapshot()
+    result = get_status_snapshot_payload()
+    metadata = cast(dict[str, Any], result["status_snapshot"])
+    freshness = cast(dict[str, Any], cast(dict[str, Any], metadata["state_evidence"])["freshness"])
+    assert result["checked_at"] == "coherent-A"
+    assert metadata["state"] == "stale"
+    assert metadata["frame"] == "A"
+    assert metadata["current_frame"] == "B"
+    assert metadata["frame_error"] == "archive frame changed during status collection"
+    assert freshness["cause"] == metadata["frame_error"]
+
+    refresh_status_snapshot(payload={"ok": True, "checked_at": "coherent-B"})
+    current = get_status_snapshot_payload()
+    assert current["checked_at"] == "coherent-B"
+    assert cast(dict[str, Any], current["status_snapshot"])["state"] == "fresh"
+
+
+def test_caller_payload_refresh_uses_invocation_frame(monkeypatch: pytest.MonkeyPatch) -> None:
+    frames = iter(("A", "B", "B"))
+    monkeypatch.setattr("polylogue.daemon.status_snapshot._status_frame", lambda: next(frames))
+    refresh_status_snapshot(payload={"ok": True, "checked_at": "unbound"})
+    result = get_status_snapshot_payload()
+    metadata = cast(dict[str, Any], result["status_snapshot"])
+    assert result.get("checked_at") != "unbound"
+    assert metadata["state"] == "stale"
+    assert metadata["frame"] == "A"
+    assert metadata["current_frame"] == "B"
+    assert metadata["frame_error"] == "archive frame changed during status collection"
+
+
 def test_daemon_status_plain_output_reports_schema_and_cursor_debt() -> None:
     """Daemon status must surface actionable split-store and cursor-state evidence."""
     lines = format_daemon_status_lines(
