@@ -122,6 +122,7 @@ def _ordered_children(
     *,
     visited_real_paths: set[str] | None = None,
     on_disposition: Callable[[Path, str, str], None] | None = None,
+    on_inspected: Callable[[], None] | None = None,
 ) -> list[tuple[str, Path, bool]]:
     """Siblings of ``directory``, reverse-sorted so a stack pops them in order.
 
@@ -149,6 +150,8 @@ def _ordered_children(
         ) from exc
     with entries:
         for entry in entries:
+            if on_inspected is not None:
+                on_inspected()
             path = Path(entry.path)
             try:
                 is_link = entry.is_symlink()
@@ -283,6 +286,7 @@ def _source_path_steps(
     after: str | None,
     scandir: Callable[[Path], Any] = os.scandir,
     on_disposition: Callable[[Path, str, str], None] | None = None,
+    on_inspected: Callable[[], None] | None = None,
 ) -> Iterator[Path | None]:
     """Yield one step per entry so a caller can resume after rejected files."""
     if not source.root.is_dir():
@@ -303,6 +307,7 @@ def _source_path_steps(
             scandir,
             visited_real_paths=visited_real_paths,
             on_disposition=on_disposition,
+            on_inspected=on_inspected,
         )
     ]
     while stack:
@@ -321,6 +326,7 @@ def _source_path_steps(
                     scandir,
                     visited_real_paths=visited_real_paths,
                     on_disposition=on_disposition,
+                    on_inspected=on_inspected,
                 )
             )
             yield None

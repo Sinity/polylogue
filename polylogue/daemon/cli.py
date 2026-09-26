@@ -657,11 +657,16 @@ async def _wal_checkpoint_once() -> None:
 
 async def _periodic_status_snapshot_refresh() -> None:
     """Refresh the rich daemon status snapshot outside request handlers."""
+    from polylogue.daemon.discovery_progress import log_discovery_progress_if_due
     from polylogue.daemon.status_snapshot import refresh_status_snapshot
+
+    async def once() -> None:
+        await asyncio.to_thread(log_discovery_progress_if_due)
+        await asyncio.to_thread(refresh_status_snapshot)
 
     await daemon_periodic_runner().run(
         "status_snapshot_refresh",
-        lambda: asyncio.to_thread(refresh_status_snapshot),
+        once,
         interval_s=_STATUS_SNAPSHOT_REFRESH_INTERVAL_SECONDS,
         # Every surface reads this snapshot: publish one before the first sleep
         # so a fresh daemon is never serving an absent snapshot for a cadence.

@@ -20,6 +20,7 @@ from polylogue.core.evidence_value import (
 )
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.refs import ObjectRef
+from polylogue.daemon.discovery_progress import overlay_active_discovery
 from polylogue.daemon.fts_status import fts_readiness_info
 from polylogue.operations.quick_check import observe_quick_check, unmeasured_quick_check
 from polylogue.paths import archive_root
@@ -92,7 +93,7 @@ class StatusSnapshot:
             ).to_dict(),
         }
         payload["daemon_write_coordinator"] = _daemon_write_coordinator_payload()
-        return json_document(payload)
+        return json_document(overlay_active_discovery(payload))
 
 
 def _status_frame() -> str | None:
@@ -419,7 +420,9 @@ def get_status_snapshot_payload() -> JSONDocument:
         snapshot = _SNAPSHOT
     if snapshot is not None:
         return snapshot.with_metadata()
-    return _minimal_status_payload(refresh_in_progress=_REFRESH_LOCK.locked())
+    return json_document(
+        overlay_active_discovery(dict(_minimal_status_payload(refresh_in_progress=_REFRESH_LOCK.locked())))
+    )
 
 
 def refresh_status_snapshot(*, payload: JSONDocument | None = None, rich: bool = True) -> StatusSnapshot:

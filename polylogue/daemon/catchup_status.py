@@ -65,6 +65,15 @@ class CatchupStatus(BaseModel):
     current_phase: str | None = None
     current_source: str | None = None
     current_path: str | None = None
+    discovery_pending: bool = False
+    discovery_age_s: float | None = None
+    discovery_last_advanced_age_s: float | None = None
+    discovery_inspected_count: int | None = None
+    discovery_accepted_count: int | None = None
+    discovery_rejected_count: int | None = None
+    discovery_active_walk_count: int = 0
+    discovery_pending_walk_count: int = 0
+    discovery_counter_scope: str | None = None
     queued_file_count: int = 0
     needed_file_count: int = 0
     skipped_file_count: int = 0
@@ -261,6 +270,18 @@ def format_catchup_status_lines(payload: object) -> list[str]:
             f"phase={phase} source={payload.get('current_source') or '-'} "
             f"source_read={payload.get('source_payload_read_bytes', 0)} bytes "
             f"cursor_read={payload.get('cursor_fingerprint_read_bytes', 0)} bytes"
+        )
+    if payload.get("discovery_pending") is True:
+        lines.append(
+            "  discovery pending: "
+            f"inspected={payload.get('discovery_inspected_count')} "
+            f"accepted={payload.get('discovery_accepted_count')} "
+            f"rejected={payload.get('discovery_rejected_count')} "
+            f"active_walks={payload.get('discovery_active_walk_count')} "
+            f"pending_walks={payload.get('discovery_pending_walk_count')} "
+            f"age={payload.get('discovery_age_s')}s "
+            f"last_advance={payload.get('discovery_last_advanced_age_s')}s "
+            "planned=unknown"
         )
     return lines
 
