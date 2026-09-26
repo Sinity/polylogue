@@ -144,7 +144,12 @@ def context_image_from_pinned_reader(payload: Mapping[str, Any], *, archive: Arc
     query = payload.get("query")
     include_messages = bool(payload.get("include_messages", True))
     redact_paths = bool(payload.get("redact_paths", True))
-    seed_refs = (f"session:{seed_session_id}",) if seed_session_id is not None else ()
+    seed_session_ids = payload.get("seed_session_ids") or ()
+    seed_refs = (
+        tuple(f"session:{session_id}" for session_id in seed_session_ids)
+        if seed_session_ids
+        else ((f"session:{seed_session_id}",) if seed_session_id is not None else ())
+    )
     spec = ContextSpec(
         purpose="handoff",
         seed_refs=seed_refs,
@@ -179,8 +184,8 @@ def context_image_from_pinned_reader(payload: Mapping[str, Any], *, archive: Arc
         project_repo=payload.get("project_repo"),
         limit=max_sessions,
     )
-    if seed_session_id is not None:
-        selection = projection.selection.model_copy(update={"refs": (f"session:{seed_session_id}",)})
+    if seed_refs:
+        selection = projection.selection.model_copy(update={"refs": seed_refs})
         projection = projection.model_copy(update={"selection": selection})
     return image.model_copy(update={"projection_spec": projection})
 

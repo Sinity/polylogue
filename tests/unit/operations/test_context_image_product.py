@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import Any, cast
 
 from polylogue.api import Polylogue
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.operations.context_image_product import context_image_from_pinned_reader
+from polylogue.operations.daemon_protocol import daemon_operation_spec, validate_operation_result
+from polylogue.operations.daemon_reads import execute_read_operation
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.storage_records import SessionBuilder
 
@@ -71,3 +74,33 @@ def test_pinned_image_matches_facade_compilation(tmp_path: Path) -> None:
     assert selected.spec == direct_selected.spec
     assert selected.segments == direct_selected.segments
     assert selected.omitted == direct_selected.omitted
+
+
+def test_context_image_operation_preserves_seed_order_and_projection(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    for number in range(2):
+        (
+            SessionBuilder(root / "index.db", f"context-image-page-{number}")
+            .provider("codex")
+            .title(f"Image {number}")
+            .add_message("one", role="user", text=f"Evidence {number}")
+            .save()
+        )
+    with ArchiveStore.open_existing(root, read_only=True) as archive:
+        refs = [summary.session_id for summary in archive.list_summaries(limit=2)]
+        selected = list(reversed(refs))
+        result = execute_read_operation(
+            "read.context-image",
+            {"seed_session_ids": selected, "max_sessions": 2, "max_tokens": 100},
+            archive=archive,
+            serving_identity="test",
+        )
+    validate_operation_result("read.context-image", result)
+    assert result["view"] == "context-image"
+    payload = cast(dict[str, Any], result["payload"])
+    assert payload["spec"]["seed_refs"] == [f"session:{session_id}" for session_id in selected]
+    assert payload["projection_spec"]["selection"]["refs"] == [f"session:{session_id}" for session_id in selected]
+    assert len(payload["segments"]) == 2
+    declaration = daemon_operation_spec("read.context-image")
+    assert declaration is not None and declaration.fallback.value == "never"

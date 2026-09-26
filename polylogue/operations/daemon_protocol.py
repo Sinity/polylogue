@@ -149,6 +149,24 @@ class ContextPreambleReadRequest(_OperationPayload):
     project_failure: str | None = None
 
 
+class ContextImageReadRequest(_OperationPayload):
+    seed_session_id: str | None = None
+    seed_session_ids: list[str] = Field(default_factory=list)
+    project_path: str | None = None
+    project_repo: str | None = None
+    since: str | None = None
+    until: str | None = None
+    origin: str | None = None
+    query: str | None = None
+    max_sessions: int = Field(default=5, ge=1, le=20)
+    max_tokens: int | None = Field(default=None, ge=1)
+    max_messages_per_session: int | None = Field(default=24, ge=1)
+    max_chars_per_message: int | None = Field(default=1800, ge=1)
+    include_messages: bool = True
+    include_assertions: bool = True
+    redact_paths: bool = True
+
+
 class AssertionClaimsListRequest(_OperationPayload):
     kinds: list[str] | None = None
     statuses: list[str] | None = Field(default_factory=lambda: ["active", "candidate"])
@@ -965,6 +983,11 @@ class ContextPreambleReadResult(_OperationResult):
     ledger: dict[str, object] | None
 
 
+class ContextImageReadResult(_OperationResult):
+    view: Literal["context-image"]
+    payload: dict[str, object]
+
+
 class CompletionCandidateResult(_OperationPayload):
     value: str
     insert: str
@@ -1476,6 +1499,14 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_contract="read.context.result/v1",
         request_model=ContextPreambleReadRequest,
         result_model=ContextPreambleReadResult,
+    ),
+    DaemonOperationSpec(
+        "read.context-image",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        result_contract="read.context-image.result/v1",
+        request_model=ContextImageReadRequest,
+        result_model=ContextImageReadResult,
     ),
     DaemonOperationSpec(
         "user.assertions.list",

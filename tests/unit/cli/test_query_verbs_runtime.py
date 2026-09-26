@@ -982,27 +982,31 @@ def test_read_verb_context_uses_declared_preamble_operation() -> None:
     deliver.assert_called_once()
 
 
-def test_read_verb_context_image_invokes_pack_view() -> None:
-    """polylogue-zok3: context-image predicates reach context_image_payload."""
+def test_read_verb_context_image_invokes_declared_read() -> None:
+    """Context-image predicates and page limit reach the typed read operation."""
     from polylogue.context.compiler import ContextImage
 
     _, child = _context_pair(query_terms=("repo:polylogue",))
-    child.obj.polylogue = SimpleNamespace(context_image_payload=MagicMock(name="context_image_payload"))
+    child.obj.config = SimpleNamespace()
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
     image = ContextImage(spec=ContextSpec(seed_query="cost", read_views=("messages",)), segments=())
     with (
         patch("polylogue.cli.query_verbs._resolve_query_action_session_ids", return_value=[]),
-        patch("polylogue.cli.query_verbs.run_coroutine_sync", return_value=image),
+        patch(
+            "polylogue.cli.read_dispatch.dispatch_read",
+            return_value=({"view": "context-image", "payload": image.model_dump(mode="json")}, None),
+        ) as dispatch_image,
         patch("polylogue.cli.read_views.base.deliver_content") as deliver,
     ):
         wrapped(child, **_read_verb_kwargs(view="context-image", max_sessions=3))
 
-    child.obj.polylogue.context_image_payload.assert_called_once()
-    kwargs = child.obj.polylogue.context_image_payload.call_args.kwargs
-    assert kwargs["query"] == "repo:polylogue"
-    assert kwargs["max_sessions"] == 3
+    dispatch_image.assert_called_once()
+    operation = dispatch_image.call_args.args[1]
+    assert operation.operation == "read.context-image"
+    assert operation.payload["query"] == "repo:polylogue"
+    assert operation.payload["max_sessions"] == 3
     deliver.assert_called_once()
     delivered = deliver.call_args.args[1]
     assert delivered.startswith("context: 0 segment(s), 0 omission(s)")

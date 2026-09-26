@@ -8,7 +8,6 @@ from contextlib import suppress
 from datetime import datetime, timezone
 from typing import cast
 
-from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.operation_kernel import OperationKernelError, OperationRequest, configured_mutation_operation
 from polylogue.cli.read_dispatch import daemon_route_disabled, dispatch_read
 from polylogue.cli.read_view_registry import CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES, CONTEXT_READ_VIEW_OPTION_NAMES
@@ -21,7 +20,6 @@ from polylogue.cli.read_views.base import (
 )
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
-from polylogue.surfaces.payloads import serialize_surface_payload
 
 
 def build_context_options(values: ReadViewOptionValues) -> ReadViewContextOptions:
@@ -116,22 +114,32 @@ def run_read_context_image(env: AppEnv, request: RootModeRequest, invocation: Re
         else options.max_sessions
     )
     redact_paths = projection.redact_paths if projection is not None else not options.no_redact
-    image = run_coroutine_sync(
-        env.polylogue.context_image_payload(
-            seed_session_id=invocation.session_id,
-            project_path=options.project_path,
-            project_repo=options.project_repo,
-            since=options.since,
-            until=options.until,
-            origin=options.origin,
-            query=options.query,
-            max_sessions=max_sessions,
-            redact_paths=redact_paths,
+    try:
+        result, _ = dispatch_read(
+            env.config,
+            OperationRequest(
+                "read.context-image",
+                {
+                    "seed_session_id": invocation.session_id,
+                    "project_path": options.project_path,
+                    "project_repo": options.project_repo,
+                    "since": options.since,
+                    "until": options.until,
+                    "origin": options.origin,
+                    "query": options.query,
+                    "max_sessions": max_sessions,
+                    "redact_paths": redact_paths,
+                },
+            ),
+            daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
         )
-    )
+    except OperationKernelError as exc:
+        from polylogue.cli.render.outcome import exit_for_read_failure
+
+        exit_for_read_failure(exc)
     deliver_content(
         env,
-        serialize_surface_payload(image, exclude_none=True) + "\n",
+        json.dumps(result["payload"], indent=2) + "\n",
         destination=invocation.destination,
         out_path=invocation.out_path,
     )

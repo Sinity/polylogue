@@ -240,6 +240,15 @@ def execute_read_operation(
         from polylogue.operations.context_preamble import execute_context_preamble_read
 
         result = execute_context_preamble_read(payload, archive=archive)
+    elif name == "read.context-image":
+        from polylogue.operations.context_image_product import context_image_from_pinned_reader
+
+        result = {
+            "view": "context-image",
+            "payload": context_image_from_pinned_reader(payload, archive=archive).model_dump(
+                mode="json", exclude_none=True
+            ),
+        }
     elif name == "session.reference":
         result = _session_reference_payload(payload, archive=archive)
     elif name == "query.units":
