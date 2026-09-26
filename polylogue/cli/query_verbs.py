@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import click
@@ -467,51 +467,15 @@ def _merge_projection_bool(
     )
 
 
-def _read_view_option_values(
-    *,
-    limit: int | None,
-    offset: int,
-    at_position: int | None,
-    full: bool,
-    related_limit: int,
-    max_sessions: int,
-    no_redact: bool,
-    window_hours: int,
-    repo_path: str | None,
-    since_hours: int,
-    confidence_threshold: float,
-    github_api: bool,
-    node_offset: int,
-    node_limit: int | None,
-    edge_offset: int,
-    edge_limit: int | None,
-    continuation: str | None = None,
-    around: str | None = None,
-    **declared_options: object,
-) -> dict[str, object]:
-    """Collect raw Click option values for read-view handler builders."""
+def _read_view_option_values(bound_values: Mapping[str, object]) -> dict[str, object]:
+    """Forward declared view options from the read callback's current values."""
 
-    return {
-        "limit": limit,
-        "offset": offset,
-        "at_position": at_position,
-        "full": full,
-        "related_limit": related_limit,
-        "max_sessions": max_sessions,
-        "no_redact": no_redact,
-        "window_hours": window_hours,
-        "repo_path": repo_path,
-        "since_hours": since_hours,
-        "confidence_threshold": confidence_threshold,
-        "github_api": github_api,
-        "node_offset": node_offset,
-        "node_limit": node_limit,
-        "edge_offset": edge_offset,
-        "edge_limit": edge_limit,
-        "continuation": continuation,
-        "around": around,
-        **declared_options,
-    }
+    option_names = read_view_option_names()
+    values = {name: bound_values[name] for name in option_names if name in bound_values}
+    additional = bound_values.get("declared_options")
+    if isinstance(additional, dict):
+        values.update({name: value for name, value in additional.items() if name in option_names})
+    return values
 
 
 _CONTINUE_CANDIDATE_DEFAULT_LIMIT = 10
@@ -1429,27 +1393,7 @@ def read_verb(
             # view-specific Click values must reach it. Building options from
             # the projection alone dropped `--full`, `--continuation` and
             # `--around` for every `read --all` invocation.
-            option_values=_read_view_option_values(
-                limit=limit,
-                offset=offset,
-                at_position=at_position,
-                full=full,
-                related_limit=related_limit,
-                max_sessions=max_sessions,
-                no_redact=no_redact,
-                window_hours=window_hours,
-                repo_path=repo_path,
-                since_hours=since_hours,
-                confidence_threshold=confidence_threshold,
-                github_api=github_api,
-                node_offset=node_offset,
-                node_limit=node_limit,
-                edge_offset=edge_offset,
-                edge_limit=edge_limit,
-                continuation=continuation,
-                around=around,
-                **declared_options,
-            ),
+            option_values=_read_view_option_values(locals()),
         )
         return
 
@@ -1567,27 +1511,7 @@ def read_verb(
             out_path=out_path,
             options=read_view_options_for_view(
                 primary_view,
-                _read_view_option_values(
-                    limit=limit,
-                    offset=offset,
-                    at_position=at_position,
-                    full=full,
-                    related_limit=related_limit,
-                    max_sessions=max_sessions,
-                    no_redact=no_redact,
-                    window_hours=window_hours,
-                    repo_path=repo_path,
-                    since_hours=since_hours,
-                    confidence_threshold=confidence_threshold,
-                    github_api=github_api,
-                    node_offset=node_offset,
-                    node_limit=node_limit,
-                    edge_offset=edge_offset,
-                    edge_limit=edge_limit,
-                    continuation=continuation,
-                    around=around,
-                    **declared_options,
-                ),
+                _read_view_option_values(locals()),
             ),
             explicit_options=explicit_options,
             projection_spec=projection_spec,
