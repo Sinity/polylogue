@@ -34,19 +34,19 @@ import hashlib
 import os
 import sqlite3
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
-from typing import overload
+from typing import Any, overload
 from urllib.parse import quote
 
 from polylogue.storage.sqlite.archive_tiers import archive_tiers_specs
 from polylogue.storage.sqlite.archive_tiers.column_spec import ColumnSpec, TableColumnSpec
 
 #: Bump when the shard's own layout changes shape; it is part of the seal.
-SHARD_LAYOUT_VERSION = 1
+SHARD_LAYOUT_VERSION = 2
 
 #: The tables a shard transports, in the order the writer must copy them:
 #: ``blocks.message_id`` references ``messages.message_id``.
@@ -167,10 +167,10 @@ class SessionShard:
     """A sealed shard file and the sessions it carries."""
 
     path: Path
-    sessions: tuple[ShardSessionRows, ...]
+    sessions: Sequence[ShardSessionRows]
 
-    def by_session_id(self) -> dict[str, ShardSessionRows]:
-        return {entry.session_id: entry for entry in self.sessions}
+    def by_session_id(self) -> Mapping[str, ShardSessionRows]:
+        return ShardSessionMapping(self.path, len(self.sessions))
 
 
 class SessionShardBuilder:
@@ -193,8 +193,9 @@ class SessionShardBuilder:
             self._conn.execute(shard_table_ddl(table))
         self._conn.execute(_SEAL_DDL)
         self._conn.execute(_SESSION_DDL)
+        self._conn.execute("CREATE INDEX shard_session_id ON shard_session(session_id)")
         self._next_rowid = dict.fromkeys(SHARD_TABLES, 1)
-        self._sessions: list[ShardSessionRows] = []
+        self._session_count = 0
         self._conn.execute("BEGIN IMMEDIATE")
 
     def add(self, prepared: object) -> None:
@@ -205,21 +206,18 @@ class SessionShardBuilder:
         """
         message_rows: Sequence[tuple[object, ...]] = prepared.message_rows  # type: ignore[attr-defined]
         block_rows: Sequence[tuple[object, ...]] = prepared.block_rows  # type: ignore[attr-defined]
-        content_identities = tuple(prepared.content_identities)  # type: ignore[attr-defined]
+        content_identities: Sequence[tuple[str, int]] = prepared.content_identities  # type: ignore[attr-defined]
         if len(content_identities) != len(message_rows):
             raise ShardRefusedError("prepared identity carrier does not cover every message row")
         message_lo = self._append("messages", message_rows)
         block_lo = self._append("blocks", block_rows)
-        self._sessions.append(
-            ShardSessionRows(
-                session_id=prepared.session_id,  # type: ignore[attr-defined]
-                session_content_hash=prepared.session_content_hash,  # type: ignore[attr-defined]
-                message_lo=message_lo,
-                message_hi=message_lo + len(message_rows) - 1,
-                block_lo=block_lo,
-                block_hi=block_lo + len(block_rows) - 1,
-                content_identities=content_identities,
-            )
+        self._append_manifest(
+            prepared.session_id,  # type: ignore[attr-defined]
+            prepared.session_content_hash,  # type: ignore[attr-defined]
+            message_lo,
+            message_lo + len(message_rows) - 1,
+            block_lo,
+            block_lo + len(block_rows) - 1,
         )
 
     def add_streamed(
@@ -235,17 +233,29 @@ class SessionShardBuilder:
         self._append_iter("messages", message_rows)
         block_lo = self._next_rowid["blocks"]
         self._append_iter("blocks", block_rows)
-        self._sessions.append(
-            ShardSessionRows(
-                session_id=session_id,
-                session_content_hash=session_content_hash,
-                message_lo=message_lo,
-                message_hi=self._next_rowid["messages"] - 1,
-                block_lo=block_lo,
-                block_hi=self._next_rowid["blocks"] - 1,
-                content_identities=(),
-            )
+        self._append_manifest(
+            session_id,
+            session_content_hash,
+            message_lo,
+            self._next_rowid["messages"] - 1,
+            block_lo,
+            self._next_rowid["blocks"] - 1,
         )
+
+    def _append_manifest(
+        self,
+        session_id: str,
+        content_hash: bytes,
+        message_lo: int,
+        message_hi: int,
+        block_lo: int,
+        block_hi: int,
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO shard_session VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, content_hash, message_lo, message_hi, block_lo, block_hi),
+        )
+        self._session_count += 1
 
     def _append_iter(self, table: str, rows: Iterator[tuple[object, ...]]) -> None:
         width = len(_bound_columns(_spec(table)))
@@ -277,27 +287,13 @@ class SessionShardBuilder:
                 self._conn.execute("ROLLBACK")
                 self._conn.close()
                 raise ShardRefusedError(f"shard {self.path}: {table} rowids are not dense")
-        self._conn.executemany(
-            "INSERT INTO shard_session VALUES (?, ?, ?, ?, ?, ?)",
-            [
-                (
-                    entry.session_id,
-                    entry.session_content_hash,
-                    entry.message_lo,
-                    entry.message_hi,
-                    entry.block_lo,
-                    entry.block_hi,
-                )
-                for entry in self._sessions
-            ],
-        )
         self._conn.execute(
             "INSERT INTO shard_seal VALUES (?, ?, ?)",
-            (SHARD_LAYOUT_VERSION, shard_column_signature(), len(self._sessions)),
+            (SHARD_LAYOUT_VERSION, shard_column_signature(), self._session_count),
         )
         self._conn.execute("COMMIT")
         self._conn.close()
-        return SessionShard(path=self.path, sessions=tuple(self._sessions))
+        return SessionShard(path=self.path, sessions=ShardSessionSequence(self.path, self._session_count))
 
     def abandon(self) -> None:
         """Discard an unsealed shard and its file."""
@@ -389,6 +385,93 @@ def _read_message_identities(
     return ShardIdentitySequence(path, message_lo, message_hi)
 
 
+def _session_entry(conn: sqlite3.Connection, path: Path, row: tuple[Any, ...]) -> ShardSessionRows:
+    session_id = str(row[0])
+    message_lo, message_hi = int(row[2]), int(row[3])
+    return ShardSessionRows(
+        session_id=session_id,
+        session_content_hash=bytes(row[1]),
+        message_lo=message_lo,
+        message_hi=message_hi,
+        block_lo=int(row[4]),
+        block_hi=int(row[5]),
+        content_identities=_read_message_identities(
+            conn, path=path, message_lo=message_lo, message_hi=message_hi, session_id=session_id
+        ),
+    )
+
+
+class ShardSessionSequence(Sequence[ShardSessionRows]):
+    """Address a sealed session manifest without retaining its Python rows."""
+
+    def __init__(self, path: Path, count: int) -> None:
+        self.path = path
+        self._count = count
+
+    def __len__(self) -> int:
+        return self._count
+
+    @overload
+    def __getitem__(self, index: int) -> ShardSessionRows: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[ShardSessionRows]: ...
+
+    def __getitem__(self, index: int | slice) -> ShardSessionRows | list[ShardSessionRows]:
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(self._count))]
+        if index < 0:
+            index += self._count
+        if index < 0 or index >= self._count:
+            raise IndexError(index)
+        with closing(sqlite3.connect(_read_only_uri(self.path), uri=True)) as conn:
+            row = conn.execute(
+                "SELECT session_id, content_hash, message_lo, message_hi, block_lo, block_hi "
+                "FROM shard_session WHERE rowid = ?",
+                (index + 1,),
+            ).fetchone()
+            if row is None:
+                raise ShardRefusedError("sealed shard session row disappeared")
+            return _session_entry(conn, self.path, row)
+
+    def __iter__(self) -> Iterator[ShardSessionRows]:
+        with closing(sqlite3.connect(_read_only_uri(self.path), uri=True)) as conn:
+            for row in conn.execute(
+                "SELECT session_id, content_hash, message_lo, message_hi, block_lo, block_hi "
+                "FROM shard_session ORDER BY rowid"
+            ):
+                yield _session_entry(conn, self.path, row)
+
+
+class ShardSessionMapping(Mapping[str, ShardSessionRows]):
+    """Resolve exact session identities using the sealed manifest index."""
+
+    def __init__(self, path: Path, count: int) -> None:
+        self.path = path
+        self.count = count
+
+    def __len__(self) -> int:
+        return self.count
+
+    def __iter__(self) -> Iterator[str]:
+        with closing(sqlite3.connect(_read_only_uri(self.path), uri=True)) as conn:
+            for (session_id,) in conn.execute("SELECT session_id FROM shard_session ORDER BY rowid"):
+                yield str(session_id)
+
+    def __getitem__(self, session_id: str) -> ShardSessionRows:
+        with closing(sqlite3.connect(_read_only_uri(self.path), uri=True)) as conn:
+            rows = conn.execute(
+                "SELECT session_id, content_hash, message_lo, message_hi, block_lo, block_hi "
+                "FROM shard_session INDEXED BY shard_session_id WHERE session_id = ? LIMIT 2",
+                (session_id,),
+            ).fetchall()
+            if not rows:
+                raise KeyError(session_id)
+            if len(rows) != 1:
+                raise ShardRefusedError(f"shard {self.path}: a session id appears twice in the manifest")
+            return _session_entry(conn, self.path, rows[0])
+
+
 def open_session_shard(path: Path) -> SessionShard:
     """Read a shard's manifest, refusing anything a builder did not seal.
 
@@ -400,7 +483,7 @@ def open_session_shard(path: Path) -> SessionShard:
     """
     if not path.exists():
         raise ShardRefusedError(f"shard {path}: file is absent")
-    session_entries: tuple[ShardSessionRows, ...]
+    checked_count = 0
     try:
         with closing(sqlite3.connect(path)) as conn:
             seal = conn.execute("SELECT layout_version, column_signature, session_count FROM shard_seal").fetchall()
@@ -411,21 +494,32 @@ def open_session_shard(path: Path) -> SessionShard:
                 raise ShardRefusedError(f"shard {path}: layout version {layout_version}")
             if column_signature != shard_column_signature():
                 raise ShardRefusedError(f"shard {path}: column signature does not match this build")
-            rows = conn.execute(
-                "SELECT session_id, content_hash, message_lo, message_hi, block_lo, block_hi FROM shard_session"
-            ).fetchall()
-            if len(rows) != int(session_count):
-                raise ShardRefusedError(f"shard {path}: seal claims {session_count} sessions, manifest has {len(rows)}")
+            actual_count, max_rowid = conn.execute(
+                "SELECT COUNT(*), COALESCE(MAX(rowid), 0) FROM shard_session"
+            ).fetchone()
+            checked_count = int(actual_count)
+            if checked_count != int(session_count) or int(max_rowid) != checked_count:
+                raise ShardRefusedError(
+                    f"shard {path}: seal claims {session_count} sessions, manifest has {checked_count}"
+                )
             # A session is addressed by its id, so two entries under one id
             # would let the writer copy the wrong rowid range for one of
             # them. Refuse the file rather than pick.
-            if len({str(row[0]) for row in rows}) != len(rows):
-                raise ShardRefusedError(f"shard {path}: a session id appears twice in the manifest")
+            previous_id: str | None = None
+            for (session_id,) in conn.execute(
+                "SELECT session_id FROM shard_session INDEXED BY shard_session_id ORDER BY session_id"
+            ):
+                if session_id == previous_id:
+                    raise ShardRefusedError(f"shard {path}: a session id appears twice in the manifest")
+                previous_id = str(session_id)
             maxima = {
                 table: int(conn.execute(f"SELECT COALESCE(MAX(rowid), 0) FROM {table}").fetchone()[0])
                 for table in SHARD_TABLES
             }
-            for session_id, _hash, message_lo, message_hi, block_lo, block_hi in rows:
+            for session_id, _hash, message_lo, message_hi, block_lo, block_hi in conn.execute(
+                "SELECT session_id, content_hash, message_lo, message_hi, block_lo, block_hi "
+                "FROM shard_session ORDER BY rowid"
+            ):
                 # Empty sessions use the builder's canonical (1, 0) range;
                 # every non-empty range must stay within the rows physically
                 # present in the sealed file.  Without this check a damaged
@@ -438,27 +532,16 @@ def open_session_shard(path: Path) -> SessionShard:
                             raise ShardRefusedError(f"shard {path}: invalid empty {table} range for {session_id}")
                     elif lo < 1 or hi > maxima[table]:
                         raise ShardRefusedError(f"shard {path}: {table} range is outside sealed rows for {session_id}")
-            session_entries = tuple(
-                ShardSessionRows(
-                    session_id=str(row[0]),
-                    session_content_hash=bytes(row[1]),
-                    message_lo=int(row[2]),
-                    message_hi=int(row[3]),
-                    block_lo=int(row[4]),
-                    block_hi=int(row[5]),
-                    content_identities=_read_message_identities(
-                        conn,
-                        path=path,
-                        message_lo=int(row[2]),
-                        message_hi=int(row[3]),
-                        session_id=str(row[0]),
-                    ),
+                _read_message_identities(
+                    conn,
+                    path=path,
+                    message_lo=int(message_lo),
+                    message_hi=int(message_hi),
+                    session_id=str(session_id),
                 )
-                for row in rows
-            )
     except sqlite3.DatabaseError as exc:
         raise ShardRefusedError(f"shard {path}: unreadable ({exc})") from exc
-    return SessionShard(path=path, sessions=session_entries)
+    return SessionShard(path=path, sessions=ShardSessionSequence(path, checked_count))
 
 
 def discard_session_shard(path: Path) -> None:

@@ -1564,7 +1564,7 @@ class ArchiveStore:
     @contextmanager
     def attached_session_shard(
         self, shard_path: Path | None, *, required: bool = False
-    ) -> Iterator[dict[str, PreparedSessionShardRows]]:
+    ) -> Iterator[Mapping[str, PreparedSessionShardRows]]:
         """Mount a stage-A shard read-only for the body and yield its bindings.
 
         ``None``, a missing file, or a shard this build refuses all yield an

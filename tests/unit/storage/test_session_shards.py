@@ -21,13 +21,16 @@ sealing before the kill, or dropping the seal check in
 
 from __future__ import annotations
 
+import gc
 import os
 import signal
 import sqlite3
 import subprocess
 import sys
 import textwrap
+import tracemalloc
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -589,6 +592,42 @@ def test_an_unsealed_shard_is_refused(tmp_path: Path) -> None:
 
     with pytest.raises(ShardRefusedError, match="unsealed"):
         open_session_shard(tmp_path / "unsealed.db")
+
+
+def test_many_small_sessions_keep_manifest_off_python_heap(tmp_path: Path) -> None:
+    builder = SessionShardBuilder(tmp_path / "many.db")
+
+    def add(index: int) -> None:
+        builder.add(
+            SimpleNamespace(
+                session_id=f"session-{index}",
+                session_content_hash=b"x" * 32,
+                message_rows=(),
+                block_rows=(),
+                content_identities=(),
+            )
+        )
+
+    tracemalloc.start()
+    try:
+        for index in range(250):
+            add(index)
+        gc.collect()
+        baseline, _ = tracemalloc.get_traced_memory()
+        for index in range(250, 8000):
+            add(index)
+        gc.collect()
+        retained, _ = tracemalloc.get_traced_memory()
+        assert retained - baseline < 1_000_000
+        shard = open_session_shard(builder.seal().path)
+        gc.collect()
+        opened, _ = tracemalloc.get_traced_memory()
+        assert opened - baseline < 1_000_000
+        assert len(shard.sessions) == 8000
+        assert shard.sessions[7999].session_id == "session-7999"
+        assert shard.by_session_id()["session-4000"].session_id == "session-4000"
+    finally:
+        tracemalloc.stop()
 
 
 def test_a_shard_built_against_other_columns_is_refused(tmp_path: Path) -> None:

@@ -20,8 +20,15 @@ from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.ids import session_content_hash
+from polylogue.sources.decoder_json import iter_json_container_records, json_record_container
 from polylogue.sources.decoders import _iter_json_stream
-from polylogue.sources.dispatch import parse_payload, parse_stream_payload
+from polylogue.sources.dispatch import (
+    BUNDLE_PROVIDERS,
+    iter_bundle_record_sessions,
+    parse_payload,
+    parse_stream_payload,
+)
+from polylogue.sources.parsers import browser_capture
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.prepared_message_sink import (
     SqliteMessageSink,
@@ -29,8 +36,16 @@ from polylogue.sources.prepared_message_sink import (
     SqliteSessionEventSink,
 )
 from polylogue.sources.sidecar_evidence import SidecarResolver
-from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionWrite, prepare_session_shard
-from polylogue.storage.sqlite.archive_tiers.write_shard import discard_session_shard, open_session_shard
+from polylogue.storage.sqlite.archive_tiers.write import (
+    PreparedSessionWrite,
+    append_session_to_shard,
+    prepare_session_shard,
+)
+from polylogue.storage.sqlite.archive_tiers.write_shard import (
+    SessionShardBuilder,
+    discard_session_shard,
+    open_session_shard,
+)
 
 _ARTIFACT_VERSION = 2
 
@@ -206,13 +221,15 @@ class PreparedJsonl:
                 "SELECT ordinal, session_id, metadata_json, message_ordinal, message_count, event_ordinal, event_count "
                 "FROM prepared_session ORDER BY ordinal"
             ):
-                if session_id not in shard_by_id:
-                    raise ValueError("JSONL preparation session is absent from row shard")
+                try:
+                    shard_entry = shard_by_id[session_id]
+                except KeyError as exc:
+                    raise ValueError("JSONL preparation session is absent from row shard") from exc
                 metadata = json.loads(metadata_json)
                 physical_count = conn.execute(
                     "SELECT COUNT(*) FROM prepared_message WHERE session_ordinal = ?", (message_ordinal,)
                 ).fetchone()[0]
-                if physical_count != message_count or physical_count != shard_by_id[session_id].message_row_count:
+                if physical_count != message_count or physical_count != shard_entry.message_row_count:
                     raise ValueError("JSONL preparation message count disagrees with row shard")
                 physical_events = conn.execute(
                     "SELECT COUNT(*) FROM prepared_event WHERE session_ordinal = ?", (event_ordinal,)
@@ -241,83 +258,98 @@ class PreparedJsonl:
 def _write_artifact(
     store: SqliteMessageStore,
     source_hash: str,
-    sessions: list[ParsedSession],
+    sessions: Iterable[ParsedSession],
     *,
     enrichment_digest: str | None,
     enrichment_index_path: str | None,
 ) -> None:
     conn = store.conn
     try:
-        conn.execute(
-            "CREATE TABLE prepared_session (ordinal INTEGER PRIMARY KEY, session_id TEXT NOT NULL UNIQUE, metadata_json TEXT NOT NULL, message_ordinal INTEGER NOT NULL, message_count INTEGER NOT NULL, event_ordinal INTEGER NOT NULL, event_count INTEGER NOT NULL)"
-        )
-        conn.execute(
-            "CREATE TABLE artifact_seal (version INTEGER NOT NULL, source_hash TEXT NOT NULL, "
-            "session_count INTEGER NOT NULL, enrichment_digest TEXT, enrichment_index_path TEXT)"
-        )
+        _create_artifact_tables(conn)
+        count = 0
         for ordinal, session in enumerate(sessions):
-            source_messages: object = session.messages
-            messages: SqliteMessageSink
-            if isinstance(source_messages, SqliteMessageSink) and source_messages.path == store.path:
-                messages = source_messages
-            else:
-                messages = store.new_sink()
-                messages.extend(session.messages)
-            source_events: object = session.session_events
-            events: SqliteSessionEventSink
-            if isinstance(source_events, SqliteSessionEventSink) and source_events.path == store.path:
-                events = source_events
-            else:
-                events = store.new_event_sink()
-                events.extend(session.session_events)
-            metadata = session.model_dump(mode="json", exclude={"messages", "session_events"})
-            metadata["content_hash"] = session.content_hash
-            metadata["unit_accounting"] = (
-                session.unit_accounting.model_dump(mode="json") if session.unit_accounting is not None else None
-            )
-            metadata["provider_session_aliases"] = session.provider_session_aliases
-            metadata["created_at_provenance"] = session.created_at_provenance
-            metadata["updated_at_provenance"] = session.updated_at_provenance
-            metadata["attachments"] = [
-                {
-                    **attachment,
-                    "message_position": source.message_position,
-                    "message_variant_index": source.message_variant_index,
-                    "owner_coordinate": (
-                        asdict(source.owner_coordinate) if source.owner_coordinate is not None else None
-                    ),
-                    "precomputed_blob": source.precomputed_blob,
-                    "_prepared_inline_bytes": (
-                        base64.b64encode(source.inline_bytes).decode("ascii")
-                        if source.inline_bytes is not None
-                        else None
-                    ),
-                }
-                for attachment, source in zip(metadata["attachments"], session.attachments, strict=True)
-            ]
-            session_id = archive_session_id(
-                origin_from_provider(session.source_name).value, session.provider_session_id
-            )
-            conn.execute(
-                "INSERT INTO prepared_session VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    ordinal,
-                    session_id,
-                    json.dumps(metadata, ensure_ascii=False),
-                    messages.session_ordinal,
-                    len(messages),
-                    events.session_ordinal,
-                    len(events),
-                ),
-            )
-        conn.execute(
-            "INSERT INTO artifact_seal VALUES (?, ?, ?, ?, ?)",
-            (_ARTIFACT_VERSION, source_hash, len(sessions), enrichment_digest, enrichment_index_path),
-        )
+            _append_artifact_session(store, ordinal, session)
+            count += 1
+        _seal_artifact(conn, source_hash, count, enrichment_digest, enrichment_index_path)
         conn.commit()
     except BaseException:
         conn.rollback()
         raise
+
+
+def _create_artifact_tables(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "CREATE TABLE prepared_session (ordinal INTEGER PRIMARY KEY, session_id TEXT NOT NULL UNIQUE, metadata_json TEXT NOT NULL, message_ordinal INTEGER NOT NULL, message_count INTEGER NOT NULL, event_ordinal INTEGER NOT NULL, event_count INTEGER NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE artifact_seal (version INTEGER NOT NULL, source_hash TEXT NOT NULL, "
+        "session_count INTEGER NOT NULL, enrichment_digest TEXT, enrichment_index_path TEXT)"
+    )
+
+
+def _append_artifact_session(store: SqliteMessageStore, ordinal: int, session: ParsedSession) -> None:
+    conn = store.conn
+    source_messages: object = session.messages
+    messages: SqliteMessageSink
+    if isinstance(source_messages, SqliteMessageSink) and source_messages.path == store.path:
+        messages = source_messages
+    else:
+        messages = store.new_sink()
+        messages.extend(session.messages)
+    source_events: object = session.session_events
+    events: SqliteSessionEventSink
+    if isinstance(source_events, SqliteSessionEventSink) and source_events.path == store.path:
+        events = source_events
+    else:
+        events = store.new_event_sink()
+        events.extend(session.session_events)
+    metadata = session.model_dump(mode="json", exclude={"messages", "session_events"})
+    metadata["content_hash"] = session.content_hash
+    metadata["unit_accounting"] = (
+        session.unit_accounting.model_dump(mode="json") if session.unit_accounting is not None else None
+    )
+    metadata["provider_session_aliases"] = session.provider_session_aliases
+    metadata["created_at_provenance"] = session.created_at_provenance
+    metadata["updated_at_provenance"] = session.updated_at_provenance
+    metadata["attachments"] = [
+        {
+            **attachment,
+            "message_position": source.message_position,
+            "message_variant_index": source.message_variant_index,
+            "owner_coordinate": (asdict(source.owner_coordinate) if source.owner_coordinate is not None else None),
+            "precomputed_blob": source.precomputed_blob,
+            "_prepared_inline_bytes": (
+                base64.b64encode(source.inline_bytes).decode("ascii") if source.inline_bytes is not None else None
+            ),
+        }
+        for attachment, source in zip(metadata["attachments"], session.attachments, strict=True)
+    ]
+    session_id = archive_session_id(origin_from_provider(session.source_name).value, session.provider_session_id)
+    conn.execute(
+        "INSERT INTO prepared_session VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            ordinal,
+            session_id,
+            json.dumps(metadata, ensure_ascii=False),
+            messages.session_ordinal,
+            len(messages),
+            events.session_ordinal,
+            len(events),
+        ),
+    )
+
+
+def _seal_artifact(
+    conn: sqlite3.Connection,
+    source_hash: str,
+    count: int,
+    enrichment_digest: str | None,
+    enrichment_index_path: str | None,
+) -> None:
+    conn.execute(
+        "INSERT INTO artifact_seal VALUES (?, ?, ?, ?, ?)",
+        (_ARTIFACT_VERSION, source_hash, count, enrichment_digest, enrichment_index_path),
+    )
 
 
 def prepare_jsonl_blob(
@@ -340,6 +372,7 @@ def prepare_jsonl_blob(
     sessions_path = directory / f"prepared-{uuid.uuid4().hex}.db"
     shard_path: Path | None = None
     store: SqliteMessageStore | None = None
+    shard_builder: SessionShardBuilder | None = None
     sealed = False
     source = Path(blob_path)
     before_hash: str | None = None
@@ -347,51 +380,102 @@ def prepare_jsonl_blob(
         provider = Provider.from_string(provider_value)
         store = SqliteMessageStore(sessions_path)
         before_hash = _source_digest(source)
-        with source.open("rb") as handle:
-            record_input = _iter_prefix_lines(handle, parse_prefix_size) if parse_prefix_size is not None else handle
-            records = _iter_json_stream(
-                record_input,  # type: ignore[arg-type]
-                Path(source_path).name,
-                fail_on_decode_error=provider is Provider.UNKNOWN,
+        stream_prefix: str | None = None
+        # Cohort callbacks may inspect or rewrite the entire parse result.
+        # The direct worker route can publish independent bundle members.
+        if (
+            not is_stream
+            and provider in BUNDLE_PROVIDERS
+            and prepare_records is None
+            and prepare_sessions is None
+            and Path(source_path).name.lower().endswith(".json")
+        ):
+            with source.open("rb") as handle:
+                stream_prefix = json_record_container(handle)
+        if stream_prefix is not None:
+            count = 0
+            all_browser_captures = True
+            with source.open("rb") as handle:
+                for record in iter_json_container_records(handle, stream_prefix):
+                    count += 1
+                    all_browser_captures = all_browser_captures and (
+                        isinstance(record, dict) and browser_capture.looks_like(record)
+                    )
+            _create_artifact_tables(store.conn)
+            shard_builder = SessionShardBuilder(directory / f"shard-{uuid.uuid4().hex}.db")
+            session_count = 0
+            with source.open("rb") as handle:
+                for session in iter_bundle_record_sessions(
+                    provider,
+                    iter_json_container_records(handle, stream_prefix),
+                    fallback_id,
+                    count=count,
+                    all_browser_captures=all_browser_captures,
+                    source_path=source_path,
+                    sidecar_resolver=sidecar_resolver,
+                ):
+                    session.content_hash = session_content_hash(session)
+                    append_session_to_shard(shard_builder, session)
+                    _append_artifact_session(store, session_count, session)
+                    session_count += 1
+            after_hash = _source_digest(source)
+            if before_hash != after_hash:
+                raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
+            enrichment_digest, enrichment_index_path = (
+                preparation_dependency() if preparation_dependency is not None else (None, None)
             )
-            if prepare_records is not None:
-                records = prepare_records(records)
-            if is_stream:
-                sessions = parse_stream_payload(
-                    provider,
-                    records,
-                    fallback_id,
-                    source_path=source_path,
-                    message_sink_factory=store.new_sink,
-                    event_sink_factory=store.new_event_sink,
-                    sidecar_resolver=sidecar_resolver,
+            _seal_artifact(store.conn, after_hash, session_count, enrichment_digest, enrichment_index_path)
+            store.conn.commit()
+            shard_path = shard_builder.seal().path
+            shard_builder = None
+        else:
+            with source.open("rb") as handle:
+                record_input = (
+                    _iter_prefix_lines(handle, parse_prefix_size) if parse_prefix_size is not None else handle
                 )
-            else:
-                sessions = parse_payload(
-                    provider,
-                    list(records),
-                    fallback_id,
-                    source_path=source_path,
-                    sidecar_resolver=sidecar_resolver,
+                records = _iter_json_stream(
+                    record_input,  # type: ignore[arg-type]
+                    Path(source_path).name,
+                    fail_on_decode_error=provider is Provider.UNKNOWN,
                 )
-        after_hash = _source_digest(source)
-        if before_hash != after_hash:
-            raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
-        if prepare_sessions is not None:
-            sessions = prepare_sessions(sessions)
-        for session in sessions:
-            session.content_hash = session_content_hash(session)
-        shard_path = prepare_session_shard(directory, sessions).path
-        enrichment_digest, enrichment_index_path = (
-            preparation_dependency() if preparation_dependency is not None else (None, None)
-        )
-        _write_artifact(
-            store,
-            after_hash,
-            sessions,
-            enrichment_digest=enrichment_digest,
-            enrichment_index_path=enrichment_index_path,
-        )
+                if prepare_records is not None:
+                    records = prepare_records(records)
+                if is_stream:
+                    sessions = parse_stream_payload(
+                        provider,
+                        records,
+                        fallback_id,
+                        source_path=source_path,
+                        message_sink_factory=store.new_sink,
+                        event_sink_factory=store.new_event_sink,
+                        sidecar_resolver=sidecar_resolver,
+                    )
+                else:
+                    sessions = parse_payload(
+                        provider,
+                        list(records),
+                        fallback_id,
+                        source_path=source_path,
+                        sidecar_resolver=sidecar_resolver,
+                    )
+            after_hash = _source_digest(source)
+            if before_hash != after_hash:
+                raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
+            if prepare_sessions is not None:
+                sessions = prepare_sessions(sessions)
+            for session in sessions:
+                session.content_hash = session_content_hash(session)
+            shard_path = prepare_session_shard(directory, sessions).path
+            enrichment_digest, enrichment_index_path = (
+                preparation_dependency() if preparation_dependency is not None else (None, None)
+            )
+            _write_artifact(
+                store,
+                after_hash,
+                sessions,
+                enrichment_digest=enrichment_digest,
+                enrichment_index_path=enrichment_index_path,
+            )
         store.close()
         store = None
         result = PreparedJsonl.seal(
@@ -406,6 +490,8 @@ def prepare_jsonl_blob(
         sealed = True
         return result
     except Exception as exc:
+        if shard_builder is not None:
+            shard_builder.abandon()
         if shard_path is not None:
             discard_session_shard(shard_path)
         retryable = isinstance(exc, (OSError, sqlite3.OperationalError, _SourceChangedDuringPreparationError))

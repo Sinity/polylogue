@@ -541,7 +541,7 @@ def _fresh_build_admits(sessions: Iterable[Any], written: set[str] | None) -> bo
 def _shard_prepared_by_raw_id(
     raw_id: str,
     parsed_by_raw_id: dict[str, ParsedSession],
-    bindings: dict[str, PreparedSessionShardRows],
+    bindings: Mapping[str, PreparedSessionShardRows],
 ) -> dict[str, PreparedRows | Future[PreparedRows]] | None:
     """Re-key one raw's shard binding from session identity to raw identity."""
     if not bindings:

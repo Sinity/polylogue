@@ -1222,10 +1222,10 @@ def prepare_session_write(
 def prepared_session_rows_from_shard(shard_path: Path, session_id: str) -> PreparedSessionRows:
     """Expose a sealed artifact's existing rows to read-only preparation."""
     shard = open_session_shard(shard_path)
-    matching = [entry for entry in shard.sessions if entry.session_id == session_id]
-    if len(matching) != 1:
-        raise PreparedSessionWriteRefusedError("sealed shard lacks one exact session row range")
-    entry = matching[0]
+    try:
+        entry = shard.by_session_id()[session_id]
+    except KeyError as exc:
+        raise PreparedSessionWriteRefusedError("sealed shard lacks one exact session row range") from exc
     return PreparedSessionRows(
         session_id=entry.session_id,
         session_content_hash=entry.session_content_hash,
@@ -1308,60 +1308,78 @@ def prepare_session_shard(directory: Path, sessions: Sequence[ParsedSession]) ->
     builder = SessionShardBuilder(directory / f"shard-{uuid.uuid4().hex}.db")
     try:
         for session in sessions:
-            if not isinstance(session.messages, SqliteMessageSink):
-                builder.add(prepare_session_rows(session))
-                continue
-            sink_messages = session.messages
-            messages: Sequence[ParsedMessage] = sink_messages
-            origin = origin_from_provider(session.source_name)
-            if sink_messages._writer is not None:
-                normalized_sink = sink_messages.normalize_active_path()
-                messages = _derive_tool_outcomes(normalized_sink, session.session_events, origin=origin)
-            session_id = archive_session_id(origin.value, session.provider_session_id)
-            duplicates = _duplicate_message_native_ids(messages)
-            try:
-                with disk_message_content_identities(messages) as identities:
-                    builder.add_streamed(
-                        session_id=session_id,
-                        session_content_hash=_prepared_session_content_hash(session),
-                        message_rows=_iter_message_rows(
-                            session_id,
-                            messages,
-                            duplicate_native_ids=duplicates,
-                            content_identities=identities,
-                        ),
-                        block_rows=_iter_block_rows(
-                            session_id,
-                            messages,
-                            duplicate_native_ids=duplicates,
-                            content_identities=identities,
-                        ),
-                    )
-            finally:
-                if isinstance(duplicates, _DiskDuplicateNativeIds):
-                    duplicates.close()
+            append_session_to_shard(builder, session)
     except BaseException:
         builder.abandon()
         raise
     return open_session_shard(builder.seal().path)
 
 
-def bind_session_shard(schema: str, shard: SessionShard) -> dict[str, PreparedSessionShardRows]:
+def append_session_to_shard(builder: SessionShardBuilder, session: ParsedSession) -> None:
+    """Append one parsed session using the same row and identity lowering as a cohort."""
+    if not isinstance(session.messages, SqliteMessageSink):
+        builder.add(prepare_session_rows(session))
+        return
+    sink_messages = session.messages
+    messages: Sequence[ParsedMessage] = sink_messages
+    origin = origin_from_provider(session.source_name)
+    if sink_messages._writer is not None:
+        normalized_sink = sink_messages.normalize_active_path()
+        messages = _derive_tool_outcomes(normalized_sink, session.session_events, origin=origin)
+    session_id = archive_session_id(origin.value, session.provider_session_id)
+    duplicates = _duplicate_message_native_ids(messages)
+    try:
+        with disk_message_content_identities(messages) as identities:
+            builder.add_streamed(
+                session_id=session_id,
+                session_content_hash=_prepared_session_content_hash(session),
+                message_rows=_iter_message_rows(
+                    session_id,
+                    messages,
+                    duplicate_native_ids=duplicates,
+                    content_identities=identities,
+                ),
+                block_rows=_iter_block_rows(
+                    session_id,
+                    messages,
+                    duplicate_native_ids=duplicates,
+                    content_identities=identities,
+                ),
+            )
+    finally:
+        if isinstance(duplicates, _DiskDuplicateNativeIds):
+            duplicates.close()
+
+
+class _BoundSessionShardRows(Mapping[str, PreparedSessionShardRows]):
+    def __init__(self, schema: str, shard: SessionShard) -> None:
+        self.schema = schema
+        self.entries = shard.by_session_id()
+
+    def __len__(self) -> int:
+        return len(self.entries)
+
+    def __iter__(self) -> Iterator[str]:
+        yield from self.entries
+
+    def __getitem__(self, session_id: str) -> PreparedSessionShardRows:
+        entry = self.entries[session_id]
+        return PreparedSessionShardRows(
+            session_id=entry.session_id,
+            session_content_hash=entry.session_content_hash,
+            schema=self.schema,
+            entry=entry,
+            content_identities=entry.content_identities,
+        )
+
+
+def bind_session_shard(schema: str, shard: SessionShard) -> Mapping[str, PreparedSessionShardRows]:
     """Address an attached shard's sessions the way the writer accepts them.
 
     ``schema`` is the alias ``attached_session_shard`` mounted the shard
     under; the returned bindings are valid only while that attachment lives.
     """
-    return {
-        entry.session_id: PreparedSessionShardRows(
-            session_id=entry.session_id,
-            session_content_hash=entry.session_content_hash,
-            schema=schema,
-            entry=entry,
-            content_identities=entry.content_identities,
-        )
-        for entry in shard.sessions
-    }
+    return _BoundSessionShardRows(schema, shard)
 
 
 def write_parsed_session_to_archive(

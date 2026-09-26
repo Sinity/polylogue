@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Iterable, Iterator, MutableSequence
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from io import BytesIO
 from itertools import islice
 from pathlib import Path
@@ -23,7 +23,7 @@ from polylogue.core.json import (
 )
 from polylogue.core.payload_coercion import optional_string
 from polylogue.core.timestamp_authority import timestamp_millis
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 
 from .decoders import _decode_json_bytes, _iter_json_stream
 from .detection import DetectionMode
@@ -1980,6 +1980,69 @@ def parse_payload(
     return sessions
 
 
+def iter_bundle_record_sessions(
+    provider: Provider,
+    records: Iterable[JSONValue],
+    fallback_id: str,
+    *,
+    count: int,
+    all_browser_captures: bool,
+    source_path: str | None = None,
+    sidecar_resolver: SidecarResolver | None = None,
+) -> Iterator[ParsedSession]:
+    """Parse independent bundle members through the ordinary lowering rules."""
+    resolver = sidecar_resolver if sidecar_resolver is not None else _default_sidecar_resolver()
+    candidates = 0
+    rejected_candidates = 0
+    matched = 0
+    for index, record in enumerate(records):
+        if count == 1:
+            # Singleton arrays have special shared-page and browser lowering.
+            yield from parse_payload(
+                provider,
+                [record],
+                fallback_id,
+                source_path=source_path,
+                sidecar_resolver=resolver,
+            )
+        elif all_browser_captures:
+            yield from parse_payload(
+                provider,
+                record,
+                f"{fallback_id}-{index}",
+                source_path=source_path,
+                sidecar_resolver=resolver,
+            )
+        else:
+            # Reuse the same bundle normalization, including ChatGPT fragment
+            # rejection and Codex-task detection, before correcting the local
+            # one-item suffix to the original array position.
+            specs = _lower_bundle_payload(provider, [record], fallback_id)
+            if provider is Provider.CHATGPT:
+                shaped = _payload_record(record)
+                if shaped is not None and _looks_like_chatgpt_mapping_candidate(shaped):
+                    candidates += 1
+                    if not chatgpt.looks_like_fragment(shaped):
+                        rejected_candidates += 1
+                matched += len(specs)
+            for spec in specs:
+                yield from _parse_lowered_spec(replace(spec, fallback_id=f"{fallback_id}-{index}"), resolver)
+    if (
+        provider is Provider.CHATGPT
+        and rejected_candidates
+        and (matched or candidates >= _CHATGPT_BUNDLE_DRIFT_MIN_CANDIDATES)
+    ):
+        emit(
+            "sources.chatgpt_bundle_candidate_rejected",
+            level=WARNING,
+            source_id=fallback_id,
+            provider=Provider.CHATGPT.value,
+            refused=rejected_candidates,
+            rows=candidates,
+            succeeded=matched,
+        )
+
+
 def _lower_shared_chatgpt_document(record: PayloadRecord) -> ChatGPTLoweredDocument | None:
     if not chatgpt.looks_like_shared_decode(record):
         return None
@@ -2148,6 +2211,7 @@ __all__ = [
     "is_jsonl_source_path",
     "is_stream_record_provider",
     "parse_payload",
+    "iter_bundle_record_sessions",
     "lower_chatgpt_documents",
     "parse_stream_payload",
 ]

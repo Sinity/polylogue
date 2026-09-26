@@ -384,6 +384,37 @@ def iter_json_stream(
     )
 
 
+def json_record_container(handle: JsonReadable) -> str | None:
+    """Identify an array whose members can be decoded one at a time.
+
+    The caller owns a seekable retained file. This probe builds no JSON
+    objects and restores the position for a second, record-producing pass.
+    """
+    try:
+        events = ijson.parse(handle)
+        first = next(events, None)
+        if first is not None and first[1] == "start_array":
+            return "item"
+        if first is not None and first[1] == "start_map":
+            for prefix, event, value in events:
+                if prefix == "" and event == "map_key" and value == "sessions":
+                    next_event = next(events, None)
+                    if next_event is not None and next_event[:2] == ("sessions", "start_array"):
+                        return "sessions.item"
+                if prefix == "" and event == "end_map":
+                    break
+    except ijson.common.JSONError:
+        return None
+    finally:
+        handle.seek(0)
+    return None
+
+
+def iter_json_container_records(handle: JsonReadable, prefix: str) -> Iterable[JsonValue]:
+    """Yield complete array members; a corrupt suffix raises after its prefix."""
+    yield from ijson.items(handle, prefix)
+
+
 __all__ = [
     "ENCODING_GUESSES",
     "IjsonModuleLike",
@@ -396,4 +427,6 @@ __all__ = [
     "decode_json_bytes_with",
     "iter_json_stream",
     "iter_json_stream_with",
+    "iter_json_container_records",
+    "json_record_container",
 ]
