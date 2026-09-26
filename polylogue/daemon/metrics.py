@@ -1623,6 +1623,8 @@ def _format_archive_metrics(lines: list[str], db: Path, configured_root: Path) -
     finally:
         conn.close()
 
+    return None
+
 
 def _format_ops_only_metrics(lines: list[str], ops_db: Path) -> bool | None:
     attempts = _ops_attempt_counts(ops_db)

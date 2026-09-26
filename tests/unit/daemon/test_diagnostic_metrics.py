@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from http import HTTPStatus
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,7 +18,7 @@ def _scrape(db: Path) -> str:
     responder = MagicMock()
     metrics.handle_metrics(responder, db)
     assert responder._send_text.call_args.args[0] == HTTPStatus.OK
-    return responder._send_text.call_args.args[1]
+    return cast(str, responder._send_text.call_args.args[1])
 
 
 def test_metrics_expose_maintained_sink_loss_without_database(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
