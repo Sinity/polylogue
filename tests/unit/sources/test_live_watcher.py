@@ -2108,8 +2108,8 @@ async def test_live_batch_processor_records_durable_attempt(tmp_path: Path) -> N
     assert attempts[0].source_payload_read_bytes == source_path.stat().st_size
     assert {
         "full.provider_parse",
-        "full.source_raw_write",
-        "full.index_parsed_write",
+        "full.source_raw_blob_ref_write",
+        "full.index.session_upsert",
     }.issubset(metrics.stage_timings_s)
 
 
@@ -3680,6 +3680,23 @@ def test_claude_todos_default_source_watches_its_own_sibling_root() -> None:
     assert todos.root.name == "todos"
     assert todos.suffixes == (".json",)
     assert todos.accepts(todos.root / "138e259e-435f-4259-8c68-dbd5aa9f9837.json")
+
+
+def test_claude_history_source_only_walks_direct_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import polylogue.paths as polylogue_paths
+    import polylogue.sources.live.watcher as live_watcher
+    from polylogue.sources.live.discovery import _bounded_source_paths
+
+    claude_root = tmp_path / ".claude"
+    (claude_root / "other").mkdir(parents=True)
+    history = claude_root / "history.jsonl"
+    history.write_text("{}\n")
+    (claude_root / "other" / "history.jsonl").write_text("{}\n")
+    monkeypatch.setattr(polylogue_paths, "claude_code_path", lambda: claude_root / "projects")
+    source = next(source for source in live_watcher.default_sources() if source.name == "claude-code-history")
+
+    assert source.recursive is False
+    assert _bounded_source_paths(source, (source,), limit=8, after=None) == [history]
 
 
 def test_browser_capture_spool_is_default_json_source(

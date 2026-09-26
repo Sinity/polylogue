@@ -252,6 +252,7 @@ class WatchSource:
     # hard boundary (for example, the default Codex state database source).
     allow_path_scoped_artifacts: bool = True
     required: bool = False
+    recursive: bool = True
 
     def exists(self) -> bool:
         return self.root.exists()
@@ -273,7 +274,7 @@ class WatchSource:
 
     def ignores_directory(self, path: Path) -> bool:
         """Return whether a subtree cannot contain a live source artifact."""
-        return path.name in self.ignored_dir_names
+        return not self.recursive or path.name in self.ignored_dir_names
 
 
 #: The harnesses that write hook carriers. Each gets its own watched
@@ -1472,7 +1473,7 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
             name="claude-code-history",
             root=claude_code_path().parent,
             suffixes=(),
-            ignored_dir_names=_DEFAULT_IGNORED_DIR_NAMES | frozenset({"projects", "todos"}),
+            recursive=False,
         ),
         WatchSource(name="codex", root=codex_path()),
         # polylogue-0jf4: Codex also keeps live SQLite state (thread titles,

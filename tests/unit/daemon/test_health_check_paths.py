@@ -316,6 +316,39 @@ def test_source_availability_warning_when_missing(
     assert "missing" in alert.message
 
 
+def test_source_availability_checks_only_selected_sources(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_root = workspace_env["archive_root"] / "selected"
+    selected_root.mkdir()
+    monkeypatch.setattr(
+        "polylogue.sources.live.watcher.default_sources",
+        lambda: pytest.fail("selected daemon sources must bypass default discovery"),
+    )
+
+    alert = _check_source_availability_fast(sources=(_FakeSource(name="selected", root=selected_root),))
+
+    assert alert.severity == HealthSeverity.OK
+    assert alert.message == "1 source(s) available"
+
+
+def test_source_availability_warns_for_missing_selected_source(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "polylogue.sources.live.watcher.default_sources",
+        lambda: pytest.fail("selected daemon sources must bypass default discovery"),
+    )
+    selected = _FakeSource(name="selected", root=workspace_env["archive_root"] / "selected-missing")
+
+    alert = _check_source_availability_fast(sources=(selected,))
+
+    assert alert.severity == HealthSeverity.WARNING
+    assert alert.message == "0/1 source(s) available, missing: selected"
+
+
 # ---------------------------------------------------------------------------
 # FAST: schema_version
 # ---------------------------------------------------------------------------

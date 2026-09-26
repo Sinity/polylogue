@@ -25,10 +25,11 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -301,13 +302,19 @@ def _check_wal_size_fast() -> HealthAlert:
         )
 
 
-def _check_source_availability_fast() -> HealthAlert:
-    """Check that configured watch source roots exist and are readable."""
-    from polylogue.sources.live.watcher import default_sources
+def _check_source_availability_fast(*, sources: Sequence[Any] | None = None) -> HealthAlert:
+    """Check that selected watch source roots exist and are readable.
 
+    Standalone health checks default to the conventional sources. A running
+    daemon supplies its effective source selection so deliberately omitted
+    roots do not appear as unavailable.
+    """
     now = datetime.now(UTC).isoformat()
     try:
-        sources = default_sources()
+        if sources is None:
+            from polylogue.sources.live.watcher import default_sources
+
+            sources = default_sources()
         missing: list[str] = []
         unreadable: list[str] = []
         available = 0
@@ -597,14 +604,14 @@ def _check_health_tier_coverage_fast() -> HealthAlert:
     )
 
 
-def _run_fast_checks() -> list[HealthAlert]:
+def _run_fast_checks(*, sources: Sequence[Any] | None = None) -> list[HealthAlert]:
     return [
         _check_daemon_liveness_fast(),
         _check_heartbeat_staleness_fast(),
         _check_schema_version_fast(),
         _check_disk_space_fast(),
         _check_wal_size_fast(),
-        _check_source_availability_fast(),
+        _check_source_availability_fast(sources=sources),
         _check_hook_flow_fast(),
         _check_health_tier_coverage_fast(),
     ]
@@ -1731,13 +1738,15 @@ def _run_expensive_checks() -> list[HealthAlert]:
 # ---------------------------------------------------------------------------
 
 
-def check_health(*, tiers: set[HealthTier] | None = None) -> DaemonHealth:
+def check_health(*, tiers: set[HealthTier] | None = None, sources: Sequence[Any] | None = None) -> DaemonHealth:
     """Run tiered health checks and return aggregated ``DaemonHealth``.
 
     Args:
         tiers: Which tiers to run. If None, runs FAST only.
                Pass ``{HealthTier.FAST, HealthTier.MEDIUM, HealthTier.EXPENSIVE}``
                for a full check.
+        sources: Effective watch source selection for a running daemon. When
+                 omitted, the conventional default sources are checked.
 
     Returns:
         ``DaemonHealth`` with alerts and tier summary.
@@ -1748,7 +1757,7 @@ def check_health(*, tiers: set[HealthTier] | None = None) -> DaemonHealth:
     alerts: list[HealthAlert] = []
 
     if HealthTier.FAST in tiers:
-        alerts.extend(_run_fast_checks())
+        alerts.extend(_run_fast_checks() if sources is None else _run_fast_checks(sources=sources))
     if HealthTier.MEDIUM in tiers:
         alerts.extend(_run_medium_checks())
     if HealthTier.EXPENSIVE in tiers:

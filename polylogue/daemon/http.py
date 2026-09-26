@@ -5501,12 +5501,14 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         web_credentials: WebCredentialRegistry | None = None,
         webui_dist_root: Path | None = None,
         archive_root: Path | None = None,
+        watch_sources: Sequence[Any] | None = None,
     ) -> None:
         super().__init__(server_address, handler_class)
         validate_declared_route_reachability(handler_class)
         self.auth_token = auth_token
         self.api_host = api_host
         self.webui_dist_root = webui_dist_root
+        self.watch_sources = None if watch_sources is None else tuple(watch_sources)
         self.started_at = datetime.now(UTC).isoformat()
         self.web_credentials = web_credentials or WebCredentialRegistry()
         from polylogue.config import load_polylogue_config
