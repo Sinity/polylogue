@@ -115,28 +115,3 @@ def test_marker_refuses_a_foreign_lineage_tier(tmp_path: Path) -> None:
         initialize_active_archive_root(tmp_path)
 
     assert user_path.read_bytes() == user_before
-
-
-def test_bootstrap_refuses_a_tier_below_target(tmp_path: Path) -> None:
-    """A source tier left behind by a numbered migration is named, not rebuilt.
-
-    Separated from the marker case above because the two refusals answer
-    different questions: this file is this lineage's own, it is simply one
-    numbered slot behind, and the operator is owed the migration route rather
-    than "move it aside".
-
-    Anti-vacuity: letting bootstrap re-apply fresh DDL over an older durable
-    tier makes this pass silently and strands every row the missing slot was
-    supposed to carry forward.
-    """
-    initialize_active_archive_root(tmp_path)
-    target = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
-    if target <= ARCHIVE_FORMAT_FLOOR_VERSION:
-        pytest.skip("source has no numbered migration slot yet")
-
-    source_path = tmp_path / "source.db"
-    with sqlite3.connect(source_path) as behind:
-        behind.execute(f"PRAGMA user_version = {target - 1}")
-
-    with pytest.raises(RuntimeError, match="run an explicit durable-tier migration"):
-        initialize_active_archive_root(tmp_path)

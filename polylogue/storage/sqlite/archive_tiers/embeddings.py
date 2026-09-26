@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import EMBEDDINGS_TABLE_SPECS
 
-EMBEDDINGS_SCHEMA_VERSION = 6
+EMBEDDINGS_SCHEMA_VERSION = 1
 EMBEDDING_DIMENSION = 1024
 
 # v6: refs bind the current canonical message semantic hash as well as the

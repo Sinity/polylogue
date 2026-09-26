@@ -1007,10 +1007,11 @@ def _initialize_active_archive_root(root: Path) -> None:
 def _archive_generation_token(root: Path) -> tuple[object, ...]:
     """Identify the archive *generation* ``_initialize_active_archive_root`` validated.
 
-    Every component is a file identity or a marker's presence, never a
-    content mtime or size: the daemon writes into its own tiers constantly,
-    so a token that moved on an ordinary write would identify a new
-    generation on every batch and memoize nothing.
+    Tier components are file identities, never content mtimes or sizes: the
+    daemon writes into its tiers constantly, so a token that moved on an
+    ordinary write would identify a new generation on every batch. The format
+    marker is immutable after publication, so its bytes identify the admitted
+    lineage and must invalidate the memo if they change.
 
     What a difference here means, and why each term is present:
 
@@ -1026,7 +1027,7 @@ def _archive_generation_token(root: Path) -> tuple[object, ...]:
       mtimes -- a durable migration both adds manifest files and appends to
       them, and that is exactly the "schema change" case that must never be
       skipped. This directory is untouched in steady state.
-    * the format / bootstrap / pending-bootstrap / audit-adoption markers --
+    * the format marker's content digest and the other markers' presence --
       each one selects a different branch of the bootstrap body.
 
     A *code* schema change cannot move within a process (the derived identity
@@ -1044,6 +1045,12 @@ def _archive_generation_token(root: Path) -> tuple[object, ...]:
         except OSError:
             return (None, None)
         return (info.st_dev, info.st_ino)
+
+    def format_marker_digest(path: Path) -> str | None:
+        try:
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            return None
 
     location = ArchiveLocation.resolve(root)
     manifest_root = root / ".maintenance-state" / "durable-change-trains"
@@ -1066,7 +1073,7 @@ def _archive_generation_token(root: Path) -> tuple[object, ...]:
         str(location.active_index.resolved_path),
         None if location.active_pointer is None else str(location.active_pointer),
         None if location.shadow_index is None else location.shadow_index.stable_id,
-        archive_format_marker_path(root).is_file(),
+        format_marker_digest(archive_format_marker_path(root)),
         (manifest_root / ".bootstrap").is_file(),
         (manifest_root / ".bootstrap.pending").is_file(),
         audit_adoption_receipt_path(root).is_file(),

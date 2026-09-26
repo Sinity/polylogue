@@ -1724,9 +1724,8 @@ def write_parsed_session_to_archive(
                     if current_parent_guard != prepared_union.prefix_sharing_parent:
                         raise PreparedSessionWriteRefusedError("prepared field union branch membership changed")
                 hook_parent, parent = prepared_lineage_bindings(conn, input_session, source_conn=source_conn)
-                if (hook_parent, parent) != (
-                    context.hook_parent_native_id,
-                    context.parent_session_id,
+                if hook_parent != context.hook_parent_native_id or (
+                    not merge_append and parent != context.parent_session_id
                 ):
                     raise PreparedSessionWriteRefusedError("prepared replay lineage evidence changed")
                 if context.lineage_prefix_digest is not None:

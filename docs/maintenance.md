@@ -10,8 +10,8 @@ manual rebuild or repair verb.
 
 ## Applying a durable schema change train
 
-Durable schema changes are an offline release operation. Before applying a
-`source.db`, `user.db`, or `audit.db` migration above its adoption floor,
+Durable schema changes for an archive intentionally retained for operation are an offline release operation. The fresh-start reset creates six empty tier files at `user_version=1` and does not apply migrations to the preserved prior archive. Before applying a later
+`source.db`, `user.db`, or `audit.db` migration,
 confirm that the release contains the matching
 `migrations/{source,user,audit}/NNN.train.json`
 sidecar. The sidecar reserves the exact slot and SQL hash and records the
@@ -309,11 +309,7 @@ A daemon cold build captures `source-baseline.json` inside its inactive index ge
 
 The generation receipt is backed by a private pending receipt at `.maintenance-state/production-source-baseline/pending.json`. A retry unions newly discovered accepted revisions with earlier accepted revisions before allocating another generation, so a file deleted after an interrupted attempt remains an unmet obligation. Unresolved discovery faults also carry forward until the same coordinate is observed as accepted, as an independently accepted alias, or as a recovered watched root. Successful promotion clears the pending receipt. ZIP obligations use the exact per-record hashes and source indexes emitted by production acquisition, including split conversation members and declared artifacts.
 
-For an archive-root move, capture the old root's effective typed sources before the aside, keep the receipt private, and publish that digest-verified receipt as pending under the fresh archive root before daemon start. The fresh build unions it with its own discovery; the old operation ID and source signature do not have to match the new build. Keep the aside and inventory as authority for any material that escaped the pre-aside capture.
-
-When moving an archive root aside for a fresh build, preserve the source coordinates before starting the daemon. Record each old inbox link's spelling, resolved target, and target revision or member inventory, then recreate the link in the fresh inbox and compare the target again. The account targets `/realm/accounts/chatgpt` and `/realm/accounts/claude` must also be declared as daemon watch roots in `programs.polylogued.settings.daemon.watch`; the generic route accepts `.json`, `.jsonl`, `.ndjson`, and `.zip`. An external inbox link is an alias only when its target is independently accepted by one of those roots. Other files under the account roots receive explicit excluded dispositions. Copy or reflink pending hook spool files into the fresh hook provider directories, keep the aside intact, and compare file counts and a content manifest before starting intake. The fresh route needs its own files because intake may consume carriers. If a target changed during the handoff, retain the earlier revision as durable source evidence or leave the build unpromoted until the change is accounted for.
-
-Also carry the private root files `api-auth-token`, `browser-capture-receiver-id`, and `browser-capture-receiver-token` into the fresh root with their ownership and mode intact. Compare file identity or hashes without printing their contents; existing clients may depend on these values. If they are regenerated, reauthorize affected clients before declaring the handoff complete.
+The fresh-start reset moves the entire previous Polylogue state aside intact solely as salvage evidence. It does not publish a source-baseline receipt from that root, recreate its inbox links, copy its hook spools or private root files, or use its databases for rollback or readback. Intake begins from an empty archive using the currently declared external source files; normal cold-build baseline and promotion checks apply to that declared input set.
 
 The runbooks below assume:
 
@@ -663,6 +659,12 @@ symlinked tiers are rejected because they do not survive mutation of the live
 database. If release notes provide neither an additive durable migration
 nor a derived-tier rebuild plan, keep the daemon stopped and roll back the
 binary.
+
+### Fresh-start archive after a reset ruling
+
+The reset creates a new empty archive with all six tier files at `PRAGMA user_version=1`. Move the complete previous Polylogue state aside intact solely as salvage evidence. Do not migrate, import, copy forward, qualify for rollback, or read back its databases as part of this reset. Ingest only external source files declared for the fresh archive, then let the production daemon converge derived tiers and verify the new archive with `polylogue ops maintenance verify-archive`.
+
+General durable migration and runtime recovery policy still applies to archives intentionally retained for operation. It does not provide a rollback route for the preserved pre-reset archive or alter the fresh-start procedure.
 
 ### Proving an archive is coherent after a rebuild or restore
 

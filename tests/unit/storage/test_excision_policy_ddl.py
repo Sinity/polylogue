@@ -1,13 +1,8 @@
-"""``excision_policy_projections`` is canonical source DDL, not a write-time shape.
+"""``excision_policy_projections`` belongs to current source DDL.
 
-``publish_source_generation`` used to issue ``CREATE TABLE IF NOT EXISTS
-excision_policy_projections`` inside the ordinary manifest write, and the table
-was absent from ``SOURCE_DDL``. Two consequences followed. An archive only had
-the shape if a policy-bearing generation had happened to be published into it,
-so ``read_excision_policy_projection`` probed ``sqlite_schema`` before its real
-query and could not distinguish "no binding for this generation" from "this
-archive never grew the table". And the durable source tier carried a table no
-schema manifest, migration chain, or parity proof described.
+Fresh source tiers create the projection before any manifest write. Ordinary
+publication must not create schema, and the reader can treat an absent row as
+an unbound generation without probing whether the table exists.
 
 The test that matters here is ``test_writer_creates_no_durable_shape``: an
 authorizer denies every DDL verb for the duration of one ordinary write, so a
@@ -29,27 +24,12 @@ from polylogue.security.excision_policy import (
     ExcisionPolicySnapshot,
     read_excision_policy_projection,
 )
-from polylogue.storage.sqlite import migration_runner
-from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.archive_tiers.source_items import publish_source_generation
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 PROJECTION_TABLE = "excision_policy_projections"
 
-#: The exact shape the retired write-time ``CREATE`` produced, so an archive
-#: that already grew the table through the ordinary writer can be rebuilt here
-#: without re-introducing the writer defect.
-WRITE_PATH_CREATE = """CREATE TABLE IF NOT EXISTS excision_policy_projections (
-            source_generation_id TEXT PRIMARY KEY REFERENCES source_generations(source_generation_id) ON DELETE CASCADE,
-            policy_digest TEXT NOT NULL CHECK(length(policy_digest) = 64),
-            user_generation INTEGER NOT NULL CHECK(user_generation >= 0),
-            audit_generation INTEGER NOT NULL CHECK(audit_generation >= 0),
-            audit_head TEXT NOT NULL CHECK(length(audit_head) = 64),
-            assertion_refs_json TEXT NOT NULL DEFAULT '[]',
-            generated_at_ms INTEGER NOT NULL CHECK(generated_at_ms >= 0)
-        ) STRICT"""
 
 _DDL_ACTIONS = frozenset(
     {
@@ -118,7 +98,6 @@ def test_canonical_ddl_owns_the_projection(fresh_source: sqlite3.Connection) -> 
         ).fetchone()
         is not None
     )
-    assert ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE] > 1
 
 
 def test_writer_creates_no_durable_shape(fresh_source: sqlite3.Connection) -> None:
@@ -152,47 +131,3 @@ def test_reader_needs_no_schema_probe(fresh_source: sqlite3.Connection) -> None:
 
     assert read_excision_policy_projection(fresh_source, "bound-generation") is not None
     assert read_excision_policy_projection(fresh_source, "unbound-generation") is None
-
-
-def test_migration_adopts_a_write_path_table(tmp_path: Path) -> None:
-    """Slot 002 reaches both shapes a pre-migration archive can be in.
-
-    One archive grew the table through the retired write path and holds a row;
-    the other never published a policy-bearing generation and has no table at
-    all. Neither may be stranded, and the adopted row must survive.
-
-    Anti-vacuity: dropping ``002_excision_policy_projections.sql`` leaves the
-    v1 tiers unreachable -- ``migrate_archive_tier`` refuses a target the
-    chain cannot supply -- and deleting its ``CREATE`` leaves the bare archive
-    without the table, so the reader below raises ``no such table``.
-    """
-    for name, seed_write_path_table in (("adopted.db", True), ("bare.db", False)):
-        path = tmp_path / name
-        connection = sqlite3.connect(path)
-        try:
-            connection.executescript(SOURCE_DDL)
-            connection.execute(f"DROP TABLE {PROJECTION_TABLE}")
-            if seed_write_path_table:
-                connection.execute(WRITE_PATH_CREATE)
-                _publish(connection, "pre-migration-generation")
-            connection.execute("PRAGMA user_version = 1")
-            connection.commit()
-
-            result = migration_runner.migrate_archive_tier(connection, ArchiveTier.SOURCE, backup_manifest=None)
-            assert result.from_version == 1
-            assert result.to_version == ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
-            assert result.applied_versions == (2,)
-
-            adopted = read_excision_policy_projection(connection, "pre-migration-generation")
-            if seed_write_path_table:
-                assert adopted is not None
-                assert adopted["policy_digest"] == _snapshot("pre-migration-generation").digest
-            else:
-                assert adopted is None
-
-            _publish(connection, "post-migration-generation")
-            assert read_excision_policy_projection(connection, "post-migration-generation") is not None
-        finally:
-            connection.close()
-
-        initialize_archive_database(path, ArchiveTier.SOURCE, allow_create=False)

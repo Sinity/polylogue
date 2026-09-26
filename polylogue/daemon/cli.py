@@ -391,6 +391,7 @@ def _watch_sources_from_roots(
     browser_capture_spool_path: Path | None = None,
     hermes_root: Path | None = None,
     include_defaults: bool = True,
+    default_source_names: tuple[str, ...] = (),
 ) -> tuple[WatchSource, ...]:
     """Build typed default sources plus configured additional roots.
 
@@ -399,10 +400,9 @@ def _watch_sources_from_roots(
     it keeps the same suffix contract as the default inbox source. Other
     additional roots use content detection over ordinary export formats.
 
-    ``include_defaults=False`` (``--no-default-sources``) drops the typed
-    defaults so ``--root`` names the complete watch set, for an operator
-    isolating a temporary or separately-served archive. The default stays
-    additive, which is the long-standing shape (polylogue-hprg0).
+    ``default_source_names`` selects whole typed default source definitions.
+    An empty selection keeps all defaults; ``include_defaults=False`` drops
+    them. Explicit roots remain additive in either case.
     """
     from polylogue.paths import archive_root, browser_capture_spool_root
 
@@ -414,7 +414,16 @@ def _watch_sources_from_roots(
     ).resolve(strict=False)
 
     sources = list(default_sources(hermes_root=hermes_root)) if include_defaults else []
-    if include_defaults and browser_capture_spool_path is not None:
+    if default_source_names:
+        available = {source.name for source in sources}
+        unknown = set(default_source_names) - available
+        if unknown:
+            raise click.UsageError(
+                f"unknown default source(s): {', '.join(sorted(unknown))}; available: {', '.join(sorted(available))}"
+            )
+        selected = set(default_source_names)
+        sources = [source for source in sources if source.name in selected]
+    if browser_capture_spool_path is not None and any(source.name == "browser-capture" for source in sources):
         spool = browser_capture_spool_path.expanduser()
         sources = [source for source in sources if source.name != "browser-capture"]
         sources.append(WatchSource(name="browser-capture", root=spool, suffixes=(".json",)))
@@ -3568,6 +3577,12 @@ def health_command(
     default=False,
     help="Watch only the given --root values; do not add the typed default sources.",
 )
+@click.option(
+    "--default-source",
+    "default_source_names",
+    multiple=True,
+    help="Watch only this named typed default source (repeatable); --root values remain additive.",
+)
 @click.pass_context
 def run_command(
     ctx: click.Context,
@@ -3590,6 +3605,7 @@ def run_command(
     api_auth_token: str | None,
     api_allow_no_auth: bool,
     no_default_sources: bool,
+    default_source_names: tuple[str, ...],
 ) -> None:
     """Run configured daemon components.
 
@@ -3652,11 +3668,14 @@ def run_command(
 
     if no_default_sources and not roots:
         raise click.UsageError("--no-default-sources requires at least one --root")
+    if no_default_sources and default_source_names:
+        raise click.UsageError("--default-source cannot be used with --no-default-sources")
     sources = _watch_sources_from_roots(
         roots,
         browser_capture_spool_path=spool_path,
         hermes_root=runtime.source_paths.hermes,
         include_defaults=not no_default_sources,
+        default_source_names=default_source_names,
     )
     components = []
     if enable_watch:
@@ -3718,18 +3737,27 @@ def run_command(
     default=False,
     help="Watch only the given --root values; do not add the typed default sources.",
 )
-def watch_command(roots: tuple[Path, ...], no_default_sources: bool) -> None:
+@click.option(
+    "--default-source",
+    "default_source_names",
+    multiple=True,
+    help="Watch only this named typed default source (repeatable); --root values remain additive.",
+)
+def watch_command(roots: tuple[Path, ...], no_default_sources: bool, default_source_names: tuple[str, ...]) -> None:
     from polylogue.config import resolve_runtime_config
     from polylogue.operations.durable_change_train import ArchiveOwnershipError
     from polylogue.paths import archive_root
 
     if no_default_sources and not roots:
         raise click.UsageError("--no-default-sources requires at least one --root")
+    if no_default_sources and default_source_names:
+        raise click.UsageError("--default-source cannot be used with --no-default-sources")
     runtime_source_paths = resolve_runtime_config().source_paths
     sources = _watch_sources_from_roots(
         roots,
         hermes_root=runtime_source_paths.hermes,
         include_defaults=not no_default_sources,
+        default_source_names=default_source_names,
     )
 
     archive_root_path = Path(archive_root())

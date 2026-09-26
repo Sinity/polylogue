@@ -1526,11 +1526,9 @@ def _probe_source_generation_publish(publish: Callable[..., object], target_vers
     """Exercise manifest-coordinate publication against the train's projected source schema."""
     generation_id = "durable-change-train-source-generation"
     with _runtime_probe_source_connection(target_version) as probe:
-        # The policy binding is canonical source DDL from slot 002 onward, so
-        # the writer must land its row in a table it never creates. A slot
-        # below that projects the table away; probing the projected catalog
-        # keeps this generic probe honest for a historical target instead of
-        # asserting a shape that slot did not have.
+        # The current source DDL owns the policy binding, so the writer must
+        # land its row in a table it never creates. Probe the projected catalog
+        # so this remains honest for any target shape that lacks the table.
         projects_policy = _probe_excision_policy_projection_columns(probe)
         ids = publish(
             probe,
@@ -1835,12 +1833,11 @@ def _probe_assertion_upsert(upsert: Callable[..., object], target_version: int) 
 def _probe_assertion_status_mark(mark: Callable[..., object], target_version: int) -> str:
     """Exercise the status marker against the train's projected user schema.
 
-    The rider's behavior proof is ``mark-needs-no-null-coalesce``: the marker's
-    own ``COALESCE(status, 'active')`` guard exists only because the column was
-    nullable. Under slot 002 the guard is answering a question the schema has
-    already settled, and this probe pins that the marker still moves a row to a
-    new terminal status and still refuses a no-op restatement of the current
-    one.
+    The rider's behavior proof is ``mark-needs-no-null-coalesce``. Fresh user
+    DDL declares the status column non-null, so the marker's legacy
+    ``COALESCE(status, 'active')`` guard is redundant. This probe pins that the
+    marker still moves a row to a new terminal status and refuses a no-op
+    restatement of the current one.
     """
     from polylogue.core.enums import AssertionStatus
     from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion

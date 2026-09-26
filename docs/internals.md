@@ -84,10 +84,9 @@ Run `devtools render all` to update the generated catalog in
 
 ## Schema Versioning Model
 
-Polylogue has two schema-evolution regimes, keyed by tier durability.
+Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered schema notes below describe historical evolution; the current fresh format starts all six tiers at version 1.
 
-- Tier version constants under `storage/sqlite/archive_tiers/` are the
-  authority. The canonical fresh schema is described directly by each tier DDL.
+- Tier version constants under `storage/sqlite/archive_tiers/` are the authority. The fresh archive format creates all six tiers at `PRAGMA user_version=1`; each canonical fresh schema is described by its tier DDL. The previous Polylogue state is moved aside intact solely as salvage evidence and is not migrated, imported, carried into the fresh archive, or used for rollback/readback. Declared external source files may be ingested into the empty archive.
 - **Durable tiers** (`source.db`, `user.db`, `audit.db`) may use explicit additive
   migrations. Migration SQL lives under
   `storage/sqlite/migrations/{source,user,audit}/NNN_name.sql`, advances
@@ -132,12 +131,10 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   runs. The lifecycle is declare, admit, reserve, authorize, apply, prove,
   and release. It uses the existing migration transaction and verified backup
   receipt, with no train state database and no second migration engine.
-  `DURABLE_MIGRATION_ADOPTION_FLOORS` is `ARCHIVE_FORMAT_FLOOR_VERSION` (1) for
-  source, user and audit alike: the archive format lineage renumbered every
-  durable tier from one and retired the predecessor chains, so the first
-  numbered slot on any durable tier is `002`. A tier below the floor is not
-  admitted for forward migration — a historical lineage is refused at archive
-  admission rather than bridged by a migration chain.
+  Future durable migration trains remain a product policy for archives that
+  are deliberately opened and evolved. They are not part of the fresh-start
+  reset: that operation creates a new empty archive at format version 1 and
+  preserves the prior archive without opening or transforming its tiers.
 - **Derived tiers** (`index.db`, `ops.db`, `embeddings.db`) have no migration
   chain. They still stamp a tier version constant, which the profile seam
   compares like any other tier, but their governing contract is one identity
@@ -204,10 +201,12 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   the new relation layout.
 - On startup the on-disk `PRAGMA user_version` is compared against the tier
   constant:
-  - **Empty file** (`user_version == 0`): bootstrap fresh.
+  - **Fresh archive format**: create each of the six tier files at
+    `user_version == 1`.
   - **Version match**: open as-is.
-  - **Older durable tier**: refuse ordinary open and require explicit migration
-    with a backup manifest.
+  - **Older durable tier in an archive being deliberately retained and
+    operated**: ordinary open is refused; a future additive migration may
+    require its verified backup manifest. This is not the fresh-start path.
   - **Derived mismatch or newer durable tier**: reject and require rebuild or a
     newer runtime as appropriate.
 - During development, schema changes are triaged before reset/reingest:

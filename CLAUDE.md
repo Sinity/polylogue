@@ -96,26 +96,9 @@ message, and block fields are hashed; parser-only coordinates, provider
 signatures, and independently-owned usage/timing/cost measurements are
 excluded with reasons.
 
-**Schema regimes**: durable tiers (`source`, `user`, `audit`) evolve by additive
-numbered migrations under `storage/sqlite/migrations/{source,user,audit}/`
-behind a verified backup, one `PRAGMA user_version` step at a time. Derived
-tiers carry no version chain: `storage/sqlite/archive_tiers/schema_identity.py`
-stamps one identity hash over the tier's DDL plus the lowering, materializer
-and replay-routing fingerprints, every open compares it, and a mismatch is a
-typed `SchemaSkew`. The required recovery design is reconvergence through the
-production daemon. Existing maintenance entry points must be checked for that
-ownership before use; their presence does not prove the transition is complete.
-A derived-schema edit can require full reconvergence. Classify every schema change before editing: metadata-only,
-index-only, additive-derived, additive-durable, or semantic-reparse.
+**Schema regimes**: the fresh archive format starts all six tier files at `PRAGMA user_version=1`. Durable tiers (`source`, `user`, `audit`) may evolve in later formats by additive numbered migrations under `storage/sqlite/migrations/{source,user,audit}/` behind a verified backup, one step at a time. That future migration policy does not apply to the fresh start: move the previous Polylogue state aside intact solely as salvage evidence, without migrating, importing, carrying it forward, or using it for rollback or readback. External source files explicitly declared for intake may be ingested into the empty archive. Derived tiers (`index`, `embeddings`, `ops`) carry no version migration chain. `storage/sqlite/archive_tiers/schema_identity.py` stamps an identity over tier DDL and the lowering, materializer and replay-routing fingerprints; each open compares it and reports a typed `SchemaSkew` on mismatch. Recovery is reconvergence through the production daemon. Classify every schema change before editing: metadata-only, index-only, additive-derived, additive-durable, or semantic-reparse.
 
-**The identity moves on ordinary code edits, not just DDL.** Those three
-fingerprints are AST closures over imported source, so a pure-performance change
-touching no schema moves the identity exactly as a new column does. The closure
-follows the current import graph, not directory boundaries. Determine membership
-on the candidate being changed; do not classify by path. Ask:
-`devtools schema closure <file>`. Because comments are absent from an AST, a
-comment-only edit does not move it. Land every closure change *before* a rebuild
-starts; one landing mid-run silently invalidates it.
+**Derived identity also moves on ordinary code edits, not just DDL.** The lowering, materializer and replay-routing fingerprints are AST closures over imported source, so a pure-performance change touching no schema can still move the identity. The closure follows the current import graph, not directory boundaries. Determine membership on the candidate with `devtools schema closure <file>`. Comments are absent from the AST. Land every closure change before a rebuild starts; a landing mid-run invalidates it.
 
 Enum membership is not a schema constraint. Durable DDL carries no
 enum-generated `CHECK(col IN (...))`; vocabulary membership is validated at the

@@ -8,7 +8,6 @@ import sqlite3
 import stat
 import subprocess
 import sys
-from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -452,34 +451,6 @@ def _seed_assertion_export_rows(archive_root: Path) -> None:
             visibility="private",
             now_ms=1_700_000_002_000,
         )
-
-
-def _create_user_at_previous_slot(path: Path) -> None:
-    """Stage the canonical user schema immediately before the current train."""
-    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_FORMAT_FLOOR_VERSION, USER_TIER_VERSION
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.migration_runner import _prepare_fresh_connection_for_target
-
-    previous = USER_TIER_VERSION - 1
-    assert previous >= ARCHIVE_FORMAT_FLOOR_VERSION, (
-        "the user tier owns no numbered slot, so there is no previous shape to stage and "
-        "migrate-tier has nothing to apply"
-    )
-
-    path.unlink(missing_ok=True)
-    initialize_archive_database(path, ArchiveTier.USER)
-    with closing(sqlite3.connect(path)) as conn:
-        with conn:
-            _prepare_fresh_connection_for_target(conn, ArchiveTier.USER, previous)
-            conn.execute(f"PRAGMA user_version = {previous}")
-        assert (
-            conn.execute(
-                "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'accepted_marker_delivery_cursor'"
-            ).fetchone()
-            is None
-        )
-    refresh_fresh_bootstrap_marker(path.parent)
-    refresh_archive_format_marker(path.parent)
 
 
 def _run_verified_backup_cli(cli_runner: CliRunner, output_dir: Path, *, profile: str) -> Path:
@@ -1660,47 +1631,6 @@ def test_archive_init_cli_refuses_a_daemon_held_pidfile(cli_workspace: dict[str,
     assert not (root / "index.db").exists()
 
 
-def test_migrate_tier_cli_applies_the_user_slot(
-    cli_workspace: dict[str, Path],
-    cli_runner: CliRunner,
-    tmp_path: Path,
-) -> None:
-    """A verified backup admits the current user train and creates its table."""
-    user_db = cli_workspace["archive_root"] / "user.db"
-    _create_user_at_previous_slot(user_db)
-    target = ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]
-    manifest = _run_verified_backup_cli(cli_runner, tmp_path / "backup", profile="user_overlays")
-
-    result = cli_runner.invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "maintenance",
-            "migrate-tier",
-            "user",
-            "--backup-manifest",
-            str(manifest),
-            "--output-format",
-            "json",
-        ],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.stdout)
-    assert payload["ok"] is True
-    assert payload["tier"] == "user"
-    assert payload["from_version"] == target - 1
-    assert payload["to_version"] == target
-    assert payload["applied_versions"] == [target]
-    with sqlite3.connect(user_db) as conn:
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == target
-        assert conn.execute(
-            "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'accepted_marker_delivery_cursor'"
-        ).fetchone() == ("accepted_marker_delivery_cursor",)
-
-
 def test_migrate_tier_cli_executes_and_persists_a_future_change_train(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
@@ -1882,7 +1812,6 @@ def test_migrate_tier_cli_refuses_live_daemon_before_sql(
     cli_runner: CliRunner,
 ) -> None:
     user_db = cli_workspace["archive_root"] / "user.db"
-    _create_user_at_previous_slot(user_db)
     pidfile = cli_workspace["archive_root"] / "daemon.pid"
     # The daemon proves ownership by holding an exclusive ``flock`` on its
     # pidfile for the whole run (``polylogue.daemon.cli._acquire_pidfile``), and
@@ -1928,7 +1857,7 @@ def test_migrate_tier_cli_refuses_live_daemon_before_sql(
     assert payload["ok"] is False
     assert "daemon to be stopped" in payload["error"]
     with sqlite3.connect(user_db) as conn:
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] - 1
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]
 
 
 def test_migrate_tier_cli_uses_shared_stable_archive_lock(
@@ -1938,7 +1867,6 @@ def test_migrate_tier_cli_uses_shared_stable_archive_lock(
     from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
 
     user_db = cli_workspace["archive_root"] / "user.db"
-    _create_user_at_previous_slot(user_db)
     with OwnedArchiveLocation.acquire(
         ArchiveLocation.resolve(cli_workspace["archive_root"]),
         owner_id="test:daemon-owner",
@@ -1954,125 +1882,7 @@ def test_migrate_tier_cli_uses_shared_stable_archive_lock(
     assert payload["ok"] is False
     assert "archive location already owned" in payload["error"]
     with sqlite3.connect(user_db) as conn:
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] - 1
-
-
-def test_migrate_tier_cli_rejects_unverified_backup_before_user_version_changes(
-    cli_workspace: dict[str, Path],
-    cli_runner: CliRunner,
-    tmp_path: Path,
-) -> None:
-    user_db = cli_workspace["archive_root"] / "user.db"
-    _create_user_at_previous_slot(user_db)
-    backup = cli_runner.invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "backup",
-            "--output-dir",
-            str(tmp_path / "backup"),
-            "--profile",
-            "user_overlays",
-        ],
-        catch_exceptions=False,
-    )
-    assert backup.exit_code == 0, backup.output
-    backup_line = next(line for line in backup.output.splitlines() if line.startswith("Backup complete: "))
-    backup_root = Path(backup_line.removeprefix("Backup complete: "))
-
-    result = cli_runner.invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "maintenance",
-            "migrate-tier",
-            "user",
-            "--backup-manifest",
-            str(backup_root / "manifest.json"),
-            "--output-format",
-            "json",
-        ],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 1
-    assert "successful backup verification receipt" in json.loads(result.stdout)["error"]
-    with sqlite3.connect(user_db) as conn:
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] - 1
-
-
-def test_migrate_tier_cli_rejects_one_byte_tampered_backup_before_user_version_changes(
-    cli_workspace: dict[str, Path],
-    cli_runner: CliRunner,
-    tmp_path: Path,
-) -> None:
-    user_db = cli_workspace["archive_root"] / "user.db"
-    _create_user_at_previous_slot(user_db)
-    manifest = _run_verified_backup_cli(cli_runner, tmp_path / "backup", profile="user_overlays")
-    copied_tier = manifest.with_name("user.db")
-    copied_bytes = bytearray(copied_tier.read_bytes())
-    copied_bytes[-1] ^= 1
-    copied_tier.write_bytes(copied_bytes)
-
-    result = cli_runner.invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "maintenance",
-            "migrate-tier",
-            "user",
-            "--backup-manifest",
-            str(manifest),
-            "--output-format",
-            "json",
-        ],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 1
-    assert "tier artifact hash mismatch" in json.loads(result.stdout)["error"]
-    with sqlite3.connect(user_db) as conn:
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] - 1
-
-
-def test_migrate_tier_cli_refuses_manifest_missing_target_tier(
-    cli_workspace: dict[str, Path],
-    cli_runner: CliRunner,
-    tmp_path: Path,
-) -> None:
-    user_db = cli_workspace["archive_root"] / "user.db"
-    _create_user_at_previous_slot(user_db)
-    manifest = _run_verified_backup_cli(cli_runner, tmp_path / "backup", profile="diagnostics_bundle")
-    with sqlite3.connect(user_db) as conn:
-        status_before = next(row for row in conn.execute("PRAGMA table_info(assertions)") if row[1] == "status")
-
-    result = cli_runner.invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "maintenance",
-            "migrate-tier",
-            "user",
-            "--backup-manifest",
-            str(manifest),
-            "--output-format",
-            "json",
-        ],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 1
-    payload = json.loads(result.stdout)
-    assert payload["ok"] is False
-    assert "does not include user.db" in payload["error"]
-    with sqlite3.connect(user_db) as conn:
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] - 1
-        status = next(row for row in conn.execute("PRAGMA table_info(assertions)") if row[1] == "status")
-        assert status == status_before, "the refused migration must leave assertions.status unchanged"
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]
 
 
 def test_archive_maintenance_help_omits_copy_activation_surface(cli_runner: CliRunner) -> None:

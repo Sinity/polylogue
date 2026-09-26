@@ -1,5 +1,7 @@
 # Archive Backup and Restore Boundaries
 
+The fresh-start reset moves the previous Polylogue state aside intact solely as salvage evidence and creates an empty archive with all six tiers at `user_version=1`. The reset does not restore, migrate, import, carry forward, or read back the previous archive. External source files explicitly declared for intake may be ingested into the new archive. The backup and runtime qualification procedures below describe ordinary backup/restore work for archives intentionally retained for operation; they are not steps in the fresh-start reset.
+
 Polylogue stores one archive root as a split SQLite file set plus a
 content-addressed blob store. Backups must preserve the tiers by durability
 class instead of treating the archive root as one anonymous cache directory.
@@ -91,9 +93,7 @@ Active index pointer targets must resolve inside the configured archive root, wi
 A restored file set is not readable on its own. Durable tiers carry a
 `PRAGMA user_version` and derived tiers carry a stamped schema identity; a
 runtime that matches neither refuses to open the archive instead of patching
-it. The complete rollback artifact is therefore the archive files plus the
-commit that can read them. Pinning that commit costs no write to the archive,
-while migrating the tiers forward mutates the copy being kept as the fallback.
+it. For ordinary restore work, the complete recovery artifact is the archive files plus the commit that can read them. Pinning that commit costs no write to the archive, while migrating the tiers forward mutates the copy being kept as the fallback.
 
 Read the versions the commit has to match out of the archive itself:
 
@@ -105,7 +105,7 @@ done
 sqlite3 "file:$(readlink -f "$POLYLOGUE_ARCHIVE_ROOT/index.db")?mode=ro" 'PRAGMA user_version;'
 ```
 
-The candidate is the newest first-parent `master` commit whose
+For an ordinary restored archive, the candidate is the newest first-parent `master` commit whose
 `ARCHIVE_VERSION_BY_TIER` in
 `polylogue/storage/sqlite/archive_tiers/__init__.py` maps every tier to those
 numbers. This is the single version authority; the durable tier modules do not
@@ -115,15 +115,7 @@ an archive whose durable tiers were migrated at different times may have no
 commit that matches every tier. Pin on the tiers the restore has to read, and
 record which tier is left unopenable and what that costs.
 
-**This rule searches history, and history has a discontinuity.** The durable
-tier lineage was reset to `ARCHIVE_FORMAT_FLOOR_VERSION = 1`, while the
-current authority maps source to `SOURCE_TIER_VERSION = 4`, user to
-`USER_TIER_VERSION = 2`, and audit to `AUDIT_TIER_VERSION = 2`.
-An archive carrying pre-reset numbers therefore has **no post-reset commit that
-matches it**, and the rule above resolves only into pre-reset history. Read the
-numbers out of the archive first and check which side of the reset they are on
-before searching; a search that returns nothing is the expected answer for a
-pre-reset archive, not a missing commit.
+Historical archive lineages may carry version numbers from an earlier schema era. This procedure applies only to archives intentionally restored for operation. The fresh-start reset does not search Git history for a compatible runtime and does not qualify the preserved archive for application reads.
 
 Build the candidate in its own checkout and confirm the executable names it:
 
@@ -160,7 +152,9 @@ and compare the two, rather than assuming the read was clean.
 
 ## Rollback custody and qualification
 
-Before replacing or removing an archive, preserve a full-evidence copy outside the path that will be recreated. Include all six tiers and every referenced blob. Record the copy's location, the selected runtime commit and executable version, and a manifest of the preserved files outside Git. Keep the original `user.db`; an export of selected rows is supplementary evidence, not a replacement.
+For ordinary archive replacement or removal, preserve a full-evidence copy outside the path that will be recreated. Include all six tiers and every referenced blob. Record the copy's location, the selected runtime commit and executable version, and a manifest of the preserved files outside Git. Keep the original `user.db`; an export of selected rows is supplementary evidence, not a replacement.
+
+For the fresh-start reset, move the entire previous Polylogue state aside intact solely as salvage evidence. Do not qualify it for application reads or use it for rollback or readback.
 
 An archive copy is usable only with a runtime that accepts every tier it must read. Read each durable tier's `user_version` and the derived tier identity from the archive, then compare them with the candidate runtime's declared versions and schema identity. A match against only source, user, index, embeddings, or ops does not qualify a runtime if its audit version differs. If no suitable runtime exists in the official first-parent history, record the archive as preserved but unqualified for application reads; do not describe a nearby commit as a rollback runtime.
 

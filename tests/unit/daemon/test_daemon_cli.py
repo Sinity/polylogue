@@ -475,6 +475,69 @@ def test_no_default_sources_makes_root_the_complete_watch_set(tmp_path: Path) ->
         assert "no_default_sources" in {param.name for param in command.params}
 
 
+@pytest.mark.parametrize("command", ("run", "watch"))
+def test_named_default_sources_keep_typed_rules_and_explicit_roots(
+    workspace_env: dict[str, Path], tmp_path: Path, command: str
+) -> None:
+    """Selecting provider defaults excludes internal roots without widening provider rules."""
+    from polylogue.daemon import cli as daemon_cli
+
+    selected_names = (
+        "claude-code",
+        "claude-code-todos",
+        "claude-code-history",
+        "codex",
+        "codex-state",
+        "codex-memories",
+        "gemini-cli",
+        "hermes",
+        "antigravity",
+    )
+    external_root = tmp_path / "account-export"
+    defaults = {source.name: source for source in daemon_cli.default_sources()}
+    recorded: dict[str, object] = {}
+
+    async def fake_run_daemon_services(**kwargs: object) -> None:
+        recorded.update(kwargs)
+
+    args = [command]
+    for name in selected_names:
+        args.extend(("--default-source", name))
+    args.extend(("--root", str(external_root)))
+    if command == "run":
+        args.extend(("--spool", str(tmp_path / "old-browser-spool"), "--no-browser-capture", "--no-api"))
+    with patch("polylogue.daemon.cli.run_daemon_services", side_effect=fake_run_daemon_services):
+        result = CliRunner().invoke(main, args)
+
+    assert result.exit_code == 0, result.output
+    sources = recorded["sources"]
+    assert isinstance(sources, tuple)
+    assert tuple(source for source in sources if source.name in defaults) == tuple(
+        defaults[name] for name in selected_names
+    )
+    assert sources[-1] == WatchSource(
+        name="account-export",
+        root=external_root,
+        suffixes=(".json", ".jsonl", ".ndjson", ".zip"),
+        required=True,
+    )
+    assert {source.name for source in sources} == {*selected_names, "account-export"}
+
+
+@pytest.mark.parametrize("command", ("run", "watch"))
+def test_named_default_source_rejects_unknown_and_conflicting_selection(command: str) -> None:
+    unknown = CliRunner().invoke(main, [command, "--default-source", "claud-code"])
+    assert unknown.exit_code != 0
+    assert "unknown default source(s): claud-code" in unknown.output
+
+    conflicting = CliRunner().invoke(
+        main,
+        [command, "--root", "/tmp/account-export", "--no-default-sources", "--default-source", "codex"],
+    )
+    assert conflicting.exit_code != 0
+    assert "--default-source cannot be used with --no-default-sources" in conflicting.output
+
+
 def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path: Path) -> None:
     from polylogue.daemon import cli as daemon_cli
 

@@ -38,14 +38,11 @@ from polylogue.storage.accepted_marker_inputs import (
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import RawSessionRecord
-from polylogue.storage.sqlite import migration_runner
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_write, write_parsed_session_to_archive
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.storage.sqlite.durable_change_train import _runtime_consumer_results, validate_durable_migration_sidecars
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.unit.sinex.test_ingest_atomicity import _AsyncConnection
 
@@ -417,76 +414,6 @@ def test_batch_append_retains_only_published_delta_with_canonical_occurrences(wo
         assert str(next(iter(retained_ids))).endswith(".1:0")
     finally:
         conn.close()
-
-
-def test_source_migration_matches_fresh_ddl_and_preserves_restart_sequence(tmp_path: Path) -> None:
-    """The additive migration must preserve historical source rows and stream position."""
-    migration = Path("polylogue/storage/sqlite/migrations/source/005_accepted_marker_inputs.sql").read_text()
-    path = tmp_path / "source.db"
-    with sqlite3.connect(path) as source:
-        source.execute("CREATE TABLE historical_source(value TEXT)")
-        source.execute("INSERT INTO historical_source VALUES ('retained')")
-        source.executescript(migration)
-        assert (
-            asyncio.run(append_accepted_marker_input(_AsyncConnection(source), prepare_accepted_marker_input("r1", [])))
-            == 1
-        )
-        objects = source.execute(
-            "SELECT type, name, sql FROM sqlite_master WHERE name IN ("
-            "'pending_accepted_marker_inputs', 'accepted_marker_stream', 'accepted_marker_inputs', "
-            "'excised_marker_inputs', "
-            "'accepted_marker_stream_no_update', 'accepted_marker_stream_no_delete', "
-            "'accepted_marker_inputs_no_update', 'accepted_marker_inputs_no_delete') ORDER BY name"
-        ).fetchall()
-    with sqlite3.connect(":memory:") as fresh:
-        fresh.executescript(SOURCE_DDL)
-        assert (
-            fresh.execute(
-                "SELECT type, name, sql FROM sqlite_master WHERE name IN ("
-                "'pending_accepted_marker_inputs', 'accepted_marker_stream', 'accepted_marker_inputs', "
-                "'excised_marker_inputs', "
-                "'accepted_marker_stream_no_update', 'accepted_marker_stream_no_delete', "
-                "'accepted_marker_inputs_no_update', 'accepted_marker_inputs_no_delete') ORDER BY name"
-            ).fetchall()
-            == objects
-        )
-    with sqlite3.connect(path) as source:
-        assert source.execute("SELECT value FROM historical_source").fetchone()[0] == "retained"
-        assert (
-            asyncio.run(append_accepted_marker_input(_AsyncConnection(source), prepare_accepted_marker_input("r2", [])))
-            == 2
-        )
-
-
-def test_marker_migration_train_has_runtime_proof_and_refuses_without_backup(tmp_path: Path) -> None:
-    """An unregistered rider or an unbacked durable migration must fail."""
-    steps = migration_runner._load_migrations(ArchiveTier.SOURCE)
-    sidecars = validate_durable_migration_sidecars(ArchiveTier.SOURCE, tuple((step.name, step.sql) for step in steps))
-    train = next(sidecar.train for sidecar in sidecars if sidecar.slot == 5)
-    assert train.migration.requires_backup
-    assert all(result.passed for result in _runtime_consumer_results(train, tmp_path))
-    migration = next(step.sql for step in steps if step.version == 5)
-    # Build a genuine v4 fixture: SOURCE_DDL is the current fresh schema and
-    # includes v5's additive objects. MigrationStep.sql includes its safety
-    # metadata comment, so strip that metadata before removing the SQL body.
-    migration_body = migration.split("\n", 1)[1]
-    with sqlite3.connect(tmp_path / "source.db") as source:
-        v4_ddl, replacements = re.subn(re.escape(migration_body), "", SOURCE_DDL, count=1)
-        assert replacements == 1
-        source.executescript(v4_ddl)
-        source.execute("PRAGMA user_version = 4")
-        v5_objects = source.execute(
-            "SELECT name FROM sqlite_master WHERE name IN ("
-            "'pending_accepted_marker_inputs', 'accepted_marker_stream', 'accepted_marker_inputs', "
-            "'excised_marker_inputs', "
-            "'accepted_marker_stream_no_update', 'accepted_marker_stream_no_delete', "
-            "'accepted_marker_inputs_no_update', 'accepted_marker_inputs_no_delete')"
-        ).fetchall()
-        assert v5_objects == []
-        source.commit()
-        with pytest.raises(migration_runner.MigrationError, match="requires a verified backup manifest"):
-            migration_runner.migrate_archive_tier(source, ArchiveTier.SOURCE, backup_manifest=None)
-        assert source.execute("PRAGMA user_version").fetchone() == (4,)
 
 
 def test_request_identity_uses_full_parse_while_carrier_keeps_selected_delta() -> None:
