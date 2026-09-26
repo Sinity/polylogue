@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sqlite3
 from dataclasses import replace
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -13,8 +15,10 @@ import pytest
 from polylogue.core.enums import Provider, Role
 from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.pipeline.ids import session_content_hash
+from polylogue.sources.decoders import _iter_json_stream
+from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
-from polylogue.sources.prepared_jsonl import PreparedJsonl, _write_artifact
+from polylogue.sources.prepared_jsonl import PreparedJsonl, _write_artifact, prepare_jsonl_blob
 from polylogue.sources.prepared_message_sink import (
     _ACTIVE_PARENT_LOOKUP_SQL,
     SqliteMessageSink,
@@ -22,6 +26,7 @@ from polylogue.sources.prepared_message_sink import (
     SqliteSessionEventSink,
 )
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
+from tests.infra.source_builders import ChatGPTExportBuilder
 
 
 def _prepared_artifact(tmp_path: Path) -> tuple[PreparedJsonl, MessageOwnerCoordinate]:
@@ -158,3 +163,150 @@ def test_prepared_artifact_refuses_same_count_row_change_and_file_replacement(tm
     os.replace(replacement, artifact.shard_path)
     with pytest.raises(ValueError, match="identity changed"):
         artifact.verify_files(full=False)
+
+
+def _claude_document(session_id: str) -> dict[str, object]:
+    return {
+        "uuid": session_id,
+        "name": session_id,
+        "chat_messages": [
+            {"uuid": "repeated", "sender": "human", "text": "First neutral prompt"},
+            {"uuid": "repeated", "sender": "assistant", "text": "Second neutral answer"},
+        ],
+    }
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_bundle_worker_stream_preserves_parser_and_duplicate_identity_rows(tmp_path: Path, wrapped: bool) -> None:
+    documents = [_claude_document("one"), _claude_document("two")]
+    payload: object = {"sessions": documents} if wrapped else documents
+    source = tmp_path / "claude-sessions.json"
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    expected = parse_payload(
+        Provider.CLAUDE_AI, list(_iter_json_stream(BytesIO(source.read_bytes()), source.name)), "fallback"
+    )
+    assert [message.provider_message_id for message in expected[0].messages] == ["repeated", "repeated"]
+    for session in expected:
+        session.content_hash = session_content_hash(session)
+    expected_shard = prepare_session_shard(tmp_path / "expected", expected)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CLAUDE_AI.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert artifact.error is None
+    actual = list(artifact.iter_sessions())
+    assert [(session.provider_session_id, session.content_hash) for session in actual] == [
+        (session.provider_session_id, session.content_hash) for session in expected
+    ]
+    assert artifact.shard_path is not None
+    with sqlite3.connect(expected_shard.path) as baseline, sqlite3.connect(artifact.shard_path) as prepared:
+        for table in ("messages", "blocks", "shard_session"):
+            assert (
+                prepared.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+                == baseline.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+            )
+
+
+def test_bundle_worker_does_not_construct_a_whole_document_record_list(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "many.json"
+    with source.open("w", encoding="utf-8") as handle:
+        handle.write("[")
+        for index in range(300):
+            if index:
+                handle.write(",")
+            handle.write(json.dumps(_claude_document(f"session-{index}")))
+        handle.write("]")
+
+    def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("whole-document decode or parse was used")
+
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CLAUDE_AI.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert artifact.error is None
+    assert sum(1 for _ in artifact.iter_sessions()) == 300
+
+
+def test_chatgpt_bundle_worker_keeps_original_positions_after_skipped_siblings(tmp_path: Path) -> None:
+    records = [
+        {"unrelated": "sibling"},
+        ChatGPTExportBuilder("conversation-1").add_node("user", "First neutral prompt").build(),
+        {"mapping": {"bad": {"id": "bad"}}},
+        ChatGPTExportBuilder("conversation-2").add_node("assistant", "Second neutral answer").build(),
+    ]
+    source = tmp_path / "conversations-000.json"
+    source.write_text(json.dumps(records), encoding="utf-8")
+    expected = parse_payload(
+        Provider.CHATGPT, list(_iter_json_stream(BytesIO(source.read_bytes()), source.name)), "fallback"
+    )
+    for session in expected:
+        session.content_hash = session_content_hash(session)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert artifact.error is None
+    assert [(session.provider_session_id, session.content_hash) for session in artifact.iter_sessions()] == [
+        (session.provider_session_id, session.content_hash) for session in expected
+    ]
+
+
+def test_bundle_worker_discards_partial_artifact_on_corrupt_suffix(tmp_path: Path) -> None:
+    source = tmp_path / "damaged.json"
+    source.write_text("[" + json.dumps(_claude_document("first")) + ", {broken}]", encoding="utf-8")
+    directory = tmp_path / "prepared"
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CLAUDE_AI.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(directory),
+    )
+    assert artifact.error is not None
+    assert artifact.sessions_path is None
+    assert list(directory.glob("*.db")) == []
+
+
+def test_singleton_chatgpt_array_keeps_existing_parse_identity(tmp_path: Path) -> None:
+    source = tmp_path / "one.json"
+    source.write_text(
+        json.dumps([ChatGPTExportBuilder("one").add_node("user", "A neutral prompt").build()]),
+        encoding="utf-8",
+    )
+    expected = parse_payload(
+        Provider.CHATGPT, list(_iter_json_stream(BytesIO(source.read_bytes()), source.name)), "fallback"
+    )
+    for session in expected:
+        session.content_hash = session_content_hash(session)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert artifact.error is None
+    assert [(session.provider_session_id, session.content_hash) for session in artifact.iter_sessions()] == [
+        (session.provider_session_id, session.content_hash) for session in expected
+    ]
