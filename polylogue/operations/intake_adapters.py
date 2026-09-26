@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import threading
 import time
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass
@@ -105,11 +106,35 @@ class FileIntakeAdapter(IntakeAdapter):
         self._fresh_pending: list[Path] = []
         self._fresh_exhausted = False
         self._fresh_exhausted_at: float | None = None
+        self._discovery_lock = threading.Lock()
+        self._discovery_thread = threading.local()
 
     async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
         # Filesystem enumeration and path probes can be slow on mounted
         # sources. Keep them off the daemon's event loop.
-        return await asyncio.to_thread(self._discover_sync, limit)
+        cancelled = threading.Event()
+        try:
+            return await asyncio.to_thread(self._observed_discover_sync, limit, cancelled)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    def _observed_discover_sync(self, limit: int, cancelled: threading.Event) -> Sequence[IntakeItem]:
+        from polylogue.daemon.discovery_progress import begin_discovery, end_discovery
+
+        with self._discovery_lock:
+            if cancelled.is_set():
+                return ()
+            token = begin_discovery(self.source.name, owner=self)
+            self._discovery_thread.token = token
+            failed = True
+            try:
+                result = self._discover_sync(limit)
+                failed = False
+                return result
+            finally:
+                del self._discovery_thread.token
+                end_discovery(token, failed=failed, pending=self.discovery_pending)
 
     def _reset_fresh_walk(self) -> None:
         self._fresh_walk = None
@@ -141,7 +166,17 @@ class FileIntakeAdapter(IntakeAdapter):
             self._after = None
             self._reset_fresh_walk()
         if self._fresh_walk is None:
-            self._fresh_walk = _source_path_steps(self.source, self.context.sources, after=self._after)
+            from polylogue.daemon.discovery_progress import advance_discovery
+
+            self._fresh_walk = _source_path_steps(
+                self.source,
+                self.context.sources,
+                after=self._after,
+                on_inspected=lambda: advance_discovery(getattr(self._discovery_thread, "token", None), inspected=1),
+                on_disposition=lambda _path, disposition, _reason: advance_discovery(
+                    getattr(self._discovery_thread, "token", None), disposition=disposition
+                ),
+            )
         steps = max(_FILE_DISCOVERY_STEP_LIMIT, limit)
         for _ in range(steps):
             if len(self._fresh_pending) >= limit:
