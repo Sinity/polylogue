@@ -6,11 +6,12 @@ rather than hard-deleted, preserving user metadata across reset cycles.
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import click
+
+from polylogue.api.archive import attach_readonly_database, open_readonly_connection
 
 if TYPE_CHECKING:
     from polylogue.surfaces.payloads import MutationStatus
@@ -161,7 +162,7 @@ def _unresolvable_raw_source_count() -> int:
     source_db = _source_db_path()
     if not source_db.exists():
         return 0
-    conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+    conn = open_readonly_connection(source_db, validate_schema=False)
     try:
         rows = conn.execute(
             """
@@ -193,7 +194,7 @@ def _resolve_archive_session_ids(tokens: list[str]) -> list[str]:
     if not archive_db.exists():
         return unique_tokens
 
-    conn = sqlite3.connect(f"file:{archive_db}?mode=ro", uri=True)
+    conn = open_readonly_connection(archive_db, validate_schema=False)
     try:
         resolved: list[str] = []
         for token in unique_tokens:
@@ -275,9 +276,9 @@ def _archive_session_ids_from_source(source_path: Path) -> list[str]:
     from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 
     exact_prefix, child_prefix = escaped_sql_path_prefix_patterns(source_path)
-    conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+    conn = open_readonly_connection(index_db, validate_schema=False)
     try:
-        conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
+        attach_readonly_database(conn, source_db, alias="source")
         rows = conn.execute(
             """
             SELECT s.session_id

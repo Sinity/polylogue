@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import click
 
+from polylogue.api.archive import open_readonly_connection
 from polylogue.storage import archive_layout
 from polylogue.storage.archive_readiness import (
     RawMaterializationAssessmentState,
@@ -238,7 +239,7 @@ def _tier_version_status(tier_paths: dict[str, Path]) -> dict[str, dict[str, obj
 
 def _read_user_version(path: Path) -> int | None:
     try:
-        with contextlib.closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
+        with contextlib.closing(open_readonly_connection(path, validate_schema=False)) as conn:
             row = conn.execute("PRAGMA user_version").fetchone()
     except sqlite3.Error:
         return None

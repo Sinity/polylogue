@@ -81,6 +81,9 @@ from polylogue.storage.sqlite.connection_profile import (
     StaleContinuationError,
 )
 from polylogue.storage.sqlite.connection_profile import (
+    attach_readonly_database as attach_readonly_database,
+)
+from polylogue.storage.sqlite.connection_profile import (
     open_readonly_connection as open_readonly_connection,
 )
 from polylogue.storage.sqlite.connection_profile import read_frame as read_frame

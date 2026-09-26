@@ -35,7 +35,7 @@ from polylogue.storage.blob_integrity import scan_blob_reference_debt
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import count_dangling_prefix_branch_points
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 from polylogue.storage.tier_access import TierRefusal, acquire_tier_reader
 
 # A tier whose schema does not match the packaged version is unreadable, not fatal:
@@ -764,7 +764,7 @@ def _archive_source_path_churn(
     try:
         conn = open_readonly_connection(index_db)
         try:
-            conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
+            attach_readonly_database(conn, source_db, alias="source_tier")
             if not table_exists(conn, "sessions") or not table_exists(conn, "raw_sessions", schema="source_tier"):
                 return []
             rows = conn.execute(
@@ -1432,7 +1432,7 @@ def _archive_derived_readiness(root: Path, *, exact_counts: bool = False) -> dic
     source_check_available = False
     try:
         if source_db.exists():
-            conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
+            attach_readonly_database(conn, source_db, alias="source_tier")
             source_attached = True
             # ``raw_sessions`` lives in the attached source tier, never in the
             # index connection's ``main``. An unqualified probe here always
@@ -1825,7 +1825,7 @@ def _archive_user_overlay_orphans(root: Path) -> dict[str, Any]:
         }
     conn = open_readonly_connection(user_db)
     try:
-        conn.execute("ATTACH DATABASE ? AS index_tier", (f"file:{index_db}?mode=ro",))
+        attach_readonly_database(conn, index_db, alias="index_tier")
         checks = {
             "assertion_marks": (
                 "SELECT COUNT(*) FROM assertions AS u "
@@ -2364,7 +2364,7 @@ def _archive_query_plans(root: Path) -> dict[str, Any]:
     try:
         conn = open_readonly_connection(index_db)
         try:
-            conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
+            attach_readonly_database(conn, source_db, alias="source_tier")
             if table_exists(conn, "sessions") and table_exists(conn, "raw_sessions", schema="source_tier"):
                 source_row = conn.execute(
                     "SELECT source_path FROM source_tier.raw_sessions WHERE source_path IS NOT NULL LIMIT 1"

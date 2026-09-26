@@ -30,7 +30,7 @@ from polylogue.storage.search_providers.sqlite_vec_support import (
     ESTIMATED_TOKENS_PER_MESSAGE,
     VOYAGE_4_COST_PER_1M_TOKENS,
 )
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 from polylogue.storage.sqlite.deadline import query_deadline
 
 if TYPE_CHECKING:
@@ -972,8 +972,6 @@ def _archive_embedding_status_payload(
         conn = open_readonly_connection(index_db, timeout=STATUS_READ_BUSY_TIMEOUT_MS / 1000.0, validate_schema=False)
     else:
         conn = _pinned_connection
-    if owns_connection:
-        conn.execute(f"PRAGMA busy_timeout = {STATUS_READ_BUSY_TIMEOUT_MS}")
     # The CLI status fast path may open an active index whose filename is not
     # the conventional ``index.db`` (for example, an active generation).
     # ``open_readonly_connection`` only auto-attaches sibling tiers for the
@@ -985,7 +983,7 @@ def _archive_embedding_status_payload(
         for schema, filename in (("embeddings", "embeddings.db"), ("ops_tier", "ops.db")):
             sibling = root / filename
             if schema not in aliases and sibling.exists():
-                conn.execute(f"ATTACH DATABASE ? AS {schema}", (str(sibling),))
+                attach_readonly_database(conn, sibling, alias=schema)
                 aliases.add(schema)
     latest_catchup_run: EmbeddingCatchupRunPayload | None = None
     latest_material_catchup_run: EmbeddingCatchupRunPayload | None = None

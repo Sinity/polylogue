@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from polylogue.api.archive import open_readonly_connection
+from polylogue.api.archive import attach_readonly_database, open_readonly_connection
 from polylogue.core.raw_state import raw_state_authority
 from polylogue.core.timestamps import iso_from_epoch_ms
 from polylogue.logging import WARNING, emit
@@ -101,7 +101,7 @@ def _fetch_archive_provenance_row(
     try:
         conn.row_factory = sqlite3.Row
         if source_db.exists():
-            conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
+            attach_readonly_database(conn, source_db, alias="source_tier")
             row = conn.execute(
                 """
                 SELECT

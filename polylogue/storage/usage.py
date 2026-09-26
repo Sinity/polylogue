@@ -53,6 +53,7 @@ from polylogue.core.evidence_value import (
 from polylogue.core.refs import ObjectRef
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.logging import WARNING, emit
+from polylogue.storage.sqlite.connection_profile import attach_readonly_database
 
 UsageReportDetail = Literal["headline", "full"]
 
@@ -1763,7 +1764,10 @@ def _source_schema_alias(conn: sqlite3.Connection, *, archive_root: Path | None 
     if source_db is None or not source_db.exists():
         return None
     try:
-        conn.execute("ATTACH DATABASE ? AS usage_source_tier", (str(source_db),))
+        if conn.execute("PRAGMA query_only").fetchone()[0]:
+            attach_readonly_database(conn, source_db, alias="usage_source_tier")
+        else:
+            conn.execute("ATTACH DATABASE ? AS usage_source_tier", (str(source_db),))
     except sqlite3.Error:
         return None
     return "usage_source_tier" if _table_exists_in_schema(conn, "usage_source_tier", "raw_sessions") else None

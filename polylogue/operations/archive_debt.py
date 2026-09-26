@@ -29,7 +29,7 @@ from polylogue.sources.parsers.local_agent import gemini_cli_chat_identity
 from polylogue.storage.archive_readiness import RAW_ALIAS_BLOB_MISSING_CATEGORY
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_candidates
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 from polylogue.surfaces.payloads import (
     ArchiveDebtActionPayload,
     ArchiveDebtKind,
@@ -230,7 +230,7 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
         return []
     conn = open_readonly_connection(source_db, timeout_class="background-read")
     conn.row_factory = sqlite3.Row
-    conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
+    attach_readonly_database(conn, index_db, alias="index_tier")
     try:
         quarantine_expr, quarantine_params = _revision_quarantine_sql(conn)
         candidate_rows = list(

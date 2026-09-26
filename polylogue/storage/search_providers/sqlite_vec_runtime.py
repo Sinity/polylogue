@@ -9,7 +9,6 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.parse import quote
 
 from polylogue.core.errors import SchemaSkewError
 from polylogue.storage.archive_identity import resolve_active_index_path
@@ -19,7 +18,12 @@ from polylogue.storage.embeddings.identity import (
     register_embedding_identity_sql,
 )
 from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError, logger
-from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import (
+    attach_readonly_database,
+    open_connection,
+    open_readonly_connection,
+    readonly_temp_staging,
+)
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 
@@ -126,7 +130,7 @@ def open_vector_read_snapshot(
                 raise SqliteVecError(f"sqlite-vec extension failed to load: {error or 'unknown error'}")
             register_embedding_identity_sql(conn, recipe=recipe)
             # Each persistent database has its own read-only URI.
-            conn.execute("ATTACH DATABASE ? AS archive_index", (f"file:{quote(str(index_path))}?mode=ro",))
+            attach_readonly_database(conn, index_path, alias="archive_index")
             conn.execute("BEGIN")
             conn.execute("SELECT rootpage FROM main.sqlite_schema LIMIT 1").fetchone()
             conn.execute("SELECT rootpage FROM archive_index.sqlite_schema LIMIT 1").fetchone()
@@ -142,19 +146,15 @@ def prepare_vector_read_projection(connection: sqlite3.Connection, *, recipe: Em
     """Build the derived lookup after publication exclusion has been released."""
     if not connection.in_transaction:
         raise SqliteVecError("semantic projection requires an already pinned read transaction")
-    with _vector_projection_errors():
-        # Persistent databases remain mode=ro. Only TEMP needs write permission;
-        # single-statement execute preserves both pinned read transactions.
-        connection.execute("PRAGMA query_only = OFF")
-        try:
-            _configure_current_embedding_messages(
-                connection,
-                recipe=recipe,
-                attach_index=False,
-                register_identity=False,
-            )
-        finally:
-            connection.execute("PRAGMA query_only = ON")
+    # Persistent databases remain mode=ro. Only TEMP needs write permission;
+    # single-statement execute preserves both pinned read transactions.
+    with _vector_projection_errors(), readonly_temp_staging(connection):
+        _configure_current_embedding_messages(
+            connection,
+            recipe=recipe,
+            attach_index=False,
+            register_identity=False,
+        )
 
 
 class SqliteVecRuntimeMixin:

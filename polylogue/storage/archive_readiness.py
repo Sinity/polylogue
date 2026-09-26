@@ -30,7 +30,7 @@ from polylogue.storage.derived.session.status import session_insight_status_sync
 from polylogue.storage.raw_authority import parser_census_logical_keys
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 
 logger = get_logger(__name__)
 
@@ -781,7 +781,7 @@ def raw_materialization_readiness_snapshot(
 
         with closing(open_readonly_connection(index_db, tier=ArchiveTier.INDEX)) as conn:
             conn.row_factory = sqlite3.Row
-            conn.execute("ATTACH DATABASE ? AS source", (f"file:{source_db}?mode=ro",))
+            attach_readonly_database(conn, source_db, alias="source")
             raw_columns = _table_columns(conn, "source", "raw_sessions")
             session_columns = _table_columns(conn, "main", "sessions")
             row = conn.execute(
@@ -1150,7 +1150,7 @@ def missing_source_raw_session_evidence(active_archive: Path, *, limit: int = 10
             open_readonly_connection(index_db, timeout_class="background-read", validate_schema=False)
         ) as conn:
             conn.row_factory = sqlite3.Row
-            conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
+            attach_readonly_database(conn, source_db, alias="source")
             if not _table_columns(conn, "main", "sessions") or not _table_columns(conn, "source", "raw_sessions"):
                 return {
                     "available": False,
@@ -1873,7 +1873,7 @@ def archive_readiness_status(root: Path) -> dict[str, Any]:
                     source_check_available = _table_exists(source_conn, "raw_sessions")
                 raw_projection: Mapping[str, object] | None = None
                 if source_check_available:
-                    conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
+                    attach_readonly_database(conn, source_db, alias="source_tier")
                     raw_projection = raw_materialization_readiness_from_pinned_index(
                         conn,
                         archive_root=location.configured_root,

@@ -55,6 +55,7 @@ from polylogue.core.sqlite_introspection import table_exists
 from polylogue.logging import get_logger
 from polylogue.storage.sqlite.connection_profile import (
     READ_PROFILES,
+    attach_readonly_database,
     open_isolated_write_connection,
     open_profiled_connection,
 )
@@ -468,7 +469,7 @@ def select_pending_secret_scan_session_ids(
     conn = open_profiled_connection(index_db, profile=_READ_PROFILE)
     try:
         if ops_db.exists():
-            conn.execute("ATTACH DATABASE ? AS ops", (str(ops_db),))
+            attach_readonly_database(conn, ops_db, alias="ops")
             has_status_table = _attached_secret_scan_status_table_exists(conn, schema="ops")
         else:
             has_status_table = False
@@ -521,7 +522,7 @@ def count_pending_secret_scan_sessions(
     conn = open_profiled_connection(index_db, profile=_READ_PROFILE)
     try:
         if ops_db.exists():
-            conn.execute("ATTACH DATABASE ? AS ops", (str(ops_db),))
+            attach_readonly_database(conn, ops_db, alias="ops")
             has_status_table = _attached_secret_scan_status_table_exists(conn, schema="ops")
         else:
             has_status_table = False

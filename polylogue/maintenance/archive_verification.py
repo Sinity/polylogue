@@ -87,7 +87,7 @@ from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.sqlite.agent_thread_state import read_spawn_edge_children
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 from polylogue.storage.sqlite.maintenance import PLANNER_STATS_COVERED_TABLES
 
 logger = get_logger(__name__)
@@ -397,7 +397,7 @@ def _check_source_index_coverage_at_index_path(
 
     try:
         try:
-            conn.execute("ATTACH DATABASE ? AS idx_tier", (f"file:{index_path}?mode=ro",))
+            attach_readonly_database(conn, index_path, alias="idx_tier")
         except sqlite3.Error as exc:
             return _error_check("source-index-coverage", f"could not attach index.db: {exc}", exc=exc)
 
@@ -707,7 +707,7 @@ def _check_source_conservation_at_index_path(
         return _error_check(name, f"could not open source.db: {exc}", exc=exc)
     try:
         try:
-            conn.execute("ATTACH DATABASE ? AS idx_tier", (f"file:{index_path}?mode=ro",))
+            attach_readonly_database(conn, index_path, alias="idx_tier")
         except sqlite3.Error as exc:
             return _error_check(name, f"could not attach index.db: {exc}", exc=exc)
         try:
@@ -2302,7 +2302,7 @@ def _check_embeddings_refs_liveness_at_index_path(
             return _skip_check("embeddings-refs-liveness", "message_embedding_refs table not present")
 
         try:
-            conn.execute("ATTACH DATABASE ? AS idx_tier", (f"file:{index_path}?mode=ro",))
+            attach_readonly_database(conn, index_path, alias="idx_tier")
         except sqlite3.Error as exc:
             return _error_check("embeddings-refs-liveness", f"could not attach index.db: {exc}", exc=exc)
 
@@ -3129,7 +3129,7 @@ def _check_convergence_freshness(archive_root: Path, _sample_limit: int) -> Arch
         return _error_check("convergence-freshness", f"could not open source.db: {exc}", exc=exc)
     try:
         try:
-            conn.execute("ATTACH DATABASE ? AS idx_tier", (f"file:{index_path}?mode=ro",))
+            attach_readonly_database(conn, index_path, alias="idx_tier")
         except sqlite3.Error as exc:
             return _error_check("convergence-freshness", f"could not attach index.db: {exc}", exc=exc)
         try:
@@ -3236,7 +3236,7 @@ def _check_user_tier_refs_at_index_path(
 
     try:
         try:
-            conn.execute("ATTACH DATABASE ? AS idx_tier", (f"file:{index_path}?mode=ro",))
+            attach_readonly_database(conn, index_path, alias="idx_tier")
         except sqlite3.Error as exc:
             return _error_check("user-tier-refs", f"could not attach index.db: {exc}", exc=exc)
         try:

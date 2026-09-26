@@ -883,7 +883,9 @@ def _archive_embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = 
     else:
         embeddings_db = Path(conn.execute("PRAGMA database_list").fetchone()[2]).with_name("embeddings.db")
     if not status_table and embeddings_db.exists():
-        conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
+        from polylogue.storage.sqlite.connection_profile import attach_readonly_database
+
+        attach_readonly_database(conn, embeddings_db, alias="embeddings")
         status_table = _attached_table_name(conn, "embeddings", "embedding_status")
         meta_table = _attached_table_name(conn, "embeddings", "message_embeddings_meta")
 
@@ -2244,8 +2246,9 @@ def _emit_archive_source_index_link_metrics(
         )
         return
 
-    source_uri = f"file:{source_db}?mode=ro"
-    conn.execute("ATTACH DATABASE ? AS source_metrics", (source_uri,))
+    from polylogue.storage.sqlite.connection_profile import attach_readonly_database
+
+    attach_readonly_database(conn, source_db, alias="source_metrics")
     try:
         source_table = conn.execute(
             "SELECT 1 FROM source_metrics.sqlite_master WHERE type='table' AND name='raw_sessions'"

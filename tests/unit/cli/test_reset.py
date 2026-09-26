@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import contextlib
+import importlib
 import json
 import sqlite3
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -19,6 +20,39 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 from tests.infra.daemon_operations import DaemonOperationStack, cli_daemon_archive
+
+
+def test_reset_session_resolution_uses_readonly_database_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reset_module = importlib.import_module("polylogue.cli.commands.reset")
+    index_db = tmp_path / "index.db"
+    with sqlite3.connect(index_db) as writer:
+        writer.execute("CREATE TABLE sessions (session_id TEXT)")
+        writer.execute("INSERT INTO sessions VALUES ('selected')")
+
+    real_open = reset_module.open_readonly_connection
+    observed = []
+
+    def checked_open(path: Path, **kwargs: Any) -> sqlite3.Connection:
+        conn = cast(sqlite3.Connection, real_open(path, **kwargs))
+        observed.append(path)
+        for statement in (
+            "INSERT INTO sessions VALUES ('wrong')",
+            "UPDATE sessions SET session_id = 'wrong'",
+            "DELETE FROM sessions",
+            "CREATE TABLE unwanted (value TEXT)",
+            "PRAGMA query_only = OFF",
+            "ATTACH DATABASE ':memory:' AS writable",
+        ):
+            with pytest.raises(sqlite3.DatabaseError):
+                conn.execute(statement)
+        return conn
+
+    monkeypatch.setattr(reset_module, "_index_db_path", lambda: index_db)
+    monkeypatch.setattr(reset_module, "open_readonly_connection", checked_open)
+    assert reset_module._resolve_archive_session_ids(["selected"]) == ["selected"]
+    assert observed == [index_db]
 
 
 def _no_seed(_root: Path) -> None:

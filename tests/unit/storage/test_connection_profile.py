@@ -88,6 +88,56 @@ def test_open_readonly_connection_rejects_immutable_with_descriptor(tmp_path: Pa
 
 
 @pytest.mark.parametrize(
+    "statement",
+    [
+        "INSERT INTO evidence VALUES ('wrong')",
+        "UPDATE evidence SET value = 'wrong'",
+        "DELETE FROM evidence",
+        "CREATE TABLE unwanted (value TEXT)",
+        "PRAGMA query_only = OFF",
+        "PRAGMA journal_mode = DELETE",
+        "PRAGMA wal_checkpoint",
+        "ATTACH DATABASE ':memory:' AS writable",
+    ],
+)
+def test_profiled_reader_rejects_write_mutants_at_sqlite_boundary(tmp_path: Path, statement: str) -> None:
+    db_path = tmp_path / "index.db"
+    with sqlite3.connect(db_path) as writer:
+        writer.execute("CREATE TABLE evidence (value TEXT)")
+        writer.execute("INSERT INTO evidence VALUES ('original')")
+
+    reader = connection_profile.open_readonly_connection(db_path, validate_schema=False)
+    try:
+        assert reader.execute("SELECT value FROM evidence").fetchone() == ("original",)
+        assert reader.execute("PRAGMA table_info(evidence)").fetchall()
+        with pytest.raises(sqlite3.DatabaseError):
+            reader.execute(statement)
+    finally:
+        reader.close()
+
+
+def test_readonly_temp_staging_cannot_write_persistent_or_attached_database(tmp_path: Path) -> None:
+    db_path = tmp_path / "index.db"
+    with sqlite3.connect(db_path) as writer:
+        writer.execute("CREATE TABLE evidence (value TEXT)")
+    reader = connection_profile.open_readonly_connection(db_path, validate_schema=False)
+    try:
+        with connection_profile.readonly_temp_staging(reader):
+            reader.execute("CREATE TEMP TABLE projection (value TEXT)")
+            reader.execute("INSERT INTO projection VALUES ('derived')")
+            with pytest.raises(sqlite3.DatabaseError):
+                reader.execute("INSERT INTO evidence VALUES ('wrong')")
+            with pytest.raises(sqlite3.DatabaseError):
+                reader.execute("ATTACH DATABASE ':memory:' AS writable")
+        assert reader.execute("SELECT value FROM projection").fetchone() == ("derived",)
+        assert reader.execute("PRAGMA query_only").fetchone() == (1,)
+        with pytest.raises(sqlite3.DatabaseError):
+            reader.execute("INSERT INTO projection VALUES ('wrong')")
+    finally:
+        reader.close()
+
+
+@pytest.mark.parametrize(
     ("profile_name", "expected_busy_timeout_ms", "expected_query_only"),
     [
         ("background-read", connection_profile.DB_TIMEOUT * 1000, 1),

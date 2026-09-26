@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import click
 
+from polylogue.api.archive import open_readonly_connection
 from polylogue.core.enums import AssertionKind
 from polylogue.paths import archive_root
 
@@ -105,8 +106,7 @@ def _read_assertion_export_rows(
 
     if not user_db_path.exists():
         return []
-    uri = f"file:{user_db_path}?mode=ro"
-    with contextlib.closing(sqlite3.connect(uri, uri=True)) as conn:
+    with contextlib.closing(open_readonly_connection(user_db_path, validate_schema=False)) as conn:
         conn.row_factory = sqlite3.Row
         return list_assertions_for_export(
             conn,

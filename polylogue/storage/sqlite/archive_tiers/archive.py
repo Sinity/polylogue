@@ -23,7 +23,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
 from typing import IO, Any, BinaryIO, Literal, NoReturn, TypedDict, cast
-from urllib.parse import quote
 
 from polylogue.analysis.affordance_usage import (
     clean_patterns as _clean_affordance_patterns,
@@ -331,8 +330,8 @@ from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError
 from polylogue.storage.sqlite.archive_tiers.write_shard import attached_session_shard as attach_session_shard
 from polylogue.storage.sqlite.connection_profile import (
     BULK_BUILD_WRITE_CONNECTION_PROFILE,
-    READ_CONNECTION_PRAGMA_STATEMENTS,
     WRITE_CONNECTION_PROFILE,
+    attach_readonly_database,
     open_connection,
     open_readonly_connection,
     open_source_tier_write_connection,
@@ -998,7 +997,7 @@ class ArchiveStore:
                     reason="database file not found",
                     guidance="run `polylogue ingest` to create the archive, or point --archive-root at an existing one",
                 ) from exc
-            pragma_statements = READ_CONNECTION_PRAGMA_STATEMENTS
+            pragma_statements: tuple[str, ...] = ()
         else:
             require_write_lease(
                 f"ArchiveStore(index={self.index_db_path})",
@@ -1040,9 +1039,7 @@ class ArchiveStore:
                 resolved_index.parent.name if resolved_index.parent.parent.name == ".index-generations" else None
             )
             assert_readable_archive_layout(self._conn, generation_id=generation_id)
-        if read_only:
-            self._conn.execute(f"PRAGMA busy_timeout = {max(0, int(read_timeout * 1000))}")
-        elif not self._pinned_read and not skip_runtime_index_ensure:
+        if not read_only and not self._pinned_read and not skip_runtime_index_ensure:
             # Fresh-bootstrap and same-version reopen both skip runtime-index
             # ensure elsewhere (initialize_archive_tier only replays DDL once,
             # at current_version==0. Owned inactive generations (bulk
@@ -1390,7 +1387,7 @@ class ArchiveStore:
                 continue
             alias = f"{tier}_tier"
             if alias not in attached:
-                self._conn.execute(f"ATTACH DATABASE ? AS {alias}", (f"file:{quote(str(path))}?mode=ro",))
+                attach_readonly_database(self._conn, path, alias=alias)
             schemas[tier] = alias
         if "user_tier" not in attached:
             schemas.pop("user")
@@ -1489,8 +1486,6 @@ class ArchiveStore:
                 conn = open_source_tier_write_connection(
                     self.source_db_path, archive_root=self._write_lease_archive_root
                 )
-            if self._read_only or self._inactive_candidate_durable_read_only:
-                conn.execute("PRAGMA foreign_keys = ON")
             self._source_conn = conn
             self.configure_operation_read_connection(conn)
         return self._source_conn
@@ -5780,7 +5775,10 @@ class ArchiveStore:
             else str(self.user_db_path)
         )
         try:
-            self._conn.execute("ATTACH DATABASE ? AS user_tier", (user_db_uri,))
+            if self._read_only:
+                attach_readonly_database(self._conn, self.user_db_path, alias="user_tier")
+            else:
+                self._conn.execute("ATTACH DATABASE ? AS user_tier", (user_db_uri,))
         except Exception as exc:
             raise self._user_tier_unavailable(reason=f"cannot open SQLite database ({exc})") from exc
         self._user_tier_attached = True
@@ -8752,7 +8750,7 @@ def _archive_source_raw_link_debt(
                 issue_count=issue_count,
                 detail=detail,
             )
-        conn.execute("ATTACH DATABASE ? AS source_debt", (f"file:{source_db_path}?mode=ro",))
+        attach_readonly_database(conn, source_db_path, alias="source_debt")
         missing = _count_scalar(
             conn,
             """
@@ -8793,7 +8791,7 @@ def _archive_user_overlay_debt(
     with closing(open_readonly_connection(index_db_path)) as conn:
         if configure_connection is not None:
             configure_connection(conn)
-        conn.execute("ATTACH DATABASE ? AS user_debt", (f"file:{user_db_path}?mode=ro",))
+        attach_readonly_database(conn, user_db_path, alias="user_debt")
         checks = (
             "SELECT COUNT(*) FROM user_debt.assertions u "
             "WHERE u.target_ref LIKE 'session:%' "
