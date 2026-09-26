@@ -11,7 +11,6 @@ from typing import Any
 import pytest
 
 from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
-from polylogue.maintenance.raw_authority import RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES
 from polylogue.operations import archive_debt as module
 from polylogue.operations.archive_debt import archive_debt_list
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_tier
@@ -574,9 +573,9 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert "metadata-only" in (metadata_only.details or "") or "non-session artifacts" in metadata_only.summary
 
 
-def test_archive_debt_blocks_oversized_raw_materialization_replay(tmp_path: Path) -> None:
+def test_archive_debt_keeps_large_non_json_raw_materialization_actionable(tmp_path: Path) -> None:
     _source_db, _index_db, source_file = _init_raw_materialization_fixture(tmp_path)
-    oversized_size = RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES + 1
+    oversized_size = 64 * 1024 * 1024 + 1
     blob = tmp_path / "blob" / "14" / ("14" * 31)
     blob.parent.mkdir(exist_ok=True)
     blob.write_bytes(b"{}")
@@ -607,20 +606,17 @@ def test_archive_debt_blocks_oversized_raw_materialization_replay(tmp_path: Path
 
     by_ref = {row.debt_ref: row for row in payload.rows}
     row = by_ref["debt:raw-materialization:claude-code-session:parse-pending"]
-    assert row.status == "blocked"
+    assert row.status == "actionable"
     assert row.affected_count == 1
-    # Nonprepared sources still use the ordinary bounded payload cache.
-    assert "Actual replay is blocked by the 64.0 MiB" in (row.details or "")
-    assert "ordinary raw-materialization cache limit" in (row.details or "")
-    assert row.actions[0].label == "Explain parser output"
-    assert payload.totals.affected_blocked == 1
+    assert row.actions[0].label == "Run daemon convergence"
+    assert payload.totals.affected_actionable >= 1
 
 
 def test_archive_debt_marks_oversized_stream_raw_materialization_actionable(tmp_path: Path) -> None:
     _source_db, _index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
     source_file = tmp_path / "claude-code.jsonl"
     source_file.write_text("{}", encoding="utf-8")
-    oversized_size = RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES + 1
+    oversized_size = 64 * 1024 * 1024 + 1
     blob = tmp_path / "blob" / "15" / ("15" * 31)
     blob.parent.mkdir(exist_ok=True)
     blob.write_bytes(b"{}")
@@ -653,8 +649,6 @@ def test_archive_debt_marks_oversized_stream_raw_materialization_actionable(tmp_
     row = by_ref["debt:raw-materialization:claude-code-session:parse-pending"]
     assert row.status == "actionable"
     assert row.affected_count == 1
-    assert "stream-record JSONL sources" in (row.details or "")
-    assert "Actual replay is blocked" not in (row.details or "")
     assert row.actions[0].label == "Run daemon convergence"
     assert payload.totals.affected_actionable >= 1
 
@@ -1175,5 +1169,4 @@ def test_archive_debt_keeps_prepared_jsonl_actionable_past_old_whale_envelope(tm
     payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
     row = {r.debt_ref: r for r in payload.rows}["debt:raw-materialization:claude-code-session:parse-pending"]
     assert row.status == "actionable"
-    assert "prepared streaming raw materialization" in (row.details or "")
-    assert "every member" in (row.details or "")
+    assert row.affected_count == 1

@@ -117,14 +117,12 @@ def _derive(
     *,
     source_roots: tuple[Path, ...] = (),
     limit: int = 128,
-    max_payload_bytes: int = 64 * 1024 * 1024,
     cursor: PassCursor | None = None,
 ) -> DerivationReport:
     return converge_raw_observations(
         root,
         source_roots=source_roots,
         limit=limit,
-        max_payload_bytes=max_payload_bytes,
         cursor=cursor,
     )
 
@@ -340,28 +338,25 @@ def test_canonical_authority_refusal_blocks_only_its_raw_observation(
         assert conn.execute("SELECT native_id FROM sessions").fetchall() == [("healthy",)]
 
 
-def test_canonical_component_budget_fails_only_the_oversized_component(tmp_path: Path) -> None:
-    """A resource refusal is durable failure, not archive-wide suppression."""
+def test_reported_blob_size_does_not_refuse_a_valid_component(tmp_path: Path) -> None:
+    """Large source metadata cannot revive the former component-size refusal."""
     bootstrap_archive_root(tmp_path)
     healthy = _admit(tmp_path, ("healthy",), path="healthy.json")
     oversized = _admit(tmp_path, ("oversized",), path="oversized.json")
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        healthy_size = int(
-            conn.execute("SELECT blob_size FROM raw_sessions WHERE raw_id = ?", (healthy,)).fetchone()[0]
-        )
-        conn.execute("UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?", (10_000, oversized))
+        conn.execute("UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?", (64 * 1024 * 1024 + 1, oversized))
         conn.commit()
 
-    report = _derive(tmp_path, limit=2, max_payload_bytes=healthy_size + 1)
-    assert report.failed == 1
+    report = _derive(tmp_path, limit=2)
+    assert report.done == 2 and report.failed == 0
     assert _inspect(tmp_path, healthy) == "valid"
-    assert _inspect(tmp_path, oversized) != "valid"
+    assert _inspect(tmp_path, oversized) == "valid"
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT native_id FROM sessions").fetchall() == [("healthy",)]
+        assert {row[0] for row in conn.execute("SELECT native_id FROM sessions")} == {"healthy", "oversized"}
 
 
-def test_canonical_oversized_component_remains_failed_across_repeated_envelopes(tmp_path: Path) -> None:
-    """A nonprepared parser keeps its protective resource envelope."""
+def test_canonical_component_replay_is_idempotent_across_repeated_passes(tmp_path: Path) -> None:
+    """A successful retained replay does not reparse on the next pass."""
     bootstrap_archive_root(tmp_path)
     raw_id = _admit(
         tmp_path,
@@ -369,19 +364,15 @@ def test_canonical_oversized_component_remains_failed_across_repeated_envelopes(
         path="repeated-envelope.json",
         payload=_chatgpt_payload(("repeated-envelope",)),
     )
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        blob_size = int(conn.execute("SELECT blob_size FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0])
+    first = _derive(tmp_path, limit=1)
+    second = _derive(tmp_path, limit=1)
 
-    first = _derive(tmp_path, limit=1, max_payload_bytes=max(1, blob_size - 1))
-    second = _derive(tmp_path, limit=1, max_payload_bytes=max(1, blob_size - 1))
-
-    assert first.done == 0
+    assert first.done == 1
     assert second.done == 0
-    assert first.failed >= 1
-    assert second.failed >= 1
-    assert _inspect(tmp_path, raw_id) != "valid"
+    assert first.failed == second.failed == 0
+    assert _inspect(tmp_path, raw_id) == "valid"
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (1,)
 
 
 def test_canonical_retryable_frontier_error_replays_from_retained_bytes(tmp_path: Path) -> None:

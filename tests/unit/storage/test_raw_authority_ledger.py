@@ -50,7 +50,6 @@ def _derive_raw_observations(root: Path, *, limit: int = 128) -> DerivationRepor
         root,
         source_roots=(),
         limit=limit,
-        max_payload_bytes=64 * 1024 * 1024,
     )
 
 

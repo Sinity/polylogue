@@ -265,10 +265,6 @@
     },
     {
       "file": "polylogue/daemon/metrics.py",
-      "digest": "e6be594aec644060d044db78875205fd9b58e7cf"
-    },
-    {
-      "file": "polylogue/daemon/metrics.py",
       "digest": "eb9caff932c44c042e0bab313f6100aa13c4379d"
     },
     {

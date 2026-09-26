@@ -120,7 +120,6 @@ def test_restart_rewinds_cursor_then_common_raw_derivation_recovers_retained_byt
         tmp_path,
         source_roots=(source_path.parent,),
         limit=1,
-        max_payload_bytes=1_000_000,
     )
     assert recovered.done == recovered.work.published == 1
     assert recovered.failed == recovered.pending == 0
@@ -133,7 +132,7 @@ def test_common_raw_derivation_restart_recovers_output_loss_without_ops_hints(tm
     source_root = tmp_path / "sources"
     source_root.mkdir()
     first = _write_unparsed_raw(tmp_path, source_path=source_root / "first.json", native_id="first")
-    initial = converge_raw_observations(tmp_path, source_roots=(source_root,), limit=1, max_payload_bytes=1_000_000)
+    initial = converge_raw_observations(tmp_path, source_roots=(source_root,), limit=1)
     assert initial.done == 1 and initial.failed == initial.pending == 0
 
     with sqlite3.connect(tmp_path / "index.db") as conn:
@@ -144,7 +143,7 @@ def test_common_raw_derivation_restart_recovers_output_loss_without_ops_hints(tm
         conn.commit()
     second = _write_unparsed_raw(tmp_path, source_path=source_root / "second.json", native_id="second")
 
-    restarted = converge_raw_observations(tmp_path, source_roots=(source_root,), limit=2, max_payload_bytes=1_000_000)
+    restarted = converge_raw_observations(tmp_path, source_roots=(source_root,), limit=2)
     assert restarted.done == restarted.work.published == 2
     assert restarted.failed == restarted.pending == 0
     assert _sessions_for_raw(tmp_path, first) == [("first", first)]

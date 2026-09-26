@@ -11,7 +11,7 @@ import hashlib
 import json
 import sqlite3
 import tempfile
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import closing, contextmanager
@@ -128,11 +128,14 @@ class RawObservationDerivation:
     prerequisites: tuple[str, ...] = ()
     recipe_version = RAW_AUTHORITY_PARSER_FINGERPRINT
 
-    def __init__(self, archive_root: Path, *, max_payload_bytes: int = 64 * 1024 * 1024) -> None:
-        if max_payload_bytes < 1:
-            raise ValueError("raw observation cache budget must be positive")
+    def __init__(
+        self,
+        archive_root: Path,
+        *,
+        prepare_non_json_artifact: Callable[..., PreparedJsonl] | None = None,
+    ) -> None:
         self.archive_root = archive_root
-        self.max_payload_bytes = max_payload_bytes
+        self._prepare_non_json_artifact = prepare_non_json_artifact
 
     @staticmethod
     def _blob_stat_identity(path: Path) -> tuple[int, int, int, int, int]:
@@ -487,9 +490,7 @@ class RawObservationDerivation:
         from polylogue.sources.dispatch import is_jsonl_source_path
         from polylogue.sources.revision_backfill import (
             PreparedRetainedInput,
-            RawParsePrefetchCache,
             RetainedPreparationRetryableError,
-            parse_retained_raw_sessions,
             prepare_retained_jsonl_artifact,
         )
         from polylogue.sources.sqlite_export import looks_like_logical_source_path
@@ -505,7 +506,7 @@ class RawObservationDerivation:
             return RawObservationReplacement(
                 key,
                 "",
-                RawParsePrefetchCache(max_inflight_bytes=self.max_payload_bytes),
+                None,
                 (),
                 already_valid=True,
             )
@@ -515,11 +516,7 @@ class RawObservationDerivation:
             raw_ids, logical_keys = archive.expand_raw_membership_selection([key])
             binding = self._binding(raw_ids)
             descriptors = {raw_id: archive.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
-            process_prepared = bool(descriptors) and all(
-                (is_jsonl_source_path(path) or Path(path).suffix.lower() == ".json")
-                and not looks_like_logical_source_path(BlobStore(self.archive_root / "blob").blob_path(blob_hash))
-                for _provider, blob_hash, path, _kind, _size in descriptors.values()
-            )
+            process_prepared = bool(descriptors)
             if process_prepared:
                 from polylogue.core.sources import origin_from_provider
                 from polylogue.sources.prepared_merge import (
@@ -606,8 +603,18 @@ class RawObservationDerivation:
                             artifact = prepared_artifacts.get(artifact_key)
                             if artifact is None:
                                 try:
+                                    is_json = (
+                                        is_jsonl_source_path(path) or Path(path).suffix.lower() == ".json"
+                                    ) and not looks_like_logical_source_path(blob_path)
+                                    worker = (
+                                        prepare_retained_jsonl_artifact if is_json else self._prepare_non_json_artifact
+                                    )
+                                    if worker is None:
+                                        raise RetainedPreparationRetryableError(
+                                            "non-JSON retained preparation requires an operations worker"
+                                        )
                                     artifact = pool.submit(
-                                        prepare_retained_jsonl_artifact,
+                                        worker,
                                         raw_id,
                                         provider.value,
                                         blob_hash,
@@ -623,11 +630,11 @@ class RawObservationDerivation:
                                 except TimeoutError as exc:
                                     terminate_process_pool(pool)
                                     raise RetainedPreparationRetryableError(
-                                        f"retained JSON preparation timed out for raw {raw_id}"
+                                        f"retained preparation timed out for raw {raw_id}"
                                     ) from exc
                                 except BrokenProcessPool as exc:
                                     raise RetainedPreparationRetryableError(
-                                        f"retained JSON worker exited before preparing raw {raw_id}"
+                                        f"retained worker exited before preparing raw {raw_id}"
                                     ) from exc
                             if not blob_store.verify(blob_hash):
                                 raise RetainedPreparationRetryableError(f"retained raw blob changed: {raw_id}")
@@ -642,18 +649,18 @@ class RawObservationDerivation:
                             verified_blob_stats[raw_id] = after
                             if artifact.deferred:
                                 raise RetainedPreparationRetryableError(
-                                    f"retained JSON preparation deferred for raw {raw_id}: {artifact.error}"
+                                    f"retained preparation deferred for raw {raw_id}: {artifact.error}"
                                 )
                             if artifact.error is None and artifact.blob_hash != blob_hash:
                                 raise RetainedPreparationRetryableError(
-                                    f"retained JSON preparation hash changed for raw {raw_id}"
+                                    f"retained preparation hash changed for raw {raw_id}"
                                 )
                             if artifact.error is None:
                                 try:
                                     artifact.verify_files(full=artifact_key not in prepared_artifacts)
                                 except (OSError, ValueError) as exc:
                                     raise RetainedPreparationRetryableError(
-                                        f"retained JSON preparation seal changed for raw {raw_id}"
+                                        f"retained preparation seal changed for raw {raw_id}"
                                     ) from exc
                             prepared_artifacts[artifact_key] = artifact
                             prepared[raw_id] = PreparedRetainedInput(
@@ -828,20 +835,9 @@ class RawObservationDerivation:
                     scratch_directory=scratch,
                     scratch_owner=scratch_owner,
                 )
-            sizes = archive.raw_payload_sizes(raw_ids)
-            if sum(sizes.values()) > self.max_payload_bytes:
-                raise ValueError("raw observation component exceeds its payload budget")
-            cache = RawParsePrefetchCache(max_inflight_bytes=self.max_payload_bytes)
-            empty = True
-            for raw_id in raw_ids:
-                _provider, blob_hash, _path, kind, size = archive.raw_revision_descriptor(raw_id)
-                if not BlobStore(self.archive_root / "blob").verify(blob_hash):
-                    raise ValueError(f"retained raw blob does not match its identity: {raw_id}")
-                parsed_sessions = parse_retained_raw_sessions(archive, raw_id)
-                empty = empty and not parsed_sessions
-                if not cache.try_admit(raw_id, parsed_sessions, payload_bytes=size, revision_kind=kind):
-                    raise ValueError("raw observation parse preparation exceeds its payload budget")
-        return RawObservationReplacement(key, binding, cache, raw_ids, empty=empty)
+        # An empty raw selection has no parse payload; the canonical replay
+        # owner remains responsible for its final authority verdict.
+        return RawObservationReplacement(key, binding, None, raw_ids)
 
     def publish(self, frame: RawFrame, replacement: RawObservationReplacement) -> bool:
         from polylogue.sources.revision_backfill import (
@@ -933,7 +929,7 @@ class RawObservationDerivation:
                     self.archive_root,
                     active_index_path=Path(frame.source_revision),
                     selected_raw_ids=list(replacement.raw_ids),
-                    max_payload_bytes=None if replacement.prepared_inputs is not None else self.max_payload_bytes,
+                    max_payload_bytes=None,
                     prefetch_cache=replacement.payload,
                     prepared_inputs=replacement.prepared_inputs,
                     prepared_aggregates=replacement.prepared_aggregates,

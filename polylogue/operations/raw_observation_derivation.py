@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from polylogue.daemon.derivation import (
     Budget,
@@ -18,13 +18,50 @@ from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.derived.raw import RAW_OBSERVATION_DOMAIN as _RAW_OBSERVATION_DOMAIN
 from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationScope
 
+if TYPE_CHECKING:
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+
 RAW_OBSERVATION_DOMAIN = _RAW_OBSERVATION_DOMAIN
 _RAW_OBSERVATION_RECIPE_VERSION = RawObservationDerivation.recipe_version
 
 
-def make_raw_observation_derivation(archive_root: Path, *, max_payload_bytes: int) -> RawObservationDerivation:
+def prepare_retained_non_json_artifact_worker(
+    raw_id: str,
+    provider_token: str,
+    blob_hash: str,
+    source_path: str,
+    kind_token: str,
+    native_id: str | None,
+    blob_root: str,
+    source_db_path: str,
+    index_db_path: str,
+    directory: str,
+    fallback_timestamp: str | None,
+) -> PreparedJsonl:
+    """Pin the archive in the worker before the source parser reads retained bytes."""
+    from polylogue.operations.operation_context import open_operation_read
+    from polylogue.sources.revision_backfill import prepare_retained_non_json_artifact
+
+    with open_operation_read(Path(source_db_path).parent) as pinned:
+        return prepare_retained_non_json_artifact(
+            pinned.archive,
+            raw_id,
+            provider_token,
+            blob_hash,
+            source_path,
+            kind_token,
+            native_id,
+            blob_root,
+            source_db_path,
+            index_db_path,
+            directory,
+            fallback_timestamp,
+        )
+
+
+def make_raw_observation_derivation(archive_root: Path) -> RawObservationDerivation:
     """Construct the storage-owned raw adapter from the operations boundary."""
-    return RawObservationDerivation(archive_root, max_payload_bytes=max_payload_bytes)
+    return RawObservationDerivation(archive_root, prepare_non_json_artifact=prepare_retained_non_json_artifact_worker)
 
 
 def raw_observation_output_session_ids(archive_root: Path, raw_id: str) -> tuple[str, ...]:
@@ -78,7 +115,7 @@ def raw_observation_pending_roots(
     A page containing pending work is revisited until publication resolves it.
     No partial all-valid prefix can certify the entire selected source scope.
     """
-    adapter = make_raw_observation_derivation(archive_root, max_payload_bytes=64 * 1024 * 1024)
+    adapter = make_raw_observation_derivation(archive_root)
     pending: set[Path] = set()
     ordered = tuple(dict.fromkeys(paths))
     if not ordered:
@@ -129,7 +166,7 @@ def raw_observation_backlog_snapshot(archive_root: Path, *, limit: int) -> dict[
             "page_complete": True,
         }
 
-    adapter = make_raw_observation_derivation(archive_root, max_payload_bytes=64 * 1024 * 1024)
+    adapter = make_raw_observation_derivation(archive_root)
     frame = raw_observation_frame(archive_root)
     try:
         raw_ids, next_cursor = adapter.required_page(frame, cursor=None, limit=limit)
@@ -199,10 +236,9 @@ def converge_raw_observations(
     *,
     source_roots: Sequence[Path],
     limit: int,
-    max_payload_bytes: int,
     cursor: PassCursor | None = None,
 ) -> DerivationReport:
-    adapter = make_raw_observation_derivation(archive_root, max_payload_bytes=max_payload_bytes)
+    adapter = make_raw_observation_derivation(archive_root)
     return converge(
         DerivationRegistry((adapter,)),
         raw_observation_frame(archive_root, source_roots=source_roots),

@@ -79,7 +79,7 @@ def _bounded_pending_raw_ids(
     """Return one canonical raw-observation page that still needs work."""
     if limit < 1:
         raise ValueError("limit must be positive")
-    adapter = make_raw_observation_derivation(config.archive_root, max_payload_bytes=64 * 1024 * 1024)
+    adapter = make_raw_observation_derivation(config.archive_root)
     frame = raw_observation_frame(
         config.archive_root,
         raw_ids=(raw_artifact_id,) if raw_artifact_id is not None else (),

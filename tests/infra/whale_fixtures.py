@@ -20,10 +20,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, BinaryIO, Final, cast
 
-from polylogue.maintenance.raw_authority import (
-    RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES,
-    RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
-)
 from tests.infra.archive_templates import clone_archive_template
 
 _TERMINAL_WIRE_BYTES: Final = 90_822_451
@@ -73,8 +69,8 @@ class WhaleFixtureDimensions:
     near_terminal_predecessor_bytes: int = _NEAR_TERMINAL_PREDECESSOR_BYTES
     stream_event_count: int = _STREAM_EVENT_COUNT
     giant_attachment_raw_bytes: int = _GIANT_ATTACHMENT_RAW_BYTES
-    ordinary_blob_limit_bytes: int = RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES
-    whale_blob_limit_bytes: int = RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES
+    ordinary_blob_limit_bytes: int = 64 * 1024 * 1024
+    whale_blob_limit_bytes: int = 8 * 1024 * 1024 * 1024
 
     def manifest_dimensions(self) -> tuple[tuple[str, int | str], ...]:
         return (

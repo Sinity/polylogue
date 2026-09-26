@@ -29,7 +29,7 @@ def _run(
     root: Path, *, limit: int, raw_ids: tuple[str, ...] = (), cursor: PassCursor | None = None
 ) -> DerivationReport:
     return converge(
-        DerivationRegistry((RawObservationDerivation(root, max_payload_bytes=1024 * 1024 * 1024),)),
+        DerivationRegistry((RawObservationDerivation(root),)),
         raw_observation_frame(root, raw_ids=raw_ids),
         budget=Budget(page=limit, discovery=limit, inspection=2 * limit, compute=limit, publication=limit),
         cursor=cursor,
