@@ -6,7 +6,7 @@ import os
 import threading
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -63,12 +63,13 @@ class StatusSnapshot:
     # cannot tell a reader that the daemon switched to a new index generation;
     # a last-good payload from the old generation must then be advisory.
     frame: str | None = None
+    frame_error: str | None = None
 
     def with_metadata(self) -> JSONDocument:
         age_s = max(0.0, time.monotonic() - self.captured_monotonic)
         current_frame = _status_frame()
         frame_changed = current_frame != self.frame
-        state = "stale" if frame_changed or age_s > STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S else "fresh"
+        state = "stale" if self.frame_error or frame_changed or age_s > STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S else "fresh"
         base_payload: dict[str, object] = dict(self.payload)
         base_payload.setdefault("component_readiness", _minimal_component_readiness(base_payload))
         payload: dict[str, object] = normalize_raw_frontier_status_payload(
@@ -86,10 +87,12 @@ class StatusSnapshot:
             "current_frame": current_frame,
             "frame_changed": frame_changed,
             "refresh_error": self.refresh_error,
+            "frame_error": self.frame_error,
             "state_evidence": _status_snapshot_state_evidence(
                 state=state,
                 captured_at=self.captured_at,
                 evaluated_at=evaluated_at,
+                stale_cause=self.frame_error or ("snapshot-frame-changed" if frame_changed else None),
             ).to_dict(),
         }
         payload["daemon_write_coordinator"] = _daemon_write_coordinator_payload()
@@ -118,6 +121,7 @@ def _status_snapshot_state_evidence(
     state: str,
     captured_at: str,
     evaluated_at: str,
+    stale_cause: str | None = None,
 ) -> EvidenceValue[str]:
     snapshot_ref = ObjectRef(kind="run", object_id=f"status-snapshot:{captured_at}")
     if state == "fresh":
@@ -126,7 +130,7 @@ def _status_snapshot_state_evidence(
         freshness = FreshnessProvenance(
             state="stale",
             evaluated_at=evaluated_at,
-            cause=f"snapshot-age-exceeded-{STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S:g}s",
+            cause=stale_cause or f"snapshot-age-exceeded-{STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S:g}s",
             last_good_at=captured_at,
             last_good_evidence_refs=(snapshot_ref,),
         )
@@ -439,7 +443,9 @@ def refresh_status_snapshot(*, payload: JSONDocument | None = None, rich: bool =
             captured_at=datetime.now(UTC).isoformat(),
         )
     try:
+        captured_monotonic = time.monotonic()
         captured_at = datetime.now(UTC).isoformat()
+        start_frame = _status_frame()
         refresh_error: str | None = None
         try:
             if payload is None:
@@ -473,13 +479,30 @@ def refresh_status_snapshot(*, payload: JSONDocument | None = None, rich: bool =
         except Exception as exc:
             refresh_error = str(exc)
             payload = _minimal_status_payload(refresh_error=refresh_error)
-        snapshot = StatusSnapshot(
-            payload=json_document(dict(payload)),
-            captured_monotonic=time.monotonic(),
-            captured_at=captured_at,
-            refresh_error=refresh_error,
-            frame=_status_frame(),
-        )
+        end_frame = _status_frame()
+        if start_frame != end_frame:
+            with _SNAPSHOT_LOCK:
+                previous = _SNAPSHOT
+            reason = "archive frame changed during status collection"
+            if previous is not None:
+                snapshot = replace(previous, frame_error=reason)
+            else:
+                snapshot = StatusSnapshot(
+                    payload=_minimal_status_payload(refresh_error=reason),
+                    captured_monotonic=captured_monotonic,
+                    captured_at=captured_at,
+                    refresh_error=reason,
+                    frame=start_frame,
+                    frame_error=reason,
+                )
+        else:
+            snapshot = StatusSnapshot(
+                payload=json_document(dict(payload)),
+                captured_monotonic=captured_monotonic,
+                captured_at=captured_at,
+                refresh_error=refresh_error,
+                frame=start_frame,
+            )
         with _SNAPSHOT_LOCK:
             _SNAPSHOT = snapshot
         return snapshot
@@ -517,12 +540,15 @@ def snapshot_state_for_metrics() -> dict[str, Any]:
     frame_changed = current_frame != snapshot.frame
     return {
         "age_s": round(age_s, 3),
-        "state": "stale" if frame_changed or age_s > STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S else "fresh",
+        "state": "stale"
+        if snapshot.frame_error or frame_changed or age_s > STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S
+        else "fresh",
         "captured_at": snapshot.captured_at,
         "frame": snapshot.frame,
         "current_frame": current_frame,
         "frame_changed": frame_changed,
         "refresh_error": snapshot.refresh_error or "",
+        "frame_error": snapshot.frame_error or "",
     }
 
 

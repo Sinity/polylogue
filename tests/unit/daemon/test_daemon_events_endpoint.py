@@ -368,6 +368,31 @@ class TestStatusEventEtag:
         assert snapshot["state"] == "stale"
         assert frontier["overall_status"] == "unknown"
 
+    def test_status_etag_changes_when_archive_frame_changes(
+        self,
+        empty_events_db: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from polylogue.daemon.events import emit_daemon_event
+        from polylogue.daemon.status_snapshot import refresh_status_snapshot
+
+        frame = {"value": "A"}
+        monkeypatch.setattr("polylogue.daemon.status_snapshot._status_frame", lambda: frame["value"])
+        emit_daemon_event("ingestion_batch", payload={})
+        refresh_status_snapshot(payload={"ok": False, "checked_at": "A"})
+        first = _make_handler("GET", "/api/status")
+        first.do_GET()
+        etag = _response_etag(cast("BytesIO", first.wfile).getvalue())
+
+        frame["value"] = "B"
+        second = _make_handler("GET", "/api/status", extra_headers={"If-None-Match": etag})
+        second.do_GET()
+        response = cast("BytesIO", second.wfile).getvalue()
+        payload = _response_json(response)
+        assert b" 200 " in response
+        assert cast(dict[str, object], payload["status_snapshot"])["state"] == "stale"
+        assert cast(dict[str, object], payload["status_snapshot"])["current_frame"] == "B"
+
     def test_status_etag_changes_when_snapshot_refreshes_to_violation(
         self,
         empty_events_db: Path,
