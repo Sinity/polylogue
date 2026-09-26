@@ -220,6 +220,14 @@ def execute_read_operation(
         from polylogue.operations.read_view_extras import execute_effective_context_read
 
         result = execute_effective_context_read(payload, archive=archive)
+    elif name == "read.lineage":
+        from polylogue.operations.read_view_lineage import execute_lineage_read
+
+        result = execute_lineage_read(payload, archive=archive)
+    elif name == "read.topology":
+        from polylogue.operations.read_view_lineage import execute_topology_read
+
+        result = execute_topology_read(payload, archive=archive)
     elif name == "read.neighbors":
         from polylogue.operations.read_view_extras import execute_neighbor_read
 

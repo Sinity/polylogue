@@ -98,6 +98,21 @@ class EffectiveContextReadRequest(_OperationPayload):
     at_position: int | None = None
 
 
+class LineageReadRequest(_OperationPayload):
+    session_id: str = Field(min_length=1)
+    node_offset: int = Field(default=0, ge=0)
+    node_limit: int | None = Field(default=None, ge=1)
+    edge_offset: int = Field(default=0, ge=0)
+    edge_limit: int | None = Field(default=None, ge=1)
+
+
+class TopologyReadRequest(_OperationPayload):
+    session_id: str = Field(min_length=1)
+    node_offset: int = Field(default=0, ge=0)
+    node_limit: int = Field(default=200, ge=1)
+    edge_limit: int = Field(default=500, ge=1)
+
+
 class NeighborReadRequest(_OperationPayload):
     session_id: str | None = None
     query: str | None = None
@@ -908,6 +923,16 @@ class EffectiveContextReadResult(_OperationResult):
     payload: dict[str, object]
 
 
+class LineageReadResult(_OperationResult):
+    view: Literal["lineage"]
+    payload: dict[str, object]
+
+
+class TopologyReadResult(_OperationResult):
+    view: Literal["topology"]
+    payload: dict[str, object]
+
+
 class NeighborReadResult(_OperationResult):
     view: Literal["neighbors"]
     payload: dict[str, object]
@@ -1388,6 +1413,22 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_contract="read.effective_context.result/v1",
         request_model=EffectiveContextReadRequest,
         result_model=EffectiveContextReadResult,
+    ),
+    DaemonOperationSpec(
+        "read.lineage",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        result_contract="read.lineage.result/v1",
+        request_model=LineageReadRequest,
+        result_model=LineageReadResult,
+    ),
+    DaemonOperationSpec(
+        "read.topology",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        result_contract="read.topology.result/v1",
+        request_model=TopologyReadRequest,
+        result_model=TopologyReadResult,
     ),
     DaemonOperationSpec(
         "read.neighbors",

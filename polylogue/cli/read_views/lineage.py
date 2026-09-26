@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from typing import cast
 
-from polylogue.api.sync.bridge import run_coroutine_sync
+from polylogue.cli.operation_kernel import OperationKernelError, OperationRequest
+from polylogue.cli.read_dispatch import daemon_route_disabled, dispatch_read
 from polylogue.cli.read_view_registry import LINEAGE_READ_VIEW_OPTION_NAMES, TOPOLOGY_READ_VIEW_OPTION_NAMES
 from polylogue.cli.read_views.base import (
     ReadViewInvocation,
@@ -15,7 +16,6 @@ from polylogue.cli.read_views.base import (
 )
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
-from polylogue.config import Config
 
 
 def build_lineage_options(values: ReadViewOptionValues) -> ReadViewLineageOptions:
@@ -34,23 +34,26 @@ def run_read_lineage(env: AppEnv, request: RootModeRequest, invocation: ReadView
     assert session_id is not None
     options = cast(ReadViewLineageOptions, invocation.options or ReadViewLineageOptions())
 
-    async def _run() -> object | None:
-        from polylogue.api import Polylogue
+    try:
+        result, _ = dispatch_read(
+            env.config,
+            OperationRequest(
+                "read.lineage",
+                {
+                    "session_id": session_id,
+                    "node_offset": options.node_offset,
+                    "node_limit": options.node_limit,
+                    "edge_offset": options.edge_offset,
+                    "edge_limit": options.edge_limit,
+                },
+            ),
+            daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
+        )
+    except OperationKernelError as exc:
+        from polylogue.cli.render.outcome import exit_for_read_failure
 
-        async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
-            return await api.compact_lineage(
-                session_id,
-                node_offset=options.node_offset,
-                node_limit=options.node_limit,
-                edge_offset=options.edge_offset,
-                edge_limit=options.edge_limit,
-            )
-
-    graph = run_coroutine_sync(_run())
-    if graph is None:
-        env.ui.error(f"Session not found: {session_id}")
-        return
-    content = json.dumps(graph.model_dump(mode="json"), indent=2) + "\n"  # type: ignore[attr-defined]
+        exit_for_read_failure(exc)
+    content = json.dumps(result["payload"], indent=2) + "\n"
     deliver_content(
         env, content, destination=invocation.destination, out_path=invocation.out_path, output_format="json"
     )
@@ -75,27 +78,25 @@ def run_read_topology(env: AppEnv, request: RootModeRequest, invocation: ReadVie
     node_limit = options.node_limit or cast(int | None, request.params.get("limit")) or 200
     edge_limit = options.edge_limit or 500
 
-    async def _run() -> object | None:
-        from polylogue.api import Polylogue
+    try:
+        result, _ = dispatch_read(
+            env.config,
+            OperationRequest(
+                "read.topology",
+                {
+                    "session_id": session_id,
+                    "node_offset": options.node_offset,
+                    "node_limit": node_limit,
+                    "edge_limit": edge_limit,
+                },
+            ),
+            daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
+        )
+    except OperationKernelError as exc:
+        from polylogue.cli.render.outcome import exit_for_read_failure
 
-        async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
-            return await api.get_session_topology(
-                session_id,
-                node_offset=options.node_offset,
-                node_limit=node_limit,
-                edge_limit=edge_limit,
-            )
-
-    topology = run_coroutine_sync(_run())
-    if topology is None:
-        env.ui.error(f"Session not found: {session_id}")
-        return
-    # The operation boundary owns the envelope and its outcome; the CLI only
-    # serializes it, so `polylogue read topology` is byte-identical to the
-    # MCP payload and to the canonical keys of the HTTP envelope.
-    from polylogue.operations.topology_envelope import topology_public_envelope
-
-    content = json.dumps(topology_public_envelope(topology, session_id=session_id), indent=2) + "\n"  # type: ignore[arg-type]
+        exit_for_read_failure(exc)
+    content = json.dumps(result["payload"], indent=2) + "\n"
     deliver_content(
         env, content, destination=invocation.destination, out_path=invocation.out_path, output_format="json"
     )
