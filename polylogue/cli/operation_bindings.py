@@ -108,6 +108,10 @@ CLI_OPERATION_BINDINGS: Mapping[str, CliOperationBinding] = {
         lowering="polylogue.cli.read_views.correlation:run_read_correlation",
         renderers=("polylogue.cli.read_views.correlation:run_read_correlation",),
     ),
+    "read.context": CliOperationBinding(
+        lowering="polylogue.cli.read_views.context:run_read_context",
+        renderers=("polylogue.cli.read_views.context:run_read_context",),
+    ),
     "session.reference": CliOperationBinding(
         lowering=f"{_LOWERING}:lower_session_reference",
         renderers=(f"{_ARCHIVE_QUERY}:_emit_reference_query",),

@@ -3542,18 +3542,56 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         related_limit: int = 5,
         boundary: str = "session_start",
         token_budget: int | None = None,
+        repo_path: str | None = None,
+        cwd: str | None = None,
+        recent_files: tuple[str, ...] = (),
+        require_session: bool = True,
+        source_tool_calls: dict[str, str] | None = None,
     ) -> Any:
         """Build a scheduler-admitted context preamble for one boundary."""
-        from polylogue.context.preamble import build_context_preamble_payload
+        import asyncio
+        from contextlib import suppress
+        from datetime import datetime, timezone
 
-        return await build_context_preamble_payload(
-            self,
-            session_id=session_id,
-            related_limit=related_limit,
-            source_tool_calls={"context_preamble_payload": "polylogue-api"},
-            boundary=boundary,
-            token_budget=token_budget,
+        from polylogue.api.facade_client import FacadeDaemonRequiredError, submit_facade_writer
+        from polylogue.context.preamble import _git_project_state
+        from polylogue.operations.context_preamble import execute_context_preamble
+
+        observed_at = datetime.now(timezone.utc)
+        project_state = _git_project_state(cwd)
+        result = await run_archive_read(
+            _active_archive_root(self.config),
+            operation="context.preamble",
+            arguments={"session_id": session_id, "related_limit": related_limit, "boundary": boundary},
+            work=lambda archive: asyncio.run(
+                execute_context_preamble(
+                    archive,
+                    session_id=session_id,
+                    related_limit=related_limit,
+                    repo_path=repo_path,
+                    cwd=cwd,
+                    recent_files=recent_files,
+                    source_tool_calls=source_tool_calls or {"context_preamble_payload": "polylogue-api"},
+                    require_session=require_session,
+                    boundary=boundary,
+                    token_budget=token_budget,
+                    observed_project_state=project_state,
+                    observed_at=observed_at,
+                )
+            ),
         )
+        if result.ledger is not None:
+            with suppress(OSError, sqlite3.Error, DatabaseError, FacadeDaemonRequiredError):
+                await submit_facade_writer(
+                    self.config,
+                    "context_ledger",
+                    {
+                        "build_ref": result.ledger.build_ref,
+                        "ledger_rows": [row.as_dict() for row in result.ledger.ledger],
+                        "observed_at_ms": result.observed_at_ms,
+                    },
+                )
+        return result.payload
 
     async def explain_query_expression(self, expression: str) -> JSONDocument:
         """Explain query DSL parsing, AST metadata, and lowering details."""

@@ -502,12 +502,10 @@ async def execute_session_operation(api: Any, request: SessionOperation, *, raw_
             gaps=window.gaps,
         )
     assert isinstance(request, ResumeContext)
-    from polylogue.context.preamble import build_context_preamble_payload
     from polylogue.surfaces.payloads import ContextPreamble
 
-    result = await build_context_preamble_payload(
-        api,
-        session_id=request.session_id or "",
+    result = await api.context_preamble_payload(
+        request.session_id or "",
         repo_path=request.repo_path,
         cwd=request.cwd,
         recent_files=tuple(request.recent_files),

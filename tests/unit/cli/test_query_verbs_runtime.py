@@ -955,23 +955,30 @@ def test_read_verb_dialogue_query_set_keeps_max_tokens_as_projection() -> None:
     assert projection_spec.projection.max_tokens == 7
 
 
-def test_read_verb_context_composes_preamble_not_passthrough() -> None:
-    """read --view context routes to the context preamble composer."""
+def test_read_verb_context_uses_declared_preamble_operation() -> None:
+    """The context view sends its seed and budget to the pinned read route."""
     _, child = _context_pair(params={"conv_id": "claude-code:abc123"}, query_terms=())
+    child.obj.config = MagicMock()
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
     with (
-        patch("polylogue.context.preamble.compose_context_preamble", return_value="{}") as compose,
+        patch("polylogue.context.preamble._git_project_state", return_value=(None, None)),
+        patch(
+            "polylogue.cli.read_views.context.dispatch_read",
+            return_value=({"payload": {"preamble_version": "1.0"}, "ledger": None}, None),
+        ) as dispatch_context,
         patch("polylogue.cli.read_views.standard.execute_query_request") as execute,
         patch("polylogue.cli.read_views.context.deliver_content") as deliver,
     ):
         wrapped(child, **_read_verb_kwargs(view="context", related_limit=3))
 
     execute.assert_not_called()
-    compose.assert_called_once()
-    assert compose.call_args.kwargs["session_id"] == "claude-code:abc123"
-    assert compose.call_args.kwargs["related_limit"] == 3
+    dispatch_context.assert_called_once()
+    operation = dispatch_context.call_args.args[1]
+    assert operation.operation == "read.context"
+    assert operation.payload["session_id"] == "claude-code:abc123"
+    assert operation.payload["related_limit"] == 3
     deliver.assert_called_once()
 
 

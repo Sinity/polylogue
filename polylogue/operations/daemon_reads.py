@@ -236,6 +236,10 @@ def execute_read_operation(
         from polylogue.operations.read_view_extras import execute_correlation_read
 
         result = execute_correlation_read(payload, archive=archive)
+    elif name == "read.context":
+        from polylogue.operations.context_preamble import execute_context_preamble_read
+
+        result = execute_context_preamble_read(payload, archive=archive)
     elif name == "session.reference":
         result = _session_reference_payload(payload, archive=archive)
     elif name == "query.units":

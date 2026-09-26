@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -335,6 +336,9 @@ async def build_context_preamble_payload(
     require_session: bool = True,
     boundary: str = "session_start",
     token_budget: int | None = None,
+    observed_project_state: tuple[ContextPreambleProjectState | None, str | None] | None = None,
+    observed_at: datetime | None = None,
+    ledger_sink: Callable[[ContextAssembly], None] | None = None,
 ) -> ContextPreamble | None:
     """Build the shared typed context preamble payload for one seed session.
 
@@ -396,7 +400,9 @@ async def build_context_preamble_payload(
     project: ContextPreambleProjectState | None = None
     git_repo = getattr(conv, "git_repository_url", None) if conv is not None else None
     git_branch = getattr(conv, "git_branch", None) if conv is not None else None
-    local_git_state, git_failure = _git_project_state(cwd)
+    local_git_state, git_failure = (
+        observed_project_state if observed_project_state is not None else _git_project_state(cwd)
+    )
     if git_failure is not None:
         component_failures["project_state"] = git_failure
     if git_repo or git_branch or local_git_state is not None:
@@ -495,7 +501,10 @@ async def build_context_preamble_payload(
         execution_context=execution_context,
         token_budget=token_budget if token_budget is not None else default_budget,
     )
-    _record_preamble_ledger(polylogue, assembly)
+    if ledger_sink is not None:
+        ledger_sink(assembly)
+    else:
+        _record_preamble_ledger(polylogue, assembly)
 
     admitted_content = {item.ref: item.content for item in assembly.quoted_evidence}
     values: dict[str, object] = {}
@@ -529,7 +538,7 @@ async def build_context_preamble_payload(
 
     return ContextPreamble(
         preamble_version="1.0",
-        injected_at=datetime.now(timezone.utc).isoformat(),
+        injected_at=(observed_at or datetime.now(timezone.utc)).isoformat(),
         source_tool_calls=cast("dict[str, str]", values.get("source_tool_calls", {})),
         session_lineage=cast("ContextPreambleLineage | None", values.get("session_lineage")),
         recent_related_sessions=cast("list[ContextPreambleSession]", values.get("recent_related_sessions", [])),

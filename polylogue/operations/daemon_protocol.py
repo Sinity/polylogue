@@ -134,6 +134,21 @@ class CorrelationReadRequest(_OperationPayload):
     confidence_threshold: float = 0.3
 
 
+class ContextPreambleReadRequest(_OperationPayload):
+    session_id: str | None = None
+    related_limit: int = Field(default=5, ge=1, le=100)
+    repo_path: str | None = None
+    cwd: str | None = None
+    recent_files: list[str] = Field(default_factory=list)
+    require_session: bool = True
+    boundary: str = "session_start"
+    token_budget: int | None = Field(default=None, ge=1)
+    source_tool_calls: dict[str, str] = Field(default_factory=dict)
+    observed_at: str = Field(min_length=1)
+    observed_project_state: dict[str, object] | None = None
+    project_failure: str | None = None
+
+
 class AssertionClaimsListRequest(_OperationPayload):
     kinds: list[str] | None = None
     statuses: list[str] | None = Field(default_factory=lambda: ["active", "candidate"])
@@ -396,6 +411,7 @@ class ContextLedgerRowRequest(_OperationPayload):
 class FacadeContextLedgerRequest(_OperationPayload):
     build_ref: str = Field(min_length=1)
     ledger_rows: list[ContextLedgerRowRequest] = Field(default_factory=list)
+    observed_at_ms: int = Field(default=0, ge=0)
 
 
 class CompletionRequest(_OperationPayload):
@@ -943,6 +959,12 @@ class CorrelationReadResult(_OperationResult):
     payload: dict[str, object]
 
 
+class ContextPreambleReadResult(_OperationResult):
+    view: Literal["context"]
+    payload: dict[str, object] | None
+    ledger: dict[str, object] | None
+
+
 class CompletionCandidateResult(_OperationPayload):
     value: str
     insert: str
@@ -1446,6 +1468,14 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_contract="read.correlation.result/v1",
         request_model=CorrelationReadRequest,
         result_model=CorrelationReadResult,
+    ),
+    DaemonOperationSpec(
+        "read.context",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        result_contract="read.context.result/v1",
+        request_model=ContextPreambleReadRequest,
+        result_model=ContextPreambleReadResult,
     ),
     DaemonOperationSpec(
         "user.assertions.list",
