@@ -45,13 +45,12 @@ def test_classified_operations_are_declared_and_agree_with_their_kind() -> None:
         elif metadata.execution_kind == "renderer":
             assert metadata.operations, f"{view_id} is a renderer over nothing"
         elif metadata.execution_kind == "in-process":
-            # Not migrated yet: the handler reads the archive in this process
-            # and reaches no operation, so it must claim none.
             assert metadata.operations == ()
         else:
             assert metadata.execution_kind == "distinct-operation"
-            # ``session.lineage`` and ``context.compile`` land with S9.
-            assert metadata.operations == ()
+            # Some distinct views still await their owner operation.
+            if metadata.operations:
+                assert len(metadata.operations) == 1
 
 
 def test_the_decided_classification_partitions_every_view() -> None:
@@ -59,13 +58,9 @@ def test_the_decided_classification_partitions_every_view() -> None:
 
     These are the *executed* routes, not the intended ones: polylogue-dutav
     found this partition claiming ten ``session.read`` projections where only
-    ``hooks`` reached ``session.read``, and claiming ``neighbors`` as a
-    ``cli.query`` renderer where it calls ``polylogue.neighbor_candidates``
-    directly.  ``messages`` joined ``hooks`` when polylogue-fko9.3 moved it
-    onto the ``session.read`` ``messages`` window kind; the ratchet in
-    ``read_view_registry`` is what keeps that direction one-way.
-    ``tests/unit/cli/test_read_view_execution_routes.py`` proves each row by
-    dispatching it; this one pins the resulting shape.
+    ``hooks`` reached ``session.read``. The other views have since moved to
+    declared operations. ``tests/unit/cli/test_read_view_execution_routes.py``
+    proves each route by dispatching it; this test pins the resulting shape.
 
     Anti-vacuity: moving any view between kinds -- notably reclassifying one of
     the per-session evidence views onto ``query.units``, which the relation
@@ -85,20 +80,19 @@ def test_the_decided_classification_partitions_every_view() -> None:
     )
     assert read_views_by_execution_kind("query-units-projection") == ()
     assert read_views_by_execution_kind("distinct-operation") == (
+        "chronicle",
         "context",
         "context-image",
-        "lineage",
-        "topology",
-    )
-    assert read_views_by_execution_kind("renderer") == ("summary", "transcript")
-    assert read_views_by_execution_kind("in-process") == (
-        "chronicle",
         "correlation",
         "dialogue",
         "effective_context",
+        "lineage",
         "neighbors",
         "temporal",
+        "topology",
     )
+    assert read_views_by_execution_kind("renderer") == ("summary", "transcript")
+    assert read_views_by_execution_kind("in-process") == ()
     assert sum(
         len(read_views_by_execution_kind(kind))
         for kind in (

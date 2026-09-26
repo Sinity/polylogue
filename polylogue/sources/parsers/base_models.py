@@ -7,7 +7,7 @@ from bisect import bisect_right
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, Field, field_serializer, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, Field, ValidationInfo, field_serializer, field_validator, model_validator
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
@@ -319,6 +319,15 @@ class ParsedPasteEvidence(BaseModel):
     source_marker: str | None = None
     content_hash: bytes | None = None
     observed_at_ms: int | None = None
+
+    @field_validator("content_hash", mode="before")
+    @classmethod
+    def _parse_content_hash(cls, value: object, info: ValidationInfo) -> object:
+        # JSON mode receives the hex representation emitted below; Python
+        # callers continue to supply the raw digest bytes.
+        if info.mode == "json" and isinstance(value, str):
+            return bytes.fromhex(value)
+        return value
 
     @field_serializer("content_hash", when_used="json")
     def _serialize_content_hash(self, value: bytes | None) -> str | None:

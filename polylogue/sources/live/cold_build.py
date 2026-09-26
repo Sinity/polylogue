@@ -33,13 +33,15 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
+import time
 import types
 import uuid
-from dataclasses import dataclass
+from contextlib import closing
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.logging import ERROR, emit
+from polylogue.logging import ERROR, WARNING, emit
 from polylogue.maintenance.candidate_capacity import (
     InsufficientCapacityError,
     require_candidate_capacity,
@@ -50,6 +52,8 @@ from polylogue.storage.index_generation import (
     rebuild_source_evidence_snapshot,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 if TYPE_CHECKING:
     from polylogue.sources.live.production_baseline import ProductionSourceBaseline
@@ -219,6 +223,133 @@ class ColdBuildGeneration:
     #: Open for the build's lifetime so one-shot ``ops.db`` writers stop
     #: checkpointing on every close. See :func:`_hold_ops_checkpoints`.
     _ops_checkpoint_holder: sqlite3.Connection | None = None
+    # Disposable, generation-scoped projection over the candidate application
+    # receipts. The candidate index and durable source rows remain authority.
+    _accepted_progress_weights: dict[tuple[str, int, str], int] = field(init=False, repr=False)
+    _accepted_progress_total: int = field(init=False, repr=False)
+    _accepted_progress_seen: set[tuple[str, int, str]] = field(default_factory=set, init=False, repr=False)
+    _accepted_progress_count: int = field(default=0, init=False, repr=False)
+    _accepted_progress_rowid: int = field(default=0, init=False, repr=False)
+    _accepted_progress_index_identity: tuple[int, int] | None = field(default=None, init=False, repr=False)
+    _accepted_progress_started_at: float = field(default_factory=time.monotonic, init=False, repr=False)
+    _accepted_progress_last_at: float | None = field(default=None, init=False, repr=False)
+    _accepted_progress_valid: bool = field(default=False, init=False, repr=False)
+    _accepted_progress_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        accepted = self.source_baseline.accepted
+        self._accepted_progress_total = len(accepted)
+        weights: dict[tuple[str, int, str], int] = {}
+        for row in accepted:
+            if row.revision is None:
+                continue
+            key = (row.path, row.source_index or 0, row.revision)
+            weights[key] = weights.get(key, 0) + 1
+        self._accepted_progress_weights = weights
+
+    @property
+    def accepted_progress(self) -> tuple[int | None, int, float | None, float | None]:
+        """Matching applied raw revisions, denominator, rate, and ETA.
+
+        A warm status call only reads this cached projection. An intake pass
+        advances it from candidate receipts after its writer has closed.
+        """
+        with self._accepted_progress_lock:
+            denominator = self._accepted_progress_total
+            if not self._accepted_progress_valid:
+                return None, denominator, None, None
+            count = self._accepted_progress_count
+            last_at = self._accepted_progress_last_at
+            elapsed = last_at - self._accepted_progress_started_at if last_at is not None else 0.0
+            rate = count / elapsed if count > 0 and elapsed > 0 else None
+            eta = max(0, denominator - count) / rate if rate is not None else None
+            return count, denominator, rate, eta
+
+    def invalidate_accepted_progress(self) -> None:
+        """Refuse a stale ETA after a failed projection refresh."""
+        with self._accepted_progress_lock:
+            self._accepted_progress_valid = False
+
+    def refresh_accepted_progress(self) -> None:
+        """Reconcile newly applied candidate rows against accepted source revisions.
+
+        Run after a completed intake pass, never on the status read path. The
+        rowid cursor bounds work to new applications; the seen set prevents
+        multiple session decisions for one raw revision from inflating progress.
+        """
+        if self.settled:
+            return
+        try:
+            index_path = Path(self.generation.index_path)
+            index_stat = index_path.stat()
+            identity = (index_stat.st_dev, index_stat.st_ino)
+            # The candidate deliberately has deferred indexes while under
+            # construction, so its final schema identity is not yet valid.
+            with closing(
+                open_readonly_connection(
+                    index_path,
+                    tier=ArchiveTier.INDEX,
+                    validate_schema=False,
+                    timeout_class="background-read",
+                )
+            ) as candidate:
+                candidate.execute("BEGIN")
+                head_row = candidate.execute("SELECT MAX(rowid) FROM raw_revision_applications").fetchone()
+                head = int(head_row[0]) if head_row is not None and head_row[0] is not None else 0
+                with self._accepted_progress_lock:
+                    cursor = self._accepted_progress_rowid
+                    if head < cursor or self._accepted_progress_index_identity != identity:
+                        self._accepted_progress_rowid = cursor = 0
+                        self._accepted_progress_seen.clear()
+                        self._accepted_progress_count = 0
+                rows = candidate.execute(
+                    "SELECT rowid, raw_id FROM raw_revision_applications "
+                    "WHERE rowid > ? AND rowid <= ? AND decision IN "
+                    "('selected_baseline', 'reparse_reaffirmation', 'applied_append', 'superseded') "
+                    "ORDER BY rowid",
+                    (cursor, head),
+                ).fetchall()
+            # source.db is durable and must pass its normal schema check.
+            with closing(
+                open_readonly_connection(
+                    self.archive_root / "source.db",
+                    tier=ArchiveTier.SOURCE,
+                    timeout_class="background-read",
+                )
+            ) as source:
+                resolved: dict[str, tuple[str, int, str] | None] = {}
+                matched: set[tuple[str, int, str]] = set()
+                for _, raw_id_value in rows:
+                    raw_id = str(raw_id_value)
+                    key = resolved.get(raw_id)
+                    if raw_id not in resolved:
+                        raw_row = source.execute(
+                            "SELECT source_path, source_index, lower(hex(blob_hash)) "
+                            "FROM raw_sessions WHERE raw_id = ?",
+                            (raw_id,),
+                        ).fetchone()
+                        key = (str(raw_row[0]), int(raw_row[1]), str(raw_row[2])) if raw_row else None
+                        resolved[raw_id] = key
+                    if key in self._accepted_progress_weights:
+                        matched.add(key)
+            with self._accepted_progress_lock:
+                new_keys = matched.difference(self._accepted_progress_seen)
+                self._accepted_progress_seen.update(new_keys)
+                self._accepted_progress_count += sum(self._accepted_progress_weights[key] for key in new_keys)
+                self._accepted_progress_rowid = head
+                self._accepted_progress_index_identity = identity
+                self._accepted_progress_last_at = time.monotonic()
+                self._accepted_progress_valid = True
+        except (OSError, sqlite3.Error) as exc:
+            self.invalidate_accepted_progress()
+            emit(
+                "daemon.cold_build.accepted_progress_unreadable",
+                level=WARNING,
+                outcome="degraded",
+                reason="accepted_progress_unreadable",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
 
     @classmethod
     def begin(

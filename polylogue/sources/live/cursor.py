@@ -1712,6 +1712,99 @@ class CursorStore:
             ).fetchall()
         return [str(row[0]) for row in rows]
 
+    def ops_ledger_generation(self) -> tuple[int, int] | None:
+        """Identify the disposable cursor ledger without opening or scanning it."""
+        try:
+            stat = self._ops_db_path.stat()
+        except FileNotFoundError:
+            return None
+        return stat.st_dev, stat.st_ino
+
+    def has_pending_retries(self, roots: Iterable[Path] | None = None) -> bool | None:
+        """Probe retry obligations for configured roots without materializing rows.
+
+        ``None`` means the disposable ops tier is absent, which cannot prove
+        that an intake generation is drained.
+        """
+        if not self._ops_db_path.is_file():
+            return None
+        root_list = tuple(roots) if roots is not None else None
+        if root_list == ():
+            return False
+        with self._connect_ops_readonly() as conn:
+            if root_list is None:
+                return (
+                    conn.execute(
+                        """SELECT 1 FROM ingest_cursor WHERE excluded = 0
+                       AND (failure_count > 0 OR (content_fingerprint IS NULL AND next_retry_at IS NOT NULL))
+                       LIMIT 1"""
+                    ).fetchone()
+                    is not None
+                )
+            for root in root_list:
+                prefix = str(root).rstrip(os.sep) + os.sep
+                upper = prefix[:-1] + chr(ord(os.sep) + 1)
+                if (
+                    conn.execute(
+                        """SELECT 1 FROM ingest_cursor WHERE source_path >= ? AND source_path < ?
+                       AND excluded = 0
+                       AND (failure_count > 0 OR (content_fingerprint IS NULL AND next_retry_at IS NOT NULL))
+                       LIMIT 1""",
+                        (prefix, upper),
+                    ).fetchone()
+                    is not None
+                ):
+                    return True
+        return False
+
+    def due_retry_high_water(self, root: Path) -> str | None:
+        """Freeze a retry sweep before new rows can extend it indefinitely."""
+        if not self._ops_db_path.is_file():
+            return None
+        prefix = str(root).rstrip(os.sep) + os.sep
+        upper = prefix[:-1] + chr(ord(os.sep) + 1)
+        with self._connect_ops_readonly() as conn:
+            row = conn.execute(
+                "SELECT MAX(source_path) FROM ingest_cursor WHERE source_path >= ? AND source_path < ?",
+                (prefix, upper),
+            ).fetchone()
+        return str(row[0]) if row is not None and row[0] is not None else None
+
+    def list_due_retry_paths(
+        self,
+        root: Path,
+        *,
+        after: str | None,
+        limit: int,
+        through: str | None = None,
+        owns: Callable[[Path], bool] | None = None,
+    ) -> tuple[Path, ...]:
+        """Page due file retries under a source root with ownership before LIMIT."""
+        if limit <= 0 or not self._ops_db_path.is_file():
+            return ()
+        prefix = str(root).rstrip(os.sep) + os.sep
+        upper = prefix[:-1] + chr(ord(os.sep) + 1)
+        now = datetime.now(UTC).isoformat()
+        with self._connect_ops_readonly() as conn:
+            ownership_clause = ""
+            if owns is not None:
+                conn.create_function("retry_path_owned", 1, lambda value: int(owns(Path(str(value)))))
+                ownership_clause = "AND retry_path_owned(source_path) = 1"
+            rows = conn.execute(
+                f"""
+                SELECT source_path FROM ingest_cursor
+                WHERE source_path >= ? AND source_path < ? AND source_path > ? AND source_path <= ?
+                  AND excluded = 0
+                  AND (failure_count > 0 OR (content_fingerprint IS NULL AND next_retry_at IS NOT NULL))
+                  AND (next_retry_at IS NULL OR next_retry_at <= ?)
+                  {ownership_clause}
+                ORDER BY source_path ASC
+                LIMIT ?
+                """,
+                (prefix, upper, after or prefix, through or upper, now, limit),
+            ).fetchall()
+        return tuple(Path(str(row[0])) for row in rows)
+
     def list_retry_records(self) -> list[CursorRecord]:
         """Return non-excluded cursor records with a scheduled retry.
 

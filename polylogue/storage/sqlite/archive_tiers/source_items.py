@@ -161,6 +161,7 @@ class FrozenSourceManifest:
     source_generation_id: str
     enumeration_fingerprint: str
     inputs: tuple[FrozenSourceInput, ...]
+    source_name: str | None = None
 
     def __post_init__(self) -> None:
         _require_digest(self.enumeration_fingerprint, "enumeration_fingerprint")
@@ -168,6 +169,8 @@ class FrozenSourceManifest:
             raise ValueError("frozen manifest requires a generation and bounded input set")
         if len({item.coordinate for item in self.inputs}) != len(self.inputs):
             raise ValueError("frozen manifest coordinates must be distinct")
+        if self.source_name is not None and (not self.source_name.strip() or len(self.source_name) > 255):
+            raise ValueError("frozen source name must be nonempty and bounded")
         for item in self.inputs:
             _require_digest(item.blob_hash, "input blob_hash")
             if not item.coordinate.strip() or not item.source_path.strip() or not item.publication_receipt_id:
@@ -181,21 +184,30 @@ class FrozenSourceManifest:
             self.enumeration_fingerprint,
             [(item.coordinate, item.source_path, item.blob_hash) for item in self.inputs],
         ]
+        if self.source_name is not None:
+            content.append(["source_name", self.source_name])
         return hashlib.sha256(json.dumps(content, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        value: dict[str, object] = {
             "source_generation_id": self.source_generation_id,
             "enumeration_fingerprint": self.enumeration_fingerprint,
             "inputs": [item.to_dict() for item in self.inputs],
         }
+        if self.source_name is not None:
+            value["source_name"] = self.source_name
+        return value
 
     @classmethod
     def from_dict(cls, value: object) -> FrozenSourceManifest:
-        if not isinstance(value, dict) or set(value) != {"source_generation_id", "enumeration_fingerprint", "inputs"}:
+        required = {"source_generation_id", "enumeration_fingerprint", "inputs"}
+        if not isinstance(value, dict) or not required <= set(value) or set(value) - required - {"source_name"}:
             raise ValueError("invalid frozen source manifest fields")
         if not isinstance(value["source_generation_id"], str) or not isinstance(value["enumeration_fingerprint"], str):
             raise ValueError("invalid frozen source manifest identity")
+        source_name = value.get("source_name")
+        if source_name is not None and not isinstance(source_name, str):
+            raise ValueError("invalid frozen source name")
         raw_inputs = value["inputs"]
         if not isinstance(raw_inputs, list):
             raise ValueError("frozen source inputs must be a list")
@@ -208,7 +220,7 @@ class FrozenSourceManifest:
             ):
                 raise ValueError("invalid frozen source input fields")
             inputs.append(FrozenSourceInput(**item))
-        return cls(value["source_generation_id"], value["enumeration_fingerprint"], tuple(inputs))
+        return cls(value["source_generation_id"], value["enumeration_fingerprint"], tuple(inputs), source_name)
 
 
 def validate_frozen_source_manifest(conn: sqlite3.Connection, manifest: FrozenSourceManifest) -> None:

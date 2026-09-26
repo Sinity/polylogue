@@ -570,12 +570,11 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "To ask whether a cold client could have formulated each continuity scenario's plan from "
             "sparse operator wording plus wire-captured discovery alone. Discovery pages the real "
             "explain tool to exhaustion over MCP stdio with no in-process registry fallback; the "
-            "production replay stays the execution oracle and is graded on separate axes. The default "
-            "scripted backend replays a recorded plan artifact and makes no network call."
+            "production replay stays the execution oracle and is graded on separate axes. "
+            "Each registry scenario gets one declared model attempt."
         ),
         examples=(
-            "devtools archive continuity-cold-model --plans tests/data/continuity/cold-model-plans.json",
-            "devtools archive continuity-cold-model --plans plans.json --attempts 3 --required-passes 2",
+            "devtools archive continuity-cold-model --backend openai-responses --model gpt-6-sol --base-url https://api.openai.com/v1 --api-key-env OPENAI_API_KEY --output /realm/tmp/work/continuity-cold-model.json",
         ),
     ),
 )

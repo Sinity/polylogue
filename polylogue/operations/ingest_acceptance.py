@@ -21,13 +21,16 @@ INGEST_OPERATION = "ingest-archive-runtime"
 
 
 def ingest_context(manifest: FrozenSourceManifest) -> dict[str, object]:
-    return {
+    context: dict[str, object] = {
         "source_generation_id": manifest.source_generation_id,
         "manifest_digest": manifest.manifest_digest,
         "enumeration_fingerprint": manifest.enumeration_fingerprint,
         "input_count": len(manifest.inputs),
         "recipe_version": SESSION_PROFILE_RECIPE_VERSION,
     }
+    if manifest.source_name is not None:
+        context["source_name"] = manifest.source_name
+    return context
 
 
 def ingest_plan(

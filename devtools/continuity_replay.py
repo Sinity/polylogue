@@ -19,7 +19,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias, TypeGuard, cast
@@ -1029,10 +1029,14 @@ async def execute_continuity_scenario(
     scenario_name: str,
     fixture: Mapping[str, JSONValue],
     route: ContinuityRoute,
+    *,
+    route_steps: tuple[ContinuityRouteStep, ...] | None = None,
 ) -> JSONDocument:
     """Run one declaration through a public route and compare planted facts."""
 
     scenario = continuity_scenario(scenario_name)
+    if route_steps is not None:
+        scenario = replace(scenario, route_steps=route_steps)
     oracle = _oracle_for(scenario, fixture)
     expected_facts = _json_mapping(oracle, "facts")
     required_evidence = _string_sequence(oracle.get("required_evidence_refs", []), "required_evidence_refs")
@@ -1591,7 +1595,7 @@ def _validate_scenario_declaration(scenario: ContinuityScenarioSpec) -> None:
             failure_class="plan",
         )
     route_tools = tuple(dict.fromkeys(step.tool for step in scenario.route_steps))
-    if route_tools != scenario.allowed_query_surfaces:
+    if set(route_tools) != set(scenario.allowed_query_surfaces):
         raise ContinuityReplayError(
             f"scenario {scenario.scenario_id!r} route tools differ from allowed surfaces",
             kind="query_surface_inventory_mismatch",

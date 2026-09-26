@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from contextlib import redirect_stdout
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -22,7 +22,6 @@ from functools import partial
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, TypeVar, cast
-from uuid import uuid4
 
 import click
 
@@ -61,6 +60,7 @@ from polylogue.daemon.services import (
     DaemonServiceSpec,
     ServiceCapability,
     ServiceProfile,
+    ServiceState,
 )
 from polylogue.daemon.status import daemon_status_payload, format_daemon_status_lines
 from polylogue.daemon.supervisor import DaemonSupervisor
@@ -79,12 +79,10 @@ from polylogue.logging import (
     emit,
     propagate,
     set_run_context,
+    shutdown_events,
     span,
 )
-from polylogue.maintenance.raw_authority import (
-    RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES,
-    RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
-)
+from polylogue.maintenance.raw_authority import RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES
 from polylogue.operations.embedding_lifecycle import (
     ensure_embedding_lifecycle_startup as _ensure_embedding_lifecycle_startup_sync,
 )
@@ -155,17 +153,6 @@ _ADDITIONAL_SOURCE_SUFFIXES = (".json", ".jsonl", ".ndjson", ".zip")
 # Parse passes checkpoint between raw batches. Acquisition has no pass-time
 # limit, but its downloads and preparation hold no archive writer lease.
 _DRIVE_CATCHUP_MAX_PASS_SECONDS = 20.0
-# polylogue-t93b: escalation-tier envelope for the whale pass. A component
-# permanently resource-blocked at the ordinary fast-path limit above
-# converges through a dedicated, single-component pass at this wider
-# envelope instead -- still bounded (a genuinely unbounded component stays
-# blocked), gated on every member being stream-record-safe (bounded parse
-# memory via the existing RawParsePrefetchCache/whale-spill machinery) and
-# on the ordinary trickle conveyor being otherwise quiescent (bounded writer
-# contention). 8 GiB comfortably covers the live witness (codex:019f49d8,
-# 6.33GB/788 raws) with headroom; override via
-# ``raw_authority_whale_payload_bytes`` / POLYLOGUE_RAW_AUTHORITY_WHALE_PAYLOAD_BYTES.
-_RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES: Final = RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES
 # A spool file younger than this is in the live route's normal debounce/
 # batch flow, not stalled; only older cursor-less files park the conveyor.
 _SPOOL_PENDING_GRACE_SECONDS = 300
@@ -1028,22 +1015,13 @@ async def _retry_convergence_debt_once(db: Path) -> None:
 async def _periodic_raw_materialization_convergence(
     *,
     watcher_registered: asyncio.Event | None = None,
-    raw_observation_owner: Any | None = None,
-    raw_intake_wakeup: asyncio.Event | None = None,
-    raw_intake_discovery: Any | None = None,
-    session_profile_callback: Callable[[Sequence[str] | None], Awaitable[object]] | None = None,
+    raw_intake_wakeup: asyncio.Event,
 ) -> None:
-    """Wake the canonical bounded raw-observation intake after registration."""
-    if raw_observation_owner is None or raw_intake_wakeup is None or raw_intake_discovery is None:
-        raise RuntimeError("raw materialization requires the canonical observation owner, discovery, and intake wakeup")
+    """Wake fair raw intake after watcher registration."""
 
     async def once() -> None:
         raw_intake_wakeup.set()
-        await _maybe_run_raw_materialization_whale_pass(
-            raw_observation_owner=raw_observation_owner,
-            raw_intake_discovery=raw_intake_discovery,
-            session_profile_callback=session_profile_callback,
-        )
+        await _drain_whale_receipt_outbox()
 
     await daemon_periodic_runner().run(
         "raw_observation_convergence",
@@ -1051,7 +1029,7 @@ async def _periodic_raw_materialization_convergence(
         interval_s=_RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS,
         gate=watcher_registered_gate(watcher_registered),
         run_first=True,
-        error_event="daemon.raw_materialization.whale_schedule_failed",
+        error_event="daemon.raw_materialization.wakeup_failed",
     )
 
 
@@ -1206,140 +1184,6 @@ async def _converge_raw_materialized_session_profiles(
         )
 
 
-def _resolve_raw_materialization_whale_blob_limit_bytes() -> int:
-    """Resolve the whale-pass escalation envelope (polylogue-t93b)."""
-    from polylogue.config import load_polylogue_config
-
-    configured = load_polylogue_config().raw_authority_whale_payload_bytes
-    if configured is None or configured <= 0:
-        return _RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES
-    return configured
-
-
-def _raw_materialization_whale_completion_payload(
-    seed_raw_id: str,
-    *,
-    status: str,
-    receipt_id: str | None = None,
-    success: bool,
-    detail: str,
-    repaired_count: int = 0,
-    metrics: Mapping[str, object] | None = None,
-) -> dict[str, object]:
-    """Build one complete, truthful whale completion event payload."""
-    values = metrics or {}
-
-    def count(name: str) -> int:
-        value = values.get(name, 0)
-        return int(value) if isinstance(value, (int, float, str)) else 0
-
-    census_incomplete = count("raw_materialization_census_incomplete_raw_count")
-    remaining = count("raw_materialization_remaining_candidate_count") + census_incomplete
-    payload = {
-        "seed_raw_id": seed_raw_id,
-        "status": status,
-        "success": success,
-        "fenced": status == "fenced",
-        "cancelled": status == "cancelled",
-        "census_pending": status == "census_pending",
-        "continuation": status == "in_progress",
-        "repaired_count": repaired_count,
-        "detail": detail,
-        "candidate_count": count("raw_materialization_candidate_count"),
-        "selected_count": count("raw_materialization_selected_count"),
-        "executed_count": count("raw_materialization_executed_count"),
-        "resource_blocked_count": count("raw_materialization_resource_blocked_count"),
-        "census_incomplete_count": census_incomplete,
-        "remaining_candidates": remaining,
-    }
-    duration_ms = values.get("duration_ms")
-    if isinstance(duration_ms, (int, float)):
-        payload["duration_ms"] = float(duration_ms)
-    return payload
-
-
-async def _publish_whale_receipt(
-    *,
-    kind: str,
-    idempotency_key: str,
-    operation_id: str,
-    payload: dict[str, object],
-    root: Path | None = None,
-    publish: bool = True,
-) -> None:
-    """Durably enqueue and boundedly publish one idempotent receipt."""
-    from polylogue.daemon import whale_outbox
-    from polylogue.daemon.events import emit_daemon_event
-
-    effective_root = root if root is not None else _WHALE_RECEIPT_ROOT
-    # The filesystem commit is the recovery boundary.  SQLite publication is
-    # deliberately off the event loop: a locked ops database must not extend
-    # the caller's shutdown wait, and the outbox remains available to startup
-    # recovery when the worker is interrupted.
-    target, target_identity = await asyncio.to_thread(
-        whale_outbox.enqueue_with_identity,
-        kind=kind,
-        idempotency_key=idempotency_key,
-        operation_id=operation_id,
-        payload=payload,
-        root=effective_root,
-    )
-    if not publish:
-        return
-
-    async def publish_event(*event_args: object, **event_kwargs: object) -> None:
-        # SQLite publication belongs to the daemon's coordinator-owned
-        # execution set. Unlike a bare ``asyncio.to_thread`` call, cancellation
-        # of this await leaves a tracked completion that shutdown can drain (or
-        # report as undrained) without allowing an executor-backed SQLite write
-        # to outlive the daemon deadline. Observation test doubles from older
-        # callers may only expose the previous to_thread-shaped seam.
-        coordinator = daemon_write_coordinator()
-        run_sync = getattr(coordinator, "run_sync", None)
-        if callable(run_sync):
-            await run_sync("whale.receipt", emit_daemon_event, *event_args, **event_kwargs)
-        else:
-            await asyncio.to_thread(cast(Any, emit_daemon_event), *event_args, **event_kwargs)
-
-    try:
-        await publish_event(
-            kind,
-            operation_id=operation_id,
-            idempotency_key=idempotency_key,
-            payload=payload,
-        )
-    except TypeError as exc:
-        # Narrow compatibility for injected observation doubles; the real
-        # emitter always receives the idempotency key above.
-        if "unexpected keyword argument" not in str(exc):
-            raise
-        await publish_event(kind, payload=payload)
-    except Exception as exc:
-        emit(
-            "daemon.whale_receipt.publication_deferred",
-            level=WARNING,
-            outcome="degraded",
-            reason="publication_failed_retained_in_outbox",
-            kind=kind,
-            operation_id=operation_id,
-            error_type=type(exc).__name__,
-            error_detail=str(exc),
-        )
-        return
-    await asyncio.to_thread(
-        whale_outbox.acknowledge,
-        {
-            "_path": target,
-            "_name": target.name,
-            "kind": kind,
-            "idempotency_key": idempotency_key,
-            "operation_id": operation_id,
-            "payload": payload,
-            "_identity": target_identity,
-        },
-    )
-
-
 async def _drain_whale_receipt_outbox(*, root: Path | None = None) -> int:
     """Retry all durable whale receipts once; later ticks retry remaining rows."""
     from polylogue.daemon import whale_outbox
@@ -1390,249 +1234,6 @@ async def _drain_whale_receipt_outbox(*, root: Path | None = None) -> int:
         await asyncio.to_thread(whale_outbox.acknowledge, record)
         delivered += 1
     return delivered
-
-
-async def _emit_whale_completion_after_admission(
-    candidate: str,
-    completion: asyncio.Task[object],
-    receipt_id: str,
-) -> None:
-    """Publish one terminal event, retrying transient ledger failures."""
-    try:
-        result: Any = completion.result()
-    except BaseException as exc:
-        payload = _raw_materialization_whale_completion_payload(
-            candidate,
-            status="error",
-            receipt_id=receipt_id,
-            success=False,
-            detail=f"coordinator operation failed after caller cancellation: {exc}",
-        )
-    else:
-        if result is None:
-            payload = _raw_materialization_whale_completion_payload(
-                candidate,
-                status="error",
-                receipt_id=receipt_id,
-                success=False,
-                detail="coordinator operation ended without a result",
-            )
-        else:
-            metrics = dict(getattr(result, "metrics", {}))
-            payload = _raw_materialization_whale_completion_payload(
-                candidate,
-                status="cancelled",
-                receipt_id=receipt_id,
-                success=False,
-                detail=f"caller cancelled; coordinator completed: {result.detail}",
-                repaired_count=int(result.repaired_count),
-                metrics=metrics,
-            )
-
-    # Keep the outbox row when bounded immediate retries are exhausted. Startup
-    # and every convergence tick drain it, so no terminal state is silently
-    # lost merely because the disposable ops tier was locked.
-    delays = (0.0, 0.05, 0.2, 0.5, 1.0)
-    for attempt, delay in enumerate(delays, start=1):
-        if delay:
-            await asyncio.sleep(delay)
-        try:
-            await _publish_whale_receipt(
-                kind="raw_materialization_whale_pass_completed",
-                idempotency_key=f"{receipt_id}:terminal",
-                operation_id=receipt_id,
-                payload=payload,
-            )
-            from polylogue.daemon import whale_outbox
-
-            if not any(
-                record.get("idempotency_key") == f"{receipt_id}:terminal"
-                for record in whale_outbox.list_pending(root=_WHALE_RECEIPT_ROOT)
-            ):
-                return
-        except Exception as exc:
-            emit(
-                "daemon.whale_receipt.terminal_attempt_failed",
-                level=ERROR,
-                outcome="error",
-                operation_id=receipt_id,
-                attempts=attempt,
-                limit=len(delays),
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
-    emit(
-        "daemon.whale_receipt.terminal_deferred",
-        level=ERROR,
-        outcome="degraded",
-        reason="deferred_to_durable_outbox_recovery",
-        operation_id=receipt_id,
-        attempts=len(delays),
-    )
-
-
-def _raw_component_payload_bytes(archive_root: Path, raw_id: str) -> int:
-    """Total retained payload of the component one raw seed expands to.
-
-    This is the quantity the raw-observation payload budget is actually
-    compared against, read through the same expansion the derivation uses.
-    """
-    from polylogue.operations.operation_context import open_operation_read
-
-    with open_operation_read(archive_root) as pinned:
-        archive = pinned.archive
-        raw_ids, _keys = archive.expand_raw_membership_selection([raw_id])
-        sizes = archive.raw_payload_sizes(raw_ids)
-    return sum(int(size) for size in sizes.values())
-
-
-async def _maybe_run_raw_materialization_whale_pass(
-    *,
-    raw_observation_owner: Any | None = None,
-    raw_intake_discovery: Any | None = None,
-    session_profile_callback: Callable[[Sequence[str] | None], Awaitable[object]] | None = None,
-) -> bool:
-    """Escalate one resource-blocked, stream-safe component past the ordinary limit.
-
-    polylogue-t93b: unconditional, because a permanent offline-only
-    requirement for whale components is the policy bug this closes; there is
-    no off switch.
-
-    The only backlog check enforced here is the head of the bounded discovery
-    traversal: a pass happens exactly when the one raw this tick's page offers
-    is itself whale-scale, so a tick whose page still offers ordinary-scale
-    work escalates nothing. That is *not* quiescence -- discovery pages one
-    item at a time and alternates lanes, so ordinary backlog can remain behind
-    the head, and a whale holds the owner's convergence lock for its whole
-    duration while it runs. Proving the ordinary class has actually drained
-    needs a signal from ``FairIntakeDispatcher``/``DaemonIntakeService``,
-    which this loop is not given; until it is, the head-of-page check is the
-    claim this function can make.
-
-    Returns whether a pass was genuinely attempted this call so the caller
-    can decide burst-vs-outer-interval pacing.
-    """
-    if raw_observation_owner is None or raw_intake_discovery is None:
-        raise RuntimeError("raw whale materialization requires canonical owner and bounded discovery")
-    from polylogue.daemon.events import emit_daemon_event
-    from polylogue.paths import archive_root
-
-    root = archive_root()
-    global _WHALE_RECEIPT_ROOT
-    _WHALE_RECEIPT_ROOT = root
-    whale_limit = _resolve_raw_materialization_whale_blob_limit_bytes()
-    await _drain_whale_receipt_outbox()
-    # Discovery is the same bounded, process-local traversal used by fair
-    # intake. It is not a whale-specific scanner or a validity cache.
-    candidates = await asyncio.to_thread(raw_intake_discovery.discover_pending_raw_ids, 1)
-    candidate: str | None = None
-    for raw_id, payload_bytes in candidates:
-        # The ordinary admission this escalates past budgets the *component*:
-        # ``RawObservationDerivation.compute`` expands the raw's membership and
-        # compares ``sum(sizes.values())`` against its payload limit, while
-        # discovery reports only the seed row's own size. A component whose
-        # members are each inside the ordinary limit but whose total is not
-        # therefore failed every ordinary admission and was never selected
-        # here, so it stayed unmaterialized indefinitely. Ask the same question
-        # the budget asks. The seed's own size exceeding the limit already
-        # implies the component does, so the extra bounded read is skipped.
-        if payload_bytes > _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES:
-            component_bytes = payload_bytes
-        else:
-            try:
-                component_bytes = await asyncio.to_thread(_raw_component_payload_bytes, root, raw_id)
-            except Exception as exc:
-                # An unreadable component size proves nothing about whale
-                # eligibility. Skipping leaves this raw to ordinary admission,
-                # which is where it already was; escalating the read failure
-                # would fail the whole periodic pass over a diagnostic.
-                emit(
-                    "daemon.raw_materialization.whale_component_size_unreadable",
-                    level=WARNING,
-                    outcome="unmeasured",
-                    reason="component_expansion_failed",
-                    raw_id=raw_id,
-                    error_type=type(exc).__name__,
-                    error_detail=str(exc),
-                )
-                continue
-        if component_bytes > _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES:
-            candidate = raw_id
-            break
-    if candidate is None:
-        return False
-    receipt_id = f"whale:{candidate}:{uuid4().hex}"
-    emit_daemon_event(
-        "raw_materialization_whale_pass_started",
-        payload={"seed_raw_id": candidate, "max_payload_bytes": whale_limit},
-    )
-    started = time.perf_counter()
-    try:
-        report = await raw_observation_owner.converge_raw_id(candidate, max_payload_bytes=whale_limit)
-    except asyncio.CancelledError as exc:
-        await _publish_whale_receipt(
-            kind="raw_materialization_whale_pass_completed",
-            idempotency_key=f"{receipt_id}:terminal",
-            operation_id=receipt_id,
-            payload=_raw_materialization_whale_completion_payload(
-                candidate,
-                status="cancelled",
-                receipt_id=receipt_id,
-                success=False,
-                detail=str(exc) or "canonical whale pass caller cancelled",
-            ),
-        )
-        raise
-    except Exception as exc:
-        await _publish_whale_receipt(
-            kind="raw_materialization_whale_pass_completed",
-            idempotency_key=f"{receipt_id}:terminal",
-            operation_id=receipt_id,
-            payload=_raw_materialization_whale_completion_payload(
-                candidate,
-                status="error",
-                receipt_id=receipt_id,
-                success=False,
-                detail=str(exc),
-                metrics={"duration_ms": (time.perf_counter() - started) * 1000.0},
-            ),
-        )
-        return True
-    from polylogue.daemon.derivation import Outcome
-
-    failed = next((outcome for outcome in report.outcomes if outcome.outcome is Outcome.FAILED), None)
-    pending = next((outcome for outcome in report.outcomes if outcome.outcome is Outcome.PENDING), None)
-    success = failed is None and pending is None
-    detail = (
-        failed.error
-        if failed is not None
-        else (
-            pending.reason.value
-            if pending is not None and pending.reason is not None
-            else "canonical raw observation converged"
-        )
-    )
-    if success and report.done:
-        await _converge_raw_materialized_session_profiles(
-            root,
-            candidate,
-            session_profile_callback,
-        )
-    await _publish_whale_receipt(
-        kind="raw_materialization_whale_pass_completed",
-        idempotency_key=f"{receipt_id}:terminal",
-        operation_id=receipt_id,
-        payload=_raw_materialization_whale_completion_payload(
-            candidate,
-            status="success" if success else "error",
-            receipt_id=receipt_id,
-            success=success,
-            detail=detail,
-            repaired_count=report.done,
-            metrics={"duration_ms": (time.perf_counter() - started) * 1000.0},
-        ),
-    )
-    return True
 
 
 def _browser_capture_spool_has_pending_files() -> bool:
@@ -1948,12 +1549,14 @@ def _release_pidfile_after_writer_drain(
 ) -> int | None:
     """Release daemon ownership only after every admitted writer is idle."""
     if not writer_drained:
+        reason_code, _, _detail = reason.partition(":")
         emit(
             "daemon.pidfile.retained",
             level=ERROR,
             outcome="degraded",
-            reason=reason,
+            reason=reason_code,
             path=_pidfile_path,
+            error_detail=reason,
         )
         return pidfile_fd
     if pidfile_fd is not None:
@@ -2174,6 +1777,7 @@ async def run_daemon_services(
     enable_api: bool = False,
     api_host: str = "127.0.0.1",
     api_port: int = 8766,
+    browser_port: int | None = None,
     api_auth_token: str | None = None,
     api_allow_no_auth: bool = False,
     startup_message: str | None = None,
@@ -2222,6 +1826,7 @@ async def run_daemon_services(
             enable_api=enable_api,
             api_host=api_host,
             api_port=api_port,
+            browser_port=browser_port,
             api_auth_token=api_auth_token,
             api_allow_no_auth=api_allow_no_auth,
             startup_message=startup_message,
@@ -2247,6 +1852,7 @@ async def _run_daemon_services_under_active_writer_lease(
     enable_api: bool = False,
     api_host: str = "127.0.0.1",
     api_port: int = 8766,
+    browser_port: int | None = None,
     api_auth_token: str | None = None,
     api_allow_no_auth: bool = False,
     startup_message: str | None = None,
@@ -2291,6 +1897,21 @@ async def _run_daemon_services_under_active_writer_lease(
             f"receiver {browser_capture_host}:{browser_capture_port}. "
             f"Set distinct --api-port/--port values or bind one component to a non-overlapping host."
         )
+    if browser_port is not None:
+        if not enable_api:
+            raise click.UsageError("--browser-port requires the daemon API; remove --no-api")
+        if not is_loopback_host(api_host) and api_host not in {"0.0.0.0", "::"}:
+            raise click.UsageError(
+                "--browser-port requires an API bind reachable on loopback (--api-host 127.0.0.1, ::1, 0.0.0.0, or ::)"
+            )
+        if browser_port == api_port:
+            raise click.UsageError("--browser-port must differ from --api-port")
+        if (
+            enable_browser_capture
+            and browser_port == browser_capture_port
+            and bind_hosts_overlap(api_host, browser_capture_host)
+        ):
+            raise click.UsageError("--browser-port conflicts with the browser-capture receiver")
 
     # The daemon API must never start in an ambiguous unauthenticated state
     # (polylogue-rzve): an explicit --api-auth-token always wins, otherwise a
@@ -2387,7 +2008,8 @@ async def _run_daemon_services_under_active_writer_lease(
     # (``durable_mismatch``) decides whether the live watcher itself (raw
     # acquisition) may still start: acquisition only ever writes source.db,
     # so a derived-only mismatch (index.db/embeddings.db) must not stop it.
-    watcher_blocked = enable_watch and schema_alert.severity == HealthSeverity.CRITICAL
+    schema_blocked = schema_alert.severity == HealthSeverity.CRITICAL
+    watcher_blocked = enable_watch and schema_blocked
     # Unconditional (not gated on ``enable_watch``): operation recovery below
     # touches audit.db on every startup regardless of whether the watcher is
     # even enabled, so it needs its own answer to "is a durable tier missing
@@ -2616,7 +2238,9 @@ async def _run_daemon_services_under_active_writer_lease(
         capabilities.add(ServiceCapability.BROWSER_CAPTURE)
     if enable_api:
         capabilities.add(ServiceCapability.API)
-    if watcher_blocked:
+    if browser_port is not None:
+        capabilities.add(ServiceCapability.BROWSER_HOST)
+    if schema_blocked:
         capabilities.add(ServiceCapability.SCHEMA_BLOCKED)
     else:
         capabilities.add(ServiceCapability.DERIVED_WRITES)
@@ -2635,6 +2259,14 @@ async def _run_daemon_services_under_active_writer_lease(
         on_degraded=_degrade_for_failed_service,
     )
     _set_active_supervisor(supervisor)
+    # A partially initialized archive can have an index but no durable raw
+    # tier. Fresh archives are different: their first acquisition creates the
+    # tier, so only an existing index makes this a failed prerequisite.
+    if (archive_root_path / "index.db").exists() and not (archive_root_path / "source.db").exists():
+        if service_profile is ServiceProfile.PRODUCTION:
+            supervisor.mark_unavailable("raw_observation_convergence", reason="source.db is absent")
+        if supervisor.is_schedulable("fair_intake"):
+            supervisor.mark_unavailable("fair_intake", reason="source.db is absent")
     for halted in supervisor.halted_records():
         emit(
             "daemon.service.halted",
@@ -2706,7 +2338,11 @@ async def _run_daemon_services_under_active_writer_lease(
         # Filled once the watcher exists; maintenance loops consult it for
         # catch-up activity without holding the watcher before creation.
         watcher_holder: list[LiveWatcher] = []
-        if not watcher_blocked:
+        archive_work_scheduled = any(
+            supervisor.is_schedulable(name)
+            for name in ("fair_intake", "watcher", "convergence_check", "raw_observation_convergence")
+        )
+        if not schema_blocked and (archive_work_scheduled or enable_api):
             await _run_startup_embedding_lifecycle(write_coordinator, archive_root_path)
             if lifecycle_events_enabled:
                 await _emit_daemon_lifecycle_event(
@@ -2757,19 +2393,39 @@ async def _run_daemon_services_under_active_writer_lease(
                 "uds_server",
                 lambda: _serve_until_complete(uds_server, label="uds"),
             )
+            if browser_port is not None:
+                # The browser child needs the actual bound port (including
+                # port 0), while ordinary API tests and alternate server
+                # implementations need no server_address introspection.
+                bound_api_port = int(api_server.server_address[1])
+                upstream_host = "127.0.0.1" if api_host == "0.0.0.0" else "::1" if api_host == "::" else api_host
+                if ":" in upstream_host:
+                    upstream_host = f"[{upstream_host}]"
+                supervisor.start(
+                    "browser_host",
+                    lambda: _run_browser_host(
+                        host=api_host,
+                        port=browser_port,
+                        daemon_origin=f"http://{upstream_host}:{bound_api_port}",
+                    ),
+                )
             if lifecycle_events_enabled:
                 await _emit_daemon_lifecycle_event(
                     "component_started",
                     archive_root_path=archive_root_path,
                     component="api",
-                    payload={"host": api_host, "port": api_port, "auth_enabled": resolved_api_auth_token is not None},
+                    payload={
+                        "host": api_host,
+                        "port": api_port,
+                        "auth_enabled": resolved_api_auth_token is not None,
+                    },
                 )
 
         # Ensure FTS structure after HTTP surfaces are bound and before live
         # catch-up starts. Startup FTS maintenance and catch-up ingestion are
         # both write-heavy; running them concurrently makes SQLite maintenance
         # time out behind the daemon's own writer.
-        if not watcher_blocked:
+        if not schema_blocked and archive_work_scheduled:
             from polylogue.daemon.blob_gc_periodic import (
                 periodic_blob_gc_check,
                 periodic_blob_publication_reconciliation_check,
@@ -2822,15 +2478,7 @@ async def _run_daemon_services_under_active_writer_lease(
             )
             from polylogue.daemon.intake_adapters import RawMaterializationDiscovery
 
-            # Fair intake and the whale lane each retain their own bounded
-            # traversal. A whale probe is selection work, not an intake
-            # acknowledgement, so letting it advance the fair cursor changes
-            # ordinary discovery order behind the scheduler's back.
             raw_intake_discovery = RawMaterializationDiscovery(
-                archive_root_path,
-                max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
-            )
-            raw_whale_discovery = RawMaterializationDiscovery(
                 archive_root_path,
                 max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
             )
@@ -2905,10 +2553,7 @@ async def _run_daemon_services_under_active_writer_lease(
                     "raw_observation_convergence",
                     lambda: _periodic_raw_materialization_convergence(
                         watcher_registered=gate,
-                        raw_observation_owner=raw_observation_owner,
                         raw_intake_wakeup=raw_intake_wakeup,
-                        raw_intake_discovery=raw_whale_discovery,
-                        session_profile_callback=session_profile_callback,
                     ),
                 ),
                 ("wal_checkpoint", _periodic_wal_checkpoint),
@@ -2943,6 +2588,8 @@ async def _run_daemon_services_under_active_writer_lease(
                 ("secret_scan_sweep", lambda: periodic_secret_scan_sweep(watcher_registered=gate)),
             )
             for service_name, service_factory in periodic_services:
+                if supervisor.state(service_name) is ServiceState.UNAVAILABLE:
+                    continue
                 supervisor.start(service_name, service_factory)
             _db = _active_index_db_path()
             converger = DaemonConverger(stages=make_default_convergence_stages(_db))
@@ -2971,6 +2618,7 @@ async def _run_daemon_services_under_active_writer_lease(
         try:
             if not watcher_creation_blocked and intake_scheduled:
                 async with Polylogue() as polylogue:
+                    from polylogue.archive.query.execution_control import QueryExecutionContext
                     from polylogue.daemon.intake_adapters import (
                         ColdBuildGeneration,
                         DaemonIntakeContext,
@@ -2980,6 +2628,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         clear_cold_build_generation,
                         register_cold_build_generation,
                     )
+                    from polylogue.operations.operation_context import open_operation_read
 
                     watcher = LiveWatcher(
                         polylogue,
@@ -2987,6 +2636,12 @@ async def _run_daemon_services_under_active_writer_lease(
                         converger=converger,
                         event_emitter=_emit_live_batch_event,
                         write_coordinator=write_coordinator,
+                        read_snapshot=lambda root: open_operation_read(
+                            root,
+                            execution_context=QueryExecutionContext.create(
+                                query_text="live-existing-session-preparation", workload_class="scan"
+                            ),
+                        ),
                         embedding_owner=embedding_callback,
                         session_profile_callback=session_profile_callback,
                         intake_wakeup=raw_intake_wakeup,
@@ -3109,7 +2764,7 @@ async def _run_daemon_services_under_active_writer_lease(
                     # returns an empty page while the tier is absent, so
                     # registering here costs nothing and the class starts
                     # admitting as soon as the first acquisition commits.
-                    raw_materialization_available = not watcher_blocked
+                    raw_materialization_available = not schema_blocked
                     from polylogue.daemon.intake_adapters import SubUnitHaltPolicy
 
                     # A configured source that terminally refuses halts
@@ -3141,10 +2796,11 @@ async def _run_daemon_services_under_active_writer_lease(
                             halt=_halt_source,
                         ),
                         remote_callback=run_remote_intake
-                        if enable_source_catchup and drive_sources_configured
+                        if not schema_blocked and enable_source_catchup and drive_sources_configured
                         else None,
                         raw_callback=admit_raw_intake if raw_materialization_available else None,
                         raw_discover=discover_raw_intake if raw_materialization_available else None,
+                        raw_suspended=lambda: cold_build is not None and not cold_build.settled,
                         hook_events_callback=admit_hook_events if raw_materialization_available else None,
                         hook_events_discover=discover_hook_events if raw_materialization_available else None,
                     )
@@ -3178,6 +2834,9 @@ async def _run_daemon_services_under_active_writer_lease(
                             sources=sources,
                         )
                         register_cold_build_generation(cold_build)
+                        from polylogue.daemon.catchup_status import set_cold_build_progress_provider
+
+                        set_cold_build_progress_provider(lambda: cold_build.accepted_progress)
 
                     async def settle_cold_build() -> None:
                         """Promote or discard the candidate once intake drains."""
@@ -3204,11 +2863,44 @@ async def _run_daemon_services_under_active_writer_lease(
                                 )
                         finally:
                             clear_cold_build_generation()
+                            set_cold_build_progress_provider(None)
+
+                    async def refresh_cold_build_progress(_result: object) -> None:
+                        generation = cold_build
+                        if generation is None or generation.settled:
+                            return
+                        try:
+                            await write_coordinator.run_sync(
+                                "daemon.cold_build.accepted_progress",
+                                generation.refresh_accepted_progress,
+                            )
+                        except Exception as exc:
+                            # This projection feeds status only. Intake and
+                            # readiness must continue even when ETA cannot be
+                            # measured from the candidate.
+                            generation.invalidate_accepted_progress()
+                            emit(
+                                "daemon.cold_build.accepted_progress_failed",
+                                level=WARNING,
+                                outcome="unmeasured",
+                                reason="candidate_progress_unavailable",
+                                error_type=type(exc).__name__,
+                                error_detail=str(exc),
+                            )
 
                     intake_service = DaemonIntakeService(
                         dispatcher,
                         wakeup=raw_intake_wakeup,
                         on_backlog_drained=settle_cold_build if cold_build is not None else None,
+                        # A scheduled retry can be absent from a bounded
+                        # discovery pass until its deadline. The candidate
+                        # cannot become active while that obligation remains.
+                        has_pending_backlog=(
+                            lambda: watcher._cursor.has_pending_retries(source.root for source in sources) is not False
+                        )
+                        if cold_build is not None
+                        else None,
+                        on_pass_complete=refresh_cold_build_progress if cold_build is not None else None,
                     )
                     supervisor.start("fair_intake", intake_service.run)
                     if enable_watch:
@@ -3393,6 +3085,9 @@ async def _run_daemon_services_under_active_writer_lease(
                 with contextlib.suppress(Exception):
                     cold_build.discard()
                 clear_cold_build_generation()
+            from polylogue.daemon.catchup_status import set_cold_build_progress_provider
+
+            set_cold_build_progress_provider(None)
             if server is not None:
                 with contextlib.suppress(Exception):
                     server.server_close()
@@ -3538,6 +3233,34 @@ async def _shutdown_server_if_serving(
             component=label,
             timeout_ms=5000,
         )
+
+
+async def _run_browser_host(*, host: str, port: int, daemon_origin: str) -> None:
+    """Own the optional browser process for one supervised service lifetime."""
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "polylogue.daemon.browser_host",
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--daemon-origin",
+        daemon_origin,
+    )
+    try:
+        returncode = await process.wait()
+        raise RuntimeError(f"browser host exited unexpectedly with status {returncode}")
+    finally:
+        if process.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5.0)
+            except TimeoutError:
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+                await asyncio.wait_for(process.wait(), timeout=1.0)
 
 
 async def _serve_until_complete(
@@ -3819,6 +3542,12 @@ def health_command(
     help="Daemon API server port.",
 )
 @click.option(
+    "--browser-port",
+    default=None,
+    type=click.IntRange(1, 65535),
+    help="Run the optional browser host on this port (for example 8767). Requires the daemon API.",
+)
+@click.option(
     "--api-auth-token",
     default=None,
     help="Daemon API auth token; auto-minted/loaded from a 0600 file if not given.",
@@ -3857,6 +3586,7 @@ def run_command(
     no_api: bool,
     api_host: str,
     api_port: int,
+    browser_port: int | None,
     api_auth_token: str | None,
     api_allow_no_auth: bool,
     no_default_sources: bool,
@@ -3935,6 +3665,8 @@ def run_command(
         components.append(f"browser-capture=http://{host}:{port}")
     if enable_api:
         components.append(f"api=http://{api_host}:{api_port}")
+    if browser_port is not None:
+        components.append(f"browser=http://{api_host}:{browser_port}")
     click.echo(
         f"Starting polylogued ({', '.join(components)}). Ctrl-C to stop.",
         err=True,
@@ -3957,6 +3689,7 @@ def run_command(
                 enable_api=enable_api,
                 api_host=api_host,
                 api_port=api_port,
+                browser_port=browser_port,
                 api_auth_token=api_auth_token,
                 api_allow_no_auth=api_allow_no_auth,
                 cold_build_index=cold_build_index,
@@ -3964,6 +3697,11 @@ def run_command(
         )
     except KeyboardInterrupt:
         click.echo("Stopping polylogued.", err=True)
+    finally:
+        # The CLI configured the process-global queued event sink. Drain it
+        # after the daemon's final stop event; embedded callers of
+        # run_daemon_services do not own that global sink.
+        shutdown_events(timeout_s=0.25)
 
 
 @main.command("watch", help="Watch source directories and ingest new sessions live.")

@@ -21,6 +21,7 @@ contracts and daemon handlers should be added here.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -92,6 +93,14 @@ _WEB_CREDENTIAL_FAILURE_STATES = list(get_args(WebCredentialFailureState))
 
 def _protected_read_security() -> list[dict[str, list[str]]]:
     return [{"machineBearer": []}, {"webCredentialCookie": []}]
+
+
+def _route_security(auth_policy: str) -> list[dict[str, list[str]]]:
+    if auth_policy in {"unauthenticated_loopback", "first_party_same_origin"}:
+        return []
+    if auth_policy == "bearer_if_configured_and_same_origin":
+        return [{"machineBearer": []}]
+    return _protected_read_security()
 
 
 def _route_contract_payload(contract: RouteContract) -> dict[str, str]:
@@ -494,6 +503,20 @@ def _build_openapi_document() -> dict[str, Any]:
                             "schema": {"type": "string"},
                         },
                         {
+                            "name": "origin",
+                            "in": "query",
+                            "description": "Public origin filter for session-list mode.",
+                            "required": False,
+                            "schema": {"type": "string"},
+                        },
+                        {
+                            "name": "repo",
+                            "in": "query",
+                            "description": "Repository filter for session-list mode.",
+                            "required": False,
+                            "schema": {"type": "string"},
+                        },
+                        {
                             "name": "since",
                             "in": "query",
                             "description": "ISO 8601 lower bound on session date.",
@@ -811,18 +834,51 @@ def _build_openapi_document() -> dict[str, Any]:
             ),
         },
     }
-    # Route identity and transport metadata are generated for every migrated
-    # route. The surrounding operation details remain schema-owned above.
+    # Keep the existing typed operation schemas. Additional executable route
+    # declarations receive an intentionally generic operation until their
+    # request/response payload models are published here.
     for declaration in DAEMON_ROUTE_DECLARATIONS:
-        openapi_path = declaration.path.replace(":id", "{session_id}")
-        operation = document["paths"].get(openapi_path, {}).get(declaration.method.lower())
+        openapi_path = re.sub(
+            r":([a-zA-Z_][a-zA-Z_0-9]*)",
+            lambda match: "{session_id}" if match.group(1) == "id" else "{" + match.group(1) + "}",
+            declaration.path,
+        )
+        path_item = document["paths"].setdefault(openapi_path, {})
+        operation = path_item.get(declaration.method.lower())
         if operation is None:
-            raise RuntimeError(
-                f"missing OpenAPI operation for daemon declaration: {declaration.method} {declaration.path}"
-            )
-        words = declaration.kernel.public_name.split("-")
-        operation.setdefault("operationId", words[0] + "".join(word.title() for word in words[1:]))
-        operation["security"] = _protected_read_security()
+            client_ready = declaration.path in {"/api/webui/observability", "/api/webui/freshness"}
+            response_content: dict[str, object] = {
+                "application/json": {"schema": {"type": "object", "additionalProperties": True}}
+            }
+            if declaration.path == "/api/events":
+                response_content["text/event-stream"] = {"schema": {"type": "string"}}
+            operation = {
+                "summary": declaration.kernel.discovery_text,
+                "responses": {
+                    ("default" if declaration.method != "GET" else "200"): {
+                        "description": declaration.response_contract,
+                        "content": response_content,
+                    }
+                },
+                "x-polylogue-client-generation": client_ready,
+            }
+            if declaration.path == "/api/webui/freshness":
+                operation["parameters"] = [
+                    {"name": "source", "in": "query", "required": True, "schema": {"type": "string"}}
+                ]
+                operation["operationId"] = "getWebuiFreshness"
+            elif declaration.path == "/api/webui/observability":
+                operation["operationId"] = "getWebuiObservability"
+            path_parameters = re.findall(r"\{([^}]+)\}", openapi_path)
+            if path_parameters:
+                operation["parameters"] = [
+                    {"name": name, "in": "path", "required": True, "schema": {"type": "string"}}
+                    for name in path_parameters
+                ]
+            path_item[declaration.method.lower()] = operation
+        words = re.findall(r"[A-Za-z0-9]+", declaration.kernel.public_name)
+        operation.setdefault("operationId", "route" + "".join(word.title() for word in words))
+        operation["security"] = _route_security(declaration.auth_policy)
         operation["x-polylogue-declaration"] = {
             "declaration_id": declaration.kernel.declaration_id,
             "method": declaration.method,
@@ -830,9 +886,12 @@ def _build_openapi_document() -> dict[str, Any]:
             "request_contract": declaration.request_contract,
             "response_contract": declaration.response_contract,
             "auth_policy": declaration.auth_policy,
-            "domain_operation": declaration.domain_operation,
             "owner_path": declaration.kernel.owner_path,
         }
+        if declaration.domain_operation is not None:
+            operation["x-polylogue-declaration"]["domain_operation"] = declaration.domain_operation
+        if declaration.migration_reason:
+            operation["x-polylogue-declaration"]["migration_reason"] = declaration.migration_reason
     return document
 
 

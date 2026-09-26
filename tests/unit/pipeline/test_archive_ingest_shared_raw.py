@@ -1,37 +1,9 @@
-"""Regression coverage for polylogue-sjf6.
+"""A grouped Claude Code capture publishes one raw row and distinct members.
 
-A Claude Code resume/fork JSONL file physically carries over ONE boundary
-record from its parent session (same content, but tagged with the PARENT's
-``sessionId``) before switching to its own session id for the rest of the
-file. `_claude_code_multiway_parse` (dispatch.py) correctly splits such
-a file into two `ParsedSession`s that share the identical captured raw bytes.
-
-Before this fix, `pipeline/services/archive_ingest.py`'s one-shot importer
-(`parse_sources_archive` / `write_pair`) wrote a SEPARATE `raw_sessions` row
-per split session via `admit_raw_and_parsed_result`, whose raw_id is derived
-from `deterministic_raw_session_id(..., native_id=session.provider_session_id)`
-(see `write_source_raw_session`). Two sessions parsed from the SAME bytes
-therefore produced TWO DIFFERENT raw_id rows differentiated only by
-native_id -- and the live daemon watcher (`sources/live/batch.py`,
-`write_raw_payload`) independently commits a THIRD raw for the same bytes
-with native_id always NULL. These extra, duplicate raw rows for
-byte-identical content are what the daemon's membership-replay guard
-(archive.py:2255, "membership replay cannot retire an unrelated accepted
-head", added by rgh2/#2718) later discovers as spurious competing claims on
-a `logical_source_key` it already has an accepted head for.
-
-Verified directly against the live production archive (2026-07-12): the
-exact production file (a 41 MB, 8984-line JSONL whose first record carries
-its logical parent session's id) had TWO raw_sessions rows for the identical
-`source_path`, one with native_id set (from a `polylogue import` run) and one
-with native_id NULL (from the daemon), joined only by identical blob bytes.
-
-This test proves the fix: `write_pair` now caches raw_ids by
-(origin, source_path, source_index, blob_hash) so every session parsed from
-the SAME physical raw acquisition is indexed against ONE shared raw_id
-(computed WITHOUT native_id, matching the daemon's own raw-identity scheme),
-using `write_parsed_for_retained_raw_result` for the second and further
-sessions instead of writing a duplicate raw row.
+The one-shot compatibility entry point uses the live acquisition and
+convergence owner. A carried-over parent turn and the child session share
+one physical JSONL file, so repeated acquisition must preserve one raw
+identity while retaining both session memberships.
 """
 
 from __future__ import annotations
@@ -40,20 +12,14 @@ import json
 import os
 import sqlite3
 import zipfile
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
-from polylogue.archive.message.roles import Role
 from polylogue.config import Source
-from polylogue.core.enums import BlockType, Provider
-from polylogue.core.timestamp_authority import timestamp_millis
-from polylogue.pipeline.services import archive_ingest
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
-from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, RawSessionData
-from polylogue.sources.source_parsing import iter_source_sessions_with_raw
+from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -212,10 +178,10 @@ def _set_mtime_ms(path: Path, mtime_ms: int) -> None:
 
 @pytest.mark.asyncio
 async def test_archive_ingest_session_shaped_workflow_journal_reaches_parser_idempotently(
-    tmp_path: Path, workspace_env: dict[str, Path]
+    tmp_path: Path, one_shot_workspace_env: dict[str, Path]
 ) -> None:
     """The production one-shot route must decode a journal before path exclusion."""
-    archive_root = workspace_env["archive_root"]
+    archive_root = one_shot_workspace_env["archive_root"]
     journal = _write_session_shaped_workflow_journal(tmp_path / "sessions")
     sources = [Source(name="claude-code", path=journal)]
 
@@ -234,16 +200,15 @@ async def test_archive_ingest_session_shaped_workflow_journal_reaches_parser_ide
 
 @pytest.mark.asyncio
 async def test_archive_ingest_ordinary_session_records_current_parser_receipt(
-    tmp_path: Path, workspace_env: dict[str, Path]
+    tmp_path: Path, one_shot_workspace_env: dict[str, Path]
 ) -> None:
-    """The ordinary importer must emit source-tier parser authority evidence.
+    """Canonical acquisition must emit source-tier parser authority evidence.
 
-    This exercises ``parse_sources_archive``'s normal ``write_pair`` ->
-    ``admit_raw_and_parsed_result`` route, rather than inserting a receipt in
-    test setup. Removing that admission receipt makes the final query return
-    no row and leaves archive readiness permanently blocked.
+    The fixture enters through live intake and convergence; no receipt is
+    inserted in test setup. Losing the admission receipt leaves readiness
+    blocked even when the session is indexed.
     """
-    archive_root = workspace_env["archive_root"]
+    archive_root = one_shot_workspace_env["archive_root"]
     journal = _write_session_shaped_workflow_journal(tmp_path / "sessions")
 
     result = await parse_sources_archive(
@@ -273,10 +238,10 @@ async def test_archive_ingest_ordinary_session_records_current_parser_receipt(
 
 @pytest.mark.asyncio
 async def test_archive_ingest_malformed_workflow_journal_remains_typed_evidence(
-    tmp_path: Path, workspace_env: dict[str, Path]
+    tmp_path: Path, one_shot_workspace_env: dict[str, Path]
 ) -> None:
     """A journal with no decodable session evidence remains a typed artifact."""
-    archive_root = workspace_env["archive_root"]
+    archive_root = one_shot_workspace_env["archive_root"]
     journal = _write_session_shaped_workflow_journal(tmp_path / "sessions", malformed=True)
     expected_mtime_ms = 1_735_689_600_123
     _set_mtime_ms(journal, expected_mtime_ms)
@@ -301,10 +266,10 @@ async def test_archive_ingest_malformed_workflow_journal_remains_typed_evidence(
 
 @pytest.mark.asyncio
 async def test_archive_ingest_zip_workflow_journal_scans_delayed_session_evidence_idempotently(
-    tmp_path: Path, workspace_env: dict[str, Path]
+    tmp_path: Path, one_shot_workspace_env: dict[str, Path]
 ) -> None:
     """ZIP member routing must decode beyond 32 artifact records before exclusion."""
-    archive_root = workspace_env["archive_root"]
+    archive_root = one_shot_workspace_env["archive_root"]
     journal_zip = _write_workflow_journal_zip(tmp_path / "sessions")
     sources = [Source(name="claude-code", path=journal_zip)]
 
@@ -323,10 +288,10 @@ async def test_archive_ingest_zip_workflow_journal_scans_delayed_session_evidenc
 
 @pytest.mark.asyncio
 async def test_archive_ingest_malformed_zip_workflow_journal_remains_typed_evidence(
-    tmp_path: Path, workspace_env: dict[str, Path]
+    tmp_path: Path, one_shot_workspace_env: dict[str, Path]
 ) -> None:
     """Malformed ZIP journals are retained as typed evidence without sessions."""
-    archive_root = workspace_env["archive_root"]
+    archive_root = one_shot_workspace_env["archive_root"]
     journal_zip = _write_workflow_journal_zip(tmp_path / "sessions", malformed=True)
     expected_mtime_ms = 1_735_689_601_456
     _set_mtime_ms(journal_zip, expected_mtime_ms)
@@ -351,12 +316,12 @@ async def test_archive_ingest_malformed_zip_workflow_journal_remains_typed_evide
 
 @pytest.mark.asyncio
 async def test_archive_ingest_large_zip_artifact_streams_to_blob_reference(
-    tmp_path: Path, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, one_shot_workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A large ZIP journal artifact must not be read into an admission payload."""
     from polylogue.sources.decoder_zip import _ZIP_READ_CHUNK_SIZE, MAX_UNCOMPRESSED_SIZE, open_bounded_zip_entry
 
-    archive_root = workspace_env["archive_root"]
+    archive_root = one_shot_workspace_env["archive_root"]
     payload = b'{"contentKey":"artifact","agentId":"workflow-agent","body":"' + b"x" * _ZIP_READ_CHUNK_SIZE + b'"}\n'
     journal_zip = _write_large_zip_member(
         tmp_path / "sessions",
@@ -373,10 +338,7 @@ async def test_archive_ingest_large_zip_artifact_streams_to_blob_reference(
     ) -> _RejectUnboundedRead:
         return _RejectUnboundedRead(original_open(zf, info, max_bytes=max_bytes))
 
-    monkeypatch.setattr(
-        "polylogue.pipeline.services.archive_ingest.open_bounded_zip_entry",
-        reject_unbounded_read,
-    )
+    monkeypatch.setattr("polylogue.sources.decoder_zip.open_bounded_zip_entry", reject_unbounded_read)
 
     result = await parse_sources_archive(archive_root, [Source(name="claude-code", path=journal_zip)], parse_workers=1)
 
@@ -388,12 +350,12 @@ async def test_archive_ingest_large_zip_artifact_streams_to_blob_reference(
 
 @pytest.mark.asyncio
 async def test_archive_ingest_large_ordinary_zip_jsonl_skips_delayed_artifact_scan(
-    tmp_path: Path, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, one_shot_workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Unclassified ZIP JSONL follows normal parsing without a second full scan."""
     from polylogue.sources import decoder_zip
 
-    archive_root = workspace_env["archive_root"]
+    archive_root = one_shot_workspace_env["archive_root"]
     payload = (
         b'{"sessionId":"ordinary-session","parentUuid":null,"type":"user",'
         b'"message":{"role":"user","content":[{"type":"text","text":"' + b"x" * (1024 * 1024) + b'"}]},'
@@ -417,10 +379,10 @@ async def test_archive_ingest_large_ordinary_zip_jsonl_skips_delayed_artifact_sc
 
 @pytest.mark.asyncio
 async def test_archive_ingest_path_classified_zip_json_record_array_reaches_parser(
-    tmp_path: Path, workspace_env: dict[str, Path]
+    tmp_path: Path, one_shot_workspace_env: dict[str, Path]
 ) -> None:
     """Decoded Claude records outrank a non-session workflow snapshot path."""
-    archive_root = workspace_env["archive_root"]
+    archive_root = one_shot_workspace_env["archive_root"]
     journal_zip = _write_large_zip_member(
         tmp_path / "sessions",
         "workflows/wf-json.json",
@@ -462,62 +424,36 @@ async def test_archive_ingest_path_classified_zip_json_record_array_reaches_pars
 
 
 @pytest.mark.asyncio
-async def test_archive_ingest_normalizes_file_mtime_before_archive_writer(
+async def test_archive_ingest_records_file_mtime_through_canonical_acquisition(
     tmp_path: Path,
-    workspace_env: dict[str, Path],
-    monkeypatch: pytest.MonkeyPatch,
+    one_shot_workspace_env: dict[str, Path],
 ) -> None:
-    archive_root = workspace_env["archive_root"]
-    source_path = tmp_path / "synthetic-codex.json"
-    source_path.write_bytes(b"synthetic raw")
-    session = ParsedSession(
-        source_name=Provider.CODEX,
-        provider_session_id="archive-ingest-mtime-fallback",
-        title="mtime fallback",
-        messages=[
-            ParsedMessage(
-                provider_message_id="m1",
-                role=Role.USER,
-                text="synthetic",
-                position=0,
-                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="synthetic")],
-            )
-        ],
-    )
-    raw = RawSessionData(
-        raw_bytes=b"synthetic raw",
-        source_path=str(source_path),
-        source_index=0,
-        file_mtime="2026-05-01T10:00:00Z",
-    )
+    archive_root = one_shot_workspace_env["archive_root"]
+    source_root = tmp_path / "sessions"
+    source_root.mkdir()
+    _, source_path = _write_carryover_chain(source_root)
+    expected_mtime_ms = 1_777_632_000_000
+    _set_mtime_ms(source_path, expected_mtime_ms)
 
-    def synthetic_iter(*_args: object, **_kwargs: object) -> Iterator[tuple[RawSessionData, ParsedSession]]:
-        yield raw, session
+    result = await parse_sources_archive(archive_root, [Source(name="claude-code", path=source_path)], parse_workers=1)
 
-    monkeypatch.setattr(archive_ingest, "iter_source_sessions_with_raw", synthetic_iter)
-    result = await parse_sources_archive(archive_root, [Source(name="codex", path=tmp_path)], parse_workers=1)
-
-    assert result.counts["sessions"] == 1
-    with sqlite3.connect(archive_root / "index.db") as conn:
-        row = conn.execute(
-            "SELECT created_at_ms, updated_at_ms FROM sessions WHERE native_id = ?",
-            ("archive-ingest-mtime-fallback",),
-        ).fetchone()
+    assert result.parse_failures == 0
+    assert result.counts["sessions"] == 2
     with sqlite3.connect(archive_root / "source.db") as conn:
         raw_mtime_ms = conn.execute(
             "SELECT file_mtime_ms FROM raw_sessions WHERE source_path = ?",
             (str(source_path),),
         ).fetchone()[0]
-    assert row[0] is not None
-    assert row[0] == row[1]
-    assert raw_mtime_ms == timestamp_millis(raw.file_mtime)
+    assert raw_mtime_ms == expected_mtime_ms
 
 
-async def test_grouped_carryover_sessions_share_one_raw_row(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+async def test_grouped_carryover_sessions_share_one_raw_row(
+    tmp_path: Path, one_shot_workspace_env: dict[str, Path]
+) -> None:
     """Two sessions split from ONE Claude Code file's bytes must NOT produce
     two raw_sessions rows for that file -- the specific bug behind
     polylogue-sjf6's live guard crash."""
-    archive_root = workspace_env["archive_root"]
+    archive_root = one_shot_workspace_env["archive_root"]
     root = tmp_path / "sessions"
     root.mkdir()
     _parent_file, child_file = _write_carryover_chain(root)
@@ -527,11 +463,8 @@ async def test_grouped_carryover_sessions_share_one_raw_row(tmp_path: Path, work
     assert result.parse_failures == 0
 
     rows = _raw_rows_for_path(archive_root / "source.db", str(child_file))
-    # Anti-vacuity: this is the production dependency under test --
-    # write_pair's shared-raw cache (pipeline/services/archive_ingest.py).
-    # Deleting that cache (reverting to one admit_raw_and_parsed_result call
-    # per split session, each deriving its own native_id-based raw_id) makes
-    # this assertion fail with TWO rows instead of one.
+    # A second raw identity for either split session breaks the shared-source
+    # membership claim, and this assertion observes that durable failure.
     assert len(rows) == 1, f"expected exactly one raw row for child-session.jsonl's bytes, got {rows}"
     assert rows[0][1] is None
     assert _membership_rows(archive_root / "source.db", rows[0][0]) == {
@@ -617,7 +550,7 @@ def _write_sibling_carryover_children(root: Path, ancestor_session_id: str) -> t
 
 @pytest.mark.asyncio
 async def test_sibling_fork_carryovers_off_one_ancestor_do_not_collide_identity(
-    tmp_path: Path, workspace_env: dict[str, Path]
+    tmp_path: Path, one_shot_workspace_env: dict[str, Path]
 ) -> None:
     """bd polylogue-jc4q: two UNRELATED resume/fork files that each carry a
     boundary record from the SAME ancestor session must not be assigned the
@@ -631,7 +564,7 @@ async def test_sibling_fork_carryovers_off_one_ancestor_do_not_collide_identity(
     56/185 (30.3%) of claude-code-session ambiguous cohorts resolved cleanly
     under this defect, far below chatgpt-export/claude-ai-export (>90%).
     """
-    archive_root = workspace_env["archive_root"]
+    archive_root = one_shot_workspace_env["archive_root"]
     root = tmp_path / "sessions"
     root.mkdir()
     ancestor_session_id = "ancestor-session"
@@ -680,14 +613,14 @@ async def test_sibling_fork_carryovers_off_one_ancestor_do_not_collide_identity(
 
 @pytest.mark.asyncio
 async def test_reingesting_identical_bytes_resolves_to_the_same_raw_id(
-    tmp_path: Path, workspace_env: dict[str, Path]
+    tmp_path: Path, one_shot_workspace_env: dict[str, Path]
 ) -> None:
     """AC #1: a deterministic fixture re-acquired twice with byte-identical
     bytes must yield the SAME raw_id (and therefore the same downstream
     logical_source_key) both times -- not a second, native_id-differentiated
     raw row that later collides with the first in membership classification.
     """
-    archive_root = workspace_env["archive_root"]
+    archive_root = one_shot_workspace_env["archive_root"]
     root = tmp_path / "sessions"
     root.mkdir()
     _parent_file, child_file = _write_carryover_chain(root)
@@ -705,48 +638,6 @@ async def test_reingesting_identical_bytes_resolves_to_the_same_raw_id(
 
     assert len(second_rows) == 1, f"re-ingest must not create a second raw row, got {second_rows}"
     assert second_rows[0][0] == first_raw_id, "raw_id must be deterministic across re-acquisitions of identical bytes"
-
-
-@pytest.mark.asyncio
-async def test_reordered_grouped_reingest_keeps_raw_identity_and_memberships(
-    tmp_path: Path,
-    workspace_env: dict[str, Path],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The real importer must tolerate a different grouped-session order on retry."""
-    monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "1")
-    monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "0")
-    archive_root = workspace_env["archive_root"]
-    root = tmp_path / "sessions"
-    root.mkdir()
-    _parent_file, child_file = _write_carryover_chain(root)
-    sources = [Source(name="claude-code", path=child_file)]
-
-    original_iter = iter_source_sessions_with_raw
-    calls = 0
-
-    def reordered_iter(source: Source, **kwargs: Any) -> Iterator[tuple[RawSessionData | None, ParsedSession]]:
-        nonlocal calls
-        pairs = list(original_iter(source, **kwargs))
-        if calls == 1:
-            pairs.reverse()
-        calls += 1
-        yield from pairs
-
-    monkeypatch.setattr(archive_ingest, "iter_source_sessions_with_raw", reordered_iter)
-
-    first_result = await parse_sources_archive(archive_root, sources)
-    assert first_result.parse_failures == 0
-    first_rows = _raw_rows_for_path(archive_root / "source.db", str(child_file))
-    assert len(first_rows) == 1
-    first_raw_id = first_rows[0][0]
-
-    second_result = await parse_sources_archive(archive_root, sources)
-    assert second_result.parse_failures == 0
-    assert calls == 2
-    second_rows = _raw_rows_for_path(archive_root / "source.db", str(child_file))
-
-    assert second_rows == [(first_raw_id, None)]
     assert _membership_rows(archive_root / "source.db", first_raw_id) == {
         ("claude-code-session:parent-session:child-session", "parent-session:child-session"),
         ("claude-code-session:child-session", "child-session"),
@@ -756,7 +647,7 @@ async def test_reordered_grouped_reingest_keeps_raw_identity_and_memberships(
 @pytest.mark.asyncio
 async def test_batched_grouped_ingest_commits_census_before_next_raw(
     tmp_path: Path,
-    workspace_env: dict[str, Path],
+    one_shot_workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Grouped raw publication must not wait behind the index message batch."""
@@ -764,7 +655,7 @@ async def test_batched_grouped_ingest_commits_census_before_next_raw(
     # Keep the index transaction open across both files. The default production
     # threshold has the same shape for this small demo-sized input.
     monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "1000")
-    archive_root = workspace_env["archive_root"]
+    archive_root = one_shot_workspace_env["archive_root"]
     first_root = tmp_path / "first"
     second_root = tmp_path / "second"
     first_root.mkdir()
@@ -828,9 +719,9 @@ def _write_stem_identity_husk(root: Path, stem: str) -> Path:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stem", ["toolu_01ABCDEFGHIJKLMNOPQRSTUV", "wf_run_1"])
 async def test_archive_ingest_refuses_filename_stem_identity_without_authored_content(
-    tmp_path: Path, workspace_env: dict[str, Path], stem: str
+    tmp_path: Path, one_shot_workspace_env: dict[str, Path], stem: str
 ) -> None:
-    """polylogue-b508: the one-shot importer must not mint fragment-identity husks.
+    """Canonical one-shot intake must not mint fragment-identity husks.
 
     ``require_positive_conversational_evidence`` is the archive's admission law
     for "parsed, but no conversation is present". Every other production write
@@ -843,11 +734,11 @@ async def test_archive_ingest_refuses_filename_stem_identity_without_authored_co
     phantom class this bead exists to make unrepresentable. (The ``*.meta``
     sibling shape is refused earlier, by its own declared artifact rule.)
 
-    Anti-vacuity: dropping the ``write_pair`` evidence gate writes one session
+    Anti-vacuity: dropping the authored-evidence gate writes one session
     row per parametrized stem, each ``provider_session_id`` equal to the stem
     and ``COUNT(*) FROM messages`` zero.
     """
-    archive_root = workspace_env["archive_root"]
+    archive_root = one_shot_workspace_env["archive_root"]
     husk = _write_stem_identity_husk(tmp_path / "corpus", stem)
 
     result = await parse_sources_archive(
@@ -864,7 +755,7 @@ async def test_archive_ingest_refuses_filename_stem_identity_without_authored_co
 
 @pytest.mark.asyncio
 async def test_archive_ingest_still_admits_a_real_session_through_the_same_gate(
-    tmp_path: Path, workspace_env: dict[str, Path]
+    tmp_path: Path, one_shot_workspace_env: dict[str, Path]
 ) -> None:
     """The evidence gate must not refuse a transcript that carries authored content.
 
@@ -874,7 +765,7 @@ async def test_archive_ingest_still_admits_a_real_session_through_the_same_gate(
     this one (same directory, same provider, same one-shot route) turns this
     red.
     """
-    archive_root = workspace_env["archive_root"]
+    archive_root = one_shot_workspace_env["archive_root"]
     transcript = _write_session_shaped_workflow_journal(tmp_path / "sessions")
 
     result = await parse_sources_archive(

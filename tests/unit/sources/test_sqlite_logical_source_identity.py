@@ -583,11 +583,18 @@ def test_commit_after_export_cannot_authorize_a_cursor_skip(tmp_path: Path, monk
         )
         watcher = LiveWatcher.__new__(LiveWatcher)
         watcher._sources = (WatchSource(name="codex-state", root=tmp_path, suffixes=(".sqlite",)),)
-        watcher._archived_cursor_index_untrusted = False
+        corroboration_probes: list[Path] = []
+
+        def corroborated(path: Path) -> bool:
+            corroboration_probes.append(path)
+            return True
+
+        monkeypatch.setattr(watcher, "_cursor_skip_corroborated_by_index", corroborated)
 
         assert snapshot.source_revision != sqlite_member_revision(source)
         assert snapshot.source_fingerprint != sqlite_source_revision(source)
         assert watcher._needs_work_from_state(source, stat=current_stat, cursor=cursor) is True
+        assert corroboration_probes == [], "a changed source must be selected before checking indexed output"
     finally:
         writer.close()
 

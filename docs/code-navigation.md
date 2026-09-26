@@ -138,10 +138,10 @@ enforced boundary authority.
   metrics runtime.
 - `api/`, `cli/`, `mcp/` — public adapters over shared operations and payloads.
 - `surfaces/` — provider-neutral payload and affordance contracts.
-- `rendering/` — markdown/HTML/string rendering only.
+- `rendering/` — session and content format adapters such as Markdown and HTML.
 - `agent_integration/` — packaged cold-start and native client integration.
 - `telemetry/` — outbound telemetry projections.
-- `ui/` — legacy terminal presentation facade retained for compatibility.
+- `ui/` — terminal interaction, Rich layout, and shared theme tokens.
 
 ### Verification worlds
 

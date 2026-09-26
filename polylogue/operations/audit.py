@@ -18,10 +18,19 @@ from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
+from polylogue.operations.ingest_acceptance import INGEST_OPERATION
 from polylogue.operations.machine_receipts import (
+    MAX_PAGE_ITEMS,
+    IngestHistoricalReceipt,
+    IngestInputHistoricalReceipt,
+    IngestInputRawPageHistoricalReceipt,
+    IngestInsightPageHistoricalReceipt,
     MachineHistoricalReceipt,
     decode_machine_receipt,
     encode_machine_receipt,
+    ingest_input_raw_pages_digest,
+    ingest_insight_pages_digest,
+    ingest_session_ids_digest,
 )
 from polylogue.operations.mutation_transaction import (
     AuthorizationMismatchError,
@@ -1352,6 +1361,45 @@ class AuditRepository:
                 "unknown_reason": values.get("unknown_reason"),
                 "now_ms": int(time.time() * 1000),
             }
+        if kind == "append_ingest_session_id_page":
+            operation_id = cast(str, args[0])
+            ordinal = cast(int, args[1])
+            session_ids = cast(tuple[str, ...], args[2])
+            if (
+                not operation_id
+                or type(ordinal) is not int
+                or ordinal < 0
+                or not 1 <= len(session_ids) <= MAX_PAGE_ITEMS
+                or any(type(session_id) is not str or not session_id for session_id in session_ids)
+                or list(session_ids) != sorted(set(session_ids))
+            ):
+                raise ValueError("ingest session ID page is not bounded, sorted, and unique")
+            return {
+                "operation_id": operation_id,
+                "ordinal": ordinal,
+                "session_ids": list(session_ids),
+                "now_ms": int(time.time() * 1000),
+            }
+        if kind == "append_ingest_insight_page":
+            operation_id = cast(str, args[0])
+            page = cast(IngestInsightPageHistoricalReceipt, args[1])
+            if not operation_id or not isinstance(page, IngestInsightPageHistoricalReceipt):
+                raise ValueError("ingest insight page requires a typed operation and page")
+            return {
+                "operation_id": operation_id,
+                "page": page.model_dump(mode="json"),
+                "now_ms": int(time.time() * 1000),
+            }
+        if kind == "append_ingest_input_raw_page":
+            operation_id = cast(str, args[0])
+            raw_page = cast(IngestInputRawPageHistoricalReceipt, args[1])
+            if not operation_id or not isinstance(raw_page, IngestInputRawPageHistoricalReceipt):
+                raise ValueError("ingest input raw page requires a typed operation and page")
+            return {
+                "operation_id": operation_id,
+                "page": raw_page.model_dump(mode="json"),
+                "now_ms": int(time.time() * 1000),
+            }
         if kind == "recover_abandoned_attempts":
             return {"now_ms": int(time.time() * 1000)}
         if kind == "record_recovery_disposition":
@@ -1471,6 +1519,25 @@ class AuditRepository:
                     receipt=None if payload["receipt"] is None else _receipt_from_payload(payload["receipt"]),
                     error_summary=cast(str | None, payload.get("error_summary")),
                     unknown_reason=cast(str | None, payload.get("unknown_reason")),
+                )
+            if mutation.kind == "append_ingest_session_id_page":
+                return cast(Any, self.append_ingest_session_id_page).__wrapped__(
+                    self,
+                    cast(str, payload["operation_id"]),
+                    cast(int, payload["ordinal"]),
+                    tuple(cast(list[str], payload["session_ids"])),
+                )
+            if mutation.kind == "append_ingest_insight_page":
+                return cast(Any, self.append_ingest_insight_page).__wrapped__(
+                    self,
+                    cast(str, payload["operation_id"]),
+                    IngestInsightPageHistoricalReceipt.model_validate(payload["page"]),
+                )
+            if mutation.kind == "append_ingest_input_raw_page":
+                return cast(Any, self.append_ingest_input_raw_page).__wrapped__(
+                    self,
+                    cast(str, payload["operation_id"]),
+                    IngestInputRawPageHistoricalReceipt.model_validate(payload["page"]),
                 )
             if mutation.kind == "recover_abandoned_attempts":
                 return cast(Any, self._recover_abandoned_attempts).__wrapped__(self)
@@ -3032,6 +3099,239 @@ class AuditRepository:
                 "SELECT * FROM operation_events WHERE operation_id = ? ORDER BY sequence", (operation_id,)
             ).fetchall()
             return tuple(dict(row) for row in rows)
+
+    @_continuity_mutation("append_ingest_session_id_page")
+    def append_ingest_session_id_page(self, operation_id: str, ordinal: int, session_ids: tuple[str, ...]) -> None:
+        """Retain one bounded changed-ID page before the terminal receipt refers to it."""
+        if (
+            type(ordinal) is not int
+            or ordinal < 0
+            or not 1 <= len(session_ids) <= MAX_PAGE_ITEMS
+            or any(type(session_id) is not str or not session_id for session_id in session_ids)
+            or list(session_ids) != sorted(set(session_ids))
+        ):
+            raise ValueError("ingest session ID page is not bounded, sorted, and unique")
+        with self._connection() as conn:
+            run = conn.execute(
+                "SELECT operation_name, status FROM operation_runs WHERE operation_id = ?", (operation_id,)
+            ).fetchone()
+            if run is None or str(run[0]) != INGEST_OPERATION or str(run[1]) == "completed":
+                raise ValueError("ingest session ID page lacks an open ingest operation")
+            last_row = conn.execute(
+                "SELECT detail_json FROM operation_events WHERE operation_id = ? AND event_type = 'ingest_session_id_page' "
+                "ORDER BY sequence DESC LIMIT 1",
+                (operation_id,),
+            ).fetchone()
+            last_page = None if last_row is None else json.loads(str(last_row[0]))
+            last_ordinal = -1 if last_page is None else int(last_page["ordinal"])
+            if ordinal <= last_ordinal:
+                prior_row = conn.execute(
+                    "SELECT detail_json FROM operation_events WHERE operation_id = ? "
+                    "AND event_type = 'ingest_session_id_page' AND json_extract(detail_json, '$.ordinal') = ?",
+                    (operation_id, ordinal),
+                ).fetchone()
+                prior = None if prior_row is None else json.loads(str(prior_row[0]))
+                if prior != {"ordinal": ordinal, "session_ids": list(session_ids)}:
+                    raise ValueError("ingest session ID page conflicts with durable page")
+                return
+            if ordinal != last_ordinal + 1:
+                raise ValueError("ingest session ID pages must be contiguous")
+            if last_page is not None and str(last_page["session_ids"][-1]) >= session_ids[0]:
+                raise ValueError("ingest session ID pages must be globally sorted")
+            self._append_event(
+                conn,
+                operation_id=operation_id,
+                event_type="ingest_session_id_page",
+                occurred_at_ms=cast(int, self._command_value("now_ms", int(time.time() * 1000))),
+                detail={"ordinal": ordinal, "session_ids": list(session_ids)},
+            )
+
+    def read_ingest_session_id_pages(
+        self, operation_id: str, *, page_count: int, session_count: int, digest: str
+    ) -> list[str]:
+        """Resolve immutable pages with exact count, order, and digest checks."""
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT detail_json FROM operation_events WHERE operation_id = ? AND event_type = 'ingest_session_id_page' "
+                "ORDER BY sequence",
+                (operation_id,),
+            ).fetchall()
+        if len(rows) != page_count:
+            raise ValueError("ingest session ID page count differs from terminal receipt")
+        session_ids: list[str] = []
+        for ordinal, row in enumerate(rows):
+            page = json.loads(str(row[0]))
+            if (
+                not isinstance(page, dict)
+                or page.get("ordinal") != ordinal
+                or not isinstance(page.get("session_ids"), list)
+                or not 1 <= len(page["session_ids"]) <= MAX_PAGE_ITEMS
+            ):
+                raise ValueError("ingest session ID page is malformed or out of order")
+            session_ids.extend(page["session_ids"])
+        if (
+            len(session_ids) != session_count
+            or session_ids != sorted(set(session_ids))
+            or ingest_session_ids_digest(session_ids) != digest
+        ):
+            raise ValueError("ingest session ID pages differ from terminal receipt")
+        return session_ids
+
+    @_continuity_mutation("append_ingest_insight_page")
+    def append_ingest_insight_page(self, operation_id: str, page: IngestInsightPageHistoricalReceipt) -> None:
+        """Persist one bounded profile-target page through audit continuity."""
+        with self._connection() as conn:
+            run = conn.execute(
+                "SELECT operation_name, status FROM operation_runs WHERE operation_id = ?", (operation_id,)
+            ).fetchone()
+            if run is None or str(run[0]) != INGEST_OPERATION or str(run[1]) == "completed":
+                raise ValueError("ingest insight page lacks an open ingest operation")
+            last_row = conn.execute(
+                "SELECT detail_json FROM operation_events WHERE operation_id = ? AND event_type = 'ingest_insight_page' "
+                "ORDER BY sequence DESC LIMIT 1",
+                (operation_id,),
+            ).fetchone()
+            last_page = None if last_row is None else json.loads(str(last_row[0]))
+            last_ordinal = -1 if last_page is None else int(last_page["ordinal"])
+            payload = page.model_dump(mode="json")
+            if page.ordinal <= last_ordinal:
+                prior_row = conn.execute(
+                    "SELECT detail_json FROM operation_events WHERE operation_id = ? "
+                    "AND event_type = 'ingest_insight_page' AND json_extract(detail_json, '$.ordinal') = ?",
+                    (operation_id, page.ordinal),
+                ).fetchone()
+                prior = None if prior_row is None else json.loads(str(prior_row[0]))
+                if prior != payload:
+                    raise ValueError("ingest insight page conflicts with durable page")
+                return
+            if page.ordinal != last_ordinal + 1:
+                raise ValueError("ingest insight pages must be contiguous")
+            self._append_event(
+                conn,
+                operation_id=operation_id,
+                event_type="ingest_insight_page",
+                occurred_at_ms=cast(int, self._command_value("now_ms", int(time.time() * 1000))),
+                detail=payload,
+            )
+
+    def read_ingest_insight_pages(
+        self, operation_id: str, *, page_count: int, target_count: int, digest: str
+    ) -> list[IngestInsightPageHistoricalReceipt]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT detail_json FROM operation_events WHERE operation_id = ? AND event_type = 'ingest_insight_page' "
+                "ORDER BY sequence",
+                (operation_id,),
+            ).fetchall()
+        if len(rows) != page_count:
+            raise ValueError("ingest insight page count differs from terminal receipt")
+        pages = [IngestInsightPageHistoricalReceipt.model_validate_json(str(row[0])) for row in rows]
+        if [page.ordinal for page in pages] != list(range(page_count)):
+            raise ValueError("ingest insight pages are not contiguous")
+        if sum(len(page.targets) for page in pages) != target_count or ingest_insight_pages_digest(pages) != digest:
+            raise ValueError("ingest insight pages differ from terminal receipt")
+        return pages
+
+    def resolve_ingest_insight_pages(
+        self, receipt: IngestHistoricalReceipt
+    ) -> list[IngestInsightPageHistoricalReceipt]:
+        """Return every historical profile target, including referenced pages."""
+        if receipt.insight_pages_ref is None:
+            return list(receipt.insight_pages)
+        assert receipt.insight_pages_digest is not None
+        return self.read_ingest_insight_pages(
+            receipt.insight_pages_ref,
+            page_count=receipt.insight_page_count,
+            target_count=receipt.summary.profile_targets_observed,
+            digest=receipt.insight_pages_digest,
+        )
+
+    @_continuity_mutation("append_ingest_input_raw_page")
+    def append_ingest_input_raw_page(self, operation_id: str, page: IngestInputRawPageHistoricalReceipt) -> None:
+        with self._connection() as conn:
+            run = conn.execute(
+                "SELECT operation_name, status FROM operation_runs WHERE operation_id = ?", (operation_id,)
+            ).fetchone()
+            if run is None or str(run[0]) != INGEST_OPERATION or str(run[1]) == "completed":
+                raise ValueError("ingest input raw page lacks an open ingest operation")
+            rows = conn.execute(
+                "SELECT detail_json FROM operation_events WHERE operation_id = ? "
+                "AND event_type = 'ingest_input_raw_page' AND json_extract(detail_json, '$.source_item_id') = ? "
+                "ORDER BY sequence DESC LIMIT 1",
+                (operation_id, page.source_item_id),
+            ).fetchone()
+            previous = None if rows is None else json.loads(str(rows[0]))
+            last_ordinal = -1 if previous is None else int(previous["ordinal"])
+            payload = page.model_dump(mode="json")
+            if page.ordinal <= last_ordinal:
+                prior_row = conn.execute(
+                    "SELECT detail_json FROM operation_events WHERE operation_id = ? "
+                    "AND event_type = 'ingest_input_raw_page' "
+                    "AND json_extract(detail_json, '$.source_item_id') = ? "
+                    "AND json_extract(detail_json, '$.ordinal') = ?",
+                    (operation_id, page.source_item_id, page.ordinal),
+                ).fetchone()
+                prior = None if prior_row is None else json.loads(str(prior_row[0]))
+                if prior != payload:
+                    raise ValueError("ingest input raw page conflicts with durable page")
+                return
+            if page.ordinal != last_ordinal + 1:
+                raise ValueError("ingest input raw pages must be contiguous")
+            if previous is not None and str(previous["raws"][-1]["raw_id"]) >= page.raws[0].raw_id:
+                raise ValueError("ingest input raw pages must be globally sorted")
+            self._append_event(
+                conn,
+                operation_id=operation_id,
+                event_type="ingest_input_raw_page",
+                occurred_at_ms=cast(int, self._command_value("now_ms", int(time.time() * 1000))),
+                detail=payload,
+            )
+
+    def read_ingest_input_raw_pages(
+        self,
+        operation_id: str,
+        *,
+        source_item_id: str,
+        page_count: int,
+        raw_count: int,
+        unresolved_count: int,
+        digest: str,
+    ) -> list[IngestInputRawPageHistoricalReceipt]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT detail_json FROM operation_events WHERE operation_id = ? "
+                "AND event_type = 'ingest_input_raw_page' AND json_extract(detail_json, '$.source_item_id') = ? "
+                "ORDER BY sequence",
+                (operation_id, source_item_id),
+            ).fetchall()
+        if len(rows) != page_count:
+            raise ValueError("ingest input raw page count differs from terminal receipt")
+        pages = [IngestInputRawPageHistoricalReceipt.model_validate_json(str(row[0])) for row in rows]
+        ids = [raw.raw_id for page in pages for raw in page.raws]
+        if [page.ordinal for page in pages] != list(range(page_count)) or ids != sorted(set(ids)):
+            raise ValueError("ingest input raw pages are not contiguous and sorted")
+        if (
+            len(ids) != raw_count
+            or sum(raw.unresolved for page in pages for raw in page.raws) != unresolved_count
+            or ingest_input_raw_pages_digest(pages) != digest
+        ):
+            raise ValueError("ingest input raw pages differ from terminal receipt")
+        return pages
+
+    def resolve_ingest_input_raw_pages(
+        self, receipt: IngestInputHistoricalReceipt
+    ) -> list[IngestInputRawPageHistoricalReceipt]:
+        if receipt.raw_id_pages_ref is None:
+            return []
+        assert receipt.raw_ids_digest is not None
+        return self.read_ingest_input_raw_pages(
+            receipt.raw_id_pages_ref,
+            source_item_id=receipt.source_item_id,
+            page_count=receipt.raw_id_page_count,
+            raw_count=receipt.raw_id_count,
+            unresolved_count=receipt.unresolved_raw_count,
+            digest=receipt.raw_ids_digest,
+        )
 
     def historical_machine_receipt(self, operation_id: str) -> MachineHistoricalReceipt | None:
         """Return a closed terminal receipt from audit history, never live tiers.

@@ -23,6 +23,7 @@ resident-core service harness, so they do not start archive convergence.
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -152,34 +153,91 @@ def test_api_and_browser_capture_same_socket_refuses(api_host: str, receiver_hos
         )
 
 
-@pytest.mark.timeout(10)
-@pytest.mark.parametrize("_repeat", range(10))
-def test_loopback_bind_passes_remote_check(_repeat: int) -> None:
+def test_browser_host_requires_api_and_distinct_port() -> None:
+    with pytest.raises(click.UsageError, match="requires the daemon API"):
+        _run(
+            run_daemon_services(
+                sources=(),
+                enable_watch=False,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+                browser_port=8767,
+                enable_api=False,
+            )
+        )
+    with pytest.raises(click.UsageError, match="must differ"):
+        _run(
+            run_daemon_services(
+                sources=(),
+                enable_watch=False,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+                browser_port=8767,
+                enable_api=True,
+                api_port=8767,
+            )
+        )
+
+
+def test_browser_host_requires_loopback_reachable_api_bind() -> None:
+    """A remote-specific API address gives the browser proxy no loopback upstream."""
+    with pytest.raises(click.UsageError, match="reachable on loopback"):
+        _run(
+            run_daemon_services(
+                sources=(),
+                enable_watch=False,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+                enable_api=True,
+                api_host="192.0.2.1",
+                api_port=8766,
+                browser_port=8767,
+            )
+        )
+
+
+@pytest.mark.uses_real_clock("times ten sequential production-profile network policy fixtures")
+def test_loopback_bind_passes_remote_check() -> None:
     """Loopback bind does not trip the remote-bind refusal.
 
     The focused production profile is selected and the production policy
     helper decides the bind without entering archive startup.
     """
-    harness = ServiceHarness(
-        profile=ServiceProfile.SURFACES,
-        capabilities={ServiceCapability.API},
-    )
-    harness.require_selected("api_server")
-    assert "raw_observation_convergence" not in harness.selected_names
-    harness.validate_api_bind(enabled=True, host="127.0.0.1", allow_remote=False, auth_token="token")
+    elapsed_runs: list[float] = []
+    for _ in range(10):
+        started = time.monotonic()
+        harness = ServiceHarness(
+            profile=ServiceProfile.SURFACES,
+            capabilities={ServiceCapability.API},
+        )
+        harness.require_selected("api_server")
+        assert "raw_observation_convergence" not in harness.selected_names
+        harness.validate_api_bind(enabled=True, host="127.0.0.1", allow_remote=False, auth_token="token")
+        elapsed_runs.append(time.monotonic() - started)
+        assert elapsed_runs[-1] < 10.0, elapsed_runs
 
 
-@pytest.mark.timeout(10)
-@pytest.mark.parametrize("_repeat", range(10))
-def test_api_disabled_skips_remote_check(_repeat: int) -> None:
+@pytest.mark.uses_real_clock("times ten sequential production-profile API-disabled fixtures")
+def test_api_disabled_skips_remote_check() -> None:
     """If the API is not enabled at all, the remote-bind check should
     not fire — the operator hasn't asked for an API server, so even a
     non-loopback ``api_host`` value is irrelevant.
     """
-    harness = ServiceHarness(profile=ServiceProfile.RESIDENT_CORE)
-    harness.require_selected("api_server", selected=False)
-    assert "raw_observation_convergence" not in harness.selected_names
-    harness.validate_api_bind(enabled=False, host="0.0.0.0", allow_remote=False, auth_token=None)
+    elapsed_runs: list[float] = []
+    for _ in range(10):
+        started = time.monotonic()
+        harness = ServiceHarness(profile=ServiceProfile.RESIDENT_CORE)
+        harness.require_selected("api_server", selected=False)
+        assert "raw_observation_convergence" not in harness.selected_names
+        harness.validate_api_bind(enabled=False, host="0.0.0.0", allow_remote=False, auth_token=None)
+        elapsed_runs.append(time.monotonic() - started)
+        assert elapsed_runs[-1] < 10.0, elapsed_runs
 
 
 def test_run_command_applies_configured_remote_api_fail_closed(
@@ -244,6 +302,7 @@ spool_path = "{spool}"
     assert result.exit_code == 0, (result.output, result.exception)
     assert recorded["api_host"] == "0.0.0.0"
     assert recorded["api_port"] == 9901
+    assert recorded["browser_port"] is None
     assert recorded["api_auth_token"] == "api-secret"
     assert recorded["browser_capture_host"] == "0.0.0.0"
     assert recorded["browser_capture_port"] == 9902
@@ -251,3 +310,16 @@ spool_path = "{spool}"
     assert recorded["browser_capture_auth_token"] == "browser-secret"
     assert recorded["browser_capture_extra_origins"] == ("https://workbench.example",)
     assert recorded["browser_capture_spool_path"] == spool
+
+
+def test_browser_port_is_opt_in_and_reaches_the_service_composition() -> None:
+    recorded: dict[str, object] = {}
+
+    async def fake_run_daemon_services(**kwargs: object) -> None:
+        recorded.update(kwargs)
+
+    with patch("polylogue.daemon.cli.run_daemon_services", side_effect=fake_run_daemon_services):
+        result = CliRunner().invoke(main, ["run", "--no-watch", "--no-browser-capture", "--browser-port", "8767"])
+
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert recorded["browser_port"] == 8767

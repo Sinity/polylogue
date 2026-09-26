@@ -21,7 +21,8 @@ from polylogue.archive.query.expression import compile_expression, parse_unit_so
 from polylogue.archive.query.unit_results import query_unit_rows
 from polylogue.cli import cli
 from polylogue.config import Source
-from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+from polylogue.operations.canonical_archive_ingest import ingest_sources_archive, scoped_one_shot_archive_owner
+from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces.payloads import (
     ActionQueryRowPayload,
@@ -74,7 +75,12 @@ def query_cardinality_archive(tmp_path_factory: pytest.TempPathFactory) -> _Prep
     manifest = query_cardinality_manifest()
     sources = [Source(name="codex", path=path) for path in manifest.write_sources(work / "wire")]
     with _archive_environment(clone.root):
-        result = asyncio.run(parse_sources_archive(clone.root, sources))
+
+        async def ingest_owned_clone() -> ParseResult:
+            with scoped_one_shot_archive_owner(clone.root):
+                return await ingest_sources_archive(clone.root, sources)
+
+        result = asyncio.run(ingest_owned_clone())
     assert result.parse_failures == 0
     assert result.processed_ids == set(manifest.matching_session_ids()) | {manifest.decoy_session_id}
     return _PreparedArchive(root=clone.root, manifest=manifest)

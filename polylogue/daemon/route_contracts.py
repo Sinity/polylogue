@@ -1,16 +1,23 @@
-"""Stable daemon HTTP route contract metadata.
+"""Daemon HTTP route declarations and compatibility inventory.
 
-The proof-critical read routes are executable declarations: the daemon adapter
-and OpenAPI renderer derive their route metadata from this module. Remaining
-historical and web-shell routes retain metadata-only contracts until their own
-migration slices land.
+API declarations own dispatch and OpenAPI route identity. A declared handler
+may still be a compatibility adapter; ``domain_operation`` and
+``migration_reason`` distinguish product operation adoption from routing.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Literal
-
+from polylogue.daemon.route_types import (
+    AuthPolicy as AuthPolicy,
+)
+from polylogue.daemon.route_types import (
+    RouteContract,
+    RouteKind,
+    RouteSpec,
+)
+from polylogue.daemon.route_types import (
+    RouteStability as RouteStability,
+)
 from polylogue.declarations import (
     CompatibilityKey,
     CompletenessEdge,
@@ -20,81 +27,6 @@ from polylogue.declarations import (
     HandlerBinding,
     OutputSpec,
 )
-
-RouteKind = Literal[
-    "browser_shell",
-    "operational",
-    "read_query",
-    "read_detail",
-    "user_overlay",
-    "workspace",
-    "maintenance",
-    "capture",
-    "observability",
-]
-RouteStability = Literal["stable", "shell_supported", "operational", "private"]
-AuthPolicy = Literal[
-    "unauthenticated_loopback",
-    "credential_if_configured",
-    "credential_and_same_origin",
-    "bearer_if_configured_and_same_origin",
-    "first_party_same_origin",
-    "observability_flag_then_loopback_or_bearer",
-]
-
-
-@dataclass(frozen=True)
-class RouteContract:
-    """Machine-readable contract for one daemon HTTP route pattern."""
-
-    method: Literal["GET", "POST", "DELETE"]
-    pattern: str
-    kind: RouteKind
-    stability: RouteStability
-    auth_policy: AuthPolicy
-    response_contract: str
-    notes: str = ""
-    domain_operation: str | None = None
-
-    @property
-    def metadata_only_reason(self) -> str | None:
-        """Explain why a route is not yet backed by a kernel declaration.
-
-        The HTTP registry intentionally contains a few generations of routes:
-        the four proof-critical reads above are executable declarations, while
-        the older shell/workbench adapters still have hand-written dispatch.
-        Making that distinction queryable keeps the inventory honest and
-        prevents a metadata-only route from silently looking like a migrated
-        one.  ``notes`` is the route owner's named reason; the fallback keeps
-        older concise contracts explicit rather than returning an empty value.
-        """
-
-        if self.domain_operation is not None:
-            return None
-        if self.notes:
-            return self.notes
-        return f"legacy {self.kind} adapter retained until its declaration migration"
-
-
-@dataclass(frozen=True, slots=True)
-class RouteSpec:
-    """HTTP projection of one shared declaration-kernel record.
-
-    The kernel owns identity, handler ownership, and output/schema edges. The
-    HTTP projection adds the transport vocabulary that the route adapter and
-    OpenAPI renderer need. Keeping this projection beside the kernel record
-    makes a route declaration executable without teaching the shared kernel
-    about HTTP.
-    """
-
-    kernel: DeclarationSpec
-    method: Literal["GET", "POST", "DELETE"]
-    path: str
-    request_contract: str
-    response_contract: str
-    auth_policy: AuthPolicy
-    domain_operation: str
-
 
 # Compatibility name for callers that adopted the first kernel projection.
 DaemonRouteDeclaration = RouteSpec
@@ -310,23 +242,23 @@ def route_contract_from_declaration(declaration: DaemonRouteDeclaration) -> Rout
     return RouteContract(
         declaration.method,
         declaration.path,
-        kind,
-        "stable",
+        declaration.kind or kind,
+        declaration.stability or "stable",
         declaration.auth_policy,
         declaration.response_contract,
-        f"declaration={declaration.kernel.declaration_id}; request={declaration.request_contract}",
+        f"declaration={declaration.kernel.declaration_id}; request={declaration.request_contract}"
+        + (f"; operation-migration={declaration.migration_reason}" if declaration.migration_reason else ""),
         declaration.domain_operation,
+        True,
     )
 
 
 def declared_route_keys() -> frozenset[tuple[str, str]]:
     """Return the route identities that are required to remain executable.
 
-    The four migrated routes are represented in ``ROUTE_CONTRACTS`` with a
-    non-null ``domain_operation``.  Keeping this expectation independent from
-    ``DAEMON_ROUTE_DECLARATIONS`` is deliberate: otherwise removing a
-    declaration would remove it from both sides of a reachability comparison
-    and the completeness check could certify the missing route.
+    The compatibility inventory is a separate reachability witness for routes
+    with a named product operation. A route without one still has a bound
+    handler and a migration reason in its declaration.
     """
 
     return frozenset((route.method, route.pattern) for route in ROUTE_CONTRACTS if route.domain_operation is not None)
@@ -341,7 +273,9 @@ def metadata_only_api_routes() -> tuple[RouteContract, ...]:
     """
 
     return tuple(
-        route for route in ROUTE_CONTRACTS if route.pattern.startswith("/api/") and route.domain_operation is None
+        route
+        for route in ROUTE_CONTRACTS
+        if route.pattern.startswith("/api/") and route.metadata_only_reason is not None
     )
 
 
@@ -472,395 +406,7 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "Prometheus text exposition",
         "Unauthenticated for Prometheus scrapers; no raw archive content.",
     ),
-    RouteContract(
-        "POST",
-        "/api/web-auth/session",
-        "browser_shell",
-        "shell_supported",
-        "first_party_same_origin",
-        "WebCredentialBootstrapPayload",
-        "Rotates a scoped HttpOnly credential; no credential bytes appear in the response body.",
-    ),
-    RouteContract(
-        "DELETE",
-        "/api/web-auth/session",
-        "browser_shell",
-        "shell_supported",
-        "first_party_same_origin",
-        "WebCredentialRevocationPayload",
-        "Revokes the current first-party credential and expires its cookie.",
-    ),
-    RouteContract("GET", "/api/health/check", "operational", "stable", "credential_if_configured", "JSON"),
-    RouteContract("GET", "/api/health", "operational", "stable", "credential_if_configured", "JSON"),
-    route_contract_from_declaration(_STATUS_DECLARATION),
-    RouteContract(
-        "GET",
-        "/api/webui/observability",
-        "observability",
-        "shell_supported",
-        "credential_if_configured",
-        "WebUI observability projection",
-        "Registry descriptor fields, bounded rows, and the status-component snapshot adapter.",
-    ),
-    RouteContract(
-        "GET",
-        "/api/webui/freshness",
-        "observability",
-        "shell_supported",
-        "credential_if_configured",
-        "NamedSourceFreshness projection",
-        "Requires one explicit source path and rejects archive-wide scans.",
-    ),
-    RouteContract(
-        "GET",
-        "/api/overview",
-        "read_query",
-        "shell_supported",
-        "credential_if_configured",
-        "bounded cockpit overview",
-        "Privacy-safe landing aggregates, readiness, and a fixed recent-session page.",
-    ),
-    RouteContract("GET", "/api/events", "operational", "stable", "credential_if_configured", "SSE or JSON event poll"),
-    RouteContract(
-        "GET",
-        "/api/agents/coordination",
-        "operational",
-        "stable",
-        "credential_if_configured",
-        "AgentCoordinationPayload",
-        "Shared coordination envelope used by CLI, MCP, and the web mission-control projection.",
-    ),
-    route_contract_from_declaration(_FIND_DECLARATION),
-    RouteContract(
-        "POST",
-        "/api/cli/query",
-        "read_query",
-        "private",
-        "credential_if_configured",
-        "SearchEnvelope / SessionListResponse with route_state",
-        "Local UDS-only root-request parameter envelope; daemon owns query compilation.",
-    ),
-    RouteContract(
-        "POST",
-        "/api/operation",
-        "operational",
-        "private",
-        "credential_if_configured",
-        "DaemonOperationEnvelope",
-        "Local CLI/MCP control-plane transport for every archive-scoped declared operation.",
-    ),
-    RouteContract(
-        "GET",
-        "/api/facets",
-        "read_query",
-        "stable",
-        "credential_if_configured",
-        "FacetsResponse with route-state metadata",
-        "Repo and action facet families are deferred from first paint unless explicitly requested.",
-    ),
-    route_contract_from_declaration(_QUERY_UNITS_DECLARATION),
-    RouteContract(
-        "GET",
-        "/api/provider-usage",
-        "operational",
-        "stable",
-        "credential_if_configured",
-        "ProviderUsageReport",
-        "Usage-accounting diagnostics; separates provider events, cumulative counters, transcript words, and model rollups.",
-    ),
-    RouteContract(
-        "GET",
-        "/api/archive-debt",
-        "operational",
-        "stable",
-        "credential_if_configured",
-        "ArchiveDebtListPayload",
-        "Unified archive debt rows shared by CLI, Python API, MCP, and daemon clients.",
-    ),
-    RouteContract(
-        "GET",
-        "/api/import/explain",
-        "operational",
-        "shell_supported",
-        "credential_if_configured",
-        "ImportExplainPayload",
-        "Local import/source evidence explanation; paths are redacted unless explicitly requested.",
-    ),
-    RouteContract(
-        "GET", "/api/refs/resolve", "read_query", "stable", "credential_if_configured", "PublicRefResolutionPayload"
-    ),
-    RouteContract(
-        "GET",
-        "/api/query-completions",
-        "read_query",
-        "stable",
-        "credential_if_configured",
-        "query completion metadata",
-    ),
-    RouteContract(
-        "GET",
-        "/api/action-affordances",
-        "read_query",
-        "stable",
-        "credential_if_configured",
-        "ActionAffordanceListPayload",
-        "Shared query-action affordance inventory for CLI, daemon, and automation clients.",
-    ),
-    RouteContract(
-        "GET",
-        "/api/read-view-profiles",
-        "read_query",
-        "stable",
-        "credential_if_configured",
-        "read-view profile metadata",
-    ),
-    RouteContract(
-        "GET",
-        "/api/assertions",
-        "user_overlay",
-        "stable",
-        "credential_if_configured",
-        "AssertionClaimListPayload",
-        "Read-only assertion-backed overlay claims shared by the web workbench and API clients.",
-    ),
-    RouteContract(
-        "GET", "/api/sources", "read_detail", "shell_supported", "credential_if_configured", "source list JSON"
-    ),
-    RouteContract(
-        "GET", "/api/sessions/:id", "read_detail", "stable", "credential_if_configured", "Session detail JSON"
-    ),
-    RouteContract(
-        "GET",
-        "/api/sessions/:id/messages",
-        "read_detail",
-        "stable",
-        "credential_if_configured",
-        "session messages JSON",
-    ),
-    route_contract_from_declaration(_READ_DECLARATION),
-    RouteContract(
-        "GET",
-        "/api/sessions/:id/raw",
-        "read_detail",
-        "shell_supported",
-        "credential_if_configured",
-        "raw session payload JSON",
-        "Raw preview is opt-in and authenticated.",
-    ),
-    RouteContract(
-        "GET", "/api/sessions/:id/cost", "read_detail", "shell_supported", "credential_if_configured", "cost JSON"
-    ),
-    RouteContract(
-        "GET",
-        "/api/sessions/:id/evidence-summary",
-        "read_detail",
-        "shell_supported",
-        "credential_if_configured",
-        "bounded session evidence summary",
-        "Structural tool outcome counts, cost projection, and capped lineage refs for the transcript header.",
-    ),
-    RouteContract(
-        "GET",
-        "/api/sessions/:id/provenance",
-        "read_detail",
-        "stable",
-        "credential_if_configured",
-        "provenance envelope",
-        "Raw bytes require the include_raw query parameter.",
-    ),
-    RouteContract(
-        "GET",
-        "/api/sessions/:id/topology",
-        "read_detail",
-        "stable",
-        "credential_if_configured",
-        "topology envelope",
-    ),
-    RouteContract(
-        "GET",
-        "/api/sessions/:id/topology/parent-chain",
-        "read_detail",
-        "stable",
-        "credential_if_configured",
-        "parent-chain topology envelope",
-    ),
-    RouteContract(
-        "GET",
-        "/api/sessions/:id/similar",
-        "read_detail",
-        "stable",
-        "credential_if_configured",
-        "similar-session envelope",
-    ),
-    RouteContract(
-        "GET",
-        "/api/sessions/:id/attachments",
-        "read_detail",
-        "shell_supported",
-        "credential_if_configured",
-        "session attachment envelope",
-    ),
-    RouteContract(
-        "GET",
-        "/api/insights/sessions/:id",
-        "read_detail",
-        "stable",
-        "credential_if_configured",
-        "session insights envelope",
-    ),
-    RouteContract(
-        "GET",
-        "/api/webui/insights/:name",
-        "observability",
-        "shell_supported",
-        "credential_if_configured",
-        "Single WebUI insight descriptor projection",
-        "The daemon owns query construction and descriptor accessors; clients receive a bounded panel only.",
-    ),
-    RouteContract(
-        "GET",
-        "/api/raw_artifacts/:id",
-        "read_detail",
-        "shell_supported",
-        "credential_if_configured",
-        "raw artifact preview",
-        "Authenticated raw preview helper for the local shell.",
-    ),
-    RouteContract(
-        "GET",
-        "/api/thread-continue-templates",
-        "read_detail",
-        "shell_supported",
-        "credential_if_configured",
-        "thread continuation templates",
-    ),
-    RouteContract(
-        "GET", "/api/paste-browser", "read_query", "shell_supported", "credential_if_configured", "paste browser JSON"
-    ),
-    RouteContract(
-        "GET",
-        "/api/attachments",
-        "read_query",
-        "shell_supported",
-        "credential_if_configured",
-        "attachment library JSON",
-    ),
-    RouteContract(
-        "GET", "/api/stack", "workspace", "shell_supported", "credential_if_configured", "stack workspace JSON"
-    ),
-    RouteContract(
-        "GET", "/api/compare", "workspace", "shell_supported", "credential_if_configured", "compare workspace JSON"
-    ),
-    RouteContract("GET", "/api/user/marks", "user_overlay", "stable", "credential_if_configured", "marks JSON"),
-    RouteContract(
-        "GET", "/api/user/annotations", "user_overlay", "stable", "credential_if_configured", "annotations JSON"
-    ),
-    RouteContract(
-        "GET", "/api/user/annotations/:id", "user_overlay", "stable", "credential_if_configured", "annotation JSON"
-    ),
-    RouteContract(
-        "GET", "/api/user/saved-views", "user_overlay", "stable", "credential_if_configured", "saved views JSON"
-    ),
-    RouteContract(
-        "GET", "/api/user/saved-views/:id", "user_overlay", "stable", "credential_if_configured", "saved view JSON"
-    ),
-    RouteContract(
-        "GET", "/api/user/recall-packs", "user_overlay", "stable", "credential_if_configured", "recall packs JSON"
-    ),
-    RouteContract(
-        "GET", "/api/user/recall-packs/:id", "user_overlay", "stable", "credential_if_configured", "recall pack JSON"
-    ),
-    RouteContract(
-        "GET", "/api/user/workspaces", "user_overlay", "stable", "credential_if_configured", "workspaces JSON"
-    ),
-    RouteContract(
-        "GET", "/api/user/workspaces/:id", "user_overlay", "stable", "credential_if_configured", "workspace JSON"
-    ),
-    RouteContract(
-        "POST",
-        "/api/telemetry/mcp-calls",
-        "operational",
-        "private",
-        "bearer_if_configured_and_same_origin",
-        "MCP call-log receipt",
-        "Machine-client telemetry; persisted by the daemon writer with bounded retention.",
-    ),
-    RouteContract(
-        "POST",
-        "/api/reset",
-        "maintenance",
-        "stable",
-        "bearer_if_configured_and_same_origin",
-        "reset result JSON",
-    ),
-    RouteContract(
-        "POST",
-        "/api/ingest",
-        "maintenance",
-        "stable",
-        "bearer_if_configured_and_same_origin",
-        "ingest result JSON",
-    ),
-    RouteContract(
-        "POST",
-        "/api/demo/augment",
-        "maintenance",
-        "operational",
-        "bearer_if_configured_and_same_origin",
-        "demo augmentation result JSON",
-        notes="Applies deterministic demo writes through the write bridge; "
-        "exists for the demo archive, not for general archive mutation.",
-    ),
-    RouteContract(
-        "POST", "/api/user/marks", "user_overlay", "stable", "credential_and_same_origin", "mutation envelope"
-    ),
-    RouteContract(
-        "POST", "/api/user/annotations", "user_overlay", "stable", "credential_and_same_origin", "mutation envelope"
-    ),
-    RouteContract(
-        "POST", "/api/user/saved-views", "user_overlay", "stable", "credential_and_same_origin", "mutation envelope"
-    ),
-    RouteContract(
-        "POST", "/api/user/recall-packs", "user_overlay", "stable", "credential_and_same_origin", "mutation envelope"
-    ),
-    RouteContract(
-        "POST", "/api/user/workspaces", "user_overlay", "stable", "credential_and_same_origin", "mutation envelope"
-    ),
-    RouteContract(
-        "DELETE", "/api/user/marks", "user_overlay", "stable", "credential_and_same_origin", "mutation envelope"
-    ),
-    RouteContract(
-        "DELETE",
-        "/api/user/annotations/:id",
-        "user_overlay",
-        "stable",
-        "credential_and_same_origin",
-        "mutation envelope",
-    ),
-    RouteContract(
-        "DELETE",
-        "/api/user/saved-views/:id",
-        "user_overlay",
-        "stable",
-        "credential_and_same_origin",
-        "mutation envelope",
-    ),
-    RouteContract(
-        "DELETE",
-        "/api/user/recall-packs/:id",
-        "user_overlay",
-        "stable",
-        "credential_and_same_origin",
-        "mutation envelope",
-    ),
-    RouteContract(
-        "DELETE",
-        "/api/user/workspaces/:id",
-        "user_overlay",
-        "stable",
-        "credential_and_same_origin",
-        "mutation envelope",
-    ),
+    *(route_contract_from_declaration(route) for route in DAEMON_ROUTE_DECLARATIONS),
 )
 
 
@@ -912,6 +458,35 @@ def _split_path(path: str) -> tuple[str, ...]:
     if path == "/":
         return ()
     return tuple(part for part in path.strip("/").split("/") if part)
+
+
+def _family_declarations() -> tuple[RouteSpec, ...]:
+    # Shared route types are separate, so family modules import directly.
+    from polylogue.daemon.route_families.maintenance import ROUTES as MAINTENANCE_ROUTES
+    from polylogue.daemon.route_families.operational import ROUTES as OPERATIONAL_ROUTES
+    from polylogue.daemon.route_families.read_detail import ROUTES as READ_DETAIL_ROUTES
+    from polylogue.daemon.route_families.read_query import ROUTES as READ_QUERY_ROUTES
+    from polylogue.daemon.route_families.user_overlay import ROUTES as USER_OVERLAY_ROUTES
+    from polylogue.daemon.route_families.workspace import ROUTES as WORKSPACE_ROUTES
+
+    return (
+        READ_DETAIL_ROUTES
+        + READ_QUERY_ROUTES
+        + WORKSPACE_ROUTES
+        + MAINTENANCE_ROUTES
+        + OPERATIONAL_ROUTES
+        + USER_OVERLAY_ROUTES
+    )
+
+
+_FAMILY_DECLARATIONS = _family_declarations()
+_family_keys = {(route.method, route.path) for route in _FAMILY_DECLARATIONS}
+if len(_family_keys) != len(_FAMILY_DECLARATIONS):
+    raise RuntimeError("duplicate daemon family declaration method/path")
+DAEMON_ROUTE_DECLARATIONS += _FAMILY_DECLARATIONS
+for _declaration in _FAMILY_DECLARATIONS:
+    DAEMON_ROUTE_REGISTRY.register(_declaration.kernel)
+ROUTE_CONTRACTS += tuple(route_contract_from_declaration(declaration) for declaration in _FAMILY_DECLARATIONS)
 
 
 __all__ = [

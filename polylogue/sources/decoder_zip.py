@@ -73,7 +73,9 @@ def provider_detection_path(source_path: str) -> bool:
         if provider is not Provider.UNKNOWN
         if (rule := artifact_rule_for_path(provider, source_path)) is not None
     ]
-    return not rules or any(rule.parse_policy == "session" for rule in rules)
+    # An explicit raw-only declaration must keep an overflow sidecar out of
+    # sniffing even if another provider has a broad session-path pattern.
+    return not rules or all(rule.parse_policy == "session" for rule in rules)
 
 
 class ZipEntryValidator:

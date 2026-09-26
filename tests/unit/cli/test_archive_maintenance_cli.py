@@ -1579,7 +1579,8 @@ def test_archive_init_cli_executes_confirmed_initialization(
     cli_runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_init(plan: ArchiveInitPlan) -> ArchiveInitResult:
+    def fake_init(plan: ArchiveInitPlan, *, owner: object | None = None) -> ArchiveInitResult:
+        assert owner is not None
         return ArchiveInitResult(
             tier_results=(
                 ArchiveTierInitResult(
@@ -1615,6 +1616,48 @@ def test_archive_init_cli_executes_confirmed_initialization(
             "tier": "index",
         }
     ]
+
+
+def test_archive_init_cli_refuses_a_daemon_held_pidfile(cli_workspace: dict[str, Path], cli_runner: CliRunner) -> None:
+    _stage_uninitialized_archive(cli_workspace)
+    root = cli_workspace["archive_root"]
+    daemon = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import fcntl, os, sys\n"
+                "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\n"
+                "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+                "os.write(fd, str(os.getpid()).encode())\n"
+                "os.fsync(fd)\n"
+                "print('ready', flush=True)\n"
+                "sys.stdin.read()\n"
+            ),
+            str(root / "daemon.pid"),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert daemon.stdout is not None
+        assert daemon.stdout.readline().strip() == "ready"
+        result = cli_runner.invoke(
+            cli,
+            ["--plain", "ops", "maintenance", "archive-init", "--yes"],
+            catch_exceptions=False,
+        )
+    finally:
+        if daemon.stdin is not None:
+            daemon.stdin.close()
+        daemon.wait(timeout=5)
+        if daemon.stdout is not None:
+            daemon.stdout.close()
+
+    assert result.exit_code != 0
+    assert "polylogued PID" in result.output
+    assert not (root / "index.db").exists()
 
 
 def test_migrate_tier_cli_applies_the_user_slot(

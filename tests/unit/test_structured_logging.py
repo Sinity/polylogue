@@ -10,6 +10,7 @@ import asyncio
 import io
 import json
 import threading
+import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 
@@ -274,9 +275,9 @@ def test_non_scalar_values_are_reduced_to_their_type() -> None:
             return "Carrier(secret='LEAKED')"
 
     with plog.capture() as records:
-        plog.emit("attempt", reason=Carrier())
+        plog.emit("attempt", origin=Carrier())
 
-    assert records[-1]["reason"] == "<Carrier>"
+    assert records[-1]["origin"] == "<Carrier>"
     assert "LEAKED" not in json.dumps(records)
 
 
@@ -420,3 +421,235 @@ def test_log_redact_strips_quarantined_fields_from_the_json_storage_form() -> No
     plain = io.StringIO()
     plog.make_stream_sink(plain, fmt="json")(record)
     assert "secret detail" in plain.getvalue()
+
+
+def test_invalid_measurements_are_rejected_by_real_renderer() -> None:
+    """A string count, infinite duration, or invented outcome cannot reach the sink."""
+    stream = io.StringIO()
+    sink = plog.add_sink(plog.make_stream_sink(stream, fmt="json"))
+    try:
+        plog.emit(
+            "intake.chunk",
+            files="7",
+            duration_ms=float("inf"),
+            outcome="imaginary",
+            reason="x" * 100_000,
+            stage_timings_ms={"parse": float("nan")},
+        )
+    finally:
+        plog.remove_sink(sink)
+    records = [json.loads(line) for line in stream.getvalue().splitlines()]
+    chunk = next(record for record in records if record["event"] == "intake.chunk")
+    assert {record["field"] for record in records if record["event"] == "log.field_rejected"} == {
+        "files",
+        "duration_ms",
+        "outcome",
+        "reason",
+        "stage_timings_ms",
+    }
+    assert "reason" not in chunk
+    assert len(json.dumps(chunk)) <= plog.EVENT_MAX_BYTES
+
+
+def test_combined_context_and_event_fields_stay_within_record_limit() -> None:
+    """Two individually bounded field sets cannot combine into an oversized record."""
+    bound = dict.fromkeys(
+        (
+            "trace_id",
+            "span_id",
+            "run_id",
+            "pass_id",
+            "operation_id",
+            "request_id",
+            "session_id",
+            "message_id",
+            "block_id",
+            "raw_id",
+            "artifact_id",
+            "blob_hash",
+            "content_hash",
+            "source_id",
+            "source_name",
+            "member_id",
+            "cursor_id",
+            "tool_id",
+            "generation_id",
+            "branch_point_message_id",
+        ),
+        "x",
+    )
+    emitted = dict.fromkeys(
+        (
+            "sessions",
+            "messages",
+            "blocks",
+            "raws",
+            "files",
+            "considered",
+            "ingested",
+            "skipped",
+            "failed",
+            "succeeded",
+            "refused",
+            "deferred",
+            "pending",
+            "retried",
+            "queued",
+            "active",
+            "bytes",
+            "size",
+            "rows",
+            "attempts",
+        ),
+        1,
+    )
+    with plog.capture() as records, plog.bind(**bound):
+        plog.emit("bounded.record", **emitted)
+    record = next(row for row in records if row["event"] == "bounded.record")
+    assert len(record) <= plog.EVENT_MAX_FIELDS
+    assert any(row["event"] == "log.field_rejected" and row["reason"] == "event_field_limit" for row in records)
+
+
+def test_span_terminal_collisions_preserve_original_exception() -> None:
+    """A terminal field from a caller cannot cause a second TypeError."""
+    original = ValueError("original failure")
+    with plog.capture() as records:
+        with pytest.raises(ValueError) as raised:
+            with plog.span("collision") as active:
+                active.set(level="debug", outcome="ok", duration_ms=999, reason="false", error_type="Wrong")
+                raise original
+    assert raised.value is original
+    terminal = [record for record in records if record["event"] == "collision.error"]
+    assert len(terminal) == 1
+    assert terminal[0]["outcome"] == "error"
+    assert terminal[0]["level"] == "error"
+    assert terminal[0]["error_type"] == "ValueError"
+    assert terminal[0]["duration_ms"] != 999
+
+
+def test_unprintable_exception_and_malformed_field_cannot_mask_work() -> None:
+    class UnprintableError(ValueError):
+        def __str__(self) -> str:
+            raise RuntimeError("bad formatter")
+
+    class BadPath:
+        def __fspath__(self) -> str:
+            raise RuntimeError("bad path")
+
+    original = UnprintableError()
+    with plog.capture() as records:
+        plog.emit("safe.success", path=BadPath())
+        with pytest.raises(UnprintableError) as raised:
+            with plog.span("safe.failure"):
+                raise original
+    assert raised.value is original
+    assert [record for record in records if record["event"] == "safe.success"]
+    terminal = [record for record in records if record["event"] == "safe.failure.error"]
+    assert len(terminal) == 1
+    assert terminal[0]["error_detail"] == "<unprintable UnprintableError>"
+
+
+@pytest.mark.uses_real_clock(
+    "measures bounded caller latency while a real worker thread is blocked in the configured sink"
+)
+def test_stalled_configured_sink_bounds_caller_and_reports_loss() -> None:
+    """A blocked device cannot block emit or conceal queue overflow."""
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockedStream:
+        def write(self, _line: str) -> None:
+            entered.set()
+            release.wait(timeout=2)
+
+        def flush(self) -> None:
+            pass
+
+    plog.reset_events()
+    try:
+        plog.configure_events(stream=BlockedStream(), fmt="json", bridge_stdlib=False)
+        plog.emit("first")
+        assert entered.wait(timeout=1)
+        started = time.monotonic()
+        for _ in range(300):
+            plog.emit("more")
+        elapsed = time.monotonic() - started
+        snapshot = plog.diagnostic_snapshot()
+        assert elapsed < 0.5
+        assert snapshot["dropped"] > 0
+        assert snapshot["queued"] <= 256
+        shutdown = plog.shutdown_events(timeout_s=0.01)
+        assert shutdown["undrained"] > 0
+    finally:
+        release.set()
+        plog.reset_events()
+
+
+def test_normal_shutdown_drains_and_flushes_configured_sink() -> None:
+    """A daemon exiting just after its terminal event retains that event."""
+    stream = io.StringIO()
+    plog.reset_events()
+    try:
+        plog.configure_events(stream=stream, fmt="json", bridge_stdlib=False)
+        plog.emit("daemon.run.stop", outcome="ok")
+        delivery = plog.shutdown_events(timeout_s=1)
+        assert delivery["queued"] == 0
+        assert delivery["dropped"] == 0
+        assert delivery["delivered"] == 1
+        assert [json.loads(line)["event"] for line in stream.getvalue().splitlines()] == ["daemon.run.stop"]
+    finally:
+        plog.reset_events()
+
+
+@pytest.mark.uses_real_clock("bounds polling for failure reported asynchronously by the configured sink worker")
+def test_failed_configured_sink_reports_loss_without_recursive_logging() -> None:
+    class FailedStream:
+        def write(self, _line: str) -> None:
+            raise OSError("device failed")
+
+        def flush(self) -> None:
+            raise OSError("device failed")
+
+    plog.reset_events()
+    try:
+        plog.configure_events(stream=FailedStream(), fmt="json", bridge_stdlib=False)
+        plog.emit("one")
+        deadline = time.monotonic() + 1
+        while plog.diagnostic_snapshot()["failures"] < 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert plog.diagnostic_snapshot()["failures"] >= 1
+        assert plog.diagnostic_snapshot()["queued"] == 0
+    finally:
+        plog.reset_events()
+
+
+@pytest.mark.parametrize("json_logs", [False, True])
+@pytest.mark.uses_real_clock("bounds polling for records delivered asynchronously by the logging worker")
+def test_pre_and_post_configuration_loggers_share_one_sink(json_logs: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Removing either bridge makes one of four records disappear."""
+    import logging
+
+    plog.reset_events()
+    # Another test may have configured structlog already; force this first
+    # logger through the pre-configuration stdlib compatibility path.
+    monkeypatch.setattr(plog, "_structlog_configured", False)
+    before = plog.get_logger("test.before")
+    stream = io.StringIO()
+    try:
+        plog.configure_logging(json_logs=json_logs)
+        plog.configure_events(stream=stream, fmt="json")
+        before.warning("before record")
+        plog.get_logger("test.after").warning("after record")
+        logging.getLogger("third.party").warning("third record")
+        plog.emit("direct.record")
+        deadline = time.monotonic() + 2
+        while plog.diagnostic_snapshot()["delivered"] < 4 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        records = [json.loads(line) for line in stream.getvalue().splitlines()]
+        events = [record["event"] for record in records]
+        assert events.count("direct.record") == 1
+        assert events.count("stdlib.record") == 2
+        assert events.count("structlog.record") == 1
+        assert all("error_detail" in record for record in records if record["event"] != "direct.record")
+    finally:
+        plog.reset_events()

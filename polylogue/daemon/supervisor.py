@@ -217,6 +217,8 @@ class DaemonSupervisor:
         path that would have to refuse it.
         """
         spec = service_spec(name)
+        if name in self._resolved:
+            return False
         if spec.name not in self._selected_names:
             return False
         return not self._is_halted(spec)

@@ -551,3 +551,43 @@ def test_a_short_ranked_page_still_terminates(tmp_path: Path) -> None:
             serving_identity="test",
         )
     assert page["next_offset"] is None
+
+
+def test_declared_query_units_replays_the_http_opaque_continuation(tmp_path: Path) -> None:
+    """Removing the continuation branch makes the declared operation reject page two."""
+    from polylogue.archive.query.transaction import QueryContinuationInvalidError
+    from tests.infra.storage_records import SessionBuilder
+
+    SessionBuilder(tmp_path / "index.db", "page-owner").provider("claude-code").title("page owner").add_message(
+        "m-0000", role="user", text="first page"
+    ).add_message("m-0001", role="user", text="second page").save()
+
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        first = execute_read_operation(
+            "query.units",
+            {"params": {"expression": "messages where words >= 0 | sort by time asc", "limit": 1}},
+            archive=archive,
+            serving_identity="daemon",
+        )
+        continuation = first["continuation"]
+        assert isinstance(continuation, str) and continuation.startswith("q2.")
+        second = execute_read_operation(
+            "query.units",
+            {"params": {"continuation": continuation}},
+            archive=archive,
+            serving_identity="daemon",
+        )
+        with pytest.raises(QueryContinuationInvalidError):
+            execute_read_operation(
+                "query.units",
+                {"params": {"continuation": continuation, "limit": 10}},
+                archive=archive,
+                serving_identity="daemon",
+            )
+
+    assert first["query_ref"] == second["query_ref"]
+    assert first["result_ref"] == second["result_ref"]
+    assert second["offset"] == 1
+    first_items = cast("list[dict[str, object]]", first["items"])
+    second_items = cast("list[dict[str, object]]", second["items"])
+    assert first_items[0]["message_id"] != second_items[0]["message_id"]

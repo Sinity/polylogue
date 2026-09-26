@@ -74,6 +74,7 @@ from polylogue.sinex.service import PublicationService
 from polylogue.sinex.transport import resolve_configured_transport
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.sources.prepared_message_sink import SqliteMessageSink
 from polylogue.storage.accepted_marker_inputs import (
     AcceptedMarkerInputRefusedError,
     PreparedAcceptedMarkerInput,
@@ -103,6 +104,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveWriteOutcome,
     LineageSignatureCache,
     PreparedSessionWrite,
+    PreparedSessionWriteRefusedError,
     _composed_db_signatures,
     _message_content_hash,
     _normalized_message_native_id,
@@ -1425,8 +1427,14 @@ def _write_session(
         hash_hex, size = attachment.precomputed_blob
         preacquired_attachment_blobs[id(attachment)] = (bytes.fromhex(hash_hex), size, "acquired")
 
-    prepared_write = (
-        prepare_session_write(
+    prepared_write = payload.prepared_write
+    if prepared_write is None and isinstance(session_to_write.messages, SqliteMessageSink):
+        # A sealed worker artifact must already have its lineage, identity,
+        # row and cross-acquisition work prepared on a read-only snapshot.
+        # Rebuilding it here would put the entire session under writer hold.
+        raise PreparedSessionWriteRefusedError("sealed session has no pre-admission prepared write")
+    if prepared_write is None and prepared_writes is not None:
+        prepared_write = prepare_session_write(
             conn,
             session_to_write,
             merge_append=merge_append,
@@ -1434,9 +1442,10 @@ def _write_session(
             source_conn=source_conn,
             signature_cache=signature_cache,
         )
-        if prepared_writes is not None
-        else None
-    )
+    if prepared_writes is not None and prepared_write is not None:
+        # Register before the writer call so entry cleanup owns this carrier
+        # even if publication raises before returning an outcome.
+        prepared_writes.append(prepared_write)
     writer_outcomes: list[ArchiveWriteOutcome] = []
     write_parsed_session_to_archive(
         conn,
@@ -1483,6 +1492,10 @@ def _write_session(
         manage_transaction=manage_transaction,
     )
     if writer_outcomes and writer_outcomes[0].stale_skipped:
+        if prepared_writes is not None and prepared_write is not None:
+            prepared_writes.remove(prepared_write)
+            if prepared_write is not payload.prepared_write:
+                prepared_write.close()
         _repair_stale_revision_observations(conn, payload)
         counts["skipped_sessions"] = 1
         counts["skipped_messages"] = payload.message_count
@@ -1491,8 +1504,6 @@ def _write_session(
         return False, counts
     if pending_attachment_receipts is not None:
         pending_attachment_receipts.extend(publication_receipts)
-    if prepared_writes is not None and prepared_write is not None:
-        prepared_writes.append(prepared_write)
     if attachment_owner_resolutions is not None and writer_outcomes:
         for attachment_id, reason in writer_outcomes[0].unresolved_attachment_owners:
             attachment_owner_resolutions.append(
@@ -1776,10 +1787,10 @@ def _write_session_entry(
     batch_owns_transaction = conn.in_transaction
     if batch_owns_transaction:
         conn.execute(f"SAVEPOINT {_SESSION_WRITE_SAVEPOINT}")
+    prepared_writes: list[PreparedSessionWrite] = []
     try:
         t_write = time.perf_counter()
         write_stage_timings: dict[str, float] = {}
-        prepared_writes: list[PreparedSessionWrite] = []
         content_changed, counts = _write_session(
             conn,
             cdata,
@@ -1860,6 +1871,14 @@ def _write_session_entry(
         summary.parse_failures += 1
         summary.failed_raw_ids[raw_id] = str(exc)[:500]
         return False
+    finally:
+        # The marker witness is fully copied into the summary above. Release
+        # a carrier built by this entry even when publication or marker
+        # preparation raises; a caller-owned pre-lease carrier is released by
+        # discard_session_data_payload after this entry returns.
+        for prepared_write in prepared_writes:
+            if prepared_write is not cdata.prepared_write:
+                prepared_write.close()
 
 
 def _top_stage_timings(stage_timings_s: dict[str, float], *, limit: int = 5) -> dict[str, float]:

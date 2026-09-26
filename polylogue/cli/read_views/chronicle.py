@@ -1,13 +1,10 @@
-"""Bounded chronological read-view handler."""
+"""Thin CLI adapter for the typed chronicle read operation."""
 
 from __future__ import annotations
 
 import json
+from typing import cast
 
-from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.archive.message.roles import Role
-from polylogue.archive.session.domain_models import SessionSummary
-from polylogue.cli.query import _create_query_vector_provider
 from polylogue.cli.read_view_registry import CHRONICLE_READ_VIEW_OPTION_NAMES
 from polylogue.cli.read_views.base import (
     ReadViewChronicleOptions,
@@ -15,18 +12,11 @@ from polylogue.cli.read_views.base import (
     ReadViewOptionValues,
     deliver_content,
 )
-from polylogue.cli.read_views.standard import exact_read_summaries
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
-from polylogue.core.enums import MaterialOrigin
-from polylogue.storage.archive_identity import archive_file_set_root
-from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.surfaces.chronicle import (
     ChronicleProjectionPayload,
-    ChronicleSessionPayload,
-    build_chronicle_projection_payload,
-    build_chronicle_session_payload,
     chronicle_json_document,
     render_chronicle_markdown,
 )
@@ -42,78 +32,54 @@ def build_chronicle_options(values: ReadViewOptionValues) -> ReadViewChronicleOp
     return ReadViewChronicleOptions(edge_limit=max(edge_limit, 1))
 
 
-async def _selected_summaries(config: Config, request: RootModeRequest) -> list[SessionSummary]:
-    from dataclasses import replace
-
-    exact = exact_read_summaries(config, request)
-    if exact is not None:
-        return exact
-
-    spec = request.query_spec()
-    if spec.limit is None:
-        spec = replace(spec, limit=5)
-    # polylogue-yla8.1 split-root contract: config.db_path always names a
-    # concrete index.db (explicit override or resolved active generation).
-    archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
-    vector_provider = _create_query_vector_provider(config, db_path=archive_root / "embeddings.db")
-    return list(await spec.list_summaries(config, vector_provider=vector_provider))
-
-
-def build_read_chronicle_payload(
-    config: Config,
-    request: RootModeRequest,
-    *,
-    edge_limit: int = DEFAULT_CHRONICLE_EDGE_LIMIT,
-) -> ChronicleProjectionPayload:
-    """Build a bounded first/last prose projection for selected sessions."""
-
-    async def _run() -> ChronicleProjectionPayload:
-        summaries = await _selected_summaries(config, request)
-        index_db_path = config.db_path
-        backend = SQLiteBackend(db_path=index_db_path)
-        session_payloads: list[ChronicleSessionPayload] = []
-        try:
-            for summary in summaries:
-                first_messages, last_messages, total = await backend.get_message_edge_windows(
-                    str(summary.id),
-                    message_role=(Role.USER, Role.ASSISTANT),
-                    message_type="message",
-                    material_origin=(MaterialOrigin.HUMAN_AUTHORED, MaterialOrigin.ASSISTANT_AUTHORED),
-                    edge_limit=edge_limit * 5,
-                )
-                session_payloads.append(
-                    build_chronicle_session_payload(
-                        summary,
-                        first_messages=first_messages,
-                        last_messages=last_messages,
-                        total_matching_messages=total,
-                        edge_limit=edge_limit,
-                    )
-                )
-        finally:
-            await backend.close()
-        return build_chronicle_projection_payload(session_payloads, edge_limit=edge_limit)
-
-    return run_coroutine_sync(_run())
-
-
 def run_read_chronicle(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
-    """Run the chronicle read view and deliver markdown/json output."""
+    """Dispatch and render one chronicle read."""
+
+    from polylogue.cli.lowering import _selection_params
+    from polylogue.cli.operation_kernel import (
+        OperationKernelError,
+        OperationRequest,
+        dispatch,
+    )
+    from polylogue.cli.read_dispatch import daemon_route_disabled
 
     options = invocation.options if isinstance(invocation.options, ReadViewChronicleOptions) else None
-    projection = invocation.projection_spec.projection if invocation.projection_spec is not None else None
-    if projection is not None and projection.edge_limit is not None:
-        edge_limit = projection.edge_limit
-    elif options is not None:
-        edge_limit = options.edge_limit
-    else:
-        edge_limit = DEFAULT_CHRONICLE_EDGE_LIMIT
-    payload = build_read_chronicle_payload(env.config, request, edge_limit=edge_limit)
+    projection = (
+        invocation.projection_spec.projection.model_dump(mode="json") if invocation.projection_spec is not None else {}
+    )
+    if not projection:
+        projection = {"edge_limit": options.edge_limit if options is not None else DEFAULT_CHRONICLE_EDGE_LIMIT}
+    elif projection.get("edge_limit") is None:
+        projection["edge_limit"] = options.edge_limit if options is not None else DEFAULT_CHRONICLE_EDGE_LIMIT
+    params = _selection_params(request)
+    params["query"] = list(request.query_terms)
+    params.setdefault("limit", 5)
+    operation = OperationRequest(
+        "read.chronicle",
+        {"session_id": invocation.session_id, "params": params, "projection": projection},
+    )
+    try:
+        result = dispatch(
+            cast(Config, request.config()),
+            operation,
+            daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
+        )
+    except OperationKernelError as exc:
+        from polylogue.cli.render.outcome import exit_for_read_failure
+
+        exit_for_read_failure(exc)
+    wire = result.value
+    if not isinstance(wire, dict) or wire.get("view") != "chronicle" or not isinstance(wire.get("payload"), dict):
+        from polylogue.cli.operation_kernel import OperationEnvelopeError
+
+        raise OperationEnvelopeError("read.chronicle result has an invalid view payload")
+    payload = ChronicleProjectionPayload.model_validate(wire["payload"])
     fmt = invocation.output_format or "markdown"
-    if fmt == "json":
-        content = json.dumps(chronicle_json_document(payload), indent=2) + "\n"
-    else:
-        content = render_chronicle_markdown(payload)
+    content = (
+        json.dumps(chronicle_json_document(payload), indent=2) + "\n"
+        if fmt == "json"
+        else render_chronicle_markdown(payload)
+    )
     deliver_content(env, content, destination=invocation.destination, out_path=invocation.out_path)
 
 
@@ -121,6 +87,5 @@ __all__ = [
     "CHRONICLE_READ_VIEW_OPTION_NAMES",
     "DEFAULT_CHRONICLE_EDGE_LIMIT",
     "build_chronicle_options",
-    "build_read_chronicle_payload",
     "run_read_chronicle",
 ]

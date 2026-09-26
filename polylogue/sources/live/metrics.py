@@ -37,6 +37,7 @@ class LiveFullIngestMetricKwargs(TypedDict):
     ingested_session_count: int
     ingested_message_count: int
     changed_session_count: int
+    excised_skips: int
 
 
 def split_offered_bytes(
@@ -114,6 +115,8 @@ class LiveBatchMetrics:
     ingested_session_count: int = 0
     ingested_message_count: int = 0
     changed_session_count: int = 0
+    #: Parser records deliberately excised under the canonical import policy.
+    excised_skips: int = 0
     rss_current_mb: float | None = None
     rss_peak_self_mb: float | None = None
     rss_peak_children_mb: float | None = None
@@ -214,6 +217,7 @@ class LiveBatchMetrics:
             "skipped_file_count": self.skipped_file_count,
             "succeeded_file_count": self.succeeded_file_count,
             "failed_file_count": self.failed_file_count,
+            "excised_skips": self.excised_skips,
             # polylogue-3r36h: deferrals were held only as paths (scheduling
             # evidence, deliberately not in the payload), so an event consumer
             # could not tell a pass that deferred work from an idle one.
@@ -277,17 +281,20 @@ class LiveFullIngestAggregate:
     ingested_session_count: int = 0
     ingested_message_count: int = 0
     changed_session_count: int = 0
+    excised_skips: int = 0
 
     def add(self, result: object) -> None:
         self.ingested_session_count += int(getattr(result, "ingested_session_count", 0))
         self.ingested_message_count += int(getattr(result, "ingested_message_count", 0))
         self.changed_session_count += int(getattr(result, "changed_session_count", 0))
+        self.excised_skips += int(getattr(result, "excised_skips", 0))
 
     def to_metric_kwargs(self) -> LiveFullIngestMetricKwargs:
         return {
             "ingested_session_count": self.ingested_session_count,
             "ingested_message_count": self.ingested_message_count,
             "changed_session_count": self.changed_session_count,
+            "excised_skips": self.excised_skips,
         }
 
 

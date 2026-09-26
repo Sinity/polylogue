@@ -1,21 +1,31 @@
 """Off-writer preparation for the live watcher's full-ingest route.
 
-Small JSONL files use the historical in-memory cache. Large JSONL files use
-``PreparedJsonl``: the process worker leaves a sealed private carrier on disk,
-and the writer verifies its captured blob hash before publishing it. A failed
-selected large worker leaves the accepted raw retryable without an inline
-parse. The selected large path and the acquired blob must contain identical
-bytes; a changed source is retried from its retained acquisition.
+Path workers leave sealed SQLite carriers and row shards on disk. Admission
+caps concurrent task count and captured source bytes; a lone oversized file
+may run, while additional files remain retryable. The publisher checks the
+captured blob hash before consuming a carrier.
 """
 
 from __future__ import annotations
 
 import threading
-from collections.abc import Sequence
-from concurrent.futures import Executor, Future, ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait
-from dataclasses import dataclass
+import time
+from collections.abc import Callable, Sequence
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    Executor,
+    Future,
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    as_completed,
+    wait,
+)
+from concurrent.futures.process import BrokenProcessPool
+from contextlib import AbstractContextManager
+from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 
 from polylogue.core.enums import Provider
 from polylogue.logging import WARNING, emit, get_logger
@@ -28,6 +38,17 @@ from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
 from polylogue.storage.sqlite.archive_tiers.write_shard import discard_session_shard
 
 logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+
+class PreparedReadSnapshot(Protocol):
+    @property
+    def archive(self) -> ArchiveStore: ...
+
+
+ReadSnapshot = Callable[[Path], AbstractContextManager[PreparedReadSnapshot]]
 
 _DEFAULT_WORKER_COUNT_FLOOR = 1
 _DEFAULT_WARM_TIMEOUT_SECONDS = 60.0
@@ -170,6 +191,13 @@ def live_parse_path_worker(
     is_stream: bool,
     shard_directory: str,
 ) -> LivePathPreparation:
+    from polylogue.sources.live.batch_support import jsonl_complete_prefix_path
+
+    boundary = jsonl_complete_prefix_path(Path(source_path))
+    source_size = Path(source_path).stat().st_size
+    parse_prefix_size = (
+        boundary.prefix_size if 0 < boundary.prefix_size < source_size and not boundary.malformed_record else None
+    )
     return prepare_jsonl_blob(
         source_path,
         source_path,
@@ -177,6 +205,7 @@ def live_parse_path_worker(
         fallback_id,
         is_stream=is_stream,
         shard_directory=shard_directory,
+        parse_prefix_size=parse_prefix_size,
     )
 
 
@@ -363,6 +392,9 @@ class LiveParseStage:
         self.shard_build_failure_count = 0
         self._path_results: dict[str, LivePathPreparation] = {}
         self._path_futures: dict[str, Future[LivePathPreparation]] = {}
+        self._path_sizes: dict[str, int] = {}
+        self._path_inflight_bytes = 0
+        self._closing = False
         if shard_directory is not None:
             shard_directory.mkdir(parents=True, exist_ok=True)
             # Anything already here belongs to a process that died before it
@@ -370,9 +402,11 @@ class LiveParseStage:
             # is no other owner to consult.
             for residue in shard_directory.glob("shard-*"):
                 discard_session_shard(residue)
-            for residue in shard_directory.glob("sessions-*.pickle"):
+            for residue in shard_directory.glob("prepared-*.db"):
                 residue.unlink(missing_ok=True)
+                residue.with_name(residue.name + "-journal").unlink(missing_ok=True)
         worker_count = max_workers if max_workers is not None else live_watcher_parse_stage_worker_count()
+        self._worker_count = worker_count
         self._max_path_pending = max(1, min(worker_count, 2))
         if use_processes:
             # The ordinary watcher route runs on the supported GIL build too.
@@ -392,13 +426,20 @@ class LiveParseStage:
                 max_inflight_bytes if max_inflight_bytes is not None else live_watcher_parse_stage_max_inflight_bytes()
             )
         )
+        self._max_path_bytes = max_inflight_bytes or live_watcher_parse_stage_max_inflight_bytes()
         self._warm_timeout_seconds = (
             warm_timeout_seconds
             if warm_timeout_seconds is not None
             else live_watcher_parse_stage_warm_timeout_seconds()
         )
 
-    def warm_paths(self, candidates: Sequence[tuple[str, Provider, bool]]) -> int:
+    def warm_paths(
+        self,
+        candidates: Sequence[tuple[str, Provider, bool]],
+        *,
+        archive_root: Path | None = None,
+        read_snapshot: ReadSnapshot | None = None,
+    ) -> int:
         """Prepare path-backed JSONL outside the writer lease.
 
         Every selected path gets a result, including worker death and timeout.
@@ -407,68 +448,233 @@ class LiveParseStage:
         """
         if self._shard_directory is None:
             return 0
-        for source_path, future in tuple(self._path_futures.items()):
-            if future.done():
-                self._collect_path_future(source_path, future)
-        for source_path, provider, is_stream in candidates:
+        deadline = time.monotonic() + self._warm_timeout_seconds
+        remaining = list(candidates)
+        while remaining:
+            for source_path, future in tuple(self._path_futures.items()):
+                if future.done():
+                    self._collect_path_future(source_path, future)
+            next_wave: list[tuple[str, Provider, bool]] = []
+            for source_path, provider, is_stream in remaining:
+                if source_path in self._path_results or source_path in self._path_futures:
+                    continue
+                try:
+                    source_bytes = Path(source_path).stat().st_size
+                except OSError as exc:
+                    self._path_results[source_path] = LivePathPreparation(
+                        None, None, None, f"source stat failed: {type(exc).__name__}"[:500], deferred=True
+                    )
+                    continue
+                if len(self._path_futures) >= self._max_path_pending or (
+                    self._path_futures and self._path_inflight_bytes + source_bytes > self._max_path_bytes
+                ):
+                    next_wave.append((source_path, provider, is_stream))
+                    continue
+                try:
+                    future = self._executor.submit(
+                        live_parse_path_worker,
+                        provider.value,
+                        source_path,
+                        Path(source_path).stem,
+                        is_stream=is_stream,
+                        shard_directory=str(self._shard_directory),
+                    )
+                except Exception as exc:
+                    self._path_results[source_path] = LivePathPreparation(
+                        None, None, None, f"worker submission failed: {type(exc).__name__}"[:500], deferred=True
+                    )
+                    continue
+                self._path_futures[source_path] = future
+                self._path_sizes[source_path] = source_bytes
+                self._path_inflight_bytes += source_bytes
+            remaining = next_wave
+            if not remaining:
+                break
+            available = max(0.0, deadline - time.monotonic())
+            if not self._path_futures or available == 0:
+                break
+            done, _pending = wait(tuple(self._path_futures.values()), timeout=available, return_when=FIRST_COMPLETED)
+            if not done:
+                break
+        for source_path, _provider, _is_stream in remaining:
             if source_path in self._path_results or source_path in self._path_futures:
                 continue
-            if len(self._path_futures) >= self._max_path_pending:
-                self._path_results[source_path] = LivePathPreparation(
-                    None, None, None, "worker preparation capacity is busy", deferred=True
-                )
-                continue
-            try:
-                future = self._executor.submit(
-                    live_parse_path_worker,
-                    provider.value,
-                    source_path,
-                    Path(source_path).stem,
-                    is_stream=is_stream,
-                    shard_directory=str(self._shard_directory),
-                )
-            except Exception as exc:
-                self._path_results[source_path] = LivePathPreparation(
-                    None, None, None, f"worker submission failed: {type(exc).__name__}"[:500]
-                )
-                continue
-            self._path_futures[source_path] = future
+            reason = (
+                "worker preparation capacity is busy"
+                if len(self._path_futures) >= self._max_path_pending
+                else "worker preparation byte capacity is busy"
+            )
+            self._path_results[source_path] = LivePathPreparation(None, None, None, reason, deferred=True)
         selected_futures = {
             self._path_futures[source_path]
             for source_path, _provider, _is_stream in candidates
             if source_path in self._path_futures
         }
         if selected_futures:
-            wait(selected_futures, timeout=self._warm_timeout_seconds)
+            _done, _pending = wait(selected_futures, timeout=max(0.0, deadline - time.monotonic()))
+            for source_path, future in tuple(self._path_futures.items()):
+                if future.done():
+                    self._collect_path_future(source_path, future)
+            # A slow worker is still the owner of its captured source. Keep
+            # its future so a later pass can consume the sealed artifact;
+            # restarting the pool here killed every whale at the same warm
+            # deadline on each retry. BrokenProcessPool is handled when the
+            # finished future is collected, and shutdown terminates stragglers.
         for source_path, future in tuple(self._path_futures.items()):
             if future.done():
                 self._collect_path_future(source_path, future)
+        if archive_root is not None:
+            self._prepare_existing_session_writes(archive_root, read_snapshot=read_snapshot)
         return len(candidates)
 
+    def _prepare_existing_session_writes(self, archive_root: Path, *, read_snapshot: ReadSnapshot | None) -> None:
+        """Reconcile prior acquisitions on a read-only index before admission."""
+        from polylogue.core.identity_law import session_id as archive_session_id
+        from polylogue.core.sources import origin_from_provider
+        from polylogue.storage.sqlite.archive_tiers.write import (
+            prepare_session_write,
+            prepared_session_rows_from_shard,
+        )
+
+        pending = {
+            path: result
+            for path, result in self._path_results.items()
+            if result.error is None and not result.prepared_writes
+        }
+        if not pending:
+            return
+        try:
+            if read_snapshot is None:
+                raise RuntimeError("prepared live write has no controlled read snapshot")
+            with read_snapshot(archive_root) as pinned:
+                archive = pinned.archive
+                index_conn = archive.index_connection
+                if index_conn is None:
+                    raise RuntimeError("prepared live write has no readable index snapshot")
+                source_conn = archive.source_connection
+                for path, result in pending.items():
+                    writes = []
+                    try:
+                        assert result.blob_hash is not None
+                        for session in result.iter_sessions():
+                            session_id = archive_session_id(
+                                origin_from_provider(session.source_name).value,
+                                session.provider_session_id,
+                            )
+                            row = index_conn.execute(
+                                "SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)
+                            ).fetchone()
+                            if row is None or row[0] is None or row[0] == result.blob_hash:
+                                continue
+                            writes.append(
+                                prepare_session_write(
+                                    index_conn,
+                                    session,
+                                    merge_append=False,
+                                    source_conn=source_conn,
+                                    raw_id=result.blob_hash,
+                                    prepared_rows=prepared_session_rows_from_shard(result.shard_path, session_id)
+                                    if result.shard_path is not None
+                                    else None,
+                                )
+                            )
+                        self._path_results[path] = replace(result, prepared_writes=tuple(writes))
+                    except Exception as exc:
+                        for prepared in writes:
+                            prepared.close()
+                        result.discard()
+                        self._path_results[path] = LivePathPreparation(
+                            None,
+                            None,
+                            None,
+                            f"existing-session preparation failed: {type(exc).__name__}"[:500],
+                            deferred=True,
+                        )
+        except Exception as exc:
+            for path, result in pending.items():
+                if self._path_results.get(path) is not result:
+                    continue
+                result.discard()
+                self._path_results[path] = LivePathPreparation(
+                    None,
+                    None,
+                    None,
+                    f"read-only preparation snapshot unavailable: {type(exc).__name__}"[:500],
+                    deferred=True,
+                )
+
     def _collect_path_future(self, source_path: str, future: Future[LivePathPreparation]) -> None:
+        if self._path_futures.get(source_path) is not future:
+            return
         self._path_futures.pop(source_path, None)
+        self._path_inflight_bytes -= self._path_sizes.pop(source_path, 0)
         try:
             result = future.result()
+        except BrokenProcessPool:
+            result = LivePathPreparation(None, None, None, "worker process died during preparation", deferred=True)
+            if not self._closing:
+                self._restart_broken_process_pool()
         except Exception as exc:
-            result = LivePathPreparation(None, None, None, f"worker failed: {type(exc).__name__}"[:500])
+            result = LivePathPreparation(None, None, None, f"worker failed: {type(exc).__name__}"[:500], deferred=True)
+        if result.error is None:
+            try:
+                # A full byte scan belongs at the prefetch boundary, before
+                # the caller enters the writer runner. Publication only needs
+                # the cheap exact-inode check in pop_path/iter_sessions.
+                result.verify_files(full=True)
+            except (OSError, ValueError) as exc:
+                result.discard()
+                result = LivePathPreparation(
+                    None,
+                    None,
+                    None,
+                    f"worker artifact changed: {type(exc).__name__}"[:500],
+                    deferred=True,
+                )
         old = self._path_results.pop(source_path, None)
         if old is not None:
             old.discard()
         self._path_results[source_path] = result
 
+    def _restart_broken_process_pool(self, *, reason: str = "worker process died during preparation") -> None:
+        if not isinstance(self._executor, ProcessPoolExecutor):
+            return
+        from polylogue.pipeline.services.process_pool import process_pool_executor, terminate_process_pool
+
+        for pending_path, future in tuple(self._path_futures.items()):
+            future.cancel()
+            self._path_results[pending_path] = LivePathPreparation(None, None, None, reason, deferred=True)
+        self._path_futures.clear()
+        self._path_sizes.clear()
+        self._path_inflight_bytes = 0
+        terminate_process_pool(self._executor)
+        self._executor = process_pool_executor(max_workers=self._worker_count)
+
     def pop_path(self, source_path: str, *, blob_hash: str) -> LivePathPreparation | None:
         future = self._path_futures.get(source_path)
         if future is not None:
-            if future.done():
-                self._collect_path_future(source_path, future)
-            else:
-                return LivePathPreparation(None, None, None, "worker preparation pending", deferred=True)
+            # pop_path runs under writer admission. Even a finished future
+            # needs a full artifact digest and prior-session reconciliation,
+            # both of which belong to the next off-lease warm_paths pass.
+            return LivePathPreparation(None, None, None, "worker preparation pending", deferred=True)
         result = self._path_results.pop(source_path, None)
         if result is None:
             return None
         if result.error is None and result.blob_hash != blob_hash:
             result.discard()
-            return LivePathPreparation(None, None, None, "captured source changed after preparation")
+            return LivePathPreparation(None, None, None, "captured source changed after preparation", deferred=True)
+        if result.error is None:
+            try:
+                result.verify_files(full=False)
+            except (OSError, ValueError) as exc:
+                result.discard()
+                return LivePathPreparation(
+                    None,
+                    None,
+                    None,
+                    f"worker artifact identity changed: {type(exc).__name__}"[:500],
+                    deferred=True,
+                )
         return result
 
     def warm(self, candidates: Sequence[LiveParseCandidate]) -> int:
@@ -579,6 +785,7 @@ class LiveParseStage:
         # A process worker may outlive a warm window indefinitely. Stop and
         # join it before removing scratch, so daemon stop stays bounded and
         # no worker can seal a carrier after cleanup.
+        self._closing = True
         if isinstance(self._executor, ProcessPoolExecutor):
             from polylogue.pipeline.services.process_pool import terminate_process_pool
 
@@ -594,8 +801,9 @@ class LiveParseStage:
         if self._shard_directory is not None:
             for residue in self._shard_directory.glob("shard-*"):
                 discard_session_shard(residue)
-            for residue in self._shard_directory.glob("sessions-*.pickle"):
+            for residue in self._shard_directory.glob("prepared-*.db"):
                 residue.unlink(missing_ok=True)
+                residue.with_name(residue.name + "-journal").unlink(missing_ok=True)
 
 
 __all__ = [

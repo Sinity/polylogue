@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
 import sqlite3
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from polylogue.config import Config
+
+if TYPE_CHECKING:
+    from polylogue.storage.archive_identity import OwnedArchiveLocation
 
 
 class DaemonResidencyUndecidableError(RuntimeError):
@@ -149,6 +153,31 @@ def running_daemon_pid(config: Config) -> int | None:
     return resident_daemon_pid(config.archive_root)
 
 
+@contextmanager
+def scoped_offline_archive_writer(archive_root: Path, *, owner_id: str) -> Iterator[OwnedArchiveLocation]:
+    """Exclude daemon startup and other offline writers across one operation."""
+    from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
+
+    root = archive_root.expanduser().resolve()
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(root / "daemon.pid", os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0), 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            pid = resident_daemon_pid(root)
+            writer = f"polylogued PID {pid}" if pid is not None else "resident daemon"
+            raise ArchiveWriterOwnershipError(
+                f"{writer} owns {root}; submit the operation to that daemon",
+                archive_root=root,
+                resident_writer=writer,
+            ) from exc
+        with OwnedArchiveLocation.acquire(ArchiveLocation.resolve(root), owner_id=owner_id) as owner:
+            yield owner
+    finally:
+        os.close(fd)
+
+
 def offline_writer_block_reason(config: Config) -> str | None:
     """Return the concrete writer that makes a strictly offline operation unsafe."""
     from polylogue.daemon.write_coordinator import daemon_write_lease_active
@@ -256,5 +285,6 @@ __all__ = [
     "refuse_writable_tier_opens",
     "resident_daemon_pid",
     "running_daemon_pid",
+    "scoped_offline_archive_writer",
     "writable_tier_opens_are_checked",
 ]

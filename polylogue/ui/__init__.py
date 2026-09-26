@@ -1,20 +1,9 @@
-"""Terminal presentation facade and the repository's theme authority.
+"""Terminal interaction, Rich presentation, and shared theme tokens.
 
-Nothing here is retained for compatibility with a replacement, which is what
-this docstring claimed until polylogue-4wqi2 measured the tree. There is no
-successor to migrate to: ``polylogue/rendering/renderers/html.py`` imports
-``polylogue.ui.theme`` rather than replacing it, ``devtools`` loads
-``polylogue/ui/theme.py`` as the generated design system's source of truth,
-and ``polylogue/ui/theme.py`` calls itself the single source of truth for
-provider, role, status and theme tokens across CLI, HTML and daemon web
-surfaces. A "legacy" label on a module every presentation surface depends on
-made maintenance decisions worse, not safer.
-
-What remains open is ownership, not status: whether terminal presentation
-ends up here or collapses into ``polylogue/rendering/`` plus the surface
-contracts is polylogue-4p1's presentation-ownership call, and this package is
-under an adoption freeze until that lands -- its importer set may shrink and
-must not grow (``tests/unit/architecture/test_ui_adoption_freeze.py``).
+This package owns terminal console behavior and palette/theme definitions
+shared with HTML presentation. ``polylogue.rendering`` owns format adapters
+that serialize sessions and content; its HTML renderer consumes these theme
+tokens rather than replacing terminal presentation.
 """
 
 from __future__ import annotations

@@ -18,7 +18,6 @@ from polylogue.daemon.write_coordinator import (
     DaemonWriteThreadBridge,
     daemon_write_lease_active,
 )
-from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
 
@@ -90,25 +89,54 @@ async def test_exact_raw_admission_uses_canonical_derivation_not_legacy_authorit
 
 
 @pytest.mark.asyncio
-async def test_widened_owner_refuses_nonstream_before_blob_open_but_ordinary_owner_can_publish(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_retained_jsonl_converges_above_cache_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A retained JSONL raw uses prepared publication regardless of byte size.
+
+    Anti-vacuity: restoring the component payload refusal makes this raw fail
+    before its retained bytes can establish a parser census and revision head.
+    """
     bootstrap_archive_root(tmp_path)
-    raw_id = _admit(tmp_path, "nonstream")
-    owner, compute, coordinator = await _owner(tmp_path)
+    payload = (
+        b'{"type":"session_meta","payload":{"id":"above-cache-budget"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"m1",'
+        b'"role":"user","content":[{"type":"input_text","text":"hello"}]}}\n'
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path="above-cache-budget.jsonl",
+            acquired_at_ms=1,
+        )
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    owner = RawObservationConvergenceOwner(
+        tmp_path,
+        compute_adapter=compute,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+        max_payload_bytes=1,
+    )
 
-    def forbidden_verify(*_args: object, **_kwargs: object) -> bool:
-        raise AssertionError("widened nonstream refusal must precede blob verification")
+    def no_singleton_merge(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("single-raw replay reconstructed a whole session")
 
+    monkeypatch.setattr("polylogue.sources.dispatch.merge_parsed_session_chunks", no_singleton_merge)
     try:
-        with monkeypatch.context() as widened:
-            widened.setattr(BlobStore, "verify", forbidden_verify)
-            for _ in range(2):
-                refused = await owner.converge_raw_id(raw_id, max_payload_bytes=2_000_000)
-                assert refused.done == 0 and refused.failed == 1
-                assert any(outcome.error and "stream-safe" in outcome.error for outcome in refused.outcomes)
-        ordinary = await owner.converge_raw_id(raw_id)
-        assert ordinary.done == 1 and ordinary.failed == ordinary.pending == 0
+        report = await owner.converge_raw_id(raw_id)
+        assert report.done == 1 and report.failed == report.pending == 0
+        with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+            assert archive.index_connection is not None
+            assert (
+                archive.index_connection.execute("SELECT accepted_raw_id FROM raw_revision_heads").fetchone()[0]
+                == raw_id
+            )
+            assert archive.source_connection is not None
+            assert (
+                archive.source_connection.execute(
+                    "SELECT status FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+                ).fetchone()[0]
+                == "complete"
+            )
     finally:
         await _shutdown(compute, coordinator)
 

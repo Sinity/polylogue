@@ -94,6 +94,28 @@ def gemini_sample_source(synthetic_source: SyntheticSourceFactory) -> Source:
     return synthetic_source("gemini")
 
 
+@pytest.fixture
+async def daemon_ingest_service(workspace_env: dict[str, Path]) -> AsyncGenerator[None, None]:
+    """Serve public facade ingestion through the production API and UDS."""
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.daemon.services import ServiceCapability, ServiceProfile
+    from tests.infra.daemon_service_harness import ServiceHarness
+
+    archive_root = workspace_env["archive_root"]
+    harness = ServiceHarness(profile=ServiceProfile.SURFACES, capabilities={ServiceCapability.API})
+    harness.require_selected("api_server")
+    harness.require_selected("uds_server")
+    api_token = resolve_api_auth_token(None)
+    api_server = harness.api_server(archive_root)
+    uds_server = harness.uds_server(archive_root, api_server=api_server, auth_token=api_token)
+    _api_task = harness.start_server("api_server", api_server)
+    _uds_task = harness.start_server("uds_server", uds_server)
+    try:
+        yield None
+    finally:
+        await harness.close()
+
+
 # =============================================================================
 # PER-PROVIDER WORKFLOW TESTS (4 tests parametrized)
 # =============================================================================
@@ -692,18 +714,13 @@ async def test_search_with_special_characters(temp_config_and_repo: WorkflowRepo
 
 
 async def test_daemon_owned_api_ingest_lands_source_session(
-    workspace_env: dict[str, Path], chatgpt_sample_source: Source
+    workspace_env: dict[str, Path], chatgpt_sample_source: Source, daemon_ingest_service: None
 ) -> None:
-    """The daemon-owned API ingest path lands source sessions in the archive."""
-    from polylogue.config import get_config
-
-    config = get_config()
-    config.sources = [chatgpt_sample_source]
-
-    async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
+    """The public facade waits for accepted daemon ingest before returning."""
+    async with Polylogue(archive_root=workspace_env["archive_root"]) as polylogue:
         result = await polylogue.parse_sources([chatgpt_sample_source])
         stored = await polylogue.list_sessions(limit=5)
 
-    assert result is not None
     assert result.counts["sessions"] > 0
+    assert result.counts["messages"] > 0
     assert len(stored) == 1

@@ -499,9 +499,9 @@ async def test_live_batch_marks_structural_database_error_degraded(
     assert second.source_payload_read_bytes == 0
     assert second.full_file_count == 0
     assert second.skipped_file_count == 1
-    # The first batch left its scope through a raised DatabaseError; the
-    # stub's flush-on-every-exit-path assertion holds for both batches.
-    cursor.assert_scopes_balanced(at_least=2)
+    # The first batch leaves its scope through the DatabaseError. The second
+    # returns at the degraded gate before any ops bookkeeping is entered.
+    cursor.assert_scopes_balanced(at_least=1)
 
 
 def test_schema_version_health_tolerates_missing_disposable_tier(

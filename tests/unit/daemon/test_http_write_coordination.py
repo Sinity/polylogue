@@ -899,32 +899,18 @@ def test_no_auth_cli_principal_ignores_attacker_selected_bearer_text() -> None:
     assert principal.role_label == "daemon-loopback-no-auth"
 
 
-def test_user_post_and_delete_hold_named_gates_around_dispatch() -> None:
+def test_user_post_and_delete_delegate_writer_ownership_to_operation_runtime() -> None:
     post_timeline: list[str] = []
     post_handler = _handler(["api", "user", "marks"], post_timeline)
-
-    def dispatch_post(*_args: object) -> bool:
-        post_timeline.append("body")
-        return True
-
-    with patch("polylogue.daemon.http.user_state_http.dispatch_post", side_effect=dispatch_post):
-        post_handler._do_post_impl()
-    assert post_timeline == ["enter:http.user.marks.post", "body", "exit:http.user.marks.post"]
+    post_handler._handle_user_overlay_post = lambda *_args: post_timeline.append("body")  # type: ignore[method-assign]
+    post_handler._do_post_impl()
+    assert post_timeline == ["body"]
 
     delete_timeline: list[str] = []
     delete_handler = _handler(["api", "user", "annotations", "ann-1"], delete_timeline)
-
-    def dispatch_delete(*_args: object) -> bool:
-        delete_timeline.append("body")
-        return True
-
-    with patch("polylogue.daemon.http.user_state_http.dispatch_delete", side_effect=dispatch_delete):
-        delete_handler._do_delete_impl()
-    assert delete_timeline == [
-        "enter:http.user.annotations.delete",
-        "body",
-        "exit:http.user.annotations.delete",
-    ]
+    delete_handler._handle_user_overlay_delete = lambda *_args: delete_timeline.append("body")  # type: ignore[method-assign]
+    delete_handler._do_delete_impl()
+    assert delete_timeline == ["body"]
 
 
 def test_standalone_http_server_owns_and_idempotently_closes_writer_runtime() -> None:
@@ -1032,12 +1018,11 @@ def _gated_handler(bridge: object) -> DaemonAPIHandler:
 
 
 def test_gated_route_body_is_authorized_to_write_under_process_wide_enforcement() -> None:
-    """The gate admits the durable user.db write it exists to admit.
+    """The legacy gate admits its route body under process-wide enforcement.
 
     polylogue-h5l6i: ``hold()`` entered the lease in a coroutine on the owner
     loop while the route body ran on a kernel worker in a freshly created event
-    loop, so every gated POST/DELETE under ``/api/user/*`` raised
-    ``UnleasedWriteError`` and answered HTTP 500.
+    loop, so a gated handler lost its admitted writer grant.
 
     Anti-vacuity: drop the ``adopt_write_lease`` wrapper from
     ``_archive_query_coroutine`` and this returns ``"unleased"``.
@@ -1053,14 +1038,14 @@ def test_gated_route_body_is_authorized_to_write_under_process_wide_enforcement(
 
     async def mutation(_polylogue: object) -> str:
         try:
-            require_write_lease("write user.db annotation")
+            require_write_lease("write gated route body")
         except Exception as exc:  # the refusal is the observation under test
             return f"unleased:{type(exc).__name__}"
         return "leased"
 
     try:
         with arm_write_lease_enforcement(process_wide=True):
-            with handler._write_gate("http.user.annotations.post"):
+            with handler._write_gate("http.reset"):
                 assert handler._sync_run(mutation) == "leased"
     finally:
         handler.server.execution_kernel.shutdown(wait=True)
@@ -1111,7 +1096,7 @@ def test_a_thread_outside_the_admitted_body_still_cannot_write() -> None:
 
     try:
         with arm_write_lease_enforcement(process_wide=True):
-            with handler._write_gate("http.user.annotations.post"):
+            with handler._write_gate("http.reset"):
                 assert handler._sync_run(mutation) == "leased"
     finally:
         handler.server.execution_kernel.shutdown(wait=True)
@@ -1301,7 +1286,7 @@ def test_an_indeterminate_mutation_keeps_the_writer_gate_until_its_body_settles(
 
     def request() -> None:
         try:
-            with handler._write_gate("http.user.annotations.post"):
+            with handler._write_gate("http.reset"):
                 handler._sync_run(mutation)
         except BaseException as exc:
             raised.append(exc)

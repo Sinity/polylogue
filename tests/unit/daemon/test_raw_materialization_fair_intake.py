@@ -1,12 +1,4 @@
-"""Whale escalation selects on the budget the ordinary admission actually uses.
-
-``RawObservationDerivation.compute`` expands a raw's membership and budgets
-``sum(sizes.values())`` over the whole component, while
-``RawMaterializationDiscovery`` reports each seed row's own size. Selecting the
-whale candidate on the seed size therefore left a component whose members are
-each inside the ordinary limit -- but whose total is not -- permanently stuck:
-too large for every ordinary admission, never offered to the whale owner.
-"""
+"""The ordinary fair intake admits a retained component above its cache budget."""
 
 from __future__ import annotations
 
@@ -20,9 +12,11 @@ import pytest
 from polylogue.core.enums import Provider
 from polylogue.daemon import cli as daemon_cli
 from polylogue.daemon.execution import BoundedComputeAdapter
+from polylogue.daemon.intake import AdmissionOutcome, AdmissionResult, FairIntakeDispatcher, IntakeClassSpec
 from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
+from polylogue.daemon.session_profile_composition import compose_session_profile_callback
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
-from polylogue.operations.intake_adapters import RawMaterializationDiscovery
+from polylogue.operations.intake_adapters import RawMaterializationDiscovery, RawMaterializationIntakeAdapter
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -52,16 +46,12 @@ def _blob_sizes(archive_root: Path) -> list[int]:
 
 
 @pytest.mark.asyncio
-async def test_whale_selection_measures_component(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Two revisions of one source path, each under the limit, together over it.
+async def test_fair_intake_converges_component_above_cache_budget_with_profiles(tmp_path: Path) -> None:
+    """Fair intake retries a component larger than its cache budget.
 
-    That skew is the whole point of the fixture: a seed that alone exceeds the
-    ordinary limit is selected by the per-raw predicate and the component
-    predicate alike, so it could not separate them.
-
-    Anti-vacuity: restore ``payload_bytes > _RAW_MATERIALIZATION_DAEMON_BLOB_
-    LIMIT_BYTES`` as the whole predicate and this returns ``False`` with no
-    session published.
+    Anti-vacuity: restoring the aggregate payload refusal leaves the index
+    without sessions or profiles. Omitting the post-publication handoff leaves
+    the profiles empty after the raw session rows appear.
     """
     archive_root = tmp_path / "archive"
     initialize_active_archive_root(archive_root)
@@ -70,17 +60,17 @@ async def test_whale_selection_measures_component(monkeypatch: pytest.MonkeyPatc
             archive.write_raw_payload(
                 provider=Provider.CODEX,
                 payload=_codex_session(
-                    f"whale-component-{index}",
+                    f"large-component-{index}",
                     (("user", f"question {index}"), ("assistant", f"answer {index}")),
                 ),
-                source_path="whale-component.jsonl",
+                source_path="large-component.jsonl",
                 acquired_at_ms=index + 1,
             )
 
     sizes = _blob_sizes(archive_root)
     assert len(sizes) == 2
-    ordinary_limit = max(sizes)
-    assert sum(sizes) > ordinary_limit, "the fixture must carry the component/seed skew"
+    cache_bytes = max(sizes)
+    assert sum(sizes) > cache_bytes, "the fixture must carry the component/seed skew"
 
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
     coordinator = DaemonWriteCoordinator()
@@ -90,21 +80,40 @@ async def test_whale_selection_measures_component(monkeypatch: pytest.MonkeyPatc
             archive_root,
             compute_adapter=compute,
             write_bridge=bridge,
-            max_payload_bytes=ordinary_limit,
+            max_payload_bytes=cache_bytes,
         )
-        monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive_root)
-        monkeypatch.setattr(daemon_cli, "_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES", ordinary_limit)
-        monkeypatch.setattr(daemon_cli, "_resolve_raw_materialization_whale_blob_limit_bytes", lambda: 1_000_000)
-        monkeypatch.setattr(daemon_cli, "_drain_whale_receipt_outbox", lambda: asyncio.sleep(0))
-        monkeypatch.setattr(daemon_cli, "_publish_whale_receipt", lambda **_kwargs: asyncio.sleep(0))
+        profiles = compose_session_profile_callback(
+            archive_root,
+            compute_adapter=compute,
+            write_bridge=bridge,
+            now=lambda: 0.0,
+        )
+        discovery = RawMaterializationDiscovery(archive_root, max_payload_bytes=cache_bytes)
 
-        assert await daemon_cli._maybe_run_raw_materialization_whale_pass(
-            raw_observation_owner=owner,
-            raw_intake_discovery=RawMaterializationDiscovery(archive_root, max_payload_bytes=ordinary_limit),
+        async def admit(raw_id: str) -> AdmissionResult:
+            report = await owner.converge_raw_id(raw_id)
+            if report.failed or report.pending:
+                return AdmissionResult(AdmissionOutcome.RETRYABLE, reason="raw observation pending")
+            if report.done:
+                await daemon_cli._converge_raw_materialized_session_profiles(archive_root, raw_id, profiles.callback)
+            return AdmissionResult(AdmissionOutcome.ADMITTED if report.done else AdmissionOutcome.DUPLICATE)
+
+        dispatcher = FairIntakeDispatcher(
+            [
+                IntakeClassSpec(
+                    name="raw_materialization",
+                    adapter=RawMaterializationIntakeAdapter(discovery.discover_pending_raw_ids, admit),
+                    page_size=1,
+                )
+            ]
         )
+        passes = [await dispatcher.run_once(budget=cache_bytes) for _ in range(4)]
+        assert any(passed.progressed for passed in passes)
         with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
             published = sorted(str(row[0]) for row in conn.execute("SELECT session_id FROM sessions"))
-        assert published == ["codex-session:whale-component-0", "codex-session:whale-component-1"]
+            profiled = sorted(str(row[0]) for row in conn.execute("SELECT session_id FROM session_profiles"))
+        assert published == ["codex-session:large-component-0", "codex-session:large-component-1"]
+        assert profiled == published
     finally:
         compute.shutdown(wait=True)
         await coordinator.shutdown(timeout=1.0)

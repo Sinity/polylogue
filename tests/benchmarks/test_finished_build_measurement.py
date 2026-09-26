@@ -47,6 +47,7 @@ from tests.infra.reindex_differential import (
     SealedRawInput,
     assert_finished_builds_equivalent,
     capture_finished_build_output,
+    capture_streamed_finished_build_fingerprint,
     clone_sealed_arm,
     finished_build_work_identity,
     seal_raw_input,
@@ -602,6 +603,23 @@ def test_index_deferral_comparison_repeats_interleaved_finished_builds(tmp_path:
     reference = receipts[0]
     for receipt in receipts[1:]:
         assert_finished_builds_equivalent(_finished_output(reference), _finished_output(receipt))
+
+    streamed_archive = tmp_path / f"comparison-0-{order[0].name}"
+    streamed_session_ids = _session_ids(streamed_archive / "index.db")[:3]
+    streamed = capture_streamed_finished_build_fingerprint(
+        streamed_archive,
+        streamed_archive / "index.db",
+        scratch_root=tmp_path,
+        session_ids=streamed_session_ids,
+        search_queries=("amg1-payload",),
+        include_threads=True,
+    )
+    assert streamed.canonical_logical_digest == reference.canonical_logical_digest
+    assert streamed.schema_object_census == reference.schema_object_census
+    assert streamed.schema_identity == reference.schema_identity
+    assert streamed.output_session_count == reference.output_session_count
+    assert streamed.output_message_count == reference.output_message_count
+    assert streamed.output_block_count == reference.output_block_count
 
     assert [receipt.deferred_secondary_indexes for receipt in receipts] == [True, False, False, True]
     assert all(receipt.fresh_build for receipt in receipts)

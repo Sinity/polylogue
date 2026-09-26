@@ -179,6 +179,12 @@ class IntakeClassReport:
 
     name: str
     admitted: int = 0
+    planned_count: int = 0
+    discovery_duration_ms: float = 0.0
+    admission_duration_ms: float = 0.0
+    budget_blocked: bool = False
+    page_full: bool = False
+    partial_plan: bool = False
     duplicates: int = 0
     excluded: int = 0
     """Items the domain durably refused. Acknowledged, never counted as progress."""
@@ -229,6 +235,26 @@ class IntakePass:
         (polylogue-swicx). An idle class backs off to the idle delay.
         """
         return any(report.admitted for report in self.classes)
+
+    @property
+    def quiescent(self) -> bool:
+        """True only when every class saw a short, fully handled idle page."""
+        if self.skipped_halted:
+            return False
+        return all(
+            not (
+                report.admitted
+                or report.retried
+                or report.deferred
+                or report.isolated
+                or report.discovery_failed
+                or report.halted
+                or report.budget_blocked
+                or report.page_full
+                or report.partial_plan
+            )
+            for report in self.classes
+        )
 
     def report_for(self, name: str) -> IntakeClassReport | None:
         for report in self.classes:
@@ -312,7 +338,30 @@ class FairIntakeDispatcher:
             runtime = self._runtime[spec.name]
             share = max(1, budget * spec.weight // total_weight)
             runtime.deficit += share
-            reports.append(await self._service_class(spec, runtime))
+            class_started = self._clock()
+            report = await self._service_class(spec, runtime)
+            reports.append(report)
+            if report.planned_count:
+                duration_ms = max(0.0, (self._clock() - class_started) * 1000)
+                emit(
+                    "daemon.intake.page",
+                    outcome="degraded"
+                    if report.retried or report.isolated or report.halted or report.excluded or report.deferred
+                    else "ok",
+                    component=spec.name,
+                    files=report.planned_count,
+                    bytes=report.estimated_cost,
+                    duration_ms=duration_ms,
+                    succeeded=report.admitted,
+                    failed=report.isolated,
+                    retried=report.retried,
+                    refused=report.excluded,
+                    deferred=report.deferred,
+                    stage_timings_ms={
+                        "discovery": report.discovery_duration_ms,
+                        "admission": report.admission_duration_ms,
+                    },
+                )
 
         for name in skipped:
             record = self._halts.record_for(unit_id(UnitKind.INTAKE_CLASS, name)) if self._halts else None
@@ -336,12 +385,13 @@ class FairIntakeDispatcher:
 
     async def _service_class(self, spec: IntakeClassSpec, runtime: _ClassRuntime) -> IntakeClassReport:
         if runtime.deficit <= 0:
-            return IntakeClassReport(name=spec.name)
+            return IntakeClassReport(name=spec.name, budget_blocked=True)
 
         # ``page_size`` bounds the discovery call in rows; ``deficit`` is
         # denominated in payload bytes, so it cannot bound a row count. The
         # page plan below is what spends the deficit.
         limit = spec.page_size
+        discovery_started = self._clock()
         try:
             page: list[IntakeItem] = list(await _maybe_await(spec.adapter.discover(limit=limit)))
         except Exception as exc:
@@ -355,6 +405,7 @@ class FairIntakeDispatcher:
                 error_detail=str(exc),
             )
             return IntakeClassReport(name=spec.name, discovery_failed=True, reason=f"discovery failed: {exc}")
+        discovery_duration_ms = max(0.0, (self._clock() - discovery_started) * 1000)
 
         admitted = duplicates = excluded = deferred = retried = isolated = 0
         estimated_cost = actual_cost = 0
@@ -390,6 +441,7 @@ class FairIntakeDispatcher:
             estimated_cost += item_cost
             planned.append(item)
 
+        admission_started = self._clock()
         for item, result in zip(planned, await self._admit_page(spec, planned), strict=True):
             item_cost = max(1, int(item.estimated_cost))
             if result.outcome is AdmissionOutcome.CLASS_TERMINAL:
@@ -397,6 +449,11 @@ class FairIntakeDispatcher:
                 return IntakeClassReport(
                     name=spec.name,
                     admitted=admitted,
+                    planned_count=len(planned),
+                    discovery_duration_ms=discovery_duration_ms,
+                    admission_duration_ms=max(0.0, (self._clock() - admission_started) * 1000),
+                    page_full=len(page) >= limit,
+                    partial_plan=len(planned) < len(page),
                     duplicates=duplicates,
                     excluded=excluded,
                     deferred=deferred,
@@ -442,6 +499,11 @@ class FairIntakeDispatcher:
                     error_detail=str(result.reason),
                 )
                 continue
+            # A retry still costs its estimate unless the adapter can report
+            # a measured cost, including zero for a confirmed unattempted item.
+            item_actual_cost = item_cost if result.actual_cost is None else max(0, int(result.actual_cost))
+            actual_cost += item_actual_cost
+            runtime.deficit -= item_actual_cost - item_cost
             attempts = runtime.attempts.get(item.item_id, 0) + 1
             runtime.attempts[item.item_id] = attempts
             retried += 1
@@ -472,6 +534,11 @@ class FairIntakeDispatcher:
         return IntakeClassReport(
             name=spec.name,
             admitted=admitted,
+            planned_count=len(planned),
+            discovery_duration_ms=discovery_duration_ms,
+            admission_duration_ms=max(0.0, (self._clock() - admission_started) * 1000),
+            page_full=len(page) >= limit,
+            partial_plan=len(planned) < len(page),
             duplicates=duplicates,
             excluded=excluded,
             deferred=deferred,

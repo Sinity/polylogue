@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from pathlib import Path
 
 import click
@@ -144,28 +145,35 @@ def blob_disposition_restore_command(
         restore_plan_members,
         write_receipt,
     )
+    from polylogue.maintenance.offline_guard import scoped_offline_archive_writer
 
     hooks_root, hook_sources, capture_spool = resolve_disposition_roots(archive_root)
     try:
         plan = BlobDispositionPlan.from_dict(json.loads(plan_path.read_text(encoding="utf-8")))
         if plan.digest() != authorized_digest:
             raise click.ClickException("authorized digest does not match the plan")
-        context = build_disposition_context(
-            archive_root=archive_root,
-            blob_root=archive_root / "blob",
-            source_db=archive_root / "source.db",
-            index_db=archive_root / "index.db",
-            hook_spool_sources=hook_sources,
-            browser_capture_spool=capture_spool,
-            export_archive_roots=export_archive_roots,
+        owner_scope = (
+            scoped_offline_archive_writer(archive_root, owner_id="blob-disposition.restore")
+            if active
+            else nullcontext()
         )
-        restorations = restore_plan_members(
-            plan,
-            context=context,
-            hook_spool_root=hooks_root,
-            browser_capture_spool=capture_spool,
-            dry_run=not active,
-        )
+        with owner_scope:
+            context = build_disposition_context(
+                archive_root=archive_root,
+                blob_root=archive_root / "blob",
+                source_db=archive_root / "source.db",
+                index_db=archive_root / "index.db",
+                hook_spool_sources=hook_sources,
+                browser_capture_spool=capture_spool,
+                export_archive_roots=export_archive_roots,
+            )
+            restorations = restore_plan_members(
+                plan,
+                context=context,
+                hook_spool_root=hooks_root,
+                browser_capture_spool=capture_spool,
+                dry_run=not active,
+            )
         result = DispositionApplyReceipt(
             tool_version=TOOL_VERSION,
             plan_digest=plan.digest(),
@@ -248,35 +256,39 @@ def blob_disposition_apply_command(
         resolve_disposition_roots,
     )
     from polylogue.maintenance.blob_disposition_apply import apply_disposition_plan, write_receipt
-    from polylogue.maintenance.offline_guard import offline_writer_block_reason
+    from polylogue.maintenance.offline_guard import offline_writer_block_reason, scoped_offline_archive_writer
     from polylogue.paths import render_root
 
     hooks_root, hook_sources, capture_spool = resolve_disposition_roots(archive_root)
     try:
         plan = BlobDispositionPlan.from_dict(json.loads(plan_path.read_text(encoding="utf-8")))
-        context = build_disposition_context(
-            archive_root=archive_root,
-            blob_root=archive_root / "blob",
-            source_db=archive_root / "source.db",
-            index_db=archive_root / "index.db",
-            hook_spool_sources=hook_sources,
-            browser_capture_spool=capture_spool,
-            export_archive_roots=export_archive_roots,
+        owner_scope = (
+            scoped_offline_archive_writer(archive_root, owner_id="blob-disposition.apply") if active else nullcontext()
         )
-        block_reason = offline_writer_block_reason(
-            Config(archive_root=archive_root, render_root=render_root(), sources=[])
-        )
-        result = apply_disposition_plan(
-            plan,
-            context=context,
-            authorized_digest=authorized_digest,
-            source_db=archive_root / "source.db",
-            index_db=archive_root / "index.db",
-            hook_spool_root=hooks_root,
-            browser_capture_spool=capture_spool,
-            writer_block_reason=block_reason,
-            dry_run=not active,
-        )
+        with owner_scope:
+            context = build_disposition_context(
+                archive_root=archive_root,
+                blob_root=archive_root / "blob",
+                source_db=archive_root / "source.db",
+                index_db=archive_root / "index.db",
+                hook_spool_sources=hook_sources,
+                browser_capture_spool=capture_spool,
+                export_archive_roots=export_archive_roots,
+            )
+            block_reason = offline_writer_block_reason(
+                Config(archive_root=archive_root, render_root=render_root(), sources=[])
+            )
+            result = apply_disposition_plan(
+                plan,
+                context=context,
+                authorized_digest=authorized_digest,
+                source_db=archive_root / "source.db",
+                index_db=archive_root / "index.db",
+                hook_spool_root=hooks_root,
+                browser_capture_spool=capture_spool,
+                writer_block_reason=block_reason,
+                dry_run=not active,
+            )
         write_receipt(receipt, result)
     except (OSError, RuntimeError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc

@@ -1,10 +1,11 @@
 {
   "family": "synthetic",
-  "model": "cold-plan-generator-v1",
+  "model": "author-recorded-synthetic-fixture",
   "generation": {
-    "kind": "model-output",
+    "kind": "author-written",
     "contract": "provider-neutral-capability-v1",
-    "source": "offline synthetic model run"
+    "source": "author-recorded synthetic test fixture",
+    "model_evidence": false
   },
   "plans": {
     "cost": {

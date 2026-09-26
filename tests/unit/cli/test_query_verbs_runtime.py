@@ -13,6 +13,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
+from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID, READ_VIEW_PROFILES, read_view_choices
 from polylogue.cli import query_verbs, read_view_handlers
@@ -28,6 +29,21 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
 from polylogue.surfaces.payloads import PublicRefResolutionPayload
 from polylogue.surfaces.projection_spec import ProjectionSpec, QueryProjectionSpec, RenderFormat, projection_from_views
 from tests.infra.builders import make_conv, make_msg
+
+
+def _dialogue_operation_result(session: object) -> tuple[dict[str, object], object]:
+    projected = session.with_content_projection(ContentProjectionSpec.prose_only())  # type: ignore[attr-defined]
+    return (
+        {
+            "view": "dialogue",
+            "payload": {
+                "session": projected.model_dump(mode="json"),
+                "total_message_count": len(projected.messages),
+                "next_offset": None,
+            },
+        },
+        SimpleNamespace(line=lambda: "daemon"),
+    )
 
 
 def _context_pair(
@@ -449,26 +465,20 @@ def test_dialogue_read_view_renders_projected_authored_prose(capsys: pytest.Capt
         ],
     )
 
-    class _FakePolylogue:
-        async def get_session(self, session_id: str, *, content_projection: object | None = None) -> object | None:
-            assert session_id == "session-1"
-            if content_projection is None:
-                return session
-            return session.with_content_projection(content_projection)  # type: ignore[arg-type]
+    env = cast(AppEnv, SimpleNamespace(config=object(), ui=MagicMock()))
 
-    env = cast(AppEnv, SimpleNamespace(polylogue=_FakePolylogue(), ui=MagicMock()))
-
-    read_view_handlers.run_read_view(
-        env,
-        RootModeRequest.from_params({}),
-        ReadViewInvocation(
-            view="dialogue",
-            session_id="session-1",
-            output_format="markdown",
-            destination="stdout",
-            out_path=None,
-        ),
-    )
+    with patch("polylogue.cli.read_dispatch.dispatch_read", return_value=_dialogue_operation_result(session)):
+        read_view_handlers.run_read_view(
+            env,
+            RootModeRequest.from_params({}),
+            ReadViewInvocation(
+                view="dialogue",
+                session_id="session-1",
+                output_format="markdown",
+                destination="stdout",
+                out_path=None,
+            ),
+        )
 
     rendered = capsys.readouterr().out
     assert "operator question" in rendered
@@ -504,17 +514,13 @@ def test_dialogue_read_view_browser_destination_honors_projection_window() -> No
         ],
     )
 
-    class _FakePolylogue:
-        async def get_session(self, session_id: str, *, content_projection: object | None = None) -> object | None:
-            assert session_id == "session-1"
-            if content_projection is None:
-                return session
-            return session.with_content_projection(content_projection)  # type: ignore[arg-type]
-
-    env = cast(AppEnv, SimpleNamespace(polylogue=_FakePolylogue(), ui=MagicMock()))
+    env = cast(AppEnv, SimpleNamespace(config=object(), ui=MagicMock()))
     projection_spec = QueryProjectionSpec(projection=ProjectionSpec(body_limit=1))
 
-    with patch("polylogue.cli.read_views.standard.deliver_content") as deliver:
+    with (
+        patch("polylogue.cli.read_dispatch.dispatch_read", return_value=_dialogue_operation_result(session)),
+        patch("polylogue.cli.read_views.standard.deliver_content") as deliver,
+    ):
         read_view_handlers.run_read_view(
             env,
             RootModeRequest.from_params({}),
@@ -546,26 +552,20 @@ def test_dialogue_json_uses_compact_payload(capsys: pytest.CaptureFixture[str]) 
         ],
     )
 
-    class _FakePolylogue:
-        async def get_session(self, session_id: str, *, content_projection: object | None = None) -> object | None:
-            assert session_id == "session-1"
-            if content_projection is None:
-                return session
-            return session.with_content_projection(content_projection)  # type: ignore[arg-type]
+    env = cast(AppEnv, SimpleNamespace(config=object(), ui=MagicMock()))
 
-    env = cast(AppEnv, SimpleNamespace(polylogue=_FakePolylogue(), ui=MagicMock()))
-
-    read_view_handlers.run_read_view(
-        env,
-        RootModeRequest.from_params({}),
-        ReadViewInvocation(
-            view="dialogue",
-            session_id="session-1",
-            output_format="json",
-            destination="stdout",
-            out_path=None,
-        ),
-    )
+    with patch("polylogue.cli.read_dispatch.dispatch_read", return_value=_dialogue_operation_result(session)):
+        read_view_handlers.run_read_view(
+            env,
+            RootModeRequest.from_params({}),
+            ReadViewInvocation(
+                view="dialogue",
+                session_id="session-1",
+                output_format="json",
+                destination="stdout",
+                out_path=None,
+            ),
+        )
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["id"] == "session-1"
@@ -601,27 +601,21 @@ def test_dialogue_json_applies_projection_token_budget(capsys: pytest.CaptureFix
         ],
     )
 
-    class _FakePolylogue:
-        async def get_session(self, session_id: str, *, content_projection: object | None = None) -> object | None:
-            assert session_id == "session-1"
-            if content_projection is None:
-                return session
-            return session.with_content_projection(content_projection)  # type: ignore[arg-type]
+    env = cast(AppEnv, SimpleNamespace(config=object(), ui=MagicMock()))
 
-    env = cast(AppEnv, SimpleNamespace(polylogue=_FakePolylogue(), ui=MagicMock()))
-
-    read_view_handlers.run_read_view(
-        env,
-        RootModeRequest.from_params({}),
-        ReadViewInvocation(
-            view="dialogue",
-            session_id="session-1",
-            output_format="json",
-            destination="stdout",
-            out_path=None,
-            projection_spec=projection_from_views(("dialogue",), max_tokens=3),
-        ),
-    )
+    with patch("polylogue.cli.read_dispatch.dispatch_read", return_value=_dialogue_operation_result(session)):
+        read_view_handlers.run_read_view(
+            env,
+            RootModeRequest.from_params({}),
+            ReadViewInvocation(
+                view="dialogue",
+                session_id="session-1",
+                output_format="json",
+                destination="stdout",
+                out_path=None,
+                projection_spec=projection_from_views(("dialogue",), max_tokens=3),
+            ),
+        )
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["message_count"] == 3
@@ -1309,21 +1303,17 @@ def test_read_view_temporal_projects_selected_summaries(
         ),
     ]
 
-    with (
-        patch("polylogue.cli.query._create_query_vector_provider", return_value=None),
-        patch(
-            "polylogue.archive.query.spec.SessionQuerySpec.list_summaries",
-            new=AsyncMock(return_value=summaries),
-        ) as list_summaries,
-        patch(
-            "polylogue.cli.read_views.standard._message_temporal_events_for_summaries",
-            return_value=([], ()),
-        ) as message_events,
-        patch(
-            "polylogue.cli.read_views.standard._action_temporal_events_for_summaries",
-            return_value=([], ()),
-        ) as action_events,
-    ):
+    from polylogue.surfaces.temporal_evidence import build_temporal_evidence_window, summary_to_temporal_event
+
+    events = [event for summary in summaries if (event := summary_to_temporal_event(summary)) is not None]
+    window_payload = build_temporal_evidence_window(events).model_dump(mode="json")
+    with patch(
+        "polylogue.cli.read_dispatch.dispatch_read",
+        return_value=(
+            {"view": "temporal", "payload": {"temporal_window": window_payload}},
+            SimpleNamespace(line=lambda: "daemon"),
+        ),
+    ) as dispatch:
         read_view_handlers.run_read_view(
             cast(AppEnv, env),
             RootModeRequest.from_params({"query": ("repo:polylogue",), "limit": 2}),
@@ -1336,9 +1326,7 @@ def test_read_view_temporal_projects_selected_summaries(
             ),
         )
 
-    list_summaries.assert_awaited_once()
-    message_events.assert_called_once()
-    action_events.assert_called_once()
+    assert dispatch.call_args.args[1].operation == "read.temporal"
     payload = json.loads(capsys.readouterr().out)
     window = payload["temporal_window"]
     assert window["event_count"] == 2
@@ -1403,19 +1391,18 @@ def test_read_view_temporal_includes_bounded_message_events(
         phase="shell",
     )
 
-    with (
-        patch("polylogue.cli.query._create_query_vector_provider", return_value=None),
-        patch(
-            "polylogue.archive.query.spec.SessionQuerySpec.list_summaries",
-            new=AsyncMock(return_value=summaries),
-        ),
-        patch(
-            "polylogue.cli.read_views.standard._message_temporal_events_for_summaries",
-            return_value=([message_event], ("message_events_capped",)),
-        ),
-        patch(
-            "polylogue.cli.read_views.standard._action_temporal_events_for_summaries",
-            return_value=([action_event], ("action_events_capped",)),
+    from polylogue.surfaces.temporal_evidence import build_temporal_evidence_window, summary_to_temporal_event
+
+    session_event = summary_to_temporal_event(summaries[0])
+    assert session_event is not None
+    window_payload = build_temporal_evidence_window(
+        [session_event, message_event, action_event], caveats=("message_events_capped", "action_events_capped")
+    ).model_dump(mode="json")
+    with patch(
+        "polylogue.cli.read_dispatch.dispatch_read",
+        return_value=(
+            {"view": "temporal", "payload": {"temporal_window": window_payload}},
+            SimpleNamespace(line=lambda: "daemon"),
         ),
     ):
         read_view_handlers.run_read_view(
@@ -1641,9 +1628,13 @@ def test_read_view_registry_builds_chronicle_edge_limit() -> None:
 
 def test_read_chronicle_uses_projection_spec_edge_limit() -> None:
     projection_spec = projection_from_views(("chronicle",), edge_limit=3)
+    operation_result = SimpleNamespace(
+        value={"view": "chronicle", "payload": {"sessions": [], "session_count": 0, "edge_limit": 3}}
+    )
 
     with (
-        patch("polylogue.cli.read_views.chronicle.build_read_chronicle_payload") as build_payload,
+        patch("polylogue.cli.operation_kernel.dispatch", return_value=operation_result) as dispatch,
+        patch("polylogue.cli.read_dispatch.daemon_route_disabled", return_value=False),
         patch("polylogue.cli.read_views.chronicle.render_chronicle_markdown", return_value="chronicle\n"),
         patch("polylogue.cli.read_views.chronicle.deliver_content") as deliver,
     ):
@@ -1660,7 +1651,9 @@ def test_read_chronicle_uses_projection_spec_edge_limit() -> None:
             ),
         )
 
-    assert build_payload.call_args.kwargs["edge_limit"] == 3
+    operation = dispatch.call_args.args[1]
+    assert operation.operation == "read.chronicle"
+    assert operation.payload["projection"]["edge_limit"] == 3
     deliver.assert_called_once()
 
 
@@ -1688,14 +1681,17 @@ def test_read_messages_uses_projection_spec_body_window() -> None:
 
 def test_read_neighbors_uses_projection_spec_neighbor_policy() -> None:
     projection_spec = projection_from_views(("neighbors",), neighbor_limit=4, neighbor_window_hours=12)
-    polylogue = SimpleNamespace(neighbor_candidates=MagicMock(name="neighbor_candidates"))
 
     with (
-        patch("polylogue.api.sync.bridge.run_coroutine_sync", return_value=[]),
+        patch(
+            "polylogue.cli.read_views.neighbors.dispatch_read",
+            return_value=({"view": "neighbors", "payload": {"neighbors": []}}, None),
+        ) as dispatch,
+        patch("polylogue.cli.read_views.neighbors.daemon_route_disabled", return_value=False),
         patch("polylogue.cli.read_views.neighbors.deliver_content"),
     ):
         read_view_handlers.run_read_view(
-            cast(AppEnv, SimpleNamespace(polylogue=polylogue)),
+            cast(AppEnv, SimpleNamespace(config=SimpleNamespace())),
             RootModeRequest.from_params({}),
             ReadViewInvocation(
                 view="neighbors",
@@ -1707,9 +1703,11 @@ def test_read_neighbors_uses_projection_spec_neighbor_policy() -> None:
             ),
         )
 
-    assert polylogue.neighbor_candidates.call_args.kwargs["session_id"] == "session-1"
-    assert polylogue.neighbor_candidates.call_args.kwargs["limit"] == 4
-    assert polylogue.neighbor_candidates.call_args.kwargs["window_hours"] == 12
+    operation = dispatch.call_args.args[1]
+    assert operation.operation == "read.neighbors"
+    assert operation.payload["session_id"] == "session-1"
+    assert operation.payload["limit"] == 4
+    assert operation.payload["window_hours"] == 12
 
 
 def test_explicit_read_view_options_reports_command_line_values_only() -> None:

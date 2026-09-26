@@ -3969,7 +3969,7 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                         storage_line += f" ({storage_tiers})"
                     payload_unavailable = latest.get("payload_unavailable_file_count")
                     if payload_unavailable is not None:
-                        storage_line += f", {payload_unavailable} payload-unavailable"
+                        storage_line += f", {payload_unavailable} payloads outside memory"
                     payload_replayed = latest.get("payload_replayed_from_blob_file_count")
                     if payload_replayed is not None:
                         storage_line += f", {payload_replayed} blob-replayed"

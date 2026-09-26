@@ -13,7 +13,8 @@ durability, and OS-level resource enforcement.
 - ``_write_claude_code_session`` mirrors the helper from
   ``tests/integration/test_daemon_convergence_evidence.py``.
 - ``_wait_for_messages`` polls ``sqlite3`` directly so the test does
-  not depend on the HTTP API being enabled.
+  not depend on the HTTP API being enabled; the SIGKILL test probes its
+  daemon-owned inactive generation before promotion.
 - Subprocess cleanup: every test uses ``try/finally`` with
   ``.terminate()`` → ``.wait(timeout=10)`` → ``.kill()`` → ``.wait()``
   to guarantee no orphan daemons.
@@ -23,12 +24,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import socket
 import sqlite3
 import subprocess
 import sys
 import time
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -80,11 +83,10 @@ pytestmark = [
 #   c  concurrent_access 11.55 + wal_checkpoint 8.05            = 19.60
 #   d  memory_pressure 8.80 + sigterm_read_only 1.27            = 10.07
 #
-# so the makespan is bounded by the largest bin instead of by arrival order.
-# The bins are a scheduling hint, not a correctness contract: every test here is
-# independent (its own archive root via `workspace_env`, its own loopback port),
-# so a wrong or missing group costs wall-clock, never a false result. Re-measure
-# and rebalance when adding a test or when a member's cost moves materially.
+# Those measurements predate the candidate-progress SIGKILL workload, which
+# now crosses a full intake page; re-measure before claiming the bins are still
+# balanced. They remain a scheduling hint, not a correctness contract: every
+# test has its own archive root and loopback port.
 _BIN_A = pytest.mark.xdist_group("daemon-resilience-a")
 _BIN_B = pytest.mark.xdist_group("daemon-resilience-b")
 _BIN_C = pytest.mark.xdist_group("daemon-resilience-c")
@@ -186,11 +188,30 @@ def _assert_daemon_alive(proc: subprocess.Popen[bytes]) -> None:
     """
     returncode = proc.poll()
     if returncode is not None:
-        try:
-            stderr_text = proc.stderr.read().decode(errors="replace")[:2000] if proc.stderr else "(no stderr)"
-        except Exception:
-            stderr_text = "(could not read stderr)"
+        stderr_text = _stderr_tail(proc)
         raise AssertionError(f"Daemon exited prematurely with code {returncode}. stderr:\n{stderr_text}")
+
+
+def _stderr_tail(proc: subprocess.Popen[bytes]) -> str:
+    """Drain available pipe bytes without waiting for descendants to close it."""
+    if proc.stderr is None:
+        return "(no stderr)"
+    try:
+        fd = proc.stderr.fileno()
+        os.set_blocking(fd, False)
+        tail = bytearray()
+        for _ in range(16):
+            try:
+                chunk = os.read(fd, 4096)
+            except BlockingIOError:
+                break
+            if not chunk:
+                break
+            tail.extend(chunk)
+            del tail[:-4000]
+        return tail.decode(errors="replace")
+    except OSError as exc:
+        return f"(could not read stderr: {type(exc).__name__})"
 
 
 def _project_binary(name: str) -> str:
@@ -284,6 +305,60 @@ def _wait_for_messages(
         time.sleep(poll_interval)
     raise TimeoutError(
         f"Timed out waiting for {min_count} messages after {timeout_s}s; last observed count: {last_count}"
+    )
+
+
+def _wait_for_cold_build_messages(
+    proc: subprocess.Popen[bytes], archive_root: Path, *, min_count: int, timeout_s: float
+) -> tuple[Path, int, int, list[tuple[str, bytes]]]:
+    """Observe rows in this process's inactive generation before promotion.
+
+    The active index deliberately stays empty during a cold build. Metadata
+    binds the candidate to this daemon PID, archive root and exact generation
+    path, so a leftover candidate from another run cannot satisfy the probe.
+    """
+    deadline = time.monotonic() + timeout_s
+    last_count = 0
+    generations = archive_root / ".index-generations"
+    while time.monotonic() < deadline:
+        _assert_daemon_alive(proc)
+        for metadata_path in generations.glob("gen-*/generation.json"):
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            candidate = metadata_path.parent / "index.db"
+            if (
+                metadata.get("owner_id") != f"cold-build:{proc.pid}"
+                or metadata.get("archive_root") != str(archive_root)
+                or metadata.get("generation_id") != metadata_path.parent.name
+                or metadata.get("index_path") != str(candidate)
+                or metadata.get("state") != "inactive"
+            ):
+                continue
+            try:
+                with sqlite3.connect(f"file:{candidate}?mode=ro", uri=True, timeout=0.1) as conn:
+                    count = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+                    last_count = max(last_count, count)
+                    if count >= min_count:
+                        session_count = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+                        hashes = [
+                            (str(session_id), bytes(content_hash))
+                            for session_id, content_hash in conn.execute(
+                                "SELECT session_id, content_hash FROM sessions ORDER BY session_id LIMIT 10"
+                            ).fetchall()
+                        ]
+                        # Stop before returning to the test: a later assertion
+                        # must not give the next intake page time to complete.
+                        os.kill(proc.pid, signal.SIGSTOP)
+                        return candidate, count, session_count, hashes
+            except sqlite3.OperationalError as exc:
+                if not any(token in str(exc).lower() for token in ("locked", "no such table", "unable to open")):
+                    raise
+        time.sleep(0.01)
+    raise TimeoutError(
+        f"Timed out waiting for {min_count} messages in daemon-owned inactive generation "
+        f"after {timeout_s}s; last observed count: {last_count}"
     )
 
 
@@ -397,54 +472,146 @@ def test_sigterm_with_locked_ops_exits_without_normal_sqlite_wait(
     """A contended OPS tier cannot hold a signalled daemon for the normal 30 seconds."""
     archive_root = workspace_env["archive_root"]
     api_port = _free_local_port()
-    daemon = subprocess.Popen(
-        [
-            sys.executable,
-            "-c",
-            "from polylogue.daemon.cli import main; main()",
-            "run",
-            "--no-watch",
-            "--no-source-catchup",
-            "--no-browser-capture",
-            "--api-port",
-            str(api_port),
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env=os.environ.copy(),
-    )
-    lock = sqlite3.connect(archive_root / "ops.db")
-    try:
-        _wait_for_lifecycle_start(daemon, archive_root / "ops.db")
-        _wait_for_api_ready(daemon, api_port)
-        lock.execute("BEGIN EXCLUSIVE")
-        started = time.monotonic()
-        daemon.send_signal(signal.SIGTERM)
-        assert daemon.wait(timeout=90) == 128 + signal.SIGTERM
-        # The contract is "well under the normal 30s SQLite wait"; the bound
-        # leaves headroom for the harness's idle-scheduled containment slice
-        # (see the deadline-calibration note at _wait_for_lifecycle_start).
-        assert time.monotonic() - started < 25.0
-    finally:
-        lock.rollback()
-        lock.close()
-        if daemon.poll() is None:
-            _cleanup_process(daemon)
+    # A real file avoids a pipe backpressure stall while the signal handler
+    # dumps thread stacks. Only a bounded tail is read into a failed assertion.
+    with (archive_root.parent / "sigterm-locked-ops.stderr").open("w+b") as stderr_capture:
+        daemon = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "from polylogue.daemon.cli import main; main()",
+                "run",
+                "--no-watch",
+                "--no-source-catchup",
+                "--no-browser-capture",
+                "--api-port",
+                str(api_port),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=stderr_capture,
+            env=os.environ.copy(),
+        )
+        lock = sqlite3.connect(archive_root / "ops.db")
+        try:
+            _wait_for_lifecycle_start(daemon, archive_root / "ops.db")
+            _wait_for_api_ready(daemon, api_port)
+            lock.execute("BEGIN EXCLUSIVE")
+            started = time.monotonic()
+            daemon.send_signal(signal.SIGTERM)
+            exit_code = daemon.wait(timeout=90)
+            elapsed_s = time.monotonic() - started
+            stderr_capture.seek(max(0, os.fstat(stderr_capture.fileno()).st_size - 8192))
+            stderr_tail = stderr_capture.read(8192).decode(errors="replace")
+            assert exit_code == 128 + signal.SIGTERM, stderr_tail
+            # The contract is "well under the normal 30s SQLite wait"; the bound
+            # leaves headroom for the harness's idle-scheduled containment slice
+            # (see the deadline-calibration note at _wait_for_lifecycle_start).
+            assert elapsed_s < 25.0, stderr_tail
+        finally:
+            lock.rollback()
+            lock.close()
+            if daemon.poll() is None:
+                _cleanup_process(daemon)
 
 
-def _daemon_debug(proc: subprocess.Popen[bytes], *, db: Path, corpus_root: Path) -> str:
+def _daemon_debug(proc: subprocess.Popen[bytes], *, db: Path, corpus_root: Path, stderr_log: Path | None = None) -> str:
     if proc.poll() is None:
         _cleanup_process(proc)
-    try:
-        stderr_text = proc.stderr.read().decode(errors="replace")[:4000] if proc.stderr else "(no stderr)"
-    except Exception:
-        stderr_text = "(could not read stderr)"
+    if stderr_log is None:
+        stderr_text = _stderr_tail(proc)
+    else:
+        with stderr_log.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, stream.tell() - 4000))
+            stderr_text = stream.read(4000).decode(errors="replace")
     files = sorted(str(path) for path in corpus_root.glob("**/*") if path.is_file())[:20]
     return (
         f"returncode={proc.poll()} db={db} db_exists={db.exists()} "
         f"source_exists={db.with_name('source.db').exists()} corpus_files={files}\n"
         f"stderr:\n{stderr_text}"
     )
+
+
+def _sigkill_ingest_diagnostics(archive_root: Path, *, owner_pid: int) -> str:
+    """Bounded read-only evidence for either SIGKILL phase timeout."""
+
+    def query(db: Path, sql: str) -> object:
+        if not db.is_file():
+            return "absent"
+        try:
+            with closing(sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.1)) as conn:
+                return conn.execute(sql).fetchall()
+        except sqlite3.Error as exc:
+            return f"{type(exc).__name__}: {exc}"
+
+    active = archive_root / "index.db"
+    source = archive_root / "source.db"
+    ops = archive_root / "ops.db"
+    evidence: dict[str, object] = {
+        "active": query(active, "SELECT (SELECT COUNT(*) FROM sessions), (SELECT COUNT(*) FROM messages)"),
+        "source_raws": query(source, "SELECT COUNT(*) FROM raw_sessions"),
+        "cursor": query(
+            ops,
+            "SELECT COUNT(*), SUM(content_fingerprint IS NOT NULL), SUM(failure_count > 0), "
+            "SUM(excluded), SUM(next_retry_at IS NOT NULL) FROM ingest_cursor",
+        ),
+        "attempts": query(
+            ops,
+            "SELECT status, phase, parsed_raw_count, materialized_count "
+            "FROM ingest_attempts ORDER BY started_at_ms DESC LIMIT 3",
+        ),
+    }
+    candidates: list[dict[str, object]] = []
+    for metadata_path in sorted((archive_root / ".index-generations").glob("gen-*/generation.json"))[:3]:
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            candidates.append({"metadata_error": f"{type(exc).__name__}: {exc}"})
+            continue
+        if metadata.get("owner_id") != f"cold-build:{owner_pid}":
+            continue
+        candidates.append(
+            {
+                "state": metadata.get("state"),
+                "generation_id": metadata.get("generation_id"),
+                "counts": query(
+                    metadata_path.parent / "index.db",
+                    "SELECT (SELECT COUNT(*) FROM sessions), (SELECT COUNT(*) FROM messages), "
+                    "(SELECT COUNT(*) FROM raw_revision_applications)",
+                ),
+            }
+        )
+    evidence["candidates"] = candidates
+    event_rows = query(
+        ops,
+        "SELECT payload_json FROM daemon_events WHERE kind = 'ingestion_batch' ORDER BY id DESC LIMIT 2",
+    )
+    batches: list[dict[str, object]] = []
+    if isinstance(event_rows, list):
+        for row in event_rows:
+            try:
+                payload = json.loads(row[0])
+            except (TypeError, ValueError):
+                continue
+            if isinstance(payload, dict):
+                batches.append(
+                    {
+                        key: payload.get(key)
+                        for key in (
+                            "succeeded_file_count",
+                            "failed_file_count",
+                            "excluded_file_count",
+                            "deferred_file_count",
+                            "time_budget_exceeded",
+                            "parse_time_s",
+                            "convergence_time_s",
+                            "total_time_s",
+                            "stage_timings_s",
+                        )
+                    }
+                )
+    evidence["recent_batches"] = batches if isinstance(event_rows, list) else event_rows
+    return json.dumps(evidence, sort_keys=True, default=str)[:6000]
 
 
 def _wait_for_sessions(
@@ -510,14 +677,14 @@ def _expected_fts_triggers() -> set[str]:
     }
 
 
-def _content_hashes(db: Path, limit: int = 10) -> list[tuple[str, str]]:
+def _content_hashes(db: Path, limit: int = 10) -> list[tuple[str, bytes]]:
     """Return (session_id, content_hash) for up to *limit* sessions."""
     with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
         rows = conn.execute(
             "SELECT session_id, content_hash FROM sessions ORDER BY session_id LIMIT ?",
             (limit,),
         ).fetchall()
-    return [(r[0], r[1]) for r in rows]
+    return [(str(session_id), bytes(content_hash)) for session_id, content_hash in rows]
 
 
 def _wal_size(db: Path) -> int:
@@ -584,7 +751,7 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
 
     Assertions:
     - FTS triggers are present after restart.
-    - No sessions lost (count before == count after).
+    - Candidate sessions are recovered and every source session becomes active.
     - Content hashes unchanged.
     - Daemon reaches ready state within timeout.
     """
@@ -593,8 +760,10 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
     db = archive_root / "index.db"
 
     # 1. Create source files.
-    N_SESSIONS = 5
-    MESSAGES_PER_SESSION = 20
+    # More than one fair-intake discovery page, so observing the first
+    # candidate page proves there is still source work when SIGKILL lands.
+    N_SESSIONS = 33
+    MESSAGES_PER_SESSION = 2
     for session_index in range(N_SESSIONS):
         session_id = f"ccccc000-0000-0000-0000-{session_index:012d}"
         _write_claude_code_session(corpus_root / f"{session_id}.jsonl", session_id, MESSAGES_PER_SESSION)
@@ -607,6 +776,12 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
     env["POLYLOGUE_SCHEMA_VALIDATION"] = "off"
     env["POLYLOGUE_CONFIG"] = ""  # disable host config
     proc: subprocess.Popen[bytes] | None = None
+    # The daemon logs throughout intake. An undrained PIPE fills and blocks
+    # its event loop before the next page, turning this recovery probe into a
+    # logging backpressure test. Keep the stream on disk and read a bounded
+    # tail only when the assertion needs diagnostics.
+    stderr_log = archive_root.parent / "sigkill-recovery.stderr"
+    stderr_capture = stderr_log.open("w+b")
     try:
         proc = subprocess.Popen(
             [
@@ -619,24 +794,39 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
             ],
             env=env,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            stderr=stderr_capture,
         )
         _assert_daemon_alive(proc)
 
         # 3. Wait for substantial ingest progress so the SIGKILL reliably
         # lands during active ingestion rather than after the daemon has
         # already finished processing.
-        msg_count = _wait_for_messages(db, min_count=max(5, N_SESSIONS * MESSAGES_PER_SESSION // 2), timeout_s=60.0)
-        assert msg_count > 0, "No messages were ingested before SIGKILL"
-
+        try:
+            candidate_db, msg_count, conv_count_before, pre_hashes = _wait_for_cold_build_messages(
+                proc,
+                archive_root,
+                min_count=50,
+                timeout_s=60.0,
+            )
+        except TimeoutError as exc:
+            evidence = _sigkill_ingest_diagnostics(archive_root, owner_pid=proc.pid)
+            debug = _daemon_debug(proc, db=db, corpus_root=corpus_root, stderr_log=stderr_log)
+            raise TimeoutError(f"{exc}\nphase=pre_kill {evidence}\n{debug}") from exc
         # 4. SIGKILL.
         os.kill(proc.pid, signal.SIGKILL)
         proc.wait(timeout=10)
         proc = None
+        assert msg_count > 0, "No messages were ingested before SIGKILL"
+        assert msg_count < N_SESSIONS * MESSAGES_PER_SESSION, "Ingestion finished before SIGKILL"
+        assert conv_count_before > 0
+        assert pre_hashes
 
-        # Record pre-recovery state.
-        pre_hashes = _content_hashes(db, limit=N_SESSIONS)
-        conv_count_before = _wait_for_sessions(db, min_count=1, timeout_s=10.0)
+        # SIGKILL cannot run the daemon's discard/promotion cleanup. The
+        # candidate remains inactive and may be corrupt after an abrupt
+        # death; recovery must rebuild its observed rows from durable source.
+        generation_metadata = json.loads((candidate_db.parent / "generation.json").read_text(encoding="utf-8"))
+        assert generation_metadata["state"] == "inactive"
+        assert _wait_for_sessions(db, min_count=0, timeout_s=10.0) == 0
 
         # 5. Restart daemon.
         restart: subprocess.Popen[bytes] = subprocess.Popen(
@@ -650,14 +840,19 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
             ],
             env=env,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            stderr=stderr_capture,
         )
         try:
             _assert_daemon_alive(restart)
             assert _wait_for_daemon_ready(restart, timeout_s=120.0), "Daemon did not reach ready state after restart"
 
             # Let it catch up.
-            _wait_for_sessions(db, min_count=N_SESSIONS, timeout_s=60.0)
+            try:
+                _wait_for_sessions(db, min_count=N_SESSIONS, timeout_s=60.0)
+            except TimeoutError as exc:
+                evidence = _sigkill_ingest_diagnostics(archive_root, owner_pid=restart.pid)
+                debug = _daemon_debug(restart, db=db, corpus_root=corpus_root, stderr_log=stderr_log)
+                raise TimeoutError(f"{exc}\nphase=recovery {evidence}\n{debug}") from exc
 
             # 6. Assertions.
             # FTS triggers present.
@@ -687,6 +882,7 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
     finally:
         if proc is not None:
             _cleanup_process(proc)
+        stderr_capture.close()
 
 
 # ---------------------------------------------------------------------------
@@ -838,6 +1034,7 @@ def test_daemon_memory_pressure(workspace_env: dict[str, Path]) -> None:
     env["POLYLOGUE_CONFIG"] = ""
 
     proc: subprocess.Popen[bytes] | None = None
+    stderr_path = archive_root.parent / "memory-pressure.stderr"
     try:
         # systemd-run with 2 GiB memory limit.
         cmd: list[str] = [
@@ -857,16 +1054,102 @@ def test_daemon_memory_pressure(workspace_env: dict[str, Path]) -> None:
             "--no-browser-capture",
             "--no-api",
         ]
-        proc = subprocess.Popen(
-            cmd,
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-        _assert_daemon_alive(proc)
+        with stderr_path.open("w+b") as stderr_capture:
+            proc = subprocess.Popen(
+                cmd,
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_capture,
+            )
+            _assert_daemon_alive(proc)
 
-        # Wait for all sessions to be ingested.
-        conv_count = _wait_for_sessions(db, min_count=N_SESSIONS, timeout_s=300.0)
+            # Wait for all sessions to be ingested.
+            try:
+                conv_count = _wait_for_sessions(db, min_count=N_SESSIONS, timeout_s=300.0)
+            except TimeoutError as exc:
+
+                def session_ids(path: Path) -> tuple[set[str], str | None]:
+                    try:
+                        with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=0.1) as conn:
+                            return {str(row[0]) for row in conn.execute("SELECT native_id FROM sessions")}, None
+                    except (OSError, sqlite3.Error) as error:
+                        return set(), type(error).__name__
+
+                active_ids, active_error = session_ids(db)
+                inactive: list[tuple[str, set[str] | None, str | None]] = []
+                for metadata_path in sorted((archive_root / ".index-generations").glob("gen-*/generation.json"))[:4]:
+                    try:
+                        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                        if metadata.get("state") != "inactive":
+                            continue
+                        ids, error = session_ids(metadata_path.parent / "index.db")
+                        inactive.append((metadata_path.parent.name, ids, error))
+                    except (OSError, ValueError) as error:
+                        inactive.append((metadata_path.parent.name, None, type(error).__name__))
+
+                cursor_rows: dict[str, tuple[int, str | None, int, int] | None] = {}
+                debt_rows: list[tuple[str, str, str]] = []
+                ops_error: str | None = None
+                try:
+                    with sqlite3.connect(f"file:{archive_root / 'ops.db'}?mode=ro", uri=True, timeout=0.1) as conn:
+                        for path in sorted(corpus_root.glob("memtest-*.jsonl"))[:N_SESSIONS]:
+                            row = conn.execute(
+                                "SELECT failure_count, next_retry_at, excluded, content_fingerprint IS NOT NULL "
+                                "FROM ingest_cursor WHERE source_path = ?",
+                                (str(path),),
+                            ).fetchone()
+                            cursor_rows[path.stem] = tuple(row) if row is not None else None
+                        debt_rows = [
+                            (str(stage), str(status), Path(str(target_id)).stem)
+                            for stage, status, target_id in conn.execute(
+                                "SELECT stage, status, target_id FROM convergence_debt ORDER BY stage, target_id LIMIT 32"
+                            )
+                        ]
+                except (OSError, sqlite3.Error) as error:
+                    ops_error = type(error).__name__
+
+                path_states = []
+                for path in sorted(corpus_root.glob("memtest-*.jsonl"))[:N_SESSIONS]:
+                    row = cursor_rows.get(path.stem)
+                    cursor_state = (
+                        "missing"
+                        if row is None
+                        else "excluded"
+                        if row[2]
+                        else "failed"
+                        if row[0]
+                        else "deferred"
+                        if row[1] is not None and not row[3]
+                        else "accepted"
+                        if row[3]
+                        else "unresolved"
+                    )
+                    path_states.append(
+                        f"{path.stem}: active={path.stem in active_ids} "
+                        f"inactive={[name for name, ids, _error in inactive if ids is not None and path.stem in ids]} "
+                        f"cursor_state={cursor_state} cursor={row}"
+                    )
+                stderr_capture.flush()
+                stderr_capture.seek(max(0, os.fstat(stderr_capture.fileno()).st_size - 8192))
+                stderr_tail = stderr_capture.read(8192).decode(errors="replace")
+                # Keep event names, numeric counters and error types only. A daemon
+                # log line can contain source text, so raw stderr is not a safe
+                # assertion payload even with this synthetic fixture.
+                stderr_events = [
+                    " ".join(
+                        re.findall(r"\b(?:daemon|live)\.[A-Za-z0-9_.]+\b", line)[:3]
+                        + re.findall(r"\b[A-Za-z_]+(?:Error|Exception)\b", line)[:2]
+                        + re.findall(r"\b(?:files|succeeded|failed|retried|deferred|refused)=\d+\b", line)[:6]
+                    )
+                    for line in stderr_tail.splitlines()[-40:]
+                ]
+                stderr_events = [line for line in stderr_events if line]
+                raise TimeoutError(
+                    f"{exc}; active_sessions={len(active_ids)} active_error={active_error}; "
+                    f"inactive_generations={[(name, len(ids) if ids is not None else None, error) for name, ids, error in inactive]}; "
+                    f"ops_error={ops_error}; paths={path_states}; debt={debt_rows}; "
+                    f"stderr_events={stderr_events[-20:]}"
+                ) from exc
         assert conv_count == N_SESSIONS, f"Expected {N_SESSIONS} sessions, got {conv_count}"
 
         # Assert daemon is still alive (did not OOM).
@@ -1004,18 +1287,16 @@ def test_large_session_file(workspace_env: dict[str, Path]) -> None:
 
 @_BIN_C
 def test_concurrent_access_safety(workspace_env: dict[str, Path]) -> None:
-    """Verify WAL read-during-write safety and daemon pidfile locking.
+    """Verify public reads alongside the resident writer and second-daemon refusal.
 
-    The daemon runs with ``--no-api``, so ``polylogue --plain status``
-    and ``polylogue --plain analyze --count`` fall through to direct SQLite reads
-    against the WAL journal.  This is the correct test for WAL-mode
-    concurrency: a reader must be able to open the database while the
-    daemon writer holds an active transaction.
+    The CLI's read operations use the daemon's UDS transport. The production
+    API must be serving before either CLI call can succeed, and an isolated
+    HTTP port keeps this daemon separate from other resilience workers.
 
     1. Start daemon, let it begin ingesting.
-    2. Start a second daemon process — assert it exits non-zero (pidfile locked).
-    3. Run ``polylogue --plain status`` while daemon is ingesting — assert exit 0.
-    4. Run ``polylogue --plain analyze --count`` while daemon is ingesting — assert exit 0.
+    2. Start a second daemon process — assert the archive owner refuses it.
+    3. Run ``polylogue --plain status`` while the first daemon owns the archive.
+    4. Run ``polylogue --plain analyze --count`` through the same public route.
     """
     archive_root = workspace_env["archive_root"]
     corpus_root = archive_root / "corpus" / "projects"
@@ -1030,10 +1311,12 @@ def test_concurrent_access_safety(workspace_env: dict[str, Path]) -> None:
 
     polylogued = _polylogued_binary()
     polylogue = _polylogue_binary()
+    api_port = _free_local_port()
     env = os.environ.copy()
     env["POLYLOGUE_ARCHIVE_ROOT"] = str(archive_root)
     env["POLYLOGUE_SCHEMA_VALIDATION"] = "off"
     env["POLYLOGUE_CONFIG"] = ""
+    env["POLYLOGUE_DAEMON_URL"] = f"http://127.0.0.1:{api_port}"
 
     proc: subprocess.Popen[bytes] | None = None
     try:
@@ -1044,13 +1327,15 @@ def test_concurrent_access_safety(workspace_env: dict[str, Path]) -> None:
                 "--root",
                 str(corpus_root),
                 "--no-browser-capture",
-                "--no-api",
+                "--api-port",
+                str(api_port),
             ],
             env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
         _assert_daemon_alive(proc)
+        _wait_for_api_ready(proc, api_port)
 
         # Wait for ingest to begin.
         try:
@@ -1058,7 +1343,7 @@ def test_concurrent_access_safety(workspace_env: dict[str, Path]) -> None:
         except TimeoutError as exc:
             raise TimeoutError(f"{exc}\n{_daemon_debug(proc, db=db, corpus_root=corpus_root)}") from exc
 
-        # 1. Second daemon should fail (pidfile lock).
+        # 1. A second daemon cannot acquire this archive's write ownership.
         result = subprocess.run(
             [
                 polylogued,
@@ -1077,20 +1362,25 @@ def test_concurrent_access_safety(workspace_env: dict[str, Path]) -> None:
             f"stderr: {result.stderr.decode(errors='replace')[:500]}"
         )
 
-        # 2. CLI status while daemon is ingesting.
+        # 2. CLI status through the running daemon.
         env["POLYLOGUE_FORCE_PLAIN"] = "1"
         status_result = subprocess.run(
-            [polylogue, "--plain", "status"],
+            [polylogue, "--plain", "status", "--format", "json"],
             env=env,
             capture_output=True,
             timeout=120,
         )
-        assert status_result.returncode == 0, (
-            f"polylogue ops status failed: {status_result.returncode}\n"
-            f"stderr: {status_result.stderr.decode(errors='replace')[:500]}"
-        )
+        # A live status read may truthfully exit 1 while ingestion leaves
+        # archive readiness degraded. The JSON envelope proves this was the
+        # daemon's answer for this archive, not an unreachable/direct fallback.
+        assert status_result.returncode in {0, 1}, status_result.stderr.decode(errors="replace")[:500]
+        status_payload = json.loads(status_result.stdout)
+        assert status_payload["source"] == "daemon", status_payload
+        assert status_payload["daemon_liveness"] is True, status_payload
+        assert status_payload["archive_root"] == str(archive_root), status_payload
+        assert status_payload["active_archive_root_matches_configured"] is True, status_payload
 
-        # 3. CLI analyze --count while daemon is ingesting.
+        # 3. CLI analyze --count through the running daemon.
         count_result = subprocess.run(
             [polylogue, "--plain", "analyze", "--count"],
             env=env,

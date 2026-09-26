@@ -6,7 +6,7 @@ All commands below assume you are inside the project devshell. See
 ## Running Tests
 
 ```bash
-# Normal repository verification
+# Static gates plus one opportunistic testmon selection
 devtools verify
 
 # Focused inner-loop runs: prefer `devtools test` over raw pytest. It provides
@@ -19,10 +19,7 @@ devtools test -k "test_name"
 devtools test tests/unit/pipeline -x
 POLYLOGUE_PYTEST_WORKERS=8 devtools test tests/unit/storage   # ask for a wider run
 
-# Raw pytest still works for ad-hoc needs the wrapper does not cover:
-pytest -x tests/unit/storage/test_hybrid_laws.py
-
-# Complete-corpus baseline (unit/property/fuzz/integration; benchmarks excluded)
+# Complete-corpus run (scheduled or explicitly requested)
 devtools verify --all
 
 # Full Nix/CI parity
@@ -120,15 +117,17 @@ browser install step is normally unnecessary after `npm ci`.
 Focused `devtools test <selection>` does not load or update testmon. Its
 receipt records the checkout graph only as a diagnostic.
 
-Ordinary `devtools verify` runs static gates and then uses a usable
-pytest-testmon graph at `.cache/testmon/testmondata` (environment
-`polylogue`) to measure and bound an affected selection. It can snapshot a
-better primary-checkout graph into a lane through SQLite backup. If no usable
-graph is available, or the selection would re-execute the corpus or otherwise
-exceed its bound, verification records and refuses the affected plan before
-pytest. It never falls back to a full corpus run. `devtools verify --all` is
-the explicit complete-corpus command and updates the graph; `--quick` runs
-static gates only.
+Ordinary `devtools verify` runs static gates and makes one bounded selection
+from a usable pytest-testmon graph at `.cache/testmon/testmondata` (environment
+`polylogue`). A green result covers only the selected tests; ordinary
+development accepts that selection can miss affected tests. A normal selector
+that chooses zero is reported as zero. If the graph is unusable or the
+selection exceeds its bound, verification records why and refuses before
+pytest. Run an explicitly supplied focused selection when that is useful, or
+leave broader graph seeding to the scheduled or explicitly requested run. Do
+not repeat the same failed seed or verification on the same revision to obtain
+a larger selection. `devtools verify --all` is the explicit complete-corpus
+command and updates the graph; `--quick` runs static gates only.
 
 AgentCTL's separately declared `verify_all` operation invokes `devtools verify
 --all` and has a 03:00 schedule in `.agentctl/project.toml`. That declaration

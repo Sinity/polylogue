@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, MutableMapping, MutableSequence, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, TypeAlias, cast
 
 from polylogue.archive.message.artifacts import classify_material_origin, classify_text_message_type
 from polylogue.archive.message.roles import Role
@@ -57,6 +58,7 @@ from .common import (
     normalize_timestamp,
     reclassify_tool_result_envelope,
 )
+from .stream_scratch import ClaudeStreamScratch, SqliteNotifications, SqlitePickleMap, SqliteStringSet
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -1072,7 +1074,7 @@ def _subagent_transcript_stem(agent_id: str) -> str:
 def _accumulate_dispatch_result(
     item: dict[str, object],
     timestamp: str | None,
-    accumulator: dict[str, _DelegationProgressStats],
+    accumulator: MutableMapping[str, _DelegationProgressStats],
 ) -> bool:
     """Fold a ``user`` record's ``toolUseResult.agentId`` into its dispatch edge.
 
@@ -1103,7 +1105,8 @@ def _accumulate_dispatch_result(
     }
     if len(tool_use_ids) != 1:
         return False
-    entry = accumulator.setdefault(next(iter(tool_use_ids)), _DelegationProgressStats())
+    tool_use_id = next(iter(tool_use_ids))
+    entry = accumulator.setdefault(tool_use_id, _DelegationProgressStats())
     entry.child_provider_ids.add(_subagent_transcript_stem(agent_id))
     entry.result_count += 1
     entry.agent_type = _string_field(tool_result, "agentType") or entry.agent_type
@@ -1113,13 +1116,14 @@ def _accumulate_dispatch_result(
             entry.first_seen = timestamp
         if entry.last_seen is None or timestamp > entry.last_seen:
             entry.last_seen = timestamp
+    accumulator[tool_use_id] = entry
     return True
 
 
 def _accumulate_delegation_progress(
     item: dict[str, object],
     timestamp: str | None,
-    accumulator: dict[str, _DelegationProgressStats],
+    accumulator: MutableMapping[str, _DelegationProgressStats],
 ) -> bool:
     """Fold one ``progress``/``agent_progress`` record into its dispatch edge.
 
@@ -1156,6 +1160,7 @@ def _accumulate_delegation_progress(
             entry.first_seen = timestamp
         if entry.last_seen is None or timestamp > entry.last_seen:
             entry.last_seen = timestamp
+    accumulator[parent_tool_use_id] = entry
     return True
 
 
@@ -1867,8 +1872,12 @@ def _mark_background_task_start(
 
 
 def _project_background_task_completions(
-    messages: list[ParsedMessage], notifications: Sequence[ClaudeCodeBackgroundTaskNotification]
-) -> list[ParsedMessage]:
+    messages: MutableSequence[ParsedMessage],
+    notifications: Iterable[ClaudeCodeBackgroundTaskNotification],
+    *,
+    scratch: ClaudeStreamScratch | None = None,
+    scope: str = "",
+) -> MutableSequence[ParsedMessage]:
     """Apply the final structured completion outcome to its start result.
 
     The exact ``(task-id, tool-use-id)`` pair is the provider protocol join
@@ -1883,43 +1892,60 @@ def _project_background_task_completions(
             metadata = block.metadata or {}
             task_id = metadata.get(_BACKGROUND_TASK_ID_METADATA_KEY)
             if isinstance(task_id, str) and task_id:
-                starts.setdefault((task_id, block.tool_id), []).append((message_index, block_index))
+                if scratch is None:
+                    starts.setdefault((task_id, block.tool_id), []).append((message_index, block_index))
+                else:
+                    scratch.add_start(scope, task_id, block.tool_id, message_index, block_index)
 
     starts_by_task: dict[str, list[tuple[int, int]]] = {}
-    for (task_id, _), locations in starts.items():
-        starts_by_task.setdefault(task_id, []).extend(locations)
+    if scratch is None:
+        for (task_id, _), locations in starts.items():
+            starts_by_task.setdefault(task_id, []).extend(locations)
 
     terminal_by_start: dict[tuple[int, int], ClaudeCodeBackgroundTaskNotification] = {}
     for notification in notifications:
-        matched_location: tuple[int, int] | None = (
-            _unique_background_start(starts.get((notification.task_id, notification.tool_use_id), []))
-            if notification.tool_use_id is not None
-            else _unique_background_start(starts_by_task.get(notification.task_id, []))
-        )
+        if scratch is None:
+            matched_location = (
+                _unique_background_start(starts.get((notification.task_id, notification.tool_use_id), []))
+                if notification.tool_use_id is not None
+                else _unique_background_start(starts_by_task.get(notification.task_id, []))
+            )
+        else:
+            matched_location = scratch.unique_start(scope, notification.task_id, notification.tool_use_id)
         if matched_location is not None:
-            terminal_by_start[matched_location] = notification
-    projected = list(messages)
+            if scratch is None:
+                terminal_by_start[matched_location] = notification
+            else:
+                _apply_background_completion(messages, matched_location, notification)
     for location, notification in terminal_by_start.items():
-        message_index, block_index = location
-        message = projected[message_index]
-        block = message.blocks[block_index]
-        metadata = dict(block.metadata or {})
-        metadata[_BACKGROUND_COMPLETION_STATUS_METADATA_KEY] = notification.status
-        metadata[_BACKGROUND_OUTPUT_FILE_METADATA_KEY] = notification.output_file
-        updated_block = block.model_copy(
-            update={
-                "metadata": metadata,
-                "is_error": None if notification.exit_code is None else notification.exit_code != 0,
-                "exit_code": notification.exit_code,
-                "outcome_unknown_reason": (
-                    None if notification.exit_code is not None else ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT.value
-                ),
-            }
-        )
-        blocks = list(message.blocks)
-        blocks[block_index] = updated_block
-        projected[message_index] = message.model_copy(update={"blocks": blocks})
-    return projected
+        _apply_background_completion(messages, location, notification)
+    return messages
+
+
+def _apply_background_completion(
+    messages: MutableSequence[ParsedMessage],
+    location: tuple[int, int],
+    notification: ClaudeCodeBackgroundTaskNotification,
+) -> None:
+    message_index, block_index = location
+    message = messages[message_index]
+    block = message.blocks[block_index]
+    metadata = dict(block.metadata or {})
+    metadata[_BACKGROUND_COMPLETION_STATUS_METADATA_KEY] = notification.status
+    metadata[_BACKGROUND_OUTPUT_FILE_METADATA_KEY] = notification.output_file
+    updated_block = block.model_copy(
+        update={
+            "metadata": metadata,
+            "is_error": None if notification.exit_code is None else notification.exit_code != 0,
+            "exit_code": notification.exit_code,
+            "outcome_unknown_reason": (
+                None if notification.exit_code is not None else ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT.value
+            ),
+        }
+    )
+    blocks = list(message.blocks)
+    blocks[block_index] = updated_block
+    messages[message_index] = message.model_copy(update={"blocks": blocks})
 
 
 def _unique_background_start(locations: Sequence[tuple[int, int]]) -> tuple[int, int] | None:
@@ -1998,15 +2024,15 @@ class _SessionAccumulator:
     is_agent: bool = False
     is_acompact: bool = False
 
-    messages: list[ParsedMessage] = field(default_factory=list)
+    messages: MutableSequence[ParsedMessage] = field(default_factory=list)
     created_at: str | None = None
     updated_at: str | None = None
-    seen_uuids: set[str] = field(default_factory=set)
+    seen_uuids: set[str] | SqliteStringSet = field(default_factory=set)
     duplicate_uuid_count: int = 0
     first_duplicate_uuid: str | None = None
     first_duplicate_index: int | None = None
     session_id: str | None = None
-    session_events: list[ParsedSessionEvent] = field(default_factory=list)
+    session_events: MutableSequence[ParsedSessionEvent] = field(default_factory=list)
     previous_boundary_end: int = -1
     total_cost: float = 0.0
     total_duration: int = 0
@@ -2018,9 +2044,11 @@ class _SessionAccumulator:
     cwds: set[str] = field(default_factory=set)
     models: set[str] = field(default_factory=set)
     message_position: int = 0
-    background_notifications: list[tuple[ClaudeCodeBackgroundTaskNotification, str | None, str | None]] = field(
-        default_factory=list
-    )
+    background_notifications: (
+        list[tuple[ClaudeCodeBackgroundTaskNotification, str | None, str | None]] | SqliteNotifications
+    ) = field(default_factory=list)
+    scratch: ClaudeStreamScratch | None = None
+    scratch_scope: str = ""
     # polylogue-pbuh: provider-supplied session title (``ai-title`` sidecar
     # record) and the deduplicated agent-dispatch delegation edges extracted
     # from ``progress``/``agent_progress`` records -- both need whole-session
@@ -2030,7 +2058,7 @@ class _SessionAccumulator:
     latest_agent_name: str | None = None
     session_kind_value: str | None = None
     git_branch_value: str | None = None
-    delegation_progress: dict[str, _DelegationProgressStats] = field(default_factory=dict)
+    delegation_progress: MutableMapping[str, _DelegationProgressStats] = field(default_factory=dict)
     # polylogue-2qx.4 / polylogue-cgfy: ``slug`` (the human-readable session
     # name Claude Code assigns, e.g. "greedy-squishing-hamming") is stamped on
     # every record of a session file -- main or subagent alike -- once the
@@ -2166,6 +2194,7 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
                 position=acc.message_position,
                 variant_index=0,
                 is_active_path=True,
+                is_active_leaf=False,
             )
         )
         acc.message_position += 1
@@ -2488,6 +2517,7 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
             position=acc.message_position,
             variant_index=0,
             is_active_path=True,
+            is_active_leaf=False,
             input_tokens=_optional_safe_int(msg_usage.get("input_tokens")),
             output_tokens=_optional_safe_int(msg_usage.get("output_tokens")),
             cache_read_tokens=_optional_safe_int(msg_usage.get("cache_read_input_tokens")),
@@ -2571,13 +2601,20 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
     delegation-progress flush, ``session_kind``, title resolution.
     """
     messages = _project_background_task_completions(
-        acc.messages, [notification for notification, _, _ in acc.background_notifications]
+        acc.messages,
+        (notification for notification, _, _ in acc.background_notifications),
+        scratch=acc.scratch,
+        scope=acc.scratch_scope,
     )
-    final_background_notifications = {
-        (notification.task_id, notification.tool_use_id): (notification, source_message_provider_id, timestamp)
-        for notification, source_message_provider_id, timestamp in acc.background_notifications
-    }
-    for notification, source_message_provider_id, timestamp in final_background_notifications.values():
+    final_notifications: Iterable[tuple[ClaudeCodeBackgroundTaskNotification, str | None, str | None]]
+    if isinstance(acc.background_notifications, SqliteNotifications):
+        final_notifications = acc.background_notifications.iter_final()
+    else:
+        final_notifications = {
+            (notification.task_id, notification.tool_use_id): (notification, source_message_provider_id, timestamp)
+            for notification, source_message_provider_id, timestamp in acc.background_notifications
+        }.values()
+    for notification, source_message_provider_id, timestamp in final_notifications:
         acc.session_events.append(
             ParsedSessionEvent(
                 event_type="background_task_completion",
@@ -2701,16 +2738,18 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
     # identical fix for the streaming path (bd polylogue-2hwl).
     active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
     if active_leaf_message_provider_id is not None:
-        leaf_index = len(messages) - 1
-        messages = [
-            message.model_copy(update={"is_active_leaf": index == leaf_index}) for index, message in enumerate(messages)
-        ]
+        messages[-1] = messages[-1].model_copy(update={"is_active_leaf": True})
 
     # polylogue-pbuh: flush deduplicated agent-dispatch delegation edges
     # gathered from ``progress``/``agent_progress`` records (see
     # ``_accumulate_delegation_progress``) -- one event per distinct
     # dispatching tool_use, not one per streaming tick.
-    for parent_tool_use_id in sorted(acc.delegation_progress):
+    delegation_ids = (
+        acc.delegation_progress
+        if isinstance(acc.delegation_progress, SqlitePickleMap)
+        else sorted(acc.delegation_progress)
+    )
+    for parent_tool_use_id in delegation_ids:
         stats = acc.delegation_progress[parent_tool_use_id]
         # Claude's progress record is parent-side evidence.  Newer wire
         # shapes carry the spawned agent identity alongside the dispatch id;
@@ -2896,7 +2935,7 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
     # "no title evidence" for this nullable column, and TitleSource.UNKNOWN
     # was a redundant second spelling of the same fact.
 
-    return ParsedSession(
+    session = ParsedSession(
         source_name=Provider.CLAUDE_CODE,
         provider_session_id=str(composed_session_id),
         session_kind=(
@@ -2909,9 +2948,13 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
         title_ref=title_ref,
         created_at=acc.created_at,
         updated_at=acc.updated_at,
-        messages=messages,
+        messages=[] if not isinstance(messages, list) else messages,
         active_leaf_message_provider_id=active_leaf_message_provider_id,
-        session_events=order_session_events(acc.session_events),
+        session_events=(
+            cast(list[ParsedSessionEvent], order_session_events(acc.session_events))
+            if isinstance(acc.session_events, list)
+            else []
+        ),
         parent_session_provider_id=parent_session_id,
         branch_point_provider_message_id=branch_point_provider_message_id,
         branch_type=branch_type,
@@ -2925,6 +2968,12 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
         session_refs=acc.session_refs,
         provider_session_aliases=([str(acc.fallback_id)] if str(acc.fallback_id) != str(composed_session_id) else []),
     )
+    updates: dict[str, object] = {}
+    if not isinstance(messages, list):
+        updates["messages"] = messages
+    if not isinstance(acc.session_events, list):
+        updates["session_events"] = order_session_events(acc.session_events)
+    return session.model_copy(update=updates) if updates else session
 
 
 def _parse_code_records(
@@ -2932,6 +2981,9 @@ def _parse_code_records(
     fallback_id: str,
     *,
     trust_fallback_id: bool = False,
+    message_sink: MutableSequence[ParsedMessage] | None = None,
+    event_sink: MutableSequence[ParsedSessionEvent] | None = None,
+    scratch: ClaudeStreamScratch | None = None,
 ) -> ParsedSession:
     """Parse Claude Code JSONL payloads into a canonical session model.
 
@@ -2963,6 +3015,16 @@ def _parse_code_records(
         is_agent=fallback_id.startswith("agent-"),
         is_acompact=fallback_id.startswith("agent-acompact-"),
     )
+    if message_sink is not None:
+        acc.messages = message_sink
+    if event_sink is not None:
+        acc.session_events = event_sink
+    if scratch is not None:
+        acc.scratch = scratch
+        acc.scratch_scope = fallback_id
+        acc.seen_uuids = scratch.string_set(f"seen:{fallback_id}")
+        acc.background_notifications = scratch.notifications(fallback_id)
+        acc.delegation_progress = scratch.mapped(f"delegation:{fallback_id}")
     for index, item in enumerate(records, start=1):
         if not isinstance(item, dict):
             continue
@@ -2992,12 +3054,10 @@ def apply_tool_result_sidecars(session: ParsedSession, join_result: SidecarJoinR
     replacements = {match.tool_use_id: match for match in join_result.matched if match.was_truncated}
     messages = session.messages
     if replacements:
-        updated_messages: list[ParsedMessage] = []
-        for message in session.messages:
+        for index, message in enumerate(session.messages):
             if not any(
                 block.type is BlockType.TOOL_RESULT and block.tool_id in replacements for block in message.blocks
             ):
-                updated_messages.append(message)
                 continue
             new_blocks = [
                 block.model_copy(update={"text": replacements[block.tool_id].full_text})
@@ -3005,10 +3065,9 @@ def apply_tool_result_sidecars(session: ParsedSession, join_result: SidecarJoinR
                 else block
                 for block in message.blocks
             ]
-            updated_messages.append(message.model_copy(update={"blocks": new_blocks}))
-        messages = updated_messages
+            messages[index] = message.model_copy(update={"blocks": new_blocks})
 
-    events = list(session.session_events)
+    events = session.session_events
     for match in join_result.matched:
         events.append(
             ParsedSessionEvent(
@@ -3063,7 +3122,7 @@ _SESSION_EVENT_TYPE_ORDER_TIER: dict[str, int] = {
 }
 
 
-def order_session_events(events: Sequence[ParsedSessionEvent]) -> list[ParsedSessionEvent]:
+def order_session_events(events: MutableSequence[ParsedSessionEvent]) -> MutableSequence[ParsedSessionEvent]:
     """Deterministic session_events order (polylogue-4987i).
 
     Missing timestamps sort first (stable; matches prior append-order
@@ -3071,6 +3130,11 @@ def order_session_events(events: Sequence[ParsedSessionEvent]) -> list[ParsedSes
     is an irreducible tiebreak: two same-type events genuinely stamped at
     the same instant have no other ordering evidence.
     """
+
+    sort_in_place = getattr(events, "sort_in_place", None)
+    if callable(sort_in_place):
+        sort_in_place(_SESSION_EVENT_TYPE_ORDER_TIER)
+        return events
 
     def sort_key(indexed: tuple[int, ParsedSessionEvent]) -> tuple[str, int, int]:
         index, event = indexed
@@ -3086,6 +3150,8 @@ def parse_code(
     *,
     tool_result_sidecars: SidecarJoinResult | None = None,
     trust_fallback_id: bool = False,
+    message_sink: MutableSequence[ParsedMessage] | None = None,
+    event_sink: MutableSequence[ParsedSessionEvent] | None = None,
 ) -> ParsedSession:
     """Parse one Claude Code session's whole record set in a single pass.
 
@@ -3096,7 +3162,16 @@ def parse_code(
     that mixes more than one logical session (interleaved ``sessionId``\\s)
     is dispatch.py's ``_claude_code_multiway_parse``'s job, not this one's.
     """
-    session = _parse_code_records(payload, fallback_id, trust_fallback_id=trust_fallback_id)
+    scratch_context = ClaudeStreamScratch() if message_sink is not None else nullcontext()
+    with scratch_context as scratch:
+        session = _parse_code_records(
+            payload,
+            fallback_id,
+            trust_fallback_id=trust_fallback_id,
+            message_sink=message_sink,
+            event_sink=event_sink,
+            scratch=scratch,
+        )
     if tool_result_sidecars is not None:
         session = apply_tool_result_sidecars(session, tool_result_sidecars)
     return session

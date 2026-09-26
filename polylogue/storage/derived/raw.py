@@ -45,7 +45,16 @@ from polylogue.storage.raw_authority import (
 from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
 
 if TYPE_CHECKING:
-    from polylogue.sources.revision_backfill import PreparedRetainedInput, RawParsePrefetchCache
+    from polylogue.sources.parsers.base import ParsedSession
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+    from polylogue.sources.revision_backfill import (
+        PreparedRetainedAggregate,
+        PreparedRetainedInput,
+        RawParsePrefetchCache,
+    )
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import PreparedRawRevisionClassification
+    from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionWrite
 
 RAW_OBSERVATION_DOMAIN = "raw_observation"
 
@@ -94,6 +103,13 @@ class RawObservationReplacement:
     payload: RawParsePrefetchCache | None
     raw_ids: tuple[str, ...]
     prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None
+    prepared_aggregates: Mapping[str, PreparedRetainedAggregate] | None = None
+    prepared_writes: Mapping[str, PreparedSessionWrite] | None = None
+    classification_proofs: Mapping[str, PreparedRawRevisionClassification] | None = None
+    verified_blob_stats: Mapping[str, tuple[int, int, int, int, int]] | None = None
+    planned_accepted_raw_ids: Mapping[str, tuple[str, ...]] | None = None
+    needs_source_census: bool = False
+    needs_source_classification: bool = False
     scratch_directory: Path | None = None
     scratch_owner: tempfile.TemporaryDirectory[str] | None = None
     empty: bool = False
@@ -112,12 +128,16 @@ class RawObservationDerivation:
     prerequisites: tuple[str, ...] = ()
     recipe_version = RAW_AUTHORITY_PARSER_FINGERPRINT
 
-    def __init__(
-        self, archive_root: Path, *, max_payload_bytes: int = 64 * 1024 * 1024, stream_safe_only: bool = False
-    ) -> None:
+    def __init__(self, archive_root: Path, *, max_payload_bytes: int = 64 * 1024 * 1024) -> None:
+        if max_payload_bytes < 1:
+            raise ValueError("raw observation cache budget must be positive")
         self.archive_root = archive_root
         self.max_payload_bytes = max_payload_bytes
-        self.stream_safe_only = stream_safe_only
+
+    @staticmethod
+    def _blob_stat_identity(path: Path) -> tuple[int, int, int, int, int]:
+        stat = path.stat()
+        return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
     @contextmanager
     def _read(self) -> Iterator[sqlite3.Connection]:
@@ -449,6 +469,19 @@ class RawObservationDerivation:
                     )
             return hashlib.sha256(repr(parts).encode()).hexdigest()
 
+    @staticmethod
+    def _source_replay_plans(archive: ArchiveStore, logical_keys: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
+        """Capture only source-backed byte plans; census may establish others later."""
+        plans: dict[str, tuple[str, ...]] = {}
+        for logical_key in logical_keys:
+            candidate = archive.source_connection.execute(
+                "SELECT 1 FROM raw_sessions WHERE logical_source_key = ? AND source_revision IS NOT NULL LIMIT 1",
+                (logical_key,),
+            ).fetchone()
+            if candidate is not None:
+                plans[logical_key] = archive.raw_revision_replay_plan(logical_key).accepted_raw_ids
+        return plans
+
     def compute(self, frame: RawFrame, key: str) -> RawObservationReplacement:
         from polylogue.operations.operation_context import open_operation_read
         from polylogue.sources.dispatch import is_stream_record_provider
@@ -457,7 +490,7 @@ class RawObservationDerivation:
             RawParsePrefetchCache,
             RetainedPreparationRetryableError,
             parse_retained_raw_sessions,
-            prepare_retained_jsonl_carrier,
+            prepare_retained_jsonl_artifact,
         )
 
         # One component replay settles every member. The kernel classified the
@@ -478,37 +511,97 @@ class RawObservationDerivation:
 
         with open_operation_read(self.archive_root) as pinned:
             archive = pinned.archive
-            raw_ids, _keys = archive.expand_raw_membership_selection([key])
+            raw_ids, logical_keys = archive.expand_raw_membership_selection([key])
             binding = self._binding(raw_ids)
-            sizes = archive.raw_payload_sizes(raw_ids)
-            if sum(sizes.values()) > self.max_payload_bytes:
-                raise ValueError("raw observation component exceeds its payload budget")
-            if self.stream_safe_only:
-                for raw_id in raw_ids:
-                    provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
-                    if not is_stream_record_provider(source_path, str(provider)):
-                        raise ValueError("oversized raw observation component is not entirely stream-safe")
             descriptors = {raw_id: archive.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
             process_prepared = all(
                 is_stream_record_provider(path, str(provider)) and provider.value in {"codex", "claude-code"}
                 for provider, _blob_hash, path, _kind, _size in descriptors.values()
             )
             if process_prepared:
+                from polylogue.core.sources import origin_from_provider
+                from polylogue.sources.prepared_merge import (
+                    prepare_retained_cohort_artifact,
+                    prepared_cohort_source_hash,
+                )
+                from polylogue.sources.revision_backfill import (
+                    PreparedRetainedAggregate,
+                    selected_prepared_membership_head,
+                )
+                from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+                    prepare_raw_revision_rebuild_classification,
+                    prepared_raw_revision_classification_current,
+                )
+                from polylogue.storage.sqlite.archive_tiers.write import (
+                    prepare_session_write,
+                    prepared_lineage_bindings,
+                    prepared_session_rows_from_shard,
+                )
+
+                census_rows = archive.source_connection.execute(
+                    f"SELECT raw_id, parser_fingerprint, status FROM raw_authority_parser_census "
+                    f"WHERE raw_id IN ({','.join('?' for _ in raw_ids)})",
+                    raw_ids,
+                ).fetchall()
+                complete_census = {
+                    str(row[0]) for row in census_rows if row[1] == self.recipe_version and row[2] == "complete"
+                }
+                needs_source_census = len(raw_ids) > 1 and len(complete_census) != len(raw_ids)
+                classification_proofs: dict[str, PreparedRawRevisionClassification] = {}
+                if not needs_source_census:
+                    for logical_key in logical_keys:
+                        has_byte_candidate = archive.source_connection.execute(
+                            "SELECT 1 FROM raw_sessions WHERE logical_source_key = ? "
+                            "AND source_revision IS NOT NULL LIMIT 1",
+                            (logical_key,),
+                        ).fetchone()
+                        if has_byte_candidate is None:
+                            continue
+                        classification_proofs[logical_key] = prepare_raw_revision_rebuild_classification(
+                            archive, logical_key
+                        )
+                    if any(
+                        not prepared_raw_revision_classification_current(archive, proof)
+                        for proof in classification_proofs.values()
+                    ):
+                        # The source must own the byte decision before the
+                        # accepted tip can select its sealed writer carrier.
+                        return RawObservationReplacement(
+                            key,
+                            binding,
+                            None,
+                            raw_ids,
+                            classification_proofs=classification_proofs,
+                            needs_source_classification=True,
+                        )
+                planned_accepted_raw_ids = self._source_replay_plans(archive, logical_keys)
                 scratch_owner = tempfile.TemporaryDirectory(
                     prefix=".raw-prepared-", dir=Path(frame.source_revision).resolve().parent
                 )
                 scratch = Path(scratch_owner.name)
                 prepared: dict[str, PreparedRetainedInput] = {}
+                aggregates: dict[str, PreparedRetainedAggregate] = {}
+                prepared_writes: dict[str, PreparedSessionWrite] = {}
+                verified_blob_stats: dict[str, tuple[int, int, int, int, int]] = {}
                 try:
                     with ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn")) as pool:
                         for raw_id in raw_ids:
                             provider, blob_hash, path, kind, size = descriptors[raw_id]
-                            if not BlobStore(self.archive_root / "blob").verify(blob_hash):
+                            blob_store = BlobStore(self.archive_root / "blob")
+                            blob_path = blob_store.blob_path(blob_hash)
+                            try:
+                                before = self._blob_stat_identity(blob_path)
+                            except OSError as exc:
+                                raise RetainedPreparationRetryableError(
+                                    f"retained raw blob disappeared: {raw_id}"
+                                ) from exc
+                            if not blob_store.verify(blob_hash):
                                 raise RetainedPreparationRetryableError(f"retained raw blob changed: {raw_id}")
                             native_id = archive.raw_native_id(raw_id) if kind.value == "append" else None
+                            fallback_timestamp = archive.raw_revision_file_mtime(raw_id)
                             try:
-                                carrier, parser_error = pool.submit(
-                                    prepare_retained_jsonl_carrier,
+                                artifact = pool.submit(
+                                    prepare_retained_jsonl_artifact,
                                     raw_id,
                                     provider.value,
                                     blob_hash,
@@ -517,7 +610,9 @@ class RawObservationDerivation:
                                     native_id,
                                     str(self.archive_root / "blob"),
                                     str(self.archive_root / "source.db"),
+                                    frame.source_revision,
                                     str(scratch),
+                                    fallback_timestamp,
                                 ).result(timeout=600)
                             except TimeoutError as exc:
                                 terminate_process_pool(pool)
@@ -528,8 +623,32 @@ class RawObservationDerivation:
                                 raise RetainedPreparationRetryableError(
                                     f"retained JSONL worker exited before preparing raw {raw_id}"
                                 ) from exc
-                            if not BlobStore(self.archive_root / "blob").verify(blob_hash):
+                            if not blob_store.verify(blob_hash):
                                 raise RetainedPreparationRetryableError(f"retained raw blob changed: {raw_id}")
+                            try:
+                                after = self._blob_stat_identity(blob_path)
+                            except OSError as exc:
+                                raise RetainedPreparationRetryableError(
+                                    f"retained raw blob disappeared: {raw_id}"
+                                ) from exc
+                            if before != after:
+                                raise RetainedPreparationRetryableError(f"retained raw blob changed: {raw_id}")
+                            verified_blob_stats[raw_id] = after
+                            if artifact.deferred:
+                                raise RetainedPreparationRetryableError(
+                                    f"retained JSONL preparation deferred for raw {raw_id}: {artifact.error}"
+                                )
+                            if artifact.error is None and artifact.blob_hash != blob_hash:
+                                raise RetainedPreparationRetryableError(
+                                    f"retained JSONL preparation hash changed for raw {raw_id}"
+                                )
+                            if artifact.error is None:
+                                try:
+                                    artifact.verify_files(full=True)
+                                except (OSError, ValueError) as exc:
+                                    raise RetainedPreparationRetryableError(
+                                        f"retained JSONL preparation seal changed for raw {raw_id}"
+                                    ) from exc
                             prepared[raw_id] = PreparedRetainedInput(
                                 raw_id,
                                 provider,
@@ -539,11 +658,142 @@ class RawObservationDerivation:
                                 size,
                                 native_id,
                                 self.recipe_version,
-                                archive.raw_revision_file_mtime(raw_id),
-                                Path(carrier) if carrier is not None else None,
-                                parser_error,
+                                fallback_timestamp,
+                                None,
+                                artifact.error,
+                                prepared_artifact=artifact if artifact.error is None else None,
+                            )
+                        if not needs_source_census and len(complete_census) != len(raw_ids):
+                            for raw_id, retained in prepared.items():
+                                retained_artifact = retained.prepared_artifact
+                                if retained_artifact is None or archive.index_connection is None:
+                                    continue
+                                for parsed_session in retained_artifact.iter_sessions():
+                                    session_id = (
+                                        f"{origin_from_provider(parsed_session.source_name).value}:"
+                                        f"{parsed_session.provider_session_id}"
+                                    )
+                                    existing = archive.index_connection.execute(
+                                        "SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)
+                                    ).fetchone()
+                                    if existing is not None and str(existing[0]) != raw_id:
+                                        needs_source_census = True
+                                if needs_source_census:
+                                    break
+                        for logical_key, accepted_raw_ids in (
+                            planned_accepted_raw_ids.items() if not needs_source_census else ()
+                        ):
+                            if len(accepted_raw_ids) < 2:
+                                continue
+                            ordered: list[tuple[str, PreparedJsonl]] = []
+                            for raw_id in accepted_raw_ids:
+                                ordered_input = prepared.get(raw_id)
+                                retained_artifact = (
+                                    ordered_input.prepared_artifact if ordered_input is not None else None
+                                )
+                                if retained_artifact is not None:
+                                    ordered.append((raw_id, retained_artifact))
+                            if len(ordered) != len(accepted_raw_ids):
+                                continue
+                            try:
+                                aggregate = pool.submit(prepare_retained_cohort_artifact, ordered, scratch).result(
+                                    timeout=600
+                                )
+                            except TimeoutError as exc:
+                                terminate_process_pool(pool)
+                                raise RetainedPreparationRetryableError(
+                                    f"retained cohort preparation timed out for {logical_key}"
+                                ) from exc
+                            except BrokenProcessPool as exc:
+                                raise RetainedPreparationRetryableError(
+                                    f"retained cohort worker exited before preparing {logical_key}"
+                                ) from exc
+                            if aggregate.deferred or aggregate.error is not None:
+                                raise RetainedPreparationRetryableError(
+                                    f"retained cohort preparation deferred for {logical_key}: {aggregate.error}"
+                                )
+                            if aggregate.blob_hash != prepared_cohort_source_hash(ordered):
+                                raise RetainedPreparationRetryableError(
+                                    f"retained cohort source dependency changed for {logical_key}"
+                                )
+                            try:
+                                aggregate.verify_files(full=True)
+                            except (OSError, ValueError) as exc:
+                                raise RetainedPreparationRetryableError(
+                                    f"retained cohort preparation seal changed for {logical_key}"
+                                ) from exc
+                            aggregates[logical_key] = PreparedRetainedAggregate(accepted_raw_ids, aggregate)
+                    if not needs_source_census and archive.index_connection is not None:
+                        selected_writes: dict[str, tuple[ParsedSession, PreparedJsonl]] = {}
+                        for logical_key, accepted_raw_ids in planned_accepted_raw_ids.items():
+                            if not accepted_raw_ids:
+                                continue
+                            tip_raw_id = accepted_raw_ids[-1]
+                            selected_artifact = (
+                                aggregates[logical_key].artifact
+                                if len(accepted_raw_ids) > 1 and logical_key in aggregates
+                                else prepared[tip_raw_id].prepared_artifact
+                            )
+                            if selected_artifact is None:
+                                continue
+                            selected_session: ParsedSession | None = None
+                            for candidate_session in selected_artifact.iter_sessions():
+                                if selected_session is not None:
+                                    raise RetainedPreparationRetryableError(
+                                        f"retained replay plan has no single prepared session for {logical_key}"
+                                    )
+                                selected_session = candidate_session
+                            if selected_session is None:
+                                raise RetainedPreparationRetryableError(
+                                    f"retained replay plan has no single prepared session for {logical_key}"
+                                )
+                            selected_writes[tip_raw_id] = (selected_session, selected_artifact)
+                        for logical_key in logical_keys:
+                            if planned_accepted_raw_ids.get(logical_key):
+                                continue
+                            selected = selected_prepared_membership_head(archive, logical_key, prepared)
+                            if selected is None:
+                                continue
+                            accepted_raw_id, accepted_session = selected
+                            membership_artifact = prepared[accepted_raw_id].prepared_artifact
+                            if membership_artifact is not None:
+                                selected_writes[accepted_raw_id] = (accepted_session, membership_artifact)
+                        for tip_raw_id, (session, artifact) in selected_writes.items():
+                            session_id = (
+                                f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
+                            )
+                            existing = archive.index_connection.execute(
+                                "SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)
+                            ).fetchone()
+                            hook_parent_id, resolved_parent_id = prepared_lineage_bindings(
+                                archive.index_connection,
+                                session,
+                                source_conn=archive.source_connection,
+                            )
+                            has_parent_claim = (
+                                session.parent_session_provider_id is not None
+                                or hook_parent_id is not None
+                                or resolved_parent_id is not None
+                            )
+                            if (existing is None or str(existing[0]) == tip_raw_id) and not has_parent_claim:
+                                continue
+                            if artifact.shard_path is None:
+                                raise RetainedPreparationRetryableError(
+                                    f"retained replay shard is absent for raw {tip_raw_id}"
+                                )
+                            prepared_writes[tip_raw_id] = prepare_session_write(
+                                archive.index_connection,
+                                session,
+                                merge_append=False,
+                                fallback_timestamp=archive.raw_revision_file_mtime(tip_raw_id),
+                                source_conn=archive.source_connection,
+                                raw_id=tip_raw_id,
+                                force_replace=True,
+                                prepared_rows=prepared_session_rows_from_shard(artifact.shard_path, session_id),
                             )
                 except BaseException:
+                    for prepared_write in prepared_writes.values():
+                        prepared_write.close()
                     scratch_owner.cleanup()
                     raise
                 return RawObservationReplacement(
@@ -552,25 +802,39 @@ class RawObservationDerivation:
                     None,
                     raw_ids,
                     prepared_inputs=prepared,
+                    prepared_aggregates=aggregates,
+                    prepared_writes=prepared_writes,
+                    classification_proofs=classification_proofs,
+                    verified_blob_stats=verified_blob_stats,
+                    planned_accepted_raw_ids=planned_accepted_raw_ids,
+                    needs_source_census=needs_source_census,
                     scratch_directory=scratch,
                     scratch_owner=scratch_owner,
                 )
+            sizes = archive.raw_payload_sizes(raw_ids)
+            if sum(sizes.values()) > self.max_payload_bytes:
+                raise ValueError("raw observation component exceeds its payload budget")
             cache = RawParsePrefetchCache(max_inflight_bytes=self.max_payload_bytes)
             empty = True
             for raw_id in raw_ids:
                 _provider, blob_hash, _path, kind, size = archive.raw_revision_descriptor(raw_id)
                 if not BlobStore(self.archive_root / "blob").verify(blob_hash):
                     raise ValueError(f"retained raw blob does not match its identity: {raw_id}")
-                sessions = parse_retained_raw_sessions(archive, raw_id)
-                empty = empty and not sessions
-                if not cache.try_admit(raw_id, sessions, payload_bytes=size, revision_kind=kind):
+                parsed_sessions = parse_retained_raw_sessions(archive, raw_id)
+                empty = empty and not parsed_sessions
+                if not cache.try_admit(raw_id, parsed_sessions, payload_bytes=size, revision_kind=kind):
                     raise ValueError("raw observation parse preparation exceeds its payload budget")
         return RawObservationReplacement(key, binding, cache, raw_ids, empty=empty)
 
     def publish(self, frame: RawFrame, replacement: RawObservationReplacement) -> bool:
-        from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+        from polylogue.sources.revision_backfill import (
+            RetainedPreparationRetryableError,
+            backfill_historical_revision_evidence,
+            census_historical_revision_evidence,
+        )
         from polylogue.storage.index_generation import ActiveWriterLease
         from polylogue.storage.raw_retention import raw_frontier_blocked_raw_ids
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import PreparedRawClassificationStaleError
 
         if replacement.already_valid:
             return self._current(frame) and self.inspect(frame, (replacement.key,)).get(replacement.key) == "valid"
@@ -593,21 +857,84 @@ class RawObservationDerivation:
                     return False
                 for raw_id in raw_ids:
                     _provider, blob_hash, _path, _kind, _size = archive.raw_revision_descriptor(raw_id)
-                    if not BlobStore(self.archive_root / "blob").verify(blob_hash):
+                    blob_store = BlobStore(self.archive_root / "blob")
+                    if replacement.prepared_inputs is not None:
+                        expected_stat = (replacement.verified_blob_stats or {}).get(raw_id)
+                        try:
+                            current_stat = self._blob_stat_identity(blob_store.blob_path(blob_hash))
+                        except OSError:
+                            return False
+                        if expected_stat is None or current_stat != expected_stat:
+                            return False
+                    elif not replacement.needs_source_classification and not blob_store.verify(blob_hash):
                         return False
-            backfill_historical_revision_evidence(
-                self.archive_root,
-                active_index_path=Path(frame.source_revision),
-                selected_raw_ids=list(replacement.raw_ids),
-                max_payload_bytes=self.max_payload_bytes,
-                prefetch_cache=replacement.payload,
-                prepared_inputs=replacement.prepared_inputs,
-                pipeline_decode=False,
-            )
+                if (
+                    replacement.planned_accepted_raw_ids is not None
+                    and self._source_replay_plans(archive, _keys) != replacement.planned_accepted_raw_ids
+                ):
+                    return False
+            for prepared in (replacement.prepared_inputs or {}).values():
+                if prepared.prepared_artifact is not None:
+                    try:
+                        prepared.prepared_artifact.verify_files(full=False)
+                    except (OSError, ValueError):
+                        return False
+            for aggregate in (replacement.prepared_aggregates or {}).values():
+                try:
+                    aggregate.artifact.verify_files(full=False)
+                except (OSError, ValueError):
+                    return False
+            if replacement.needs_source_census:
+                if replacement.prepared_inputs is None:
+                    return False
+                census_historical_revision_evidence(
+                    self.archive_root,
+                    active_index_path=Path(frame.source_revision),
+                    selected_raw_ids=list(replacement.raw_ids),
+                    max_payload_bytes=None,
+                    prepared_inputs=replacement.prepared_inputs,
+                    ingest_workers=1,
+                )
+                return False
+            if replacement.needs_source_classification:
+                if replacement.classification_proofs is None:
+                    return False
+                try:
+                    census_historical_revision_evidence(
+                        self.archive_root,
+                        active_index_path=Path(frame.source_revision),
+                        selected_raw_ids=list(replacement.raw_ids),
+                        max_payload_bytes=None,
+                        classification_proofs=replacement.classification_proofs,
+                        ingest_workers=1,
+                    )
+                except (PreparedRawClassificationStaleError, RetainedPreparationRetryableError):
+                    return False
+                return False
+            try:
+                backfill_historical_revision_evidence(
+                    self.archive_root,
+                    active_index_path=Path(frame.source_revision),
+                    selected_raw_ids=list(replacement.raw_ids),
+                    max_payload_bytes=None if replacement.prepared_inputs is not None else self.max_payload_bytes,
+                    prefetch_cache=replacement.payload,
+                    prepared_inputs=replacement.prepared_inputs,
+                    prepared_aggregates=replacement.prepared_aggregates,
+                    prepared_writes=replacement.prepared_writes,
+                    prepared_replay_plans=replacement.planned_accepted_raw_ids,
+                    pipeline_decode=False,
+                    use_session_shards=replacement.prepared_inputs is not None,
+                )
+            except RetainedPreparationRetryableError:
+                return False
             return True
         finally:
             try:
                 lease.close()
             finally:
-                if replacement.scratch_owner is not None:
-                    replacement.scratch_owner.cleanup()
+                try:
+                    for prepared_write in (replacement.prepared_writes or {}).values():
+                        prepared_write.close()
+                finally:
+                    if replacement.scratch_owner is not None:
+                        replacement.scratch_owner.cleanup()

@@ -439,6 +439,7 @@ async def test_repeated_wakeups_on_a_drained_backlog_cannot_spin() -> None:
     pass count run away instead of holding at 3. Executed.
     """
     from polylogue.daemon.periodic import PassOutcome
+    from tests.infra.daemon_service_harness import record_private_lifecycle_probe
 
     barrier = _PassBarrier()
     runner = PeriodicRunner(jitter_ratio=0.0, rng=random.Random(0), sleep=barrier.sleep, clock=lambda: 0.0)
@@ -473,6 +474,18 @@ async def test_repeated_wakeups_on_a_drained_backlog_cannot_spin() -> None:
             await asyncio.sleep(0)
         assert passes == 3, "the loop kept running without a wakeup or an elapsed cadence"
         assert not wakeup.is_set()
+        record_private_lifecycle_probe(
+            "idle-wake",
+            {
+                "service": "embedding_backlog",
+                "passes": passes,
+                "wakeups": state.wakeups,
+                "unexpected_idle_passes": passes - 1 - state.wakeups,
+                "drain_transitions": state.drain_transitions,
+                "event_loop_turns_after_last_wake": 50,
+                "historical_before": "unmeasured",
+            },
+        )
     finally:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):

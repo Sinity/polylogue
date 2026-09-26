@@ -93,6 +93,7 @@ def archive_init_command(replace_existing: bool, yes: bool, output_format: str) 
     then creates fresh source, index, embeddings, user, and ops databases.
     Ingest and read surfaces populate and consume the archive.
     """
+    from polylogue.maintenance.offline_guard import scoped_offline_archive_writer
     from polylogue.storage.sqlite.archive_tiers.archive_init import (
         ArchiveInitBlockedError,
         initialize_archive_tier_files_from_plan,
@@ -116,7 +117,12 @@ def archive_init_command(replace_existing: bool, yes: bool, output_format: str) 
         return
 
     try:
-        result = initialize_archive_tier_files_from_plan(plan)
+        with scoped_offline_archive_writer(plan.archive_root, owner_id="archive-init") as owner:
+            plan = build_archive_init_plan(
+                archive_root=plan.archive_root,
+                replace_existing=replace_existing,
+            )
+            result = initialize_archive_tier_files_from_plan(plan, owner=owner)
     except ArchiveInitBlockedError as exc:
         # Narrowed from ``except RuntimeError``. That catch also swallowed
         # ``UnleasedWriteError`` -- the single-writer boundary's refusal -- and

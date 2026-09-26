@@ -42,9 +42,6 @@ def _int(value: JSONValue) -> int:
     return value
 
 
-_PLANS = Path(__file__).resolve().parents[2] / "tests" / "data" / "continuity" / "cold-model-plans.json"
-
-
 @pytest.fixture(scope="module")
 def cold_corpus(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, JSONDocument]:
     archive_root = tmp_path_factory.mktemp("cold-model-lane") / "archive"
@@ -53,11 +50,27 @@ def cold_corpus(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, JSONDoc
     return archive_root, catalog
 
 
-def _recorded_backend() -> ScriptedColdModelBackend:
-    payload = json.loads(_PLANS.read_text(encoding="utf-8"))
+def _synthetic_backend() -> ScriptedColdModelBackend:
     answers = {
-        continuity_scenario(scenario_id).sparse_prompt: json.dumps(plan)
-        for scenario_id, plan in payload["plans"].items()
+        scenario.sparse_prompt: json.dumps(
+            {
+                "steps": [
+                    {"tool": step.tool, "arguments": step.argument_dict(), "paginate": step.paginate}
+                    for step in scenario.route_steps
+                ],
+                "stop_conditions": ["all continuations are exhausted"],
+                "citation_fields": [
+                    next(
+                        segment
+                        for segment in reversed(projection.path)
+                        if isinstance(segment, str) and segment not in {"*", "items"}
+                    )
+                    for projection in scenario.evidence_projections
+                ],
+                "uncertainty": "medium",
+            }
+        )
+        for scenario in CONTINUITY_SCENARIOS
     }
     return ScriptedColdModelBackend(answers=answers)
 
@@ -131,7 +144,7 @@ class TestColdLane:
         from the in-process catalogue instead of the wire, would still report a
         green status here."""
         archive_root, catalog = cold_corpus
-        report = await run_cold_model_lane(archive_root, catalog, _recorded_backend())
+        report = await run_cold_model_lane(archive_root, catalog, _synthetic_backend())
 
         assert report["coverage_errors"] == []
         assert report["scenario_count"] == len(CONTINUITY_SCENARIOS)
@@ -148,6 +161,7 @@ class TestColdLane:
             result = _doc(row)
             assert result["disposition"] == "pass"
             assert result["product_status"] == "pass"
+            assert result["model_execution_status"] == "pass"
             assert _int(result["prompt_bytes"]) > 1000
 
     @pytest.mark.asyncio
@@ -176,3 +190,38 @@ class TestColdLane:
         grades = [_doc(grade) for grade in _rows(attempt["grades"])]
         failed = {grade["axis"] for grade in grades if grade["status"] == "fail"}
         assert failed == {"plan_equivalence"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(600)
+    async def test_same_signature_wrong_arguments_fail_model_execution(
+        self, cold_corpus: tuple[Path, JSONDocument]
+    ) -> None:
+        """A correct tool family cannot stand in for the model's actual query."""
+        archive_root, catalog = cold_corpus
+        scenario = continuity_scenario("resume")
+        wrong = json.dumps(
+            {
+                "steps": [
+                    {
+                        "tool": "query",
+                        "arguments": {"expression": "messages where text:absent", "limit": 2},
+                        "paginate": True,
+                    }
+                ],
+                "stop_conditions": ["continuation exhausted"],
+                "citation_fields": ["message_id"],
+                "uncertainty": "medium",
+            }
+        )
+        backend = ScriptedColdModelBackend(answers={scenario.sparse_prompt: wrong})
+
+        report = await run_cold_model_lane(archive_root, catalog, backend, scenario_names=("resume",))
+
+        result = _doc(_rows(report["results"])[0])
+        assert result["product_status"] == "pass"
+        assert result["model_execution_status"] == "fail"
+        assert result["disposition"] == "fail"
+        attempt = _doc(_rows(result["attempts"])[0])
+        grades = [_doc(grade) for grade in _rows(attempt["grades"])]
+        assert all(grade["status"] == "pass" for grade in grades)
+        assert _rows(result["model_execution_diagnostics"])

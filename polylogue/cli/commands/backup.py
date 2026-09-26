@@ -6,7 +6,8 @@ from pathlib import Path
 
 import click
 
-from polylogue.daemon.backup import BACKUP_PROFILES, BackupProfile, backup_archive, format_backup_result
+from polylogue.cli.shared.types import AppEnv
+from polylogue.daemon.backup import BACKUP_PROFILES, BackupProfile, BackupResult, backup_archive, format_backup_result
 from polylogue.logging import configure_logging
 
 
@@ -39,11 +40,15 @@ from polylogue.logging import configure_logging
     show_default=True,
     help="Named backup profile controlling copied archive tiers.",
 )
+@click.option("--format", "output_format", type=click.Choice(("plain", "json")), default="plain")
+@click.pass_obj
 def backup_command(
+    env: AppEnv,
     output_dir: Path,
     check_only: bool,
     verify: bool,
     profile: BackupProfile,
+    output_format: str,
 ) -> None:
     """Back up the Polylogue archive.
 
@@ -55,18 +60,41 @@ def backup_command(
     without creating a backup.
     """
     configure_logging()
-    # The resident-daemon refusal is not repeated here. It lives in
-    # ``backup_archive`` itself (``polylogue/daemon/backup.py``), which is the
-    # function that mints ``write_lease("maintenance.backup")`` and opens the
-    # live tiers, so every caller -- this command and any embedded Python
-    # importer of the public ``backup_archive`` -- is refused on the same
-    # terms (polylogue-8qm4k AC1).
-    result = backup_archive(
-        output_dir=output_dir,
-        check_only=check_only,
-        verify=verify,
-        profile=profile,
-    )
+    if check_only:
+        result = backup_archive(
+            output_dir=output_dir,
+            check_only=True,
+            verify=verify,
+            profile=profile,
+            archive_root_path=env.config.archive_root,
+        )
+    else:
+        from polylogue.cli.archive_query import submit_cli_mutation
+        from polylogue.cli.operation_kernel import OperationFailedError
+
+        try:
+            completed = submit_cli_mutation(
+                env,
+                "maintenance.backup",
+                {"output_dir": str(output_dir), "check_only": False, "verify": verify, "profile": profile},
+            )
+        except click.ClickException as exc:
+            failure = exc.__cause__
+            if not isinstance(failure, OperationFailedError) or failure.code != "backup_failed":
+                raise
+            payload = failure.data.get("backup_result")
+            if not isinstance(payload, dict):
+                raise
+            result = BackupResult.model_validate(payload)
+        else:
+            result = BackupResult.model_validate(completed.get("result"))
+    if output_format == "json":
+        import json
+
+        click.echo(json.dumps(result.model_dump(mode="json"), sort_keys=True))
+        if not result.ok:
+            raise SystemExit(1)
+        return
     for line in format_backup_result(result):
         click.echo(line)
     if not result.ok:

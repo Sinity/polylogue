@@ -44,7 +44,7 @@ class ReadPreset:
         )
         return projection_from_views(
             views,
-            format=str(params.get("output_format", self.format.value)),
+            format=str(params["output_format"] if params.get("output_format") is not None else self.format.value),
             destination=str(params.get("destination", self.destination.value)),
             layout=str(params.get("layout", self.layout)),
             timestamps=str(params["timestamps"]) if params.get("timestamps") is not None else None,

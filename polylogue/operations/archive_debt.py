@@ -23,10 +23,7 @@ from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.daemon.fts_status import fts_readiness_info
-from polylogue.maintenance.raw_authority import (
-    RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES,
-    RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
-)
+from polylogue.maintenance.raw_authority import RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES
 from polylogue.sources.dispatch import is_stream_record_provider
 from polylogue.sources.parsers.local_agent import gemini_cli_chat_identity
 from polylogue.storage.archive_readiness import RAW_ALIAS_BLOB_MISSING_CATEGORY
@@ -643,26 +640,15 @@ def _raw_materialization_debt_row(
     sample_rows = rows[:5]
     max_blob_size = max(_int_value(row["blob_size"]) or 0 for row in rows)
     max_blob_size_text = _format_bytes(max_blob_size)
-    # The thresholds a raw actually meets are the daemon's, and there are two
-    # of them. The ordinary raw-materialization pass refuses a component over
-    # ``RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES``; the whale escalation
-    # retries it at the far wider ``RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES``
-    # but is gated on every member being stream-record-safe. So a non-stream-safe
-    # row is blocked at the ordinary limit, and a stream-safe one only above the
-    # whale envelope.
-    #
-    # This used to be a single comparison against a 1 GiB constant that no
-    # executor consulted, which both understated the blocked set by a factor of
-    # sixteen for ordinary rows and named a threshold to the operator that
-    # nothing enforces.
+    # An all-prepared stream-record JSONL component uses sealed shards at any
+    # retained size. Other parsers still use the bounded payload cache and can
+    # refuse an oversized component. This row-level projection cannot prove
+    # all members of a mixed component use the prepared route.
     oversized_rows = [
         row for row in rows if (_int_value(row["blob_size"]) or 0) > RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES
     ]
     stream_safe_oversized_rows = [
-        row
-        for row in oversized_rows
-        if _raw_materialization_row_stream_safe(origin=origin, row=row)
-        and (_int_value(row["blob_size"]) or 0) <= RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES
+        row for row in oversized_rows if _raw_materialization_row_stream_safe(origin=origin, row=row)
     ]
     blocked_oversized_count = len(oversized_rows) - len(stream_safe_oversized_rows)
     validation_counts = _count_values(row["validation_status"] for row in rows)
@@ -843,24 +829,23 @@ def _raw_materialization_debt_row(
         if blocked_oversized_count:
             status = "blocked"
             details += (
-                f" Actual replay is blocked by the "
+                " Actual replay is blocked by the "
                 f"{_format_bytes(RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES)} ordinary raw-materialization "
-                f"limit for {blocked_oversized_count:,} oversized row(s) the whale escalation cannot take "
-                f"(not stream-record-safe, or past its "
-                f"{_format_bytes(RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES)} envelope)."
+                f"cache limit for {blocked_oversized_count:,} oversized nonprepared row(s)."
             )
             actions = (
                 ArchiveDebtActionPayload(
                     label="Explain parser output",
                     command=("polylogue", "import", "--explain"),
-                    description="Inspect one sampled source path; daemon convergence will retry when the source shape is stream-safe.",
+                    description="Inspect one sampled source path; this parser requires a bounded retained payload.",
                 ),
             )
         else:
             if stream_safe_oversized_rows:
                 details += (
-                    f" {len(stream_safe_oversized_rows):,} oversized row(s) are stream-record JSONL sources within "
-                    "the whale envelope and can use the streaming raw-materialization path."
+                    f" {len(stream_safe_oversized_rows):,} oversized row(s) are stream-record JSONL sources "
+                    "and can use prepared streaming raw materialization when every member of their expanded "
+                    "component uses that format."
                 )
             actions = (
                 ArchiveDebtActionPayload(

@@ -124,7 +124,7 @@ def test_each_supported_origin_has_one_claim_and_reaches_production_detector_and
 
 @pytest.mark.asyncio
 async def test_supported_witnesses_reach_the_production_archive_ingest_seam(
-    workspace_env: dict[str, Path],
+    one_shot_workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -153,7 +153,7 @@ async def test_supported_witnesses_reach_the_production_archive_ingest_seam(
             sources.append(Source(name=witness.parser_claims[0].provider.value, path=source_root))
 
     result = await parse_sources_archive(
-        workspace_env["archive_root"],
+        one_shot_workspace_env["archive_root"],
         sources,
         parse_workers=1,
     )

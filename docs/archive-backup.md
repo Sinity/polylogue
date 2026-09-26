@@ -158,56 +158,17 @@ disposable tier, is touched. When the archive is the only copy, capture a
 size/mtime/ctime/sha256 manifest of the durable tiers before and after the read
 and compare the two, rather than assuming the read was clean.
 
-## Pre-wipe rollback packet
+## Rollback custody and qualification
 
-The rollback packet for the 2026-09-12 fresh-restart campaign is a public pointer to private operator-held artifacts. It contains no archive bytes, transcripts, assertions, or blob payloads in Git. The executable pin is first-parent commit `c8ba64157ea1a8eeed175c9a80229aedfa818820` (2026-08-10, `fix(replay): block readiness on incomplete parser census (#3903)`). Keep that checkout available with the aside archive root, all six tier files, and the referenced `blob/` directory.
+Before replacing or removing an archive, preserve a full-evidence copy outside the path that will be recreated. Include all six tiers and every referenced blob. Record the copy's location, the selected runtime commit and executable version, and a manifest of the preserved files outside Git. Keep the original `user.db`; an export of selected rows is supplementary evidence, not a replacement.
 
-Three facts about that pin, each rechecked 2026-09-22:
+An archive copy is usable only with a runtime that accepts every tier it must read. Read each durable tier's `user_version` and the derived tier identity from the archive, then compare them with the candidate runtime's declared versions and schema identity. A match against only source, user, index, embeddings, or ops does not qualify a runtime if its audit version differs. If no suitable runtime exists in the official first-parent history, record the archive as preserved but unqualified for application reads; do not describe a nearby commit as a rollback runtime.
 
-* **The pin is an ancestor of `master` and nothing points at it.** `git cat-file -t` resolves it and `git merge-base --is-ancestor <pin> origin/master` succeeds, but `git tag --points-at <pin>` is empty. The pin lives only in this prose and in reachability from `master`; it survives a prune because `master` contains it, not because anything names it. A named ref would make it independently discoverable.
-* **The audit tier is outside the four-tier match.** The pin's window is source 30, user 10, index 67, embeddings 4, ops 1. Audit is not in that list: the pin declares audit version 1 while a live archive at that window carries `user_version = 2`. A rollback checkout at this pin therefore faces audit-tier skew, and what it costs must be reported rather than assumed away.
-* **Reproducing the pin from a live pre-reset archive no longer works**, for the floor-reset reason recorded above. Take the pin as recorded here; do not expect to re-derive it.
+Archive roots may contain absolute symlinks to generation or tier files. Moving the root aside does not preserve those files independently: a link can still resolve through the original path after that path is recreated. Before relying on a moved copy, inventory and preserve the resolved targets as part of the custody copy, or repair links in a separate copy and verify that every target resolves within that copy. Do not modify the sole preserved archive to repair its links.
 
-The prior rollback drill also exported 107 user assertions (18 columns) and
-verified a canonical row-list SHA-256 round trip. That export is private
-operator evidence, not a Git artifact and not a substitute for retaining
-`user.db`; recheck its count and digest against the aside snapshot before
-authorizing a restore.
+Qualification requires the production read route with the candidate runtime against the preserved copy. Check the archive plan and status, then run a representative field/origin query. Report field-query and FTS readiness separately; stale search indexes can remain unavailable until daemon convergence. A raw SQLite open or file listing establishes neither runtime compatibility nor query readiness. Never migrate the sole preserved copy as part of qualification.
 
-Before a wipe, the operator must recheck the private packet and record its exact archive-root path, commit, executable version, and a size/mtime/ctime/sha256 manifest outside Git. The packet is ready only when all six files are present: `source.db`, `index.db`, `embeddings.db`, `user.db`, `audit.db`, and `ops.db`, together with the referenced blobs. The independently exported user assertions file is additional evidence, not a replacement for `user.db`.
-
-### Assembling a packet is not the only route
-
-The 2026-09-20 operator simplification: for the fresh restart the operation is
-**stop the daemon, move `/realm/state/polylogue` aside as one intact root,
-start the daemon, and let it converge into the recreated root**. Everything in
-the root moves together, inbox symlinks and referenced blob material included,
-and nothing durable is written to obtain the rollback. It therefore cannot fail
-halfway by migrating the only copy, and no packet has to be assembled or copied
-first. Keep the aside path and the pinned checkout together. The packet
-procedure above remains the route for a rollback that must live somewhere other
-than the original path.
-
-Two mechanical notes for whoever runs the move:
-
-* The daemon must be stopped first. `.archive-ownership.lock` and live `-shm`/`-wal` files are present while it runs.
-* Symlinks inside the root use absolute self-referential targets (`index.db` into `.index-generations/gen-*/`, and the tier links inside that generation pointing back at the root). After a move they still name the original path, which is the path the daemon recreates. Relativize them, or point `POLYLOGUE_ARCHIVE_ROOT` at the aside path when reading it. This only matters if someone actually reads the aside copy.
-
-Use the pinned checkout and the production read route for the proof. A raw SQLite open or a file listing alone does not establish rollback readiness:
-
-```bash
-export POLYLOGUE_ARCHIVE_ROOT="<operator-retained rollback root>"
-./.venv/bin/polylogue ops maintenance archive-plan --output-format json
-./.venv/bin/polylogue status
-./.venv/bin/polylogue --origin ORIGIN find 'FIELD:VALUE' then select --format json
-```
-
-The rollback pin is expected to provide field, origin, and date queries while FTS remains stale until daemon convergence. Report FTS as degraded rather than claiming complete search readiness. Do not migrate, re-adopt audit receipts, reconcile a reserved migration train, or start a daemon against the only archive as part of this preparation. If the private packet or its recorded production-route receipt cannot be rechecked, stop and leave the wipe unauthorized.
-
-Restore in place. An archive root can be a symlink farm whose `index.db` and
-active-generation tier links are absolute, so a file set copied to a different
-root resolves back into the old one and `ArchiveLocation` refuses it. Changing
-the root goes through the restore route above.
+Changing a configured archive root is a restore into a new root, not an in-place transition. Create and verify a full-evidence backup, restore it at the new root, and let the daemon converge. `ArchiveLocation` refuses an out-of-root active-generation pointer unless it resolves through the configured index symlink in the supported symlink-farm layout.
 
 ## Restore Rules
 

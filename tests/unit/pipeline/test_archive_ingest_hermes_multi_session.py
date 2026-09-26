@@ -6,13 +6,13 @@ deliberately excludes the session id, because Hermes session ids are only
 unique within a profile. One ``state.db`` therefore yields N ParsedSessions
 that all carry the SAME acquisition raw id and DIFFERENT native ids.
 
-That is the grouped-capture shape, and the one-shot importer
-(``parse_sources_archive``) has to treat it as such. When it instead admitted
+That is the grouped-capture shape, and the canonical live intake owner
+(``parse_sources_archive`` delegates to it) has to treat it as such. When a
+former one-shot importer instead admitted
 each session as its own BASELINE observation against that shared raw id, the
 second session collided: the raw row already existed, so
 ``_assert_existing_raw_observation_identity`` refused it as a substitution
-hazard, and ``write_pair`` -- which catches only ``ContentExcisedError`` --
-let the exception abort and roll back the whole import batch.
+hazard and aborted the whole import batch.
 
 The regression could not surface in unit coverage of
 ``admit_raw_observation`` itself (a single admission never collides) nor in
@@ -30,7 +30,6 @@ import pytest
 
 from polylogue.config import Source
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 SESSION_IDS = ("hermes-alpha", "hermes-beta", "hermes-gamma")
 
@@ -96,7 +95,6 @@ def _write_multi_session_state_db(path: Path) -> None:
 @pytest.mark.usefixtures("workspace_env")
 def test_multi_session_hermes_snapshot_imports_as_one_shared_raw(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
     state_db = tmp_path / "hermes-profile" / "state.db"
     _write_multi_session_state_db(state_db)
 

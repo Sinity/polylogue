@@ -32,6 +32,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import IO, BinaryIO
 
+from polylogue.storage.io_phase_metrics import timed_io_phase
+
 _CHUNK_SIZE = 1024 * 1024  # 1 MiB
 
 # Valid blob hash: exactly 64 lowercase hex chars (a SHA-256 digest). Matched
@@ -238,7 +240,8 @@ class BlobStore:
                     if heartbeat is not None:
                         with suppress(Exception):
                             heartbeat()
-            os.fsync(fd)
+            with timed_io_phase("source", "blob_file_fsync"):
+                os.fsync(fd)
             os.close(fd)
             fd = None
             os.chmod(temporary_path, 0o600)
@@ -275,7 +278,8 @@ class BlobStore:
                 if heartbeat is not None:
                     with suppress(Exception):
                         heartbeat()
-            os.fsync(fd)
+            with timed_io_phase("source", "blob_file_fsync"):
+                os.fsync(fd)
             os.close(fd)
             fd = None
             os.chmod(temporary_path, 0o600)
@@ -296,7 +300,8 @@ class BlobStore:
             fd, temporary_name = tempfile.mkstemp(dir=staging_root, prefix=".blob.")
             temporary_path = Path(temporary_name)
             _write_all(fd, data)
-            os.fsync(fd)
+            with timed_io_phase("source", "blob_file_fsync"):
+                os.fsync(fd)
             os.close(fd)
             fd = None
             os.chmod(temporary_path, 0o600)
@@ -312,7 +317,8 @@ class BlobStore:
         """Persist *directory*'s own entries, not the files they name."""
         directory_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
-            os.fsync(directory_fd)
+            with timed_io_phase("source", "blob_directory_fsync"):
+                os.fsync(directory_fd)
         finally:
             os.close(directory_fd)
 

@@ -114,9 +114,9 @@ def hook_spool_sources(
             emit(
                 "source.hook_spool.implicit_legacy_root_skipped",
                 outcome="ok",
-                legacy_root=str(default_legacy),
-                primary_root=str(primary),
-                reason="primary is not the default XDG hook spool",
+                path=str(default_legacy),
+                root=str(primary),
+                reason="primary_not_default_xdg_hook_spool",
             )
     sources = [HookSpoolSourceSpec("primary-hook-spool", "primary-writable", primary)]
     for index, root_value in enumerate(configured_legacy):

@@ -11,11 +11,12 @@ import subprocess
 import sys
 import textwrap
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from polylogue.scenarios import DEMO_CODEX_LINEAGE_FORK_SESSION_ID
 
-from .models import DemoTourResult, DemoTourStep
+from .models import DemoSeedResult, DemoTourResult, DemoTourStep
 from .seed import seed_demo_archive
 from .verify import verify_demo_archive
 
@@ -28,6 +29,7 @@ def run_demo_tour(
     output_dir: Path,
     archive_root: Path | None = None,
     force: bool = True,
+    seed_archive: Callable[..., DemoSeedResult] | None = None,
 ) -> DemoTourResult:
     """Run the deterministic public tour and write report artifacts."""
 
@@ -50,13 +52,15 @@ def run_demo_tour(
     transcript_parts: list[str] = []
 
     seed_start = time.perf_counter()
-    seed = asyncio.run(
-        seed_demo_archive(
-            resolved_archive,
-            force=True,
-            with_overlays=True,
-            explicit_root=archive_root is not None,
-        )
+    seed_options = {
+        "force": True,
+        "with_overlays": True,
+        "explicit_root": archive_root is not None,
+    }
+    seed = (
+        seed_archive(resolved_archive, **seed_options)
+        if seed_archive is not None
+        else asyncio.run(seed_demo_archive(resolved_archive, **seed_options))
     )
     seed_duration = time.perf_counter() - seed_start
     seed_passed = sum(row.ok for row in seed.construct_coverage)

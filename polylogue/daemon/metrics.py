@@ -19,8 +19,9 @@ Design notes:
   to loopback by default. The endpoint exposes only counts and gauges
   derived from existing daemon-state tables — no session
   content, no environment.
-- **Read-only.** Every series is sourced from the archive SQLite
-  database via ``open_readonly_connection``. The endpoint never
+- **Read-only.** Archive series are sourced from SQLite via
+  ``open_readonly_connection``; process-local I/O phase counters are read
+  from their bounded in-memory owner. The endpoint never
   writes and never blocks on a held writer.
 - **Resilient to missing tables.** Each section gracefully degrades
   to zero / absent series when a backing table does not yet exist
@@ -39,6 +40,11 @@ varies on a known-bounded dimension):
 - ``polylogue_status_snapshot_state`` (gauge) — labels: state
 - ``polylogue_detached_writer_failures_total`` (counter) — process-lifetime
   count of detached background daemon-writer tasks that raised (polylogue-es7b)
+- ``polylogue_diagnostic_delivery_total`` (counter) — labels: outcome
+- ``polylogue_diagnostic_queue_depth`` (gauge)
+- ``polylogue_storage_io_phase_total`` (counter) — labels: tier, phase, inside_writer_lease, succeeded
+- ``polylogue_storage_io_phase_seconds_total`` (counter) — same labels
+- ``polylogue_storage_io_phase_observable`` (gauge) — labels: phase
 - ``polylogue_live_ingest_attempts_total`` (counter) — labels: status
 - ``polylogue_live_ingest_attempts_in_flight`` (gauge)
 - ``polylogue_live_ingest_storage_route_total`` (counter) — labels: route
@@ -91,13 +97,15 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from collections.abc import Sequence
 from http import HTTPStatus
 from pathlib import Path
 from typing import Protocol, TypedDict
 
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.daemon.process_start import uptime_seconds
-from polylogue.logging import ERROR, WARNING, emit
+from polylogue.logging import ERROR, WARNING, diagnostic_snapshot, emit
+from polylogue.operations.storage_io_observation import IoPhaseObservation, storage_io_observation
 from polylogue.storage import archive_layout
 from polylogue.storage.archive_layout import (
     ARCHIVE_ACTIVE_TIER_ROLES,
@@ -302,7 +310,7 @@ def _emit_metric(
     name: str,
     help_text: str,
     metric_type: str,
-    samples: list[tuple[dict[str, str] | None, float | int]],
+    samples: Sequence[tuple[dict[str, str] | None, float | int]],
     omit_when_empty: bool = False,
 ) -> None:
     lines.append(f"# HELP {name} {help_text}")
@@ -1214,6 +1222,70 @@ def format_metrics(
         ),
         metric_type="counter",
         samples=[(None, int(detached_writer_failures) if isinstance(detached_writer_failures, (int, float)) else 0)],
+    )
+
+    diagnostic = diagnostic_snapshot()
+    _emit_metric(
+        lines,
+        name="polylogue_diagnostic_delivery_total",
+        help_text="Process-local diagnostic records delivered, dropped, failed, or left undrained at shutdown.",
+        metric_type="counter",
+        samples=[
+            ({"outcome": outcome}, diagnostic[outcome]) for outcome in ("delivered", "dropped", "failures", "undrained")
+        ],
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_diagnostic_queue_depth",
+        help_text="Diagnostic records waiting for the configured sink.",
+        metric_type="gauge",
+        samples=[(None, diagnostic["queued"])],
+    )
+
+    io_observation = storage_io_observation()
+
+    def io_labels(sample: IoPhaseObservation) -> dict[str, str]:
+        return {
+            "tier": sample.tier,
+            "phase": sample.phase,
+            "inside_writer_lease": "true" if sample.inside_writer_lease else "false",
+            "succeeded": "true" if sample.succeeded else "false",
+        }
+
+    _emit_metric(
+        lines,
+        name="polylogue_storage_io_phase_total",
+        help_text="Observed storage I/O phase calls by tier, phase, lease ownership, and outcome.",
+        metric_type="counter",
+        samples=[(io_labels(sample), sample.count) for sample in io_observation.samples],
+        omit_when_empty=True,
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_storage_io_phase_seconds_total",
+        help_text="Observed wall time in storage I/O phases, in seconds.",
+        metric_type="counter",
+        samples=[(io_labels(sample), sample.elapsed_ns / 1_000_000_000) for sample in io_observation.samples],
+        omit_when_empty=True,
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_storage_io_phase_observable",
+        help_text="1 for measured outer I/O phases; 0 for SQLite-internal phases unavailable to this process.",
+        metric_type="gauge",
+        samples=[
+            ({"phase": phase}, 1)
+            for phase in (
+                "connection_create",
+                "begin",
+                "commit",
+                "rollback",
+                "checkpoint",
+                "blob_file_fsync",
+                "blob_directory_fsync",
+            )
+        ]
+        + [({"phase": phase}, 0) for phase in io_observation.unavailable_phases],
     )
 
     _emit_periodic_loop_metrics(lines)

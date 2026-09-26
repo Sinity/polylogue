@@ -98,28 +98,31 @@ def scan_secrets_command(
     if session_id is None:
         raise click.UsageError("Provide --session <id>, --all, or --status.")
 
-    from polylogue.security.secret_scan import scan_session_for_secret_candidates
+    from polylogue.cli.archive_query import submit_cli_mutation
 
-    result = scan_session_for_secret_candidates(root, session_id)
+    envelope = submit_cli_mutation(env, "maintenance.secret_scan", {"session_id": session_id})
+    result = envelope.get("result")
+    if not isinstance(result, dict):
+        raise click.ClickException("daemon returned no secret scan result")
 
     if output_format == "json":
         import json as json_module
 
-        click.echo(json_module.dumps({"status": "ok" if result.found else "not_found", **result.as_dict()}))
+        click.echo(json_module.dumps({"status": "ok" if result.get("found") else "not_found", **result}))
         return
 
-    if not result.found:
+    if not result.get("found"):
         env.ui.console.print(f"No session found for {session_id!r}.")
         return
 
     env.ui.summary(
         f"Scanned session {session_id}",
         [
-            f"  blocks scanned: {result.blocks_scanned}",
-            f"  secret candidates found: {result.candidates_found}",
+            f"  blocks scanned: {result['blocks_scanned']}",
+            f"  secret candidates found: {result['candidates_found']}",
             *(
                 ["  review candidates, then `polylogue ops excise` to remove confirmed secrets."]
-                if result.candidates_found
+                if result["candidates_found"]
                 else []
             ),
         ],
@@ -134,35 +137,16 @@ def _scan_all(
     origin: str | None,
     output_format: str | None,
 ) -> None:
-    from pathlib import Path
+    from polylogue.cli.archive_query import submit_cli_mutation
 
-    from polylogue.security.secret_scan import DEFAULT_SECRET_SCAN_PAGE_SIZE, scan_archive_for_secret_candidates
-
-    assert isinstance(root, Path)
-
-    single_page = page_limit is not None
-    page_size = page_limit if page_limit is not None else DEFAULT_SECRET_SCAN_PAGE_SIZE
-
-    sessions_scanned = 0
-    blocks_scanned = 0
-    candidates_found = 0
-    errors = 0
-    pages = 0
-    remaining_pending = 0
-    while True:
-        result = scan_archive_for_secret_candidates(root, max_sessions=page_size, origin=origin)
-        pages += 1
-        sessions_scanned += result.sessions_scanned
-        blocks_scanned += result.blocks_scanned
-        candidates_found += result.candidates_found
-        errors += result.errors
-        remaining_pending = result.remaining_pending
-        if single_page or not result.more_pending:
-            break
-        if result.sessions_scanned == 0:
-            # No forward progress this page (e.g. every candidate errored);
-            # stop instead of looping forever against the same backlog.
-            break
+    envelope = submit_cli_mutation(
+        env,
+        "maintenance.secret_scan",
+        {"scan_all": True, "max_sessions": page_limit, "origin": origin},
+    )
+    result = envelope.get("result")
+    if not isinstance(result, dict):
+        raise click.ClickException("daemon returned no secret scan result")
 
     if output_format == "json":
         import json as json_module
@@ -171,13 +155,13 @@ def _scan_all(
             json_module.dumps(
                 {
                     "status": "ok",
-                    "pages": pages,
-                    "sessions_scanned": sessions_scanned,
-                    "blocks_scanned": blocks_scanned,
-                    "candidates_found": candidates_found,
-                    "errors": errors,
-                    "remaining_pending": remaining_pending,
-                    "more_pending": remaining_pending > 0,
+                    "pages": result["pages"],
+                    "sessions_scanned": result["sessions_scanned"],
+                    "blocks_scanned": result["blocks_scanned"],
+                    "candidates_found": result["candidates_found"],
+                    "errors": result["errors"],
+                    "remaining_pending": result["remaining_pending"],
+                    "more_pending": result["more_pending"],
                 }
             )
         )
@@ -186,15 +170,15 @@ def _scan_all(
     env.ui.summary(
         "Archive-wide secret scan" + (f" (origin={origin})" if origin else ""),
         [
-            f"  pages: {pages}",
-            f"  sessions scanned: {sessions_scanned}",
-            f"  blocks scanned: {blocks_scanned}",
-            f"  secret candidates found: {candidates_found}",
-            *([f"  errors: {errors}"] if errors else []),
-            f"  remaining pending: {remaining_pending}",
+            f"  pages: {result['pages']}",
+            f"  sessions scanned: {result['sessions_scanned']}",
+            f"  blocks scanned: {result['blocks_scanned']}",
+            f"  secret candidates found: {result['candidates_found']}",
+            *([f"  errors: {result['errors']}"] if result["errors"] else []),
+            f"  remaining pending: {result['remaining_pending']}",
             *(
                 ["  review candidates, then `polylogue ops excise` to remove confirmed secrets."]
-                if candidates_found
+                if result["candidates_found"]
                 else []
             ),
         ],

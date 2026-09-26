@@ -372,6 +372,127 @@ def maintenance_demo_augment(
     }
 
 
+def maintenance_secret_scan(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    """Run the secret scanner under the resident writer's admission."""
+    del audit, snapshot
+    from polylogue.security.secret_scan import (
+        DEFAULT_SECRET_SCAN_PAGE_SIZE,
+        SECRET_SCAN_VERSION,
+        count_pending_secret_scan_sessions,
+        scan_archive_for_secret_candidates,
+        scan_session_for_secret_candidates,
+    )
+
+    payload = request.payload
+    detail: dict[str, Any]
+    origin = cast(str | None, payload.get("origin"))
+    if payload.get("status_only"):
+        detail = {
+            "scanner_version": SECRET_SCAN_VERSION,
+            "remaining_pending": count_pending_secret_scan_sessions(
+                context.archive_root / "index.db", context.archive_root / "ops.db", origin=origin
+            ),
+        }
+        effect = "no-effect"
+    elif payload.get("scan_all"):
+        limit = cast(int | None, payload.get("max_sessions"))
+        page_size = limit or DEFAULT_SECRET_SCAN_PAGE_SIZE
+        detail = {
+            "pages": 0,
+            "sessions_scanned": 0,
+            "blocks_scanned": 0,
+            "candidates_found": 0,
+            "errors": 0,
+            "remaining_pending": 0,
+        }
+        while True:
+            assert context.runtime is not None
+            stop = context.runtime.stop_reason(request)
+            if stop is not None:
+                from polylogue.archive.query.execution_control import QueryCancelledError
+
+                raise QueryCancelledError(
+                    f"secret scan stopped after {detail['sessions_scanned']} sessions: {stop}; "
+                    "rerun to continue from durable coverage"
+                )
+            page = scan_archive_for_secret_candidates(context.archive_root, max_sessions=page_size, origin=origin)
+            detail["pages"] += 1
+            for key in ("sessions_scanned", "blocks_scanned", "candidates_found", "errors"):
+                detail[key] += getattr(page, key)
+            detail["remaining_pending"] = page.remaining_pending
+            if limit is not None or not page.more_pending or page.sessions_scanned == 0:
+                break
+        detail["more_pending"] = detail["remaining_pending"] > 0
+        effect = "committed" if detail["sessions_scanned"] else "no-effect"
+    else:
+        session_id = str(payload["session_id"])
+        scanned = scan_session_for_secret_candidates(context.archive_root, session_id)
+        detail = scanned.as_dict()
+        effect = "committed" if scanned.found else "no-effect"
+    return {
+        "operation": request.operation,
+        "outcome": "completed",
+        "sequence": 1,
+        "effect": effect,
+        "result": detail,
+    }
+
+
+def maintenance_backup(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    """Refuse generic dispatch, which pins a reader across backup checkpoints."""
+    del request, context, audit, snapshot
+    raise RuntimeError("maintenance.backup requires snapshotless staged execution")
+
+
+def maintenance_embedding_failure_resolve(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    """Resolve an active embedding failure under the daemon writer."""
+    del audit, snapshot
+    from polylogue.storage.archive_identity import ArchiveLocation
+    from polylogue.storage.embeddings.materialization import resolve_embedding_failure_with_lifecycle
+
+    embeddings_db = ArchiveLocation.resolve(context.archive_root).active_tier("embeddings").configured_path
+    if not embeddings_db.is_file():
+        raise FileNotFoundError("embeddings.db not found")
+    payload = request.payload
+    failure = resolve_embedding_failure_with_lifecycle(
+        embeddings_db,
+        failure_id=str(payload["failure_id"]),
+        action=cast(Any, payload["resolution"]),
+        note=cast(str | None, payload.get("note")),
+        superseded_by=cast(str | None, payload.get("superseded_by")),
+    )
+    return {
+        "operation": request.operation,
+        "outcome": "completed",
+        "sequence": 1,
+        "effect": "committed",
+        "affected_count": 1,
+        "result": {
+            "failure_id": failure.failure_id,
+            "session_id": failure.session_id,
+            "lifecycle_state": failure.lifecycle_state,
+            "resolution_action": failure.resolution_action,
+            "resolution_note": failure.resolution_note,
+            "superseded_by": failure.superseded_by,
+        },
+    }
+
+
 def _audit_int(value: object, *, field: str) -> int:
     """Reject malformed durable counters before scheduling a mutation batch."""
 
@@ -995,7 +1116,21 @@ def mutation_annotation_import_batch(
         model_ref=str(payload["model_ref"]),
         prompt_ref=str(payload["prompt_ref"]),
         metadata=cast(dict[str, object], payload.get("metadata") or {}),
+        created_at_ms=(int(cast(int, payload["created_at_ms"])) if payload.get("created_at_ms") is not None else None),
     )
+
+    registry = None
+    schema_definition_json = payload.get("schema_definition_json")
+    if schema_definition_json is not None:
+        from polylogue.annotations.schema import AnnotationSchema, AnnotationSchemaRegistry
+
+        if not isinstance(schema_definition_json, str):
+            raise ValueError("schema_definition_json must be a string")
+        schema = AnnotationSchema.from_canonical_definition_json(schema_definition_json)
+        if schema.schema_id != product_request.schema_id or schema.version != product_request.schema_version:
+            raise ValueError("schema_definition_json does not match the import request schema identity")
+        registry = AnnotationSchemaRegistry()
+        registry.register(schema)
 
     class _DaemonImportArchiveHandle:
         """Supplies exactly what ``import_annotation_batch`` reads off ``poly``."""
@@ -1009,7 +1144,10 @@ def mutation_annotation_import_batch(
 
     async def _run() -> AnnotationBatchImportResult:
         with adopt_write_lease(delegation):
-            return await import_annotation_batch(cast(Any, _DaemonImportArchiveHandle()), product_request)
+            handle = cast(Any, _DaemonImportArchiveHandle())
+            if registry is None:
+                return await import_annotation_batch(handle, product_request)
+            return await import_annotation_batch(handle, product_request, registry=registry)
 
     result = asyncio.run(_run())
     return {
@@ -1091,6 +1229,7 @@ def mutation_judgment_record(
                         replacement_kind=(
                             None if item.get("replacement_kind") is None else str(item["replacement_kind"])
                         ),
+                        replacement_value=item.get("replacement_value"),
                         expected_evidence_digest=(
                             None
                             if item.get("expected_evidence_digest") is None

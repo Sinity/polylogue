@@ -63,11 +63,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/WebCredentialFailurePayload'
       x-polylogue-recoverable-states: *id001
+      x-polylogue-declaration:
+        declaration_id: daemon.http.post.api.web-auth.session
+        method: POST
+        path: /api/web-auth/session
+        request_contract: HTTP route request
+        response_contract: WebCredentialBootstrapPayload
+        auth_policy: first_party_same_origin
+        owner_path: polylogue/daemon/http.py
+        migration_reason: First-party credential lifecycle is owned by the daemon credential registry.
     delete:
       summary: Revoke the current first-party web credential
       operationId: revokeWebCredential
-      security:
-      - webCredentialCookie: []
+      security: []
       responses:
         '200':
           description: Credential revoked and browser cookie expired.
@@ -114,6 +122,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/WebCredentialFailurePayload'
       x-polylogue-recoverable-states: *id001
+      x-polylogue-declaration:
+        declaration_id: daemon.http.delete.api.web-auth.session
+        method: DELETE
+        path: /api/web-auth/session
+        request_contract: HTTP route request
+        response_contract: WebCredentialRevocationPayload
+        auth_policy: first_party_same_origin
+        owner_path: polylogue/daemon/http.py
+        migration_reason: First-party credential lifecycle is owned by the daemon credential registry.
   /api/status:
     get:
       summary: Report daemon status and archive readiness
@@ -166,8 +183,8 @@ paths:
         request_contract: StatusQuery
         response_contract: DaemonStatusPayload
         auth_policy: credential_if_configured
-        domain_operation: daemon.status
         owner_path: polylogue/daemon/http.py
+        domain_operation: daemon.status
   /api/sessions:
     get:
       summary: Ranked session search and list
@@ -204,6 +221,18 @@ paths:
       - name: provider
         in: query
         description: Provider name filter.
+        required: false
+        schema:
+          type: string
+      - name: origin
+        in: query
+        description: Public origin filter for session-list mode.
+        required: false
+        schema:
+          type: string
+      - name: repo
+        in: query
+        description: Repository filter for session-list mode.
         required: false
         schema:
           type: string
@@ -309,8 +338,8 @@ paths:
         request_contract: SessionSearchQuery
         response_contract: SearchEnvelope | SessionListResponse
         auth_policy: credential_if_configured
-        domain_operation: sessions.find
         owner_path: polylogue/daemon/http.py
+        domain_operation: sessions.find
   /api/query-units:
     get:
       summary: Terminal query-unit rows
@@ -594,8 +623,8 @@ paths:
         request_contract: QueryUnitQuery
         response_contract: QueryUnitResultEnvelope
         auth_policy: credential_if_configured
-        domain_operation: query.units
         owner_path: polylogue/daemon/http.py
+        domain_operation: query.units
   /api/sessions/{session_id}/read:
     get:
       summary: Execute a session read-view
@@ -802,8 +831,8 @@ paths:
         request_contract: SessionReadQuery
         response_contract: SessionReadViewEnvelope
         auth_policy: credential_if_configured
-        domain_operation: sessions.read
         owner_path: polylogue/daemon/http.py
+        domain_operation: sessions.read
   /api/assertions:
     get:
       summary: List assertion-backed overlay claims
@@ -894,6 +923,1624 @@ paths:
                 anyOf:
                 - $ref: '#/components/schemas/QueryErrorPayload'
                 - $ref: '#/components/schemas/WebCredentialFailurePayload'
+      x-polylogue-declaration:
+        declaration_id: daemon.user.user_assertions_list
+        method: GET
+        path: /api/assertions
+        request_contract: AssertionClaimQuery
+        response_contract: AssertionClaimListPayload
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: user.assertions.list
+  /api/sources:
+    get:
+      summary: Read /api/sources through the daemon detail surface.
+      responses:
+        '200':
+          description: source list JSON
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeReadDetailSources
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.read-detail.sources
+        method: GET
+        path: /api/sources
+        request_contract: EmptyQuery
+        response_contract: source list JSON
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: read_configured_sources
+  /api/sessions/{session_id}:
+    get:
+      summary: Read /api/sessions/:id through the daemon detail surface.
+      responses:
+        '200':
+          description: Session detail JSON
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+      operationId: routeReadDetailSessionsId
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.read-detail.sessions.id
+        method: GET
+        path: /api/sessions/:id
+        request_contract: SessionDetailQuery
+        response_contract: Session detail JSON
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: execute_http_session_detail
+  /api/sessions/{session_id}/messages:
+    get:
+      summary: Read /api/sessions/:id/messages through the daemon detail surface.
+      responses:
+        '200':
+          description: session messages JSON
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+      operationId: routeReadDetailSessionsIdMessages
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.read-detail.sessions.id.messages
+        method: GET
+        path: /api/sessions/:id/messages
+        request_contract: SessionMessagesQuery
+        response_contract: session messages JSON
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: execute_http_session_messages
+  /api/sessions/{session_id}/raw:
+    get:
+      summary: Read /api/sessions/:id/raw through the daemon detail surface.
+      responses:
+        '200':
+          description: raw session payload JSON
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+      operationId: routeReadDetailSessionsIdRaw
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.read-detail.sessions.id.raw
+        method: GET
+        path: /api/sessions/:id/raw
+        request_contract: SessionRawQuery
+        response_contract: raw session payload JSON
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: read_session_raw
+  /api/sessions/{session_id}/cost:
+    get:
+      summary: Read /api/sessions/:id/cost through the daemon detail surface.
+      responses:
+        '200':
+          description: cost JSON
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+      operationId: routeReadDetailSessionsIdCost
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.read-detail.sessions.id.cost
+        method: GET
+        path: /api/sessions/:id/cost
+        request_contract: SessionCostQuery
+        response_contract: cost JSON
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: read_session_cost
+  /api/sessions/{session_id}/evidence-summary:
+    get:
+      summary: Read /api/sessions/:id/evidence-summary through the daemon detail surface.
+      responses:
+        '200':
+          description: bounded session evidence summary
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+      operationId: routeReadDetailSessionsIdEvidenceSummary
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.read-detail.sessions.id.evidence-summary
+        method: GET
+        path: /api/sessions/:id/evidence-summary
+        request_contract: SessionEvidenceQuery
+        response_contract: bounded session evidence summary
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: read_session_evidence
+  /api/sessions/{session_id}/provenance:
+    get:
+      summary: Read /api/sessions/:id/provenance through the daemon detail surface.
+      responses:
+        '200':
+          description: provenance envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+      operationId: routeReadDetailSessionsIdProvenance
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.read-detail.sessions.id.provenance
+        method: GET
+        path: /api/sessions/:id/provenance
+        request_contract: SessionProvenanceQuery
+        response_contract: provenance envelope
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: build_provenance_payload
+  /api/sessions/{session_id}/topology:
+    get:
+      summary: Read /api/sessions/:id/topology through the daemon detail surface.
+      responses:
+        '200':
+          description: topology envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+      operationId: routeReadDetailSessionsIdTopology
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.read-detail.sessions.id.topology
+        method: GET
+        path: /api/sessions/:id/topology
+        request_contract: SessionTopologyQuery
+        response_contract: topology envelope
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: read_session_topology
+  /api/sessions/{session_id}/topology/parent-chain:
+    get:
+      summary: Read /api/sessions/:id/topology/parent-chain through the daemon detail surface.
+      responses:
+        '200':
+          description: parent-chain topology envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+      operationId: routeReadDetailSessionsIdTopologyParentChain
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.read-detail.sessions.id.topology.parent-chain
+        method: GET
+        path: /api/sessions/:id/topology/parent-chain
+        request_contract: ParentChainQuery
+        response_contract: parent-chain topology envelope
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: read_session_topology
+  /api/sessions/{session_id}/similar:
+    get:
+      summary: Read /api/sessions/:id/similar through the daemon detail surface.
+      responses:
+        '200':
+          description: similar-session envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+      operationId: routeReadDetailSessionsIdSimilar
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.read-detail.sessions.id.similar
+        method: GET
+        path: /api/sessions/:id/similar
+        request_contract: SimilarSessionQuery
+        response_contract: similar-session envelope
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: build_similar_payload
+  /api/sessions/{session_id}/attachments:
+    get:
+      summary: Read /api/sessions/:id/attachments through the daemon detail surface.
+      responses:
+        '200':
+          description: session attachment envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+      operationId: routeReadDetailSessionsIdAttachments
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.read-detail.sessions.id.attachments
+        method: GET
+        path: /api/sessions/:id/attachments
+        request_contract: SessionAttachmentsQuery
+        response_contract: session attachment envelope
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: read_session_attachments
+  /api/insights/sessions/{session_id}:
+    get:
+      summary: Read /api/insights/sessions/:id through the daemon detail surface.
+      responses:
+        '200':
+          description: session insights envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+      operationId: routeReadDetailInsightsSessionsId
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.read-detail.insights.sessions.id
+        method: GET
+        path: /api/insights/sessions/:id
+        request_contract: SessionInsightsQuery
+        response_contract: session insights envelope
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: read_session_insights
+  /api/raw_artifacts/{session_id}:
+    get:
+      summary: Read /api/raw_artifacts/:id through the daemon detail surface.
+      responses:
+        '200':
+          description: raw artifact preview
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+      operationId: routeReadDetailRawArtifactsId
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.read-detail.raw_artifacts.id
+        method: GET
+        path: /api/raw_artifacts/:id
+        request_contract: RawArtifactQuery
+        response_contract: raw artifact preview
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: read_raw_artifacts
+  /api/thread-continue-templates:
+    get:
+      summary: Read /api/thread-continue-templates through the daemon detail surface.
+      responses:
+        '200':
+          description: thread continuation templates
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeReadDetailThreadContinueTemplates
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.read-detail.thread-continue-templates
+        method: GET
+        path: /api/thread-continue-templates
+        request_contract: EmptyQuery
+        response_contract: thread continuation templates
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: build_templates_envelope
+  /api/overview:
+    get:
+      summary: Read /api/overview through the daemon query surface.
+      responses:
+        '200':
+          description: bounded cockpit overview
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeReadQueryOverview
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.read-query.overview
+        method: GET
+        path: /api/overview
+        request_contract: OverviewQuery
+        response_contract: bounded cockpit overview
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: read_archive_overview
+  /api/facets:
+    get:
+      summary: Read /api/facets through the daemon query surface.
+      responses:
+        '200':
+          description: FacetsResponse with route-state metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeReadQueryFacets
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.read-query.facets
+        method: GET
+        path: /api/facets
+        request_contract: SessionFacetQuery
+        response_contract: FacetsResponse with route-state metadata
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: facets
+  /api/refs/resolve:
+    get:
+      summary: Read /api/refs/resolve through the daemon query surface.
+      responses:
+        '200':
+          description: PublicRefResolutionPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeReadQueryRefsResolve
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.read-query.refs.resolve
+        method: GET
+        path: /api/refs/resolve
+        request_contract: PublicRefQuery
+        response_contract: PublicRefResolutionPayload
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: ref_resolution.plan_ref_resolution
+  /api/query-completions:
+    get:
+      summary: Read /api/query-completions through the daemon query surface.
+      responses:
+        '200':
+          description: query completion metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeReadQueryQueryCompletions
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.read-query.query-completions
+        method: GET
+        path: /api/query-completions
+        request_contract: QueryCompletionQuery
+        response_contract: query completion metadata
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: query_completion_payload
+  /api/action-affordances:
+    get:
+      summary: Read /api/action-affordances through the daemon query surface.
+      responses:
+        '200':
+          description: ActionAffordanceListPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeReadQueryActionAffordances
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.read-query.action-affordances
+        method: GET
+        path: /api/action-affordances
+        request_contract: EmptyQuery
+        response_contract: ActionAffordanceListPayload
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: action_affordance_list_payload
+  /api/read-view-profiles:
+    get:
+      summary: Read /api/read-view-profiles through the daemon query surface.
+      responses:
+        '200':
+          description: read-view profile metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeReadQueryReadViewProfiles
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.read-query.read-view-profiles
+        method: GET
+        path: /api/read-view-profiles
+        request_contract: EmptyQuery
+        response_contract: read-view profile metadata
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: read_view_profile_payloads
+  /api/paste-browser:
+    get:
+      summary: Read /api/paste-browser through the daemon query surface.
+      responses:
+        '200':
+          description: paste browser JSON
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeReadQueryPasteBrowser
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.read-query.paste-browser
+        method: GET
+        path: /api/paste-browser
+        request_contract: PasteBrowserQuery
+        response_contract: paste browser JSON
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: query.units
+  /api/attachments:
+    get:
+      summary: Read /api/attachments through the daemon query surface.
+      responses:
+        '200':
+          description: attachment library JSON
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeReadQueryAttachments
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.read-query.attachments
+        method: GET
+        path: /api/attachments
+        request_contract: AttachmentLibraryQuery
+        response_contract: attachment library JSON
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: read_attachment_library_page
+  /api/stack:
+    get:
+      summary: Read a bounded workspace view over selected sessions.
+      responses:
+        '200':
+          description: StackWorkspaceEnvelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeStack
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.workspace.stack
+        method: GET
+        path: /api/stack
+        request_contract: StackWorkspaceQuery
+        response_contract: StackWorkspaceEnvelope
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        migration_reason: Workspace route still uses the established direct archive projection; no canonical daemon operation
+          owns it.
+  /api/compare:
+    get:
+      summary: Compare two sessions with a bounded message window.
+      responses:
+        '200':
+          description: CompareWorkspaceEnvelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeCompare
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.workspace.compare
+        method: GET
+        path: /api/compare
+        request_contract: CompareWorkspaceQuery
+        response_contract: CompareWorkspaceEnvelope
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        migration_reason: Workspace route still uses the established direct archive projection; no canonical daemon operation
+          owns it.
+  /api/reset:
+    post:
+      summary: Reset one selected session through the daemon write owner.
+      responses:
+        default:
+          description: MutationResultPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeReset
+      security:
+      - machineBearer: []
+      x-polylogue-declaration:
+        declaration_id: daemon.maintenance.reset
+        method: POST
+        path: /api/reset
+        request_contract: ResetSessionRequest
+        response_contract: MutationResultPayload
+        auth_policy: bearer_if_configured_and_same_origin
+        owner_path: polylogue/daemon/http.py
+        migration_reason: This compatibility route still calls the safe session-delete API directly; maintenance.reset owns
+          archive-file reset.
+  /api/ingest:
+    post:
+      summary: Stage and submit one import source to the daemon ingest operation.
+      responses:
+        default:
+          description: DaemonOperationResult
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeIngest
+      security:
+      - machineBearer: []
+      x-polylogue-declaration:
+        declaration_id: daemon.maintenance.ingest
+        method: POST
+        path: /api/ingest
+        request_contract: IngestRequest
+        response_contract: DaemonOperationResult
+        auth_policy: bearer_if_configured_and_same_origin
+        owner_path: polylogue/daemon/http.py
+        domain_operation: ingest
+  /api/demo/augment:
+    post:
+      summary: Apply deterministic demo augmentation through the daemon write bridge.
+      responses:
+        default:
+          description: DemoAugmentResult
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeDemoAugment
+      security:
+      - machineBearer: []
+      x-polylogue-declaration:
+        declaration_id: daemon.maintenance.demo.augment
+        method: POST
+        path: /api/demo/augment
+        request_contract: DemoAugmentRequest
+        response_contract: DemoAugmentResult
+        auth_policy: bearer_if_configured_and_same_origin
+        owner_path: polylogue/daemon/http.py
+        migration_reason: This compatibility route still applies demo writes through the bridge; the declared maintenance.demo.augment
+          operation is not its executor.
+  /api/health/check:
+    get:
+      summary: Execute GET /api/health/check through the daemon HTTP adapter.
+      responses:
+        '200':
+          description: JSON
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeGetApiHealthCheck
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.http.get.api.health.check
+        method: GET
+        path: /api/health/check
+        request_contract: HTTP route request
+        response_contract: JSON
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        migration_reason: The handler remains the established HTTP compatibility adapter; it does not call one fixed archive
+          operation.
+  /api/health:
+    get:
+      summary: Execute GET /api/health through the daemon HTTP adapter.
+      responses:
+        '200':
+          description: JSON
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeGetApiHealth
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.http.get.api.health
+        method: GET
+        path: /api/health
+        request_contract: HTTP route request
+        response_contract: JSON
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        migration_reason: The handler remains the established HTTP compatibility adapter; it does not call one fixed archive
+          operation.
+  /api/events:
+    get:
+      summary: Execute GET /api/events through the daemon HTTP adapter.
+      responses:
+        '200':
+          description: SSE or JSON event poll
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+            text/event-stream:
+              schema:
+                type: string
+      x-polylogue-client-generation: false
+      operationId: routeGetApiEvents
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.http.get.api.events
+        method: GET
+        path: /api/events
+        request_contract: HTTP route request
+        response_contract: SSE or JSON event poll
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        migration_reason: The daemon event bus owns polling and SSE streaming.
+  /api/agents/coordination:
+    get:
+      summary: Execute GET /api/agents/coordination through the daemon HTTP adapter.
+      responses:
+        '200':
+          description: AgentCoordinationPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeGetApiAgentsCoordination
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.http.get.api.agents.coordination
+        method: GET
+        path: /api/agents/coordination
+        request_contract: HTTP route request
+        response_contract: AgentCoordinationPayload
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        migration_reason: The handler remains the established HTTP compatibility adapter; it does not call one fixed archive
+          operation.
+  /api/provider-usage:
+    get:
+      summary: Execute GET /api/provider-usage through the daemon HTTP adapter.
+      responses:
+        '200':
+          description: ProviderUsageReport
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeGetApiProviderUsage
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.http.get.api.provider-usage
+        method: GET
+        path: /api/provider-usage
+        request_contract: HTTP route request
+        response_contract: ProviderUsageReport
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        migration_reason: The handler remains the established HTTP compatibility adapter; it does not call one fixed archive
+          operation.
+  /api/archive-debt:
+    get:
+      summary: Execute GET /api/archive-debt through the daemon HTTP adapter.
+      responses:
+        '200':
+          description: ArchiveDebtListPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeGetApiArchiveDebt
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.http.get.api.archive-debt
+        method: GET
+        path: /api/archive-debt
+        request_contract: HTTP route request
+        response_contract: ArchiveDebtListPayload
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        migration_reason: The handler remains the established HTTP compatibility adapter; it does not call one fixed archive
+          operation.
+  /api/import/explain:
+    get:
+      summary: Execute GET /api/import/explain through the daemon HTTP adapter.
+      responses:
+        '200':
+          description: ImportExplainPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeGetApiImportExplain
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.http.get.api.import.explain
+        method: GET
+        path: /api/import/explain
+        request_contract: HTTP route request
+        response_contract: ImportExplainPayload
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        migration_reason: The handler remains the established HTTP compatibility adapter; it does not call one fixed archive
+          operation.
+  /api/operation:
+    post:
+      summary: Execute POST /api/operation through the daemon HTTP adapter.
+      responses:
+        default:
+          description: DaemonOperationEnvelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routePostApiOperation
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.http.post.api.operation
+        method: POST
+        path: /api/operation
+        request_contract: HTTP route request
+        response_contract: DaemonOperationEnvelope
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        migration_reason: The payload selects its declared operation dynamically; the HTTP endpoint is the shared dispatcher.
+  /api/cli/query:
+    post:
+      summary: Execute POST /api/cli/query through the daemon HTTP adapter.
+      responses:
+        default:
+          description: SearchEnvelope / SessionListResponse with route_state
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routePostApiCliQuery
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.http.post.api.cli.query
+        method: POST
+        path: /api/cli/query
+        request_contract: HTTP route request
+        response_contract: SearchEnvelope / SessionListResponse with route_state
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        migration_reason: The CLI query compatibility body is lowered by the daemon query adapter.
+  /api/telemetry/mcp-calls:
+    post:
+      summary: Execute POST /api/telemetry/mcp-calls through the daemon HTTP adapter.
+      responses:
+        default:
+          description: MCP call-log receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routePostApiTelemetryMcpCalls
+      security:
+      - machineBearer: []
+      x-polylogue-declaration:
+        declaration_id: daemon.http.post.api.telemetry.mcp-calls
+        method: POST
+        path: /api/telemetry/mcp-calls
+        request_contract: HTTP route request
+        response_contract: MCP call-log receipt
+        auth_policy: bearer_if_configured_and_same_origin
+        owner_path: polylogue/daemon/http.py
+        migration_reason: Bounded telemetry receipt is written by the daemon writer.
+  /api/webui/observability:
+    get:
+      summary: Execute GET /api/webui/observability through the daemon HTTP adapter.
+      responses:
+        '200':
+          description: WebUI observability projection
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: true
+      operationId: getWebuiObservability
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.http.get.api.webui.observability
+        method: GET
+        path: /api/webui/observability
+        request_contract: HTTP route request
+        response_contract: WebUI observability projection
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        migration_reason: The handler remains the established HTTP compatibility adapter; it does not call one fixed archive
+          operation.
+  /api/webui/freshness:
+    get:
+      summary: Execute GET /api/webui/freshness through the daemon HTTP adapter.
+      responses:
+        '200':
+          description: NamedSourceFreshness projection
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: true
+      parameters:
+      - name: source
+        in: query
+        required: true
+        schema:
+          type: string
+      operationId: getWebuiFreshness
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.http.get.api.webui.freshness
+        method: GET
+        path: /api/webui/freshness
+        request_contract: HTTP route request
+        response_contract: NamedSourceFreshness projection
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        migration_reason: The handler remains the established HTTP compatibility adapter; it does not call one fixed archive
+          operation.
+  /api/webui/insights/{name}:
+    get:
+      summary: Execute GET /api/webui/insights/:name through the daemon HTTP adapter.
+      responses:
+        '200':
+          description: Single WebUI insight descriptor projection
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      operationId: routeGetApiWebuiInsightsName
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.http.get.api.webui.insights.name
+        method: GET
+        path: /api/webui/insights/:name
+        request_contract: HTTP route request
+        response_contract: Single WebUI insight descriptor projection
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        migration_reason: The handler remains the established HTTP compatibility adapter; it does not call one fixed archive
+          operation.
+  /api/user/marks:
+    get:
+      summary: Execute user.marks.list through the daemon user-overlay operation.
+      responses:
+        '200':
+          description: OverlayListPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeGetApiUserMarks
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.user.user_marks_list
+        method: GET
+        path: /api/user/marks
+        request_contract: MarkListQuery
+        response_contract: OverlayListPayload
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: user.marks.list
+    post:
+      summary: Execute user.mark.add through the daemon user-overlay operation.
+      responses:
+        default:
+          description: MutationResultPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routePostApiUserMarks
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.user.user_mark_add
+        method: POST
+        path: /api/user/marks
+        request_contract: MarkMutationBody
+        response_contract: MutationResultPayload
+        auth_policy: credential_and_same_origin
+        owner_path: polylogue/daemon/http.py
+        domain_operation: user.mark.add
+    delete:
+      summary: Execute user.mark.remove through the daemon user-overlay operation.
+      responses:
+        default:
+          description: MutationResultPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeDeleteApiUserMarks
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.user.user_mark_remove
+        method: DELETE
+        path: /api/user/marks
+        request_contract: MarkMutationQuery
+        response_contract: MutationResultPayload
+        auth_policy: credential_and_same_origin
+        owner_path: polylogue/daemon/http.py
+        domain_operation: user.mark.remove
+  /api/user/annotations:
+    get:
+      summary: Execute user.annotations.list through the daemon user-overlay operation.
+      responses:
+        '200':
+          description: OverlayListPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeGetApiUserAnnotations
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.user.user_annotations_list
+        method: GET
+        path: /api/user/annotations
+        request_contract: AnnotationListQuery
+        response_contract: OverlayListPayload
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: user.annotations.list
+    post:
+      summary: Execute user.annotation.save through the daemon user-overlay operation.
+      responses:
+        default:
+          description: MutationResultPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routePostApiUserAnnotations
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.user.user_annotation_save
+        method: POST
+        path: /api/user/annotations
+        request_contract: AnnotationMutationBody
+        response_contract: MutationResultPayload
+        auth_policy: credential_and_same_origin
+        owner_path: polylogue/daemon/http.py
+        domain_operation: user.annotation.save
+  /api/user/annotations/{session_id}:
+    get:
+      summary: Execute user.annotations.get through the daemon user-overlay operation.
+      responses:
+        '200':
+          description: OverlayItemPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+      operationId: routeGetApiUserAnnotationsId
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.user.user_annotations_get
+        method: GET
+        path: /api/user/annotations/:id
+        request_contract: OverlayIdQuery
+        response_contract: OverlayItemPayload
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: user.annotations.get
+    delete:
+      summary: Execute user.annotation.delete through the daemon user-overlay operation.
+      responses:
+        default:
+          description: MutationResultPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+      operationId: routeDeleteApiUserAnnotationsId
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.user.user_annotation_delete
+        method: DELETE
+        path: /api/user/annotations/:id
+        request_contract: OverlayIdQuery
+        response_contract: MutationResultPayload
+        auth_policy: credential_and_same_origin
+        owner_path: polylogue/daemon/http.py
+        domain_operation: user.annotation.delete
+  /api/user/saved-views:
+    get:
+      summary: Execute user.saved_views.list through the daemon user-overlay operation.
+      responses:
+        '200':
+          description: OverlayListPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeGetApiUserSavedViews
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.user.user_saved_views_list
+        method: GET
+        path: /api/user/saved-views
+        request_contract: EmptyQuery
+        response_contract: OverlayListPayload
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: user.saved_views.list
+    post:
+      summary: Execute user.saved_view.save through the daemon user-overlay operation.
+      responses:
+        default:
+          description: MutationResultPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routePostApiUserSavedViews
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.user.user_saved_view_save
+        method: POST
+        path: /api/user/saved-views
+        request_contract: SavedViewMutationBody
+        response_contract: MutationResultPayload
+        auth_policy: credential_and_same_origin
+        owner_path: polylogue/daemon/http.py
+        domain_operation: user.saved_view.save
+  /api/user/saved-views/{session_id}:
+    get:
+      summary: Execute user.saved_views.get through the daemon user-overlay operation.
+      responses:
+        '200':
+          description: OverlayItemPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+      operationId: routeGetApiUserSavedViewsId
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.user.user_saved_views_get
+        method: GET
+        path: /api/user/saved-views/:id
+        request_contract: OverlayIdQuery
+        response_contract: OverlayItemPayload
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: user.saved_views.get
+    delete:
+      summary: Execute user.saved_view.delete through the daemon user-overlay operation.
+      responses:
+        default:
+          description: MutationResultPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+      operationId: routeDeleteApiUserSavedViewsId
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.user.user_saved_view_delete
+        method: DELETE
+        path: /api/user/saved-views/:id
+        request_contract: OverlayIdQuery
+        response_contract: MutationResultPayload
+        auth_policy: credential_and_same_origin
+        owner_path: polylogue/daemon/http.py
+        domain_operation: user.saved_view.delete
+  /api/user/recall-packs:
+    get:
+      summary: Execute user.recall_packs.list through the daemon user-overlay operation.
+      responses:
+        '200':
+          description: OverlayListPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeGetApiUserRecallPacks
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.user.user_recall_packs_list
+        method: GET
+        path: /api/user/recall-packs
+        request_contract: EmptyQuery
+        response_contract: OverlayListPayload
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: user.recall_packs.list
+    post:
+      summary: Execute user.recall_pack.save through the daemon user-overlay operation.
+      responses:
+        default:
+          description: MutationResultPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routePostApiUserRecallPacks
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.user.user_recall_pack_save
+        method: POST
+        path: /api/user/recall-packs
+        request_contract: RecallPackMutationBody
+        response_contract: MutationResultPayload
+        auth_policy: credential_and_same_origin
+        owner_path: polylogue/daemon/http.py
+        domain_operation: user.recall_pack.save
+  /api/user/recall-packs/{session_id}:
+    get:
+      summary: Execute user.recall_packs.get through the daemon user-overlay operation.
+      responses:
+        '200':
+          description: OverlayItemPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+      operationId: routeGetApiUserRecallPacksId
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.user.user_recall_packs_get
+        method: GET
+        path: /api/user/recall-packs/:id
+        request_contract: OverlayIdQuery
+        response_contract: OverlayItemPayload
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: user.recall_packs.get
+    delete:
+      summary: Execute user.recall_pack.delete through the daemon user-overlay operation.
+      responses:
+        default:
+          description: MutationResultPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+      operationId: routeDeleteApiUserRecallPacksId
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.user.user_recall_pack_delete
+        method: DELETE
+        path: /api/user/recall-packs/:id
+        request_contract: OverlayIdQuery
+        response_contract: MutationResultPayload
+        auth_policy: credential_and_same_origin
+        owner_path: polylogue/daemon/http.py
+        domain_operation: user.recall_pack.delete
+  /api/user/workspaces:
+    get:
+      summary: Execute user.workspaces.list through the daemon user-overlay operation.
+      responses:
+        '200':
+          description: OverlayListPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routeGetApiUserWorkspaces
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.user.user_workspaces_list
+        method: GET
+        path: /api/user/workspaces
+        request_contract: EmptyQuery
+        response_contract: OverlayListPayload
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: user.workspaces.list
+    post:
+      summary: Execute user.workspace.save through the daemon user-overlay operation.
+      responses:
+        default:
+          description: MutationResultPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routePostApiUserWorkspaces
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.user.user_workspace_save
+        method: POST
+        path: /api/user/workspaces
+        request_contract: WorkspaceMutationBody
+        response_contract: MutationResultPayload
+        auth_policy: credential_and_same_origin
+        owner_path: polylogue/daemon/http.py
+        domain_operation: user.workspace.save
+  /api/user/workspaces/{session_id}:
+    get:
+      summary: Execute user.workspaces.get through the daemon user-overlay operation.
+      responses:
+        '200':
+          description: OverlayItemPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+      operationId: routeGetApiUserWorkspacesId
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.user.user_workspaces_get
+        method: GET
+        path: /api/user/workspaces/:id
+        request_contract: OverlayIdQuery
+        response_contract: OverlayItemPayload
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
+        domain_operation: user.workspaces.get
+    delete:
+      summary: Execute user.workspace.delete through the daemon user-overlay operation.
+      responses:
+        default:
+          description: MutationResultPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+      operationId: routeDeleteApiUserWorkspacesId
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      x-polylogue-declaration:
+        declaration_id: daemon.user.user_workspace_delete
+        method: DELETE
+        path: /api/user/workspaces/:id
+        request_contract: OverlayIdQuery
+        response_contract: MutationResultPayload
+        auth_policy: credential_and_same_origin
+        owner_path: polylogue/daemon/http.py
+        domain_operation: user.workspace.delete
 components:
   schemas:
     ActionAffordancePayload:
@@ -4887,32 +6534,14 @@ x-polylogue-route-contracts:
   auth_policy: unauthenticated_loopback
   response_contract: Prometheus text exposition
   notes: Unauthenticated for Prometheus scrapers; no raw archive content.
-- method: POST
-  pattern: /api/web-auth/session
-  kind: browser_shell
-  stability: shell_supported
-  auth_policy: first_party_same_origin
-  response_contract: WebCredentialBootstrapPayload
-  notes: Rotates a scoped HttpOnly credential; no credential bytes appear in the response body.
-- method: DELETE
-  pattern: /api/web-auth/session
-  kind: browser_shell
-  stability: shell_supported
-  auth_policy: first_party_same_origin
-  response_contract: WebCredentialRevocationPayload
-  notes: Revokes the current first-party credential and expires its cookie.
 - method: GET
-  pattern: /api/health/check
-  kind: operational
+  pattern: /api/sessions
+  kind: read_query
   stability: stable
   auth_policy: credential_if_configured
-  response_contract: JSON
-- method: GET
-  pattern: /api/health
-  kind: operational
-  stability: stable
-  auth_policy: credential_if_configured
-  response_contract: JSON
+  response_contract: SearchEnvelope | SessionListResponse
+  notes: declaration=daemon.find.sessions; request=SessionSearchQuery
+  domain_operation: sessions.find
 - method: GET
   pattern: /api/status
   kind: operational
@@ -4922,69 +6551,6 @@ x-polylogue-route-contracts:
   notes: declaration=daemon.status; request=StatusQuery
   domain_operation: daemon.status
 - method: GET
-  pattern: /api/webui/observability
-  kind: observability
-  stability: shell_supported
-  auth_policy: credential_if_configured
-  response_contract: WebUI observability projection
-  notes: Registry descriptor fields, bounded rows, and the status-component snapshot adapter.
-- method: GET
-  pattern: /api/webui/freshness
-  kind: observability
-  stability: shell_supported
-  auth_policy: credential_if_configured
-  response_contract: NamedSourceFreshness projection
-  notes: Requires one explicit source path and rejects archive-wide scans.
-- method: GET
-  pattern: /api/overview
-  kind: read_query
-  stability: shell_supported
-  auth_policy: credential_if_configured
-  response_contract: bounded cockpit overview
-  notes: Privacy-safe landing aggregates, readiness, and a fixed recent-session page.
-- method: GET
-  pattern: /api/events
-  kind: operational
-  stability: stable
-  auth_policy: credential_if_configured
-  response_contract: SSE or JSON event poll
-- method: GET
-  pattern: /api/agents/coordination
-  kind: operational
-  stability: stable
-  auth_policy: credential_if_configured
-  response_contract: AgentCoordinationPayload
-  notes: Shared coordination envelope used by CLI, MCP, and the web mission-control projection.
-- method: GET
-  pattern: /api/sessions
-  kind: read_query
-  stability: stable
-  auth_policy: credential_if_configured
-  response_contract: SearchEnvelope | SessionListResponse
-  notes: declaration=daemon.find.sessions; request=SessionSearchQuery
-  domain_operation: sessions.find
-- method: POST
-  pattern: /api/cli/query
-  kind: read_query
-  stability: private
-  auth_policy: credential_if_configured
-  response_contract: SearchEnvelope / SessionListResponse with route_state
-  notes: Local UDS-only root-request parameter envelope; daemon owns query compilation.
-- method: POST
-  pattern: /api/operation
-  kind: operational
-  stability: private
-  auth_policy: credential_if_configured
-  response_contract: DaemonOperationEnvelope
-  notes: Local CLI/MCP control-plane transport for every archive-scoped declared operation.
-- method: GET
-  pattern: /api/facets
-  kind: read_query
-  stability: stable
-  auth_policy: credential_if_configured
-  response_contract: FacetsResponse with route-state metadata
-  notes: Repo and action facet families are deferred from first paint unless explicitly requested.
-- method: GET
   pattern: /api/query-units
   kind: read_query
   stability: stable
@@ -4992,77 +6558,6 @@ x-polylogue-route-contracts:
   response_contract: QueryUnitResultEnvelope
   notes: declaration=daemon.query.units; request=QueryUnitQuery
   domain_operation: query.units
-- method: GET
-  pattern: /api/provider-usage
-  kind: operational
-  stability: stable
-  auth_policy: credential_if_configured
-  response_contract: ProviderUsageReport
-  notes: Usage-accounting diagnostics; separates provider events, cumulative counters, transcript words, and model rollups.
-- method: GET
-  pattern: /api/archive-debt
-  kind: operational
-  stability: stable
-  auth_policy: credential_if_configured
-  response_contract: ArchiveDebtListPayload
-  notes: Unified archive debt rows shared by CLI, Python API, MCP, and daemon clients.
-- method: GET
-  pattern: /api/import/explain
-  kind: operational
-  stability: shell_supported
-  auth_policy: credential_if_configured
-  response_contract: ImportExplainPayload
-  notes: Local import/source evidence explanation; paths are redacted unless explicitly requested.
-- method: GET
-  pattern: /api/refs/resolve
-  kind: read_query
-  stability: stable
-  auth_policy: credential_if_configured
-  response_contract: PublicRefResolutionPayload
-- method: GET
-  pattern: /api/query-completions
-  kind: read_query
-  stability: stable
-  auth_policy: credential_if_configured
-  response_contract: query completion metadata
-- method: GET
-  pattern: /api/action-affordances
-  kind: read_query
-  stability: stable
-  auth_policy: credential_if_configured
-  response_contract: ActionAffordanceListPayload
-  notes: Shared query-action affordance inventory for CLI, daemon, and automation clients.
-- method: GET
-  pattern: /api/read-view-profiles
-  kind: read_query
-  stability: stable
-  auth_policy: credential_if_configured
-  response_contract: read-view profile metadata
-- method: GET
-  pattern: /api/assertions
-  kind: user_overlay
-  stability: stable
-  auth_policy: credential_if_configured
-  response_contract: AssertionClaimListPayload
-  notes: Read-only assertion-backed overlay claims shared by the web workbench and API clients.
-- method: GET
-  pattern: /api/sources
-  kind: read_detail
-  stability: shell_supported
-  auth_policy: credential_if_configured
-  response_contract: source list JSON
-- method: GET
-  pattern: /api/sessions/:id
-  kind: read_detail
-  stability: stable
-  auth_policy: credential_if_configured
-  response_contract: Session detail JSON
-- method: GET
-  pattern: /api/sessions/:id/messages
-  kind: read_detail
-  stability: stable
-  auth_policy: credential_if_configured
-  response_contract: session messages JSON
 - method: GET
   pattern: /api/sessions/:id/read
   kind: read_detail
@@ -5072,247 +6567,501 @@ x-polylogue-route-contracts:
   notes: declaration=daemon.read.session; request=SessionReadQuery
   domain_operation: sessions.read
 - method: GET
+  pattern: /api/sources
+  kind: read_detail
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: source list JSON
+  notes: declaration=daemon.read-detail.sources; request=EmptyQuery
+  domain_operation: read_configured_sources
+- method: GET
+  pattern: /api/sessions/:id
+  kind: read_detail
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: Session detail JSON
+  notes: declaration=daemon.read-detail.sessions.id; request=SessionDetailQuery
+  domain_operation: execute_http_session_detail
+- method: GET
+  pattern: /api/sessions/:id/messages
+  kind: read_detail
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: session messages JSON
+  notes: declaration=daemon.read-detail.sessions.id.messages; request=SessionMessagesQuery
+  domain_operation: execute_http_session_messages
+- method: GET
   pattern: /api/sessions/:id/raw
   kind: read_detail
   stability: shell_supported
   auth_policy: credential_if_configured
   response_contract: raw session payload JSON
-  notes: Raw preview is opt-in and authenticated.
+  notes: declaration=daemon.read-detail.sessions.id.raw; request=SessionRawQuery
+  domain_operation: read_session_raw
 - method: GET
   pattern: /api/sessions/:id/cost
   kind: read_detail
   stability: shell_supported
   auth_policy: credential_if_configured
   response_contract: cost JSON
+  notes: declaration=daemon.read-detail.sessions.id.cost; request=SessionCostQuery
+  domain_operation: read_session_cost
 - method: GET
   pattern: /api/sessions/:id/evidence-summary
   kind: read_detail
   stability: shell_supported
   auth_policy: credential_if_configured
   response_contract: bounded session evidence summary
-  notes: Structural tool outcome counts, cost projection, and capped lineage refs for the transcript header.
+  notes: declaration=daemon.read-detail.sessions.id.evidence-summary; request=SessionEvidenceQuery
+  domain_operation: read_session_evidence
 - method: GET
   pattern: /api/sessions/:id/provenance
   kind: read_detail
   stability: stable
   auth_policy: credential_if_configured
   response_contract: provenance envelope
-  notes: Raw bytes require the include_raw query parameter.
+  notes: declaration=daemon.read-detail.sessions.id.provenance; request=SessionProvenanceQuery
+  domain_operation: build_provenance_payload
 - method: GET
   pattern: /api/sessions/:id/topology
   kind: read_detail
   stability: stable
   auth_policy: credential_if_configured
   response_contract: topology envelope
+  notes: declaration=daemon.read-detail.sessions.id.topology; request=SessionTopologyQuery
+  domain_operation: read_session_topology
 - method: GET
   pattern: /api/sessions/:id/topology/parent-chain
   kind: read_detail
   stability: stable
   auth_policy: credential_if_configured
   response_contract: parent-chain topology envelope
+  notes: declaration=daemon.read-detail.sessions.id.topology.parent-chain; request=ParentChainQuery
+  domain_operation: read_session_topology
 - method: GET
   pattern: /api/sessions/:id/similar
   kind: read_detail
   stability: stable
   auth_policy: credential_if_configured
   response_contract: similar-session envelope
+  notes: declaration=daemon.read-detail.sessions.id.similar; request=SimilarSessionQuery
+  domain_operation: build_similar_payload
 - method: GET
   pattern: /api/sessions/:id/attachments
   kind: read_detail
   stability: shell_supported
   auth_policy: credential_if_configured
   response_contract: session attachment envelope
+  notes: declaration=daemon.read-detail.sessions.id.attachments; request=SessionAttachmentsQuery
+  domain_operation: read_session_attachments
 - method: GET
   pattern: /api/insights/sessions/:id
   kind: read_detail
   stability: stable
   auth_policy: credential_if_configured
   response_contract: session insights envelope
-- method: GET
-  pattern: /api/webui/insights/:name
-  kind: observability
-  stability: shell_supported
-  auth_policy: credential_if_configured
-  response_contract: Single WebUI insight descriptor projection
-  notes: The daemon owns query construction and descriptor accessors; clients receive a bounded panel only.
+  notes: declaration=daemon.read-detail.insights.sessions.id; request=SessionInsightsQuery
+  domain_operation: read_session_insights
 - method: GET
   pattern: /api/raw_artifacts/:id
   kind: read_detail
   stability: shell_supported
   auth_policy: credential_if_configured
   response_contract: raw artifact preview
-  notes: Authenticated raw preview helper for the local shell.
+  notes: declaration=daemon.read-detail.raw_artifacts.id; request=RawArtifactQuery
+  domain_operation: read_raw_artifacts
 - method: GET
   pattern: /api/thread-continue-templates
   kind: read_detail
   stability: shell_supported
   auth_policy: credential_if_configured
   response_contract: thread continuation templates
+  notes: declaration=daemon.read-detail.thread-continue-templates; request=EmptyQuery
+  domain_operation: build_templates_envelope
+- method: GET
+  pattern: /api/overview
+  kind: read_query
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: bounded cockpit overview
+  notes: declaration=daemon.read-query.overview; request=OverviewQuery
+  domain_operation: read_archive_overview
+- method: GET
+  pattern: /api/facets
+  kind: read_query
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: FacetsResponse with route-state metadata
+  notes: declaration=daemon.read-query.facets; request=SessionFacetQuery
+  domain_operation: facets
+- method: GET
+  pattern: /api/refs/resolve
+  kind: read_query
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: PublicRefResolutionPayload
+  notes: declaration=daemon.read-query.refs.resolve; request=PublicRefQuery
+  domain_operation: ref_resolution.plan_ref_resolution
+- method: GET
+  pattern: /api/query-completions
+  kind: read_query
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: query completion metadata
+  notes: declaration=daemon.read-query.query-completions; request=QueryCompletionQuery
+  domain_operation: query_completion_payload
+- method: GET
+  pattern: /api/action-affordances
+  kind: read_query
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: ActionAffordanceListPayload
+  notes: declaration=daemon.read-query.action-affordances; request=EmptyQuery
+  domain_operation: action_affordance_list_payload
+- method: GET
+  pattern: /api/read-view-profiles
+  kind: read_query
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: read-view profile metadata
+  notes: declaration=daemon.read-query.read-view-profiles; request=EmptyQuery
+  domain_operation: read_view_profile_payloads
 - method: GET
   pattern: /api/paste-browser
   kind: read_query
   stability: shell_supported
   auth_policy: credential_if_configured
   response_contract: paste browser JSON
+  notes: declaration=daemon.read-query.paste-browser; request=PasteBrowserQuery
+  domain_operation: query.units
 - method: GET
   pattern: /api/attachments
   kind: read_query
   stability: shell_supported
   auth_policy: credential_if_configured
   response_contract: attachment library JSON
+  notes: declaration=daemon.read-query.attachments; request=AttachmentLibraryQuery
+  domain_operation: read_attachment_library_page
 - method: GET
   pattern: /api/stack
   kind: workspace
   stability: shell_supported
   auth_policy: credential_if_configured
-  response_contract: stack workspace JSON
+  response_contract: StackWorkspaceEnvelope
+  notes: declaration=daemon.workspace.stack; request=StackWorkspaceQuery; operation-migration=Workspace route still uses the
+    established direct archive projection; no canonical daemon operation owns it.
 - method: GET
   pattern: /api/compare
   kind: workspace
   stability: shell_supported
   auth_policy: credential_if_configured
-  response_contract: compare workspace JSON
+  response_contract: CompareWorkspaceEnvelope
+  notes: declaration=daemon.workspace.compare; request=CompareWorkspaceQuery; operation-migration=Workspace route still uses
+    the established direct archive projection; no canonical daemon operation owns it.
+- method: POST
+  pattern: /api/reset
+  kind: maintenance
+  stability: stable
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: MutationResultPayload
+  notes: declaration=daemon.maintenance.reset; request=ResetSessionRequest; operation-migration=This compatibility route still
+    calls the safe session-delete API directly; maintenance.reset owns archive-file reset.
+- method: POST
+  pattern: /api/ingest
+  kind: maintenance
+  stability: stable
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: DaemonOperationResult
+  notes: declaration=daemon.maintenance.ingest; request=IngestRequest
+  domain_operation: ingest
+- method: POST
+  pattern: /api/demo/augment
+  kind: maintenance
+  stability: operational
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: DemoAugmentResult
+  notes: declaration=daemon.maintenance.demo.augment; request=DemoAugmentRequest; operation-migration=This compatibility route
+    still applies demo writes through the bridge; the declared maintenance.demo.augment operation is not its executor.
+- method: POST
+  pattern: /api/web-auth/session
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: first_party_same_origin
+  response_contract: WebCredentialBootstrapPayload
+  notes: declaration=daemon.http.post.api.web-auth.session; request=HTTP route request; operation-migration=First-party credential
+    lifecycle is owned by the daemon credential registry.
+- method: DELETE
+  pattern: /api/web-auth/session
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: first_party_same_origin
+  response_contract: WebCredentialRevocationPayload
+  notes: declaration=daemon.http.delete.api.web-auth.session; request=HTTP route request; operation-migration=First-party
+    credential lifecycle is owned by the daemon credential registry.
 - method: GET
-  pattern: /api/user/marks
-  kind: user_overlay
+  pattern: /api/health/check
+  kind: operational
   stability: stable
   auth_policy: credential_if_configured
-  response_contract: marks JSON
+  response_contract: JSON
+  notes: declaration=daemon.http.get.api.health.check; request=HTTP route request; operation-migration=The handler remains
+    the established HTTP compatibility adapter; it does not call one fixed archive operation.
 - method: GET
-  pattern: /api/user/annotations
-  kind: user_overlay
+  pattern: /api/health
+  kind: operational
   stability: stable
   auth_policy: credential_if_configured
-  response_contract: annotations JSON
+  response_contract: JSON
+  notes: declaration=daemon.http.get.api.health; request=HTTP route request; operation-migration=The handler remains the established
+    HTTP compatibility adapter; it does not call one fixed archive operation.
 - method: GET
-  pattern: /api/user/annotations/:id
-  kind: user_overlay
+  pattern: /api/events
+  kind: operational
   stability: stable
   auth_policy: credential_if_configured
-  response_contract: annotation JSON
+  response_contract: SSE or JSON event poll
+  notes: declaration=daemon.http.get.api.events; request=HTTP route request; operation-migration=The daemon event bus owns
+    polling and SSE streaming.
 - method: GET
-  pattern: /api/user/saved-views
-  kind: user_overlay
+  pattern: /api/agents/coordination
+  kind: operational
   stability: stable
   auth_policy: credential_if_configured
-  response_contract: saved views JSON
+  response_contract: AgentCoordinationPayload
+  notes: declaration=daemon.http.get.api.agents.coordination; request=HTTP route request; operation-migration=The handler
+    remains the established HTTP compatibility adapter; it does not call one fixed archive operation.
 - method: GET
-  pattern: /api/user/saved-views/:id
-  kind: user_overlay
+  pattern: /api/provider-usage
+  kind: operational
   stability: stable
   auth_policy: credential_if_configured
-  response_contract: saved view JSON
+  response_contract: ProviderUsageReport
+  notes: declaration=daemon.http.get.api.provider-usage; request=HTTP route request; operation-migration=The handler remains
+    the established HTTP compatibility adapter; it does not call one fixed archive operation.
 - method: GET
-  pattern: /api/user/recall-packs
-  kind: user_overlay
+  pattern: /api/archive-debt
+  kind: operational
   stability: stable
   auth_policy: credential_if_configured
-  response_contract: recall packs JSON
+  response_contract: ArchiveDebtListPayload
+  notes: declaration=daemon.http.get.api.archive-debt; request=HTTP route request; operation-migration=The handler remains
+    the established HTTP compatibility adapter; it does not call one fixed archive operation.
 - method: GET
-  pattern: /api/user/recall-packs/:id
-  kind: user_overlay
-  stability: stable
+  pattern: /api/import/explain
+  kind: operational
+  stability: shell_supported
   auth_policy: credential_if_configured
-  response_contract: recall pack JSON
-- method: GET
-  pattern: /api/user/workspaces
-  kind: user_overlay
-  stability: stable
+  response_contract: ImportExplainPayload
+  notes: declaration=daemon.http.get.api.import.explain; request=HTTP route request; operation-migration=The handler remains
+    the established HTTP compatibility adapter; it does not call one fixed archive operation.
+- method: POST
+  pattern: /api/operation
+  kind: operational
+  stability: private
   auth_policy: credential_if_configured
-  response_contract: workspaces JSON
-- method: GET
-  pattern: /api/user/workspaces/:id
-  kind: user_overlay
-  stability: stable
+  response_contract: DaemonOperationEnvelope
+  notes: declaration=daemon.http.post.api.operation; request=HTTP route request; operation-migration=The payload selects its
+    declared operation dynamically; the HTTP endpoint is the shared dispatcher.
+- method: POST
+  pattern: /api/cli/query
+  kind: read_query
+  stability: private
   auth_policy: credential_if_configured
-  response_contract: workspace JSON
+  response_contract: SearchEnvelope / SessionListResponse with route_state
+  notes: declaration=daemon.http.post.api.cli.query; request=HTTP route request; operation-migration=The CLI query compatibility
+    body is lowered by the daemon query adapter.
 - method: POST
   pattern: /api/telemetry/mcp-calls
   kind: operational
   stability: private
   auth_policy: bearer_if_configured_and_same_origin
   response_contract: MCP call-log receipt
-  notes: Machine-client telemetry; persisted by the daemon writer with bounded retention.
-- method: POST
-  pattern: /api/reset
-  kind: maintenance
+  notes: declaration=daemon.http.post.api.telemetry.mcp-calls; request=HTTP route request; operation-migration=Bounded telemetry
+    receipt is written by the daemon writer.
+- method: GET
+  pattern: /api/webui/observability
+  kind: observability
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: WebUI observability projection
+  notes: declaration=daemon.http.get.api.webui.observability; request=HTTP route request; operation-migration=The handler
+    remains the established HTTP compatibility adapter; it does not call one fixed archive operation.
+- method: GET
+  pattern: /api/webui/freshness
+  kind: observability
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: NamedSourceFreshness projection
+  notes: declaration=daemon.http.get.api.webui.freshness; request=HTTP route request; operation-migration=The handler remains
+    the established HTTP compatibility adapter; it does not call one fixed archive operation.
+- method: GET
+  pattern: /api/webui/insights/:name
+  kind: observability
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: Single WebUI insight descriptor projection
+  notes: declaration=daemon.http.get.api.webui.insights.name; request=HTTP route request; operation-migration=The handler
+    remains the established HTTP compatibility adapter; it does not call one fixed archive operation.
+- method: GET
+  pattern: /api/assertions
+  kind: user_overlay
   stability: stable
-  auth_policy: bearer_if_configured_and_same_origin
-  response_contract: reset result JSON
-- method: POST
-  pattern: /api/ingest
-  kind: maintenance
+  auth_policy: credential_if_configured
+  response_contract: AssertionClaimListPayload
+  notes: declaration=daemon.user.user_assertions_list; request=AssertionClaimQuery
+  domain_operation: user.assertions.list
+- method: GET
+  pattern: /api/user/marks
+  kind: user_overlay
   stability: stable
-  auth_policy: bearer_if_configured_and_same_origin
-  response_contract: ingest result JSON
-- method: POST
-  pattern: /api/demo/augment
-  kind: maintenance
-  stability: operational
-  auth_policy: bearer_if_configured_and_same_origin
-  response_contract: demo augmentation result JSON
-  notes: Applies deterministic demo writes through the write bridge; exists for the demo archive, not for general archive
-    mutation.
+  auth_policy: credential_if_configured
+  response_contract: OverlayListPayload
+  notes: declaration=daemon.user.user_marks_list; request=MarkListQuery
+  domain_operation: user.marks.list
+- method: GET
+  pattern: /api/user/annotations
+  kind: user_overlay
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: OverlayListPayload
+  notes: declaration=daemon.user.user_annotations_list; request=AnnotationListQuery
+  domain_operation: user.annotations.list
+- method: GET
+  pattern: /api/user/annotations/:id
+  kind: user_overlay
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: OverlayItemPayload
+  notes: declaration=daemon.user.user_annotations_get; request=OverlayIdQuery
+  domain_operation: user.annotations.get
+- method: GET
+  pattern: /api/user/saved-views
+  kind: user_overlay
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: OverlayListPayload
+  notes: declaration=daemon.user.user_saved_views_list; request=EmptyQuery
+  domain_operation: user.saved_views.list
+- method: GET
+  pattern: /api/user/saved-views/:id
+  kind: user_overlay
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: OverlayItemPayload
+  notes: declaration=daemon.user.user_saved_views_get; request=OverlayIdQuery
+  domain_operation: user.saved_views.get
+- method: GET
+  pattern: /api/user/recall-packs
+  kind: user_overlay
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: OverlayListPayload
+  notes: declaration=daemon.user.user_recall_packs_list; request=EmptyQuery
+  domain_operation: user.recall_packs.list
+- method: GET
+  pattern: /api/user/recall-packs/:id
+  kind: user_overlay
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: OverlayItemPayload
+  notes: declaration=daemon.user.user_recall_packs_get; request=OverlayIdQuery
+  domain_operation: user.recall_packs.get
+- method: GET
+  pattern: /api/user/workspaces
+  kind: user_overlay
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: OverlayListPayload
+  notes: declaration=daemon.user.user_workspaces_list; request=EmptyQuery
+  domain_operation: user.workspaces.list
+- method: GET
+  pattern: /api/user/workspaces/:id
+  kind: user_overlay
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: OverlayItemPayload
+  notes: declaration=daemon.user.user_workspaces_get; request=OverlayIdQuery
+  domain_operation: user.workspaces.get
 - method: POST
   pattern: /api/user/marks
   kind: user_overlay
   stability: stable
   auth_policy: credential_and_same_origin
-  response_contract: mutation envelope
+  response_contract: MutationResultPayload
+  notes: declaration=daemon.user.user_mark_add; request=MarkMutationBody
+  domain_operation: user.mark.add
 - method: POST
   pattern: /api/user/annotations
   kind: user_overlay
   stability: stable
   auth_policy: credential_and_same_origin
-  response_contract: mutation envelope
+  response_contract: MutationResultPayload
+  notes: declaration=daemon.user.user_annotation_save; request=AnnotationMutationBody
+  domain_operation: user.annotation.save
 - method: POST
   pattern: /api/user/saved-views
   kind: user_overlay
   stability: stable
   auth_policy: credential_and_same_origin
-  response_contract: mutation envelope
+  response_contract: MutationResultPayload
+  notes: declaration=daemon.user.user_saved_view_save; request=SavedViewMutationBody
+  domain_operation: user.saved_view.save
 - method: POST
   pattern: /api/user/recall-packs
   kind: user_overlay
   stability: stable
   auth_policy: credential_and_same_origin
-  response_contract: mutation envelope
+  response_contract: MutationResultPayload
+  notes: declaration=daemon.user.user_recall_pack_save; request=RecallPackMutationBody
+  domain_operation: user.recall_pack.save
 - method: POST
   pattern: /api/user/workspaces
   kind: user_overlay
   stability: stable
   auth_policy: credential_and_same_origin
-  response_contract: mutation envelope
+  response_contract: MutationResultPayload
+  notes: declaration=daemon.user.user_workspace_save; request=WorkspaceMutationBody
+  domain_operation: user.workspace.save
 - method: DELETE
   pattern: /api/user/marks
   kind: user_overlay
   stability: stable
   auth_policy: credential_and_same_origin
-  response_contract: mutation envelope
+  response_contract: MutationResultPayload
+  notes: declaration=daemon.user.user_mark_remove; request=MarkMutationQuery
+  domain_operation: user.mark.remove
 - method: DELETE
   pattern: /api/user/annotations/:id
   kind: user_overlay
   stability: stable
   auth_policy: credential_and_same_origin
-  response_contract: mutation envelope
+  response_contract: MutationResultPayload
+  notes: declaration=daemon.user.user_annotation_delete; request=OverlayIdQuery
+  domain_operation: user.annotation.delete
 - method: DELETE
   pattern: /api/user/saved-views/:id
   kind: user_overlay
   stability: stable
   auth_policy: credential_and_same_origin
-  response_contract: mutation envelope
+  response_contract: MutationResultPayload
+  notes: declaration=daemon.user.user_saved_view_delete; request=OverlayIdQuery
+  domain_operation: user.saved_view.delete
 - method: DELETE
   pattern: /api/user/recall-packs/:id
   kind: user_overlay
   stability: stable
   auth_policy: credential_and_same_origin
-  response_contract: mutation envelope
+  response_contract: MutationResultPayload
+  notes: declaration=daemon.user.user_recall_pack_delete; request=OverlayIdQuery
+  domain_operation: user.recall_pack.delete
 - method: DELETE
   pattern: /api/user/workspaces/:id
   kind: user_overlay
   stability: stable
   auth_policy: credential_and_same_origin
-  response_contract: mutation envelope
+  response_contract: MutationResultPayload
+  notes: declaration=daemon.user.user_workspace_delete; request=OverlayIdQuery
+  domain_operation: user.workspace.delete
 x-polylogue-query-ast:
   schema_version: polylogue.query-explain-ast.v1
   schema: '#/components/schemas/QueryExpressionExplanationAst'

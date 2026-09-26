@@ -24,11 +24,11 @@ cd webui
 POLYLOGUE_DAEMON_URL=http://127.0.0.1:8787 npm run dev
 ```
 
-Open the Vite URL printed by the command. Vite serves the island source with hot reload and proxies `/api/*` to `POLYLOGUE_DAEMON_URL`. The production route is `http://127.0.0.1:8787/`; it reads the packaged manifest and serves content-hashed assets under `/assets/<content-hash>`.
+Open the Vite URL printed by the command. Vite serves the island source with hot reload and proxies `/api/*` to `POLYLOGUE_DAEMON_URL`. Production can serve the packaged manifest from the daemon address or from the optional separately supervised browser host (`polylogued run --browser-port 8767`); browser API requests still reach the daemon authority.
 
 ## Contract boundary
 
-`src/contracts/runtime.ts` owns the small reusable runtime-validation primitives; endpoint-specific validators live beside it. `src/lib/api.ts` exports `requestJson()` so every vertical shares same-origin web-credential bootstrap while validating its own typed payload. `src/contracts/query-units.ts` and `fetchArchiveMessagePage()` demonstrate opaque-continuation replay. Keep view-state types inside each island or feature directory.
+`src/api/generated.ts` is rendered from the daemon OpenAPI contract and owns application HTTP requests, including credential bootstrap and opaque query-unit continuations. `src/api/runtime.ts` supplies the same-origin fetch transport and typed errors. Endpoint payload guards remain in `src/contracts/` where a response is a union or has a generic schema; `src/lib/api.ts` adapts generated session methods to those guards. Keep view-state types inside each island or feature directory.
 
 ## Test stack
 

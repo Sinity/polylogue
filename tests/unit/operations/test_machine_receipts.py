@@ -8,9 +8,16 @@ from polylogue.operations.machine_receipts import (
     IngestHistoricalReceipt,
     IngestInputHistoricalReceipt,
     IngestInputPageHistoricalReceipt,
+    IngestInputRawMemberHistorical,
+    IngestInputRawPageHistoricalReceipt,
+    IngestInsightPageHistoricalReceipt,
     IngestRefusedMembershipHistorical,
     IngestTerminalSummaryHistorical,
+    InsightCertifiedCountsHistorical,
+    InsightTargetHistoricalReceipt,
     decode_machine_receipt,
+    ingest_input_raw_pages_digest,
+    ingest_insight_pages_digest,
 )
 
 
@@ -160,3 +167,111 @@ def test_refusal_count_may_not_understate_its_own_enumeration() -> None:
                 )
             ],
         )
+
+
+def test_large_ingest_projection_uses_a_page_reference_without_truncating_its_count() -> None:
+    from polylogue.operations.machine_receipts import MAX_PAGE_ITEMS, ingest_session_ids_digest
+
+    session_ids = [f"chatgpt:{index:05d}" for index in range(10_001)]
+    history = _history(
+        parse_projection_known=True,
+        processed_session_id_pages_ref="operation:fixture",
+        processed_session_id_page_count=(len(session_ids) + MAX_PAGE_ITEMS - 1) // MAX_PAGE_ITEMS,
+        processed_session_ids_digest=ingest_session_ids_digest(session_ids),
+        changed_session_count=len(session_ids),
+    )
+
+    replayed = decode_machine_receipt(history.model_dump(mode="json"))
+    assert isinstance(replayed, IngestHistoricalReceipt)
+    assert replayed.summary.changed_session_count == 10_001
+    assert replayed.summary.processed_session_ids == []
+    assert replayed.summary.processed_session_id_page_count == 40
+
+
+def test_large_ingest_projection_rejects_a_missing_page() -> None:
+    with pytest.raises(ValueError, match="page count does not match"):
+        _history(
+            parse_projection_known=True,
+            processed_session_id_pages_ref="operation:fixture",
+            processed_session_id_page_count=39,
+            processed_session_ids_digest="a" * 64,
+            changed_session_count=10_001,
+        )
+
+
+def test_ingest_insight_evidence_over_40_pages_uses_an_exact_audit_reference() -> None:
+    pages = [
+        IngestInsightPageHistoricalReceipt(
+            ordinal=ordinal,
+            targets=[
+                InsightTargetHistoricalReceipt(
+                    target_ref=f"session:fixture-{ordinal}",
+                    disposition="published",
+                    certified_counts=InsightCertifiedCountsHistorical(profiles=1),
+                    publication_known_committed=True,
+                )
+            ],
+        )
+        for ordinal in range(41)
+    ]
+    history = IngestHistoricalReceipt(
+        source_generation_id="generation:fixture",
+        final_sequence=1,
+        input_count=1,
+        input_pages=[_one_input_page()],
+        insight_pages_ref="operation:fixture",
+        insight_page_count=len(pages),
+        insight_pages_digest=ingest_insight_pages_digest(pages),
+        summary=IngestTerminalSummaryHistorical(
+            enumeration_complete=True,
+            source_complete=True,
+            confirmed_raw_count=1,
+            unresolved_raw_count=0,
+            profile_targets_observed=41,
+        ),
+    )
+    replayed = decode_machine_receipt(history.model_dump(mode="json"))
+    assert isinstance(replayed, IngestHistoricalReceipt)
+    assert replayed.insight_page_count == 41
+    assert replayed.insight_pages == []
+
+
+def test_zip_like_input_raw_attribution_crosses_inline_threshold_without_loss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.operations import machine_receipts
+
+    monkeypatch.setattr(machine_receipts, "MAX_INLINE_RAW_IDS_PER_INPUT", 3)
+    raw_page = IngestInputRawPageHistoricalReceipt(
+        source_item_id="source-item:zip",
+        ordinal=0,
+        raws=[IngestInputRawMemberHistorical(raw_id=f"raw:{index}", unresolved=index == 3) for index in range(4)],
+    )
+    item = IngestInputHistoricalReceipt(
+        source_item_id="source-item:zip",
+        logical_coordinate="export.zip",
+        denominator=4,
+        raw_id_pages_ref="operation:fixture",
+        raw_id_page_count=1,
+        raw_id_count=4,
+        unresolved_raw_count=1,
+        raw_ids_digest=ingest_input_raw_pages_digest([raw_page]),
+    )
+    history = IngestHistoricalReceipt(
+        source_generation_id="generation:fixture",
+        final_sequence=1,
+        input_count=1,
+        input_pages=[IngestInputPageHistoricalReceipt.from_items(0, [item])],
+        summary=IngestTerminalSummaryHistorical(
+            enumeration_complete=True,
+            source_complete=False,
+            confirmed_raw_count=3,
+            unresolved_raw_count=1,
+            profile_targets_observed=0,
+        ),
+    )
+    replayed = decode_machine_receipt(history.model_dump(mode="json"))
+    assert isinstance(replayed, IngestHistoricalReceipt)
+    assert replayed.input_pages[0].items[0].raw_id_count == 4
+    with pytest.raises(ValueError, match="pages disagree"):
+        IngestInputHistoricalReceipt.model_validate({**item.model_dump(mode="json"), "raw_id_count": 5})

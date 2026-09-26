@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import cast
 
-from polylogue.archive.session.neighbor_candidates import SessionNeighborCandidate
+from polylogue.cli.operation_kernel import OperationKernelError, OperationRequest
+from polylogue.cli.read_dispatch import daemon_route_disabled, dispatch_read
 from polylogue.cli.read_view_registry import NEIGHBOR_READ_VIEW_OPTION_NAMES
 from polylogue.cli.read_views.base import (
     ReadViewInvocation,
@@ -29,36 +31,44 @@ def _neighbor_score_label(score: float) -> str:
     return f"{score:.2f}".rstrip("0").rstrip(".")
 
 
-def _neighbor_candidate_heading(candidate: SessionNeighborCandidate) -> str:
-    summary = candidate.summary
-    date = f" {summary.display_date.isoformat()}" if summary.display_date else ""
+def _neighbor_candidate_heading(candidate: Mapping[str, object]) -> str:
+    summary = candidate.get("session")
+    if not isinstance(summary, Mapping):
+        raise ValueError("neighbor result omitted its session summary")
+    stamp = summary.get("updated_at") or summary.get("created_at")
+    date = f" {str(stamp)[:10]}" if stamp else ""
+    score = candidate.get("score")
+    if isinstance(score, bool) or not isinstance(score, int | float):
+        raise ValueError("neighbor result omitted its numeric score")
     return (
-        f"{candidate.rank}. {candidate.session_id} "
-        f"[{summary.origin.value}] {summary.display_title}{date} "
-        f"(score {_neighbor_score_label(candidate.score)})"
+        f"{candidate['rank']}. {summary['id']} "
+        f"[{summary['origin']}] {summary['title']}{date} "
+        f"(score {_neighbor_score_label(float(score))})"
     )
 
 
-def _render_neighbors_plain(candidates: list[SessionNeighborCandidate]) -> str:
+def _render_neighbors_plain(candidates: list[Mapping[str, object]]) -> str:
     if not candidates:
         return "No neighboring candidates found.\n"
     lines = [f"Neighbor candidates ({len(candidates)}):"]
     for candidate in candidates:
         lines.append(_neighbor_candidate_heading(candidate))
-        for reason in candidate.reasons:
-            evidence = f" ({reason.evidence})" if reason.evidence else ""
-            lines.append(f"   - {reason.kind}: {reason.detail}{evidence}")
+        reasons = candidate.get("reasons")
+        if not isinstance(reasons, list):
+            raise ValueError("neighbor result omitted its reasons")
+        for reason in reasons:
+            if not isinstance(reason, Mapping):
+                continue
+            evidence = f" ({reason['evidence']})" if reason.get("evidence") else ""
+            lines.append(f"   - {reason['kind']}: {reason['detail']}{evidence}")
     return "\n".join(lines) + "\n"
 
 
 def run_read_neighbors(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
     """Render explainable neighbor/near-duplicate candidates for a seed session."""
 
-    from polylogue.api.sync.bridge import run_coroutine_sync
-    from polylogue.archive.session.neighbor_candidates import NeighborDiscoveryError
     from polylogue.cli.shared.helper_support import fail
     from polylogue.cli.shared.machine_errors import emit_success
-    from polylogue.surfaces.payloads import SessionNeighborCandidatePayload, model_json_document
 
     query_seed = " ".join(request.query_terms).strip() or None
     if not invocation.session_id and not query_seed:
@@ -77,30 +87,34 @@ def run_read_neighbors(env: AppEnv, request: RootModeRequest, invocation: ReadVi
         else options.window_hours
     )
     try:
-        candidates = run_coroutine_sync(
-            env.polylogue.neighbor_candidates(
-                session_id=invocation.session_id,
-                query=query_seed,
-                origin=str(origin) if origin is not None else None,
-                limit=max(1, limit if limit is not None else 10),
-                window_hours=max(1, window_hours),
-            )
+        result, _ = dispatch_read(
+            env.config,
+            OperationRequest(
+                "read.neighbors",
+                {
+                    "session_id": invocation.session_id,
+                    "query": query_seed,
+                    "origin": str(origin) if origin is not None else None,
+                    "limit": max(1, limit if limit is not None else 10),
+                    "window_hours": max(1, window_hours),
+                },
+            ),
+            daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
         )
-    except NeighborDiscoveryError as exc:
-        fail("read", str(exc))
+    except OperationKernelError as exc:
+        from polylogue.cli.render.outcome import exit_for_read_failure
+
+        exit_for_read_failure(exc)
+    payload = result.get("payload")
+    if not isinstance(payload, Mapping):
+        raise ValueError("read.neighbors returned no payload")
+    raw_candidates = payload.get("neighbors")
+    if not isinstance(raw_candidates, list):
+        raise ValueError("read.neighbors returned no candidates")
+    candidates = [candidate for candidate in raw_candidates if isinstance(candidate, Mapping)]
 
     if invocation.output_format == "json":
-        emit_success(
-            {
-                "neighbors": [
-                    model_json_document(
-                        SessionNeighborCandidatePayload.from_candidate(candidate),
-                        exclude_none=True,
-                    )
-                    for candidate in candidates
-                ]
-            }
-        )
+        emit_success({"neighbors": candidates})
         return
 
     deliver_content(

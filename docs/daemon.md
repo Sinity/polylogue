@@ -31,6 +31,8 @@ materialization pass finalizes any retained snapshot still lacking that
 receipt from its immutable blob before consulting the cursor-authority gate.
 Operators can inspect and record the same census, without applying plans, with `polylogue ops maintenance raw-authority-frontier`.
 
+Accepted ingest records changed session IDs in its terminal audit receipt. Up to 10,000 IDs are inline. Larger ingests append sorted pages of at most 256 IDs to the same operation's continuity-backed audit events before finalization; the receipt records their operation reference, exact count, page count, and digest. The local API reads those durable pages after completion and checks their order, count, and digest before returning the full `ParseResult.processed_ids` set. Profile target evidence uses the same audit route when more than 40 insight pages are needed; `AuditRepository.resolve_ingest_insight_pages` returns every typed target and checks the pages against the terminal count and digest. A source item with more than 10,000 raw IDs stores 256-raw attribution pages, including each raw's unresolved flag, and keeps exact counts and a digest in its input receipt. Completed operations resolve these pages from audit history rather than deriving them from the current index.
+
 
 ## Auto-Discovery
 
@@ -87,6 +89,7 @@ local process can then read/post to the receiver).
 |------|---------|-------------|
 | `--api-host` | `127.0.0.1` | API server host |
 | `--api-port` | `8766` | API server port |
+| `--browser-port` | disabled | Start the separate browser host on this port, for example `8767`; requires the API |
 | `--api-auth-token` (`daemon.api.auth_token` / `api_auth_token`) | auto | API bearer token; auto-minted/loaded from a 0600 file if not given |
 | `--api-allow-no-auth` (`daemon.api.allow_no_auth` / `api_allow_no_auth`) | off | Explicit opt-out: serve the API with no bearer token at all |
 
@@ -98,6 +101,13 @@ class table below) — run `polylogued api token show` to print it. Pass
 local process can then read/write through the API); this cannot be combined
 with a non-loopback `--api-host` (`--insecure-allow-remote` still requires a
 real token in effect).
+
+When `--browser-port` is set, the daemon supervises a separate browser host
+process on `--api-host:--browser-port`. It forwards browser requests to the
+loopback API port and exits with the daemon. The browser host is opt-in; the
+machine API remains at `--api-port`. The ports must differ. A specific
+non-loopback API bind cannot be used with `--browser-port` because it has no
+loopback upstream; wildcard API binds use the corresponding loopback address.
 
 ## HTTP API Endpoints
 
@@ -557,8 +567,8 @@ shutdown deadline, status component, and the execution profiles that include
 it.
 
 - **Capabilities** are resolved once from the run's own arguments and preflight
-  results: `watch`, `source_catchup`, `browser_capture`, `api`,
-  `derived_writes`, `schema_blocked`. A service whose required capability is
+  results: `watch`, `source_catchup`, `browser_capture`, `api`, `browser_host`,
+  `derived_writes`, `embeddings`, `schema_blocked`. A service whose required capability is
   absent resolves to `skipped` with the missing name; it does not start a
   background loop that retries something that cannot succeed.
 - **Failure policy** is `isolate` (record and continue), `degrade` (record,
@@ -576,18 +586,42 @@ it.
   terminated with an exception and cannot write.
 - **Profiles** narrow the one registry: `production` runs everything;
   `resident_core` runs process liveness and health only; `surfaces` adds the
-  sockets; `intake` adds acquisition. `polylogued run` uses `production`.
+  sockets; `intake` adds fair intake; `replay` adds the session convergence
+  sweep to intake. `polylogued run` uses `production`.
   Focused tests select a narrower profile through `service_profile`, which is
   why a daemon test cannot start a convergence pass it never asked for. The
   composition root also asks the supervisor whether any intake service is
-  schedulable before it builds the intake stack, so a profile that runs no
-  intake does not open an archive generation or register adapters for
-  services it will never start.
+  schedulable before it builds the intake stack. It skips derived startup work
+  when the selected profile has no archive service, so a focused surface test
+  does not open an archive generation or register adapters for services it
+  will never start.
 - **Drain cycles.** A cadence loop that drains a backlog reports each pass's
   outcome, and the runner counts the progressed-to-drained *edge*. An already
   empty backlog woken again by an ingest that changed nothing does not
   announce a second completion; `drain_transitions` in the per-loop payload is
   one per cycle, and the cycle re-arms on the next pass that does work.
+
+The current composition has one scheduling edge for each long-lived owner:
+`run_daemon_services → DaemonSupervisor → declared service`. The browser host
+is an optional supervised process that depends on the API server. Fair intake
+owns file, remote, and raw admission; its completed passes feed the cold-build
+readiness decision. Periodic raw convergence wakes that same intake owner;
+prepared retained input admits oversized raw components through this route.
+The periodic loop also retries historical durable whale receipts.
+Status reads the services' observations and does not schedule replacement work.
+
+| Edge changed in this lifecycle pass | Previous behavior | Current behavior |
+| --- | --- | --- |
+| Focused daemon fixture → archive work | Full production selection could construct intake and start unrelated raw maintenance | `resident_core`, `surfaces`, `intake`, and `replay` select only declared work needed by the fixture |
+| Missing `source.db` → raw convergence | The selected raw task could reach a failing open | The supervisor resolves it as `unavailable` with the source-tier reason, before scheduling |
+| Raw and general convergence → status | Both named the `convergence` lifecycle component | Raw convergence publishes `raw_materialization`; general convergence retains `convergence` |
+| Empty intake pass → cold-build promotion | Any pass without a new admission could fire the one-shot settle callback | Settle requires a fully handled short page and no pending durable retry; a failed settle remains retryable |
+
+The earlier service registry and supervisor already existed before this pass;
+historical orphan counts, shutdown latency, and idle polling before that
+registry are not measured. The focused lifecycle probe records current
+shutdown duration and orphan count from the production supervisor, while the
+periodic-runner probe records passes after controlled idle wakeups.
 
 #### Halted work
 

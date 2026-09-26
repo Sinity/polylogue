@@ -19,6 +19,12 @@ MAX_MACHINE_RECEIPT_PAGES = 40
 MAX_MACHINE_RECEIPT_INPUTS = 10_000
 MAX_PAGE_ITEMS = 256
 MAX_RAW_IDS_PER_INPUT = 10_000
+MAX_INLINE_RAW_IDS_PER_INPUT = MAX_RAW_IDS_PER_INPUT
+MAX_INLINE_INGEST_SESSION_IDS = 10_000
+
+
+def ingest_session_ids_digest(session_ids: list[str]) -> str:
+    return hashlib.sha256(json.dumps(session_ids, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 
 
 class _Receipt(BaseModel):
@@ -85,11 +91,28 @@ class IngestInputHistoricalReceipt(_Receipt):
     denominator: int = Field(ge=0)
     raw_ids: list[str] | None = Field(default=None, max_length=MAX_RAW_IDS_PER_INPUT)
     unresolved_raw_ids: list[str] = Field(default_factory=list, max_length=MAX_RAW_IDS_PER_INPUT)
+    raw_id_pages_ref: str | None = Field(default=None, min_length=1)
+    raw_id_page_count: int = Field(default=0, ge=0)
+    raw_id_count: int = Field(default=0, ge=0)
+    unresolved_raw_count: int = Field(default=0, ge=0)
+    raw_ids_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     unknown_attribution: str | None = Field(default=None, max_length=512)
 
     @model_validator(mode="after")
     def valid_attribution(self) -> IngestInputHistoricalReceipt:
-        if self.raw_ids is None and self.unknown_attribution is None:
+        paged = self.raw_id_pages_ref is not None
+        if paged != bool(self.raw_id_page_count) or paged != bool(self.raw_ids_digest):
+            raise ValueError("historical raw attribution page reference is incomplete")
+        if paged and (
+            self.raw_ids is not None
+            or self.unresolved_raw_ids
+            or self.raw_id_count <= MAX_INLINE_RAW_IDS_PER_INPUT
+            or self.raw_id_page_count != (self.raw_id_count + MAX_PAGE_ITEMS - 1) // MAX_PAGE_ITEMS
+            or self.unresolved_raw_count > self.raw_id_count
+            or self.denominator < self.raw_id_count
+        ):
+            raise ValueError("historical raw attribution pages disagree with their count")
+        if self.raw_ids is None and self.unknown_attribution is None and not paged:
             raise ValueError("missing raw attribution must name an explicit unknown reason")
         if self.raw_ids is not None:
             if len(self.raw_ids) != len(set(self.raw_ids)):
@@ -100,7 +123,32 @@ class IngestInputHistoricalReceipt(_Receipt):
                 raise ValueError("historical ingest denominator is smaller than known membership")
         elif self.unresolved_raw_ids:
             raise ValueError("unknown attribution cannot invent unresolved raw ids")
+        if not paged and any((self.raw_id_count, self.unresolved_raw_count)):
+            raise ValueError("inline raw attribution cannot claim referenced counts")
         return self
+
+
+class IngestInputRawMemberHistorical(_Receipt):
+    raw_id: str = Field(min_length=1)
+    unresolved: bool
+
+
+class IngestInputRawPageHistoricalReceipt(_Receipt):
+    source_item_id: str = Field(min_length=1)
+    ordinal: int = Field(ge=0)
+    raws: list[IngestInputRawMemberHistorical] = Field(min_length=1, max_length=MAX_PAGE_ITEMS)
+
+    @model_validator(mode="after")
+    def valid_page(self) -> IngestInputRawPageHistoricalReceipt:
+        ids = [raw.raw_id for raw in self.raws]
+        if ids != sorted(set(ids)):
+            raise ValueError("historical input raw page repeats or reorders a raw")
+        return self
+
+
+def ingest_input_raw_pages_digest(pages: list[IngestInputRawPageHistoricalReceipt]) -> str:
+    payload = [page.model_dump(mode="json") for page in pages]
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def _page_digest(items: list[IngestInputHistoricalReceipt]) -> str:
@@ -125,7 +173,7 @@ class IngestInputPageHistoricalReceipt(_Receipt):
 
 
 class IngestInsightPageHistoricalReceipt(_Receipt):
-    ordinal: int = Field(ge=0, lt=MAX_MACHINE_RECEIPT_PAGES)
+    ordinal: int = Field(ge=0)
     targets: list[InsightTargetHistoricalReceipt] = Field(default_factory=list, max_length=MAX_PAGE_ITEMS)
     unattempted_target_refs: list[str] = Field(default_factory=list, max_length=MAX_PAGE_ITEMS)
 
@@ -139,6 +187,11 @@ class IngestInsightPageHistoricalReceipt(_Receipt):
         if len(refs) + len(self.unattempted_target_refs) > MAX_PAGE_ITEMS:
             raise ValueError("historical ingest insight page exceeds its target budget")
         return self
+
+
+def ingest_insight_pages_digest(pages: list[IngestInsightPageHistoricalReceipt]) -> str:
+    payload = [page.model_dump(mode="json") for page in pages]
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 class IngestRefusedMembershipHistorical(_Receipt):
@@ -161,6 +214,47 @@ class IngestTerminalSummaryHistorical(_Receipt):
     # degradation traded for the loud one.
     refused_membership_count: int = Field(ge=0, default=0)
     refused_memberships: list[IngestRefusedMembershipHistorical] = Field(default_factory=list, max_length=256)
+    # Captured by the admitted writer during cohort publication. Public API
+    # clients project ParseResult from this terminal fact, never a later index
+    # read that may already describe another generation or replacement.
+    parse_projection_known: bool = False
+    processed_session_ids: list[str] = Field(default_factory=list, max_length=MAX_INLINE_INGEST_SESSION_IDS)
+    processed_session_id_pages_ref: str | None = Field(default=None, min_length=1)
+    processed_session_id_page_count: int = Field(default=0, ge=0)
+    processed_session_ids_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    processed_message_count: int = Field(default=0, ge=0)
+    changed_session_count: int = Field(default=0, ge=0)
+    changed_message_count: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def valid_parse_projection(self) -> IngestTerminalSummaryHistorical:
+        if len(self.processed_session_ids) != len(set(self.processed_session_ids)):
+            raise ValueError("ingest parse projection repeats a session")
+        paged = self.processed_session_id_pages_ref is not None
+        if paged != bool(self.processed_session_id_page_count) or paged != bool(self.processed_session_ids_digest):
+            raise ValueError("ingest parse projection page reference is incomplete")
+        if paged and self.processed_session_ids:
+            raise ValueError("paged ingest parse projection cannot also inline session ids")
+        if self.parse_projection_known:
+            if not paged and self.changed_session_count != len(self.processed_session_ids):
+                raise ValueError("ingest parse projection session count does not match its ids")
+            if paged and self.changed_session_count <= MAX_INLINE_INGEST_SESSION_IDS:
+                raise ValueError("ingest parse projection pages require more than 10000 sessions")
+            if (
+                paged
+                and self.processed_session_id_page_count
+                != (self.changed_session_count + MAX_PAGE_ITEMS - 1) // MAX_PAGE_ITEMS
+            ):
+                raise ValueError("ingest parse projection page count does not match its sessions")
+            if self.changed_message_count != self.processed_message_count:
+                raise ValueError("ingest parse projection message counts disagree")
+        elif (
+            self.processed_session_ids
+            or paged
+            or any((self.processed_message_count, self.changed_session_count, self.changed_message_count))
+        ):
+            raise ValueError("unknown ingest parse projection cannot invent changed rows")
+        return self
 
 
 class IngestHistoricalReceipt(_Receipt):
@@ -172,6 +266,9 @@ class IngestHistoricalReceipt(_Receipt):
     insight_pages: list[IngestInsightPageHistoricalReceipt] = Field(
         default_factory=list, max_length=MAX_MACHINE_RECEIPT_PAGES
     )
+    insight_pages_ref: str | None = Field(default=None, min_length=1)
+    insight_page_count: int = Field(default=0, ge=0)
+    insight_pages_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     summary: IngestTerminalSummaryHistorical
 
     @model_validator(mode="after")
@@ -182,8 +279,19 @@ class IngestHistoricalReceipt(_Receipt):
             raise ValueError("historical ingest input pages are not contiguous")
         if [page.ordinal for page in self.insight_pages] != list(range(len(self.insight_pages))):
             raise ValueError("historical ingest insight pages are not contiguous")
-        if self.summary.profile_targets_observed != sum(len(page.targets) for page in self.insight_pages):
+        paged_insights = self.insight_pages_ref is not None
+        if paged_insights != bool(self.insight_page_count) or paged_insights != bool(self.insight_pages_digest):
+            raise ValueError("historical ingest insight page reference is incomplete")
+        if paged_insights and self.insight_pages:
+            raise ValueError("historical ingest cannot mix inline and referenced insight pages")
+        if paged_insights and self.insight_page_count <= MAX_MACHINE_RECEIPT_PAGES:
+            raise ValueError("historical ingest insight reference requires more than inline pages")
+        if not paged_insights and self.summary.profile_targets_observed != sum(
+            len(page.targets) for page in self.insight_pages
+        ):
             raise ValueError("historical ingest profile total does not match its pages")
+        if paged_insights and self.summary.profile_targets_observed > self.insight_page_count * MAX_PAGE_ITEMS:
+            raise ValueError("historical ingest profile total exceeds its referenced pages")
         if self.summary.refused_membership_count < len(self.summary.refused_memberships):
             raise ValueError("historical ingest refusal count is smaller than its enumerated refusals")
         if self.summary.refused_membership_count and self.summary.source_complete:

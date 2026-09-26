@@ -17,7 +17,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.core.enums import BlockType, MaterialOrigin, Role
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
-from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.parsers.codex import _tool_input_from_arguments, is_supported_session_stream, parse_stream
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
 from polylogue.sources.parsers.codex import parse as _parse_impl
@@ -1142,6 +1142,117 @@ class TestMessageParsing:
         from_stream = parse_stream(iter(payload), "fallback")
 
         assert from_stream == from_list
+
+    def test_parse_stream_uses_supplied_sink_and_preserves_duplicate_ids(self) -> None:
+        payload = [
+            {"type": "session_meta", "payload": {"id": "conv-abc"}},
+            {
+                "type": "message",
+                "id": "reused",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "first"}],
+            },
+            {
+                "type": "message",
+                "id": "reused",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "second"}],
+            },
+        ]
+        sink: list[ParsedMessage] = []
+
+        streamed = parse_stream(iter(payload), "fallback", message_sink=sink)
+        collected = parse(payload, "fallback")
+
+        assert streamed.messages is sink
+        assert streamed.model_copy(update={"messages": list(streamed.messages)}) == collected
+        assert [message.is_active_leaf for message in sink] == [False, True]
+
+    def test_stream_lookahead_pairs_repeated_code_mode_ids(self) -> None:
+        payload = [
+            {"type": "session_meta", "payload": {"id": "conv-abc"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "functions.exec",
+                    "call_id": "reused",
+                    "arguments": 'await tools.exec_command({cmd: "first"})',
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {"type": "function_call_output", "call_id": "reused", "output": "first output"},
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "functions.exec",
+                    "call_id": "reused",
+                    "arguments": 'await tools.exec_command({cmd: "second"})',
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {"type": "function_call_output", "call_id": "reused", "output": "second output"},
+            },
+        ]
+
+        streamed = parse_stream(iter(payload), "fallback")
+        assert streamed == parse(payload, "fallback")
+        child_outputs = [
+            block.text
+            for message in streamed.messages
+            for block in message.blocks
+            if block.type is BlockType.TOOL_RESULT and block.tool_id == "reused::polylogue-child::0"
+        ]
+        assert child_outputs == ["first output", "second output"]
+
+    def test_sqlite_sinks_keep_late_event_updates_and_compaction_order(self, tmp_path: Path) -> None:
+        from polylogue.sources.prepared_message_sink import SqliteMessageStore
+
+        payload = [
+            {"type": "session_meta", "payload": {"id": "conv-abc"}},
+            {
+                "type": "compacted",
+                "payload": {
+                    "message": "summary",
+                    "replacement_history": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "history only"}],
+                        }
+                    ],
+                },
+            },
+            {"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "final only"}},
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "retained reply"}],
+            },
+            {"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "retained reply"}},
+        ]
+        store = SqliteMessageStore(tmp_path / "codex-sinks.db")
+        try:
+            messages = store.new_sink()
+            events = store.new_event_sink()
+            streamed = parse_stream(iter(payload), "fallback", message_sink=messages, event_sink=events)
+            collected = parse(payload, "fallback")
+
+            assert id(streamed.messages) == id(messages)
+            assert id(streamed.session_events) == id(events)
+            assert streamed.model_copy(update={"messages": list(messages), "session_events": list(events)}) == collected
+            event_types = [event.event_type for event in events]
+            compaction_index = event_types.index("compaction")
+            assert event_types[compaction_index + 1] == "codex_replacement_context"
+            completions = [event for event in events if event.event_type == "task_complete"]
+            assert completions[0].payload["last_agent_message"] == "final only"
+            assert completions[1].payload["last_agent_message_retained"] is True
+        finally:
+            store.close()
 
     def test_system_developer_and_protocol_messages_are_typed_as_context_or_protocol(self) -> None:
         payload = [
@@ -3179,6 +3290,20 @@ class TestTaskCompleteLastAgentMessage:
         assert events[0].payload["last_agent_message"] == "an unmirrored reply"
         assert "last_agent_message" not in events[1].payload
         assert events[1].payload["last_agent_message_retained"] is True
+
+    def test_task_completion_alias_preserves_each_wire_length(self) -> None:
+        payload = [
+            {"type": "session_meta", "payload": {"id": "s1"}},
+            {"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "e\u0301"}},
+            {"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "\u00e9"}},
+        ]
+
+        session = parse_stream(iter(payload), "fallback")
+        events = [event for event in session.session_events if event.event_type == "task_complete"]
+
+        assert events[0].payload["last_agent_message"] == "e\u0301"
+        assert events[1].payload["last_agent_message_retained"] is True
+        assert [event.payload["last_agent_message_chars"] for event in events] == [2, 1]
 
 
 class TestReEmbeddedTextConservation:

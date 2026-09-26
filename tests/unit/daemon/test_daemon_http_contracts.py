@@ -1128,3 +1128,21 @@ class TestBoundedArchiveQueryExecutor:
         import asyncio
 
         assert asyncio.run(harness.close()).clean
+
+    def test_server_close_does_not_close_borrowed_executor_alias(self, tmp_path: Path) -> None:
+        from unittest.mock import Mock
+
+        from polylogue.daemon.services import ServiceCapability, ServiceProfile
+        from tests.infra.daemon_service_harness import ServiceHarness
+
+        harness = ServiceHarness(profile=ServiceProfile.SURFACES, capabilities={ServiceCapability.API})
+        harness.require_selected("api_server")
+        server = harness.api_server(tmp_path)
+        borrowed = Mock()
+        server.archive_query_executor = borrowed
+        server.server_close()
+        server.server_close()
+        borrowed.shutdown.assert_not_called()
+        import asyncio
+
+        assert asyncio.run(harness.close()).clean

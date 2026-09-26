@@ -105,8 +105,8 @@ These expose the archive and its insights:
   `GET /assets/:asset` (`webui/`,
   TypeScript + Preact + Vite; committed build output under
   `polylogue/daemon/static/dist`).
-- terminal rendering facade: `polylogue/ui/`
-- renderers: `polylogue/rendering/`
+- terminal interaction, styling, and shared theme tokens: `polylogue/ui/`
+- session and content format adapters: `polylogue/rendering/`
 
 Leaf adapters over archive operations and derived insights.
 
@@ -524,21 +524,14 @@ polylogue-c9y so the first PR that adds it has somewhere to look):
   This keeps analytics testable in isolation and keeps `insights/` the
   single place that knows about staleness/rebuild.
 
-### Presentation-layer consolidation (target, not yet executed)
+### Presentation ownership
 
-`surfaces/`, `rendering/`, `ui/`, and `cli/` currently split presentation
-four ways, and `surfaces/payloads.py` is itself a large, growing module.
-Target topology (execute opportunistically alongside surface work, not as a
-big-bang move — recorded here so the direction is not re-litigated per PR):
-
-- `ui/` is frozen — no new adopters (importer set may only shrink); its
-  canonical-vs-migrate disposition is owned with 4p1's presentation
-  ownership (polylogue-4wqi2).
-- `rendering/` stays as the markdown/HTML string-building layer; it does
-  not grow response-shaping logic that belongs in `surfaces/`.
-- `surfaces/` payload shaping is the target home for response models
-  currently duplicated per-surface; new payload types join `surfaces/`
-  rather than a bespoke per-tool model living in `mcp/` or `cli/`.
+`ui/` owns terminal interaction, Rich layout, and the shared theme tokens
+consumed by terminal and HTML presentation. `rendering/` owns adapters that
+serialize sessions and content into output formats such as Markdown and HTML.
+The HTML renderer uses `ui/theme.py` for palette and syntax-theme tokens; this
+shared theme dependency is intentional. Surface packages own their transport
+payloads and response contracts.
 
 ### Verification (repo health)
 - `devtools/` — operator tooling, lints, campaigns, rendering

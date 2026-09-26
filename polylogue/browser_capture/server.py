@@ -690,8 +690,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             self._safe_error(HTTPStatus.BAD_REQUEST, "exact_message_evidence_required")
             return
         try:
-            from polylogue.api.archive import _archive_capture_assertion_candidate, candidate_capture_kind
+            from polylogue.api.archive import candidate_capture_kind
             from polylogue.config import Config
+            from polylogue.operations.facade_writers import _archive_capture_assertion_candidate
 
             root = self.server.config.archive_root or default_archive_root()
             envelope = _archive_capture_assertion_candidate(

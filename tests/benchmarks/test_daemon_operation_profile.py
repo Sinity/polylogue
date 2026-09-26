@@ -100,6 +100,31 @@ def _validate_successful_find_response(returncode: int, stdout: str, stderr: str
     return payload
 
 
+def _unexplained_server_residual_ms(server_ms: float, queue_ms: float, frame_ms: float, compute_ms: float) -> float:
+    """Return un-attributed server time; it is not an instrumentation measurement."""
+    return max(0.0, server_ms - queue_ms - frame_ms - compute_ms)
+
+
+def _direct_invalidation_summary(samples_ms: list[float]) -> dict[str, object]:
+    """Summarize only directly timed invalidator calls; empty means unavailable."""
+    ordered = sorted(samples_ms)
+
+    def percentile(fraction: float) -> float:
+        if not ordered:
+            return 0.0
+        index = max(0, min(len(ordered) - 1, int((len(ordered) * fraction + 0.999999) - 1)))
+        return round(ordered[index], 3)
+
+    return {
+        "p50_ms": percentile(0.50),
+        "p95_ms": percentile(0.95),
+        "p99_ms": percentile(0.99),
+        "samples": len(ordered),
+        "available": bool(ordered),
+        "measurement": "direct wall time around invalidate_search_cache calls",
+    }
+
+
 def test_installed_cli_only_uses_a_console_script_inside_this_checkout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -155,6 +180,18 @@ def test_installed_cli_timing_requires_successful_nonempty_product_envelope() ->
             json.dumps({"items": [], "outcome": {"state": "empty"}, "total": 0}),
             "",
         )
+
+
+def test_mixed_load_residual_is_unexplained_and_invalidation_requires_direct_samples() -> None:
+    assert _unexplained_server_residual_ms(30.0, 2.0, 5.0, 7.0) == 16.0
+    assert _unexplained_server_residual_ms(10.0, 5.0, 6.0, 7.0) == 0.0
+    unavailable = _direct_invalidation_summary([])
+    assert unavailable["available"] is False
+    assert unavailable["samples"] == 0
+    measured = _direct_invalidation_summary([3.0, 1.0, 2.0])
+    assert measured["available"] is True
+    assert measured["samples"] == 3
+    assert measured["p50_ms"] == 2.0
 
 
 @pytest.mark.benchmark
@@ -388,12 +425,12 @@ def test_bench_daemon_mixed_load(
 
     # Attribute the route in the daemon process itself.  Client wall time is
     # not enough: it conflates admission, snapshot pinning, query compute,
-    # response encoding, and the instrumentation/transport tail.  These
+    # response encoding, and unmeasured server-side time.  These
     # wrappers are deliberately benchmark-only and preserve the production
     # route unchanged.
     import polylogue.operations.daemon_execution as daemon_execution
     import polylogue.operations.daemon_reads as daemon_reads
-    from polylogue.storage.search.cache import current_cache_epoch
+    import polylogue.storage.search.cache as search_cache
 
     phase_lock = threading.Lock()
     phase_name = "quiet"
@@ -401,14 +438,30 @@ def test_bench_daemon_mixed_load(
         "admission_queue",
         "read_frame_acquisition",
         "compute",
-        "cache_invalidation",
-        "instrumentation_tail",
+        "unexplained_server_residual",
         "serialization_tail",
     )
     phase_samples: dict[str, dict[str, list[float]]] = {
         "quiet": {name: [] for name in phase_names},
         "writer": {name: [] for name in phase_names},
     }
+    invalidation_samples_ms: list[float] = []
+    invalidation_lock = threading.Lock()
+    real_invalidate_search_cache = search_cache.invalidate_search_cache
+
+    def timed_invalidate_search_cache() -> None:
+        started = perf_counter()
+        try:
+            real_invalidate_search_cache()
+        finally:
+            elapsed_ms = (perf_counter() - started) * 1000
+            with invalidation_lock:
+                invalidation_samples_ms.append(elapsed_ms)
+
+    # The write-effect route imports this function at effect execution time.
+    # Timing that concrete call gives invalidation its own measurement; it is
+    # not inferred from a read's server-time remainder.
+    monkeypatch.setattr(search_cache, "invalidate_search_cache", timed_invalidate_search_cache)
     pending_compute: dict[str, deque[float]] = {
         "quiet": deque(),
         "writer": deque(),
@@ -653,7 +706,6 @@ def test_bench_daemon_mixed_load(
         installed_cli_elapsed_ms.append(elapsed_ms)
 
     def phase_read(params: Mapping[str, object]) -> dict[str, object]:
-        before_epoch = current_cache_epoch()
         client = DaemonClient(socket_path, timeout_s=5)
         result = _operation(client, "cli.query", {"params": params})
         client_ms = float(client.last_elapsed_ms or 0)
@@ -668,11 +720,8 @@ def test_bench_daemon_mixed_load(
             phase_samples[current_phase]["admission_queue"].append(max(0.0, admission_queue_ms))
             phase_samples[current_phase]["compute"].append(compute_ms)
             phase_samples[current_phase]["read_frame_acquisition"].append(max(0.0, frame_ms))
-            phase_samples[current_phase]["cache_invalidation"].append(
-                0.0 if current_cache_epoch() == before_epoch else max(0.0, server_ms - frame_ms - compute_ms)
-            )
-            phase_samples[current_phase]["instrumentation_tail"].append(
-                max(0.0, server_ms - admission_queue_ms - frame_ms - compute_ms)
+            phase_samples[current_phase]["unexplained_server_residual"].append(
+                _unexplained_server_residual_ms(server_ms, admission_queue_ms, frame_ms, compute_ms)
             )
             phase_samples[current_phase]["serialization_tail"].append(max(0.0, client_ms - server_ms))
         return result
@@ -808,6 +857,7 @@ def test_bench_daemon_mixed_load(
         peak_queue_bytes=peak_queue_bytes,
         peak_rss_kib=getrusage(RUSAGE_SELF).ru_maxrss,
         mixed_load_phase_percentiles=phase_report,
+        mixed_load_cache_invalidation=_direct_invalidation_summary(invalidation_samples_ms),
         mixed_load_dominant_phase=dominant_phase,
         mixed_load_series_summary={
             "quiet": {

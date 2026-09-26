@@ -58,22 +58,32 @@ external abort signals, relative timeouts, and absolute deadlines.
 
 ## Vertical adoption map
 
+All island API requests use `PolylogueClient`: overview query units and opaque
+continuations, session list and message windows, observability refresh and
+named-source freshness, search, and credential bootstrap. Session and
+observability payload guards remain local where the OpenAPI response is a
+union or a generic object. Routes without a published request schema are
+documented in OpenAPI but excluded from client generation.
+
+The optional `polylogue-browser-host` process serves manifest-governed assets
+and forwards browser requests to the daemon HTTP authority. It does not open
+an archive or carry a privileged daemon token. A daemon connection failure is
+reported as `daemon_unavailable`; the host's own liveness and packaged assets
+remain available. Direct daemon browser routes remain available while clients
+are moved to the separate address.
+
 ### webui-02 session list/read
 
-Replace session search fetches with `client.search()` and single-session read
-fetches with `client.readSessionView()`. Plain list mode is exposed by
-`client.searchSessions()` as the declared `SessionListResponse` branch, but it
-is still offset-based and has no opaque continuation in the snapshot. The
-vertical's continuation-only list requirement therefore needs a server-side
-list continuation before it can claim complete adoption; it must not fabricate
-one in TypeScript.
+The list island uses `client.searchSessions()` and the transcript island uses
+`client.readSessionView()`. Plain list mode remains offset-based and has no
+opaque continuation; a server-side list continuation is still required before
+the list can claim continuation-only pagination.
 
 ### webui-03 search
 
-Replace all `/api/sessions?query=...` calls and local search-envelope types with
-`client.search()`. For explicit terminal DSL unit queries, use
-`client.query()`. Both iterators preserve server ranking/filter semantics and
-surface exact-versus-qualified coverage directly.
+The search island uses `client.search()`. For explicit terminal DSL unit
+queries, `client.query()` preserves server filters and opaque continuation.
+Both iterators surface exact-versus-qualified coverage directly.
 
 ### webui-04 transcript rendering
 
@@ -84,10 +94,10 @@ adopt the generated operation. Do not type a card-document endpoint locally.
 
 ### webui-05 insights/status
 
-The current OpenAPI artifact has no typed insight registry, named-source
-freshness, or component-status operation. Those routes remain declaration
-gates. Once their Pydantic response models and route-backed OpenAPI paths land,
-regeneration supplies the methods without runtime changes.
+`getWebuiObservability()` and `getWebuiFreshness()` are generated request
+methods with explicit route/query parameters. Their response schema is still
+generic, so the observability island retains its payload guard. Typed insight
+registry, freshness, and component-status models remain future contract work.
 
 ### webui-06 cost/usage
 

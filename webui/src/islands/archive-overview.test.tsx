@@ -1,9 +1,10 @@
 import { fireEvent, render, screen } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
-import type { MessageQueryPage } from '../contracts/query-units';
-import { ArchiveOverviewIsland } from './archive-overview';
+import { PolylogueClient, type QueryUnitEnvelope } from '../api/generated';
+import type { ClientRequest, ClientTransport } from '../api/runtime';
+import { ArchiveOverviewIsland, loadArchiveMessagePage } from './archive-overview';
 
-const page: MessageQueryPage = {
+const page: QueryUnitEnvelope = {
   mode: 'query-unit',
   unit: 'message',
   query: 'messages where words >= 0 | sort by time desc',
@@ -30,9 +31,36 @@ const page: MessageQueryPage = {
   query_ref: 'query:overview',
   result_ref: 'result:overview',
   continuation: null,
+  outcome: { state: 'ok' },
 };
 
 describe('ArchiveOverviewIsland', () => {
+  it('uses the generated operation with the daemon continuation unchanged', async () => {
+    const requests: ClientRequest[] = [];
+    const transport: ClientTransport = {
+      async request<TResponse>(request: ClientRequest): Promise<TResponse> {
+        requests.push(request);
+        return page as TResponse;
+      },
+    };
+    vi.spyOn(PolylogueClient.prototype, 'bootstrapWebCredential').mockResolvedValue({} as never);
+    try {
+      const client = new PolylogueClient(transport);
+      const first = await loadArchiveMessagePage(undefined, client);
+      const next = await loadArchiveMessagePage('q2.opaque/token', client);
+      expect(first).toBe(page);
+      expect(next).toBe(page);
+      expect(requests[0]?.query).toMatchObject({
+        expression: 'messages where words >= 0 | sort by time desc',
+        limit: 6,
+      });
+      expect(requests[1]?.query).toMatchObject({ continuation: 'q2.opaque/token' });
+      expect(requests[1]?.query?.expression).toBeUndefined();
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
   it('loads the next typed page using the opaque continuation', async () => {
     const loadPage = vi.fn(async () => page);
     render(<ArchiveOverviewIsland initialContinuation="q1.opaque-token" loadPage={loadPage} />);

@@ -1,7 +1,7 @@
 {
   "kind": "polylogue.derived-identity-closure-baseline",
   "note": "Modules feeding the derived schema identity. Growth is a blocking finding in `devtools gate schema-closure`; shrinking this list is always allowed. Regenerate with `devtools gate schema-closure --update` and explain the growth in the PR.",
-  "count": 561,
+  "count": 565,
   "members": [
     "polylogue/analysis/affordance_usage.py",
     "polylogue/analysis/archive.py",
@@ -366,6 +366,7 @@
     "polylogue/sources/parsers/claude/history.py",
     "polylogue/sources/parsers/claude/index.py",
     "polylogue/sources/parsers/claude/orchestration.py",
+    "polylogue/sources/parsers/claude/stream_scratch.py",
     "polylogue/sources/parsers/claude/todos.py",
     "polylogue/sources/parsers/codex.py",
     "polylogue/sources/parsers/drive_support_attachments.py",
@@ -378,6 +379,8 @@
     "polylogue/sources/parsers/local_agent.py",
     "polylogue/sources/parsers/otel_genai.py",
     "polylogue/sources/prepared_jsonl.py",
+    "polylogue/sources/prepared_merge.py",
+    "polylogue/sources/prepared_message_sink.py",
     "polylogue/sources/providers/claude_code_models.py",
     "polylogue/sources/providers/codex.py",
     "polylogue/sources/retained_assembly.py",
@@ -438,6 +441,7 @@
     "polylogue/storage/hook_event_authority.py",
     "polylogue/storage/hydrators.py",
     "polylogue/storage/index_generation.py",
+    "polylogue/storage/io_phase_metrics.py",
     "polylogue/storage/materials.py",
     "polylogue/storage/query_models.py",
     "polylogue/storage/raw/models.py",

@@ -27,6 +27,37 @@ pytestmark = pytest.mark.uses_real_clock(
 )
 
 
+def test_failed_backup_operation_retains_rejected_result_details(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.daemon.backup import BackupResult
+
+    partial = BackupResult(
+        ok=False,
+        output_path=str(tmp_path / "partial-backup"),
+        error="verification failed",
+        warnings=["source.db could not be verified"],
+    )
+    monkeypatch.setattr("polylogue.daemon.backup.backup_archive", lambda **_kwargs: partial)
+
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        envelope = stack.client.operation(
+            "maintenance.backup",
+            {"output_dir": str(tmp_path / "backups")},
+            archive_root=str(stack.archive_root),
+        )
+
+    assert envelope is not None
+    assert envelope["outcome"] == "rejected"
+    assert envelope["result"] is None
+    assert envelope["error"] == {
+        "code": "backup_failed",
+        "detail": "verification failed",
+        "retryable": False,
+        "data": {"backup_result": partial.model_dump(mode="json")},
+    }
+
+
 def _seed_sessions(root: Path, *, count: int, title: str = "Operation route session") -> tuple[str, ...]:
     """Seed one fully bootstrapped synthetic archive before daemon startup."""
 

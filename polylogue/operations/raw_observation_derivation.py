@@ -22,13 +22,9 @@ RAW_OBSERVATION_DOMAIN = _RAW_OBSERVATION_DOMAIN
 _RAW_OBSERVATION_RECIPE_VERSION = RawObservationDerivation.recipe_version
 
 
-def make_raw_observation_derivation(
-    archive_root: Path, *, max_payload_bytes: int, stream_safe_only: bool = False
-) -> RawObservationDerivation:
+def make_raw_observation_derivation(archive_root: Path, *, max_payload_bytes: int) -> RawObservationDerivation:
     """Construct the storage-owned raw adapter from the operations boundary."""
-    return RawObservationDerivation(
-        archive_root, max_payload_bytes=max_payload_bytes, stream_safe_only=stream_safe_only
-    )
+    return RawObservationDerivation(archive_root, max_payload_bytes=max_payload_bytes)
 
 
 def raw_observation_output_session_ids(archive_root: Path, raw_id: str) -> tuple[str, ...]:

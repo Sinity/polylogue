@@ -37,7 +37,9 @@ import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
+from typing import overload
 from urllib.parse import quote
 
 from polylogue.storage.sqlite.archive_tiers import archive_tiers_specs
@@ -149,7 +151,7 @@ class ShardSessionRows:
     block_hi: int
     #: Content-derived fallback identities carried by the prepared rows.  The
     #: writer validates and reuses these; it never regenerates them.
-    content_identities: tuple[tuple[str, int], ...]
+    content_identities: Sequence[tuple[str, int]]
 
     @property
     def message_row_count(self) -> int:
@@ -220,6 +222,42 @@ class SessionShardBuilder:
             )
         )
 
+    def add_streamed(
+        self,
+        *,
+        session_id: str,
+        session_content_hash: bytes,
+        message_rows: Iterator[tuple[object, ...]],
+        block_rows: Iterator[tuple[object, ...]],
+    ) -> None:
+        """Copy bounded row windows for one disk-backed parsed session."""
+        message_lo = self._next_rowid["messages"]
+        self._append_iter("messages", message_rows)
+        block_lo = self._next_rowid["blocks"]
+        self._append_iter("blocks", block_rows)
+        self._sessions.append(
+            ShardSessionRows(
+                session_id=session_id,
+                session_content_hash=session_content_hash,
+                message_lo=message_lo,
+                message_hi=self._next_rowid["messages"] - 1,
+                block_lo=block_lo,
+                block_hi=self._next_rowid["blocks"] - 1,
+                content_identities=(),
+            )
+        )
+
+    def _append_iter(self, table: str, rows: Iterator[tuple[object, ...]]) -> None:
+        width = len(_bound_columns(_spec(table)))
+        placeholders = ", ".join("?" * width)
+        sql = f"INSERT INTO {table} VALUES ({placeholders})"
+        while True:
+            window = list(islice(rows, 128))
+            if not window:
+                break
+            self._conn.executemany(sql, window)
+            self._next_rowid[table] += len(window)
+
     def _append(self, table: str, rows: Sequence[tuple[object, ...]]) -> int:
         lo = self._next_rowid[table]
         if rows:
@@ -283,33 +321,72 @@ def build_session_shard(directory: Path, prepared_sessions: Sequence[object]) ->
     return builder.seal()
 
 
+class ShardIdentitySequence(Sequence[tuple[str, int]]):
+    """Address identity rows on disk without rebuilding a whole-session tuple."""
+
+    def __init__(self, path: Path, lo: int, hi: int) -> None:
+        self.path = path
+        self.lo = lo
+        self.hi = hi
+
+    def __len__(self) -> int:
+        return max(0, self.hi - self.lo + 1)
+
+    @overload
+    def __getitem__(self, index: int) -> tuple[str, int]: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[tuple[str, int]]: ...
+
+    def __getitem__(self, index: int | slice) -> tuple[str, int] | list[tuple[str, int]]:
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        with closing(sqlite3.connect(_read_only_uri(self.path), uri=True)) as conn:
+            row = conn.execute(
+                "SELECT content_identity, content_occurrence FROM messages WHERE rowid = ?",
+                (self.lo + index,),
+            ).fetchone()
+        if row is None:
+            raise ShardRefusedError("prepared message identity row disappeared")
+        return str(row[0]), int(row[1])
+
+    def __iter__(self) -> Iterator[tuple[str, int]]:
+        with closing(sqlite3.connect(_read_only_uri(self.path), uri=True)) as conn:
+            for identity, occurrence in conn.execute(
+                "SELECT content_identity, content_occurrence FROM messages WHERE rowid BETWEEN ? AND ? ORDER BY rowid",
+                (self.lo, self.hi),
+            ):
+                yield str(identity), int(occurrence)
+
+
 def _read_message_identities(
     conn: sqlite3.Connection,
     *,
+    path: Path,
     message_lo: int,
     message_hi: int,
     session_id: str,
-) -> tuple[tuple[str, int], ...]:
+) -> Sequence[tuple[str, int]]:
     """Read the identity carrier from the sealed message rows, without hashing."""
     if message_hi < message_lo:
         return ()
-    rows = conn.execute(
-        "SELECT session_id, content_identity, content_occurrence "
-        "FROM messages WHERE rowid BETWEEN ? AND ? ORDER BY rowid",
-        (message_lo, message_hi),
-    ).fetchall()
-    if len(rows) != message_hi - message_lo + 1:
+    count, invalid = conn.execute(
+        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN session_id != ? "
+        "OR typeof(content_identity) != 'text' OR content_identity = '' "
+        "OR typeof(content_occurrence) != 'integer' OR content_occurrence < 0 "
+        "THEN 1 ELSE 0 END), 0) "
+        "FROM messages WHERE rowid BETWEEN ? AND ?",
+        (session_id, message_lo, message_hi),
+    ).fetchone()
+    if count != message_hi - message_lo + 1:
         raise ShardRefusedError(f"shard {conn}: message identity range is incomplete for {session_id}")
-    identities: list[tuple[str, int]] = []
-    for row_session_id, identity, occurrence in rows:
-        if row_session_id != session_id:
-            raise ShardRefusedError(f"shard {conn}: message identity range crosses sessions for {session_id}")
-        if not isinstance(identity, str) or not identity:
-            raise ShardRefusedError(f"shard {conn}: missing message identity for {session_id}")
-        if not isinstance(occurrence, int) or occurrence < 0:
-            raise ShardRefusedError(f"shard {conn}: invalid message identity occurrence for {session_id}")
-        identities.append((identity, occurrence))
-    return tuple(identities)
+    if invalid:
+        raise ShardRefusedError(f"shard {conn}: invalid message identity for {session_id}")
+    return ShardIdentitySequence(path, message_lo, message_hi)
 
 
 def open_session_shard(path: Path) -> SessionShard:
@@ -357,7 +434,7 @@ def open_session_shard(path: Path) -> SessionShard:
                 ranges = (("messages", int(message_lo), int(message_hi)), ("blocks", int(block_lo), int(block_hi)))
                 for table, lo, hi in ranges:
                     if hi < lo:
-                        if (lo, hi) != (1, 0):
+                        if lo != hi + 1 or lo < 1 or lo > maxima[table] + 1:
                             raise ShardRefusedError(f"shard {path}: invalid empty {table} range for {session_id}")
                     elif lo < 1 or hi > maxima[table]:
                         raise ShardRefusedError(f"shard {path}: {table} range is outside sealed rows for {session_id}")
@@ -369,14 +446,12 @@ def open_session_shard(path: Path) -> SessionShard:
                     message_hi=int(row[3]),
                     block_lo=int(row[4]),
                     block_hi=int(row[5]),
-                    content_identities=tuple(
-                        (str(identity), int(occurrence))
-                        for identity, occurrence in _read_message_identities(
-                            conn,
-                            message_lo=int(row[2]),
-                            message_hi=int(row[3]),
-                            session_id=str(row[0]),
-                        )
+                    content_identities=_read_message_identities(
+                        conn,
+                        path=path,
+                        message_lo=int(row[2]),
+                        message_hi=int(row[3]),
+                        session_id=str(row[0]),
                     ),
                 )
                 for row in rows

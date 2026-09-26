@@ -127,6 +127,9 @@ class ServiceCapability(str, Enum):
     API = "api"
     """The machine API surfaces (TCP + UDS) are enabled."""
 
+    BROWSER_HOST = "browser_host"
+    """The optional browser process is enabled for this run."""
+
     DERIVED_WRITES = "derived_writes"
     """Derived tiers are usable, so index-writing work may be scheduled."""
 
@@ -162,7 +165,10 @@ class ServiceProfile(str, Enum):
     """Resident core plus the socket servers."""
 
     INTAKE = "intake"
-    """Resident core plus acquisition; no derived materialization."""
+    """Resident core plus fair intake, including its admitted derivations."""
+
+    REPLAY = "replay"
+    """Resident core, intake, and the session convergence sweep."""
 
 
 PRODUCTION_PROFILE = ServiceProfile.PRODUCTION
@@ -246,9 +252,10 @@ _RESIDENT = (
     ServiceProfile.RESIDENT_CORE,
     ServiceProfile.SURFACES,
     ServiceProfile.INTAKE,
+    ServiceProfile.REPLAY,
 )
 _WITH_SURFACES = (ServiceProfile.PRODUCTION, ServiceProfile.SURFACES)
-_WITH_INTAKE = (ServiceProfile.PRODUCTION, ServiceProfile.INTAKE)
+_WITH_INTAKE = (ServiceProfile.PRODUCTION, ServiceProfile.INTAKE, ServiceProfile.REPLAY)
 
 
 _SPECS: tuple[DaemonServiceSpec, ...] = (
@@ -313,6 +320,17 @@ _SPECS: tuple[DaemonServiceSpec, ...] = (
         readiness=ServiceReadiness.NEVER_REPORTS,
         status_component="uds",
     ),
+    _spec(
+        "browser_host",
+        owner="daemon.browser_host",
+        trigger=ServiceTrigger.SERVER,
+        requires=(ServiceCapability.API, ServiceCapability.BROWSER_HOST),
+        depends_on=("api_server",),
+        profiles=(ServiceProfile.PRODUCTION,),
+        readiness=ServiceReadiness.NEVER_REPORTS,
+        shutdown_deadline_s=8.0,
+        status_component="browser_host",
+    ),
     # --- derived convergence: everything below writes index/embedding tiers
     _spec(
         "fair_intake",
@@ -329,7 +347,7 @@ _SPECS: tuple[DaemonServiceSpec, ...] = (
         owner="daemon.convergence",
         trigger=ServiceTrigger.PERIODIC,
         requires=(ServiceCapability.DERIVED_WRITES,),
-        profiles=(ServiceProfile.PRODUCTION,),
+        profiles=(ServiceProfile.PRODUCTION, ServiceProfile.REPLAY),
         readiness=ServiceReadiness.ON_FIRST_PASS,
         status_component="convergence",
         cadence_s=60.0,
@@ -341,7 +359,7 @@ _SPECS: tuple[DaemonServiceSpec, ...] = (
         requires=(ServiceCapability.DERIVED_WRITES,),
         profiles=(ServiceProfile.PRODUCTION,),
         readiness=ServiceReadiness.ON_FIRST_PASS,
-        status_component="convergence",
+        status_component="raw_materialization",
         cadence_s=30.0,
     ),
     _spec(

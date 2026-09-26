@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import sqlite3
+import tempfile
 from collections import deque
+from collections.abc import Iterator, Set
+from contextlib import closing
 from dataclasses import dataclass
-from typing import Literal, TypeAlias
+from pathlib import Path
+from typing import Any, Literal, TypeAlias, TypeVar, cast
 
 from polylogue.core.enums import PolylogueStrEnum
 from polylogue.core.timestamps import parse_timestamp
@@ -39,6 +44,7 @@ class MembershipDecision(PolylogueStrEnum):
 #: either side disagreeing about content under a shared identity, or each
 #: side holding an identity the other lacks (a genuine fork).
 _Relation: TypeAlias = Literal["equal", "a_contains_b", "b_contains_a", "conflict"]
+_T = TypeVar("_T")
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +54,7 @@ class MembershipRevision:
     provider_updated_at: str | None = None
     observed_at_ms: int | None = None
     browser_snapshot_fidelity: Literal["dom", "native"] | None = None
-    provider_message_ids: frozenset[str] = frozenset()
+    provider_message_ids: Set[str | None] = frozenset()
     provider_attachment_ids: frozenset[str] = frozenset()
 
 
@@ -74,7 +80,7 @@ class MembershipClassification:
     ambiguous_raw_ids: tuple[str, ...]
 
 
-def _identities(contents: frozenset[tuple[bytes, bytes]]) -> frozenset[bytes]:
+def _identities(contents: Set[tuple[bytes, bytes]]) -> frozenset[bytes]:
     """Project the identity half of a (identity, content) pair set.
 
     Messages and events always carry content for every identity they have --
@@ -86,15 +92,15 @@ def _identities(contents: frozenset[tuple[bytes, bytes]]) -> frozenset[bytes]:
     return frozenset(identity for identity, _content in contents)
 
 
-def _message_identities(contents: frozenset[MessageContent]) -> frozenset[bytes]:
+def _message_identities(contents: Set[MessageContent]) -> frozenset[bytes]:
     return frozenset(identity for identity, _content, _multiplicity in contents)
 
 
 def _message_axis_relation(
-    contents_a: frozenset[MessageContent],
-    contents_b: frozenset[MessageContent],
+    contents_a: Set[MessageContent],
+    contents_b: Set[MessageContent],
     *,
-    mutable_identities: frozenset[bytes] = frozenset(),
+    mutable_identities: Set[bytes] = frozenset(),
 ) -> _Relation:
     """Compare message content as an unordered multiset.
 
@@ -154,7 +160,7 @@ def _message_axis_relation(
     return "equal"
 
 
-def _content_by_identity(contents: frozenset[tuple[bytes, bytes]]) -> dict[bytes, frozenset[bytes]]:
+def _content_by_identity(contents: Set[tuple[bytes, bytes]]) -> dict[bytes, frozenset[bytes]]:
     """Group content hashes by identity, retaining EVERY value under a colliding identity.
 
     Identity is not always injective: two acquired attachments on one
@@ -174,10 +180,10 @@ def _content_by_identity(contents: frozenset[tuple[bytes, bytes]]) -> dict[bytes
 
 
 def _axis_relation(
-    identities_a: frozenset[bytes],
-    contents_a: frozenset[tuple[bytes, bytes]],
-    identities_b: frozenset[bytes],
-    contents_b: frozenset[tuple[bytes, bytes]],
+    identities_a: Set[bytes],
+    contents_a: Set[tuple[bytes, bytes]],
+    identities_b: Set[bytes],
+    contents_b: Set[tuple[bytes, bytes]],
 ) -> _Relation:
     """Compare one content axis (messages, attachments, or events) between two revisions.
 
@@ -274,6 +280,184 @@ def _event_axis_relation(
     return _axis_relation(_identities(kept_a), kept_a, _identities(kept_b), kept_b)
 
 
+def _sorted_evidence(values: Set[_T]) -> Iterator[_T]:
+    iterator = getattr(values, "iter_sorted", None)
+    return cast(Iterator[_T], iterator()) if iterator is not None else iter(sorted(cast(Any, values)))
+
+
+def _relation_from_richness(a_richer: bool, b_richer: bool) -> _Relation:
+    if a_richer and b_richer:
+        return "conflict"
+    if a_richer:
+        return "a_contains_b"
+    if b_richer:
+        return "b_contains_a"
+    return "equal"
+
+
+def _stream_message_axis_relation(a: SessionRevisionProjection, b: SessionRevisionProjection) -> _Relation:
+    left = iter(_sorted_evidence(a.message_contents))
+    right = iter(_sorted_evidence(b.message_contents))
+    lrow = next(left, None)
+    rrow = next(right, None)
+    a_richer = b_richer = False
+    while lrow is not None or rrow is not None:
+        identity = min(row[0] for row in (lrow, rrow) if row is not None)
+        l_present = lrow is not None and lrow[0] == identity
+        r_present = rrow is not None and rrow[0] == identity
+        if not l_present:
+            b_richer = True
+            while rrow is not None and rrow[0] == identity:
+                rrow = next(right, None)
+            continue
+        if not r_present:
+            a_richer = True
+            while lrow is not None and lrow[0] == identity:
+                lrow = next(left, None)
+            continue
+        if identity in a.mutable_message_identities or identity in b.mutable_message_identities:
+            left_count = right_count = 0
+            while lrow is not None and lrow[0] == identity:
+                left_count += lrow[2]
+                lrow = next(left, None)
+            while rrow is not None and rrow[0] == identity:
+                right_count += rrow[2]
+                rrow = next(right, None)
+            a_richer |= left_count > right_count
+            b_richer |= right_count > left_count
+            continue
+        while lrow is not None and lrow[0] == identity and rrow is not None and rrow[0] == identity:
+            if lrow[1] != rrow[1]:
+                return "conflict"
+            a_richer |= lrow[2] > rrow[2]
+            b_richer |= rrow[2] > lrow[2]
+            lrow = next(left, None)
+            rrow = next(right, None)
+        if lrow is not None and lrow[0] == identity or rrow is not None and rrow[0] == identity:
+            return "conflict"
+    return _relation_from_richness(a_richer, b_richer)
+
+
+def _stream_axis_relation(
+    identities_a: Set[bytes],
+    contents_a: Set[tuple[bytes, bytes]],
+    identities_b: Set[bytes],
+    contents_b: Set[tuple[bytes, bytes]],
+) -> _Relation:
+    left_ids = iter(_sorted_evidence(identities_a))
+    right_ids = iter(_sorted_evidence(identities_b))
+    left_values = iter(_sorted_evidence(contents_a))
+    right_values = iter(_sorted_evidence(contents_b))
+    lid = next(left_ids, None)
+    rid = next(right_ids, None)
+    lrow = next(left_values, None)
+    rrow = next(right_values, None)
+    a_richer = b_richer = False
+    while lid is not None or rid is not None:
+        identity = min(item for item in (lid, rid) if item is not None)
+        l_present = lid == identity
+        r_present = rid == identity
+        if l_present:
+            lid = next(left_ids, None)
+        if r_present:
+            rid = next(right_ids, None)
+        if not l_present:
+            b_richer = True
+        if not r_present:
+            a_richer = True
+        l_has = lrow is not None and lrow[0] == identity
+        r_has = rrow is not None and rrow[0] == identity
+        if l_present and r_present:
+            if l_has and not r_has:
+                a_richer = True
+            elif r_has and not l_has:
+                b_richer = True
+            elif l_has and r_has:
+                while lrow is not None and lrow[0] == identity and rrow is not None and rrow[0] == identity:
+                    if lrow[1] != rrow[1]:
+                        return "conflict"
+                    lrow = next(left_values, None)
+                    rrow = next(right_values, None)
+                if lrow is not None and lrow[0] == identity or rrow is not None and rrow[0] == identity:
+                    return "conflict"
+        while lrow is not None and lrow[0] == identity:
+            lrow = next(left_values, None)
+        while rrow is not None and rrow[0] == identity:
+            rrow = next(right_values, None)
+    return _relation_from_richness(a_richer, b_richer)
+
+
+def _anchor_free_lookup(
+    values: Set[tuple[bytes, bytes]], identity: bytes, cache: dict[bytes, bytes] | None
+) -> bytes | None:
+    lookup = getattr(values, "lookup_second", None)
+    if lookup is not None:
+        return cast(bytes | None, lookup(identity))
+    return cache.get(identity) if cache is not None else None
+
+
+def _stream_event_axis_relation(a: SessionRevisionProjection, b: SessionRevisionProjection) -> _Relation:
+    left = iter(_sorted_evidence(a.event_contents))
+    right = iter(_sorted_evidence(b.event_contents))
+    lrow = next(left, None)
+    rrow = next(right, None)
+    a_cache = None if hasattr(a.anchor_free_event_identities, "lookup_second") else dict(a.anchor_free_event_identities)
+    b_cache = None if hasattr(b.anchor_free_event_identities, "lookup_second") else dict(b.anchor_free_event_identities)
+    a_richer = b_richer = False
+    parent = getattr(a.event_contents, "scratch_parent", None) or getattr(b.event_contents, "scratch_parent", None)
+    with (
+        tempfile.TemporaryDirectory(prefix="polylogue-event-compare-", dir=parent) as scratch,
+        closing(sqlite3.connect(Path(scratch) / "unmatched.db")) as conn,
+    ):
+        conn.execute(
+            "CREATE TABLE unmatched (anchor_free BLOB PRIMARY KEY, left_count INTEGER NOT NULL, right_count INTEGER NOT NULL) WITHOUT ROWID"
+        )
+
+        def unmatched(side: str, identity: bytes) -> None:
+            nonlocal a_richer, b_richer
+            evidence = a if side == "left" else b
+            cache = a_cache if side == "left" else b_cache
+            anchor = _anchor_free_lookup(evidence.anchor_free_event_identities, identity, cache)
+            if anchor is None:
+                if side == "left":
+                    a_richer = True
+                else:
+                    b_richer = True
+                return
+            increment = "left_count" if side == "left" else "right_count"
+            initial = (1, 0) if side == "left" else (0, 1)
+            conn.execute(
+                f"INSERT INTO unmatched VALUES (?, ?, ?) ON CONFLICT(anchor_free) "
+                f"DO UPDATE SET {increment} = {increment} + 1",
+                (anchor, *initial),
+            )
+
+        while lrow is not None or rrow is not None:
+            identity = min(row[0] for row in (lrow, rrow) if row is not None)
+            l_present = lrow is not None and lrow[0] == identity
+            r_present = rrow is not None and rrow[0] == identity
+            if l_present and r_present:
+                while lrow is not None and lrow[0] == identity and rrow is not None and rrow[0] == identity:
+                    if lrow[1] != rrow[1]:
+                        return "conflict"
+                    lrow = next(left, None)
+                    rrow = next(right, None)
+                if lrow is not None and lrow[0] == identity or rrow is not None and rrow[0] == identity:
+                    return "conflict"
+            elif l_present:
+                unmatched("left", identity)
+                while lrow is not None and lrow[0] == identity:
+                    lrow = next(left, None)
+            else:
+                unmatched("right", identity)
+                while rrow is not None and rrow[0] == identity:
+                    rrow = next(right, None)
+        for left_count, right_count in conn.execute("SELECT left_count, right_count FROM unmatched"):
+            a_richer |= left_count > right_count
+            b_richer |= right_count > left_count
+    return _relation_from_richness(a_richer, b_richer)
+
+
 def _relation(a: SessionRevisionProjection, b: SessionRevisionProjection) -> _Relation:
     """Combine the message/attachment/event axes into one overall relation.
 
@@ -284,15 +468,29 @@ def _relation(a: SessionRevisionProjection, b: SessionRevisionProjection) -> _Re
     something the other lacks, so it is a conflict too), and ``conflict`` if
     any single axis already is.
     """
-    axes = (
-        _message_axis_relation(
-            a.message_contents,
-            b.message_contents,
-            mutable_identities=a.mutable_message_identities | b.mutable_message_identities,
-        ),
-        _axis_relation(a.attachment_identities, a.attachment_contents, b.attachment_identities, b.attachment_contents),
-        _event_axis_relation(a, b),
-    )
+    if hasattr(a.message_contents, "iter_sorted") or hasattr(b.message_contents, "iter_sorted"):
+        axes = (
+            _stream_message_axis_relation(a, b),
+            _stream_axis_relation(
+                a.attachment_identities,
+                a.attachment_contents,
+                b.attachment_identities,
+                b.attachment_contents,
+            ),
+            _stream_event_axis_relation(a, b),
+        )
+    else:
+        axes = (
+            _message_axis_relation(
+                a.message_contents,
+                b.message_contents,
+                mutable_identities=a.mutable_message_identities | b.mutable_message_identities,
+            ),
+            _axis_relation(
+                a.attachment_identities, a.attachment_contents, b.attachment_identities, b.attachment_contents
+            ),
+            _event_axis_relation(a, b),
+        )
     if "conflict" in axes:
         return "conflict"
     directions = {axis for axis in axes if axis != "equal"}

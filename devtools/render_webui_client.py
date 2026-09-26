@@ -129,6 +129,8 @@ class TypeScriptRenderer:
                 if raw is None:
                     continue
                 operation = _mapping(raw, f"paths.{path}.{method}")
+                if operation.get("x-polylogue-client-generation") is False:
+                    continue
                 if "requestBody" in operation:
                     raise ContractGenerationError(
                         f"{path} {method}: request bodies are not supported by the generated client"

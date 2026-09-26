@@ -620,6 +620,33 @@ def test_layering_census_baseline_entry_that_stopped_mutating_is_stale(tmp_path:
     ] == ["polylogue/ops/retired_writer.py"]
 
 
+def test_scratch_census_authority_cannot_cover_archive_tier_mutation(tmp_path: Path) -> None:
+    """A scratch declaration admits scratch DML but rejects known archive-table writes.
+
+    Anti-vacuity: if the census ignores ``authority`` or fails to classify a
+    known archive table, changing this file from scratch storage to archive
+    storage would remain green under the same baseline row.
+    """
+    rel = "polylogue/ops/scratch_writer.py"
+    _write_census_module(tmp_path, rel, "INSERT INTO scratch_records (value) VALUES (?)")
+    baseline: list[dict[str, object]] = [{"file": rel, "tiers": [], "authority": "scratch"}]
+
+    assert verify_layering._collect_writer_module_census_violations(tmp_path, _census_policy(tmp_path, baseline)) == []
+
+    _write_census_module(tmp_path, rel, "INSERT INTO sessions (native_id) VALUES (?)")
+
+    violations = verify_layering._collect_writer_module_census_violations(tmp_path, _census_policy(tmp_path, baseline))
+    assert [
+        violation["rule"]
+        for violation in violations
+        if violation["rule"] == "writer_module_scratch_archive_tier_mutation"
+    ] == ["writer_module_scratch_archive_tier_mutation"]
+
+    invalid_policy = _census_policy(tmp_path, [{"file": rel, "tiers": ["index"], "authority": "scratch"}])
+    invalid = verify_layering._collect_writer_module_census_violations(tmp_path, invalid_policy)
+    assert [violation["rule"] for violation in invalid] == ["writer_module_census_declaration_invalid"]
+
+
 def test_layering_production_census_baseline_is_exact() -> None:
     """The checked-in census matches the tree, so the ratchet is real today."""
     assert verify_layering._collect_writer_module_census_violations(_REPO_ROOT, _production_writer_policy()) == []

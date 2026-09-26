@@ -135,7 +135,8 @@ def log_unclaimed_file(
         size=size,
         mtime=mtime,
         source_name=source_name,
-        reason=reason,
+        reason="unclaimed_file",
+        error_detail=reason,
     )
 
 

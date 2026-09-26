@@ -92,6 +92,8 @@ maximum age. In the daemon the `/proc` walk usually answers "polylogued", which
 is not actionable; the frame list says which snapshot, how old, and against
 what bound.
 
+The recurring sweep covers all six archive tiers, including `audit.db`.
+
 Checkpoint hold is budgeted separately from publication:
 `CHECKPOINT_HOLD_BUDGET_S` (20 s) against `maintenance.wal_checkpoint` in
 `daemon/write_coordinator.py`, below the 120 s general maintenance budget.
@@ -142,6 +144,9 @@ the connection under an in-flight cursor.
 other work. It re-checks the declared age between rows, and on expiry closes the
 cursor *before* `ReadFrameExpiredError` reaches the caller — so the typed
 refusal ends the WAL pin instead of naming it and continuing to cause it.
+Its SQLite progress handler also interrupts a single expensive row computation
+when that computation itself crosses the frame age; the stream maps that
+interrupt to the same typed expiry and closes its cursor.
 
 A live-generation profile with `max_snapshot_age_s=None` is refused at
 construction: that shape is exactly the unbounded snapshot the class exists to
@@ -194,6 +199,11 @@ pair of read frames), `operations/mutation_actuators.py`,
 `sources/sqlite_snapshot.py`, `sources/parsers/{codex_state,hermes_state,hermes_verification}.py`,
 `maintenance/embedding_preservation.py` and
 `operations/durable_change_train.py`.
+
+The archive store's source-tier version probe, persistent read-only source
+handle, raw-artifact and hook-event readers, and operation-debt probe now use
+the named factory. They keep their previous schema-validation behavior so a
+diagnostic read can still report a stale or absent tier through its caller.
 
 The API, CLI status, `operations/archive_debt.py` and `daemon/similarity.py`
 readers already used the declared factories and named classes.

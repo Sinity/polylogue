@@ -23,6 +23,7 @@ prove:
 from __future__ import annotations
 
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
@@ -34,6 +35,7 @@ from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.pipeline import ids as pipeline_ids
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -41,7 +43,9 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     PreparedSessionRows,
     PreparedSessionWriteRefusedError,
     prepare_session_rows,
+    prepare_session_shard,
     prepare_session_write,
+    prepared_session_rows_from_shard,
     read_archive_session_envelope,
     write_parsed_session_to_archive,
 )
@@ -53,6 +57,38 @@ def _connect(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
     return conn
+
+
+def test_disk_duplicate_native_ids_cross_thread_lookup_and_cleanup(tmp_path: Path) -> None:
+    """A prepared disk lookup moves to the writer, then its owner releases it."""
+    store = SqliteMessageStore(tmp_path / "duplicate-source.db")
+    sink = store.new_sink()
+    sink.extend(
+        [
+            ParsedMessage(provider_message_id="dup", role=Role.USER, text="first"),
+            ParsedMessage(provider_message_id=" dup ", role=Role.USER, text="second"),
+            ParsedMessage(provider_message_id="unique", role=Role.USER, text="third"),
+        ]
+    )
+    store.conn.commit()
+    store.close()
+    sealed = SqliteMessageSink(store.path, sink.session_ordinal, count=len(sink))
+    duplicates = archive_tier_write._duplicate_message_native_ids(sealed)
+    assert isinstance(duplicates, archive_tier_write._DiskDuplicateNativeIds)
+    scratch = Path(duplicates._scratch.name)
+
+    with ThreadPoolExecutor(max_workers=1) as writer, ThreadPoolExecutor(max_workers=1) as owner:
+        assert writer.submit(
+            lambda: ("dup" in duplicates, "unique" in duplicates, len(duplicates), list(duplicates))
+        ).result() == (
+            True,
+            False,
+            1,
+            ["dup"],
+        )
+        owner.submit(duplicates.close).result()
+    duplicates.close()
+    assert not scratch.exists()
 
 
 def _synthetic_sessions() -> list[ParsedSession]:
@@ -567,5 +603,271 @@ def test_prepared_write_preserves_prefix_sharing_context_without_writer_lowering
             "B",
             "C",
         ]
+    finally:
+        conn.close()
+
+
+def test_disk_prepared_write_keeps_lineage_tail_and_rows_off_heap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="disk-parent",
+        messages=[
+            ParsedMessage(provider_message_id="a", role=Role.USER, text="A"),
+            ParsedMessage(provider_message_id="b", role=Role.ASSISTANT, text="B"),
+        ],
+    )
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="disk-child",
+        parent_session_provider_id="disk-parent",
+        messages=[
+            *parent.messages,
+            ParsedMessage(provider_message_id="c", role=Role.USER, text="C"),
+        ],
+    )
+    store = SqliteMessageStore(tmp_path / "child-prepared.db")
+    sink = store.new_sink()
+    sink.extend(child.messages)
+    store.conn.commit()
+    store.close()
+    sealed = SqliteMessageSink(store.path, sink.session_ordinal, count=len(sink))
+    publication = child.model_copy(update={"messages": sealed, "content_hash": str(session_content_hash(child))})
+    conn = _connect(tmp_path / "index.db")
+    try:
+        write_parsed_session_to_archive(conn, parent, content_hash=str(session_content_hash(parent)))
+        prepared = prepare_session_write(conn, publication, merge_append=False)
+        assert not isinstance(prepared.rows.message_rows, tuple)
+        assert len(prepared.context.messages) == 1
+
+        def forbid_row_lowering(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("writer rebuilt prepared lineage rows")
+
+        monkeypatch.setattr(archive_tier_write, "_iter_message_rows", forbid_row_lowering)
+        monkeypatch.setattr(archive_tier_write, "_iter_block_rows", forbid_row_lowering)
+        child_id = write_parsed_session_to_archive(
+            conn,
+            publication,
+            content_hash=publication.content_hash,
+            prepared_write=prepared,
+            prepared_required=True,
+        )
+        assert [row[0] for row in conn.execute("SELECT native_id FROM messages WHERE session_id = ?", (child_id,))] == [
+            "c"
+        ]
+        assert [message.native_id for message in read_archive_session_envelope(conn, child_id).messages] == [
+            "a",
+            "b",
+            "c",
+        ]
+    finally:
+        conn.close()
+
+
+def test_prepared_lineage_refuses_changed_earlier_parent_prefix(tmp_path: Path) -> None:
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="mutable-parent",
+        messages=[
+            ParsedMessage(provider_message_id="a", role=Role.USER, text="old A"),
+            ParsedMessage(provider_message_id="b", role=Role.ASSISTANT, text="B"),
+        ],
+    )
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="waiting-child",
+        parent_session_provider_id="mutable-parent",
+        messages=[
+            *parent.messages,
+            ParsedMessage(provider_message_id="c", role=Role.USER, text="C"),
+        ],
+    )
+    conn = _connect(tmp_path / "index.db")
+    try:
+        write_parsed_session_to_archive(conn, parent, content_hash=str(session_content_hash(parent)))
+        prepared = prepare_session_write(conn, child, merge_append=False)
+        changed_parent = parent.model_copy(
+            update={
+                "messages": [
+                    ParsedMessage(provider_message_id="a", role=Role.USER, text="new A"),
+                    parent.messages[1],
+                ]
+            }
+        )
+        write_parsed_session_to_archive(
+            conn,
+            changed_parent,
+            content_hash=str(session_content_hash(changed_parent)),
+            force_replace=True,
+        )
+        with pytest.raises(PreparedSessionWriteRefusedError, match="lineage prefix changed"):
+            write_parsed_session_to_archive(
+                conn,
+                child,
+                content_hash=str(session_content_hash(child)),
+                prepared_write=prepared,
+                prepared_required=True,
+            )
+        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE native_id = 'waiting-child'").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_prepared_cross_acquisition_union_matches_inline_and_skips_writer_merge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A poorer export preserves older message and nested block evidence.
+
+    Anti-vacuity: the old in-writer union and canonical row builders raise
+    after preparation, so a prepared carrier must publish its merged rows.
+    """
+    rich = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="prepared-field-union",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TEXT,
+                        text="answer",
+                        tool_input={"citation": {"url": "https://example.invalid", "start": 4}},
+                    ),
+                ],
+            ),
+            ParsedMessage(
+                provider_message_id="m2",
+                role=Role.TOOL,
+                blocks=[
+                    ParsedContentBlock(type=BlockType.TOOL_RESULT, text="retained tool", is_error=False),
+                ],
+            ),
+        ],
+    )
+    poor = rich.model_copy(
+        update={
+            "messages": [
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    blocks=[
+                        ParsedContentBlock(
+                            type=BlockType.TEXT,
+                            text="answer",
+                            tool_input={"citation": {"url": "https://example.invalid"}},
+                        ),
+                    ],
+                ),
+            ]
+        }
+    )
+
+    expected = _connect(tmp_path / "expected.db")
+    actual = _connect(tmp_path / "actual.db")
+    try:
+        write_parsed_session_to_archive(expected, rich, raw_id="older", content_hash=str(session_content_hash(rich)))
+        write_parsed_session_to_archive(expected, poor, raw_id="newer", content_hash=str(session_content_hash(poor)))
+        session_id = write_parsed_session_to_archive(
+            actual, rich, raw_id="older", content_hash=str(session_content_hash(rich))
+        )
+        store = SqliteMessageStore(tmp_path / "prepared-poor.db")
+        sink = store.new_sink()
+        sink.extend(poor.messages)
+        bound_hash = str(session_content_hash(poor))
+        worker_session = poor.model_copy(update={"messages": sink, "content_hash": bound_hash})
+        shard = prepare_session_shard(tmp_path, [worker_session])
+        store.conn.commit()
+        store.close()
+        sealed = SqliteMessageSink(store.path, sink.session_ordinal, count=len(sink))
+        publication = poor.model_copy(update={"messages": sealed, "content_hash": bound_hash})
+        input_rows = prepared_session_rows_from_shard(shard.path, session_id)
+
+        def forbid_inline(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("writer rebuilt or merged prepared field rows")
+
+        monkeypatch.setattr(archive_tier_write, "_union_with_existing_rows", forbid_inline)
+        monkeypatch.setattr(archive_tier_write, "_iter_message_rows", forbid_inline)
+        monkeypatch.setattr(archive_tier_write, "_iter_block_rows", forbid_inline)
+        prepared = prepare_session_write(
+            actual,
+            publication,
+            merge_append=False,
+            raw_id="newer",
+            prepared_rows=input_rows,
+        )
+        assert prepared.cross_acquisition_union is not None
+        assert not isinstance(prepared.cross_acquisition_union.rows.message_rows, tuple)
+        write_parsed_session_to_archive(
+            actual,
+            publication,
+            raw_id="newer",
+            content_hash=publication.content_hash,
+            prepared_write=prepared,
+            prepared_required=True,
+        )
+        for table in ("sessions", "messages", "blocks"):
+            assert [tuple(row) for row in actual.execute(f"SELECT * FROM {table} ORDER BY rowid")] == [
+                tuple(row) for row in expected.execute(f"SELECT * FROM {table} ORDER BY rowid")
+            ]
+        prepared.close()
+    finally:
+        expected.close()
+        actual.close()
+
+
+def test_prepared_cross_acquisition_union_refuses_changed_predecessor(tmp_path: Path) -> None:
+    first = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="union-race",
+        messages=[
+            ParsedMessage(provider_message_id="m1", role=Role.USER, text="first"),
+        ],
+    )
+    second = first.model_copy(
+        update={
+            "messages": [
+                ParsedMessage(provider_message_id="m1", role=Role.USER, text="second"),
+            ]
+        }
+    )
+    competing = first.model_copy(
+        update={
+            "messages": [
+                ParsedMessage(provider_message_id="m1", role=Role.USER, text="competing"),
+            ]
+        }
+    )
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session_id = write_parsed_session_to_archive(
+            conn,
+            first,
+            raw_id="old",
+            content_hash=str(session_content_hash(first)),
+        )
+        prepared = prepare_session_write(conn, second, merge_append=False, raw_id="second")
+        assert prepared.cross_acquisition_union is not None
+        write_parsed_session_to_archive(
+            conn,
+            competing,
+            raw_id="competing",
+            content_hash=str(session_content_hash(competing)),
+            force_replace=True,
+        )
+        with pytest.raises(PreparedSessionWriteRefusedError, match="predecessor changed"):
+            write_parsed_session_to_archive(
+                conn,
+                second,
+                raw_id="second",
+                content_hash=str(session_content_hash(second)),
+                prepared_write=prepared,
+                prepared_required=True,
+            )
+        assert (
+            conn.execute("SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0] == "competing"
+        )
+        prepared.close()
     finally:
         conn.close()

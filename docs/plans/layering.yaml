@@ -37,7 +37,9 @@ writer_modules:
   # that only these modules write. Modules elsewhere in the package that execute
   # DML are held by census_roots + census_baseline instead: an exact checked-in
   # census that can shrink but never grow without an explicit edit, so a new
-  # unpoliced write path cannot appear without review.
+  # unpoliced write path cannot appear without review. A census entry may add
+  # authority: scratch only with tiers: []; the gate rejects that declaration
+  # if the module later writes a recognized archive tier.
   mutation_roots: [polylogue/storage/sqlite/archive_tiers]
   census_roots: [polylogue]
   census_baseline: docs/plans/writer-module-census-baseline.json
@@ -59,11 +61,13 @@ writer_modules:
       entrypoints:
         [admit_raw_and_parsed_result, admit_raw_artifact_blob_ref, admit_raw_artifact_payload,
         apply_raw_membership_classification, apply_raw_revision_replay,
+        apply_prepared_raw_revision_classification,
         classify_raw_revision_cohort_for_frozen_candidate,
         classify_raw_revision_cohort_for_live_watch, classify_raw_revision_cohort_for_live_watch_in_transaction,
         classify_raw_revision_cohort_for_rebuild_repair, classify_raw_revision_cohort_for_rebuild_repair_in_transaction,
         finalize_raw_parse_state,
         mark_raw_parse_failed, promote_reconstructed_legacy_append_revisions,
+        prepare_raw_revision_rebuild_classification,
         record_current_parser_source_census,
         release_provisional_full_revisions, replace_raw_membership_census,
         write_parsed_for_retained_raw, write_parsed_for_retained_raw_result, write_raw_and_parsed,

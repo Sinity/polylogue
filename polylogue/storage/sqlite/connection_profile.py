@@ -30,6 +30,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Literal, Self
 from urllib.parse import quote
 
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
 if TYPE_CHECKING:
@@ -647,7 +648,7 @@ def open_source_tier_write_connection(
     synchronous, busy-timeout, or foreign-key policy.
     """
     require_write_lease(f"open_source_tier_write_connection({path})", archive_root=archive_root)
-    conn = sqlite3.connect(str(path), timeout=WRITE_CONNECTION_PROFILE.timeout_seconds)
+    conn = connect_measured(path, timeout=WRITE_CONNECTION_PROFILE.timeout_seconds)
     try:
         for statement in write_connection_local_pragma_statements(WRITE_CONNECTION_PROFILE):
             conn.execute(statement)
@@ -1052,7 +1053,7 @@ def open_connection(
     if profile.role != "write":
         raise ValueError("open_connection requires a write profile")
     require_write_lease(f"open_connection({path})", archive_root=archive_root)
-    conn = sqlite3.connect(str(path), timeout=timeout, check_same_thread=check_same_thread)
+    conn = connect_measured(path, timeout=timeout, check_same_thread=check_same_thread)
     try:
         if validate_schema:
             _assert_schema_supported(conn, path, tier)
@@ -1085,7 +1086,7 @@ def open_daemon_connection(
     service cgroup for the lifetime of the process.
     """
     require_write_lease(f"open_daemon_connection({path})", archive_root=archive_root)
-    conn = sqlite3.connect(str(path), timeout=timeout)
+    conn = connect_measured(path, timeout=timeout)
     try:
         if validate_schema:
             _assert_schema_supported(conn, path, tier)
@@ -1189,7 +1190,7 @@ def open_readonly_connection(
         if descriptor_uri is None:
             raise RuntimeError(f"cannot open selected SQLite database through a descriptor-bound path: {path}")
         database_uri = descriptor_uri
-    conn = sqlite3.connect(database_uri, uri=True, timeout=timeout)
+    conn = connect_measured(database_uri, uri=True, timeout=timeout)
     try:
         if validate_schema:
             _assert_schema_supported(conn, path, tier)
@@ -1250,7 +1251,7 @@ def open_sealed_staging_connection(
 
     profile = SEALED_STAGING_CONNECTION_PROFILE
     database_uri = f"file:{quote(str(path))}?mode=ro&immutable=1"
-    conn = sqlite3.connect(database_uri, uri=True, timeout=profile.timeout_seconds)
+    conn = connect_measured(database_uri, uri=True, timeout=profile.timeout_seconds)
     try:
         if validate_schema:
             _assert_schema_supported(conn, path, tier)
@@ -1320,7 +1321,7 @@ def open_isolated_write_connection(
     if profile.role != "write":
         raise ValueError("open_isolated_write_connection requires a write profile")
     require_write_lease(purpose, archive_root=archive_root)
-    conn = sqlite3.connect(str(path), timeout=profile.timeout_seconds if timeout is None else timeout)
+    conn = connect_measured(path, timeout=profile.timeout_seconds if timeout is None else timeout)
     try:
         for statement in write_connection_pragma_statements(profile):
             conn.execute(statement)
@@ -1527,6 +1528,7 @@ class ReadFrame:
         self._opened_at = time.monotonic()
         self._generation = _generation_token(self._path)
         self._data_version = _data_version(self._conn)
+        self._install_progress_handler()
         with _LIVE_READ_FRAMES_LOCK:
             _LIVE_READ_FRAMES.add(self)
 
@@ -1539,6 +1541,17 @@ class ReadFrame:
         )
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _install_progress_handler(self) -> None:
+        # A row can take arbitrarily long to compute. Checking only between
+        # yielded rows would let one SQLite step pin a WAL frame past its age.
+        self._conn.set_progress_handler(lambda: int(self._cancelled or self.expired), 1000)
+
+    def _raise_if_interrupted(self, exc: sqlite3.OperationalError) -> None:
+        if self._cancelled:
+            raise ReadFrameCancelledError(f"read frame over {self._path} was cancelled") from exc
+        if self.expired:
+            self.check()
 
     # -- identity and lifetime ------------------------------------------------
 
@@ -1629,15 +1642,21 @@ class ReadFrame:
         it chooses, instead of leaving it to garbage collection.
         """
         self.check()
-        cursor = self._conn.execute(sql, tuple(parameters))
         self._streaming += 1
+        cursor: sqlite3.Cursor | None = None
         try:
-            for row in cursor:
-                self.check()
-                yield row
+            try:
+                cursor = self._conn.execute(sql, tuple(parameters))
+                for row in cursor:
+                    self.check()
+                    yield row
+            except sqlite3.OperationalError as exc:
+                self._raise_if_interrupted(exc)
+                raise
         finally:
             self._streaming -= 1
-            cursor.close()
+            if cursor is not None:
+                cursor.close()
 
     def revalidate(self) -> bool:
         """Whether this frame still sees exactly what it was opened on.
@@ -1677,6 +1696,7 @@ class ReadFrame:
         self._opened_at = time.monotonic()
         self._generation = _generation_token(self._path)
         self._data_version = _data_version(self._conn)
+        self._install_progress_handler()
         return self._generation
 
     def cancel(self) -> None:

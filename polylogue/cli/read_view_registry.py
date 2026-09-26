@@ -54,43 +54,119 @@ ReadViewExecutionKind = Literal[
 READ_VIEW_GLOBAL_OPTION_NAMES = frozenset({"limit", "offset"})
 
 
-#: The raw view windows *artifacts*, not messages, so it takes no message
-#: anchor: accepting one it could only ignore would answer a window the caller
-#: did not ask for.
-RAW_READ_VIEW_OPTION_NAMES = frozenset({"full", "limit", "offset", "continuation"})
-MESSAGE_READ_VIEW_OPTION_NAMES = RAW_READ_VIEW_OPTION_NAMES
-CONTEXT_READ_VIEW_OPTION_NAMES = frozenset({"related_limit"})
-CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES = frozenset(
-    {
-        "max_sessions",
-        "no_redact",
-    }
-)
-NEIGHBOR_READ_VIEW_OPTION_NAMES = frozenset({"limit", "window_hours"})
-CORRELATION_READ_VIEW_OPTION_NAMES = frozenset({"confidence_threshold", "github_api", "repo_path", "since_hours"})
-CHRONICLE_READ_VIEW_OPTION_NAMES = frozenset({"limit"})
-#: A windowed-evidence view pages a relation whose bound is *reported*, so it
-#: takes the continuation that resumes the page it minted.  ``limit``/``offset``
-#: are the shared global coordinates.  ``events``, ``file-edits`` and
-#: ``web-content`` share this set because they share the contract, not because
-#: one of them owns it.
-EVIDENCE_WINDOW_READ_VIEW_OPTION_NAMES = frozenset({"limit", "continuation"})
-EVENTS_READ_VIEW_OPTION_NAMES = EVIDENCE_WINDOW_READ_VIEW_OPTION_NAMES
-EFFECTIVE_CONTEXT_READ_VIEW_OPTION_NAMES = frozenset({"at_position"})
-LINEAGE_READ_VIEW_OPTION_NAMES = frozenset({"node_offset", "node_limit", "edge_offset", "edge_limit"})
-# Topology pages by node window plus an edge bound. These reuse the Click
-# params the lineage view already declares, so registering them adds no new
-# positional surface to the query verbs.
-TOPOLOGY_READ_VIEW_OPTION_NAMES = frozenset({"node_offset", "node_limit", "edge_limit"})
-
-
 @dataclass(frozen=True, slots=True)
 class ReadViewOptionDeclaration:
     name: str
     flags: tuple[str, ...]
     help: str
-    value_type: Literal["string", "integer", "float"] = "string"
-    default: str | int | float | None = None
+    value_type: Literal["string", "integer", "float", "boolean", "bounded-integer"] = "string"
+    default: str | int | float | bool | None = None
+    show_default: bool = False
+    minimum: int | None = None
+    maximum: int | None = None
+
+
+FULL_OPTION = ReadViewOptionDeclaration(
+    "full", ("--full",), "Read a full single-session body for views that paginate.", "boolean", False
+)
+CONTINUATION_OPTION = ReadViewOptionDeclaration(
+    "continuation",
+    ("--continuation",),
+    "Resume a snapshot-bound window; supersedes --limit/--offset and refuses a stale archive generation.",
+)
+AT_POSITION_OPTION = ReadViewOptionDeclaration(
+    "at_position", ("--at-position",), "Message position for --view effective_context.", "integer"
+)
+WINDOW_HOURS_OPTION = ReadViewOptionDeclaration(
+    "window_hours",
+    ("--window-hours",),
+    "Neighboring time window around the seed session.",
+    "integer",
+    24,
+    True,
+)
+REPO_PATH_OPTION = ReadViewOptionDeclaration(
+    "repo_path", ("--repo-path",), "Git repository path for correlation; defaults to the session's repo/cwd."
+)
+SINCE_HOURS_OPTION = ReadViewOptionDeclaration(
+    "since_hours",
+    ("--since-hours",),
+    "Hours before/after the session to scan for commits.",
+    "integer",
+    2,
+    True,
+)
+CONFIDENCE_THRESHOLD_OPTION = ReadViewOptionDeclaration(
+    "confidence_threshold",
+    ("--confidence-threshold",),
+    "Minimum confidence for file-overlap commit detection.",
+    "float",
+    0.3,
+    True,
+)
+GITHUB_API_OPTION = ReadViewOptionDeclaration(
+    "github_api",
+    ("--github-api/--no-github-api",),
+    "Cross-reference issue/PR refs with the GitHub API via gh CLI.",
+    "boolean",
+    True,
+    True,
+)
+RELATED_LIMIT_OPTION = ReadViewOptionDeclaration(
+    "related_limit",
+    ("--related-limit",),
+    "Number of related sessions to include.",
+    "integer",
+    5,
+    True,
+)
+MAX_SESSIONS_OPTION = ReadViewOptionDeclaration(
+    "max_sessions",
+    ("--max-sessions",),
+    "Max sessions, 1-20.",
+    "bounded-integer",
+    5,
+    True,
+    1,
+    20,
+)
+NO_REDACT_OPTION = ReadViewOptionDeclaration(
+    "no_redact",
+    ("--no-redact",),
+    "Do not redact filesystem paths.",
+    "boolean",
+    False,
+)
+NODE_OFFSET_OPTION = ReadViewOptionDeclaration(
+    "node_offset",
+    ("--node-offset",),
+    "Lineage node-page offset.",
+    "integer",
+    0,
+)
+NODE_LIMIT_OPTION = ReadViewOptionDeclaration(
+    "node_limit",
+    ("--node-limit",),
+    "Lineage node-page size.",
+    "integer",
+    50,
+    True,
+)
+EDGE_OFFSET_OPTION = ReadViewOptionDeclaration(
+    "edge_offset",
+    ("--edge-offset",),
+    "Lineage edge-page offset.",
+    "integer",
+    0,
+)
+EDGE_LIMIT_OPTION = ReadViewOptionDeclaration(
+    "edge_limit",
+    ("--edge-limit",),
+    "Lineage edge-page size.",
+    "integer",
+    50,
+    True,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,16 +189,7 @@ class ReadViewHandlerMetadata:
 #: by dispatching each view with the daemon absent and watching which
 #: operations reach the kernel, so a row cannot claim an operation it does not
 #: execute -- which is the state ten of these rows were in (polylogue-dutav).
-IN_PROCESS_READ_VIEWS: frozenset[str] = frozenset(
-    {
-        "chronicle",
-        "correlation",
-        "dialogue",
-        "effective_context",
-        "neighbors",
-        "temporal",
-    }
-)
+IN_PROCESS_READ_VIEWS: frozenset[str] = frozenset()
 
 # The per-session evidence views render index or source relations the query
 # grammar does not declare as structural units: ``hook_events``,
@@ -147,12 +214,10 @@ IN_PROCESS_READ_VIEWS: frozenset[str] = frozenset(
 # reported bound and ``operations/evidence_window.py`` the per-relation
 # continuation family.
 #
-# What remains is not a ``session.read`` projection at all.  ``dialogue``,
-# ``temporal`` and ``chronicle`` accept query sets rather than one exact
-# reference; ``effective_context`` is a compaction-aware replay with an
-# ``--at-position`` parameter; ``neighbors`` and ``correlation`` reach other
-# subsystems.  Each needs an operation declaration of its own, which is the
-# work S8/S9 still owe.
+# The six views below have separate read operations. ``dialogue``, ``temporal``
+# and ``chronicle`` accept query sets; ``effective_context`` replays a
+# compaction boundary, while ``neighbors`` and ``correlation`` read distinct
+# evidence relations.
 READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
     "summary": ReadViewHandlerMetadata(
         "summary",
@@ -174,13 +239,16 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
         "dialogue",
         "required",
         accepts_query_set=True,
-        execution_kind="in-process",
+        execution_kind="distinct-operation",
+        operations=("read.dialogue",),
     ),
     "messages": ReadViewHandlerMetadata(
         "messages",
         "required",
-        MESSAGE_READ_VIEW_OPTION_NAMES,
+        frozenset({"limit", "offset"}),
         declared_options=(
+            FULL_OPTION,
+            CONTINUATION_OPTION,
             ReadViewOptionDeclaration(
                 "around",
                 ("--around",),
@@ -194,7 +262,8 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
     "raw": ReadViewHandlerMetadata(
         "raw",
         "required",
-        RAW_READ_VIEW_OPTION_NAMES,
+        frozenset({"limit", "offset"}),
+        declared_options=(FULL_OPTION, CONTINUATION_OPTION),
         execution_kind="session-read-projection",
         operations=("session.read",),
     ),
@@ -207,32 +276,35 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
     "events": ReadViewHandlerMetadata(
         "events",
         "required",
-        EVENTS_READ_VIEW_OPTION_NAMES,
+        frozenset({"limit"}),
+        declared_options=(CONTINUATION_OPTION,),
         execution_kind="session-read-projection",
         operations=("session.read",),
     ),
     "effective_context": ReadViewHandlerMetadata(
         "effective_context",
         "required",
-        EFFECTIVE_CONTEXT_READ_VIEW_OPTION_NAMES,
-        execution_kind="in-process",
+        declared_options=(AT_POSITION_OPTION,),
+        execution_kind="distinct-operation",
+        operations=("read.effective_context",),
     ),
     "lineage": ReadViewHandlerMetadata(
         "lineage",
         "required",
-        LINEAGE_READ_VIEW_OPTION_NAMES,
+        declared_options=(NODE_OFFSET_OPTION, NODE_LIMIT_OPTION, EDGE_OFFSET_OPTION, EDGE_LIMIT_OPTION),
         execution_kind="distinct-operation",
     ),
     "topology": ReadViewHandlerMetadata(
         "topology",
         "required",
-        TOPOLOGY_READ_VIEW_OPTION_NAMES,
+        declared_options=(NODE_OFFSET_OPTION, NODE_LIMIT_OPTION, EDGE_LIMIT_OPTION),
         execution_kind="distinct-operation",
     ),
     "file-edits": ReadViewHandlerMetadata(
         "file-edits",
         "required",
-        EVIDENCE_WINDOW_READ_VIEW_OPTION_NAMES,
+        frozenset({"limit"}),
+        declared_options=(CONTINUATION_OPTION,),
         execution_kind="session-read-projection",
         operations=("session.read",),
     ),
@@ -245,48 +317,75 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
     "web-content": ReadViewHandlerMetadata(
         "web-content",
         "required",
-        EVIDENCE_WINDOW_READ_VIEW_OPTION_NAMES,
+        frozenset({"limit"}),
+        declared_options=(CONTINUATION_OPTION,),
         execution_kind="session-read-projection",
         operations=("session.read",),
     ),
     "context": ReadViewHandlerMetadata(
         "context",
         "required",
-        CONTEXT_READ_VIEW_OPTION_NAMES,
+        declared_options=(RELATED_LIMIT_OPTION,),
         execution_kind="distinct-operation",
     ),
     "context-image": ReadViewHandlerMetadata(
         "context-image",
         "none",
-        CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES,
+        declared_options=(MAX_SESSIONS_OPTION, NO_REDACT_OPTION),
         execution_kind="distinct-operation",
     ),
     "neighbors": ReadViewHandlerMetadata(
         "neighbors",
         "query_or_session",
-        NEIGHBOR_READ_VIEW_OPTION_NAMES,
-        execution_kind="in-process",
+        frozenset({"limit"}),
+        declared_options=(WINDOW_HOURS_OPTION,),
+        execution_kind="distinct-operation",
+        operations=("read.neighbors",),
     ),
     "correlation": ReadViewHandlerMetadata(
         "correlation",
         "required",
-        CORRELATION_READ_VIEW_OPTION_NAMES,
-        execution_kind="in-process",
+        declared_options=(REPO_PATH_OPTION, SINCE_HOURS_OPTION, CONFIDENCE_THRESHOLD_OPTION, GITHUB_API_OPTION),
+        execution_kind="distinct-operation",
+        operations=("read.correlation",),
     ),
     "temporal": ReadViewHandlerMetadata(
         "temporal",
         "optional",
         accepts_query_set=True,
-        execution_kind="in-process",
+        execution_kind="distinct-operation",
+        operations=("read.temporal",),
     ),
     "chronicle": ReadViewHandlerMetadata(
         "chronicle",
         "optional",
-        CHRONICLE_READ_VIEW_OPTION_NAMES,
+        frozenset({"limit"}),
         accepts_query_set=True,
-        execution_kind="in-process",
+        execution_kind="distinct-operation",
+        operations=("read.chronicle",),
     ),
 }
+
+
+def _view_option_names(view: str) -> frozenset[str]:
+    metadata = READ_VIEW_HANDLER_METADATA[view]
+    return metadata.accepted_options | {option.name for option in metadata.declared_options}
+
+
+# Compatibility exports for read-view modules; the declaration remains the
+# sole owner of option admission, Click binding, help and completion.
+RAW_READ_VIEW_OPTION_NAMES = _view_option_names("raw")
+MESSAGE_READ_VIEW_OPTION_NAMES = _view_option_names("messages")
+CONTEXT_READ_VIEW_OPTION_NAMES = _view_option_names("context")
+CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES = _view_option_names("context-image")
+NEIGHBOR_READ_VIEW_OPTION_NAMES = _view_option_names("neighbors")
+CORRELATION_READ_VIEW_OPTION_NAMES = _view_option_names("correlation")
+CHRONICLE_READ_VIEW_OPTION_NAMES = _view_option_names("chronicle")
+EVIDENCE_WINDOW_READ_VIEW_OPTION_NAMES = _view_option_names("file-edits")
+EVENTS_READ_VIEW_OPTION_NAMES = _view_option_names("events")
+EFFECTIVE_CONTEXT_READ_VIEW_OPTION_NAMES = _view_option_names("effective_context")
+LINEAGE_READ_VIEW_OPTION_NAMES = _view_option_names("lineage")
+TOPOLOGY_READ_VIEW_OPTION_NAMES = _view_option_names("topology")
 
 
 def read_view_option_names() -> frozenset[ReadViewOptionName]:
@@ -378,8 +477,6 @@ def _validate_read_view_classification() -> None:
             offenders.append(f"{view_id}: a session.read projection must name exactly session.read")
         elif kind == "renderer" and not metadata.operations:
             offenders.append(f"{view_id}: a renderer must name the operations it composes")
-        elif kind == "distinct-operation" and metadata.operations:
-            offenders.append(f"{view_id}: its operation is not declared yet, so it must name none")
         elif kind == "in-process" and metadata.operations:
             offenders.append(f"{view_id}: an in-process view reaches no operation, so it must name none")
     # The ratchet: the honest in-process set may shrink as views are migrated,

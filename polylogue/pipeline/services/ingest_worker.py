@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     from polylogue.schemas.packages import SchemaResolution
     from polylogue.schemas.runtime_registry import SchemaRegistry
     from polylogue.sources.parsers.base import ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionWrite
 
 
 logger = get_logger(__name__)
@@ -89,6 +90,9 @@ class SessionWritePayload:
     raw_id: str | None = None
     append_only: bool = False
     fallback_timestamp: str | None = None
+    # A parent-stage carrier may be attached after worker IPC, before writer
+    # admission. The process worker never serializes an open scratch owner.
+    prepared_write: PreparedSessionWrite | None = None
 
 
 @dataclass(slots=True)

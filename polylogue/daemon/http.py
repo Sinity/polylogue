@@ -30,13 +30,12 @@ from polylogue.archive.query.transaction import (
     QueryContinuationStaleError,
     archive_read_context,
 )
-from polylogue.archive.viewport import READ_VIEW_HTTP_CAPABILITIES, read_view_http_capability_payloads
-from polylogue.core.enums import AssertionKind, AssertionStatus
+from polylogue.archive.viewport import READ_VIEW_HTTP_CAPABILITIES
 from polylogue.core.errors import DatabaseError, PolylogueError
 from polylogue.core.json import JSONDocument
 from polylogue.core.loopback import is_loopback_host
 from polylogue.core.sqlite_locking import is_corrupt_sqlite_database, is_transient_sqlite_lock
-from polylogue.daemon import user_state_http, workspace_routes
+from polylogue.daemon import workspace_routes
 from polylogue.daemon.events import (
     emit_daemon_event,
     get_latest_event_id,
@@ -56,8 +55,9 @@ from polylogue.daemon.route_contracts import (
     route_contract_for_pattern,
     route_contract_from_declaration,
 )
+from polylogue.daemon.route_families import read_detail, read_query, user_overlay
+from polylogue.daemon.route_types import RouteMethod
 from polylogue.daemon.status_snapshot import get_status_snapshot_payload
-from polylogue.daemon.user_state_http import RouteMethod
 from polylogue.daemon.web_auth import (
     WEB_CREDENTIAL_SCOPES,
     WebCredentialBootstrapPayload,
@@ -89,20 +89,21 @@ from polylogue.daemon.write_coordinator import (
 from polylogue.declarations import HandlerBinding
 from polylogue.logging import DEBUG, ERROR, WARNING, emit, propagate
 from polylogue.logging import span as log_span
-from polylogue.operations.authority import authority_for_config, authority_for_reader
+from polylogue.operations.authority import authority_for_config
+from polylogue.operations.http_session_reads import (
+    HttpSessionProjectionAdapters,
+    execute_http_session_detail,
+    execute_http_session_messages,
+)
 from polylogue.operations.message_locator import (
     MessageNotInSessionError,
-    locate_message_in_archive,
-    window_offset_for_index,
 )
 from polylogue.operations.origin_filters import unknown_origin_filter_tokens
 from polylogue.operations.quick_check import HEALTH_RESULT_KEY, observe_quick_check
 from polylogue.rendering.semantic_card_placement import (
-    SemanticCardPlacement,
     semantic_card_placement_for_messages,
 )
 from polylogue.rendering.semantic_cards import (
-    lineage_descriptor_from_archive_envelope,
     lineage_descriptor_from_session,
 )
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -111,7 +112,6 @@ from polylogue.storage.sqlite.connection_profile import one_shot_diagnostic_read
 from polylogue.surfaces.authority import serialize_authority
 from polylogue.surfaces.outcome import OutcomeEnvelope, combine_outcomes, decide_outcome, lineage_page_outcome
 from polylogue.surfaces.payloads import (
-    AssertionClaimListPayload,
     MutationResultPayload,
     QueryErrorPayload,
     QueryMissDiagnosticsPayload,
@@ -141,7 +141,6 @@ if TYPE_CHECKING:
         ArchiveSessionSummary,
         ArchiveStore,
     )
-    from polylogue.storage.sqlite.archive_tiers.write import ArchiveMessageRow, ArchiveSessionEnvelope
 
 
 class _AttachmentRow(Protocol):
@@ -170,6 +169,7 @@ class _StaticGetRoute:
     segments: tuple[str, ...]
     handler_name: str
     passes_params: bool = False
+    passes_path: bool = False
 
     @property
     def pattern(self) -> str:
@@ -183,6 +183,7 @@ class _ParameterizedGetRoute:
     suffix: tuple[str, ...]
     handler_name: str
     passes_params: bool = False
+    passes_path: bool = False
 
     @property
     def pattern(self) -> str:
@@ -190,11 +191,24 @@ class _ParameterizedGetRoute:
 
 
 @dataclass(frozen=True)
-class _StaticPostRoute:
-    pattern: str
+class _DeclaredMutationRoute:
+    declaration: RouteSpec
     segments: tuple[str, ...]
     handler_name: str
-    passes_path: bool = False
+
+    def matches(self, path: list[str]) -> bool:
+        return len(path) == len(self.segments) and all(
+            expected.startswith(":") and bool(actual) or expected == actual
+            for expected, actual in zip(self.segments, path, strict=True)
+        )
+
+
+def _declared_mutation_routes(method: str) -> tuple[_DeclaredMutationRoute, ...]:
+    return tuple(
+        _DeclaredMutationRoute(declaration, _route_segments(declaration.path), _daemon_http_binding(declaration).symbol)
+        for declaration in DAEMON_ROUTE_DECLARATIONS
+        if declaration.method == method
+    )
 
 
 @dataclass(frozen=True)
@@ -344,30 +358,7 @@ def _read_view_payload_field_values(payload: object, field_name: str, *, max_dep
 
 
 def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
-    return (
-        _static_get_route("/api/health/check", "_handle_health_check"),
-        _static_get_route("/api/health", "_handle_health"),
-        _static_get_route("/api/webui/observability", "_handle_webui_observability"),
-        _static_get_route("/api/webui/freshness", "_handle_webui_source_freshness", passes_params=True),
-        _static_get_route("/api/overview", "_handle_overview"),
-        _static_get_route("/api/events", "_handle_events", passes_params=True),
-        _static_get_route("/api/agents/coordination", "_handle_agent_coordination", passes_params=True),
-        _static_get_route("/api/facets", "_handle_facets", passes_params=True),
-        _static_get_route("/api/provider-usage", "_handle_provider_usage", passes_params=True),
-        _static_get_route("/api/archive-debt", "_handle_archive_debt", passes_params=True),
-        _static_get_route("/api/import/explain", "_handle_import_explain", passes_params=True),
-        _static_get_route("/api/refs/resolve", "_handle_ref_resolve", passes_params=True),
-        _static_get_route("/api/query-completions", "_handle_query_completions", passes_params=True),
-        _static_get_route("/api/action-affordances", "_handle_action_affordances"),
-        _static_get_route("/api/read-view-profiles", "_handle_read_view_profiles"),
-        _static_get_route("/api/assertions", "_handle_assertions", passes_params=True),
-        _static_get_route("/api/paste-browser", "_handle_paste_browser", passes_params=True),
-        _static_get_route("/api/attachments", "_handle_attachment_library", passes_params=True),
-        _static_get_route("/api/stack", "_handle_stack", passes_params=True),
-        _static_get_route("/api/compare", "_handle_compare", passes_params=True),
-        _static_get_route("/api/sources", "_handle_sources"),
-        _static_get_route("/api/thread-continue-templates", "_handle_get_thread_continue_templates"),
-    ) + tuple(route for route in _declared_get_routes() if isinstance(route, _StaticGetRoute))
+    return () + tuple(route for route in _declared_get_routes() if isinstance(route, _StaticGetRoute))
 
 
 def _declared_static_get_route(method: str, path: str) -> _StaticGetRoute:
@@ -383,7 +374,8 @@ def _declared_static_get_route(method: str, path: str) -> _StaticGetRoute:
         contract=contract,
         segments=_route_segments(declaration.path),
         handler_name=binding.symbol,
-        passes_params=True,
+        passes_params=declaration.passes_params,
+        passes_path=declaration.passes_path,
     )
 
 
@@ -403,7 +395,8 @@ def _declared_parameterized_get_route(method: str, path: str) -> _ParameterizedG
         prefix=parts[:parameter_index],
         suffix=parts[parameter_index + 1 :],
         handler_name=binding.symbol,
-        passes_params=True,
+        passes_params=declaration.passes_params,
+        passes_path=declaration.passes_path,
     )
 
 
@@ -463,19 +456,25 @@ def validate_declared_route_reachability(handler_class: type[BaseHTTPRequestHand
         missing = sorted(expected - set(declared))
         extra = sorted(set(declared) - expected)
         raise RuntimeError(f"daemon declaration generation mismatch: missing={missing}, extra={extra}")
-    generated_routes = _declared_get_routes()
-    generated = tuple((route.contract.method, route.pattern) for route in generated_routes)
-    installed_routes: tuple[_StaticGetRoute | _ParameterizedGetRoute, ...] = (
+    generated_get_routes = _declared_get_routes()
+    generated_mutation_routes = _declared_mutation_routes("POST") + _declared_mutation_routes("DELETE")
+    generated = tuple((route.contract.method, route.pattern) for route in generated_get_routes) + tuple(
+        (route.declaration.method, route.declaration.path) for route in generated_mutation_routes
+    )
+    installed_get_routes: tuple[_StaticGetRoute | _ParameterizedGetRoute, ...] = (
         _static_get_routes() + _parameterized_get_routes()
     )
     installed = tuple(
         (route.contract.method, route.pattern)
-        for route in installed_routes
+        for route in installed_get_routes
         if (route.contract.method, route.pattern) in set(declared)
-    )
-    for route in generated_routes:
+    ) + tuple((route.declaration.method, route.declaration.path) for route in generated_mutation_routes)
+    for route in generated_get_routes:
         if not callable(getattr(handler_class, route.handler_name, None)):
             raise RuntimeError(f"daemon route adapter is unreachable: {route.handler_name}")
+    for mutation_route in generated_mutation_routes:
+        if not callable(getattr(handler_class, mutation_route.handler_name, None)):
+            raise RuntimeError(f"daemon route adapter is unreachable: {mutation_route.handler_name}")
     if (
         len(generated) != len(set(generated))
         or len(installed) != len(set(installed))
@@ -488,58 +487,13 @@ def validate_declared_route_reachability(handler_class: type[BaseHTTPRequestHand
 
 
 def _parameterized_get_routes() -> tuple[_ParameterizedGetRoute, ...]:
-    return (
-        _parameterized_get_route("/api/sessions/:id", "_handle_get_session", passes_params=True),
-        _parameterized_get_route("/api/sessions/:id/messages", "_handle_get_messages", passes_params=True),
-        _parameterized_get_route("/api/sessions/:id/raw", "_handle_get_session_raw"),
-        _parameterized_get_route("/api/sessions/:id/cost", "_handle_get_session_cost"),
-        _parameterized_get_route("/api/sessions/:id/evidence-summary", "_handle_get_session_evidence_summary"),
-        _parameterized_get_route("/api/sessions/:id/provenance", "_handle_get_session_provenance", passes_params=True),
-        _parameterized_get_route("/api/sessions/:id/topology", "_handle_get_session_topology", passes_params=True),
-        _parameterized_get_route(
-            "/api/sessions/:id/topology/parent-chain",
-            "_handle_get_session_parent_chain",
-            passes_params=True,
-        ),
-        _parameterized_get_route("/api/sessions/:id/similar", "_handle_get_session_similar", passes_params=True),
-        _parameterized_get_route("/api/sessions/:id/attachments", "_handle_get_session_attachments"),
-        _parameterized_get_route("/api/insights/sessions/:id", "_handle_get_session_insights", passes_params=True),
-        _parameterized_get_route("/api/webui/insights/:name", "_handle_webui_insight", passes_params=True),
-        _parameterized_get_route("/api/raw_artifacts/:id", "_handle_get_raw_artifact"),
-    ) + tuple(route for route in _declared_get_routes() if isinstance(route, _ParameterizedGetRoute))
+    return () + tuple(route for route in _declared_get_routes() if isinstance(route, _ParameterizedGetRoute))
 
 
 def _normalize_session_route_id(identifier: str) -> str:
     """Accept session target-ref identity keys in session route ids."""
 
     return identifier.removeprefix("session:")
-
-
-def _authenticated_post_routes() -> tuple[_StaticPostRoute, ...]:
-    return (
-        _StaticPostRoute(
-            "/api/telemetry/mcp-calls",
-            ("api", "telemetry", "mcp-calls"),
-            "_handle_mcp_call_log",
-        ),
-        _StaticPostRoute("/api/reset", ("api", "reset"), "_handle_reset"),
-        _StaticPostRoute("/api/ingest", ("api", "ingest"), "_handle_ingest"),
-        _StaticPostRoute("/api/demo/augment", ("api", "demo", "augment"), "_handle_demo_augment"),
-    )
-
-
-def _cli_read_post_routes() -> tuple[_StaticPostRoute, ...]:
-    """POST routes whose request bodies carry CLI parameter maps.
-
-    ``/api/operation`` also carries write and control operations; those are
-    re-checked against the machine-client credential inside the handler once
-    the declared authority of the requested operation is known.
-    """
-
-    return (
-        _StaticPostRoute("/api/cli/query", ("api", "cli", "query"), "_handle_cli_query"),
-        _StaticPostRoute("/api/operation", ("api", "operation"), "_handle_daemon_operation"),
-    )
 
 
 def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
@@ -560,14 +514,11 @@ def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
         ("GET", "/healthz/live"),
         ("GET", "/healthz/ready"),
         ("GET", "/metrics"),
-        ("POST", "/api/web-auth/session"),
-        ("DELETE", "/api/web-auth/session"),
     ]
     routes.extend(("GET", route.pattern) for route in _static_get_routes())
     routes.extend(("GET", route.pattern) for route in _parameterized_get_routes())
-    routes.extend(("POST", route.pattern) for route in _authenticated_post_routes())
-    routes.extend(("POST", route.pattern) for route in _cli_read_post_routes())
-    routes.extend(user_state_http.user_state_route_patterns())
+    routes.extend((route.declaration.method, route.declaration.path) for route in _declared_mutation_routes("POST"))
+    routes.extend((route.declaration.method, route.declaration.path) for route in _declared_mutation_routes("DELETE"))
     return tuple(routes)
 
 
@@ -1413,6 +1364,10 @@ class _AuthResult:
         return self.allowed
 
 
+def _http_session_projection_adapters() -> HttpSessionProjectionAdapters:
+    return HttpSessionProjectionAdapters(attachment=attachment_to_envelope, paste_spans=envelope_paste_spans)
+
+
 class DaemonAPIHandler(BaseHTTPRequestHandler):
     """HTTP handler for the daemon API server.
 
@@ -2062,13 +2017,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         static_route = next((route for route in _static_get_routes() if tuple(path) == route.segments), None)
         if static_route is not None:
             handler = cast(Callable[..., None], getattr(self, static_route.handler_name))
-            if static_route.passes_params:
+            if static_route.passes_path:
+                handler(path, params)
+            elif static_route.passes_params:
                 handler(params)
             else:
                 handler()
-            return
-
-        if path[:2] == ["api", "user"] and user_state_http.dispatch_get(self, path[2:], params):
             return
 
         for route in _parameterized_get_routes():
@@ -2083,7 +2037,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 identifier = path[len(route.prefix)]
                 if route.pattern.startswith(("/api/sessions/:id", "/api/insights/sessions/:id")):
                     identifier = _normalize_session_route_id(identifier)
-                if route.passes_params:
+                if route.passes_path:
+                    handler(path, params)
+                elif route.passes_params:
                     handler(identifier, params)
                 else:
                     handler(identifier)
@@ -2146,6 +2102,40 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return True
         return self._check_auth(allow_web=False)
 
+    def _dispatch_declared_mutation(self, method: str, path: list[str], params: dict[str, list[str]]) -> bool:
+        route = next((item for item in _declared_mutation_routes(method) if item.matches(path)), None)
+        if route is None:
+            return False
+        declaration = route.declaration
+        if declaration.auth_policy == "first_party_same_origin":
+            pass  # The bound credential lifecycle handler validates its own origin.
+        elif declaration.auth_policy == "bearer_if_configured_and_same_origin":
+            if not self._check_auth(allow_web=False):
+                return True
+        elif not self._check_auth(declaration.auth_scope):
+            return True
+        if (
+            declaration.auth_policy in {"credential_and_same_origin", "bearer_if_configured_and_same_origin"}
+            and not self._check_cross_origin()
+        ):
+            return True
+        handler = cast(Callable[..., None], getattr(self, route.handler_name))
+        actor = {
+            "_handle_reset": "http.reset",
+            "_handle_mcp_call_log": "http.telemetry.mcp-call",
+        }.get(route.handler_name, f"http.{method.lower()}.{declaration.kernel.declaration_id}")
+        if path[:2] == ["api", "user"] and len(path) > 2:
+            actor = f"http.user.{path[2]}.{method.lower()}"
+        gate = self._write_gate(actor) if declaration.write_gate else contextlib.nullcontext()
+        with gate:
+            if declaration.passes_path:
+                handler(path, params)
+            elif declaration.passes_params:
+                handler(params)
+            else:
+                handler()
+        return True
+
     def do_POST(self) -> None:
         try:
             self._do_post_impl()
@@ -2169,48 +2159,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if self._reject_credential_query():
             return
 
-        if web_auth_request:
-            self._handle_web_auth_bootstrap()
+        if self._dispatch_declared_mutation("POST", path, params):
             return
 
-        authenticated_route = next(
-            (route for route in _authenticated_post_routes() if tuple(path) == route.segments), None
-        )
-        if authenticated_route is not None:
-            # Archive control operations remain machine-client capabilities.
-            # A first-party shell cookie can mutate user overlays, but cannot
-            # reset, ingest, or run maintenance against the archive.
-            if not self._check_auth(allow_web=False):
-                return
-            if not self._check_cross_origin():
-                return
-            handler = cast(Callable[..., None], getattr(self, authenticated_route.handler_name))
-            mutating_actor = {
-                "_handle_mcp_call_log": "http.telemetry.mcp-call",
-                "_handle_reset": "http.reset",
-            }.get(authenticated_route.handler_name)
-            gate = self._write_gate(mutating_actor) if mutating_actor is not None else contextlib.nullcontext()
-            with gate:
-                if authenticated_route.passes_path:
-                    handler(path)
-                else:
-                    handler()
-            return
-        cli_read_route = next((route for route in _cli_read_post_routes() if tuple(path) == route.segments), None)
-        if cli_read_route is not None:
-            if not self._check_auth("read"):
-                return
-            handler = cast(Callable[..., None], getattr(self, cli_read_route.handler_name))
-            handler()
-            return
         if not self._check_auth("user_state"):
             return
         if not self._check_cross_origin():
             return
-        if path[:2] == ["api", "user"]:
-            with self._write_gate(f"http.user.{path[2] if len(path) > 2 else 'unknown'}.post"):
-                if user_state_http.dispatch_post(self, path[2:]):
-                    return
         self._send_error(HTTPStatus.NOT_FOUND, "not_found")
 
     def do_DELETE(self) -> None:
@@ -2236,8 +2191,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if self._reject_credential_query():
             return
 
-        if web_auth_request:
-            self._handle_web_auth_revoke()
+        if self._dispatch_declared_mutation("DELETE", path, params):
             return
 
         if not self._check_auth("user_state"):
@@ -2245,10 +2199,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if not self._check_cross_origin():
             return
 
-        if path[:2] == ["api", "user"]:
-            with self._write_gate(f"http.user.{path[2] if len(path) > 2 else 'unknown'}.delete"):
-                if user_state_http.dispatch_delete(self, path[2:], params):
-                    return
         self._send_error(HTTPStatus.NOT_FOUND, "not_found")
 
     # ------------------------------------------------------------------
@@ -2982,14 +2932,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_paste_browser(self, params: dict[str, list[str]]) -> None:
-        limit = self._get_int(params, "limit", 200)
-        offset = self._get_int(params, "offset", 0)
-
-        async def _run(poly: Polylogue) -> object:
-            return await self._do_paste_browser(poly, limit=limit, offset=offset)
-
-        result = self._sync_run(_run)
-        self._send_json(HTTPStatus.OK, result)
+        return read_query._handle_paste_browser(self, params)
 
     #: Declared terminal unit expression behind ``/api/paste-browser``.
     #:
@@ -3060,24 +3003,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_attachment_library(self, params: dict[str, list[str]]) -> None:
-        limit = self._get_int(params, "limit", 500)
-        offset = self._get_int(params, "offset", 0)
-        mime_filter = (params.get("mime") or [""])[0]
-        state_filter = (params.get("state") or [""])[0]
-        session_filter = (params.get("session") or [""])[0]
-
-        async def _run(poly: Polylogue) -> object:
-            return await self._do_attachment_library(
-                poly,
-                limit=limit,
-                offset=offset,
-                mime_filter=mime_filter,
-                state_filter=state_filter,
-                session_filter=session_filter,
-            )
-
-        result = self._sync_run(_run)
-        self._send_json(HTTPStatus.OK, result)
+        return read_query._handle_attachment_library(self, params)
 
     async def _do_attachment_library(
         self,
@@ -3128,14 +3054,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_get_session_attachments(self, conv_id: str) -> None:
-        async def _get(poly: Polylogue) -> object:
-            return await self._do_get_session_attachments(poly, conv_id)
-
-        result = self._sync_run(_get)
-        if result is None:
-            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
-            return
-        self._send_json(HTTPStatus.OK, result)
+        return read_detail._handle_get_session_attachments(self, conv_id)
 
     async def _do_get_session_attachments(self, poly: Polylogue, conv_id: str) -> object:
         conv = await poly.get_session(conv_id)
@@ -3368,60 +3287,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_overview(self) -> None:
-        """Return one bounded, privacy-safe cockpit landing projection."""
-        archive_root = _web_reader_archive_root()
-        if archive_root is None:
-            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
-            return
-        with archive_read_context(
-            archive_root,
-            operation="http.archive.read",
-            arguments={"path": getattr(self, "path", "")},
-            projection="http-read",
-        ) as archive:
-            origin_rows = archive._conn.execute(
-                "SELECT origin, COUNT(*) FROM sessions GROUP BY origin ORDER BY origin"
-            ).fetchall()
-            total_sessions = int(archive.count_sessions())
-            total_messages = int(archive._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
-            recent = archive.list_summaries(limit=6, offset=0)
-        status = get_status_snapshot_payload()
-        snapshot = status.get("status_snapshot")
-        components = status.get("component_readiness")
-        readiness: dict[str, dict[str, object]] = (
-            {
-                str(name): {"state": value.get("state", "unknown")}
-                for name, value in components.items()
-                if isinstance(value, Mapping)
-            }
-            if isinstance(components, Mapping)
-            else {}
-        )
-        origins: dict[str, int] = {str(row[0]): int(row[1]) for row in origin_rows}
-        snapshot_payload: dict[str, object] = (
-            {
-                "state": snapshot.get("state", "unknown"),
-                "captured_at": snapshot.get("captured_at"),
-                "age_s": snapshot.get("age_s"),
-                "refresh_error": snapshot.get("refresh_error"),
-            }
-            if isinstance(snapshot, Mapping)
-            else {"state": "unknown", "captured_at": None, "age_s": None, "refresh_error": None}
-        )
-        overview: dict[str, object] = {
-            "mode": "cockpit-overview",
-            "totals": {"sessions": total_sessions, "messages": total_messages, "origins": origins},
-            "readiness": readiness,
-            "status_snapshot": snapshot_payload,
-            "recent": [self._archive_summary_payload(summary) for summary in recent],
-            "recent_limit": 6,
-        }
-        from polylogue.paths import archive_root as configured_archive_root
-
-        self._send_json(
-            HTTPStatus.OK,
-            _web_privacy_safe_projection(overview, archive_root, configured_archive_root()),
-        )
+        return read_query._handle_overview(self)
 
     # ------------------------------------------------------------------
     # Handlers: events (SSE + JSON poll) — implementation in events_http
@@ -3943,59 +3809,20 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_get_session(self, conv_id: str, params: dict[str, list[str]]) -> None:
-        archive_root = _web_reader_archive_root()
-        if archive_root is not None:
-            result = (
-                self._do_archive_get_session_summary(archive_root, conv_id)
-                if self._get_param(params, "shape") == "summary"
-                else self._do_archive_get_session(archive_root, conv_id)
-            )
-            if result is None:
-                self._send_error(HTTPStatus.NOT_FOUND, "not_found")
-                return
-            self._send_json(HTTPStatus.OK, result)
-            return
-
-        async def _get(poly: Polylogue) -> object:
-            return await self._do_get_session(poly, conv_id)
-
-        result = self._sync_run(_get)
-        if result is None:
-            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
-            return
-        self._send_json(HTTPStatus.OK, result)
+        return read_detail._handle_get_session(self, conv_id, params)
 
     def _do_archive_get_session_summary(self, archive_root: Path, conv_id: str) -> object | None:
-        """Read detail metadata without hydrating a session transcript."""
         with archive_read_context(
             archive_root,
             operation="http.archive.read",
             arguments={"path": getattr(self, "path", "")},
             projection="http-read",
         ) as archive:
-            try:
-                summary = archive.read_summary(archive.resolve_session_id(conv_id))
-            except KeyError:
-                return None
-        payload = self._archive_summary_payload(summary)
-        payload.update(
-            {
-                "display_title": payload["title"],
-                # The summary row carries topology and title provenance; the
-                # detail-shape route used to hardcode NULL here, so the same
-                # session reported a parent through the full read and no
-                # parent through the summary read (polylogue-blpir).
-                "branch_type": summary.branch_type,
-                "parent_id": summary.parent_id,
-                "session_kind": summary.session_kind,
-                "display_name": summary.display_name,
-                "title_source": summary.title_source,
-                "title_ref": summary.title_ref,
-                "model": None,
-                "total": payload["message_count"],
-            }
-        )
-        return payload
+            return execute_http_session_detail(
+                {"session_id": conv_id, "shape": "summary", "limit": None, "offset": 0},
+                archive=archive,
+                adapters=_http_session_projection_adapters(),
+            )
 
     async def _do_get_session_window(
         self, poly: Polylogue, conv_id: str, window: workspace_routes.MessageWindow
@@ -4128,176 +3955,21 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         limit: int | None = None,
         offset: int = 0,
     ) -> object | None:
-        """Read one session envelope, optionally bounded to a message page.
-
-        ``limit=None`` (the default) composes the full transcript, for
-        callers that need it whole (the JSON session API, stack, compare).
-        Passing ``limit`` composes only ``[offset, offset + limit)`` at the
-        storage layer (``read_session_page``) so large-session first paint
-        stays bounded by the page size rather than the total message count
-        (polylogue-07g6) -- ``message_count``/``total`` below still report
-        the TRUE total either way.
-        """
         with archive_read_context(
             archive_root,
             operation="http.archive.read",
             arguments={"path": getattr(self, "path", "")},
             projection="http-read",
         ) as archive:
-            try:
-                session_id = archive.resolve_session_id(conv_id)
-
-                def read_session_data() -> tuple[ArchiveSessionEnvelope, ArchiveSessionSummary]:
-                    return (
-                        archive.read_session_page(session_id, limit=limit, offset=offset)
-                        if limit is not None
-                        else archive.read_session(session_id),
-                        archive.read_summary(session_id),
-                    )
-
-                envelope, summary = self._run_archive_bounded_query(archive, deadline_s=None, compute=read_session_data)
-            except KeyError:
-                return None
-
-        session_id = envelope.session_id
-        created_at = summary.created_at
-        updated_at = summary.updated_at
-        word_count = summary.word_count
-        target_ref = TargetRefPayload.session(session_id)
-        card_placement = self._archive_semantic_card_placement(envelope)
-        messages = [
-            self._archive_message_payload(
-                session_id,
-                message,
-                semantic_entries=card_placement.entries_for(str(message.message_id)),
-                semantic_cards=card_placement.cards_for(str(message.message_id)),
-                semantic_card_suppressed=card_placement.is_suppressed(str(message.message_id)),
+            return self._run_archive_bounded_query(
+                archive,
+                deadline_s=None,
+                compute=lambda: execute_http_session_detail(
+                    {"session_id": conv_id, "shape": "full", "limit": limit, "offset": offset},
+                    archive=archive,
+                    adapters=_http_session_projection_adapters(),
+                ),
             )
-            for message in envelope.messages
-        ]
-        # Flatten per-message attachments plus session-level orphan attachments
-        # into one session-level list, mirroring the archive detail handler
-        # so the inspector tab and the session envelope share one source of
-        # truth (#1199).
-        from polylogue.archive.hydration import archive_attachment_to_domain
-
-        session_attachments: list[dict[str, object]] = []
-        for message_payload in messages:
-            session_attachments.extend(cast("list[dict[str, object]]", message_payload["attachments"]))
-        session_attachments.extend(
-            attachment_to_envelope(
-                archive_attachment_to_domain(att),
-                session_id=session_id,
-                message_id=att.message_id,
-            )
-            for att in envelope.orphan_attachments
-        )
-        total_message_count = (
-            envelope.total_message_count if envelope.total_message_count is not None else len(messages)
-        )
-        return {
-            "id": session_id,
-            "session_id": session_id,
-            "title": envelope.title,
-            "display_title": envelope.title or session_id,
-            "origin": envelope.origin,
-            "target_ref": _dump_target_ref(target_ref),
-            "anchor": reader_anchor("session", session_id),
-            "actions": _dump_actions(reader_session_actions()),
-            "created_at": created_at,
-            "updated_at": updated_at,
-            "message_count": total_message_count,
-            "word_count": word_count,
-            "messages": messages,
-            "attachments": session_attachments,
-            "semantic_entries": list(card_placement.session_entries),
-            "tags": list(summary.tags),
-            "branch_type": envelope.branch_type,
-            "parent_id": envelope.parent_session_id,
-            "repo": envelope.git_repository_url,
-            "cwd_display": next(iter(envelope.working_directories), None),
-            "model": None,
-            "flags": None,
-            "summary": None,
-            "total": total_message_count,
-        }
-
-    def _archive_semantic_card_placement(self, envelope: ArchiveSessionEnvelope) -> SemanticCardPlacement:
-        """Place the archive's exact composed rows through the shared renderer."""
-
-        return semantic_card_placement_for_messages(
-            envelope.messages,
-            session_id=envelope.session_id,
-            provider_family=envelope.origin,
-            lineage=lineage_descriptor_from_archive_envelope(envelope),
-        )
-
-    def _archive_message_attachments(self, session_id: str, message: ArchiveMessageRow) -> list[dict[str, object]]:
-        from polylogue.archive.hydration import archive_attachment_to_domain
-
-        return [
-            attachment_to_envelope(
-                archive_attachment_to_domain(att),
-                session_id=session_id,
-                message_id=str(message.message_id),
-            )
-            for att in message.attachments
-        ]
-
-    def _archive_message_payload(
-        self,
-        session_id: str,
-        message: ArchiveMessageRow,
-        *,
-        semantic_entries: Sequence[JSONDocument] = (),
-        semantic_cards: Sequence[JSONDocument] = (),
-        semantic_card_suppressed: bool = False,
-    ) -> dict[str, object]:
-        from polylogue.archive.hydration import archive_message_to_domain
-
-        # One hydration, then the web-reader wire shape. The semantic fields
-        # below are read off the canonical domain message so this route cannot
-        # drift from the DB-backed detail route (``_do_get_session``), which
-        # reaches the same ``Message`` through ``Polylogue.get_session``.
-        domain = archive_message_to_domain(message)
-        message_id = str(domain.id)
-        text = domain.text or ""
-        has_paste = bool(domain.has_paste)
-        return {
-            "id": message_id,
-            "identity_source": domain.identity_source,
-            "role": str(domain.role),
-            "text": text,
-            "target_ref": _dump_target_ref(TargetRefPayload.message(session_id=session_id, message_id=message_id)),
-            "anchor": reader_anchor("message", message_id),
-            "actions": _dump_actions(reader_message_actions()),
-            # The stored ISO string is the wire contract here; the reader
-            # compares it verbatim against block anchors.
-            "timestamp": message.occurred_at,
-            "message_type": str(domain.message_type),
-            "material_origin": str(domain.material_origin),
-            "duration_ms": domain.duration_ms,
-            **message_topology_from_domain(domain),
-            # Provider-reported terminal signal; the reader's turn-state
-            # rendering claims terminal semantics, so it must not be dropped.
-            "stop_reason": domain.stop_reason,
-            "source_session_id": message.source_session_id,
-            "inherited_prefix": (
-                message.source_session_id != session_id if message.source_session_id is not None else None
-            ),
-            # The stored per-message counter, not the text-derived
-            # ``Message.word_count``: the reader totals it against the session
-            # row's own word_count.
-            "word_count": message.word_count,
-            "has_tool_use": bool(domain.has_tool_use),
-            "has_thinking": bool(domain.has_thinking),
-            "has_paste_evidence": has_paste,
-            "paste_spans": envelope_paste_spans(text, has_paste=has_paste),
-            "semantic_entries": list(semantic_entries),
-            "semantic_cards": list(semantic_cards),
-            "semantic_card_suppressed": semantic_card_suppressed,
-            "attachments": self._archive_message_attachments(session_id, message),
-        }
 
     # ------------------------------------------------------------------
     # Handlers: get session raw
@@ -4305,14 +3977,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_get_session_raw(self, conv_id: str) -> None:
-        async def _get(poly: Polylogue) -> object:
-            return await self._do_get_session_raw(poly, conv_id)
-
-        result = self._sync_run(_get)
-        if result is None:
-            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
-            return
-        self._send_json(HTTPStatus.OK, result)
+        return read_detail._handle_get_session_raw(self, conv_id)
 
     async def _do_get_session_raw(self, poly: Polylogue, conv_id: str) -> object:
         conv = await poly.get_session(conv_id)
@@ -4339,116 +4004,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_get_session_cost(self, conv_id: str) -> None:
-        async def _get(poly: Polylogue) -> object:
-            return await self._do_get_session_cost(poly, conv_id)
-
-        result = self._sync_run(_get)
-        if result is None:
-            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
-            return
-        self._send_json(HTTPStatus.OK, result)
+        return read_detail._handle_get_session_cost(self, conv_id)
 
     @daemon_safe_handler
     def _handle_get_session_evidence_summary(self, conv_id: str) -> None:
-        """Return bounded structural counts for the reader evidence strip."""
-        archive_root = _web_reader_archive_root()
-        if archive_root is None:
-            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
-            return
-        with archive_read_context(
-            archive_root,
-            operation="http.archive.read",
-            arguments={"path": getattr(self, "path", "")},
-            projection="http-read",
-        ) as archive:
-            try:
-                session_id = archive.resolve_session_id(conv_id)
-                summary = archive.read_summary(session_id)
-                envelope = archive.read_session(session_id)
-            except KeyError:
-                self._send_error(HTTPStatus.NOT_FOUND, "not_found")
-                return
-            # Prefix-sharing sessions persist a divergent tail but the reader
-            # renders ArchiveStore's composed logical transcript. Query the
-            # canonical blocks/actions relations over those composed message
-            # identities, so evidence describes the same transcript.
-            message_ids_json = json.dumps([message.message_id for message in envelope.messages])
-            tool_calls = int(
-                archive._conn.execute(
-                    "SELECT COUNT(*) FROM blocks WHERE block_type = 'tool_use' "
-                    "AND message_id IN (SELECT value FROM json_each(?))",
-                    (message_ids_json,),
-                ).fetchone()[0]
-            )
-            outcome_row = archive._conn.execute(
-                """SELECT
-                          COALESCE(SUM(outcome = 'ok'), 0),
-                          COALESCE(SUM(outcome = 'failed'), 0),
-                          COALESCE(SUM(outcome = 'unknown'), 0)
-                   FROM (
-                     -- ``result_state`` is the canonical structural outcome
-                     -- computed once by the ``actions`` view; never re-derive
-                     -- it from the legacy ``exit_code``/``is_error`` compat
-                     -- pair, which reports a distrusted
-                     -- ``tool_outcome='unknown'`` as success.
-                     SELECT CASE result_state
-                       WHEN 'outcome_success' THEN 'ok'
-                       WHEN 'outcome_error' THEN 'failed'
-                       ELSE 'unknown'
-                     END AS outcome
-                     FROM actions WHERE message_id IN (SELECT value FROM json_each(?))
-                   )""",
-                (message_ids_json,),
-            ).fetchone()
-            # polylogue-31h8l: an unreadable session_links is a named gap,
-            # never an empty lineage. Zero rows behind a gap is exactly the
-            # confusion the terminal-outcome envelope exists to prevent, so
-            # the failure is carried out of this block rather than flattened
-            # into [].
-            gaps: list[str] = []
-            try:
-                lineage_rows = archive._conn.execute(
-                    "SELECT dst_origin || ':' || dst_native_id, link_type, status FROM session_links WHERE src_session_id = ? ORDER BY link_type, dst_origin, dst_native_id LIMIT 20",
-                    (session_id,),
-                ).fetchall()
-            except sqlite3.Error as exc:
-                emit(
-                    "daemon.http.session_evidence_degraded",
-                    level=WARNING,
-                    outcome="degraded",
-                    reason="lineage_refs_unreadable",
-                    session_id=conv_id,
-                    error_type=type(exc).__name__,
-                    error_detail=str(exc),
-                )
-                lineage_rows = []
-                gaps.append("lineage_refs_unreadable")
-
-        async def _cost(poly: Polylogue) -> object:
-            return await self._do_get_session_cost(poly, conv_id)
-
-        cost_payload = self._sync_run(_cost)
-        cost = cost_payload if isinstance(cost_payload, Mapping) else {"total_usd": None, "confidence_tag": "q-missing"}
-        self._send_json(
-            HTTPStatus.OK,
-            {
-                "mode": "session-evidence-summary",
-                "session_id": session_id,
-                "origin": summary.origin,
-                "tool_calls": tool_calls,
-                "outcomes": {"ok": int(outcome_row[0]), "failed": int(outcome_row[1]), "unknown": int(outcome_row[2])},
-                "cost": {"total_usd": cost.get("total_usd"), "confidence_tag": cost.get("confidence_tag", "q-missing")},
-                "lineage_refs": [
-                    {"session_id": str(row[0]), "kind": str(row[1]), "status": str(row[2])} for row in lineage_rows
-                ],
-                "lineage_refs_authoritative": not gaps,
-                "lineage_limit": 20,
-                "outcome": decide_outcome(
-                    matched=tool_calls + len(lineage_rows),
-                    degraded=tuple(gaps),
-                ).to_dict(),
-            },
-        )
+        return read_detail._handle_get_session_evidence_summary(self, conv_id)
 
     async def _do_get_session_cost(self, poly: Polylogue, conv_id: str) -> object:
         from polylogue.analysis.archive import SessionCostInsightQuery
@@ -4470,29 +4030,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_get_session_insights(self, conv_id: str, params: dict[str, list[str]]) -> None:
-        """``GET /api/insights/sessions/{id}?include=profile,threads``.
-
-        Returns a single typed envelope joining the per-session insight
-        kinds for *conv_id* — session profile (#1018) and work threads.
-        Each section carries a
-        readiness chip drawn from the closed vocabulary
-        (``q-ready`` / ``q-partial`` / ``q-missing``).
-
-        Unknown sessions return ``404 not_found``. Existing sessions
-        without materialized insights return ``200`` with explicit ``q-missing``
-        per-kind shapes so the panel is never blank (AC#1120).
-        """
-        include_raw = self._get_param(params, "include")
-        includes = _parse_insight_includes(include_raw)
-
-        async def _get(poly: Polylogue) -> object:
-            return await self._do_get_session_insights(poly, conv_id, includes)
-
-        result = self._sync_run(_get)
-        if result is None:
-            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
-            return
-        self._send_json(HTTPStatus.OK, result)
+        return read_detail._handle_get_session_insights(self, conv_id, params)
 
     async def _do_get_session_insights(
         self,
@@ -4623,35 +4161,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         conv_id: str,
         params: dict[str, list[str]],
     ) -> None:
-        """``GET /api/sessions/{id}/provenance[?include_raw=1[&bytes=N]]``.
-
-        Returns the source artifact metadata that produced *conv_id*.
-        The raw payload preview is opt-in (``include_raw=1``) and is
-        bounded server-side by
-        :data:`polylogue.daemon.provenance.RAW_PREVIEW_MAX_BYTES` —
-        client-supplied ``bytes`` only narrows the window, never widens
-        it.
-        """
-        from polylogue.daemon.provenance import build_provenance_payload
-
-        include_raw = self._get_bool(params, "include_raw")
-        requested_bytes: int | None = None
-        raw_bytes_param = self._get_param(params, "bytes")
-        if raw_bytes_param is not None:
-            try:
-                requested_bytes = int(raw_bytes_param)
-            except (TypeError, ValueError):
-                requested_bytes = None
-
-        payload = build_provenance_payload(
-            conv_id,
-            include_raw=include_raw,
-            requested_bytes=requested_bytes,
-        )
-        if payload is None:
-            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
-            return
-        self._send_json(HTTPStatus.OK, payload)
+        return read_detail._handle_get_session_provenance(self, conv_id, params)
 
     # ------------------------------------------------------------------
     # Handlers: per-session topology (#1121)
@@ -4663,40 +4173,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         conv_id: str,
         params: dict[str, list[str]],
     ) -> None:
-        """``GET /api/sessions/{id}/topology[?limit=N]``.
-
-        Returns a bounded :class:`polylogue.analysis.topology.SessionTopology`
-        envelope rooted at *conv_id*'s lineage root. ``?limit=`` is the
-        operator-visible knob; the daemon enforces the hard cap from
-        :data:`polylogue.daemon.topology_http.MAX_NODE_LIMIT` regardless of
-        client input (#1121 AC: lineage rendering is bounded).
-        """
-        from polylogue.daemon.topology_http import (
-            build_topology_envelope,
-            coerce_node_limit,
-            coerce_node_offset,
-        )
-
-        node_limit = coerce_node_limit(self._get_param(params, "limit"))
-        if node_limit is None:
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_limit")
-            return
-        node_offset = coerce_node_offset(self._get_param(params, "continuation"))
-        if node_offset is None:
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_continuation")
-            return
-
-        async def _get(poly: Polylogue) -> object:
-            topology = await poly.get_session_topology(conv_id, node_offset=node_offset, node_limit=node_limit)
-            if topology is None:
-                return None
-            return build_topology_envelope(topology, node_limit=node_limit)
-
-        result = self._sync_run(_get)
-        if result is None:
-            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
-            return
-        self._send_json(HTTPStatus.OK, result)
+        return read_detail._handle_get_session_topology(self, conv_id, params)
 
     # ------------------------------------------------------------------
     # Handlers: parent-chain stack envelope + thread-continue templates (#1203)
@@ -4708,46 +4185,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         conv_id: str,
         params: dict[str, list[str]],
     ) -> None:
-        """``GET /api/sessions/{id}/topology/parent-chain``.
-
-        Returns the stack-ready chain envelope shaped by
-        :func:`polylogue.daemon.topology_http.build_parent_chain_envelope`.
-        The envelope's ``chain_ids`` seed the stack workspace route
-        (``/w/stack?ids=...``); ``focus_id`` keeps the operator anchored
-        at the session they invoked the action from.
-
-        Query parameters:
-        - ``descendants=0`` — omit descendant sessions and return
-          only the ancestor chain (root → target).
-        """
-        from polylogue.daemon.topology_http import build_parent_chain_envelope
-
-        include_descendants_raw = self._get_param(params, "descendants", "1") or "1"
-        include_descendants = include_descendants_raw not in ("0", "false", "no")
-
-        async def _get(poly: Polylogue) -> object:
-            topology = await poly.get_session_topology(conv_id)
-            if topology is None:
-                return None
-            return build_parent_chain_envelope(topology, include_descendants=include_descendants)
-
-        result = self._sync_run(_get)
-        if result is None:
-            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
-            return
-        self._send_json(HTTPStatus.OK, result)
+        return read_detail._handle_get_session_parent_chain(self, conv_id, params)
 
     @daemon_safe_handler
     def _handle_get_thread_continue_templates(self) -> None:
-        """``GET /api/thread-continue-templates``.
-
-        Returns the active agent URL-template registry. Templates are
-        substituted client-side so the daemon never sees the messages
-        the operator is "continuing" in another agent.
-        """
-        from polylogue.daemon.thread_continue import build_templates_envelope
-
-        self._send_json(HTTPStatus.OK, build_templates_envelope())
+        return read_detail._handle_get_thread_continue_templates(self)
 
     @daemon_safe_handler
     def _handle_provider_usage(self, params: dict[str, list[str]]) -> None:
@@ -4835,7 +4277,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             QueryTransactionRequest,
             decode_query_units_continuation,
         )
-        from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
+        from polylogue.archive.query.unit_results import query_unit_request
+        from polylogue.operations.daemon_reads import _query_units_payload
 
         continuation_token = self._get_param(params, "continuation")
         session_filters: Mapping[str, object] | None = None
@@ -4946,13 +4389,22 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S,
         )
         try:
+            operation_params: dict[str, object] = (
+                {"continuation": continuation_token}
+                if continuation_token is not None
+                else {
+                    "expression": expression,
+                    "limit": request.limit,
+                    "offset": request.offset,
+                    "session_filters": request.session_filters or {},
+                }
+            )
             payload = transaction.run_sync(
-                lambda archive: query_unit_envelope(
-                    archive,
-                    request,
-                    execution_context=transaction.context,
-                    transaction_request=transaction.request,
+                lambda archive: _query_units_payload(
+                    operation_params,
+                    archive=archive,
                     serving_identity="daemon",
+                    execution_context=transaction.context,
                 )
             )
         except QueryTimeoutError:
@@ -4965,7 +4417,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, exc.code, str(exc))
             return
 
-        self._send_json(HTTPStatus.OK, payload.model_dump(mode="json"))
+        self._send_json(HTTPStatus.OK, payload)
 
     @daemon_safe_handler
     def _handle_archive_debt(self, params: dict[str, list[str]]) -> None:
@@ -5027,140 +4479,35 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_ref_resolve(self, params: dict[str, list[str]]) -> None:
-        """``GET /api/refs/resolve`` resolves public object/evidence refs.
-
-        The resolution is the shared operation (``operations/ref_resolution``),
-        run against the reader this handler pins.  It deliberately no longer
-        constructs a ``Polylogue`` facade inside the daemon's own process: that
-        opened a second archive generation per request and made the daemon's
-        answer a *different execution* of ref resolution from the one the
-        annotation importer admits durable rows on (polylogue-j5u2b).
-        """
-
-        from polylogue.operations.ref_resolution import plan_ref_resolution
-
-        ref = self._get_param(params, "ref")
-        if not ref:
-            self._send_json(
-                HTTPStatus.BAD_REQUEST, {"error": "missing_ref", "message": "ref query parameter is required"}
-            )
-            return
-        archive_root = _web_reader_archive_root()
-        if archive_root is None:
-            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
-            return
-        plan = plan_ref_resolution(ref, archive_root=archive_root)
-        if plan.payload is not None:
-            payload = plan.payload
-        else:
-            assert plan.read is not None
-            with archive_read_context(
-                archive_root,
-                operation=plan.operation,
-                arguments=plan.arguments,
-                projection=plan.projection,
-                stable_order=plan.stable_order,
-            ) as archive:
-                payload = plan.read(archive)
-        self._send_json(HTTPStatus.OK, payload.model_dump(mode="json", exclude_none=True))
+        return read_query._handle_ref_resolve(self, params)
 
     @daemon_safe_handler
     def _handle_query_completions(self, params: dict[str, list[str]]) -> None:
-        """``GET /api/query-completions`` exposes shared query metadata."""
-
-        from polylogue.archive.query.completions import QueryCompletionError, query_completion_payload
-
-        kind = self._get_param(params, "kind") or "field"
-        incomplete = self._get_param(params, "incomplete") or ""
-        unit = self._get_param(params, "unit")
-        field = self._get_param(params, "field")
-        try:
-            payload = query_completion_payload(kind, incomplete=incomplete, unit=unit, field=field)
-        except QueryCompletionError as exc:
-            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_query_completion", "message": str(exc)})
-            return
-        self._send_json(HTTPStatus.OK, {"query_completions": payload})
+        return read_query._handle_query_completions(self, params)
 
     @daemon_safe_handler
     def _handle_action_affordances(self) -> None:
-        """``GET /api/action-affordances`` exposes shared query-action metadata."""
-
-        from polylogue.operations.action_contracts import action_affordance_list_payload
-
-        payload = action_affordance_list_payload()
-        self._send_json(HTTPStatus.OK, payload.model_dump(mode="json"))
+        return read_query._handle_action_affordances(self)
 
     @daemon_safe_handler
     def _handle_read_view_profiles(self) -> None:
-        """``GET /api/read-view-profiles`` exposes shared read-view metadata."""
-
-        from polylogue.archive.viewport import read_view_profile_payloads
-
-        capabilities = read_view_http_capability_payloads()
-        profiles = []
-        for profile in read_view_profile_payloads():
-            view_id = profile.get("view_id")
-            capability = capabilities.get(view_id) if isinstance(view_id, str) else None
-            if capability is not None:
-                profile = {**profile, "http": capability}
-            profiles.append(profile)
-        self._send_json(HTTPStatus.OK, {"read_views": profiles, "total": len(profiles)})
+        return read_query._handle_read_view_profiles(self)
 
     @daemon_safe_handler
     def _handle_assertions(self, params: dict[str, list[str]]) -> None:
-        """``GET /api/assertions`` lists assertion-backed overlay claims.
+        return user_overlay.handle_assertions(self, params)
 
-        This is the web-workbench read side of #1883/#1846: the daemon
-        does not invent an overlay model, it routes through
-        ``Polylogue.list_assertion_claim_payloads`` and serializes through the
-        shared ``AssertionClaimPayload`` surface model.
-        """
+    @daemon_safe_handler
+    def _handle_user_overlay_get(self, path: list[str], params: dict[str, list[str]]) -> None:
+        return user_overlay.handle_get(self, path, params)
 
-        from polylogue.archive.query.spec import clamp_query_limit
+    @daemon_safe_handler
+    def _handle_user_overlay_post(self, path: list[str], params: dict[str, list[str]]) -> None:
+        return user_overlay.handle_post(self, path, params)
 
-        raw_kinds = _csv_values(params, "kind") + _csv_values(params, "kinds")
-        kinds = tuple(AssertionKind.from_string(kind) for kind in dict.fromkeys(raw_kinds))
-        statuses = self._assertion_status_filter(params)
-        context_inject = None
-        if "context_inject" in params:
-            context_inject = self._get_bool(params, "context_inject")
-        limit = clamp_query_limit(self._get_int(params, "limit", 20), default=20)
-
-        async def _get(poly: Polylogue) -> object:
-            items = await poly.list_assertion_claim_payloads(
-                kinds=kinds or None,
-                target_ref=self._get_param(params, "target_ref"),
-                scope_ref=self._get_param(params, "scope_ref"),
-                statuses=statuses,
-                context_inject=context_inject,
-                limit=limit,
-            )
-            return AssertionClaimListPayload(
-                items=tuple(items),
-                total=len(items),
-                limit=limit,
-                statuses=statuses,
-                kinds=kinds or None,
-            ).model_dump(mode="json", exclude_none=True)
-
-        self._send_json(HTTPStatus.OK, self._sync_run(_get))
-
-    def _assertion_status_filter(self, params: dict[str, list[str]]) -> tuple[AssertionStatus, ...] | None:
-        """Return status filters for ``GET /api/assertions``.
-
-        The default mirrors ``Polylogue.list_assertion_claims``
-        (``active,candidate``). ``status=all`` / ``statuses=all`` gives
-        the operator an explicit all-status read without special casing in
-        the underlying store.
-        """
-
-        raw_statuses = _csv_values(params, "status") + _csv_values(params, "statuses")
-        if not raw_statuses:
-            return (AssertionStatus.ACTIVE, AssertionStatus.CANDIDATE)
-        normalized = tuple(dict.fromkeys(token.lower() for token in raw_statuses if token.strip()))
-        if any(token in {"all", "*"} for token in normalized):
-            return None
-        return tuple(AssertionStatus.from_string(token) for token in normalized)
+    @daemon_safe_handler
+    def _handle_user_overlay_delete(self, path: list[str], params: dict[str, list[str]]) -> None:
+        return user_overlay.handle_delete(self, path, params)
 
     # ------------------------------------------------------------------
     # Handlers: shared single-session read-view execution (#1846)
@@ -5364,31 +4711,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         conv_id: str,
         params: dict[str, list[str]],
     ) -> None:
-        """``GET /api/sessions/{id}/similar[?limit=N]``.
-
-        Returns ranked similar sessions through the embedding read
-        surface from #828. The endpoint is honest about the embedding
-        pipeline's state: when embeddings are disabled, unavailable, or
-        the source session has not been embedded yet, the response
-        carries an explicit ``status`` rather than an empty success.
-        ``limit`` is clamped server-side to
-        :data:`polylogue.daemon.similarity.SIMILAR_RESULTS_MAX`.
-        """
-        from polylogue.daemon.similarity import build_similar_payload
-
-        requested_limit: int | None = None
-        raw_limit = self._get_param(params, "limit")
-        if raw_limit is not None:
-            try:
-                requested_limit = int(raw_limit)
-            except (TypeError, ValueError):
-                requested_limit = None
-
-        payload = build_similar_payload(conv_id, limit=requested_limit)
-        if payload is None:
-            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
-            return
-        self._send_json(HTTPStatus.OK, payload)
+        return read_detail._handle_get_session_similar(self, conv_id, params)
 
     # ------------------------------------------------------------------
     # Handlers: get messages
@@ -5396,37 +4719,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_get_messages(self, conv_id: str, params: dict[str, list[str]]) -> None:
-        from polylogue.archive.query.spec import clamp_query_limit
-
-        limit = clamp_query_limit(self._get_int(params, "limit", 50), default=50)
-        offset = max(0, self._get_int(params, "offset", 0))
-        continuation = self._get_param(params, "continuation")
-        around = self._get_param(params, "around")
-        if not self._accept_message_window_anchor(around, continuation):
-            return
-
-        archive_root = _web_reader_archive_root()
-        try:
-            if archive_root is not None:
-                payload = self._do_archive_get_messages(archive_root, conv_id, limit, offset, continuation, around)
-            else:
-
-                async def _get(poly: Polylogue) -> object:
-                    return await self._do_get_messages(poly, conv_id, limit, offset, continuation, around)
-
-                payload = self._sync_run(_get)
-        except MessageNotInSessionError as exc:
-            self._send_error(HTTPStatus.NOT_FOUND, exc.code, str(exc))
-            return
-        except QueryContinuationStaleError as exc:
-            # A write landed since the token was issued; resuming it would page
-            # into shifted rows, so the route refuses rather than answers.
-            self._send_error(HTTPStatus.CONFLICT, exc.code, str(exc))
-            return
-        except QueryContinuationInvalidError as exc:
-            self._send_error(HTTPStatus.BAD_REQUEST, exc.code, str(exc))
-            return
-        self._send_json(HTTPStatus.OK, payload)
+        return read_detail._handle_get_messages(self, conv_id, params)
 
     def _accept_message_window_anchor(self, around: str | None, continuation: str | None) -> bool:
         """Refuse a request that names its window twice, and say so.
@@ -5556,120 +4849,24 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         continuation: str | None = None,
         around: str | None = None,
     ) -> object:
-        """Return a bounded ``[offset, offset + limit)`` page of a session's messages.
-
-        Composes only the requested window at the storage layer
-        (``read_session_page``) instead of the whole transcript, so repeated
-        "load more" / deep-link-auto-page fetches (webui/src/islands/session-read.tsx)
-        each cost O(page size), not O(session size) (polylogue-07g6). Semantic
-        card placement is computed over that same bounded page, matching the
-        CLI's own paginated ``messages`` read view precedent
-        (``polylogue/cli/messages.py``), which already builds its transcript
-        from a bounded page rather than the full session.
-
-        ``around`` names a message instead of a coordinate: the offset of the
-        window holding it is resolved against the indexed transcript order
-        (``polylogue/operations/message_locator.py``) and reported back in
-        ``offset``, so a deep link costs one page read regardless of how deep
-        the target sits (polylogue-i5vqc). A message this session does not
-        contain is refused, never answered with page zero.
-        """
-        from polylogue.operations.transcript_window import read_transcript_window_sync, window_request
-
-        started_at = monotonic()
         with archive_read_context(
             archive_root,
             operation="http.archive.read",
             arguments={"path": getattr(self, "path", "")},
             projection="http-read",
         ) as archive:
-            authority = serialize_authority(
-                authority_for_reader(archive, server_identity="daemon", started_at=started_at)
-            )
-            try:
-                session_id = archive.resolve_session_id(conv_id)
-            except KeyError:
-                return {
-                    "messages": [],
-                    "total": 0,
+            return execute_http_session_messages(
+                {
+                    "session_id": conv_id,
                     "limit": limit,
                     "offset": offset,
-                    "next_offset": None,
-                    "continuation": None,
-                    "lineage_complete": True,
-                    "lineage_truncation_reason": None,
-                    "outcome": decide_outcome(matched=0, error="session_not_found").to_dict(),
-                    "authority": authority,
-                }
-
-            if around:
-                offset = window_offset_for_index(
-                    locate_message_in_archive(archive, session_id, around).index,
-                    limit,
-                )
-
-            composed: list[object] = []
-
-            def _read(page_limit: int, page_offset: int) -> tuple[list[object], int, object]:
-                # The web reader keeps its own row projection on purpose: the
-                # composed archive row carries source_session_id/inherited_prefix
-                # and the stored per-message word_count, which the domain
-                # ``Message`` model does not represent. What it no longer owns
-                # is the window itself (polylogue-ijbwq).
-                page_envelope = archive.read_session_page(session_id, limit=page_limit, offset=page_offset)
-                composed.append(page_envelope)
-                rows = list(page_envelope.messages)
-                page_total = (
-                    page_envelope.total_message_count if page_envelope.total_message_count is not None else len(rows)
-                )
-                return (
-                    cast("list[object]", rows),
-                    page_total,
-                    SimpleNamespace(
-                        complete=page_envelope.lineage_complete,
-                        truncation_reason=page_envelope.lineage_truncation_reason,
-                    ),
-                )
-
-            window = read_transcript_window_sync(
-                archive,
-                window_request(session_id, limit=limit, offset=offset, continuation=continuation),
-                read=_read,
+                    "continuation": continuation,
+                    "around": around,
+                },
+                archive=archive,
+                adapters=_http_session_projection_adapters(),
+                server_identity="daemon",
             )
-        envelope = cast("Any", composed[-1])
-        page = list(window.rows)
-        total = window.total
-        placement = self._archive_semantic_card_placement(envelope)
-        return {
-            "session_id": envelope.session_id,
-            "messages": [
-                self._archive_message_payload(
-                    envelope.session_id,
-                    message,
-                    semantic_entries=placement.entries_for(str(message.message_id)),
-                    semantic_cards=placement.cards_for(str(message.message_id)),
-                    semantic_card_suppressed=placement.is_suppressed(str(message.message_id)),
-                )
-                for message in page
-            ],
-            "semantic_entries": list(placement.session_entries),
-            "total": total,
-            "limit": window.limit,
-            "offset": window.offset,
-            "next_offset": window.next_offset,
-            "continuation": window.continuation,
-            # polylogue-ppkj: the envelope already carries the read-time
-            # completeness signal (read_session_page/read_archive_session_envelope
-            # compute it); it was just never included in the response body.
-            "lineage_complete": envelope.lineage_complete,
-            "lineage_truncation_reason": envelope.lineage_truncation_reason,
-            "outcome": lineage_page_outcome(
-                matched=total,
-                complete=envelope.lineage_complete,
-                truncation_reason=envelope.lineage_truncation_reason,
-            ).to_dict(),
-            "authority": authority,
-        }
 
     # ------------------------------------------------------------------
     # Handlers: workspace stack/compare
@@ -5742,11 +4939,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_get_raw_artifact(self, artifact_id: str) -> None:
-        async def _get(poly: Polylogue) -> object:
-            return await self._do_get_raw_artifacts(poly, artifact_id)
-
-        result = self._sync_run(_get)
-        self._send_json(HTTPStatus.OK, result)
+        return read_detail._handle_get_raw_artifact(self, artifact_id)
 
     async def _do_get_raw_artifacts(self, poly: Polylogue, artifact_id: str) -> object:
         raw_items = await poly.get_raw_artifacts_for_session(artifact_id)
@@ -5758,14 +4951,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_facets(self, params: dict[str, list[str]]) -> None:
-        query_params = _build_query_spec_params(params, self)
-        include_deferred = bool(_facet_requested_optional_families(params))
-
-        async def _get(poly: Polylogue) -> object:
-            return await self._do_facets(poly, query_params, include_deferred=include_deferred)
-
-        result = self._sync_run(_get)
-        self._send_json(HTTPStatus.OK, result)
+        return read_query._handle_facets(self, params)
 
     async def _do_facets(
         self,
@@ -5844,23 +5030,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 if cancellation is not None:
                     cancellation.unregister_connection(conn)
 
-    @daemon_safe_handler
-    def _handle_user_state(self, handler: Callable[..., None], *args: object) -> None:
-        handler(self, *args)
-
     # ------------------------------------------------------------------
     # Handlers: sources
     # ------------------------------------------------------------------
 
     @daemon_safe_handler
     def _handle_sources(self) -> None:
-        from polylogue.sources.live.watcher import default_sources
-
-        sources = default_sources()
-        self._send_json(
-            HTTPStatus.OK,
-            {"sources": [{"name": s.name, "root": str(s.root), "exists": s.exists()} for s in sources]},
-        )
+        return read_detail._handle_sources(self)
 
     # ------------------------------------------------------------------
     # Handlers: reset
@@ -5958,7 +5134,19 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.operations.daemon_protocol import DAEMON_PRINCIPAL_CAPABILITIES
         from polylogue.operations.mutation_transaction import MutationPrincipal
 
-        base = self._cli_mutation_principal("read")
+        web_token = self._web_credential_token()
+        if self._auth_token and not self.headers.get("Authorization", "") and web_token:
+            required_scope: WebCredentialScope = "read" if self.command == "GET" else "user_state"
+            if not self._web_credential_decision(required_scope).allowed:
+                raise RuntimeError("daemon operation web credential is no longer valid")
+            base = MutationPrincipal(
+                actor_ref=f"daemon:web:{hashlib.sha256(web_token.encode()).hexdigest()}",
+                capabilities=frozenset({"read"}),
+                surface="api",
+                role_label="daemon-web-credential",
+            )
+        else:
+            base = self._cli_mutation_principal("read")
         principal = MutationPrincipal(
             actor_ref=base.actor_ref,
             capabilities=DAEMON_PRINCIPAL_CAPABILITIES,
@@ -6402,10 +5590,6 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
             kernel = getattr(self, "execution_kernel", None)
             if isinstance(kernel, BoundedComputeAdapter):
                 kernel.shutdown(wait=False, cancel_futures=True)
-            else:
-                executor = getattr(self, "archive_query_executor", None)
-                if executor is not None:
-                    executor.shutdown(wait=False, cancel_futures=True)
 
         owned_write_runtime = getattr(self, "_owned_write_runtime", None)
         self._owned_write_runtime = None

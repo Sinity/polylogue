@@ -165,6 +165,13 @@ _MUTATING_INVOCATIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
         "mutation.session",
     ),
     ("reset-identity", ("ops", "reset", "--session", _SESSION_ID, "--yes"), "mutation.identity-reset"),
+    ("backup", ("ops", "backup", "--output-dir", "./backup-matrix"), "maintenance.backup"),
+    ("scan-secrets", ("ops", "scan-secrets", "--session", _SESSION_ID), "maintenance.secret_scan"),
+    (
+        "embed-resolve-failure",
+        ("ops", "embed", "resolve-failure", "failure:missing", "--action", "requeue", "--yes"),
+        "maintenance.embeddings.failure.resolve",
+    ),
     (
         "annotations-import",
         (
