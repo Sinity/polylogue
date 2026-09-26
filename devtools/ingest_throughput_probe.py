@@ -364,7 +364,8 @@ async def _ingest_batch(archive_root: Path, provider: str, source_file: Path) ->
     skipped_raw_count = sum(int(observation.get("skipped_raw_count", 0)) for observation in batch_observations)
     return {
         "source": source_file.name,
-        **counts,
+        "sessions": counts["sessions"],
+        "messages": counts["messages"],
         "skipped_counts": {key: int(value) for key, value in result.counts.items() if key.startswith("skipped_")},
         "skipped_sessions": int(result.counts.get("skipped_sessions", 0)),
         "skipped_messages": int(result.counts.get("skipped_messages", 0)),

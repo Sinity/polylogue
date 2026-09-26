@@ -8,6 +8,7 @@ durations or messages/second values.
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -200,14 +201,16 @@ def test_receipt_build_identity_uses_the_imported_checkout(tmp_path: Path, monke
     ).stdout.strip()
     monkeypatch.chdir(tmp_path)
 
-    assert probe._current_build_id().startswith(f"git:{expected_head}:tracked-diff:")
+    build_id = probe._current_build_id()
+    assert build_id is not None
+    assert build_id.startswith(f"git:{expected_head}:tracked-diff:")
 
 
 def test_unreportable_private_failure_cleans_its_scratch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import devtools.ingest_throughput_probe as probe
 
     scratch = tmp_path / "unreportable"
-    monkeypatch.setattr(probe.tempfile, "mkdtemp", lambda **kwargs: str(scratch))
+    monkeypatch.setattr(tempfile, "mkdtemp", lambda **kwargs: str(scratch))
 
     def fail_before_report(*args: object, **kwargs: object) -> object:
         raise RuntimeError("controlled route failure")
