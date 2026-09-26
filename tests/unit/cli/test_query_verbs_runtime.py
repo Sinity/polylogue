@@ -183,7 +183,7 @@ def test_read_direct_non_session_ref_emits_shared_resolution_payload(capsys: pyt
 
     with patch("polylogue.cli.query_verbs.run_coroutine_sync", return_value=payload) as run_sync:
         wrapped_read(
-            ctx=child,
+            child,
             **_read_verb_kwargs(view="summary", output_format="json", ref="message:abc"),
         )
 
@@ -426,18 +426,21 @@ def test_read_request_normalization_receives_the_full_parsed_selection(monkeypat
 
     from polylogue.surfaces.read_contract import ReadRequest
 
+    request = RootModeRequest.from_params({"query": ("typed_only:true", "repo:polylogue")})
+    expected_selection = request.query_spec()
+
     normalized_selections: list[object] = []
     normalize = ReadRequest.normalize
 
     def recording_normalize(params: dict[str, object], *, preset: str | None = None) -> ReadRequest:
         result = normalize(params, preset=preset)
-        normalized_selections.append(result.selection)
+        # query_spec() also normalizes the root request. Only the projection
+        # handoff carries both views and the full parsed selection.
+        if "views" in params and "selection" in params:
+            normalized_selections.append(result.selection)
         return result
 
     monkeypatch.setattr(ReadRequest, "normalize", staticmethod(recording_normalize))
-    request = RootModeRequest.from_params({"query": ("typed_only:true", "repo:polylogue")})
-    expected_selection = request.query_spec()
-
     query_verbs._build_read_projection_spec(
         request,
         views=("summary",),
