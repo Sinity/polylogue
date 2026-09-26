@@ -15,6 +15,7 @@ from polylogue.core.enums import Provider
 from polylogue.daemon.derivation import Budget, DerivationRegistry, DerivationReport, converge
 from polylogue.operations.raw_observation_derivation import (
     converge_raw_observations,
+    make_raw_observation_derivation,
     raw_observation_frame,
     raw_observation_pending_roots,
 )
@@ -112,7 +113,7 @@ def test_non_json_retained_worker_replays_past_old_payload_limit(tmp_path: Path)
         )
     del payload
 
-    adapter = RawObservationDerivation(tmp_path)
+    adapter = make_raw_observation_derivation(tmp_path)
     frame = raw_observation_frame(tmp_path)
     replacement = adapter.compute(frame, raw_id)
     try:
@@ -135,7 +136,7 @@ def test_retained_text_path_matches_json_session_output(tmp_path: Path) -> None:
         root = tmp_path / suffix
         bootstrap_archive_root(root)
         raw_id = _admit(root, ("same-session",), path=f"bundle.{suffix}")
-        adapter = RawObservationDerivation(root)
+        adapter = make_raw_observation_derivation(root)
         frame = raw_observation_frame(root)
         replacement = adapter.compute(frame, raw_id)
         assert adapter.publish(frame, replacement)
@@ -163,7 +164,7 @@ def test_sqlite_page_image_uses_worker_without_materializing_a_session(tmp_path:
             source_path=str(source),
             acquired_at_ms=1,
         )
-    adapter = RawObservationDerivation(tmp_path)
+    adapter = make_raw_observation_derivation(tmp_path)
     frame = raw_observation_frame(tmp_path)
     replacement = adapter.compute(frame, raw_id)
     assert replacement.prepared_inputs is not None
@@ -207,7 +208,7 @@ def test_logical_sqlite_export_uses_worker_and_replays_session(tmp_path: Path, r
             source_path=str(source.with_name(retained_name)),
             acquired_at_ms=1,
         )
-    adapter = RawObservationDerivation(tmp_path)
+    adapter = make_raw_observation_derivation(tmp_path)
     frame = raw_observation_frame(tmp_path)
     replacement = adapter.compute(frame, raw_id)
     assert replacement.prepared_inputs is not None
@@ -550,7 +551,7 @@ def test_retained_worker_exit_keeps_raw_retryable(
         )
     monkeypatch.setattr(raw_module, "ProcessPoolExecutor", DeadPool)
     with pytest.raises(RetainedPreparationRetryableError, match="worker exited"):
-        RawObservationDerivation(tmp_path).compute(raw_observation_frame(tmp_path), raw_id)
+        make_raw_observation_derivation(tmp_path).compute(raw_observation_frame(tmp_path), raw_id)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (None,)
 

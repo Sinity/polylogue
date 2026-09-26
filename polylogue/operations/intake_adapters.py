@@ -954,8 +954,11 @@ class RawMaterializationDiscovery:
             # daemon latch raw materialization off for its whole lifetime and
             # log a whale-schedule warning every 30 s on an empty root.
             return ()
-        from polylogue.operations.raw_observation_derivation import raw_observation_frame
-        from polylogue.storage.derived.raw import RAW_OBSERVATION_DOMAIN, RawObservationDerivation
+        from polylogue.operations.raw_observation_derivation import (
+            make_raw_observation_derivation,
+            raw_observation_frame,
+        )
+        from polylogue.storage.derived.raw import RAW_OBSERVATION_DOMAIN
 
         frame = raw_observation_frame(self._archive_root)
         binding = _RawDiscoveryBinding(
@@ -974,7 +977,7 @@ class RawMaterializationDiscovery:
             self._arrivals_first = False
 
         inspected_limit = min(limit, _RAW_DISCOVERY_INSPECTION_LIMIT)
-        adapter = RawObservationDerivation(self._archive_root)
+        adapter = make_raw_observation_derivation(self._archive_root)
         self._arrivals_first = not self._arrivals_first
         lanes: tuple[Callable[[Any, Any, int], tuple[str, ...]], ...] = (
             (self._arrival_selected, self._sweep_selected)

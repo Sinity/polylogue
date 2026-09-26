@@ -1058,6 +1058,7 @@ def prepare_retained_jsonl_artifact(
 
 
 def prepare_retained_non_json_artifact(
+    archive: ArchiveStore,
     raw_id: str,
     provider_token: str,
     blob_hash: str,
@@ -1085,44 +1086,43 @@ def prepare_retained_non_json_artifact(
     sealed = False
     parsed = False
     try:
-        with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
-            provider, current_hash, current_path, kind, _size = archive.raw_revision_descriptor(raw_id)
-            if (
-                archive.index_db_path.resolve() != Path(index_db_path).resolve()
-                or provider != Provider(provider_token)
-                or current_hash != blob_hash
-                or current_path != source_path
-                or kind != RawRevisionKind(kind_token)
-                or (archive.raw_native_id(raw_id) if kind is RawRevisionKind.APPEND else None) != native_id
-                or archive.raw_revision_file_mtime(raw_id) != fallback_timestamp
-            ):
-                raise RetainedPreparationRetryableError(f"retained descriptor changed for raw {raw_id}")
-            sessions = parse_retained_raw_sessions(archive, raw_id)
-            outcome = _enrich_retained_parse_outcome(
-                archive,
-                raw_id,
-                descriptor=(provider, blob_hash, source_path, kind, _size, native_id),
-                outcome=(sessions, _size, kind),
-            )
-            if isinstance(outcome, Exception):
-                raise outcome
-            sessions = outcome[0]
-            resolved_provider = Provider.from_string(sessions[0].source_name) if sessions else provider
-            evidence = _retained_enrichment_sidecar_data(
-                provider=resolved_provider,
-                sessions=sessions,
-                index_conn=archive.index_connection,
-                source_conn=archive._ensure_source_conn(),
-                blob_root=Path(blob_root),
-                source_path=source_path,
-            )
-            dependency = _retained_dependency_digest(
-                _enrichment_evidence_digest(evidence),
-                _retained_parser_sidecar_digest(
-                    archive._ensure_source_conn(), provider=resolved_provider, source_path=source_path
-                ),
-            )
-            parsed = True
+        provider, current_hash, current_path, kind, _size = archive.raw_revision_descriptor(raw_id)
+        if (
+            archive.index_db_path.resolve() != Path(index_db_path).resolve()
+            or provider != Provider(provider_token)
+            or current_hash != blob_hash
+            or current_path != source_path
+            or kind != RawRevisionKind(kind_token)
+            or (archive.raw_native_id(raw_id) if kind is RawRevisionKind.APPEND else None) != native_id
+            or archive.raw_revision_file_mtime(raw_id) != fallback_timestamp
+        ):
+            raise RetainedPreparationRetryableError(f"retained descriptor changed for raw {raw_id}")
+        sessions = parse_retained_raw_sessions(archive, raw_id)
+        outcome = _enrich_retained_parse_outcome(
+            archive,
+            raw_id,
+            descriptor=(provider, blob_hash, source_path, kind, _size, native_id),
+            outcome=(sessions, _size, kind),
+        )
+        if isinstance(outcome, Exception):
+            raise outcome
+        sessions = outcome[0]
+        resolved_provider = Provider.from_string(sessions[0].source_name) if sessions else provider
+        evidence = _retained_enrichment_sidecar_data(
+            provider=resolved_provider,
+            sessions=sessions,
+            index_conn=archive.index_connection,
+            source_conn=archive._ensure_source_conn(),
+            blob_root=Path(blob_root),
+            source_path=source_path,
+        )
+        dependency = _retained_dependency_digest(
+            _enrichment_evidence_digest(evidence),
+            _retained_parser_sidecar_digest(
+                archive._ensure_source_conn(), provider=resolved_provider, source_path=source_path
+            ),
+        )
+        parsed = True
         if not BlobStore(Path(blob_root)).verify(blob_hash):
             raise RetainedPreparationRetryableError(f"retained blob changed for raw {raw_id}")
         store = SqliteMessageStore(sessions_path)

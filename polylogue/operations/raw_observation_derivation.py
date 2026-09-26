@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from polylogue.daemon.derivation import (
     Budget,
@@ -18,13 +18,50 @@ from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.derived.raw import RAW_OBSERVATION_DOMAIN as _RAW_OBSERVATION_DOMAIN
 from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationScope
 
+if TYPE_CHECKING:
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+
 RAW_OBSERVATION_DOMAIN = _RAW_OBSERVATION_DOMAIN
 _RAW_OBSERVATION_RECIPE_VERSION = RawObservationDerivation.recipe_version
 
 
+def prepare_retained_non_json_artifact_worker(
+    raw_id: str,
+    provider_token: str,
+    blob_hash: str,
+    source_path: str,
+    kind_token: str,
+    native_id: str | None,
+    blob_root: str,
+    source_db_path: str,
+    index_db_path: str,
+    directory: str,
+    fallback_timestamp: str | None,
+) -> PreparedJsonl:
+    """Pin the archive in the worker before the source parser reads retained bytes."""
+    from polylogue.operations.operation_context import open_operation_read
+    from polylogue.sources.revision_backfill import prepare_retained_non_json_artifact
+
+    with open_operation_read(Path(source_db_path).parent) as pinned:
+        return prepare_retained_non_json_artifact(
+            pinned.archive,
+            raw_id,
+            provider_token,
+            blob_hash,
+            source_path,
+            kind_token,
+            native_id,
+            blob_root,
+            source_db_path,
+            index_db_path,
+            directory,
+            fallback_timestamp,
+        )
+
+
 def make_raw_observation_derivation(archive_root: Path) -> RawObservationDerivation:
     """Construct the storage-owned raw adapter from the operations boundary."""
-    return RawObservationDerivation(archive_root)
+    return RawObservationDerivation(archive_root, prepare_non_json_artifact=prepare_retained_non_json_artifact_worker)
 
 
 def raw_observation_output_session_ids(archive_root: Path, raw_id: str) -> tuple[str, ...]:

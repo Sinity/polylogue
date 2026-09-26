@@ -11,7 +11,7 @@ import hashlib
 import json
 import sqlite3
 import tempfile
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import closing, contextmanager
@@ -128,8 +128,14 @@ class RawObservationDerivation:
     prerequisites: tuple[str, ...] = ()
     recipe_version = RAW_AUTHORITY_PARSER_FINGERPRINT
 
-    def __init__(self, archive_root: Path) -> None:
+    def __init__(
+        self,
+        archive_root: Path,
+        *,
+        prepare_non_json_artifact: Callable[..., PreparedJsonl] | None = None,
+    ) -> None:
         self.archive_root = archive_root
+        self._prepare_non_json_artifact = prepare_non_json_artifact
 
     @staticmethod
     def _blob_stat_identity(path: Path) -> tuple[int, int, int, int, int]:
@@ -519,7 +525,6 @@ class RawObservationDerivation:
                 )
                 from polylogue.sources.revision_backfill import (
                     PreparedRetainedAggregate,
-                    prepare_retained_non_json_artifact,
                     selected_prepared_membership_head,
                 )
                 from polylogue.storage.sqlite.archive_tiers.revision_governance import (
@@ -601,10 +606,15 @@ class RawObservationDerivation:
                                     is_json = (
                                         is_jsonl_source_path(path) or Path(path).suffix.lower() == ".json"
                                     ) and not looks_like_logical_source_path(blob_path)
+                                    worker = (
+                                        prepare_retained_jsonl_artifact if is_json else self._prepare_non_json_artifact
+                                    )
+                                    if worker is None:
+                                        raise RetainedPreparationRetryableError(
+                                            "non-JSON retained preparation requires an operations worker"
+                                        )
                                     artifact = pool.submit(
-                                        prepare_retained_jsonl_artifact
-                                        if is_json
-                                        else prepare_retained_non_json_artifact,
+                                        worker,
                                         raw_id,
                                         provider.value,
                                         blob_hash,
