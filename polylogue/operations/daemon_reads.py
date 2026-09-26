@@ -24,6 +24,7 @@ from polylogue.operations.session_evidence import (
 )
 
 if TYPE_CHECKING:
+    from polylogue.archive.query.execution_control import QueryExecutionContext
     from polylogue.archive.query.expression import WithUnitWindow
     from polylogue.archive.query.search_contract import LaneFailure
     from polylogue.archive.query.spec import SessionQuerySpec
@@ -203,11 +204,50 @@ def execute_read_operation(
         result = _aggregate_payload(payload, archive=archive)
     elif name == "session.read":
         result = _session_read_payload(payload, archive=archive)
+    elif name == "read.dialogue":
+        from polylogue.operations.read_view_dialogue_temporal import execute_dialogue_read
+
+        result = execute_dialogue_read(payload, archive=archive)
+    elif name == "read.temporal":
+        from polylogue.operations.read_view_dialogue_temporal import execute_temporal_read
+
+        result = execute_temporal_read(payload, archive=archive, vector_provider=dependencies.vector_provider)
+    elif name == "read.chronicle":
+        from polylogue.operations.read_view_chronicle import execute_chronicle_read
+
+        result = execute_chronicle_read(payload, archive=archive, vector_provider=dependencies.vector_provider)
+    elif name == "read.effective_context":
+        from polylogue.operations.read_view_extras import execute_effective_context_read
+
+        result = execute_effective_context_read(payload, archive=archive)
+    elif name == "read.neighbors":
+        from polylogue.operations.read_view_extras import execute_neighbor_read
+
+        result = execute_neighbor_read(payload, archive=archive)
+    elif name == "read.correlation":
+        from polylogue.operations.read_view_extras import execute_correlation_read
+
+        result = execute_correlation_read(payload, archive=archive)
     elif name == "session.reference":
         result = _session_reference_payload(payload, archive=archive)
     elif name == "query.units":
         params = _params(payload)
         result = _query_units_payload(params, archive=archive, serving_identity=serving_identity)
+    elif name in {
+        "user.assertions.list",
+        "user.marks.list",
+        "user.annotations.list",
+        "user.annotations.get",
+        "user.saved_views.list",
+        "user.saved_views.get",
+        "user.recall_packs.list",
+        "user.recall_packs.get",
+        "user.workspaces.list",
+        "user.workspaces.get",
+    }:
+        from polylogue.operations.user_overlay_reads import execute_user_overlay_read
+
+        result = execute_user_overlay_read(name, payload, archive=archive)
     elif name == "completion":
         result = _completion_payload(payload, archive=archive)
     elif name == "facets":
@@ -254,7 +294,7 @@ def _cacheable_read(name: str, payload: Mapping[str, object]) -> bool:
 def requires_vector_snapshot(name: str, payload: Mapping[str, object]) -> bool:
     """Return whether this declared read needs a coherent vector handle."""
 
-    if name != "cli.query":
+    if name not in {"cli.query", "read.temporal", "read.chronicle"}:
         return False
     spec = _cli_query_spec(_params(payload))
     return bool(spec.similar_text or spec.similar_session_id or spec.retrieval_lane == "hybrid")
@@ -604,34 +644,61 @@ def _search_payload(
 
 
 def _query_units_payload(
-    params: Mapping[str, object], *, archive: ArchiveStore, serving_identity: str
+    params: Mapping[str, object],
+    *,
+    archive: ArchiveStore,
+    serving_identity: str,
+    execution_context: QueryExecutionContext | None = None,
 ) -> dict[str, object]:
-    from polylogue.archive.query.transaction import query_units_transaction_request
+    from polylogue.archive.query.transaction import (
+        QueryContinuationInvalidError,
+        decode_query_units_continuation,
+        query_units_transaction_request,
+    )
     from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 
-    expression = str(params.get("expression") or "")
-    filter_params = {
-        key: value for key, value in params.items() if key not in {"expression", "limit", "offset", "session_filters"}
-    }
-    raw_session_filters = params.get("session_filters")
-    if raw_session_filters is not None and not isinstance(raw_session_filters, Mapping):
-        raise ValueError("session_filters must be an object")
-    request = query_unit_request(
-        expression=expression,
-        limit=_non_negative_int(params.get("limit"), default=50) or 50,
-        offset=_non_negative_int(params.get("offset"), default=0),
-        session_filters=raw_session_filters,
-        **filter_params,
-    )
-    transaction_request = query_units_transaction_request(
-        expression=expression,
-        session_filters=request.session_filters or {},
-        page_size=request.limit,
-        offset=request.offset,
-    )
+    continuation = params.get("continuation")
+    if continuation is not None:
+        if set(params) != {"continuation"} or not isinstance(continuation, str):
+            raise QueryContinuationInvalidError("continuation requests cannot override query parameters")
+        transaction_request = decode_query_units_continuation(continuation).request
+        arguments = transaction_request.arguments
+        expression = arguments["expression"]
+        session_filters = arguments["session_filters"]
+        assert isinstance(expression, str) and isinstance(session_filters, Mapping)
+        request = query_unit_request(
+            expression=expression,
+            limit=transaction_request.page_size,
+            offset=transaction_request.offset,
+            session_filters=session_filters,
+        )
+    else:
+        expression = str(params.get("expression") or "")
+        filter_params = {
+            key: value
+            for key, value in params.items()
+            if key not in {"expression", "limit", "offset", "session_filters"}
+        }
+        raw_session_filters = params.get("session_filters")
+        if raw_session_filters is not None and not isinstance(raw_session_filters, Mapping):
+            raise ValueError("session_filters must be an object")
+        request = query_unit_request(
+            expression=expression,
+            limit=_non_negative_int(params.get("limit"), default=50) or 50,
+            offset=_non_negative_int(params.get("offset"), default=0),
+            session_filters=raw_session_filters,
+            **filter_params,
+        )
+        transaction_request = query_units_transaction_request(
+            expression=expression,
+            session_filters=request.session_filters or {},
+            page_size=request.limit,
+            offset=request.offset,
+        )
     return query_unit_envelope(
         archive,
         request,
+        execution_context=execution_context,
         transaction_request=transaction_request,
         serving_identity=serving_identity,
     ).model_dump(mode="json")

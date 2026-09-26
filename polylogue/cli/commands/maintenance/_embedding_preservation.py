@@ -9,7 +9,6 @@ receipt proves the reuse the copy existed to provide.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import click
@@ -77,7 +76,7 @@ def restore_command(copy_path: Path, root: Path | None, model: str | None, outpu
         recomputed_vector_hashes,
         restore_embedding_vectors,
     )
-    from polylogue.operations.durable_change_train import acquire_durable_archive_ownership
+    from polylogue.maintenance.offline_guard import scoped_offline_archive_writer
 
     embeddings_db, index_db = _tier_paths(root)
     resolved_recipe = configured_vector_recipe(model)
@@ -87,7 +86,7 @@ def restore_command(copy_path: Path, root: Path | None, model: str | None, outpu
     # Restoration mutates the rebuilt embeddings tier and must be the explicit
     # offline owner of the archive for the whole destination-binding and
     # restore window. The preserved source is opened read-only by the library.
-    with acquire_durable_archive_ownership(archive_root_path, owner_id=f"embedding-restore:{os.getpid()}"):
+    with scoped_offline_archive_writer(archive_root_path, owner_id="embedding-preservation.restore"):
         receipt = restore_embedding_vectors(embeddings_db, copy_path, set(wanted.values()))
     if output_format == "json":
         click.echo(

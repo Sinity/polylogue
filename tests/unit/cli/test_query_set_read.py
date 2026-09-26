@@ -13,7 +13,6 @@ from click.testing import CliRunner
 
 from polylogue.archive.models import Session
 from polylogue.archive.query.spec import SessionQuerySpec
-from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.cli import query_set_read, query_verbs
 from polylogue.cli.click_app import cli
 from polylogue.cli.read_view_handlers import ReadViewInvocation
@@ -85,18 +84,20 @@ def test_run_query_set_read_separates_markdown_with_horizontal_rule() -> None:
     assert text.count("\n---\n") == 1
 
 
-def test_dialogue_query_set_view_uses_prose_projection() -> None:
-    captured: dict[str, object] = {}
-
-    def _capture(*args: object, **kwargs: object) -> None:
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-
-    with patch("polylogue.cli.query_set_read.run_query_set_read", side_effect=_capture):
+def test_dialogue_query_set_selects_rows_then_uses_declared_view_operation() -> None:
+    session = make_conv(id="session-1", messages=[make_msg(text="authored answer")])
+    env = cast(AppEnv, SimpleNamespace(config=object()))
+    with (
+        patch(
+            "polylogue.cli.session_rows.query_session_rows", return_value=[SimpleNamespace(session_id="session-1")]
+        ) as select,
+        patch("polylogue.cli.read_views.standard._read_dialogue_session", return_value=session) as read,
+        patch("polylogue.cli.query_set_read.run_query_set_read", side_effect=AssertionError("local read")),
+    ):
         runner = CliRunner()
-        with runner.isolation():
+        with runner.isolation() as (out, _err, _term):
             run_query_set_read_view(
-                _stub_env([]),
+                env,
                 _request(limit=1),
                 view="dialogue",
                 output_format=None,
@@ -104,17 +105,13 @@ def test_dialogue_query_set_view_uses_prose_projection() -> None:
                 destination="terminal",
                 out_path=None,
             )
-
-    kwargs = cast(dict[str, object], captured["kwargs"])
-    projection = kwargs["content_projection"]
-    assert kwargs["output_format"] == "markdown"
-    assert isinstance(projection, ContentProjectionSpec)
-    assert projection.filters_content()
-    assert kwargs["renderer"] is not None
+            content = out.getvalue().decode("utf-8")
+    assert "authored answer" in content
+    select.assert_called_once()
+    assert read.call_args.args[2] == "session-1"
 
 
-def test_dialogue_query_set_renderer_applies_projection_spec() -> None:
-    captured: dict[str, object] = {}
+def test_dialogue_query_set_applies_projection_spec_to_operation_result() -> None:
     session = make_conv(
         id="session-1",
         messages=[
@@ -123,15 +120,15 @@ def test_dialogue_query_set_renderer_applies_projection_spec() -> None:
         ],
     )
 
-    def _capture(*args: object, **kwargs: object) -> None:
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-
-    with patch("polylogue.cli.query_set_read.run_query_set_read", side_effect=_capture):
+    env = cast(AppEnv, SimpleNamespace(config=object()))
+    with (
+        patch("polylogue.cli.session_rows.query_session_rows", return_value=[SimpleNamespace(session_id="session-1")]),
+        patch("polylogue.cli.read_views.standard._read_dialogue_session", return_value=session) as read,
+    ):
         runner = CliRunner()
-        with runner.isolation():
+        with runner.isolation() as (out, _err, _term):
             run_query_set_read_view(
-                _stub_env([session]),
+                env,
                 _request(limit=1),
                 view="dialogue",
                 output_format="json",
@@ -140,14 +137,44 @@ def test_dialogue_query_set_renderer_applies_projection_spec() -> None:
                 out_path=None,
                 projection_spec=projection_from_views(("dialogue",), max_tokens=3),
             )
-
-    renderer = cast(dict[str, object], captured["kwargs"])["renderer"]
-    assert callable(renderer)
-    payload = json.loads(renderer(session, "json", None))
+            payload = json.loads(out.getvalue().decode("utf-8"))[0]
+    assert read.call_args.args[3].max_tokens == 3
     assert payload["message_count"] == 2
     assert payload["rendered_message_count"] == 1
     assert payload["projection"]["max_tokens"] == 3
     assert [message["id"] for message in payload["messages"]] == ["user-1"]
+
+
+def test_dialogue_query_set_without_limit_reads_every_selected_session() -> None:
+    session_a = make_conv(id="session-a", messages=[make_msg(text="first")])
+    session_b = make_conv(id="session-b", messages=[make_msg(text="second")])
+    env = cast(AppEnv, SimpleNamespace(config=object()))
+    with (
+        patch(
+            "polylogue.cli.session_rows.query_complete_session_ids",
+            return_value=["session-a", "session-b"],
+        ) as select,
+        patch(
+            "polylogue.cli.read_views.standard._read_dialogue_session",
+            side_effect=[session_a, session_b],
+        ) as read,
+        patch("polylogue.cli.read_dispatch.daemon_route_disabled", return_value=False),
+    ):
+        runner = CliRunner()
+        with runner.isolation() as (out, _err, _term):
+            run_query_set_read_view(
+                env,
+                _request(),
+                view="dialogue",
+                output_format="json",
+                fields=None,
+                destination="terminal",
+                out_path=None,
+            )
+            payload = json.loads(out.getvalue().decode("utf-8"))
+    assert [item["id"] for item in payload] == ["session-a", "session-b"]
+    select.assert_called_once()
+    assert [call.args[2] for call in read.call_args_list] == ["session-a", "session-b"]
 
 
 def test_read_all_registered_and_dispatches_via_root_cli() -> None:

@@ -144,7 +144,7 @@ def test_each_view_executes_the_route_it_declares(
     metadata = READ_VIEW_HANDLER_METADATA[view]
     reached = _operations_reached(monkeypatch, env, config, session_id, view)
 
-    if metadata.execution_kind in {"in-process", "distinct-operation"}:
+    if metadata.execution_kind == "in-process" or not metadata.operations:
         assert reached == (), f"{view} declares no operation but dispatched {reached}"
         return
 
@@ -168,7 +168,6 @@ def test_transcript_file_delivery_does_not_bypass_its_declared_operation(
 
     from polylogue.cli import operation_kernel
     from polylogue.cli.read_view_handlers import run_read_view
-    from polylogue.cli.read_views import standard
     from polylogue.cli.read_views.base import ReadViewInvocation
 
     env, config, session_id = probe_env
@@ -181,11 +180,7 @@ def test_transcript_file_delivery_does_not_bypass_its_declared_operation(
         kwargs["daemon_disabled"] = False
         return real_dispatch(cfg, request, **kwargs)  # type: ignore[arg-type]
 
-    def _forbid_streaming(*_args: object, **_kwargs: object) -> bool:
-        raise AssertionError("transcript file delivery bypassed cli.query")
-
     monkeypatch.setattr(operation_kernel, "dispatch", _recording_dispatch)
-    monkeypatch.setattr(standard, "stream_exact_session_markdown", _forbid_streaming)
     request = RootModeRequest.from_params({"_config": config, "id": session_id})
     invocation = ReadViewInvocation(
         view="transcript",

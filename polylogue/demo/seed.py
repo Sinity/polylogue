@@ -13,7 +13,10 @@ from hashlib import sha256
 from pathlib import Path
 
 from polylogue.config import Source, load_polylogue_config
-from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+from polylogue.operations.canonical_archive_ingest import (
+    ingest_sources_archive,
+    scoped_one_shot_archive_owner,
+)
 from polylogue.scenarios import (
     DEMO_ANTIGRAVITY_SESSION_ID,
     DEMO_CHATGPT_SESSION_ID,
@@ -1601,7 +1604,7 @@ def apply_demo_post_ingest_augmentation(archive_root: Path) -> None:
             time.sleep(_AUGMENTATION_SETTLE_INTERVAL_S)
 
 
-async def seed_demo_archive(
+async def _seed_demo_archive_owned(
     archive_root: Path,
     *,
     force: bool = False,
@@ -1631,6 +1634,10 @@ async def seed_demo_archive(
     # the second seed skips revalidation and the staleness surfaces later as
     # a SchemaSkewError from the identity comparison instead of the
     # actionable "move it aside and rebuild" refusal this path owns.
+    if _archive_root_has_real_content(archive_root) and not _archive_root_is_demo_owned(archive_root):
+        raise DemoSeedTargetUnsafeError(
+            f"{archive_root} contains real archive content; submit ingestion to its resident daemon"
+        )
     invalidate_active_archive_bootstrap(archive_root)
     _guard_demo_seed_target(archive_root, explicit_root=explicit_root, force=force)
     _record_demo_ownership_if_undetermined(archive_root)
@@ -1641,24 +1648,7 @@ async def seed_demo_archive(
 
     source_root = materialize_demo_source(archive_root, force=force)
     with _pushd(source_root):
-        # Force sequential (single-worker) parsing for the fixed, dozen-file
-        # synthetic demo corpus. `parse_sources_archive`'s ambient worker
-        # count defaults to up to `cpus-1` real OS subprocesses (spawn-based
-        # ProcessPoolExecutor); at demo scale that pool buys zero throughput
-        # (it exists to overlap CPU-bound parse with I/O-bound writes on real
-        # bulk archives) but multiplies badly under pytest-xdist, where every
-        # worker process independently spawns its own sub-pool. Under host
-        # load a per-file worker task can fail (BrokenProcessPool, transient
-        # spawn/OOM) and is caught by the pool driver's `except Exception:
-        # failed += 1; continue` -- silently dropping that file's sessions
-        # with only a log line, no raised error. That is the root cause of
-        # the observed nondeterministic declared-construct loss under xdist
-        # (polylogue-b054.1.1.1): a demo fixture file occasionally vanished
-        # under load with no test-visible signal until construct-coverage
-        # happened to depend on it. Sequential parsing removes the pool
-        # entirely for this fixed-size corpus, so demo seeding no longer
-        # depends on host process/memory pressure at all.
-        result = await parse_sources_archive(archive_root, demo_source_specs(source_root), parse_workers=1)
+        result = await ingest_sources_archive(archive_root, demo_source_specs(source_root), parse_workers=1)
 
     apply_demo_post_ingest_augmentation(archive_root)
     _refresh_demo_ownership_session_ids(archive_root)
@@ -1676,6 +1666,24 @@ async def seed_demo_archive(
         construct_coverage=construct_coverage,
         healed_tiers=healed_tiers,
     )
+
+
+async def seed_demo_archive(
+    archive_root: Path,
+    *,
+    force: bool = False,
+    with_overlays: bool = False,
+    explicit_root: bool = False,
+) -> DemoSeedResult:
+    """Seed an isolated demo root under one archive owner for the entire run."""
+    root = archive_root.expanduser().resolve()
+    with scoped_one_shot_archive_owner(root):
+        return await _seed_demo_archive_owned(
+            root,
+            force=force,
+            with_overlays=with_overlays,
+            explicit_root=explicit_root,
+        )
 
 
 __all__ = [

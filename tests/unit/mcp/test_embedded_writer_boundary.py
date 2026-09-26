@@ -4,15 +4,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import subprocess
-import sys
-from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import cast
 
 import pytest
 
-import polylogue.api.archive as archive_module
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
 from polylogue.mcp.declarations.models import MCPCapabilities
@@ -23,44 +19,6 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 from tests.infra.live_ingest import write_index_session
 from tests.infra.mcp import MCPServerUnderTest, installed_runtime_services, invoke_surface_async
-
-
-@pytest.fixture
-def resident_daemon(tmp_path: Path) -> Iterator[Callable[[Path], int]]:
-    """Hold the archive pidfile lock with a process whose name is irrelevant."""
-
-    script = tmp_path / "hold_pidfile.py"
-    script.write_text(
-        "import fcntl, os, sys, time\n"
-        "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)\n"
-        "fcntl.flock(fd, fcntl.LOCK_EX)\n"
-        "os.write(fd, str(os.getpid()).encode())\n"
-        "os.fsync(fd)\n"
-        "sys.stdout.write('ready\\n')\n"
-        "sys.stdout.flush()\n"
-        "time.sleep(300)\n"
-    )
-    processes: list[subprocess.Popen[str]] = []
-
-    def start(pidfile: Path) -> int:
-        process = subprocess.Popen(
-            [sys.executable, str(script), str(pidfile)],
-            stdout=subprocess.PIPE,
-            text=True,
-        )
-        processes.append(process)
-        assert process.stdout is not None
-        assert process.stdout.readline().strip() == "ready"
-        return process.pid
-
-    try:
-        yield start
-    finally:
-        for process in processes:
-            process.kill()
-            process.wait(timeout=30)
-            if process.stdout is not None:
-                process.stdout.close()
 
 
 def _user_archive(root: Path) -> None:
@@ -105,19 +63,8 @@ def _annotation_import_fields(session_id: str, batch_id: str) -> dict[str, objec
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("resident,bypass_guard", [(True, False), (False, False), (True, True)])
-async def test_annotation_import_mcp_obeys_writer_authority(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    resident_daemon: Callable[[Path], int],
-    resident: bool,
-    bypass_guard: bool,
-) -> None:
-    """The real MCP import refuses a resident owner before any user-tier commit.
-
-    Bypassing the facade guard reproduces the unowned durable commit; offline
-    import still works through the same production dispatcher and importer.
-    """
+async def test_mcp_import_without_daemon_refuses_before_user_commit(tmp_path: Path) -> None:
+    """The MCP surface cannot fall back to its own writable user tier."""
     from polylogue.mcp.server import build_server
 
     archive_root = tmp_path / "archive"
@@ -131,11 +78,6 @@ async def test_annotation_import_mcp_obeys_writer_authority(
                 messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
             ),
         )
-    if resident:
-        resident_daemon(archive_root / "daemon.pid")
-    if bypass_guard:
-        monkeypatch.setattr(archive_module, "_require_archive_write_authority", lambda *_args: None)
-
     server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
     write_fn = server._tool_manager._tools["write"].fn
     with installed_runtime_services(archive_root):
@@ -146,52 +88,60 @@ async def test_annotation_import_mcp_obeys_writer_authority(
                 fields=_annotation_import_fields(session_id, "writer-boundary-batch"),
             )
         )
-
+    assert result.get("is_error") is True, result
+    assert result.get("detail") == "FacadeDaemonRequiredError", result
     with sqlite3.connect(archive_root / "user.db") as conn:
-        row = conn.execute("SELECT status FROM assertions WHERE key = 'writer-boundary-row'").fetchone()
-    if resident and not bypass_guard:
-        assert result.get("is_error") is True, result
-        assert result.get("detail") == "ArchiveWriterOwnershipError", result
-        assert row is None
-    else:
-        assert result.get("is_error") is not True, result
-        assert row == ("candidate",)
+        assert conn.execute("SELECT COUNT(*) FROM assertions WHERE key = 'writer-boundary-row'").fetchone()[0] == 0
 
 
 @pytest.mark.asyncio
-async def test_judge_only_mcp_refuses_a_resident_daemon_before_user_write(
-    tmp_path: Path,
-    resident_daemon: Callable[[Path], int],
+async def test_mcp_import_roundtrips_through_real_daemon_operation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The judge-only handler reaches the real facade and gets a typed refusal."""
-
+    """An accepted MCP import reaches the daemon writer and returns its receipt."""
+    from polylogue.daemon.socket_path import daemon_socket_path
     from polylogue.mcp.server import build_server
+    from tests.infra.daemon_operations import running_daemon_operations
 
     archive_root = tmp_path / "archive"
-    _user_archive(archive_root)
-    _seed_candidate(archive_root, "resident-boundary-candidate")
-    resident_pid = resident_daemon(archive_root / "daemon.pid")
-    server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(judge=True)))
-    judge_fn = server._tool_manager._tools["judge"].fn
+    session_ids: list[str] = []
 
-    with installed_runtime_services(archive_root):
-        result = json.loads(
-            await invoke_surface_async(
-                judge_fn,
-                candidate_ref="assertion:resident-boundary-candidate",
-                decision="accept",
+    def seed(root: Path) -> None:
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            session_ids.append(
+                write_index_session(
+                    archive,
+                    ParsedSession(
+                        source_name=Provider.CODEX,
+                        provider_session_id="annotation-wire-roundtrip",
+                        title="Wire roundtrip fixture",
+                        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
+                    ),
+                )
             )
-        )
 
-    assert result.get("is_error") is True, result
-    assert result.get("detail") == "ArchiveWriterOwnershipError", result
-    assert resident_pid > 0
+    monkeypatch.setattr("polylogue.daemon.api_auth.resolve_api_auth_token", lambda *_args, **_kwargs: None)
+    with running_daemon_operations(archive_root, seed_archive=seed, socket_path=daemon_socket_path(archive_root)):
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
+        write_fn = server._tool_manager._tools["write"].fn
+        with installed_runtime_services(archive_root):
+            result = json.loads(
+                await invoke_surface_async(
+                    write_fn,
+                    operation="import_annotation_batch",
+                    fields=_annotation_import_fields(session_ids[0], "writer-boundary-wire"),
+                )
+            )
+        assert result.get("is_error") is not True, result
+        with sqlite3.connect(archive_root / "user.db") as conn:
+            assert conn.execute("SELECT status FROM assertions WHERE key = 'writer-boundary-row'").fetchone() == (
+                "candidate",
+            )
 
 
 @pytest.mark.asyncio
-async def test_judge_only_mcp_remains_functional_without_a_daemon(tmp_path: Path) -> None:
-    """The shared boundary does not blanket-refuse entitled offline MCP writes."""
-
+async def test_judge_only_mcp_without_daemon_refuses_before_user_write(tmp_path: Path) -> None:
+    """Judgment writes use the same daemon-required public route."""
     from polylogue.mcp.server import build_server
 
     archive_root = tmp_path / "archive"
@@ -199,7 +149,6 @@ async def test_judge_only_mcp_remains_functional_without_a_daemon(tmp_path: Path
     _seed_candidate(archive_root, "offline-boundary-candidate")
     server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(judge=True)))
     judge_fn = server._tool_manager._tools["judge"].fn
-
     with installed_runtime_services(archive_root):
         result = json.loads(
             await invoke_surface_async(
@@ -208,44 +157,12 @@ async def test_judge_only_mcp_remains_functional_without_a_daemon(tmp_path: Path
                 decision="accept",
             )
         )
-
-    assert result.get("is_error") is not True, result
-
-
-@pytest.mark.asyncio
-async def test_judge_only_mcp_anti_vacuity_restores_the_write_when_boundary_is_disabled(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    resident_daemon: Callable[[Path], int],
-) -> None:
-    """Removing the shared API guard restores the formerly unowned judge path."""
-
-    from polylogue.mcp.server import build_server
-
-    archive_root = tmp_path / "archive"
-    _user_archive(archive_root)
-    _seed_candidate(archive_root, "anti-vacuity-candidate")
-    resident_daemon(archive_root / "daemon.pid")
-    monkeypatch.setattr(archive_module, "_require_archive_write_authority", lambda *_args: None)
-    server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(judge=True)))
-    judge_fn = server._tool_manager._tools["judge"].fn
-
-    with installed_runtime_services(archive_root):
-        result = json.loads(
-            await invoke_surface_async(
-                judge_fn,
-                candidate_ref="assertion:anti-vacuity-candidate",
-                decision="accept",
-            )
-        )
-
-    assert result.get("is_error") is not True, result
+    assert result.get("is_error") is True, result
+    assert result.get("detail") == "FacadeDaemonRequiredError", result
     with sqlite3.connect(archive_root / "user.db") as conn:
-        status = conn.execute(
-            "SELECT status FROM assertions WHERE assertion_id = ?",
-            ("anti-vacuity-candidate",),
-        ).fetchone()
-    assert status == ("accepted",)
+        assert conn.execute(
+            "SELECT status FROM assertions WHERE assertion_id = ?", ("offline-boundary-candidate",)
+        ).fetchone() == ("candidate",)
 
 
 def test_mcp_capability_inventory_is_declaration_derived() -> None:

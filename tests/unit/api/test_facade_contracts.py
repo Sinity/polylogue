@@ -29,7 +29,7 @@ import inspect
 import json
 import shutil
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any, cast, get_type_hints
 
@@ -374,6 +374,41 @@ def _archive(tmp_path: Path) -> Polylogue:
     return Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
 
 
+@pytest.fixture
+def facade_daemon_writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
+    """Run the production UDS writer for facade tests rooted at ``tmp_path``."""
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from tests.infra.daemon_operations import running_daemon_operations
+
+    monkeypatch.setattr("polylogue.daemon.api_auth.resolve_api_auth_token", lambda *_args, **_kwargs: None)
+    with running_daemon_operations(tmp_path, socket_path=daemon_socket_path(tmp_path)) as stack:
+        yield stack
+
+
+@pytest.fixture
+def facade_workspace_daemon_writer(workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
+    """Run the production UDS writer for facade tests using ``workspace_env``."""
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from tests.infra.daemon_operations import running_daemon_operations
+
+    archive_root = workspace_env["archive_root"]
+    monkeypatch.setattr("polylogue.daemon.api_auth.resolve_api_auth_token", lambda *_args, **_kwargs: None)
+    with running_daemon_operations(archive_root, socket_path=daemon_socket_path(archive_root)) as stack:
+        yield stack
+
+
+@pytest.fixture
+def facade_active_daemon_writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
+    """Run the production UDS writer for facade tests using ``tmp_path/active``."""
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from tests.infra.daemon_operations import running_daemon_operations
+
+    archive_root = tmp_path / "active"
+    monkeypatch.setattr("polylogue.daemon.api_auth.resolve_api_auth_token", lambda *_args, **_kwargs: None)
+    with running_daemon_operations(archive_root, socket_path=daemon_socket_path(archive_root)) as stack:
+        yield stack
+
+
 async def test_archive_read_capability_is_the_real_facade_route(tmp_path: Path) -> None:
     """The extracted protocol is implemented by, and exercised on, Polylogue."""
     archive = _archive(tmp_path)
@@ -446,7 +481,7 @@ def _materialize_run_projection(index_db: Path) -> SessionInsightCounts:
 
 
 async def test_facade_capture_candidate_dispatches_executor_and_persists_user_row(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, facade_daemon_writer: Any
 ) -> None:
     """The real facade route cannot bypass the executor and still pass.
 
@@ -2364,6 +2399,7 @@ async def test_regenerate_private_fable_packet_reads_real_delegations_and_labels
 async def test_mutation_methods_raise_on_unknown_id(
     tmp_path: Path,
     method_name: str,
+    facade_daemon_writer: Any,
 ) -> None:
     """Mutation-by-ID methods raise ``SessionNotFoundError`` for unknown IDs."""
     archive = _archive(tmp_path)
@@ -2391,7 +2427,7 @@ async def test_mutation_methods_raise_on_unknown_id(
         await archive.close()
 
 
-async def test_delete_session_returns_false_on_unknown_id(tmp_path: Path) -> None:
+async def test_delete_session_returns_false_on_unknown_id(tmp_path: Path, facade_daemon_writer: Any) -> None:
     """``delete_session`` returns ``False`` rather than raising for unknown IDs."""
     archive = _archive(tmp_path)
     try:
@@ -2401,7 +2437,7 @@ async def test_delete_session_returns_false_on_unknown_id(tmp_path: Path) -> Non
         await archive.close()
 
 
-async def test_delete_session_safe_returns_typed_not_found(tmp_path: Path) -> None:
+async def test_delete_session_safe_returns_typed_not_found(tmp_path: Path, facade_daemon_writer: Any) -> None:
     """``delete_session_safe`` returns ``outcome='not_found'`` for unknown IDs."""
     from polylogue.surfaces.payloads import DeleteSessionResult
 
@@ -4899,41 +4935,57 @@ async def test_archive_tiers_api_reads_session_topology(tmp_path: Path) -> None:
 
 
 async def test_archive_tiers_parse_file_writes_source_and_index_tiers(tmp_path: Path) -> None:
-    """Public parse_file writes directly to source.db/index.db under active archive."""
+    """Public parse_file waits for daemon ingest and exposes the landed archive state."""
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    archive = _archive(tmp_path)
-    payload = {
-        "sessionId": "gemini-v1-parse",
-        "projectHash": "project-hash",
-        "startTime": "2026-04-08T20:45:00.000Z",
-        "lastUpdated": "2026-04-08T20:47:00.000Z",
-        "kind": "chat",
-        "summary": "Native parse",
-        "messages": [
-            {
-                "id": "u1",
-                "timestamp": "2026-04-08T20:45:01.000Z",
-                "type": "user",
-                "content": ["parse needle"],
-            },
-            {"id": "a1", "timestamp": "2026-04-08T20:45:02.000Z", "type": "gemini", "content": "response"},
-        ],
-    }
-    source_path = tmp_path / "gemini-session.json"
-    source_path.write_text(json.dumps(payload), encoding="utf-8")
+    archive = _archive(tmp_path / "archive")
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.daemon.services import ServiceCapability, ServiceProfile
+    from tests.infra.daemon_service_harness import ServiceHarness
 
+    harness = ServiceHarness(profile=ServiceProfile.SURFACES, capabilities={ServiceCapability.API})
     try:
-        with ArchiveStore(archive.config.archive_root):
-            pass
+        harness.require_selected("api_server")
+        harness.require_selected("uds_server")
+        api_token = resolve_api_auth_token(None)
+        api_server = harness.api_server(archive.config.archive_root)
+        uds_server = harness.uds_server(archive.config.archive_root, api_server=api_server, auth_token=api_token)
+        _api_task = harness.start_server("api_server", api_server)
+        _uds_task = harness.start_server("uds_server", uds_server)
+        payload = {
+            "sessionId": "gemini-v1-parse",
+            "projectHash": "project-hash",
+            "startTime": "2026-04-08T20:45:00.000Z",
+            "lastUpdated": "2026-04-08T20:47:00.000Z",
+            "kind": "chat",
+            "summary": "Native parse",
+            "messages": [
+                {
+                    "id": "u1",
+                    "timestamp": "2026-04-08T20:45:01.000Z",
+                    "type": "user",
+                    "content": ["parse needle"],
+                },
+                {
+                    "id": "a1",
+                    "timestamp": "2026-04-08T20:45:02.000Z",
+                    "type": "gemini",
+                    "content": "response",
+                },
+            ],
+        }
+        source_path = tmp_path / "gemini-session.json"
+        source_path.write_text(json.dumps(payload), encoding="utf-8")
 
         result = await archive.parse_file(source_path, source_name=Provider.GEMINI_CLI.value)
         rows = await archive.list_sessions(origin="gemini-cli-session")
+        stored = await archive.get_session("gemini-cli-session:gemini-v1-parse:chat:2026-04-08T20:45:00.000Z")
         search = await archive.search("needle")
 
         assert result.counts["sessions"] == 1
         assert result.counts["messages"] == 2
         assert result.changed_counts["sessions"] == 1
+        assert result.parse_failures == 0
         observation = result.batch_observations[-1]
         assert observation["primary_ingest_store"] == "archive_file_set"
         assert observation["archive_write_mode"] == "archive"
@@ -4941,6 +4993,8 @@ async def test_archive_tiers_parse_file_writes_source_and_index_tiers(tmp_path: 
         assert observation["archive_write_targets"] == ["source.db", "index.db"]
         assert observation["archive_source_rows"] == 1
         assert observation["archive_index_rows"] == 1
+        assert stored is not None
+        assert len(stored.messages) == 2
         # gemini-cli identity composes sessionId, kind and startTime.
         expected_session_id = "gemini-cli-session:gemini-v1-parse:chat:2026-04-08T20:45:00.000Z"
         assert [str(row.id) for row in rows] == [expected_session_id]
@@ -4950,10 +5004,13 @@ async def test_archive_tiers_parse_file_writes_source_and_index_tiers(tmp_path: 
         assert total == 1
         assert artifacts[0]["source_path"] == str(source_path)
     finally:
-        await archive.close()
+        try:
+            await harness.close()
+        finally:
+            await archive.close()
 
 
-async def test_archive_tiers_api_user_mutations_write_user_tier(tmp_path: Path) -> None:
+async def test_archive_tiers_api_user_mutations_write_user_tier(tmp_path: Path, facade_daemon_writer: Any) -> None:
     """User tag/metadata facade methods write ``user.db``."""
     import sqlite3
 
@@ -5317,7 +5374,9 @@ async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) 
         await archive.close()
 
 
-async def test_archive_tiers_api_delete_uses_index_tier_and_keeps_user_overlay(tmp_path: Path) -> None:
+async def test_archive_tiers_api_delete_uses_index_tier_and_keeps_user_overlay(
+    tmp_path: Path, facade_daemon_writer: Any
+) -> None:
     """Archive facade delete removes index rows without dropping ``user.db`` overlays."""
     import sqlite3
 
@@ -6045,7 +6104,9 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
         await archive.close()
 
 
-async def test_archive_tiers_api_marks_and_annotations_write_user_tier(tmp_path: Path) -> None:
+async def test_archive_tiers_api_marks_and_annotations_write_user_tier(
+    tmp_path: Path, facade_daemon_writer: Any
+) -> None:
     """Marks and annotations use archive ``user.db`` when is present."""
     import sqlite3
 
@@ -6121,7 +6182,7 @@ async def test_archive_tiers_api_marks_and_annotations_write_user_tier(tmp_path:
         await archive.close()
 
 
-async def test_archive_tiers_api_reader_artifacts_write_user_tier(tmp_path: Path) -> None:
+async def test_archive_tiers_api_reader_artifacts_write_user_tier(tmp_path: Path, facade_daemon_writer: Any) -> None:
     """Saved views, recall packs, and workspaces use ``user.db``."""
     import json
     import sqlite3
@@ -6246,7 +6307,9 @@ async def test_archive_tiers_api_reader_artifacts_write_user_tier(tmp_path: Path
         await archive.close()
 
 
-async def test_facade_import_annotation_batch_persists_candidate_provenance(tmp_path: Path) -> None:
+async def test_facade_import_annotation_batch_persists_candidate_provenance(
+    tmp_path: Path, facade_active_daemon_writer: Any
+) -> None:
     """The facade reaches the bounded CLI/MCP annotation import operation.
 
     Anti-vacuity: removing facade delegation, schema validation, live
@@ -6255,7 +6318,7 @@ async def test_facade_import_annotation_batch_persists_candidate_provenance(tmp_
     configured_root = tmp_path / "configured"
     active_root = tmp_path / "active"
     configured_root.mkdir()
-    active_root.mkdir()
+    active_root.mkdir(exist_ok=True)
     archive = Polylogue(archive_root=configured_root, db_path=active_root / "index.db")
     try:
         session = ParsedSession(
@@ -6329,7 +6392,7 @@ async def test_facade_import_annotation_batch_persists_candidate_provenance(tmp_
         await archive.close()
 
 
-async def test_facade_import_annotation_batch_uses_default_registry(tmp_path: Path) -> None:
+async def test_facade_import_annotation_batch_uses_default_registry(tmp_path: Path, facade_daemon_writer: Any) -> None:
     """Omitting ``registry`` uses the registered production schema path.
 
     Anti-vacuity: forwarding ``None`` to the importer instead of taking its
@@ -6395,7 +6458,7 @@ async def test_facade_import_annotation_batch_uses_default_registry(tmp_path: Pa
         await archive.close()
 
 
-async def test_archive_tiers_api_corrections_write_user_tier(tmp_path: Path) -> None:
+async def test_archive_tiers_api_corrections_write_user_tier(tmp_path: Path, facade_daemon_writer: Any) -> None:
     """Learning corrections use ``user.db``."""
     import sqlite3
 
@@ -6508,7 +6571,9 @@ async def test_facade_runs_inside_workspace_env_fixture(
         await archive.close()
 
 
-async def test_facade_judges_candidate_assertion_in_user_tier(workspace_env: dict[str, Path]) -> None:
+async def test_facade_judges_candidate_assertion_in_user_tier(
+    workspace_env: dict[str, Path], facade_workspace_daemon_writer: Any
+) -> None:
     """Candidate assertion promotion is exposed through the Python facade."""
 
     archive_root = workspace_env["archive_root"]
@@ -6569,6 +6634,7 @@ async def test_facade_judges_candidate_assertion_in_user_tier(workspace_env: dic
 
 async def test_facade_candidate_queue_includes_agent_authored_terminal_notes(
     workspace_env: dict[str, Path],
+    facade_workspace_daemon_writer: Any,
 ) -> None:
     """The facade queue must use the broad candidate-kind registry."""
 
@@ -6904,7 +6970,9 @@ async def test_parse_sources_does_not_accept_a_download_assets_switch(tmp_path: 
         await archive.close()
 
 
-async def test_blocked_receipt_is_not_rendered_as_a_no_op(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_blocked_receipt_is_not_rendered_as_a_no_op(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, facade_daemon_writer: Any
+) -> None:
     """A ``blocked`` receipt is a refusal, never an idempotent no-op.
 
     ``SessionExcisionActuator.apply`` returns ``status="blocked"`` with
@@ -6959,7 +7027,7 @@ async def test_blocked_receipt_is_not_rendered_as_a_no_op(tmp_path: Path, monkey
 
 
 async def test_apply_time_keyerror_is_not_reported_as_a_missing_session(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, facade_daemon_writer: Any
 ) -> None:
     """A target that vanishes after AUTHORIZE is not a missing input.
 

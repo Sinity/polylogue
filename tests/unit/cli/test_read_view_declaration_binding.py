@@ -10,21 +10,59 @@ there is nothing to disagree.  These tests hold the derivation in place.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import click
 import pytest
 
+from polylogue.cli.query_verbs import read_verb
 from polylogue.cli.read_view_handlers import (
     READ_VIEW_EXECUTION,
     READ_VIEW_HANDLERS,
     ReadViewExecution,
     build_read_view_handler,
 )
-from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA, ReadViewHandlerMetadata
+from polylogue.cli.read_view_registry import (
+    READ_VIEW_GLOBAL_OPTION_NAMES,
+    READ_VIEW_HANDLER_METADATA,
+    ReadViewHandlerMetadata,
+    ReadViewOptionDeclaration,
+    read_view_option_names,
+)
 from polylogue.cli.read_views.base import ReadViewInvocation
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 
 _SYNTHETIC_VIEW = "synthetic-declared-view"
+
+
+def test_every_view_option_is_bound_only_from_its_declaration() -> None:
+    """The real Click adapter gains view options through the registry.
+
+    A new declaration on an existing executable view is the mutation: a
+    hand-bound adapter would omit it, or demand a second option edit.
+    """
+
+    context = click.Context(read_verb)
+    static_names = {param.name for param in click.Command.get_params(read_verb, context)}
+    assert not (static_names & (read_view_option_names() - READ_VIEW_GLOBAL_OPTION_NAMES))
+
+    original = READ_VIEW_HANDLER_METADATA["messages"]
+    synthetic = ReadViewOptionDeclaration("synthetic_window", ("--synthetic-window",), "Synthetic window marker.")
+    READ_VIEW_HANDLER_METADATA["messages"] = replace(original, declared_options=(*original.declared_options, synthetic))
+    try:
+        parameters = {param.name: param for param in read_verb.get_params(context)}
+        assert "synthetic_window" in parameters
+        read_verb.parse_args(context, ["--view", "messages", "--synthetic-window", "marker"])
+        assert context.params["synthetic_window"] == "marker"
+    finally:
+        READ_VIEW_HANDLER_METADATA["messages"] = original
+
+
+def test_view_option_refusal_names_a_next_action() -> None:
+    context = click.Context(read_verb)
+    with pytest.raises(click.UsageError, match="remove that option or use `read --views`"):
+        read_verb.parse_args(context, ["--view", "summary", "--at-position", "3"])
 
 
 def _never_runs(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
@@ -123,7 +161,7 @@ def test_a_borrowed_declaration_carries_the_lenders_contract_under_the_borrowers
 
     assert handler.view_id == "borrowed-projection"
     assert handler.session_policy == lender.session_policy
-    assert handler.accepted_options == lender.accepted_options
+    assert handler.accepted_options == lender.accepted_options | {option.name for option in lender.declared_options}
 
 
 def test_every_executable_binding_names_a_declared_view() -> None:

@@ -448,53 +448,54 @@ def test_status_detail_exposes_bounded_terminal_failure_resolution(tmp_path: Pat
     assert "resolve: polylogue ops embed resolve-failure embedding-failure:terminal" in text
 
 
-def test_resolve_failure_cli_requeues_terminal_failure(tmp_path: Path) -> None:
+def test_resolve_failure_cli_requeues_terminal_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The operator command must mutate the failure ledger and retry status.
 
     Anti-vacuity: replacing the Click command with output-only formatting, or
     removing its call to ``resolve_embedding_failure``, leaves the terminal row
     active and the session excluded from a future embedding pass.
     """
-    db_anchor = tmp_path / "custom.sqlite"
-    index_db = tmp_path / "index.db"
-    _seed_archive_file_set_from_archive_tiers(index_db)
-    embeddings_db = index_db.with_name("embeddings.db")
-    with sqlite3.connect(embeddings_db) as conn:
-        # embedding_failures now comes from the production EMBEDDINGS_DDL; only
-        # the rows this test needs are seeded here.
-        conn.executescript(
-            """
-            INSERT INTO embedding_status (session_id, origin, message_count_embedded, needs_reindex, error_message)
-            VALUES ('codex-session:pending', 'codex-session', 0, 0, 'Embedding generation failed: HTTP 400');
-            INSERT INTO embedding_failures (
-                failure_id, session_id, origin, message_refs_json, provider, model,
-                error_class, error_message, retryable, lifecycle_state,
-                created_at_ms, updated_at_ms, resolved_at_ms, resolution_action,
-                resolution_note, superseded_by
-            ) VALUES (
-                'embedding-failure:terminal', 'codex-session:pending', 'codex-session',
-                '["codex-session:pending:m1"]', 'voyage', 'voyage-4', 'provider_http_400',
-                'Embedding generation failed: HTTP 400', 0, 'terminal', 1800000000000, 1800000000000,
-                NULL, NULL, NULL, NULL
-            );
-            """
-        )
+    from polylogue.cli.click_app import cli
+    from tests.infra.daemon_operations import cli_daemon_archive
 
-    runner = CliRunner(env={"POLYLOGUE_FORCE_PLAIN": "1"})
-    result = runner.invoke(
-        embed_command,
-        [
-            "resolve-failure",
-            "embedding-failure:terminal",
-            "--action",
-            "requeue",
-            "--yes",
-            "--format",
-            "json",
-        ],
-        obj=_env(db_anchor),
-        catch_exceptions=False,
-    )
+    archive_root = tmp_path / "archive"
+
+    def seed(owned_root: Path) -> None:
+        with sqlite3.connect(owned_root / "embeddings.db") as conn:
+            conn.executescript(
+                """
+                INSERT INTO embedding_status (session_id, origin, message_count_embedded, needs_reindex, error_message)
+                VALUES ('codex-session:pending', 'codex-session', 0, 0, 'Embedding generation failed: HTTP 400');
+                INSERT INTO embedding_failures (
+                    failure_id, session_id, origin, message_refs_json, provider, model,
+                    error_class, error_message, retryable, lifecycle_state,
+                    created_at_ms, updated_at_ms, resolved_at_ms, resolution_action,
+                    resolution_note, superseded_by
+                ) VALUES (
+                    'embedding-failure:terminal', 'codex-session:pending', 'codex-session',
+                    '["codex-session:pending:m1"]', 'voyage', 'voyage-4', 'provider_http_400',
+                    'Embedding generation failed: HTTP 400', 0, 'terminal', 1800000000000, 1800000000000,
+                    NULL, NULL, NULL, NULL
+                );
+                """
+            )
+
+    with cli_daemon_archive(archive_root, monkeypatch, seed_archive=seed):
+        result = CliRunner(env={"POLYLOGUE_FORCE_PLAIN": "1"}).invoke(
+            cli,
+            [
+                "ops",
+                "embed",
+                "resolve-failure",
+                "embedding-failure:terminal",
+                "--action",
+                "requeue",
+                "--yes",
+                "--format",
+                "json",
+            ],
+            catch_exceptions=False,
+        )
 
     assert result.exit_code == 0
     assert _payload(result.output) == {
@@ -505,7 +506,7 @@ def test_resolve_failure_cli_requeues_terminal_failure(tmp_path: Path) -> None:
         "session_id": "codex-session:pending",
         "superseded_by": None,
     }
-    with sqlite3.connect(embeddings_db) as conn:
+    with sqlite3.connect(archive_root / "embeddings.db") as conn:
         assert conn.execute(
             "SELECT lifecycle_state FROM embedding_failures WHERE failure_id = 'embedding-failure:terminal'"
         ).fetchone() == ("resolved",)

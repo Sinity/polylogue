@@ -352,6 +352,21 @@ def test_demo_seed_blank_archive_root_env_still_triggers_collision_guard(
     result = runner.invoke(cli, ["demo", "seed", "--format", "json"])
 
     assert result.exit_code != 0
-    assert "real ingested session" in result.output
+    assert "existing real archive" in result.output
     assert not (fallback_archive_root / "demo-fixture-world-source").exists()
     assert not (fallback_archive_root / "demo-archive-ownership.json").exists()
+
+
+def test_demo_seed_force_does_not_bypass_real_archive_daemon(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.storage_records import SessionBuilder
+
+    real_root = tmp_path / "real-archive"
+    initialize_active_archive_root(real_root)
+    SessionBuilder(real_root / "index.db", "real-session").provider("claude-code").save()
+
+    result = CliRunner().invoke(cli, ["demo", "seed", "--root", str(real_root), "--force", "--format", "json"])
+
+    assert result.exit_code != 0
+    assert "polylogued run" in result.output
+    assert not (real_root / "demo-fixture-world-source").exists()

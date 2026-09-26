@@ -1,4 +1,4 @@
-"""Enhanced HTML renderer with Pygments syntax highlighting and modern styling."""
+"""Serialize a session as HTML using shared UI theme tokens."""
 
 from __future__ import annotations
 

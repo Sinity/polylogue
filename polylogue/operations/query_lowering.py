@@ -126,7 +126,10 @@ def cli_read_request(params: Mapping[str, object], *, preset: str = "summary") -
     normalized, expression = lower_cli_query_params(params)
     base = SessionQuerySpec.from_params(normalized)
     selection = compile_expression_into(expression, base) if expression else base
-    return ReadRequest.normalize({"selection": selection}, preset=preset)
+    # The same normalized map also carries projection and render controls.
+    # Passing selection alone made this shared request silently revert those
+    # controls to preset defaults even though the CLI had accepted them.
+    return ReadRequest.normalize({**normalized, "selection": selection}, preset=preset)
 
 
 def cli_query_spec(params: Mapping[str, object]) -> SessionQuerySpec:

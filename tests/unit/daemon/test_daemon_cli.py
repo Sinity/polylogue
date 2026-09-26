@@ -182,14 +182,12 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
     for filename, tier in (
         ("source.db", ArchiveTier.SOURCE),
         ("index.db", ArchiveTier.INDEX),
+        ("embeddings.db", ArchiveTier.EMBEDDINGS),
         ("user.db", ArchiveTier.USER),
         ("audit.db", ArchiveTier.AUDIT),
         ("ops.db", ArchiveTier.OPS),
     ):
         initialize_archive_database(tmp_path / filename, tier)
-    with sqlite3.connect(tmp_path / "embeddings.db") as conn:
-        conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.EMBEDDINGS]}")
-        conn.commit()
     inspect_raw_authority_frontier(
         Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[], db_path=tmp_path / "index.db")
     )
@@ -198,10 +196,13 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
         patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status.default_sources", return_value=()),
+        patch("polylogue.daemon.cli._live_daemon_status_payload", return_value=None),
     ):
         result = CliRunner().invoke(main, ["status", "--format", "json"])
 
-    assert result.exit_code == 0
+    # A schema-complete but empty archive has no raw revisions from which to
+    # prove materialization readiness, so status must report it as unmeasured.
+    assert result.exit_code == 1
     payload = loads(result.output)
     assert isinstance(payload, dict)
     storage = cast(dict[str, object], payload["archive_storage"])
@@ -212,7 +213,9 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
     assert storage["final_shape_ready"] is True
     assert storage["schema_mismatches"] == []
     assert storage["archive_schema_ready"] is True
-    assert storage["archive_ready"] is True
+    assert storage["archive_materialization_ready"] is False
+    assert cast(dict[str, object], storage["archive_materialization_assessment"])["reason"] == "zero_denominator"
+    assert storage["archive_ready"] is False
     assert storage["present_tiers"] == ["source", "index", "embeddings", "user", "audit", "ops"]
     tiers = cast(list[dict[str, object]], storage["tiers"])
     # The daemon reports what each tier stamps, so the expectation is the one
@@ -754,6 +757,7 @@ class TestBrowserCaptureReceiverTokenAutoMint:
     @staticmethod
     def _run_with_captured_make_server_kwargs(**run_kwargs: Any) -> dict[str, object]:
         from polylogue.daemon import cli as daemon_cli
+        from polylogue.daemon.services import ServiceProfile
 
         class FakeServer:
             def serve_forever(self, poll_interval: float = 0.5) -> None:
@@ -783,6 +787,7 @@ class TestBrowserCaptureReceiverTokenAutoMint:
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
                     browser_capture_spool_path=None,
+                    service_profile=ServiceProfile.SURFACES,
                     **run_kwargs,
                 )
             )
@@ -1168,12 +1173,13 @@ def test_explicit_archive_inbox_root_keeps_import_suffixes(workspace_env: dict[s
     sources = daemon_cli._watch_sources_from_roots((inbox, ordinary))
 
     assert next(source for source in sources if source.root == inbox) == WatchSource(
-        name="inbox", root=inbox, suffixes=INBOX_SOURCE_SUFFIXES
+        name="inbox", root=inbox, suffixes=INBOX_SOURCE_SUFFIXES, required=True
     )
     assert next(source for source in sources if source.root == ordinary) == WatchSource(
         name="ordinary-jsonl-root",
         root=ordinary,
         suffixes=(".json", ".jsonl", ".ndjson", ".zip"),
+        required=True,
     )
     assert {source.name for source in sources} >= {
         "claude-code",
@@ -1305,7 +1311,7 @@ def test_explicit_browser_capture_root_keeps_capture_suffixes(
     sources = daemon_cli._watch_sources_from_roots((spool, ordinary))
 
     assert next(source for source in sources if source.root == spool) == WatchSource(
-        name="browser-capture", root=spool, suffixes=(".json",)
+        name="browser-capture", root=spool, suffixes=(".json",), required=True
     )
     assert next(source for source in sources if source.root == ordinary).suffixes == (
         ".json",
@@ -1336,7 +1342,7 @@ def test_explicit_browser_capture_root_uses_spool_override_classifier(tmp_path: 
     )
 
     assert next(source for source in sources if source.root == override_spool) == WatchSource(
-        name="browser-capture", root=override_spool, suffixes=(".json",)
+        name="browser-capture", root=override_spool, suffixes=(".json",), required=True
     )
     assert next(source for source in sources if source.root == ordinary).suffixes == (
         ".json",
@@ -2433,9 +2439,6 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
     current_coordinator: DaemonWriteCoordinator | None = None
     real_compose = session_profile_composition.compose_session_profile_callback
 
-    async def idle_loop(**_kwargs: object) -> None:
-        await asyncio.Event().wait()
-
     async def noop_periodic_work(*_args: object, **_kwargs: object) -> None:
         return None
 
@@ -2470,7 +2473,7 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
         # A read, so it opens read-only: the daemon under test holds the
         # process-wide writer boundary and a writable open here would be a
         # second in-process writer (polylogue-8qm4k).
-        with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
+        with contextlib.closing(sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True)) as conn:
             if not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'session_profiles'").fetchone():
                 return False
             return (
@@ -2491,7 +2494,7 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
                 browser_capture_port=8765,
                 browser_capture_spool_path=None,
                 enable_api=False,
-                service_profile=ServiceProfile.PRODUCTION,
+                service_profile=ServiceProfile.REPLAY,
             )
         )
         try:
@@ -2512,41 +2515,24 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
             )
             stack.enter_context(patch.object(daemon_cli, "_retry_convergence_debt_once", noop_periodic_work))
             stack.enter_context(patch.object(daemon_cli, "_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS", 0.05))
-            for attribute in (
-                "_periodic_lifecycle_heartbeat",
-                "_periodic_health_check",
-                "_periodic_wal_checkpoint",
-                "_periodic_fts_merge",
-                "_periodic_heartbeat",
-                "_periodic_db_optimize",
-                "_periodic_status_snapshot_refresh",
-                "_periodic_raw_materialization_convergence",
-                "_periodic_drive_source_catchup",
-            ):
-                stack.enter_context(patch.object(daemon_cli, attribute, idle_loop))
-            for target in (
-                "polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check",
-                "polylogue.daemon.embedding_backlog.periodic_embedding_orphan_reconcile_check",
-                "polylogue.daemon.judgment_automation.periodic_judgment_automation_sweep",
-                "polylogue.daemon.blob_gc_periodic.periodic_blob_gc_check",
-                "polylogue.daemon.blob_gc_periodic.periodic_blob_publication_reconciliation_check",
-                "polylogue.daemon.secret_scan_sweep.periodic_secret_scan_sweep",
-            ):
-                stack.enter_context(patch(target, idle_loop))
-
             await run_until_observed_sweep()
-            # This fixture really does write the archive out from under the
-            # running daemon, to force reconvergence. It is a declared test
-            # authority, not a production route, so it says so.
+            # This fixture writes derived output out from under the daemon and
+            # retains the matching transaction-owned demand obligation. The
+            # periodic owner must discover that obligation without a file hint.
             from polylogue.storage.sqlite.write_lease import declared_unguarded_write
 
             with (
                 declared_unguarded_write("test fixture clears derived rows to force reconvergence"),
-                sqlite3.connect(archive_root / "index.db") as conn,
+                contextlib.closing(sqlite3.connect(archive_root / "index.db")) as conn,
             ):
                 assert conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
                 for table in ("session_latency_profiles", "session_profiles"):
                     conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
+                conn.execute(
+                    "INSERT INTO session_profile_demand(session_id, revision) VALUES (?, 1) "
+                    "ON CONFLICT(session_id) DO UPDATE SET revision = revision + 1",
+                    (session_id,),
+                )
                 conn.commit()
             assert not profile_exists()
 
@@ -2585,7 +2571,7 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
     from polylogue.daemon.execution import reset_daemon_compute_adapter
     from polylogue.daemon.intake import FairIntakeDispatcher
     from polylogue.daemon.intake_adapters import DaemonIntakeService
-    from polylogue.daemon.supervisor import DaemonSupervisor
+    from polylogue.daemon.services import ServiceProfile
     from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
     from polylogue.sources.live.watcher import LiveWatcher
 
@@ -2600,20 +2586,15 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
     admission_metrics: list[object] = []
     kernel_reports: list[DerivationReport] = []
     passes: list[object] = []
+    intake_outcomes: list[tuple[str, str, str, str | None]] = []
     carriers: list[Path] = []
     browser = source_name == "browser-capture"
     native_id = "aaaa0000-0000-0000-0000-000000000001"
     session_id = "chatgpt-export:intake-law" if browser else f"claude-code-session:{native_id}"
-    real_start = DaemonSupervisor.start
     real_pass = FairIntakeDispatcher.run_once
+    real_admit_page = FairIntakeDispatcher._admit_page
     real_ingest = LiveWatcher._ingest_files
     real_kernel = DaemonConverger.converge_derivations
-
-    async def idle() -> None:
-        await asyncio.Event().wait()
-
-    def start(self: DaemonSupervisor, name: str, factory: Any, **kwargs: Any) -> Any:
-        return real_start(self, name, factory if name in {"watcher", "fair_intake"} else idle, **kwargs)
 
     async def dispatch(self: FairIntakeDispatcher, **kwargs: Any) -> Any:
         intake_tasks.append(asyncio.current_task())
@@ -2626,6 +2607,14 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
             else:
                 first_admission.set()
         return result
+
+    async def record_admit_page(self: FairIntakeDispatcher, spec: Any, items: Any) -> Any:
+        results = await real_admit_page(self, spec, items)
+        intake_outcomes.extend(
+            (spec.name, item.item_id, result.outcome.value, result.reason)
+            for item, result in zip(items, results, strict=True)
+        )
+        return results
 
     async def ingest(self: LiveWatcher, *args: Any, **kwargs: Any) -> Any:
         admission_tasks.append(asyncio.current_task())
@@ -2707,7 +2696,7 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
         os.utime(artifact, (2.0, 2.0))
         assert source_root.stat().st_mtime_ns == root_mtime
         yield {(Change.modified, str(artifact))}
-        await idle()
+        await asyncio.Event().wait()
 
     coordinator = DaemonWriteCoordinator(archive_root=archive_root)
     reset_daemon_compute_adapter()
@@ -2716,8 +2705,8 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
             _daemon_startup_stubs(stack, daemon_cli, archive_root)
             stack.enter_context(patch.object(daemon_cli, "Polylogue", lambda: RealPolylogue(archive_root=archive_root)))
             stack.enter_context(patch.object(daemon_cli, "daemon_write_coordinator", return_value=coordinator))
-            stack.enter_context(patch.object(DaemonSupervisor, "start", start))
             stack.enter_context(patch.object(FairIntakeDispatcher, "run_once", dispatch))
+            stack.enter_context(patch.object(FairIntakeDispatcher, "_admit_page", record_admit_page))
             stack.enter_context(patch.object(LiveWatcher, "_ingest_files", ingest))
             stack.enter_context(patch.object(DaemonConverger, "converge_derivations", kernel))
             stack.enter_context(patch("watchfiles.awatch", watch_events))
@@ -2741,6 +2730,7 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
                     browser_capture_spool_path=None,
                     enable_api=False,
                     enable_source_catchup=False,
+                    service_profile=ServiceProfile.INTAKE,
                 )
             )
             try:
@@ -2750,7 +2740,8 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
                     if task.done():
                         await task
                     pytest.fail(
-                        f"intake did not complete: passes={passes}, carriers={carriers}, admissions={admission_tasks}"
+                        f"intake did not complete: outcomes={intake_outcomes[-12:]}, "
+                        f"passes={passes}, carriers={carriers}, admissions={admission_tasks}"
                     )
                 assert admission_tasks and all(item is intake_tasks[0] for item in admission_tasks)
                 expected_versions = 1 if browser else 2
@@ -2864,6 +2855,7 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
 
 def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:
     from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.services import ServiceProfile
 
     async def noop() -> None:
         return None
@@ -2896,6 +2888,7 @@ def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
                 browser_capture_spool_path=None,
+                service_profile=ServiceProfile.SURFACES,
             )
         )
 
@@ -3303,52 +3296,33 @@ def test_periodic_schema_preflight_recheck_exits_on_recovery(
     assert sleeps == 2
 
 
-# polylogue-t93b: the daemon's whale-pass escalation tier. A component
-# permanently resource-blocked at the ordinary fast-path envelope must not
-# stay blocked forever -- the periodic conveyor schedules a dedicated,
-# bounded pass for it once (and only once) the ordinary trickle backlog is
-# genuinely quiescent for the tick.
-
-
-def test_periodic_raw_materialization_wakes_fair_intake_without_legacy_scan(
+def test_periodic_raw_materialization_wakes_fair_intake_without_discovery(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The composed periodic route only wakes the fair owner.
-
-    Anti-vacuity: restoring the legacy drain or its all-valid scanner makes
-    this fail before the bounded canonical whale probe can run.
-    """
+    """The periodic route wakes fair intake without selecting a raw itself."""
     from polylogue.daemon import cli as daemon_cli
 
     wakeup = asyncio.Event()
-    whale_calls: list[tuple[object, object]] = []
+    drains = 0
 
-    async def fake_whale(**kwargs: object) -> bool:
-        whale_calls.append((kwargs["raw_observation_owner"], kwargs["raw_intake_discovery"]))
-        return False
+    async def drain_receipts() -> None:
+        nonlocal drains
+        drains += 1
+
+    monkeypatch.setattr(daemon_cli, "_drain_whale_receipt_outbox", drain_receipts)
 
     async def stop_after_one_tick(seconds: float) -> None:
         assert (
             daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS
             <= seconds
-            <= (daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS * 1.1)
+            <= daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS * 1.1
         )
         assert wakeup.is_set()
         raise asyncio.CancelledError
 
-    owner = object()
-    discovery = object()
-    monkeypatch.setattr(daemon_cli, "_maybe_run_raw_materialization_whale_pass", fake_whale)
     with patch("asyncio.sleep", side_effect=stop_after_one_tick), pytest.raises(asyncio.CancelledError):
-        asyncio.run(
-            daemon_cli._periodic_raw_materialization_convergence(
-                raw_observation_owner=owner,
-                raw_intake_wakeup=wakeup,
-                raw_intake_discovery=discovery,
-            )
-        )
-
-    assert whale_calls == [(owner, discovery)]
+        asyncio.run(daemon_cli._periodic_raw_materialization_convergence(raw_intake_wakeup=wakeup))
+    assert drains == 1
 
 
 @pytest.mark.parametrize("watcher_initially_registered", [False, True])
@@ -3356,34 +3330,27 @@ def test_periodic_raw_materialization_respects_watcher_registration_gate(
     monkeypatch: pytest.MonkeyPatch,
     watcher_initially_registered: bool,
 ) -> None:
-    """Canonical raw maintenance wakes only after watcher registration."""
+    """Periodic raw maintenance starts only after watcher registration."""
     from polylogue.daemon import cli as daemon_cli
+
+    async def drain_receipts() -> None:
+        return None
+
+    monkeypatch.setattr(daemon_cli, "_drain_whale_receipt_outbox", drain_receipts)
 
     async def exercise() -> bool:
         watcher_registered = asyncio.Event()
         if watcher_initially_registered:
             watcher_registered.set()
         raw_intake_wakeup = asyncio.Event()
-        whale_calls: list[tuple[object, object]] = []
-        owner = object()
-        discovery = object()
-
-        async def fake_whale(**kwargs: object) -> bool:
-            whale_calls.append((kwargs["raw_observation_owner"], kwargs["raw_intake_discovery"]))
-            return False
-
-        monkeypatch.setattr(daemon_cli, "_maybe_run_raw_materialization_whale_pass", fake_whale)
         task = asyncio.create_task(
             daemon_cli._periodic_raw_materialization_convergence(
                 watcher_registered=watcher_registered,
-                raw_observation_owner=owner,
                 raw_intake_wakeup=raw_intake_wakeup,
-                raw_intake_discovery=discovery,
             )
         )
         await asyncio.sleep(0)
         if not watcher_initially_registered:
-            assert whale_calls == []
             assert not raw_intake_wakeup.is_set()
             watcher_registered.set()
 
@@ -3391,172 +3358,19 @@ def test_periodic_raw_materialization_respects_watcher_registration_gate(
                 assert (
                     daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS
                     <= seconds
-                    <= (daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS * 1.1)
+                    <= daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS * 1.1
                 )
                 raise asyncio.CancelledError
 
-            with patch(
-                "asyncio.sleep",
-                side_effect=stop_after_one_tick,
-            ):
-                with pytest.raises(asyncio.CancelledError):
-                    await task
+            with patch("asyncio.sleep", side_effect=stop_after_one_tick), pytest.raises(asyncio.CancelledError):
+                await task
         else:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-        assert whale_calls == [(owner, discovery)]
         return raw_intake_wakeup.is_set()
 
     assert asyncio.run(exercise()) is True
-
-
-def test_canonical_whale_pass_uses_bounded_derivation_discovery_not_legacy_scanner(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """One oversized pending raw reaches the canonical owner at whale capacity.
-
-    Anti-vacuity: the bounded discovery limit and the owner call each assert
-    their canonical arguments, so a legacy scanner cannot satisfy this proof.
-    """
-    from polylogue.daemon import cli as daemon_cli
-
-    raw_id = "oversized-raw"
-    calls: list[tuple[str, int]] = []
-    receipts: list[dict[str, object]] = []
-
-    class Discovery:
-        def discover_pending_raw_ids(self, limit: int) -> tuple[tuple[str, int], ...]:
-            assert limit == 1
-            return ((raw_id, daemon_cli._RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES + 1),)
-
-    class Owner:
-        async def converge_raw_id(self, candidate: str, *, max_payload_bytes: int) -> object:
-            calls.append((candidate, max_payload_bytes))
-            return SimpleNamespace(done=1, outcomes=())
-
-    async def capture_receipt(**kwargs: object) -> None:
-        receipts.append(cast(dict[str, object], kwargs["payload"]))
-
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
-    monkeypatch.setattr(daemon_cli, "_resolve_raw_materialization_whale_blob_limit_bytes", lambda: 4096)
-    monkeypatch.setattr(daemon_cli, "_drain_whale_receipt_outbox", lambda: asyncio.sleep(0))
-    monkeypatch.setattr(daemon_cli, "_publish_whale_receipt", capture_receipt)
-    assert asyncio.run(
-        daemon_cli._maybe_run_raw_materialization_whale_pass(
-            raw_observation_owner=Owner(),
-            raw_intake_discovery=Discovery(),
-        )
-    )
-    assert calls == [(raw_id, 4096)]
-    assert receipts[-1]["status"] == "success"
-    assert receipts[-1]["repaired_count"] == 1
-
-
-def test_canonical_whale_pass_without_candidate_does_not_call_owner(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """A bounded empty discovery page must not acquire publication machinery."""
-    from polylogue.daemon import cli as daemon_cli
-
-    class Discovery:
-        def discover_pending_raw_ids(self, limit: int) -> tuple[tuple[str, int], ...]:
-            assert limit == 1
-            return ()
-
-    class Owner:
-        async def converge_raw_id(self, *_args: object, **_kwargs: object) -> object:
-            raise AssertionError("empty whale discovery must not call the owner")
-
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
-    monkeypatch.setattr(daemon_cli, "_drain_whale_receipt_outbox", lambda: asyncio.sleep(0))
-    monkeypatch.setattr(
-        daemon_cli,
-        "_resolve_raw_materialization_whale_blob_limit_bytes",
-        lambda: 4096,
-    )
-    monkeypatch.setattr(
-        daemon_cli,
-        "_publish_whale_receipt",
-        lambda **_kwargs: pytest.fail("empty whale discovery must not publish a receipt"),
-    )
-
-    assert (
-        asyncio.run(
-            daemon_cli._maybe_run_raw_materialization_whale_pass(
-                raw_observation_owner=Owner(),
-                raw_intake_discovery=Discovery(),
-            )
-        )
-        is False
-    )
-
-
-@pytest.mark.parametrize("outcome_kind", ["pending", "failed"])
-def test_canonical_whale_pass_maps_pending_and_failed_reports_to_receipts(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    outcome_kind: str,
-) -> None:
-    """Canonical derivation outcomes remain truthful in the whale receipt."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.daemon.derivation import Outcome, PendingReason
-
-    events: list[tuple[str, dict[str, object]]] = []
-    receipts: list[dict[str, object]] = []
-    raw_id = f"{outcome_kind}-raw"
-
-    class Discovery:
-        def discover_pending_raw_ids(self, limit: int) -> tuple[tuple[str, int], ...]:
-            assert limit == 1
-            return ((raw_id, daemon_cli._RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES + 1),)
-
-    class Owner:
-        async def converge_raw_id(self, candidate: str, *, max_payload_bytes: int) -> object:
-            assert candidate == raw_id
-            assert max_payload_bytes == 4096
-            if outcome_kind == "pending":
-                outcome = SimpleNamespace(
-                    key=SimpleNamespace(key=raw_id),
-                    outcome=Outcome.PENDING,
-                    reason=PendingReason.BLOCKED,
-                )
-            else:
-                outcome = SimpleNamespace(
-                    key=SimpleNamespace(key=raw_id),
-                    outcome=Outcome.FAILED,
-                    error="source frontier changed",
-                )
-            return SimpleNamespace(done=0, outcomes=(outcome,))
-
-    async def capture_receipt(**kwargs: object) -> None:
-        receipts.append(cast(dict[str, object], kwargs["payload"]))
-
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
-    monkeypatch.setattr(daemon_cli, "_resolve_raw_materialization_whale_blob_limit_bytes", lambda: 4096)
-    monkeypatch.setattr(daemon_cli, "_drain_whale_receipt_outbox", lambda: asyncio.sleep(0))
-    monkeypatch.setattr(
-        "polylogue.daemon.events.emit_daemon_event",
-        lambda kind, *, payload: events.append((str(kind), cast(dict[str, object], payload))),
-    )
-    monkeypatch.setattr(daemon_cli, "_publish_whale_receipt", capture_receipt)
-
-    assert (
-        asyncio.run(
-            daemon_cli._maybe_run_raw_materialization_whale_pass(
-                raw_observation_owner=Owner(),
-                raw_intake_discovery=Discovery(),
-            )
-        )
-        is True
-    )
-    assert [kind for kind, _payload in events] == ["raw_materialization_whale_pass_started"]
-    assert len(receipts) == 1
-    assert receipts[0]["status"] == "error"
-    assert receipts[0]["success"] is False
-    assert receipts[0]["detail"] == ("blocked" if outcome_kind == "pending" else "source frontier changed")
 
 
 @pytest.mark.parametrize(
@@ -3788,56 +3602,6 @@ def test_raw_owner_cancellation_settles_publication_and_fts(
             assert await coordinator.shutdown(timeout=2.0) is True
 
     asyncio.run(scenario())
-
-
-def test_whale_cancellation_publishes_canonical_receipt(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Cancellation of canonical whale admission leaves a terminal receipt."""
-    from polylogue.daemon import cli as daemon_cli
-
-    started = asyncio.Event()
-    receipts: list[dict[str, object]] = []
-
-    class Discovery:
-        def discover_pending_raw_ids(self, limit: int) -> tuple[tuple[str, int], ...]:
-            assert limit == 1
-            return (("cancelled-raw", daemon_cli._RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES + 1),)
-
-    class Owner:
-        async def converge_raw_id(self, _raw_id: str, *, max_payload_bytes: int) -> object:
-            assert max_payload_bytes == 4096
-            started.set()
-            await asyncio.Event().wait()
-            raise AssertionError("unreachable")
-
-    async def capture_receipt(**kwargs: object) -> None:
-        receipts.append(cast(dict[str, object], kwargs["payload"]))
-
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
-    monkeypatch.setattr(daemon_cli, "_resolve_raw_materialization_whale_blob_limit_bytes", lambda: 4096)
-    monkeypatch.setattr(daemon_cli, "_drain_whale_receipt_outbox", lambda: asyncio.sleep(0))
-    monkeypatch.setattr(daemon_cli, "_publish_whale_receipt", capture_receipt)
-
-    async def scenario() -> None:
-        task = asyncio.create_task(
-            daemon_cli._maybe_run_raw_materialization_whale_pass(
-                raw_observation_owner=Owner(),
-                raw_intake_discovery=Discovery(),
-            )
-        )
-        await asyncio.wait_for(started.wait(), timeout=1)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-    asyncio.run(scenario())
-    assert len(receipts) == 1
-    assert receipts[0]["seed_raw_id"] == "cancelled-raw"
-    assert receipts[0]["status"] == "cancelled"
-    assert receipts[0]["cancelled"] is True
-    assert receipts[0]["success"] is False
 
 
 def test_raw_source_refusal_is_retryable_and_does_not_starve_sibling(
@@ -4429,88 +4193,7 @@ def test_unconfigured_embeddings_skip_the_backlog_service_on_the_production_rout
         assert skip.reason is not None and "embeddings" in skip.reason
 
 
-def test_daemon_composition_gives_raw_whale_its_own_discovery_cursor(tmp_path: Path) -> None:
-    """Whale selection cannot consume fair intake's raw continuation.
-
-    ``RawMaterializationDiscovery`` owns a process-local traversal cursor.  If
-    the periodic whale route borrows fair intake's instance, a whale probe
-    advances that cursor and changes which raw the fair adapter sees next.
-
-    Anti-vacuity: passing ``raw_intake_discovery`` to periodic raw convergence
-    instead of a separately constructed whale discovery makes the identities
-    below equal.
-    """
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.daemon import intake_adapters as daemon_intake_adapters
-    from polylogue.operations.intake_adapters import build_intake_adapters as build_real_intake_adapters
-
-    created: list[object] = []
-    periodic_discoveries: list[object] = []
-    fair_discover: list[object] = []
-
-    class Discovery:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            created.append(self)
-
-        def discover_pending_raw_ids(self, _limit: int) -> tuple[tuple[str, int], ...]:
-            return ()
-
-    class FakePolylogue:
-        async def __aenter__(self) -> object:
-            return object()
-
-        async def __aexit__(self, *exc: object) -> None:
-            return None
-
-    class FakeWatcher(_NoIntakeHints):
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            self.watcher_ready = asyncio.Event()
-
-        async def run(self) -> None:
-            await asyncio.sleep(0)
-            raise RuntimeError("watch stopped")
-
-        def stop(self) -> None:
-            return None
-
-    async def capture_periodic(**kwargs: object) -> None:
-        periodic_discoveries.append(kwargs["raw_intake_discovery"])
-        await asyncio.Event().wait()
-
-    def capture_build(*args: Any, **kwargs: Any) -> tuple[tuple[str, object], ...]:
-        fair_discover.append(kwargs["raw_discover"])
-        return cast(tuple[tuple[str, object], ...], build_real_intake_adapters(*args, **kwargs))
-
-    with contextlib.ExitStack() as stack:
-        _daemon_startup_stubs(stack, daemon_cli, tmp_path)
-        stack.enter_context(patch.object(daemon_cli, "Polylogue", FakePolylogue))
-        stack.enter_context(patch.object(daemon_cli, "LiveWatcher", FakeWatcher))
-        stack.enter_context(patch.object(daemon_intake_adapters, "RawMaterializationDiscovery", Discovery))
-        stack.enter_context(patch.object(daemon_intake_adapters, "build_intake_adapters", capture_build))
-        stack.enter_context(patch.object(daemon_cli, "_periodic_raw_materialization_convergence", capture_periodic))
-        stack.enter_context(pytest.raises(RuntimeError, match="watch stopped"))
-        asyncio.run(
-            daemon_cli.run_daemon_services(
-                sources=(),
-                enable_watch=True,
-                enable_browser_capture=False,
-                browser_capture_host="127.0.0.1",
-                browser_capture_port=8765,
-                browser_capture_spool_path=None,
-            )
-        )
-
-    assert len(created) == 2
-    assert len(fair_discover) == 1
-    fair_cursor = inspect.getclosurevars(cast(Callable[..., object], fair_discover[0])).nonlocals[
-        "raw_intake_discovery"
-    ]
-    assert periodic_discoveries == [created[1]]
-    assert periodic_discoveries[0] is not fair_cursor
-
-
-@pytest.mark.uses_real_clock("bounds the focused-profile fixture's own wall-clock cost")
-def test_a_focused_profile_starts_no_materialization_and_finishes_promptly(tmp_path: Path) -> None:
+def _run_focused_profile_iteration(tmp_path: Path) -> dict[str, float | int]:
     """The API-disabled fixture profile.
 
     Two separate things are asserted, because the profile is only half the
@@ -4518,9 +4201,8 @@ def test_a_focused_profile_starts_no_materialization_and_finishes_promptly(tmp_p
     *construct* the intake stack on behalf of services it will never
     schedule: registering adapters and opening a cold-build generation for a
     discarded `fair_intake` is real archive work that a focused test pays
-    for. Measured at head with the construction still unconditional, this
-    fixture ran 1.15-7.76 s across five runs; asking the supervisor first
-    takes it to 0.47-1.48 s.
+    for. Each iteration measures the current focused composition and
+    supervisor shutdown; no historical timing baseline is available.
 
     Anti-vacuity, both executed: pass ``ServiceProfile.PRODUCTION`` instead
     and the materialization assertion fails, because the production profile
@@ -4530,9 +4212,18 @@ def test_a_focused_profile_starts_no_materialization_and_finishes_promptly(tmp_p
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon import intake_adapters as daemon_intake_adapters
     from polylogue.daemon.services import ServiceProfile, ServiceState
+    from polylogue.daemon.supervisor import DaemonSupervisor, ShutdownReport
 
     started: list[str] = []
     intake_builds: list[object] = []
+    startup_archive_work: list[str] = []
+    shutdown_reports: list[ShutdownReport] = []
+    actual_shutdown = DaemonSupervisor.shutdown
+
+    async def measured_shutdown(supervisor: DaemonSupervisor) -> ShutdownReport:
+        report = await actual_shutdown(supervisor)
+        shutdown_reports.append(report)
+        return report
 
     async def resident_loop(**_kwargs: object) -> None:
         started.append("resident")
@@ -4543,10 +4234,24 @@ def test_a_focused_profile_starts_no_materialization_and_finishes_promptly(tmp_p
 
     with contextlib.ExitStack() as stack:
         _daemon_startup_stubs(stack, daemon_cli, tmp_path)
+        stack.enter_context(patch.object(DaemonSupervisor, "shutdown", measured_shutdown))
         supervisors = _capture_supervisor(stack, daemon_cli)
         stack.enter_context(patch.object(daemon_cli, "_periodic_lifecycle_heartbeat", resident_loop))
         stack.enter_context(patch.object(daemon_cli, "_periodic_health_check", resident_loop))
         stack.enter_context(patch.object(daemon_cli, "_periodic_raw_materialization_convergence", materialization))
+        stack.enter_context(
+            patch.object(
+                daemon_cli,
+                "_ensure_embedding_lifecycle_startup_sync",
+                lambda _root: startup_archive_work.append("embedding_lifecycle"),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "polylogue.daemon.fts_convergence.FtsConvergenceOwner.converge",
+                lambda *_args, **_kwargs: startup_archive_work.append("fts"),
+            )
+        )
 
         def _record_intake_build(*args: object, **_kwargs: object) -> tuple[object, ...]:
             intake_builds.append(args)
@@ -4569,50 +4274,154 @@ def test_a_focused_profile_starts_no_materialization_and_finishes_promptly(tmp_p
         elapsed = time.monotonic() - started_at
 
     assert "raw_materialization" not in started
+    assert startup_archive_work == [], "the focused profile entered archive startup work"
     assert started == ["resident", "resident"]
     assert intake_builds == [], "the intake stack was built for services this profile never schedules"
-    assert elapsed < 10.0
-
     supervisor = supervisors[0]
-    assert supervisor.state("raw_observation_convergence") is ServiceState.SKIPPED
+    assert "raw_observation_convergence" not in {spec.name for spec in supervisor.selected}
     assert supervisor.state("lifecycle_heartbeat") is ServiceState.STOPPED
+    assert len(shutdown_reports) == 1
+    shutdown_report = shutdown_reports[0]
+    assert shutdown_report.clean
+    assert shutdown_report.orphaned == ()
+    return {
+        "elapsed_s": elapsed,
+        "shutdown_s": shutdown_report.duration_s,
+        "orphan_count": len(shutdown_report.orphaned),
+        "unexpected_resident_runs": max(0, len(started) - 2),
+    }
 
 
-def test_whale_pass_on_an_empty_root_is_quiet_not_a_repeating_failure(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A fresh archive root has no raw tier yet, and that is not an error.
+@pytest.mark.uses_real_clock("bounds ten consecutive focused-profile fixture runs")
+def test_a_focused_profile_starts_no_materialization_and_finishes_promptly(tmp_path: Path) -> None:
+    """Ten consecutive focused selections of the production registry stay below 10 seconds."""
+    from tests.infra.daemon_service_harness import record_private_lifecycle_probe
 
-    polylogue-f7pdm: the periodic whale pass ran discovery against a
-    non-existent ``source.db`` and logged
-    ``daemon.raw_materialization.whale_schedule_failed`` at WARNING every
-    thirty seconds for the daemon's whole lifetime on the declared build
-    route.
-
-    Anti-vacuity: removing the missing-tier guard in
-    ``RawMaterializationDiscovery.discover_pending_raw_ids`` makes this raise
-    ``sqlite3.OperationalError`` instead of returning ``False``.
-    """
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.operations.intake_adapters import RawMaterializationDiscovery
-
-    monkeypatch.setattr(daemon_cli, "archive_root", lambda: tmp_path, raising=False)
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
-
-    async def no_outbox() -> None:
-        return None
-
-    monkeypatch.setattr(daemon_cli, "_drain_whale_receipt_outbox", no_outbox)
-
-    assert not (tmp_path / "source.db").exists()
-    attempted = asyncio.run(
-        daemon_cli._maybe_run_raw_materialization_whale_pass(
-            raw_observation_owner=object(),
-            raw_intake_discovery=RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024),
-        )
+    measures: list[dict[str, float | int]] = []
+    for index in range(10):
+        root = tmp_path / f"run-{index}"
+        root.mkdir()
+        measure = _run_focused_profile_iteration(root)
+        measures.append(measure)
+        assert measure["elapsed_s"] < 10.0, measures
+        assert measure["orphan_count"] == 0, measures
+        assert measure["unexpected_resident_runs"] == 0, measures
+    record_private_lifecycle_probe(
+        "focused-profile",
+        {"profile": "resident_core", "iterations": measures, "historical_before": "unmeasured"},
     )
 
-    assert attempted is False
+
+@pytest.mark.asyncio
+async def test_browser_host_child_is_terminated_when_its_service_is_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The supervised process cannot outlive cancellation of its service."""
+    from polylogue.daemon import cli as daemon_cli
+
+    started = asyncio.Event()
+    exited = asyncio.Event()
+    arguments: tuple[str, ...] = ()
+
+    class Process:
+        returncode: int | None = None
+        terminate_calls = 0
+
+        async def wait(self) -> int:
+            await exited.wait()
+            assert self.returncode is not None
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.terminate_calls += 1
+            self.returncode = 0
+            exited.set()
+
+        def kill(self) -> None:
+            raise AssertionError("cooperative child was killed")
+
+    process = Process()
+
+    async def spawn(*args: str) -> Process:
+        nonlocal arguments
+        arguments = args
+        started.set()
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    task = asyncio.create_task(
+        daemon_cli._run_browser_host(host="127.0.0.1", port=8767, daemon_origin="http://127.0.0.1:8766")
+    )
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert process.terminate_calls == 1
+    assert arguments[-6:] == (
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8767",
+        "--daemon-origin",
+        "http://127.0.0.1:8766",
+    )
+
+
+@pytest.mark.asyncio
+async def test_full_profile_names_missing_source_tier_without_starting_raw_service(tmp_path: Path) -> None:
+    """An existing archive missing source.db reports the failed prerequisite.
+
+    Removing the composition root's prerequisite resolution starts raw work
+    or leaves its state pending. A newly empty archive follows the separate
+    first-acquisition path and is covered by the live intake tests.
+    """
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.health import _check_schema_version_fast
+    from polylogue.daemon.services import ServiceProfile, ServiceState
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    # This is a partial archive whose index was initialized before any raw
+    # tier existed. Deleting source.db from a completed six-tier bootstrap
+    # instead invalidates its authenticated durable bootstrap receipt.
+    initialize_archive_database(archive_root / "index.db", ArchiveTier.INDEX)
+    with contextlib.ExitStack() as stack:
+        _daemon_startup_stubs(stack, daemon_cli, archive_root)
+        stack.enter_context(patch.object(daemon_cli, "_check_schema_version_fast", _check_schema_version_fast))
+        supervisors = _capture_supervisor(stack, daemon_cli)
+        task = asyncio.create_task(
+            daemon_cli.run_daemon_services(
+                sources=(),
+                enable_watch=True,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+                enable_api=False,
+                service_profile=ServiceProfile.PRODUCTION,
+            )
+        )
+        try:
+            async with asyncio.timeout(5):
+                while not supervisors:
+                    if task.done():
+                        await task
+                    await asyncio.sleep(0.01)
+            supervisor = supervisors[0]
+            assert supervisor.state("raw_observation_convergence") is ServiceState.UNAVAILABLE
+            assert supervisor.state("fair_intake") is ServiceState.UNAVAILABLE
+            assert not supervisor.is_schedulable("raw_observation_convergence")
+            assert not supervisor.is_schedulable("fair_intake")
+            observation = supervisor.board.get_or_unavailable("raw_materialization")
+            assert observation.state.value == "unavailable"
+            assert observation.reason == "source.db is absent"
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=10)
+    assert not [task for task in supervisors[0].tasks if not task.done()]
 
 
 @pytest.mark.asyncio
@@ -4791,8 +4600,8 @@ async def test_an_orphaned_service_retains_archive_ownership_on_the_production_r
 
     records = [record for record in events if record.get("event") == "daemon.pidfile.retained"]
     assert records, "the retained pidfile was not reported"
-    assert "services_outlived_shutdown_deadline" in str(records[-1].get("reason"))
-    assert "health_check" in str(records[-1].get("reason"))
+    assert records[-1].get("reason") == "services_outlived_shutdown_deadline"
+    assert "health_check" in str(records[-1].get("error_detail"))
 
     orphan_reports = [record for record in events if record.get("event") == "daemon.shutdown.services_orphaned"]
     assert orphan_reports, "incomplete shutdown was not reported"

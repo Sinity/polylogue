@@ -23,7 +23,7 @@ from collections.abc import Mapping
 from contextlib import AbstractContextManager, closing, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import BaseModel
 
@@ -32,7 +32,7 @@ from polylogue.core.durable_fs import atomic_replace
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import SchemaSkew
 from polylogue.core.sources import provider_from_origin
-from polylogue.core.write_lease import write_lease
+from polylogue.core.write_lease import require_write_lease, write_lease
 from polylogue.daemon.cli import checkpoint_connection, open_isolated_write_connection
 from polylogue.daemon.status import open_readonly_connection
 from polylogue.operations.zip_acquisition_replay import MemberCandidateCache, zip_reacquisition_payload
@@ -52,6 +52,10 @@ from polylogue.storage.blob_integrity import (
     project_source_blob_liveness,
 )
 from polylogue.storage.blob_store import BlobStore
+
+if TYPE_CHECKING:
+    from polylogue.operations.daemon_protocol import DaemonOperationEnvelope, DaemonOperationRequest
+    from polylogue.operations.operation_context import OperationContext
 
 BackupProfile = Literal["full_evidence", "user_overlays", "rebuildable_cache_exclude", "diagnostics_bundle"]
 BACKUP_PROFILES: tuple[BackupProfile, ...] = (
@@ -435,11 +439,13 @@ def _readable_sqlite(path: Path) -> str | None:
     return None
 
 
-def _check_prerequisites(*, profile: BackupProfile = "rebuildable_cache_exclude") -> list[str]:
+def _check_prerequisites(
+    *, profile: BackupProfile = "rebuildable_cache_exclude", archive_root_path: Path | None = None
+) -> list[str]:
     """Return a list of warning/error strings for backup prerequisites."""
     warnings: list[str] = []
 
-    root = archive_root()
+    root = archive_root_path or archive_root()
     if not _archive_layout_present(root):
         return [f"archive tiers not found under {root}"]
 
@@ -1327,6 +1333,7 @@ def _require_exclusive_archive_ownership(root: Path) -> None:
     ``check_only`` never reaches here: it opens nothing writable, and a
     prerequisite check is what an operator runs *before* stopping the daemon.
     """
+    from polylogue.daemon.write_coordinator import daemon_write_lease_active
     from polylogue.maintenance.offline_guard import (
         ArchiveWriterOwnershipError,
         ArchiveWriterOwnershipUndecidableError,
@@ -1334,6 +1341,11 @@ def _require_exclusive_archive_ownership(root: Path) -> None:
         resident_daemon_pid,
     )
 
+    if daemon_write_lease_active():
+        # The caller's daemon lease must own this exact archive, not merely
+        # some archive in the current process.
+        require_write_lease("maintenance.backup", archive_root=root)
+        return
     try:
         pid = resident_daemon_pid(root)
     except DaemonResidencyUndecidableError as exc:
@@ -1347,9 +1359,9 @@ def _require_exclusive_archive_ownership(root: Path) -> None:
     reason = f"polylogued PID {pid} is running for this archive"
     raise ArchiveWriterOwnershipError(
         f"refusing to back up {root}: {reason}. A backup snapshot checkpoints and "
-        "write-locks each live tier, so it must own the archive exclusively. Stop polylogued "
-        "and run the backup again, or run `polylogue ops backup --check` to verify "
-        "prerequisites without touching the tiers",
+        "write-locks each live tier, so it must own the archive exclusively. Submit the "
+        "declared maintenance.backup operation to that daemon, or run "
+        "`polylogue ops backup --check` to verify prerequisites without touching the tiers",
         archive_root=root,
         resident_writer=reason,
     )
@@ -1361,6 +1373,7 @@ def backup_archive(
     check_only: bool = False,
     verify: bool = False,
     profile: BackupProfile = "rebuildable_cache_exclude",
+    archive_root_path: Path | None = None,
 ) -> BackupResult:
     """Backup the Polylogue archive.
 
@@ -1378,8 +1391,9 @@ def backup_archive(
     """
     started = time.monotonic()
 
+    root = archive_root_path or archive_root()
     if check_only:
-        warnings = _check_prerequisites(profile=profile)
+        warnings = _check_prerequisites(profile=profile, archive_root_path=root)
         return BackupResult(
             ok=len(warnings) == 0,
             check_only=True,
@@ -1390,23 +1404,86 @@ def backup_archive(
             elapsed_s=round(time.monotonic() - started, 3),
         )
 
-    # Non-check mode: actually create backup.  Prove exclusive ownership of the
-    # archive before anything is created or any tier is touched.
-    root = archive_root()
-    _require_exclusive_archive_ownership(root)
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    from polylogue.daemon.write_coordinator import daemon_write_lease_active
+    from polylogue.maintenance.offline_guard import scoped_offline_archive_writer
 
-    # Backups checkpoint and briefly take ``BEGIN IMMEDIATE`` on each live
-    # tier.  They are therefore writers even though the copied bytes are
-    # read-only.  Acquire the same process lease as daemon publications; when
-    # invoked from a coordinator this is re-entrant and cannot create a second
-    # ownership path.
-    with write_lease("maintenance.backup", archive_root=root):
-        result = _backup_archive(output_dir=output_dir, started=started, profile=profile, archive_root_path=root)
+    # The daemon's coordinator already owns a durable writer hold. A direct
+    # Python caller pins both the daemon pidfile and durable anchor until its
+    # checkpointing copies finish, so a later daemon cannot race this check.
+    owner_scope = (
+        nullcontext()
+        if daemon_write_lease_active()
+        else scoped_offline_archive_writer(root, owner_id="maintenance.backup")
+    )
+    with owner_scope:
+        _require_exclusive_archive_ownership(root)
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        with write_lease("maintenance.backup", archive_root=root):
+            result = _backup_archive(output_dir=output_dir, started=started, profile=profile, archive_root_path=root)
     if verify and result.ok and result.output_path is not None:
         _verify_backup_result(result)
     return result
+
+
+async def execute_backup_operation(
+    request: DaemonOperationRequest, context: OperationContext
+) -> DaemonOperationEnvelope:
+    """Run a backup without pinning an index reader across WAL checkpoints."""
+    from polylogue.operations.daemon_execution import (
+        _validate_identity,
+        operation_envelope,
+        validate_execution_request,
+    )
+    from polylogue.operations.operation_context import observe_control_authority
+
+    request = validate_execution_request(request, context)
+    runtime = context.runtime
+    assert runtime is not None
+    snapshot = await runtime.compute_phase(lambda: observe_control_authority(context.archive_root))
+    _validate_identity(request, context, snapshot)
+    payload = request.payload
+
+    def run() -> BackupResult:
+        return backup_archive(
+            output_dir=Path(str(payload["output_dir"])),
+            check_only=bool(payload.get("check_only", False)),
+            verify=bool(payload.get("verify", False)),
+            profile=cast(BackupProfile, payload.get("profile", "rebuildable_cache_exclude")),
+            archive_root_path=context.archive_root,
+        )
+
+    if payload.get("check_only"):
+        result = await runtime.compute_phase(run)
+    else:
+        runtime.begin_unbound_write(request)
+        result = await runtime.write_phase("backup", run)
+    detail = result.model_dump(mode="json")
+    return operation_envelope(
+        request,
+        context,
+        snapshot=snapshot,
+        outcome="completed" if result.ok else "rejected",
+        error=None
+        if result.ok
+        else {
+            "code": "backup_failed",
+            "detail": result.error or "backup failed",
+            "retryable": False,
+            "data": {"backup_result": detail},
+        },
+        result=(
+            {
+                "operation": request.operation,
+                "outcome": "completed",
+                "sequence": 1,
+                "effect": "no-effect" if result.check_only else "committed",
+                "result": detail,
+            }
+            if result.ok
+            else None
+        ),
+    )
 
 
 def _backup_archive(
@@ -1419,7 +1496,7 @@ def _backup_archive(
         if path.exists() or tier not in _optional_profile_tiers(profile)
     }
     omitted_tiers = {tier: path for tier, path in _all_archive_tiers(root).items() if tier not in included_tiers}
-    warnings = _check_prerequisites(profile=profile)
+    warnings = _check_prerequisites(profile=profile, archive_root_path=root)
     if _has_backup_error(warnings):
         return BackupResult(
             ok=False,

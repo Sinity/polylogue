@@ -637,21 +637,6 @@ class PolylogueConfig:
         return max(1, int(str(self._data.get("live_full_ingest_workers", 1))))
 
     @property
-    def raw_authority_whale_payload_bytes(self) -> int | None:
-        """Escalation-tier payload envelope (bytes) for the daemon whale pass (polylogue-t93b).
-
-        ``None``/absent falls back to the caller's hardcoded default. The
-        ordinary daemon fast-path blob limit is unaffected by this value --
-        it only widens the envelope for a dedicated, single-component pass
-        (stream-safe members only) run when the ordinary trickle conveyor
-        is otherwise quiescent.
-        """
-        value = self._data.get("raw_authority_whale_payload_bytes")
-        if value is None:
-            return None
-        return int(str(value))
-
-    @property
     def daemon_parse_stage_workers(self) -> int | None:
         """Worker cap for the daemon-owned pre-parse thread pool.
 
@@ -1373,19 +1358,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         ),
     ),
     ConfigInventoryEntry(
-        "raw_authority_whale_payload_bytes",
-        toml_path="pipeline.raw_authority.whale_payload_bytes",
-        env_var="POLYLOGUE_RAW_AUTHORITY_WHALE_PAYLOAD_BYTES",
-        owner_class="resource-policy",
-        reload_behavior="daemon-loop",
-        description=(
-            "Escalation-tier payload envelope (bytes) for the daemon whale "
-            "pass (polylogue-t93b); widens the resource-block envelope for "
-            "a dedicated single-component stream-safe-gated pass only. "
-            "<=0/absent falls back to the adaptive default."
-        ),
-    ),
-    ConfigInventoryEntry(
         "subscription_plans",
         toml_path="cost.subscription.plans",
         owner_class="provider-cost-control",
@@ -1573,7 +1545,6 @@ _INT_CONFIG_KEYS = frozenset(
         "memory_budget_bytes",
         "judgment_automation_interval_s",
         "judgment_automation_batch_limit",
-        "raw_authority_whale_payload_bytes",
         "daemon_parse_stage_workers",
         "daemon_parse_stage_max_inflight_bytes",
         "daemon_parse_stage_max_cached_tree_bytes",
@@ -1808,7 +1779,6 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "ingest_commit_batch_messages": 8000,
         "live_full_ingest_workers": 1,
         "memory_budget_bytes": None,
-        "raw_authority_whale_payload_bytes": None,
         "subscription_plans": (),
         "daemon_parse_stage_workers": None,
         "daemon_parse_stage_max_inflight_bytes": None,

@@ -13,6 +13,7 @@ import click
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.errors import DatabaseError
 from polylogue.demo import (
+    DemoSeedResult,
     DemoSeedTargetUnsafeError,
     inspect_completion_claims,
     inspect_demo_receipts,
@@ -55,6 +56,36 @@ def _root_is_explicit(root: Path | None) -> bool:
     return bool(os.environ.get("POLYLOGUE_ARCHIVE_ROOT", "").strip())
 
 
+def _seed_demo_archive(
+    env: AppEnv,
+    resolved_root: Path,
+    *,
+    force: bool,
+    with_overlays: bool,
+    explicit_root: bool,
+) -> DemoSeedResult:
+    """Seed an isolated synthetic root through canonical live acquisition."""
+    del env
+    from polylogue.cli.shared.helpers import DaemonRequiredError
+    from polylogue.demo.seed import _archive_root_has_real_content, _archive_root_is_demo_owned
+
+    if _archive_root_has_real_content(resolved_root) and not _archive_root_is_demo_owned(resolved_root):
+        raise DaemonRequiredError(
+            "demo seed cannot acquire into an existing real archive locally; start `polylogued run` "
+            "and use the daemon's `ingest` operation followed by `maintenance.demo.augment`",
+            operation="ingest",
+            archive_root=resolved_root,
+        )
+    return asyncio.run(
+        seed_demo_archive(
+            resolved_root,
+            force=force,
+            with_overlays=with_overlays,
+            explicit_root=explicit_root,
+        )
+    )
+
+
 @click.group("demo")
 def demo_command() -> None:
     """Seed and verify the deterministic local demo archive."""
@@ -90,13 +121,12 @@ def seed_command(
 
     resolved_root = (root or archive_root()).expanduser().resolve()
     try:
-        result = asyncio.run(
-            seed_demo_archive(
-                resolved_root,
-                force=force,
-                with_overlays=with_overlays,
-                explicit_root=_root_is_explicit(root),
-            )
+        result = _seed_demo_archive(
+            env,
+            resolved_root,
+            force=force,
+            with_overlays=with_overlays,
+            explicit_root=_root_is_explicit(root),
         )
     except DemoSeedTargetUnsafeError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -182,13 +212,12 @@ def receipts_command(
     should_seed = (not has_configured_root) if seed is None else seed
     if should_seed:
         try:
-            asyncio.run(
-                seed_demo_archive(
-                    resolved_root,
-                    force=force,
-                    with_overlays=False,
-                    explicit_root=has_configured_root,
-                )
+            _seed_demo_archive(
+                AppEnv(),
+                resolved_root,
+                force=force,
+                with_overlays=False,
+                explicit_root=has_configured_root,
             )
         except DemoSeedTargetUnsafeError as exc:
             raise click.ClickException(str(exc)) from exc
@@ -306,7 +335,12 @@ def tour_command(
 ) -> None:
     """Run a one-command public demo tour and write shareable artifacts."""
 
-    result = run_demo_tour(output_dir=out_dir, archive_root=root, force=force)
+    result = run_demo_tour(
+        output_dir=out_dir,
+        archive_root=root,
+        force=force,
+        seed_archive=lambda target, **options: _seed_demo_archive(env, target, **options),
+    )
     payload = result.to_payload()
     if output_format == "json":
         click.echo(json.dumps(payload, sort_keys=True))

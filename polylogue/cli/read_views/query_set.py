@@ -17,25 +17,9 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.surfaces.projection_spec import QueryProjectionSpec, RenderDestination
 
-
-def _dialogue_query_set_renderer(
-    session: object,
-    output_format: str,
-    fields: str | None,
-    projection_spec: QueryProjectionSpec | None,
-) -> str:
-    del fields
-    from polylogue.archive.session.domain_models import Session
-    from polylogue.cli.read_views.standard import _format_dialogue_session
-
-    assert isinstance(session, Session)
-    projection = projection_spec.projection if projection_spec is not None else None
-    return _format_dialogue_session(session, output_format, projection=projection)
-
-
 #: Views whose bulk renderer owns the whole selection, so a query-set read
 #: hands them the matched set directly instead of dispatching a handler.
-_BULK_RENDERED_VIEWS = frozenset({"summary", "transcript", "dialogue"})
+_BULK_RENDERED_VIEWS = frozenset({"summary", "transcript"})
 
 
 def run_query_set_read_view(
@@ -51,6 +35,17 @@ def run_query_set_read_view(
     option_values: Mapping[str, object] | None = None,
 ) -> None:
     """Render all matched sessions through the query-set read path."""
+
+    if view == "dialogue":
+        _run_dialogue_query_set(
+            env,
+            request,
+            output_format=output_format,
+            destination=destination,
+            out_path=out_path,
+            projection_spec=projection_spec,
+        )
+        return
 
     if view not in _BULK_RENDERED_VIEWS:
         if _view_accepts_query_set(view):
@@ -77,22 +72,10 @@ def run_query_set_read_view(
         )
         return
 
-    from polylogue.archive.semantic.content_projection import ContentProjectionSpec
     from polylogue.cli.query_set_read import run_query_set_read
 
-    is_dialogue = view == "dialogue"
-    fmt = output_format or ("markdown" if is_dialogue else "ndjson")
+    fmt = output_format or "ndjson"
     bulk_fmt = "jsonl" if fmt == "ndjson" else fmt
-    content_projection = ContentProjectionSpec.prose_only() if is_dialogue else None
-    renderer = (
-        (
-            lambda session, output_format, fields: _dialogue_query_set_renderer(
-                session, output_format, fields, projection_spec
-            )
-        )
-        if is_dialogue
-        else None
-    )
 
     if destination == RenderDestination.FILE:
         if not out_path:
@@ -111,8 +94,6 @@ def run_query_set_read_view(
                 request,
                 output_format=bulk_fmt,
                 fields=fields,
-                content_projection=content_projection,
-                renderer=renderer,
             )
         finally:
             click.echo = _orig_echo
@@ -141,8 +122,6 @@ def run_query_set_read_view(
                 request,
                 output_format=bulk_fmt,
                 fields=fields,
-                content_projection=content_projection,
-                renderer=renderer,
             )
         finally:
             click.echo = _orig_echo
@@ -162,9 +141,56 @@ def run_query_set_read_view(
         request,
         output_format=bulk_fmt,
         fields=fields,
-        content_projection=content_projection,
-        renderer=renderer,
     )
+
+
+def _run_dialogue_query_set(
+    env: AppEnv,
+    request: RootModeRequest,
+    *,
+    output_format: str | None,
+    destination: str,
+    out_path: str | None,
+    projection_spec: QueryProjectionSpec | None,
+) -> None:
+    """Select through cli.query and project each match through read.dialogue."""
+
+    from polylogue.cli.read_dispatch import daemon_route_disabled
+    from polylogue.cli.read_views.base import deliver_content
+    from polylogue.cli.read_views.standard import _format_dialogue_session, _read_dialogue_session
+    from polylogue.cli.session_rows import query_complete_session_ids, query_session_rows
+
+    spec = request.query_spec()
+    disabled = daemon_route_disabled(flag=bool(request.params.get("no_daemon")))
+    if spec.limit is None:
+        session_ids = query_complete_session_ids(env.config, request, daemon_disabled=disabled)[spec.offset :]
+    else:
+        rows = query_session_rows(
+            env.config,
+            request,
+            limit=spec.limit,
+            offset=spec.offset,
+            daemon_disabled=disabled,
+        )
+        session_ids = [row.session_id for row in rows]
+    fmt = output_format or "markdown"
+    projection = projection_spec.projection if projection_spec is not None else None
+    rendered: list[str] = []
+    for session_id in session_ids:
+        session = _read_dialogue_session(env, request, session_id, projection)
+        if session is not None:
+            rendered.append(
+                _format_dialogue_session(session, "json" if fmt in {"ndjson", "jsonl"} else fmt, projection=projection)
+            )
+    if fmt in {"ndjson", "jsonl"}:
+        content = "".join(json.dumps(json.loads(part), separators=(",", ":")) + "\n" for part in rendered)
+    elif fmt == "json":
+        content = json.dumps([json.loads(part) for part in rendered], indent=2) + "\n"
+    else:
+        content = "\n---\n".join(rendered)
+        if content:
+            content += "\n"
+    deliver_content(env, content, destination=destination, out_path=out_path, output_format=fmt)
 
 
 def _view_accepts_query_set(view: str) -> bool:

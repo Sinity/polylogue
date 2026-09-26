@@ -6,7 +6,7 @@ The daemon's two session-detail fast paths must compute an identical
 - DB-backed: ``daemon/http.py:_do_get_session`` -> ``Polylogue.get_session()``
   -> ``archive/hydration.py:archive_message_to_domain``.
 - Archive-backed: ``daemon/http.py:_do_archive_get_session`` ->
-  ``daemon/http.py:_archive_message_payload``.
+  ``operations/http_session_reads.py:execute_http_session_detail``.
 
 Both used to independently reimplement the same "join every block's text"
 formula; a message with mixed block types (TEXT + THINKING + TOOL_USE +
@@ -20,7 +20,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.daemon.http import DaemonAPIHandler
+from polylogue.daemon.webui_data import attachment_to_envelope, envelope_paste_spans
+from polylogue.operations.http_session_reads import HttpSessionProjectionAdapters, execute_http_session_detail
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.storage_records import SessionBuilder, db_setup
 
@@ -50,17 +51,22 @@ async def test_db_backed_and_archive_backed_message_text_agree_for_mixed_blocks(
     assert len(session_messages) == 1
     db_backed_text = session_messages[0].text
 
-    # Archive-backed route: the exact call ``_do_archive_get_session`` makes,
-    # invoked directly on the handler (its body touches no other ``self``
-    # state, so a bare, unconnected instance is sufficient).
+    # Archive-backed route: its pinned product read and wire projection.
     archive_root = db_path.parent
     with ArchiveStore(archive_root) as archive:
-        resolved_id = archive.resolve_session_id(builder.native_session_id())
-        envelope = archive.read_session(resolved_id)
-    assert len(envelope.messages) == 1
-
-    handler = object.__new__(DaemonAPIHandler)
-    archive_payload = handler._archive_message_payload(resolved_id, envelope.messages[0])
+        detail = execute_http_session_detail(
+            {"session_id": builder.native_session_id(), "shape": "full", "limit": None, "offset": 0},
+            archive=archive,
+            adapters=HttpSessionProjectionAdapters(
+                attachment=attachment_to_envelope,
+                paste_spans=envelope_paste_spans,
+            ),
+        )
+    assert detail is not None
+    messages = detail["messages"]
+    assert isinstance(messages, list) and len(messages) == 1
+    archive_payload = messages[0]
+    assert isinstance(archive_payload, dict)
     archive_backed_text = archive_payload["text"]
 
     assert db_backed_text == archive_backed_text

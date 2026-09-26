@@ -821,6 +821,20 @@ export type GetStatusResponse = {
 };
 export type GetStatusError = QueryErrorPayload | WebCredentialFailurePayload;
 
+export type GetWebuiFreshnessParameters = {
+  readonly source: string;
+};
+export type GetWebuiFreshnessResponse = {
+  readonly [key: string]: unknown;
+};
+export type GetWebuiFreshnessError = unknown;
+
+export type GetWebuiObservabilityParameters = Record<string, never>;
+export type GetWebuiObservabilityResponse = {
+  readonly [key: string]: unknown;
+};
+export type GetWebuiObservabilityError = unknown;
+
 export type ListAssertionClaimsParameters = {
   readonly context_inject?: boolean;
   readonly kind?: string;
@@ -902,8 +916,10 @@ export type SearchSessionsParameters = {
   readonly cursor?: string;
   readonly limit?: number;
   readonly offset?: number;
+  readonly origin?: string;
   readonly provider?: string;
   readonly query?: string;
+  readonly repo?: string;
   readonly retrieval_lane?: "auto" | "dialogue" | "actions" | "hybrid" | "semantic";
   readonly since?: string;
 };
@@ -964,6 +980,35 @@ export class PolylogueClient {
       {
         method: "GET",
         path: "/api/status",
+      },
+      options,
+    );
+  }
+
+  getWebuiFreshness(
+    parameters: GetWebuiFreshnessParameters,
+    options: RequestOptions = {},
+  ): Promise<GetWebuiFreshnessResponse> {
+    return this.#transport.request<GetWebuiFreshnessResponse, GetWebuiFreshnessError>(
+      {
+        method: "GET",
+        path: "/api/webui/freshness",
+        query: {
+          source: parameters.source,
+        },
+      },
+      options,
+    );
+  }
+
+  getWebuiObservability(
+    parameters: GetWebuiObservabilityParameters = {},
+    options: RequestOptions = {},
+  ): Promise<GetWebuiObservabilityResponse> {
+    return this.#transport.request<GetWebuiObservabilityResponse, GetWebuiObservabilityError>(
+      {
+        method: "GET",
+        path: "/api/webui/observability",
       },
       options,
     );
@@ -1121,8 +1166,10 @@ export class PolylogueClient {
           cursor: parameters.cursor,
           limit: parameters.limit,
           offset: parameters.offset,
+          origin: parameters.origin,
           provider: parameters.provider,
           query: parameters.query,
+          repo: parameters.repo,
           retrieval_lane: parameters.retrieval_lane,
           since: parameters.since,
         },

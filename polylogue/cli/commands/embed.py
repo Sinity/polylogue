@@ -21,7 +21,7 @@ import json
 import os
 import sqlite3
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 import click
 
@@ -312,37 +312,21 @@ def resolve_failure_subcommand(
 
     if not yes and not click.confirm(f"Apply {resolution} to embedding failure {failure_id}?", default=False):
         raise click.Abort()
-    location = _active_archive_location(env.config.db_path)
-    if location is None:
-        raise click.ClickException("index.db not found")
-    embeddings_db = location.active_tier("embeddings").configured_path
-    if not embeddings_db.exists():
-        raise click.ClickException("embeddings.db not found")
-    from polylogue.storage.embeddings.materialization import resolve_embedding_failure_with_lifecycle
+    from polylogue.cli.archive_query import submit_cli_mutation
 
-    try:
-        failure = resolve_embedding_failure_with_lifecycle(
-            embeddings_db,
-            failure_id=failure_id,
-            action=cast(Literal["acknowledge", "requeue", "supersede"], resolution),
-            note=note,
-            superseded_by=superseded_by,
-        )
-    except KeyError as exc:
-        raise click.ClickException(f"active embedding failure not found: {failure_id}") from exc
-    payload = {
-        "failure_id": failure.failure_id,
-        "session_id": failure.session_id,
-        "lifecycle_state": failure.lifecycle_state,
-        "resolution_action": failure.resolution_action,
-        "resolution_note": failure.resolution_note,
-        "superseded_by": failure.superseded_by,
-    }
+    completed = submit_cli_mutation(
+        env,
+        "maintenance.embeddings.failure.resolve",
+        {"failure_id": failure_id, "resolution": resolution, "note": note, "superseded_by": superseded_by},
+    )
+    payload = completed.get("result")
+    if not isinstance(payload, dict):
+        raise click.ClickException("daemon returned no embedding failure result")
     if output_format == "json":
         click.echo(json.dumps(payload, sort_keys=True))
     else:
         click.echo(
-            f"Resolved embedding failure {failure.failure_id}: {failure.lifecycle_state} ({failure.resolution_action})"
+            f"Resolved embedding failure {payload['failure_id']}: {payload['lifecycle_state']} ({payload['resolution_action']})"
         )
 
 

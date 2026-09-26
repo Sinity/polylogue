@@ -3,12 +3,35 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 import pytest
 
 from polylogue import Polylogue
 from polylogue.config import Source
+
+
+@pytest.fixture
+async def daemon_ingest_service(workspace_env: dict[str, Path]) -> AsyncGenerator[None, None]:
+    """Serve facade ingestion through the production API and machine UDS."""
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.daemon.services import ServiceCapability, ServiceProfile
+    from tests.infra.daemon_service_harness import ServiceHarness
+
+    archive_root = workspace_env["archive_root"]
+    harness = ServiceHarness(profile=ServiceProfile.SURFACES, capabilities={ServiceCapability.API})
+    harness.require_selected("api_server")
+    harness.require_selected("uds_server")
+    api_token = resolve_api_auth_token(None)
+    api_server = harness.api_server(archive_root)
+    uds_server = harness.uds_server(archive_root, api_server=api_server, auth_token=api_token)
+    _api_task = harness.start_server("api_server", api_server)
+    _uds_task = harness.start_server("uds_server", uds_server)
+    try:
+        yield None
+    finally:
+        await harness.close()
 
 
 @pytest.fixture
@@ -91,6 +114,8 @@ def sample_claude_file(tmp_path: Path) -> Path:
 class TestPolylogueParsing:
     """Test ingestion functionality."""
 
+    pytestmark = pytest.mark.usefixtures("daemon_ingest_service")
+
     @pytest.mark.asyncio
     async def test_ingest_chatgpt_file(self, workspace_env: dict[str, Path], sample_chatgpt_file: Path) -> None:
         """Test ingesting a ChatGPT export file."""
@@ -132,12 +157,7 @@ class TestPolylogueParsing:
     async def test_ingest_duplicate_is_idempotent(
         self, workspace_env: dict[str, Path], sample_chatgpt_file: Path
     ) -> None:
-        """Test that re-ingesting the same file skips duplicates.
-
-        With stage-based ingestion (acquire → parse), duplicates are skipped
-        at the acquire stage (raw_id already exists), so the parse stage
-        is never called and returns an empty result.
-        """
+        """Repeated public ingest reports no changed content and keeps rows stable."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
             db_path=workspace_env["archive_root"] / "index.db",
@@ -147,13 +167,15 @@ class TestPolylogueParsing:
         result1 = await archive.parse_file(sample_chatgpt_file)
         first_count = result1.counts["sessions"]
         assert first_count > 0
+        assert result1.changed_counts["sessions"] == first_count
 
-        # Second ingest is skipped at the acquire stage (the raw_id already
-        # exists), so the parse stage never runs and reports nothing -- exactly
-        # what this case's docstring describes. Idempotency is the archive
-        # state below, not the per-run counter.
+        # The terminal receipt distinguishes already-present content from
+        # changed rows, and projects a zero-count repeat to the facade.
         result2 = await archive.parse_file(sample_chatgpt_file)
         assert result2.counts["sessions"] == 0
+        assert result2.counts["messages"] == 0
+        assert result2.changed_counts["sessions"] == 0
+        assert result2.changed_counts["messages"] == 0
 
         # Verify DB still has same number of sessions (idempotent)
         sessions = await archive.list_sessions()
@@ -203,6 +225,8 @@ class TestPolylogueParsing:
 
 class TestPolylogueQuery:
     """Test query functionality."""
+
+    pytestmark = pytest.mark.usefixtures("daemon_ingest_service")
 
     @pytest.mark.asyncio
     async def test_get_session_by_full_id(self, workspace_env: dict[str, Path], sample_chatgpt_file: Path) -> None:
@@ -312,6 +336,8 @@ class TestPolylogueQuery:
 class TestPolylogueSemanticProjections:
     """Test semantic projections on retrieved sessions."""
 
+    pytestmark = pytest.mark.usefixtures("daemon_ingest_service")
+
     @pytest.mark.asyncio
     async def test_session_substantive_only(self, workspace_env: dict[str, Path], sample_chatgpt_file: Path) -> None:
         """Test getting substantive messages only."""
@@ -372,6 +398,8 @@ class TestPolylogueSemanticProjections:
 class TestPolylogueSearch:
     """Test search functionality."""
 
+    pytestmark = pytest.mark.usefixtures("daemon_ingest_service")
+
     @pytest.mark.asyncio
     async def test_search_basic(self, workspace_env: dict[str, Path], sample_chatgpt_file: Path) -> None:
         """Test basic search functionality."""
@@ -413,6 +441,8 @@ class TestPolylogueSearch:
 
 class TestPolylogueEdgeCases:
     """Test edge cases and error handling."""
+
+    pytestmark = pytest.mark.usefixtures("daemon_ingest_service")
 
     @pytest.mark.asyncio
     async def test_empty_archive(self, workspace_env: dict[str, Path]) -> None:

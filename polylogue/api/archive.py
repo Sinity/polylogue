@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import builtins
-import hashlib
 import json
 import sqlite3
-import uuid
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from http import HTTPStatus
@@ -22,6 +20,7 @@ from polylogue.analysis.archive import (
 from polylogue.analysis.archive_models import ArchiveInsightModel
 from polylogue.analysis.feedback import LearningCorrection, parse_correction_kind
 from polylogue.api.archive_reads import ArchiveReadCapability
+from polylogue.api.facade_client import submit_facade_product
 from polylogue.archive.actions.actions import Action
 from polylogue.archive.blackboard import BlackboardNote
 from polylogue.archive.hydration import archive_envelope_to_session, archive_summary_to_domain
@@ -48,7 +47,6 @@ from polylogue.context.scheduler import (
     ContextItem,
     ContextLedgerRecord,
     read_context_ledger,
-    record_context_ledger,
     schedule_context,
 )
 from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin
@@ -57,8 +55,6 @@ from polylogue.core.json import JSONDocument
 from polylogue.core.refs import (
     EvidenceRef,
     ObjectRef,
-    normalize_object_ref_text,
-    parse_public_ref,
 )
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.types import SessionId
@@ -83,7 +79,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
 from polylogue.storage.sqlite.connection_profile import (
     ReadFrameExpiredError,
     StaleContinuationError,
-    open_connection,
 )
 from polylogue.storage.sqlite.connection_profile import (
     open_readonly_connection as open_readonly_connection,
@@ -137,7 +132,6 @@ if TYPE_CHECKING:
     from polylogue.context.hermes_delivery_correlation import HermesContextDeliveryCorrelation
     from polylogue.core.protocols import ProgressCallback
     from polylogue.operations import ArchiveStats
-    from polylogue.operations.mutation_transaction import MutationActuator, MutationPlan, MutationReceipt
     from polylogue.operations.transcript_window import TranscriptWindow
     from polylogue.readiness import ReadinessReport
     from polylogue.sources.parsers.hermes_lifecycle import HermesLifecycleReconciliation
@@ -151,7 +145,6 @@ if TYPE_CHECKING:
     )
     from polylogue.storage.sqlite.archive_tiers.user_settings_write import ArchiveUserSettingEnvelope
     from polylogue.storage.sqlite.archive_tiers.user_write import (
-        ArchiveAssertionBulkJudgmentEnvelope,
         ArchiveAssertionCandidateReviewEnvelope,
         ArchiveAssertionEnvelope,
     )
@@ -181,54 +174,9 @@ if TYPE_CHECKING:
 
 
 def _require_archive_write_authority(config: Config, purpose: str) -> None:
-    """Require this route to own the archive before opening a writable tier.
+    from polylogue.operations.archive_mutation import require_archive_write_authority
 
-    Embedded callers do not arm the process-wide write boundary used by the
-    daemon, so ``require_write_lease`` alone is intentionally insufficient:
-    an embedded API call would otherwise open a tier beside a resident daemon.
-    The residency probe is the per-route boundary.  The daemon's own
-    coordinator is the one exception; its active lease is checked before the
-    normal storage-side lease assertion so online API calls keep their
-    existing behavior.
-    """
-
-    from polylogue.core.write_lease import require_write_lease
-    from polylogue.maintenance.offline_guard import (
-        ArchiveWriterOwnershipError,
-        ArchiveWriterOwnershipUndecidableError,
-        DaemonResidencyUndecidableError,
-        offline_writer_block_reason,
-        resident_daemon_pid,
-    )
-
-    root = _active_archive_root(config)
-    try:
-        block_reason = offline_writer_block_reason(config)
-    except DaemonResidencyUndecidableError as exc:
-        raise ArchiveWriterOwnershipUndecidableError(
-            f"{purpose} cannot prove whether a resident daemon owns {root}: {exc}. "
-            "Refusing rather than opening a writable archive tier beside an unseen writer",
-            archive_root=root,
-        ) from exc
-
-    from polylogue.daemon.write_coordinator import daemon_write_lease_active
-
-    if block_reason is not None and not daemon_write_lease_active():
-        # ``offline_writer_block_reason`` answers the ownership question; the
-        # PID is fetched separately only to name the resident writer. Never
-        # infer ownership from PID text, which may be stale or malformed.
-        daemon_pid = resident_daemon_pid(root)
-        resident_writer = (
-            f"polylogued PID {daemon_pid} is running for this archive" if daemon_pid is not None else block_reason
-        )
-        raise ArchiveWriterOwnershipError(
-            f"{purpose} may not write {root}: {resident_writer}. Route the mutation through the "
-            "resident daemon, or stop it and run this operation as the archive's exclusive offline owner",
-            archive_root=root,
-            resident_writer=resident_writer,
-        )
-
-    require_write_lease(purpose, archive_root=root)
+    require_archive_write_authority(config, purpose)
 
 
 _BOUNDED_MESSAGES_FALLBACK_READ_VIEWS = frozenset({"raw", "context", "neighbors", "correlation", "chronicle"})
@@ -250,7 +198,6 @@ _FACET_DEFERRED_FAMILIES = (
 
 _FACET_COMPLETE_FAMILIES = _FACET_CORE_FAMILIES + _FACET_DEFERRED_FAMILIES
 
-_MutationArgsT = TypeVar("_MutationArgsT")
 _ReadResultT = TypeVar("_ReadResultT")
 
 _CANDIDATE_CAPTURE_KIND_MAP: dict[str, AssertionKind] = {
@@ -383,41 +330,11 @@ class SessionTranscriptPage:
     offset: int
 
 
-class SessionNotFoundError(PolylogueError):
-    """Raised when a requested session does not exist in the archive."""
-
-    http_status_code = 404
-
-
-class MutationBlockedError(PolylogueError):
-    """Raised when a mutation cycle returned a ``blocked`` receipt.
-
-    A blocked receipt is a refusal that carries its reason (for example the
-    lineage-dependents refusal in ``SessionExcisionActuator.apply``). Reading
-    only ``affected_count`` would render that refusal as an idempotent no-op,
-    which is the one thing it is not: nothing was applied and the caller's
-    intent was declined.
-    """
-
-    http_status_code = 409
-
-    def __init__(self, operation: str, detail: str | None, target_refs: tuple[str, ...] = ()) -> None:
-        super().__init__(f"{operation} was blocked: {detail or 'no reason recorded'}")
-        self.operation = operation
-        self.detail = detail
-        self.target_refs = target_refs
-
-
-class MutationTargetVanishedError(PolylogueError):
-    """Raised when a mutation's target disappeared after it was authorized.
-
-    Distinct from :class:`SessionNotFoundError`: the lookup succeeded, the
-    plan was prepared and authorized, and the target went absent during
-    revalidation or apply. Reporting that as "session not found" hides a
-    concurrent-mutation hazard behind an ordinary missing-input answer.
-    """
-
-    http_status_code = 409
+from polylogue.operations.archive_mutation import MutationBlockedError as MutationBlockedError  # noqa: E402
+from polylogue.operations.archive_mutation import (  # noqa: E402
+    MutationTargetVanishedError as MutationTargetVanishedError,
+)
+from polylogue.operations.archive_mutation import SessionNotFoundError as SessionNotFoundError  # noqa: E402
 
 
 def _read_session_transcript_page(
@@ -1577,54 +1494,6 @@ def _archive_list_context_injection_ledger(
         return []
 
 
-def _archive_record_context_delivery(
-    config: Config,
-    *,
-    image: ContextImage,
-    boundary: str,
-    recipient_ref: str,
-    delivered_by_ref: str,
-    run_ref: str | None,
-    inheritance_mode: str,
-) -> ArchiveContextDeliveryEnvelope:
-    """Persist one exact delivery receipt for a compiled context image.
-
-    This is the delivery boundary the storage layer (fs1.11/PR #2703) was
-    built for but that no surface called: compilation alone is not evidence.
-    Exact retries are idempotent and any drift in the immutable delivery
-    identity is rejected -- both enforced by ``write_context_delivery``, not
-    reimplemented here.
-    """
-
-    from polylogue.context.compiler import context_snapshot_record_from_image
-    from polylogue.storage.sqlite.archive_tiers.context_delivery_write import write_context_delivery
-
-    user_db = _active_archive_root(config) / "user.db"
-    if not user_db.exists():
-        raise ValueError("context-delivery user tier is not initialized")
-    _require_archive_write_authority(config, "api.context_delivery")
-    record = context_snapshot_record_from_image(
-        image, boundary=boundary, run_ref=run_ref, inheritance_mode=inheritance_mode
-    )
-    try:
-        conn = open_connection(user_db)
-        conn.row_factory = sqlite3.Row
-        try:
-            envelope = write_context_delivery(
-                conn,
-                image=image,
-                record=record,
-                recipient_ref=recipient_ref,
-                delivered_by_ref=delivered_by_ref,
-            )
-            conn.commit()
-            return envelope
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        raise RuntimeError(f"failed to record context delivery: {exc}") from exc
-
-
 def _archive_correlate_hermes_context_deliveries(
     config: Config,
     *,
@@ -2345,271 +2214,6 @@ def _archive_assertion_candidate_queue_health(
     )
 
 
-def _archive_judge_assertion_candidate(
-    config: Config,
-    *,
-    candidate_ref: str,
-    decision: str,
-    reason: str | None = None,
-    actor_ref: str = "user:local",
-    inject: bool = False,
-    replacement_kind: str | None = None,
-    replacement_body_text: str | None = None,
-    replacement_value: object | None = None,
-) -> Any:
-    """Write an assertion-candidate judgment to ``user.db``."""
-
-    from polylogue.storage.sqlite.archive_tiers.user_write import judge_assertion_candidate
-
-    user_db = _active_archive_root(config) / "user.db"
-    if not user_db.exists():
-        raise ValueError("assertion user tier is not initialized")
-    _require_archive_write_authority(config, "api.judge_assertion_candidate")
-    try:
-        conn = open_connection(user_db)
-        conn.row_factory = sqlite3.Row
-        try:
-            result = judge_assertion_candidate(
-                conn,
-                candidate_ref=candidate_ref,
-                decision=decision,
-                reason=reason,
-                actor_ref=actor_ref,
-                inject=inject,
-                replacement_kind=replacement_kind,
-                replacement_body_text=replacement_body_text,
-                replacement_value=replacement_value,
-            )
-            conn.commit()
-            return result
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        raise RuntimeError(f"failed to judge assertion candidate: {exc}") from exc
-
-
-def _archive_capture_assertion_candidate(
-    config: Config,
-    *,
-    body_text: str,
-    kind: AssertionKind,
-    refs: Sequence[str] = (),
-    scope_refs: Sequence[str] = (),
-    cwd: Path | None = None,
-    author_ref: str = "user:local",
-    author_kind: str = "user",
-    idempotency_key: str | None = None,
-    ttl_seconds: int | None = None,
-) -> Any:
-    """Write one terminal-captured assertion through the user-tier gate.
-
-    ``ttl_seconds``, when given, stamps ``staleness={"expires_at_ms": ...}``
-    on the written row (polylogue-37t.1): the admission read
-    (:func:`~polylogue.storage.sqlite.archive_tiers.user_write.list_assertion_claims`)
-    excludes expired claims from the preamble compiler and every other
-    ``ASSERTION_CLAIM_KINDS`` consumer once ``expires_at_ms`` elapses, with no
-    new assertion status introduced.
-    """
-
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope, upsert_assertion
-
-    normalized_body = body_text.strip()
-    if not normalized_body:
-        raise ValueError("note text cannot be empty")
-    normalized_author_ref = normalize_object_ref_text(author_ref)
-    normalized_author_kind = author_kind.strip().lower()
-    if not normalized_author_kind:
-        raise ValueError("author_kind cannot be empty")
-    if ttl_seconds is not None and ttl_seconds <= 0:
-        raise ValueError("ttl_seconds must be positive")
-
-    normalized_idempotency_key = None if idempotency_key is None else idempotency_key.strip()
-    if idempotency_key is not None and not normalized_idempotency_key:
-        raise ValueError("idempotency_key cannot be empty")
-    if normalized_idempotency_key is not None and len(normalized_idempotency_key) > 240:
-        raise ValueError("idempotency_key exceeds 240 characters")
-
-    if normalized_idempotency_key is None:
-        assertion_id = f"assertion-terminal-note:{uuid.uuid4()}"
-    else:
-        identity = hashlib.sha256(
-            f"{normalized_author_ref}\0{normalized_idempotency_key}".encode("utf-8", errors="surrogatepass")
-        ).hexdigest()
-        assertion_id = f"assertion-terminal-note:{identity}"
-    resolved_refs: list[str] = []
-    _require_archive_write_authority(config, "api.capture_assertion_candidate")
-    with ArchiveStore.open_existing(_active_archive_root(config), read_only=False) as archive:
-        for ref in refs:
-            if ref == "last":
-                resolved_cwd = (cwd or Path.cwd()).resolve()
-                repo_root = next(
-                    (candidate for candidate in (resolved_cwd, *resolved_cwd.parents) if (candidate / ".git").exists()),
-                    resolved_cwd,
-                )
-                summaries = archive.list_summaries(cwd_prefix=str(repo_root), limit=1)
-                if not summaries:
-                    raise ValueError("--ref last found no archived session for the current repository/cwd")
-                session_ref = f"session:{summaries[0].session_id}"
-                resolved_refs.append(session_ref)
-                continue
-            parsed = ObjectRef.parse(ref)
-            if parsed.kind != "session":
-                raise ValueError("--ref must be a session:<id> ref or 'last'")
-            try:
-                session_id = archive.resolve_session_id(parsed.object_id)
-            except KeyError:
-                raise ValueError(f"session ref not found: {parsed.object_id}") from None
-            resolved_refs.append(f"session:{session_id}")
-
-        normalized_scope_refs = [parse_public_ref(ref).format() for ref in scope_refs]
-        target_ref = resolved_refs[0] if resolved_refs else f"assertion:{assertion_id}"
-        user_db = archive.user_db_path
-
-    fingerprint_document = {
-        "author_kind": normalized_author_kind,
-        "author_ref": normalized_author_ref,
-        "body_text": normalized_body,
-        "evidence_refs": list(dict.fromkeys((*resolved_refs, *normalized_scope_refs))),
-        "kind": kind.value,
-        "scope_refs": normalized_scope_refs,
-        "target_ref": target_ref,
-    }
-    capture_fingerprint = hashlib.sha256(
-        json.dumps(
-            fingerprint_document,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8", errors="surrogatepass")
-    ).hexdigest()
-
-    try:
-        _require_archive_write_authority(config, "api.capture_assertion_candidate")
-        conn = open_connection(user_db)
-        conn.row_factory = sqlite3.Row
-        try:
-            # The key lookup and first write share one reservation. Without
-            # this, two changed captures racing on the same key could both
-            # observe absence and the later writer would overwrite history.
-            conn.execute("BEGIN IMMEDIATE")
-            existing = read_assertion_envelope(conn, assertion_id)
-            if existing is not None:
-                existing_value = existing.value if isinstance(existing.value, dict) else {}
-                existing_scope_refs = existing_value.get("scope_refs")
-                existing_document = {
-                    "author_kind": existing.author_kind,
-                    "author_ref": existing.author_ref,
-                    "body_text": existing.body_text,
-                    "evidence_refs": existing.evidence_refs,
-                    "kind": existing.kind.value,
-                    "scope_refs": existing_scope_refs if isinstance(existing_scope_refs, list) else [],
-                    "target_ref": existing.target_ref,
-                }
-                existing_fingerprint = hashlib.sha256(
-                    json.dumps(
-                        existing_document,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ).encode("utf-8", errors="surrogatepass")
-                ).hexdigest()
-                if existing_fingerprint == capture_fingerprint:
-                    conn.commit()
-                    return existing
-                raise ValueError("idempotency_key conflicts with a different assertion candidate capture")
-            capture_now_ms = int(datetime.now(UTC).timestamp() * 1000)
-            staleness = None if ttl_seconds is None else {"expires_at_ms": capture_now_ms + ttl_seconds * 1000}
-            envelope = upsert_assertion(
-                conn,
-                assertion_id=assertion_id,
-                target_ref=target_ref,
-                scope_ref=normalized_scope_refs[0] if normalized_scope_refs else None,
-                kind=kind,
-                key="terminal-note",
-                value={
-                    "capture_surface": "terminal",
-                    "scope_refs": normalized_scope_refs,
-                    "unanchored": not bool(resolved_refs),
-                },
-                body_text=normalized_body,
-                author_ref=normalized_author_ref,
-                author_kind=normalized_author_kind,
-                evidence_refs=tuple(dict.fromkeys((*resolved_refs, *normalized_scope_refs))),
-                status=AssertionStatus.CANDIDATE,
-                staleness=staleness,
-                context_policy={"inject": False, "promotion_required": True},
-                now_ms=capture_now_ms,
-            )
-            conn.commit()
-            return envelope
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        raise RuntimeError(f"failed to capture assertion candidate: {exc}") from exc
-
-
-def _archive_judge_assertion_candidates(
-    config: Config,
-    *,
-    items: Sequence[Any],
-) -> Any:
-    """Write an independently-recoverable bulk candidate judgment batch."""
-
-    from polylogue.storage.sqlite.archive_tiers.user_write import judge_assertion_candidates
-
-    user_db = _active_archive_root(config) / "user.db"
-    if not user_db.exists():
-        raise ValueError("assertion user tier is not initialized")
-    _require_archive_write_authority(config, "api.judge_assertion_candidates")
-    try:
-        conn = open_connection(user_db)
-        conn.row_factory = sqlite3.Row
-        try:
-            result = judge_assertion_candidates(conn, items)
-            conn.commit()
-            return result
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        raise RuntimeError(f"failed to judge assertion candidates: {exc}") from exc
-
-
-def _archive_record_comparative_judgment(
-    config: Config,
-    judgment: Any,
-    *,
-    author_kind: str,
-) -> Any:
-    """Write one comparative judgment (rxdo.9.11/9.6/9.7/9.12) as an assertion row.
-
-    Mirrors :func:`_archive_judge_assertion_candidates`'s connection
-    lifecycle. This is the first production caller of
-    :func:`~polylogue.storage.sqlite.archive_tiers.user_write.upsert_comparative_judgment_assertion`
-    -- the storage/read functions were fully built and tested but never
-    invoked outside ``tests/unit/storage/`` before the ``judge compare`` /
-    ``judge calibration`` CLI commands.
-    """
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_comparative_judgment_assertion
-
-    user_db = _active_archive_root(config) / "user.db"
-    _require_archive_write_authority(config, "api.record_comparative_judgment")
-    initialize_archive_database(user_db, ArchiveTier.USER)
-    try:
-        conn = open_connection(user_db)
-        conn.row_factory = sqlite3.Row
-        try:
-            envelope = upsert_comparative_judgment_assertion(conn, judgment, author_kind=author_kind)
-            conn.commit()
-            return envelope
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        raise RuntimeError(f"failed to record comparative judgment: {exc}") from exc
-
-
 def _archive_list_comparative_judgments(config: Config) -> Any:
     """Read back every live comparative-judgment assertion row."""
 
@@ -2936,67 +2540,6 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         @property
         def repository(self) -> SessionRepository: ...
 
-    def _execute_facade_mutation(
-        self,
-        actuator: MutationActuator[_MutationArgsT],
-        build_args: Callable[[ArchiveStore], _MutationArgsT],
-        *,
-        capability: str,
-        session_id: str | None = None,
-    ) -> tuple[MutationReceipt, MutationPlan]:
-        """Run one PREPARE/AUTHORIZE/EXECUTE cycle against a fresh archive handle.
-
-        Collapses the ``ArchiveStore.open_existing`` + ``OperationExecutor``
-        shell shared by every facade mutation method routed through the
-        t46.9 ``OperationExecutor`` contract: every one of those sites
-        authorizes with ``actor="facade"``, ``role="write"``,
-        ``confirmation_strength="role_only"`` -- only the actuator, its
-        args, and the capability string vary from call to call.
-        ``delete_session_safe`` authorizes with a caller-supplied ``actor``
-        and ``confirmation_strength="bound_token"`` instead (it exposes a
-        stronger confirmation contract to its own callers), so it stays
-        outside this helper. Returns ``(receipt, plan)`` because a couple of
-        callers read ``plan.context`` back after the archive handle closes.
-
-        ``session_id`` names the caller's lookup target: a ``KeyError`` raised
-        while building args or preparing/authorizing the plan is that lookup
-        failing, and becomes :class:`SessionNotFoundError`. After AUTHORIZE the
-        targets are resolved, so a ``KeyError`` there is
-        :class:`MutationTargetVanishedError`. A ``blocked`` receipt is raised as
-        :class:`MutationBlockedError` here rather than left for each caller to
-        mistake for a zero-``affected_count`` no-op.
-        """
-        from polylogue.operations.bindings import runtime_operation_binding
-        from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        _require_archive_write_authority(self.config, "api.facade_mutation")
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            root = _active_archive_root(self.config)
-            executor = OperationExecutor.for_archive_root(root)
-            binding = runtime_operation_binding(actuator)
-            principal = MutationPrincipal("facade", frozenset({capability}), "api", "write")
-            # Only the target lookup answers "no such session". Everything
-            # after AUTHORIZE has already resolved its targets, so a KeyError
-            # there is a concurrent-mutation hazard, not a missing input.
-            try:
-                args = build_args(archive)
-                preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
-                authorization = executor.authorize_bound(binding, preview, principal)
-            except KeyError:
-                if session_id is None:
-                    raise
-                raise SessionNotFoundError(session_id) from None
-            try:
-                receipt = executor.execute_bound(binding, preview, authorization, args)
-            except KeyError as exc:
-                raise MutationTargetVanishedError(
-                    f"{actuator.operation!r} target disappeared during execution: {exc}"
-                ) from exc
-        if receipt.status == "blocked":
-            raise MutationBlockedError(receipt.operation, receipt.detail, receipt.target_refs)
-        return receipt, preview.plan
-
     async def import_annotation_batch(
         self,
         request: AnnotationBatchImportRequest,
@@ -3010,24 +2553,21 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         use a deliberately constructed schema registry without bypassing the
         facade.
         """
-        _require_archive_write_authority(self.config, "api.import_annotation_batch")
-        from polylogue.annotations.importer import import_annotation_batch
+        from polylogue.annotations.importer import AnnotationBatchImportResult
+        from polylogue.annotations.schema import ANNOTATION_SCHEMA_REGISTRY
+        from polylogue.api.facade_client import submit_facade_operation
 
-        class _ActiveArchiveImportFacade:
-            @property
-            def archive_root(self) -> Path:
-                return _active_archive_root(self._archive.config)
-
-            def __init__(self, archive: PolylogueArchiveMixin) -> None:
-                self._archive = archive
-
-            async def resolve_ref(self, ref: str) -> PublicRefResolutionPayload:
-                return await self._archive.resolve_ref(ref)
-
-        import_facade = cast("Polylogue", _ActiveArchiveImportFacade(self))
-        if registry is None:
-            return await import_annotation_batch(import_facade, request)
-        return await import_annotation_batch(import_facade, request, registry=registry)
+        payload = request.model_dump(mode="json")
+        schema_registry = registry if registry is not None else ANNOTATION_SCHEMA_REGISTRY
+        try:
+            schema = schema_registry.get(request.schema_id, request.schema_version)
+        except KeyError:
+            if registry is not None:
+                raise
+        else:
+            payload["schema_definition_json"] = schema.canonical_definition_json()
+        state = await submit_facade_operation(self.config, "mutation.annotation.import_batch", payload)
+        return AnnotationBatchImportResult.model_validate(state["result"])
 
     async def get_session(
         self,
@@ -3507,14 +3047,30 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         compilation and returns the exact image alongside the receipt.
         """
 
-        return _archive_record_context_delivery(
+        from polylogue.api.facade_client import submit_facade_writer
+
+        value = await submit_facade_writer(
             self.config,
-            image=image,
-            boundary=boundary,
-            recipient_ref=recipient_ref,
-            delivered_by_ref=delivered_by_ref,
-            run_ref=run_ref,
-            inheritance_mode=inheritance_mode,
+            "record_context_delivery",
+            {
+                "image": image.model_dump(mode="json"),
+                "boundary": boundary,
+                "recipient_ref": recipient_ref,
+                "delivered_by_ref": delivered_by_ref,
+                "run_ref": run_ref,
+                "inheritance_mode": inheritance_mode,
+            },
+        )
+        return ArchiveContextDeliveryEnvelope(
+            **{
+                **value,
+                "context_image": image,
+                "segment_refs": tuple(value["segment_refs"]),
+                "evidence_refs": tuple(value["evidence_refs"]),
+                "assertion_refs": tuple(value["assertion_refs"]),
+                "omissions": tuple(value["omissions"]),
+                "caveats": tuple(value["caveats"]),
+            }
         )
 
     async def compile_and_record_context(
@@ -3803,20 +3359,24 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
     ) -> AssertionJudgmentResultPayload:
         """Record an explicit judgment for one candidate assertion."""
 
+        from polylogue.api.facade_client import submit_facade_writer
         from polylogue.surfaces.payloads import AssertionJudgmentResultPayload
 
-        result = _archive_judge_assertion_candidate(
+        value = await submit_facade_writer(
             self.config,
-            candidate_ref=candidate_ref,
-            decision=decision,
-            reason=reason,
-            actor_ref=actor_ref,
-            inject=inject,
-            replacement_kind=replacement_kind,
-            replacement_body_text=replacement_body_text,
-            replacement_value=replacement_value,
+            "judge_assertion_candidate",
+            {
+                "candidate_ref": candidate_ref,
+                "decision": decision,
+                "reason": reason,
+                "actor_ref": actor_ref,
+                "inject": inject,
+                "replacement_kind": replacement_kind,
+                "replacement_body_text": replacement_body_text,
+                "replacement_value": replacement_value,
+            },
         )
-        return AssertionJudgmentResultPayload.from_envelope(result)
+        return AssertionJudgmentResultPayload.model_validate(value)
 
     async def capture_assertion_candidate(
         self,
@@ -3838,40 +3398,22 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         idempotency semantics.
         """
 
-        from polylogue.operations.mutation_actuators import (
-            CaptureAssertionCandidateActuator,
-            CaptureAssertionCandidateArgs,
-        )
         from polylogue.surfaces.payloads import AssertionClaimPayload
 
-        if idempotency_key is None:
-            assertion_id = f"assertion-terminal-note:{uuid.uuid4()}"
-        else:
-            identity = hashlib.sha256(
-                f"{normalize_object_ref_text(author_ref)}\0{idempotency_key.strip()}".encode(
-                    "utf-8", errors="surrogatepass"
-                )
-            ).hexdigest()
-            assertion_id = f"assertion-terminal-note:{identity}"
-        receipt, _plan = self._execute_facade_mutation(
-            CaptureAssertionCandidateActuator(),
-            lambda archive: CaptureAssertionCandidateArgs(
-                archive=archive,
-                body_text=body_text,
-                kind=kind,
-                refs=tuple(refs),
-                scope_refs=tuple(scope_refs),
-                cwd=cwd,
-                author_ref=author_ref,
-                author_kind=author_kind,
-                idempotency_key=idempotency_key,
-                assertion_id=assertion_id,
-                ttl_seconds=ttl_seconds,
-            ),
-            capability="archive.capture_assertion_candidate",
+        receipt, _plan = await submit_facade_product(
+            self.config,
+            "capture_assertion_candidate",
+            body_text=body_text,
+            kind=kind,
+            refs=tuple(refs),
+            scope_refs=tuple(scope_refs),
+            cwd=cwd,
+            author_ref=author_ref,
+            author_kind=author_kind,
+            idempotency_key=idempotency_key,
+            ttl_seconds=ttl_seconds,
         )
-        envelope = cast("ArchiveAssertionEnvelope", receipt.domain_receipt["envelope"])
-        return AssertionClaimPayload.from_envelope(envelope)
+        return AssertionClaimPayload.model_validate(receipt.domain_receipt["claim"])
 
     async def judge_assertion_candidates(
         self,
@@ -3880,10 +3422,18 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
     ) -> AssertionBulkJudgmentPayload:
         """Apply a review batch with per-candidate partial-success outcomes."""
 
+        from dataclasses import asdict, is_dataclass
+
+        from polylogue.api.facade_client import submit_facade_operation
         from polylogue.surfaces.payloads import AssertionBulkJudgmentPayload
 
-        result = _archive_judge_assertion_candidates(self.config, items=items)
-        return AssertionBulkJudgmentPayload.from_envelope(cast("ArchiveAssertionBulkJudgmentEnvelope", result))
+        reviews = [asdict(item) if is_dataclass(item) and not isinstance(item, type) else dict(item) for item in items]
+        state = await submit_facade_operation(
+            self.config,
+            "mutation.judgment.record",
+            {"judgment_kind": "assertion-review", "reviews": reviews},
+        )
+        return AssertionBulkJudgmentPayload.model_validate(state["result"])
 
     async def record_comparative_judgment(
         self,
@@ -3900,9 +3450,23 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         (:func:`~polylogue.storage.sqlite.archive_tiers.user_write.upsert_comparative_judgment_assertion`),
         which previously had no production caller.
         """
-        return cast(
-            "ArchiveAssertionEnvelope",
-            _archive_record_comparative_judgment(self.config, judgment, author_kind=author_kind),
+        from polylogue.api.facade_client import submit_facade_writer
+        from polylogue.core.enums import AssertionVisibility
+        from polylogue.operations.judgment_wire import comparative_judgment_wire_form
+        from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
+
+        value = await submit_facade_writer(
+            self.config,
+            "record_comparative_judgment",
+            {"judgment": comparative_judgment_wire_form(judgment), "author_kind": author_kind},
+        )
+        return ArchiveAssertionEnvelope(
+            **{
+                **value,
+                "kind": AssertionKind.from_string(value["kind"]),
+                "status": AssertionStatus.from_string(value["status"]),
+                "visibility": AssertionVisibility.from_string(value["visibility"]),
+            }
         )
 
     async def list_comparative_judgments(self) -> list[ComparativeJudgment]:
@@ -4004,62 +3568,17 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
     async def record_manual_continuation(self, child_session_id: str, parent_session_id: str) -> None:
         """Record a spawned-fresh continuation and its first handoff claim."""
+        from polylogue.api.facade_client import submit_facade_writer
+
         child = str(child_session_id).strip()
         parent = str(parent_session_id).strip()
         if not child or not parent or ":" not in child or ":" not in parent:
             raise ValueError("manual continuation requires origin-prefixed child and parent session ids")
-        parent_origin, parent_native = parent.split(":", 1)
-        root = _active_archive_root(self.config)
-        _require_archive_write_authority(self.config, "api.record_manual_continuation")
-        now_ms = int(datetime.now(UTC).timestamp() * 1000)
-        index = open_connection(root / "index.db")
-        try:
-            if index.execute("SELECT 1 FROM sessions WHERE session_id = ?", (child,)).fetchone() is None:
-                raise ValueError("manual continuation child session does not exist")
-            if index.execute("SELECT 1 FROM sessions WHERE session_id = ?", (parent,)).fetchone() is None:
-                raise ValueError("manual continuation parent session does not exist")
-            index.execute(
-                # ``status`` is an exceptional marker (``TopologyEdgeStatus``:
-                # repaired / quarantined / authority-contradicted), not the
-                # ordinary resolved state -- resolvedness is carried by
-                # ``resolved_dst_session_id IS NOT NULL``. Writing 'resolved'
-                # here failed the column's generated CHECK, so this route
-                # raised IntegrityError on every call (polylogue-pkst).
-                """INSERT OR REPLACE INTO session_links
-                   (src_session_id, dst_origin, dst_native_id, link_type, inheritance,
-                    resolved_dst_session_id, method, confidence, evidence_json, observed_at_ms)
-                   VALUES (?, ?, ?, 'continuation', 'spawned-fresh', ?,
-                           'manual-continuation', 1.0, '[]', ?)""",
-                (child, parent_origin, parent_native, parent, now_ms),
-            )
-            index.commit()
-        finally:
-            index.close()
-
-        from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
-
-        user = open_connection(root / "user.db")
-        try:
-            upsert_assertion(
-                user,
-                assertion_id="handoff:" + hashlib.sha256(f"{child}\0{parent}".encode()).hexdigest()[:32],
-                target_ref=f"session:{child}",
-                kind=AssertionKind.HANDOFF,
-                body_text=f"Continuation from session {parent}.",
-                # ``author_ref`` is an ObjectRef: ``service`` is not a
-                # declared kind, so this raised before the assertion landed
-                # (polylogue-pkst). ``actor:`` is the kind the other
-                # automated writers use (``actor:judgment-automation``).
-                author_ref="actor:polylogue",
-                author_kind="service",
-                evidence_refs=[f"session:{parent}", f"session:{child}"],
-                status=AssertionStatus.CANDIDATE,
-                context_policy={"inject": False, "promotion_required": True},
-                now_ms=now_ms,
-            )
-            user.commit()
-        finally:
-            user.close()
+        await submit_facade_writer(
+            self.config,
+            "record_manual_continuation",
+            {"child_session_id": child, "parent_session_id": parent},
+        )
 
     async def compile_context(self, spec: ContextSpec) -> ContextImage:
         """Compile a bounded context image from query/ref seeds and read views.
@@ -4358,23 +3877,16 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             token_budget=spec.max_tokens if spec.max_tokens is not None else max(token_total, 1),
             now_ms=0,
         )
-        try:
-            ops_db = _active_archive_root(self.config) / "ops.db"
-            _require_archive_write_authority(self.config, "api.context_injection_ledger")
-            if not ops_db.exists():
-                from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-                from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+        from polylogue.api.facade_client import FacadeDaemonRequiredError, submit_facade_writer
 
-                initialize_archive_database(ops_db, ArchiveTier.OPS)
-            ops_conn = open_connection(ops_db)
-            try:
-                record_context_ledger(ops_conn, admission, observed_at_ms=0)
-            finally:
-                ops_conn.close()
-        except (OSError, sqlite3.Error, DatabaseError):
-            # Frozen/read-only archive views, and a tier this runtime cannot
-            # use, still return the compiled image.
-            pass
+        # Frozen/read-only archive views, and a tier this runtime cannot use,
+        # still return the compiled image.
+        with suppress(OSError, sqlite3.Error, DatabaseError, FacadeDaemonRequiredError):
+            await submit_facade_writer(
+                self.config,
+                "context_ledger",
+                {"build_ref": admission.build_ref, "ledger_rows": [row.as_dict() for row in admission.ledger]},
+            )
 
         admitted_ids = {item.ref for item in (*admission.quoted_evidence, *admission.executable_policy)}
         admitted_segments = tuple(segment for segment in segments if segment.segment_id in admitted_ids)
@@ -5996,18 +5508,21 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         timestamp: str | None = None,
     ) -> dict[str, object]:
         """Record one typed live-agent event through the archive writer."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.api.facade_client import submit_facade_writer
 
-        _require_archive_write_authority(self.config, "api.record_work_event")
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            return archive.append_work_event(
-                session_id=session_id,
-                event_type=event_type,
-                payload=dict(payload or {}),
-                event_id=event_id,
-                summary=summary,
-                timestamp=timestamp,
-            )
+        value = await submit_facade_writer(
+            self.config,
+            "record_work_event",
+            {
+                "session_id": session_id,
+                "event_id": event_id,
+                "event_type": event_type,
+                "summary": summary,
+                "payload": dict(payload or {}),
+                "timestamp": timestamp,
+            },
+        )
+        return cast("dict[str, object]", value)
 
     async def emit_decision(
         self,
@@ -6557,39 +6072,11 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         -- shares one preview/authorization/receipt contract instead of
         calling ``ArchiveStore.delete_sessions`` independently.
         """
-        from polylogue.operations.bindings import runtime_operation_binding
-        from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
-        from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.api.facade_client import submit_facade_writer
         from polylogue.surfaces.payloads import DeleteSessionResult
 
-        _require_archive_write_authority(self.config, "api.delete_session")
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            try:
-                resolved = archive.resolve_session_id(session_id)
-            except KeyError:
-                return DeleteSessionResult(
-                    outcome="not_found",
-                    session_id=session_id,
-                    detail="session_not_found",
-                )
-            actuator = SessionDeleteActuator()
-            root = _active_archive_root(self.config)
-            executor = OperationExecutor.for_archive_root(root)
-            args = SessionDeleteArgs(archive=archive, session_ids=(resolved,))
-            binding = runtime_operation_binding(actuator)
-            principal = MutationPrincipal(actor, frozenset({"archive.delete_session"}), "api", "write")
-            preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
-            authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
-            receipt = executor.execute_bound(binding, preview, authorization, args)
-        if receipt.status == "blocked":
-            raise MutationBlockedError(receipt.operation, receipt.detail, receipt.target_refs)
-        deleted = receipt.affected_count > 0
-        return DeleteSessionResult(
-            outcome="deleted" if deleted else "not_found",
-            session_id=resolved,
-            detail=None if deleted else "session_not_found",
-        )
+        value = await submit_facade_writer(self.config, "delete_session", {"session_id": session_id, "actor": actor})
+        return DeleteSessionResult.model_validate(value)
 
     async def add_tag(
         self,
@@ -6612,19 +6099,13 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         ``write(operation='add_tag')``) now shares one preview/authorize/
         receipt contract instead of calling the primitive independently.
         """
-        from polylogue.operations.mutation_actuators import TagAddActuator, TagAddArgs
         from polylogue.surfaces.payloads import TagMutationResult
 
         # The lookup window (``session_id=``) is what answers "session never
         # existed". A target that disappears after AUTHORIZE surfaces as
         # ``MutationTargetVanishedError``, not as a missing session.
-        receipt, _plan = self._execute_facade_mutation(
-            TagAddActuator(),
-            lambda archive: TagAddArgs(
-                archive=archive, session_id=session_id, tag=tag, author_ref=author_ref, author_kind=author_kind
-            ),
-            capability="archive.add_tag",
-            session_id=session_id,
+        receipt, _plan = await submit_facade_product(
+            self.config, "add_tag", session_id=session_id, tag=tag, author_ref=author_ref, author_kind=author_kind
         )
         changed = receipt.affected_count
         return TagMutationResult(
@@ -6642,15 +6123,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         Routed through ``OperationExecutor``/``TagRemoveActuator`` (t46.9
         phase 2); see :meth:`add_tag` for the shared-contract rationale.
         """
-        from polylogue.operations.mutation_actuators import TagRemoveActuator, TagRemoveArgs
         from polylogue.surfaces.payloads import TagMutationResult
 
-        receipt, _plan = self._execute_facade_mutation(
-            TagRemoveActuator(),
-            lambda archive: TagRemoveArgs(archive=archive, session_id=session_id, tag=tag),
-            capability="archive.remove_tag",
-            session_id=session_id,
-        )
+        receipt, _plan = await submit_facade_product(self.config, "remove_tag", session_id=session_id, tag=tag)
         changed = receipt.affected_count
         return TagMutationResult(
             outcome="removed" if changed else "not_present",
@@ -6696,7 +6171,6 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         Routed through ``OperationExecutor``/``MetadataSetActuator`` (t46.9
         phase 2); see :meth:`add_tag` for the shared-contract rationale.
         """
-        from polylogue.operations.mutation_actuators import MetadataSetActuator, MetadataSetArgs
         from polylogue.surfaces.payloads import (
             MetadataKeyValidationError,
             MetadataMutationResult,
@@ -6707,11 +6181,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         if validation_error is not None:
             raise MetadataKeyValidationError(validation_error)
 
-        receipt, plan = self._execute_facade_mutation(
-            MetadataSetActuator(),
-            lambda archive: MetadataSetArgs(archive=archive, session_id=session_id, key=key, value=value),
-            capability="archive.set_metadata",
-            session_id=session_id,
+        receipt, plan = await submit_facade_product(
+            self.config, "set_metadata", session_id=session_id, key=key, value=value
         )
         changed = receipt.affected_count
         resolved = str(plan.context["session_id"])
@@ -6733,7 +6204,6 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         (t46.9 phase 2); see :meth:`add_tag` for the shared-contract
         rationale.
         """
-        from polylogue.operations.mutation_actuators import MetadataDeleteActuator, MetadataDeleteArgs
         from polylogue.surfaces.payloads import (
             MetadataKeyValidationError,
             MetadataMutationResult,
@@ -6744,12 +6214,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         if validation_error is not None:
             raise MetadataKeyValidationError(validation_error)
 
-        receipt, plan = self._execute_facade_mutation(
-            MetadataDeleteActuator(),
-            lambda archive: MetadataDeleteArgs(archive=archive, session_id=session_id, key=key),
-            capability="archive.delete_metadata",
-            session_id=session_id,
-        )
+        receipt, plan = await submit_facade_product(self.config, "delete_metadata", session_id=session_id, key=key)
         changed = receipt.affected_count
         resolved = str(plan.context["session_id"])
         return MetadataMutationResult(
@@ -6776,30 +6241,24 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         Routed through ``OperationExecutor``/``BulkTagActuator`` (t46.9 phase
         2); see :meth:`add_tag` for the shared-contract rationale.
         """
-        from polylogue.operations.mutation_actuators import BulkTagActuator, BulkTagArgs
         from polylogue.surfaces.payloads import BulkTagMutationResult
 
         if not session_ids:
             raise ValueError("bulk_tag_sessions requires at least one session_id")
         if not tags:
             raise ValueError("bulk_tag_sessions requires at least one tag")
-        max_sessions = 100
-        max_tags = 20
-        if len(session_ids) > max_sessions:
-            raise ValueError(f"bulk_tag_sessions supports at most {max_sessions} session_ids")
-        if len(tags) > max_tags:
-            raise ValueError(f"bulk_tag_sessions supports at most {max_tags} tags")
+        if len(session_ids) > 100:
+            raise ValueError("bulk_tag_sessions supports at most 100 session_ids")
+        if len(tags) > 20:
+            raise ValueError("bulk_tag_sessions supports at most 20 tags")
 
-        receipt, _plan = self._execute_facade_mutation(
-            BulkTagActuator(),
-            lambda archive: BulkTagArgs(
-                archive=archive,
-                session_ids=tuple(session_ids),
-                tags=tuple(tags),
-                author_ref=author_ref,
-                author_kind=author_kind,
-            ),
-            capability="archive.bulk_tag_sessions",
+        receipt, _plan = await submit_facade_product(
+            self.config,
+            "bulk_tag_sessions",
+            session_ids=tuple(session_ids),
+            tags=tuple(tags),
+            author_ref=author_ref,
+            author_kind=author_kind,
         )
         domain_receipt = receipt.domain_receipt
         return BulkTagMutationResult(
@@ -6947,7 +6406,6 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         ``IdentityResetActuator``'s pattern.
         """
         from polylogue.core.user_state_targets import validate_mark_type
-        from polylogue.operations.mutation_actuators import MarkAddActuator, MarkArgs
 
         mark_type = validate_mark_type(mark_type)
         target = await self._resolve_user_state_target(
@@ -6956,16 +6414,13 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             target_id=target_id,
             message_id=message_id,
         )
-        receipt, _plan = self._execute_facade_mutation(
-            MarkAddActuator(),
-            lambda archive: MarkArgs(
-                archive=archive,
-                target_type=str(target["target_type"]),
-                target_id=str(target["target_id"]),
-                mark_type=mark_type,
-                owner_session_id=str(target["session_id"]) if target.get("session_id") else None,
-            ),
-            capability="archive.add_mark",
+        receipt, _plan = await submit_facade_product(
+            self.config,
+            "add_mark",
+            target_type=str(target["target_type"]),
+            target_id=str(target["target_id"]),
+            mark_type=mark_type,
+            owner_session_id=str(target["session_id"]) if target.get("session_id") else None,
         )
         return receipt.status == "applied"
 
@@ -6984,7 +6439,6 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         phase 2); see :meth:`add_mark` for the shared-contract rationale.
         """
         from polylogue.core.user_state_targets import validate_mark_type
-        from polylogue.operations.mutation_actuators import MarkArgs, MarkRemoveActuator
 
         mark_type = validate_mark_type(mark_type)
         target = await self._resolve_user_state_target(
@@ -6993,16 +6447,13 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             target_id=target_id,
             message_id=message_id,
         )
-        receipt, _plan = self._execute_facade_mutation(
-            MarkRemoveActuator(),
-            lambda archive: MarkArgs(
-                archive=archive,
-                target_type=str(target["target_type"]),
-                target_id=str(target["target_id"]),
-                mark_type=mark_type,
-                owner_session_id=str(target["session_id"]) if target.get("session_id") else None,
-            ),
-            capability="archive.remove_mark",
+        receipt, _plan = await submit_facade_product(
+            self.config,
+            "remove_mark",
+            target_type=str(target["target_type"]),
+            target_id=str(target["target_id"]),
+            mark_type=mark_type,
+            owner_session_id=str(target["session_id"]) if target.get("session_id") else None,
         )
         return receipt.status == "applied"
 
@@ -7070,7 +6521,6 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             raise ValueError("annotation_id must not be empty")
         if not note_text.strip():
             raise ValueError("note_text must not be empty")
-        from polylogue.operations.mutation_actuators import AnnotationSaveActuator, AnnotationSaveArgs
 
         target = await self._resolve_user_state_target(
             session_id,
@@ -7078,17 +6528,14 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             target_id=target_id,
             message_id=message_id,
         )
-        receipt, _plan = self._execute_facade_mutation(
-            AnnotationSaveActuator(),
-            lambda archive: AnnotationSaveArgs(
-                archive=archive,
-                annotation_id=annotation_id,
-                target_type=str(target["target_type"]),
-                target_id=str(target["target_id"]),
-                note_text=note_text,
-                owner_session_id=str(target["session_id"]) if target.get("session_id") else None,
-            ),
-            capability="archive.save_annotation",
+        receipt, _plan = await submit_facade_product(
+            self.config,
+            "save_annotation",
+            annotation_id=annotation_id,
+            target_type=str(target["target_type"]),
+            target_id=str(target["target_id"]),
+            note_text=note_text,
+            owner_session_id=str(target["session_id"]) if target.get("session_id") else None,
         )
         return bool(receipt.domain_receipt.get("created"))
 
@@ -7148,13 +6595,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         (t46.9 phase 3); see :meth:`add_mark` for the shared-contract
         rationale.
         """
-        from polylogue.operations.mutation_actuators import AnnotationDeleteActuator, AnnotationDeleteArgs
 
-        receipt, _plan = self._execute_facade_mutation(
-            AnnotationDeleteActuator(),
-            lambda archive: AnnotationDeleteArgs(archive=archive, annotation_id=annotation_id),
-            capability="archive.delete_annotation",
-        )
+        receipt, _plan = await submit_facade_product(self.config, "delete_annotation", annotation_id=annotation_id)
         return receipt.status == "applied"
 
     # ------------------------------------------------------------------
@@ -7173,14 +6615,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         (polylogue-pm8cj). A selection with no evaluable predicate is refused
         at plan time.
         """
-        from polylogue.operations.mutation_actuators import SavedViewSaveActuator, SavedViewSaveArgs
 
-        receipt, _plan = self._execute_facade_mutation(
-            SavedViewSaveActuator(),
-            lambda archive: SavedViewSaveArgs(
-                archive=archive, view_id=view_id, name=name, query_json=query_json, watch=watch
-            ),
-            capability="archive.save_view",
+        receipt, _plan = await submit_facade_product(
+            self.config, "save_view", view_id=view_id, name=name, query_json=query_json, watch=watch
         )
         return bool(receipt.domain_receipt.get("created"))
 
@@ -7212,13 +6649,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         (t46.9 phase 4); see :meth:`add_mark` for the shared-contract
         rationale.
         """
-        from polylogue.operations.mutation_actuators import SavedViewDeleteActuator, SavedViewDeleteArgs
 
-        receipt, _plan = self._execute_facade_mutation(
-            SavedViewDeleteActuator(),
-            lambda archive: SavedViewDeleteArgs(archive=archive, view_id=view_id),
-            capability="archive.delete_view",
-        )
+        receipt, _plan = await submit_facade_product(self.config, "delete_view", view_id=view_id)
         return receipt.status == "applied"
 
     # ------------------------------------------------------------------
@@ -7478,18 +6910,14 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             payload=payload,
         )
         session_ids_json = json.dumps(resolved_session_ids, sort_keys=True)
-        from polylogue.operations.mutation_actuators import RecallPackSaveActuator, RecallPackSaveArgs
 
-        receipt, _plan = self._execute_facade_mutation(
-            RecallPackSaveActuator(),
-            lambda archive: RecallPackSaveArgs(
-                archive=archive,
-                pack_id=pack_id,
-                label=label,
-                session_ids_json=session_ids_json,
-                payload_json=normalized_payload_json,
-            ),
-            capability="archive.create_recall_pack",
+        receipt, _plan = await submit_facade_product(
+            self.config,
+            "create_recall_pack",
+            pack_id=pack_id,
+            label=label,
+            session_ids_json=session_ids_json,
+            payload_json=normalized_payload_json,
         )
         return bool(receipt.domain_receipt.get("created"))
 
@@ -7521,13 +6949,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         (t46.9 phase 4); see :meth:`add_mark` for the shared-contract
         rationale.
         """
-        from polylogue.operations.mutation_actuators import RecallPackDeleteActuator, RecallPackDeleteArgs
 
-        receipt, _plan = self._execute_facade_mutation(
-            RecallPackDeleteActuator(),
-            lambda archive: RecallPackDeleteArgs(archive=archive, pack_id=pack_id),
-            capability="archive.delete_recall_pack",
-        )
+        receipt, _plan = await submit_facade_product(self.config, "delete_recall_pack", pack_id=pack_id)
         return receipt.status == "applied"
 
     # ------------------------------------------------------------------
@@ -7593,20 +7016,15 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             raise ValueError("active_target_json must encode an object")
         normalized_active_json = await self._build_workspace_active_target(active_target)
 
-        from polylogue.operations.mutation_actuators import WorkspaceSaveActuator, WorkspaceSaveArgs
-
-        receipt, _plan = self._execute_facade_mutation(
-            WorkspaceSaveActuator(),
-            lambda archive: WorkspaceSaveArgs(
-                archive=archive,
-                workspace_id=workspace_id,
-                name=name,
-                mode=mode,
-                open_targets_json=normalized_targets_json,
-                layout_json=normalized_layout_json,
-                active_target_json=normalized_active_json,
-            ),
-            capability="archive.save_workspace",
+        receipt, _plan = await submit_facade_product(
+            self.config,
+            "save_workspace",
+            workspace_id=workspace_id,
+            name=name,
+            mode=mode,
+            open_targets_json=normalized_targets_json,
+            layout_json=normalized_layout_json,
+            active_target_json=normalized_active_json,
         )
         return bool(receipt.domain_receipt.get("created"))
 
@@ -7638,13 +7056,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         (t46.9 phase 4); see :meth:`add_mark` for the shared-contract
         rationale.
         """
-        from polylogue.operations.mutation_actuators import WorkspaceDeleteActuator, WorkspaceDeleteArgs
 
-        receipt, _plan = self._execute_facade_mutation(
-            WorkspaceDeleteActuator(),
-            lambda archive: WorkspaceDeleteArgs(archive=archive, workspace_id=workspace_id),
-            capability="archive.delete_workspace",
-        )
+        receipt, _plan = await submit_facade_product(self.config, "delete_workspace", workspace_id=workspace_id)
         return receipt.status == "applied"
 
     # ------------------------------------------------------------------
@@ -7682,25 +7095,19 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         rationale.
         """
 
-        normalized_payload = {str(key): str(value) for key, value in payload.items()}
         parse_correction_kind(kind)
-        from polylogue.operations.mutation_actuators import CorrectionRecordActuator, CorrectionRecordArgs
 
-        receipt, _plan = self._execute_facade_mutation(
-            CorrectionRecordActuator(),
-            lambda archive: CorrectionRecordArgs(
-                archive=archive,
-                session_id=session_id,
-                kind=kind,
-                payload=normalized_payload,
-                note=note,
-                author_ref=author_ref,
-                author_kind=author_kind,
-            ),
-            capability="archive.record_correction",
+        receipt, _plan = await submit_facade_product(
+            self.config,
+            "record_correction",
             session_id=session_id,
+            kind=kind,
+            payload={str(key): str(value) for key, value in payload.items()},
+            note=note,
+            author_ref=author_ref,
+            author_kind=author_kind,
         )
-        return cast("LearningCorrection", receipt.domain_receipt["correction"])
+        return LearningCorrection.model_validate(receipt.domain_receipt["correction"])
 
     async def list_corrections(
         self,
@@ -7733,14 +7140,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         """
 
         parse_correction_kind(kind)
-        from polylogue.operations.mutation_actuators import CorrectionDeleteActuator, CorrectionDeleteArgs
 
-        receipt, _plan = self._execute_facade_mutation(
-            CorrectionDeleteActuator(),
-            lambda archive: CorrectionDeleteArgs(archive=archive, session_id=session_id, kind=kind),
-            capability="archive.delete_correction",
-            session_id=session_id,
-        )
+        receipt, _plan = await submit_facade_product(self.config, "delete_correction", session_id=session_id, kind=kind)
         return receipt.status == "applied"
 
     async def clear_corrections(self, session_id: str) -> int:
@@ -7753,14 +7154,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         instead of silently clearing a kind the caller never previewed.
         """
 
-        from polylogue.operations.mutation_actuators import CorrectionsClearActuator, CorrectionsClearArgs
-
-        receipt, _plan = self._execute_facade_mutation(
-            CorrectionsClearActuator(),
-            lambda archive: CorrectionsClearArgs(archive=archive, session_id=session_id),
-            capability="archive.clear_corrections",
-            session_id=session_id,
-        )
+        receipt, _plan = await submit_facade_product(self.config, "clear_corrections", session_id=session_id)
         return int(receipt.affected_count)
 
     async def post_blackboard_note(
@@ -7794,42 +7188,29 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         executor revalidates at EXECUTE time is stable across both PREPARE
         calls.
         """
-        from polylogue.archive.blackboard import (
-            BLACKBOARD_KINDS,
-            build_blackboard_body,
-            decode_blackboard_note,
-        )
-        from polylogue.operations.mutation_actuators import BlackboardPostActuator, BlackboardPostArgs
+        from polylogue.archive.blackboard import BLACKBOARD_KINDS
 
         if kind not in BLACKBOARD_KINDS:
             raise ValueError(f"kind must be one of {list(BLACKBOARD_KINDS)}, got {kind!r}")
-        body = build_blackboard_body(
+        receipt, _plan = await submit_facade_product(
+            self.config,
+            "post_blackboard_note",
             kind=kind,
             title=title,
             content=content,
             scope_repo=scope_repo,
+            scope_session=scope_session,
             scope_issue=scope_issue,
             scope_path=scope_path,
             related_sessions=related_sessions,
+            author_ref=author_ref,
+            author_kind=author_kind,
+            evidence_refs=evidence_refs,
+            staleness=staleness,
+            context_policy=context_policy,
         )
-        note_id = str(uuid.uuid4())
-        target_type = "session" if scope_session else None
-        receipt, _plan = self._execute_facade_mutation(
-            BlackboardPostActuator(),
-            lambda archive: BlackboardPostArgs(
-                archive=archive,
-                note_id=note_id,
-                body=body,
-                target_type=target_type,
-                target_id=scope_session,
-                author_ref=author_ref,
-                author_kind=author_kind,
-                evidence_refs=evidence_refs,
-                staleness=staleness,
-                context_policy=context_policy,
-            ),
-            capability="archive.post_blackboard_note",
-        )
+        from polylogue.archive.blackboard import decode_blackboard_note
+
         domain_receipt = receipt.domain_receipt
         return decode_blackboard_note(
             note_id=str(domain_receipt["note_id"]),

@@ -87,7 +87,7 @@ def test_every_registered_route_handler_name_resolves_to_a_real_method() -> None
     named handler actually exists on DaemonAPIHandler."""
     from polylogue.daemon.http import (
         DaemonAPIHandler,
-        _authenticated_post_routes,
+        _declared_mutation_routes,
         _parameterized_get_routes,
         _static_get_routes,
     )
@@ -101,11 +101,10 @@ def test_every_registered_route_handler_name_resolves_to_a_real_method() -> None
             missing.append(
                 f"parameterized GET {parameterized_get_route.pattern} -> {parameterized_get_route.handler_name}"
             )
-    for authenticated_post_route in _authenticated_post_routes():
-        if not hasattr(DaemonAPIHandler, authenticated_post_route.handler_name):
-            missing.append(
-                f"authenticated POST {authenticated_post_route.pattern} -> {authenticated_post_route.handler_name}"
-            )
+    for method in ("POST", "DELETE"):
+        for mutation_route in _declared_mutation_routes(method):
+            if not hasattr(DaemonAPIHandler, mutation_route.handler_name):
+                missing.append(f"{method} {mutation_route.declaration.path} -> {mutation_route.handler_name}")
     assert missing == [], f"registered routes with no matching handler method: {missing}"
 
 
@@ -282,7 +281,7 @@ class TestPostEndpointAuthAndOriginGate:
         with (
             patch.object(handler, "_handle_reset"),
             patch.object(handler, "_handle_ingest"),
-            patch("polylogue.daemon.user_state_http.dispatch_post", return_value=True),
+            patch.object(handler, "_handle_user_overlay_post"),
         ):
             handler.do_POST()
         for call in send_error.call_args_list:
@@ -304,7 +303,7 @@ class TestPostEndpointAuthAndOriginGate:
         with (
             patch.object(handler, "_handle_reset"),
             patch.object(handler, "_handle_ingest"),
-            patch("polylogue.daemon.user_state_http.dispatch_post", return_value=True),
+            patch.object(handler, "_handle_user_overlay_post"),
         ):
             handler.do_POST()
         for call in send_error.call_args_list:
@@ -368,7 +367,7 @@ class TestDeleteEndpointAuthAndOriginGate:
         """Auth + origin gates admit a curl/hook-style request (no Origin)."""
         handler = _make_handler("DELETE", path, auth_header="Bearer secret")
         send_error, _ = capture_responses(handler)
-        with patch("polylogue.daemon.user_state_http.dispatch_delete", return_value=True):
+        with patch.object(handler, "_handle_user_overlay_delete"):
             handler.do_DELETE()
         for call in send_error.call_args_list:
             status = call.args[0]
@@ -386,7 +385,7 @@ class TestDeleteEndpointAuthAndOriginGate:
             host="localhost:8766",
         )
         send_error, _ = capture_responses(handler)
-        with patch("polylogue.daemon.user_state_http.dispatch_delete", return_value=True):
+        with patch.object(handler, "_handle_user_overlay_delete"):
             handler.do_DELETE()
         for call in send_error.call_args_list:
             status = call.args[0]

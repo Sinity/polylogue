@@ -164,6 +164,9 @@ class TestFmtBytes:
         assert _fmt_bytes(0) == "0 KB"
         assert _fmt_bytes(1) == "0 KB"  # rounds down
 
+    def test_unknown_bytes_remain_unavailable(self) -> None:
+        assert _fmt_bytes(None) == "unavailable"
+
 
 class TestArchivePrimaryTierCount:
     """Tests for _archive_primary_tier_count()."""

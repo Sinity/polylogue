@@ -28,7 +28,10 @@ from polylogue.daemon.services import (
 )
 from tests.infra.daemon_service_harness import ServiceHarness
 
-ALL_CAPABILITIES = frozenset(ServiceCapability) - {ServiceCapability.SCHEMA_BLOCKED}
+ALL_CAPABILITIES = frozenset(ServiceCapability) - {
+    ServiceCapability.SCHEMA_BLOCKED,
+    ServiceCapability.BROWSER_HOST,
+}
 
 
 def test_every_spec_has_a_distinct_name_and_a_declared_owner() -> None:
@@ -36,6 +39,8 @@ def test_every_spec_has_a_distinct_name_and_a_declared_owner() -> None:
 
     assert specs, "the registry must not be empty"
     assert len({spec.name for spec in specs}) == len(specs)
+    components = [spec.status_component or f"service.{spec.name}" for spec in specs]
+    assert len(set(components)) == len(components), "two services publish one lifecycle status component"
     for spec in specs:
         assert spec.owner, f"{spec.name} declares no owner"
         assert isinstance(spec.trigger, ServiceTrigger)
@@ -81,6 +86,18 @@ def test_a_missing_capability_removes_exactly_its_dependents() -> None:
     assert with_api - without_api == {"api_server", "uds_server"}
 
 
+def test_browser_host_is_an_explicit_production_service() -> None:
+    capabilities = ALL_CAPABILITIES | {ServiceCapability.BROWSER_HOST}
+    production = select_service_specs(profile=ServiceProfile.PRODUCTION, capabilities=capabilities)
+    focused = select_service_specs(profile=ServiceProfile.SURFACES, capabilities=capabilities)
+    names = [spec.name for spec in production]
+
+    assert names.index("api_server") < names.index("browser_host")
+    assert service_spec("browser_host").failure_policy is FailurePolicy.ISOLATE
+    assert "browser_host" not in {spec.name for spec in focused}
+    assert "browser_host" not in {spec.name for spec in select_service_specs(capabilities=ALL_CAPABILITIES)}
+
+
 def test_derived_writes_gate_every_index_writing_service() -> None:
     """Schema-blocked startup must not schedule derived-tier work."""
     blocked = {
@@ -112,6 +129,17 @@ def test_resident_core_profile_starts_no_archive_work() -> None:
     assert "raw_observation_convergence" not in selected
 
 
+def test_replay_profile_selects_intake_and_session_sweep_without_maintenance() -> None:
+    selected = {
+        spec.name for spec in select_service_specs(profile=ServiceProfile.REPLAY, capabilities=ALL_CAPABILITIES)
+    }
+
+    assert {"fair_intake", "watcher", "watcher_registered_bridge", "convergence_check"} <= selected
+    assert "raw_observation_convergence" not in selected
+    assert "embedding_backlog" not in selected
+    assert "db_optimize" not in selected
+
+
 def test_full_profile_resolves_missing_source_prerequisite_with_attributable_state() -> None:
     """A selected raw service with no source tier is explicit and leaves no task.
 
@@ -134,9 +162,10 @@ def test_full_profile_resolves_missing_source_prerequisite_with_attributable_sta
     )
 
     assert harness.state("raw_observation_convergence").value == "unavailable"
-    observation = harness.supervisor.board.get_or_unavailable("convergence")
+    observation = harness.supervisor.board.get_or_unavailable("raw_materialization")
     assert observation.state.value == "unavailable"
     assert observation.reason == "source.db is absent"
+    assert not harness.supervisor.is_schedulable("raw_observation_convergence")
     assert not [task for task in harness.supervisor.tasks if not task.done()]
     report = asyncio.run(harness.close())
     assert report.clean

@@ -1,8 +1,8 @@
-"""Renderer module.
+"""Session and content format adapters.
 
-The live output renderers are accessed via module functions in
-polylogue.rendering.formatting (format_session_markdown,
-render_session_html).
+These renderers serialize archive data into output formats. The HTML adapter
+uses ``polylogue.ui.theme`` for shared palette and syntax-theme tokens;
+terminal interaction and Rich layout remain owned by ``polylogue.ui``.
 """
 
 from __future__ import annotations

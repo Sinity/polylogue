@@ -1,10 +1,32 @@
 import { useState } from 'preact/hooks';
-import type { MessageQueryPage, MessageQueryRow } from '../contracts/query-units';
-import { fetchArchiveMessagePage } from '../lib/api';
+import { PolylogueClient, type MessageQueryRowPayload, type QueryUnitEnvelope } from '../api/generated';
+import { ensureWebCredential } from '../lib/api';
 
 const PREVIEW_LIMIT = 180;
+const ARCHIVE_OVERVIEW_EXPRESSION = 'messages where words >= 0 | sort by time desc';
+const ARCHIVE_OVERVIEW_LIMIT = 6;
+const client = new PolylogueClient();
 
-type PageLoader = (continuation?: string) => Promise<MessageQueryPage>;
+type PageLoader = (continuation?: string) => Promise<QueryUnitEnvelope>;
+
+export async function loadArchiveMessagePage(
+  continuation?: string,
+  queryClient: PolylogueClient = client,
+): Promise<QueryUnitEnvelope> {
+  await ensureWebCredential();
+  const response = await queryClient.queryUnits(
+    continuation === undefined
+      ? { expression: ARCHIVE_OVERVIEW_EXPRESSION, limit: ARCHIVE_OVERVIEW_LIMIT }
+      : { continuation },
+  );
+  if (response.mode !== 'query-unit' || response.unit !== 'message') {
+    throw new TypeError('archive activity response is not a message page');
+  }
+  if (response.items.some((row) => row.unit !== 'message')) {
+    throw new TypeError('archive activity page contains a non-message row');
+  }
+  return response;
+}
 
 export interface ArchiveOverviewIslandProps {
   readonly initialContinuation?: string | null;
@@ -29,16 +51,17 @@ function activityTimestamp(occurredAtMs: number | null): string {
   }).format(new Date(occurredAtMs));
 }
 
-function ActivityRow({ row }: { readonly row: MessageQueryRow }) {
+function ActivityRow({ row }: { readonly row: MessageQueryRowPayload }) {
+  const occurredAtMs = row.occurred_at_ms ?? null;
   return (
     <li class="activity-row" data-message-id={row.message_id}>
       <div class="activity-row__meta">
         <span class="activity-row__origin">{row.origin}</span>
-        {row.occurred_at_ms === null ? (
+        {occurredAtMs === null ? (
           <span>Time unavailable</span>
         ) : (
-          <time dateTime={new Date(row.occurred_at_ms).toISOString()}>
-            {activityTimestamp(row.occurred_at_ms)}
+          <time dateTime={new Date(occurredAtMs).toISOString()}>
+            {activityTimestamp(occurredAtMs)}
           </time>
         )}
       </div>
@@ -57,10 +80,10 @@ function ActivityRow({ row }: { readonly row: MessageQueryRow }) {
 
 export function ArchiveOverviewIsland({
   initialContinuation,
-  loadPage = fetchArchiveMessagePage,
+  loadPage = loadArchiveMessagePage,
 }: ArchiveOverviewIslandProps) {
   const [continuation, setContinuation] = useState<string | null | undefined>(initialContinuation);
-  const [rows, setRows] = useState<readonly MessageQueryRow[]>([]);
+  const [rows, setRows] = useState<readonly MessageQueryRowPayload[]>([]);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState('');
 
@@ -79,10 +102,18 @@ export function ArchiveOverviewIsland({
     setStatus('Loading archive activity…');
     try {
       const page = await loadPage(continuation ?? undefined);
-      setRows((current) => [...current, ...page.items]);
+      if (page.unit !== 'message' || page.items.some((row) => row.unit !== 'message')) {
+        throw new TypeError('archive activity page contains a non-message row');
+      }
+      if (page.outcome.state === 'error') {
+        throw new Error(page.outcome.reason ?? 'Archive activity is unavailable.');
+      }
+      setRows((current) => [...current, ...(page.items as readonly MessageQueryRowPayload[])]);
       setContinuation(page.continuation);
       setStatus(
-        page.items.length === 0
+        page.outcome.state === 'degraded'
+          ? (page.outcome.reason ?? 'Archive activity is incomplete.')
+          : page.items.length === 0
           ? 'No additional activity found.'
           : `Loaded ${page.items.length.toLocaleString()} additional ${page.items.length === 1 ? 'record' : 'records'}.`,
       );

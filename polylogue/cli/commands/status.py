@@ -1215,7 +1215,9 @@ def _archive_primary_tier_count(tier: str, counts: dict[str, int]) -> tuple[str,
     return table, counts[table]
 
 
-def _fmt_bytes(n: int) -> str:
+def _fmt_bytes(n: int | None) -> str:
+    if n is None:
+        return "unavailable"
     if n >= 1_000_000_000:
         return f"{n / 1_000_000_000:.1f} GB"
     if n >= 1_000_000:

@@ -75,6 +75,314 @@ class QueryUnitsRequest(QueryRequest):
     pass
 
 
+class DialogueReadRequest(QueryRequest):
+    session_id: str = Field(min_length=1)
+    projection: dict[str, object] = Field(default_factory=dict)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=100, ge=1, le=200)
+    continuation: str | None = Field(default=None, min_length=1)
+
+
+class TemporalReadRequest(QueryRequest):
+    session_id: str | None = None
+    projection: dict[str, object] = Field(default_factory=dict)
+
+
+class ChronicleReadRequest(QueryRequest):
+    session_id: str | None = None
+    projection: dict[str, object] = Field(default_factory=dict)
+
+
+class EffectiveContextReadRequest(_OperationPayload):
+    session_id: str = Field(min_length=1)
+    at_position: int | None = None
+
+
+class NeighborReadRequest(_OperationPayload):
+    session_id: str | None = None
+    query: str | None = None
+    origin: str | None = None
+    limit: int = Field(default=10, ge=1)
+    window_hours: int = Field(default=24, ge=1)
+
+    @model_validator(mode="after")
+    def has_seed(self) -> NeighborReadRequest:
+        if not self.session_id and not self.query:
+            raise ValueError("supply a session_id or query seed")
+        return self
+
+
+class CorrelationReadRequest(_OperationPayload):
+    session_id: str = Field(min_length=1)
+    repo_path: str | None = None
+    since_hours: int = 2
+    confidence_threshold: float = 0.3
+
+
+class AssertionClaimsListRequest(_OperationPayload):
+    kinds: list[str] | None = None
+    statuses: list[str] | None = Field(default_factory=lambda: ["active", "candidate"])
+    target_ref: str | None = None
+    scope_ref: str | None = None
+    context_inject: bool | None = None
+    limit: int = Field(default=20, ge=1, le=1000)
+
+
+class UserMarksListRequest(_OperationPayload):
+    mark_type: str | None = None
+    session_id: str | None = None
+    target_type: str | None = None
+    target_id: str | None = None
+    message_id: str | None = None
+
+
+class UserAnnotationsListRequest(_OperationPayload):
+    session_id: str | None = None
+    target_type: str | None = None
+    target_id: str | None = None
+    message_id: str | None = None
+
+
+class UserOverlayListRequest(_OperationPayload):
+    pass
+
+
+class UserOverlayGetRequest(_OperationPayload):
+    id: str = Field(min_length=1)
+
+
+class UserMarkMutationRequest(_OperationPayload):
+    session_id: str = Field(min_length=1)
+    mark_type: str = Field(min_length=1)
+    target_type: str = Field(default="session", min_length=1)
+    target_id: str | None = None
+    message_id: str | None = None
+
+
+class UserAnnotationSaveRequest(_OperationPayload):
+    annotation_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    note_text: str = Field(min_length=1)
+    target_type: str = Field(default="session", min_length=1)
+    target_id: str | None = None
+    message_id: str | None = None
+
+
+class UserOverlayDeleteRequest(_OperationPayload):
+    id: str = Field(min_length=1)
+
+
+class UserSavedViewSaveRequest(_OperationPayload):
+    view_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    query: dict[str, object]
+    watch: bool = False
+
+
+class UserRecallPackSaveRequest(_OperationPayload):
+    pack_id: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    payload: dict[str, object]
+
+    @model_validator(mode="after")
+    def items_are_objects(self) -> UserRecallPackSaveRequest:
+        items = self.payload.get("items")
+        if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+            raise ValueError("recall pack payload.items must be a list of objects")
+        return self
+
+
+class UserWorkspaceSaveRequest(_OperationPayload):
+    workspace_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    mode: Literal["tabs", "stack", "compare", "timeline"] = "tabs"
+    open_targets: list[dict[str, object]] = Field(default_factory=list)
+    layout: dict[str, object] = Field(default_factory=dict)
+    active_target: dict[str, object] = Field(default_factory=dict)
+
+
+class FacadeMetadataSetRequest(_OperationPayload):
+    session_id: str = Field(min_length=1)
+    key: str = Field(min_length=1)
+    value: object
+
+
+class FacadeMetadataDeleteRequest(_OperationPayload):
+    session_id: str = Field(min_length=1)
+    key: str = Field(min_length=1)
+
+
+class FacadeTagAddRequest(_OperationPayload):
+    session_id: str = Field(min_length=1)
+    tag: str = Field(min_length=1)
+    author_ref: str | None = None
+    author_kind: str | None = None
+
+
+class FacadeTagRemoveRequest(_OperationPayload):
+    session_id: str = Field(min_length=1)
+    tag: str = Field(min_length=1)
+
+
+class FacadeBulkTagSessionsRequest(_OperationPayload):
+    session_ids: list[str] = Field(min_length=1, max_length=100)
+    tags: list[str] = Field(min_length=1, max_length=20)
+    author_ref: str | None = None
+    author_kind: str | None = None
+
+
+class FacadeRecallPackCreateRequest(_OperationPayload):
+    pack_id: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    session_ids_json: str
+    payload_json: str
+
+
+class FacadeRecallPackDeleteRequest(_OperationPayload):
+    pack_id: str = Field(min_length=1)
+
+
+class FacadeSavedViewSaveRequest(_OperationPayload):
+    view_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    query_json: str
+    watch: bool = False
+
+
+class FacadeWorkspaceSaveRequest(_OperationPayload):
+    workspace_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    mode: Literal["tabs", "stack", "compare", "timeline"]
+    open_targets_json: str
+    layout_json: str
+    active_target_json: str = "{}"
+
+
+class FacadeWorkspaceDeleteRequest(_OperationPayload):
+    workspace_id: str = Field(min_length=1)
+
+
+class FacadeRecordCorrectionRequest(_OperationPayload):
+    session_id: str = Field(min_length=1)
+    kind: str = Field(min_length=1)
+    payload: dict[str, str]
+    note: str | None = None
+    author_ref: str | None = None
+    author_kind: str | None = None
+
+
+class FacadeCorrectionRequest(_OperationPayload):
+    session_id: str = Field(min_length=1)
+    kind: str = Field(min_length=1)
+
+
+class FacadeClearCorrectionsRequest(_OperationPayload):
+    session_id: str = Field(min_length=1)
+
+
+class FacadeBlackboardPostRequest(_OperationPayload):
+    kind: str = Field(min_length=1)
+    title: str
+    content: str
+    scope_repo: str | None = None
+    scope_session: str | None = None
+    scope_issue: int | None = None
+    scope_path: str | None = None
+    related_sessions: list[str] = Field(default_factory=list)
+    author_ref: str | None = None
+    author_kind: str = "user"
+    evidence_refs: list[str] = Field(default_factory=list)
+    staleness: dict[str, object] | None = None
+    context_policy: dict[str, object] | None = None
+
+
+class FacadeDeleteSessionRequest(_OperationPayload):
+    session_id: str = Field(min_length=1)
+    actor: str = Field(default="user:api", min_length=1)
+
+
+class FacadeWorkEventRequest(_OperationPayload):
+    session_id: str = Field(min_length=1)
+    event_id: str = Field(min_length=1)
+    event_type: str = Field(min_length=1)
+    summary: str
+    payload: dict[str, object] | None = None
+    timestamp: str | None = None
+
+
+class FacadeManualContinuationRequest(_OperationPayload):
+    child_session_id: str = Field(min_length=1)
+    parent_session_id: str = Field(min_length=1)
+
+
+class FacadeContextDeliveryRequest(_OperationPayload):
+    image: dict[str, object]
+    boundary: str = Field(min_length=1)
+    recipient_ref: str = Field(min_length=1)
+    delivered_by_ref: str = Field(min_length=1)
+    run_ref: str | None = None
+    inheritance_mode: str = "explicit"
+
+
+class FacadeCandidateJudgmentRequest(_OperationPayload):
+    candidate_ref: str = Field(min_length=1)
+    decision: str = Field(min_length=1)
+    reason: str | None = None
+    actor_ref: str = "user:local"
+    inject: bool = False
+    replacement_kind: str | None = None
+    replacement_body_text: str | None = None
+    replacement_value: object | None = None
+
+
+class ComparativeJudgmentJudgeRequest(_OperationPayload):
+    actor_ref: str = Field(min_length=1)
+    execution_context_id: str = Field(min_length=1)
+    role: str = "judge"
+
+
+class ComparativeJudgmentWireRequest(_OperationPayload):
+    judgment_id: str = Field(min_length=1)
+    items: list[str] = Field(min_length=2)
+    dimension: str = Field(min_length=1)
+    verdict: str | list[str]
+    judge: ComparativeJudgmentJudgeRequest
+    blinded: bool
+    rubric_id: str = Field(min_length=1)
+    rubric_version: int = Field(ge=1)
+    evidence_refs: list[str] = Field(default_factory=list)
+    elicitation_ref: str | None = None
+    rationale: str | None = None
+    rationale_visible: bool = False
+    decided_at_ms: int = Field(default=0, ge=0)
+
+
+class FacadeComparativeJudgmentRequest(_OperationPayload):
+    judgment: ComparativeJudgmentWireRequest
+    author_kind: str = "user"
+
+
+class ContextLedgerRowRequest(_OperationPayload):
+    decision: Literal["included", "degraded", "dropped"]
+    source: str = Field(min_length=1)
+    item_ref: str = Field(min_length=1)
+    token_cost: int = Field(ge=0)
+    source_local_rank: int = Field(ge=0)
+    budget_before: int = Field(ge=0)
+    budget_after: int = Field(ge=0)
+    disclosure_verdict: str = Field(min_length=1)
+    authority_verdict: str = Field(min_length=1)
+    authority_reason: str
+    policy_refs: list[str] = Field(default_factory=list)
+    target_session: str | None = None
+    execution_context_ref: str = Field(min_length=1)
+
+
+class FacadeContextLedgerRequest(_OperationPayload):
+    build_ref: str = Field(min_length=1)
+    ledger_rows: list[ContextLedgerRowRequest] = Field(default_factory=list)
+
+
 class CompletionRequest(_OperationPayload):
     """One shell-completion question.
 
@@ -97,9 +405,33 @@ class FacetsRequest(QueryRequest):
     pass
 
 
+class BackupRequest(_OperationPayload):
+    output_dir: str = Field(min_length=1)
+    check_only: bool = False
+    verify: bool = False
+    profile: Literal["full_evidence", "user_overlays", "rebuildable_cache_exclude", "diagnostics_bundle"] = (
+        "rebuildable_cache_exclude"
+    )
+
+
+class SecretScanRequest(_OperationPayload):
+    session_id: str | None = None
+    scan_all: bool = False
+    max_sessions: int | None = Field(default=None, ge=1)
+    origin: str | None = None
+    status_only: bool = False
+
+    @model_validator(mode="after")
+    def one_scan_mode(self) -> SecretScanRequest:
+        if sum((self.session_id is not None, self.scan_all, self.status_only)) != 1:
+            raise ValueError("select exactly one of session_id, scan_all, or status_only")
+        return self
+
+
 class IngestRequest(_OperationPayload):
     path: str = Field(min_length=1)
     source_path: str | None = None
+    source_name: str | None = None
     idempotency_key: str | None = None
 
 
@@ -315,6 +647,8 @@ class AnnotationBatchImportOperationRequest(_OperationPayload):
     model_ref: str = Field(min_length=1, max_length=4_096)
     prompt_ref: str = Field(min_length=1, max_length=4_096)
     metadata: dict[str, object] = Field(default_factory=dict)
+    created_at_ms: int | None = Field(default=None, ge=0)
+    schema_definition_json: str | None = None
 
     @model_validator(mode="after")
     def nonblank_refs(self) -> AnnotationBatchImportOperationRequest:
@@ -437,6 +771,13 @@ class EmbeddingBackfillRequest(_OperationPayload):
     rebuild: bool = False
 
 
+class EmbeddingFailureResolveRequest(_OperationPayload):
+    failure_id: str = Field(min_length=1)
+    resolution: Literal["acknowledge", "requeue", "supersede"]
+    note: str | None = None
+    superseded_by: str | None = None
+
+
 class OperationStatusRequest(_OperationPayload):
     request_id: str = Field(min_length=1)
 
@@ -459,6 +800,22 @@ class _OperationResult(BaseModel):
     """Base for declared result payloads; envelopes own authority metadata."""
 
     model_config = ConfigDict(extra="allow", frozen=True, strict=True)
+
+
+class UserOverlayListResult(_OperationResult):
+    items: list[dict[str, object]]
+    total: int = Field(ge=0)
+
+
+class AssertionClaimsListResult(UserOverlayListResult):
+    limit: int = Field(ge=1)
+    statuses: list[str] | None = None
+    kinds: list[str] | None = None
+
+
+class UserOverlayGetResult(_OperationResult):
+    found: bool
+    item: dict[str, object] | None
 
 
 class StatusResult(_OperationResult):
@@ -529,6 +886,36 @@ class QueryUnitsResult(_OperationResult):
         model = QueryUnitAggregateEnvelope if value.get("mode") == "query-unit-aggregate" else QueryUnitEnvelope
         model.model_validate_json(json.dumps(value), strict=True)
         return value
+
+
+class DialogueReadResult(_OperationResult):
+    view: Literal["dialogue"]
+    payload: dict[str, object]
+
+
+class TemporalReadResult(_OperationResult):
+    view: Literal["temporal"]
+    payload: dict[str, object]
+
+
+class ChronicleReadResult(_OperationResult):
+    view: Literal["chronicle"]
+    payload: dict[str, object]
+
+
+class EffectiveContextReadResult(_OperationResult):
+    view: Literal["effective_context"]
+    payload: dict[str, object]
+
+
+class NeighborReadResult(_OperationResult):
+    view: Literal["neighbors"]
+    payload: dict[str, object]
+
+
+class CorrelationReadResult(_OperationResult):
+    view: Literal["correlation"]
+    payload: dict[str, object]
 
 
 class CompletionCandidateResult(_OperationPayload):
@@ -971,6 +1358,583 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_model=SessionReadResult,
     ),
     DaemonOperationSpec(
+        "read.dialogue",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        result_contract="read.dialogue.result/v1",
+        request_model=DialogueReadRequest,
+        result_model=DialogueReadResult,
+    ),
+    DaemonOperationSpec(
+        "read.temporal",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        result_contract="read.temporal.result/v1",
+        request_model=TemporalReadRequest,
+        result_model=TemporalReadResult,
+    ),
+    DaemonOperationSpec(
+        "read.chronicle",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        result_contract="read.chronicle.result/v1",
+        request_model=ChronicleReadRequest,
+        result_model=ChronicleReadResult,
+    ),
+    DaemonOperationSpec(
+        "read.effective_context",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        result_contract="read.effective_context.result/v1",
+        request_model=EffectiveContextReadRequest,
+        result_model=EffectiveContextReadResult,
+    ),
+    DaemonOperationSpec(
+        "read.neighbors",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        result_contract="read.neighbors.result/v1",
+        request_model=NeighborReadRequest,
+        result_model=NeighborReadResult,
+    ),
+    DaemonOperationSpec(
+        "read.correlation",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        deadline_s=30.0,
+        result_contract="read.correlation.result/v1",
+        request_model=CorrelationReadRequest,
+        result_model=CorrelationReadResult,
+    ),
+    DaemonOperationSpec(
+        "user.assertions.list",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="user.assertions.list.request/v1",
+        result_contract="user.assertions.list.result/v1",
+        request_model=AssertionClaimsListRequest,
+        result_model=AssertionClaimsListResult,
+    ),
+    DaemonOperationSpec(
+        "user.marks.list",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="user.marks.list.request/v1",
+        result_contract="user.marks.list.result/v1",
+        request_model=UserMarksListRequest,
+        result_model=UserOverlayListResult,
+    ),
+    DaemonOperationSpec(
+        "user.annotations.list",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="user.annotations.list.request/v1",
+        result_contract="user.annotations.list.result/v1",
+        request_model=UserAnnotationsListRequest,
+        result_model=UserOverlayListResult,
+    ),
+    DaemonOperationSpec(
+        "user.annotations.get",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="user.annotations.get.request/v1",
+        result_contract="user.annotations.get.result/v1",
+        request_model=UserOverlayGetRequest,
+        result_model=UserOverlayGetResult,
+    ),
+    DaemonOperationSpec(
+        "user.saved_views.list",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="user.saved_views.list.request/v1",
+        result_contract="user.saved_views.list.result/v1",
+        request_model=UserOverlayListRequest,
+        result_model=UserOverlayListResult,
+    ),
+    DaemonOperationSpec(
+        "user.saved_views.get",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="user.saved_views.get.request/v1",
+        result_contract="user.saved_views.get.result/v1",
+        request_model=UserOverlayGetRequest,
+        result_model=UserOverlayGetResult,
+    ),
+    DaemonOperationSpec(
+        "user.recall_packs.list",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="user.recall_packs.list.request/v1",
+        result_contract="user.recall_packs.list.result/v1",
+        request_model=UserOverlayListRequest,
+        result_model=UserOverlayListResult,
+    ),
+    DaemonOperationSpec(
+        "user.recall_packs.get",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="user.recall_packs.get.request/v1",
+        result_contract="user.recall_packs.get.result/v1",
+        request_model=UserOverlayGetRequest,
+        result_model=UserOverlayGetResult,
+    ),
+    DaemonOperationSpec(
+        "user.workspaces.list",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="user.workspaces.list.request/v1",
+        result_contract="user.workspaces.list.result/v1",
+        request_model=UserOverlayListRequest,
+        result_model=UserOverlayListResult,
+    ),
+    DaemonOperationSpec(
+        "user.workspaces.get",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="user.workspaces.get.request/v1",
+        result_contract="user.workspaces.get.result/v1",
+        request_model=UserOverlayGetRequest,
+        result_model=UserOverlayGetResult,
+    ),
+    DaemonOperationSpec(
+        "user.mark.add",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.add_mark",
+        deadline_s=120.0,
+        request_contract="user.mark.add.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=UserMarkMutationRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="user_mark_add",
+        handler_module="polylogue.operations.user_overlay_mutations",
+    ),
+    DaemonOperationSpec(
+        "user.mark.remove",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.remove_mark",
+        deadline_s=120.0,
+        request_contract="user.mark.remove.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=UserMarkMutationRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="user_mark_remove",
+        handler_module="polylogue.operations.user_overlay_mutations",
+    ),
+    DaemonOperationSpec(
+        "user.annotation.save",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.save_annotation",
+        deadline_s=120.0,
+        request_contract="user.annotation.save.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=UserAnnotationSaveRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="user_annotation_save",
+        handler_module="polylogue.operations.user_overlay_mutations",
+    ),
+    DaemonOperationSpec(
+        "user.annotation.delete",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.delete_annotation",
+        deadline_s=120.0,
+        request_contract="user.annotation.delete.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=UserOverlayDeleteRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="user_annotation_delete",
+        handler_module="polylogue.operations.user_overlay_mutations",
+    ),
+    DaemonOperationSpec(
+        "user.saved_view.save",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.save_view",
+        deadline_s=120.0,
+        request_contract="user.saved_view.save.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=UserSavedViewSaveRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="user_saved_view_save",
+        handler_module="polylogue.operations.user_overlay_mutations",
+    ),
+    DaemonOperationSpec(
+        "user.saved_view.delete",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.delete_view",
+        deadline_s=120.0,
+        request_contract="user.saved_view.delete.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=UserOverlayDeleteRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="user_saved_view_delete",
+        handler_module="polylogue.operations.user_overlay_mutations",
+    ),
+    DaemonOperationSpec(
+        "user.recall_pack.save",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.create_recall_pack",
+        deadline_s=120.0,
+        request_contract="user.recall_pack.save.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=UserRecallPackSaveRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="user_recall_pack_save",
+        handler_module="polylogue.operations.user_overlay_mutations",
+    ),
+    DaemonOperationSpec(
+        "user.recall_pack.delete",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.delete_recall_pack",
+        deadline_s=120.0,
+        request_contract="user.recall_pack.delete.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=UserOverlayDeleteRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="user_recall_pack_delete",
+        handler_module="polylogue.operations.user_overlay_mutations",
+    ),
+    DaemonOperationSpec(
+        "user.workspace.save",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.save_workspace",
+        deadline_s=120.0,
+        request_contract="user.workspace.save.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=UserWorkspaceSaveRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="user_workspace_save",
+        handler_module="polylogue.operations.user_overlay_mutations",
+    ),
+    DaemonOperationSpec(
+        "user.workspace.delete",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.delete_workspace",
+        deadline_s=120.0,
+        request_contract="user.workspace.delete.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=UserOverlayDeleteRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="user_workspace_delete",
+        handler_module="polylogue.operations.user_overlay_mutations",
+    ),
+    DaemonOperationSpec(
+        "mutation.facade.set_metadata",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.set_metadata",
+        deadline_s=120.0,
+        request_contract="mutation.facade.set_metadata.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=FacadeMetadataSetRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="facade_set_metadata",
+        handler_module="polylogue.operations.facade_mutations",
+    ),
+    DaemonOperationSpec(
+        "mutation.facade.delete_metadata",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.delete_metadata",
+        deadline_s=120.0,
+        request_contract="mutation.facade.delete_metadata.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=FacadeMetadataDeleteRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="facade_delete_metadata",
+        handler_module="polylogue.operations.facade_mutations",
+    ),
+    DaemonOperationSpec(
+        "mutation.facade.bulk_tag_sessions",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.bulk_tag_sessions",
+        deadline_s=120.0,
+        request_contract="mutation.facade.bulk_tag_sessions.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=FacadeBulkTagSessionsRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="facade_bulk_tag_sessions",
+        handler_module="polylogue.operations.facade_mutations",
+    ),
+    DaemonOperationSpec(
+        "mutation.facade.add_tag",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.add_tag",
+        deadline_s=120.0,
+        request_contract="mutation.facade.add_tag.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=FacadeTagAddRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="facade_add_tag",
+        handler_module="polylogue.operations.facade_mutations",
+    ),
+    DaemonOperationSpec(
+        "mutation.facade.remove_tag",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.remove_tag",
+        deadline_s=120.0,
+        request_contract="mutation.facade.remove_tag.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=FacadeTagRemoveRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="facade_remove_tag",
+        handler_module="polylogue.operations.facade_mutations",
+    ),
+    DaemonOperationSpec(
+        "mutation.facade.save_view",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.save_view",
+        deadline_s=120.0,
+        max_body_bytes=8 * 1024 * 1024,
+        request_contract="mutation.facade.save_view.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=FacadeSavedViewSaveRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="facade_save_view",
+        handler_module="polylogue.operations.facade_mutations",
+    ),
+    DaemonOperationSpec(
+        "mutation.facade.create_recall_pack",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.create_recall_pack",
+        deadline_s=120.0,
+        max_body_bytes=8 * 1024 * 1024,
+        request_contract="mutation.facade.create_recall_pack.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=FacadeRecallPackCreateRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="facade_create_recall_pack",
+        handler_module="polylogue.operations.facade_mutations",
+    ),
+    DaemonOperationSpec(
+        "mutation.facade.delete_recall_pack",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.delete_recall_pack",
+        deadline_s=120.0,
+        request_contract="mutation.facade.delete_recall_pack.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=FacadeRecallPackDeleteRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="facade_delete_recall_pack",
+        handler_module="polylogue.operations.facade_mutations",
+    ),
+    DaemonOperationSpec(
+        "mutation.facade.save_workspace",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.save_workspace",
+        deadline_s=120.0,
+        request_contract="mutation.facade.save_workspace.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=FacadeWorkspaceSaveRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="facade_save_workspace",
+        handler_module="polylogue.operations.facade_mutations",
+    ),
+    DaemonOperationSpec(
+        "mutation.facade.delete_workspace",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.delete_workspace",
+        deadline_s=120.0,
+        request_contract="mutation.facade.delete_workspace.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=FacadeWorkspaceDeleteRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="facade_delete_workspace",
+        handler_module="polylogue.operations.facade_mutations",
+    ),
+    DaemonOperationSpec(
+        "mutation.facade.record_correction",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.record_correction",
+        deadline_s=120.0,
+        request_contract="mutation.facade.record_correction.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=FacadeRecordCorrectionRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="facade_record_correction",
+        handler_module="polylogue.operations.facade_mutations",
+    ),
+    DaemonOperationSpec(
+        "mutation.facade.delete_correction",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.delete_correction",
+        deadline_s=120.0,
+        request_contract="mutation.facade.delete_correction.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=FacadeCorrectionRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="facade_delete_correction",
+        handler_module="polylogue.operations.facade_mutations",
+    ),
+    DaemonOperationSpec(
+        "mutation.facade.clear_corrections",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.clear_corrections",
+        deadline_s=120.0,
+        request_contract="mutation.facade.clear_corrections.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=FacadeClearCorrectionsRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="facade_clear_corrections",
+        handler_module="polylogue.operations.facade_mutations",
+    ),
+    DaemonOperationSpec(
+        "mutation.facade.post_blackboard_note",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.post_blackboard_note",
+        deadline_s=120.0,
+        request_contract="mutation.facade.post_blackboard_note.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=FacadeBlackboardPostRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="facade_post_blackboard_note",
+        handler_module="polylogue.operations.facade_mutations",
+    ),
+    DaemonOperationSpec(
+        "mutation.facade.delete_session",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.delete_session",
+        deadline_s=120.0,
+        request_contract="mutation.facade.delete_session.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=FacadeDeleteSessionRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="facade_delete_session",
+        handler_module="polylogue.operations.facade_mutations",
+    ),
+    DaemonOperationSpec(
+        "mutation.facade.record_work_event",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.record_work_event",
+        deadline_s=120.0,
+        request_contract="mutation.facade.record_work_event.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=FacadeWorkEventRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="facade_record_work_event",
+        handler_module="polylogue.operations.facade_writers",
+    ),
+    DaemonOperationSpec(
+        "mutation.facade.record_manual_continuation",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.record_manual_continuation",
+        deadline_s=120.0,
+        request_contract="mutation.facade.record_manual_continuation.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=FacadeManualContinuationRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="facade_record_manual_continuation",
+        handler_module="polylogue.operations.facade_writers",
+    ),
+    DaemonOperationSpec(
+        "mutation.facade.record_context_delivery",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.record_context_delivery",
+        deadline_s=120.0,
+        max_body_bytes=8 * 1024 * 1024,
+        request_contract="mutation.facade.record_context_delivery.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=FacadeContextDeliveryRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="facade_record_context_delivery",
+        handler_module="polylogue.operations.facade_writers",
+    ),
+    DaemonOperationSpec(
+        "mutation.facade.judge_assertion_candidate",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.judge_assertion_candidate",
+        deadline_s=120.0,
+        request_contract="mutation.facade.judge_assertion_candidate.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=FacadeCandidateJudgmentRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="facade_judge_assertion_candidate",
+        handler_module="polylogue.operations.facade_writers",
+    ),
+    DaemonOperationSpec(
+        "mutation.facade.record_comparative_judgment",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.record_comparative_judgment",
+        deadline_s=120.0,
+        request_contract="mutation.facade.record_comparative_judgment.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=FacadeComparativeJudgmentRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="facade_record_comparative_judgment",
+        handler_module="polylogue.operations.facade_writers",
+    ),
+    DaemonOperationSpec(
+        "mutation.facade.context_ledger",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.context_injection_ledger",
+        deadline_s=30.0,
+        max_body_bytes=8 * 1024 * 1024,
+        request_contract="mutation.facade.context_ledger.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=FacadeContextLedgerRequest,
+        result_model=MutationResult,
+        idempotent=False,
+        handler="facade_context_ledger",
+        handler_module="polylogue.operations.facade_writers",
+    ),
+    DaemonOperationSpec(
         "session.reference",
         DaemonAuthority.READ,
         DaemonFallback.NEVER,
@@ -1027,6 +1991,31 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_model=IngestResult,
         handler="execute_ingest_operation",
         handler_module="polylogue.operations.daemon_ingest",
+    ),
+    DaemonOperationSpec(
+        "maintenance.backup",
+        DaemonAuthority.LONG_RUNNING,
+        DaemonFallback.NEVER,
+        capability="archive.backup",
+        deadline_s=300.0,
+        cancellable=False,
+        request_contract="maintenance.backup.request/v1",
+        result_contract="maintenance.backup.result/v1",
+        request_model=BackupRequest,
+        result_model=MutationResult,
+        handler="maintenance_backup",
+    ),
+    DaemonOperationSpec(
+        "maintenance.secret_scan",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.scan_secrets",
+        deadline_s=300.0,
+        request_contract="maintenance.secret_scan.request/v1",
+        result_contract="maintenance.secret_scan.result/v1",
+        request_model=SecretScanRequest,
+        result_model=MutationResult,
+        handler="maintenance_secret_scan",
     ),
     DaemonOperationSpec(
         "mutation.session.delete.preview",
@@ -1368,7 +2357,22 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=EmbeddingBackfillRequest,
         result_model=EmbeddingBackfillResult,
         idempotent=True,
-        handler="maintenance_embeddings_backfill",
+        handler="execute_embedding_backfill_operation",
+        handler_module="polylogue.daemon.embedding_owner",
+    ),
+    DaemonOperationSpec(
+        "maintenance.embeddings.failure.resolve",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.embed",
+        deadline_s=60.0,
+        request_contract="maintenance.embeddings.failure.resolve.request/v1",
+        result_contract="mutation.result/v1",
+        request_type="EmbeddingFailureResolveRequest",
+        result_type="MutationResult",
+        request_model=EmbeddingFailureResolveRequest,
+        result_model=MutationResult,
+        handler="maintenance_embedding_failure_resolve",
     ),
 )
 

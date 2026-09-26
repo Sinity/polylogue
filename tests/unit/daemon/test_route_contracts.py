@@ -11,6 +11,7 @@ import pytest
 from polylogue.daemon.http import (
     DaemonAPIHandler,
     _declared_get_routes,
+    _declared_mutation_routes,
     _parameterized_get_routes,
     _ParameterizedGetRoute,
     _static_get_routes,
@@ -85,18 +86,21 @@ def test_declared_routes_are_generated_and_reachable_from_daemon_handler() -> No
 
     validate_declared_route_reachability(DaemonAPIHandler)
     generated = {(route.contract.method, route.pattern) for route in _declared_get_routes()}
+    generated.update((route.declaration.method, route.declaration.path) for route in _declared_mutation_routes("POST"))
+    generated.update(
+        (route.declaration.method, route.declaration.path) for route in _declared_mutation_routes("DELETE")
+    )
     declared = {(route.method, route.path) for route in DAEMON_ROUTE_DECLARATIONS}
     assert generated == declared
 
 
-def test_metadata_only_api_inventory_has_an_explicit_migration_reason() -> None:
-    """Undeclared API routes stay visible as named, bounded migration debt."""
+def test_declared_compatibility_adapters_have_an_explicit_migration_reason() -> None:
+    """A bound route never claims a product operation it does not execute."""
 
-    routes = metadata_only_api_routes()
-    assert routes
-    assert all(route.domain_operation is None for route in routes)
-    assert all(route.metadata_only_reason for route in routes)
-    assert all(route.metadata_only_reason != "metadata-only" for route in routes)
+    assert not metadata_only_api_routes()
+    compatibility = [route for route in DAEMON_ROUTE_DECLARATIONS if route.domain_operation is None]
+    assert compatibility
+    assert all(route.migration_reason for route in compatibility)
 
 
 def test_proof_critical_read_declarations_drive_dispatch_and_openapi() -> None:
@@ -116,7 +120,7 @@ def test_proof_critical_read_declarations_drive_dispatch_and_openapi() -> None:
     installed.update({route.pattern: route for route in _parameterized_get_routes()})
     document = _build_openapi_document()
 
-    assert {declaration.path for declaration in DAEMON_ROUTE_DECLARATIONS} == set(expected)
+    assert set(expected).issubset({declaration.path for declaration in DAEMON_ROUTE_DECLARATIONS})
     for path, (declaration_id, handler_name) in expected.items():
         declaration = daemon_route_declaration("GET", path)
         assert declaration.kernel.declaration_id == declaration_id
@@ -152,7 +156,7 @@ def test_unreachable_declaration_fails_the_reachability_oracle(monkeypatch: pyte
 
     from polylogue.daemon.route_contracts import RouteSpec
 
-    source = DAEMON_ROUTE_DECLARATIONS[-1]
+    source = daemon_route_declaration("GET", "/api/sessions")
     unreachable = replace(
         source,
         path="/api/sessions/:id/unreachable",
@@ -289,7 +293,7 @@ def test_stable_user_overlay_mutations_use_shared_envelope_contract() -> None:
     for route in stable_route_contracts():
         if route.kind == "user_overlay" and route.method in {"POST", "DELETE"}:
             assert route.auth_policy == "credential_and_same_origin"
-            assert route.response_contract == "mutation envelope"
+            assert route.response_contract == "MutationResultPayload"
 
 
 def test_archive_control_mutations_are_bearer_only() -> None:

@@ -1,7 +1,10 @@
 import { useState } from 'preact/hooks';
 
+import { PolylogueClient } from '../api/generated';
 import { parseObservabilityPayload, type InsightPanel, type ObservabilityPayload, type StatusComponentSnapshot } from '../contracts/observability';
-import { requestJson } from '../lib/api';
+import { ensureWebCredential } from '../lib/api';
+
+const observabilityClient = new PolylogueClient();
 
 export function InsightBrowser({ panels }: { readonly panels: readonly InsightPanel[] }) {
   return <div class="insight-grid">{panels.map((panel) => <article class="insight-card" data-insight-state={panel.state} key={panel.name}><h3>{panel.display_name}</h3><p class="state-label">{panel.state} · readiness {panel.readiness.state}</p>{panel.error ? <p>{panel.error}</p> : panel.items.length === 0 ? <p>No materialized rows are available for this bounded view.</p> : <ul>{panel.items.map((item, index) => <li key={index}><dl>{item.fields.map((field) => <div key={field.label}><dt>{field.label || 'value'}</dt><dd>{field.value}</dd></div>)}</dl>{item.provenance ? <details><summary>Provenance</summary><pre>{JSON.stringify(item.provenance, null, 2)}</pre></details> : null}<details><summary>JSON evidence</summary><pre>{JSON.stringify(item.json, null, 2)}</pre></details></li>)}</ul>}</article>)}</div>;
@@ -23,7 +26,10 @@ export function FreshnessLadder({ value }: { readonly value: unknown }) {
 
 export function ObservabilityIsland({
   initial,
-  load = async () => parseObservabilityPayload(await requestJson('/api/webui/observability')),
+  load = async () => {
+    await ensureWebCredential();
+    return parseObservabilityPayload(await observabilityClient.getWebuiObservability());
+  },
 }: {
   readonly initial: ObservabilityPayload;
   readonly load?: () => Promise<ObservabilityPayload>;
@@ -33,6 +39,6 @@ export function ObservabilityIsland({
   const [sourceResult, setSourceResult] = useState<unknown>(null);
   const [status, setStatus] = useState('');
   async function refresh() { setStatus('Refreshing observability…'); try { setPayload(await load()); setStatus('Observability refreshed.'); } catch (error) { setStatus(error instanceof Error ? error.message : 'Observability refresh failed.'); } }
-  async function inspectSource(event: Event) { event.preventDefault(); if (!source.trim()) return; setStatus('Inspecting exact source…'); try { setSourceResult(await requestJson(`/api/webui/freshness?source=${encodeURIComponent(source)}`)); setStatus('Source freshness loaded.'); } catch (error) { setStatus(error instanceof Error ? error.message : 'Source freshness failed.'); } }
+  async function inspectSource(event: Event) { event.preventDefault(); if (!source.trim()) return; setStatus('Inspecting exact source…'); try { await ensureWebCredential(); setSourceResult(await observabilityClient.getWebuiFreshness({ source })); setStatus('Source freshness loaded.'); } catch (error) { setStatus(error instanceof Error ? error.message : 'Source freshness failed.'); } }
   return <><section class="observability-panel" aria-labelledby="status-title"><h2 id="status-title">Component status</h2><button type="button" onClick={() => void refresh()}>Refresh status</button><ComponentGrid components={payload.status.components} /></section><section class="observability-panel" aria-labelledby="freshness-title"><h2 id="freshness-title">Named-source freshness</h2><form class="source-lookup" onSubmit={(event) => void inspectSource(event)}><label for="source-path">Exact source path</label><input id="source-path" value={source} onInput={(event) => setSource(event.currentTarget.value)} /><button type="submit">Inspect source</button></form><FreshnessLadder value={sourceResult} /></section><section class="observability-panel" aria-labelledby="insights-title"><h2 id="insights-title">Insights</h2><InsightBrowser panels={payload.insights} /></section><p class="island-status" role="status" aria-live="polite">{status}</p></>;
 }

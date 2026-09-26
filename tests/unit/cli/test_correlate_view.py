@@ -1,10 +1,9 @@
 """CLI tests for git/GitHub correlation via ``read --view correlation``.
 
 The standalone ``correlate`` command was absorbed into the read-view surface
-(#1842): ``find <seed> then read --view correlation``. The correlation logic
-lives in ``polylogue.analysis.correlation_view.run_correlation_view`` and
-``polylogue.analysis.session_commit``; the MCP ``correlate_session(s)`` tools
-expose the same capability programmatically.
+(#1842): ``find <seed> then read --view correlation``. The typed CLI adapter
+and the earlier in-process presentation share ``analysis.session_commit``;
+the MCP ``correlate_session(s)`` tools also expose that product logic.
 """
 
 from __future__ import annotations
@@ -18,7 +17,47 @@ import pytest
 
 from polylogue.analysis.correlation_view import run_correlation_view
 from polylogue.analysis.session_commit import GitHubRef, SessionCommitEdge, SessionCorrelationResult
+from polylogue.cli.read_view_handlers import ReadViewCorrelationOptions, ReadViewInvocation
+from polylogue.cli.read_views.correlation import run_read_correlation
+from polylogue.cli.root_request import RootModeRequest
 from polylogue.core.refs import ObjectRef
+
+
+def test_read_correlation_routes_options_and_formats_operation_result(capsys: pytest.CaptureFixture[str]) -> None:
+    """The CLI must submit the policy and render the bounded product result."""
+
+    env = MagicMock()
+    result = {"view": "correlation", "payload": {"session_id": "target", "repo": "/work/repo", "commits": []}}
+    with (
+        patch("polylogue.cli.read_views.correlation.dispatch_read", return_value=(result, None)) as dispatch,
+        patch("polylogue.cli.read_views.correlation.daemon_route_disabled", return_value=False),
+        patch("polylogue.cli.read_views.correlation._enrich_github_refs") as enrich,
+    ):
+        run_read_correlation(
+            env,
+            RootModeRequest.from_params({}),
+            ReadViewInvocation(
+                view="correlation",
+                session_id="target",
+                output_format="json",
+                destination="stdout",
+                out_path=None,
+                options=ReadViewCorrelationOptions(
+                    repo_path="/work/repo", since_hours=8, confidence_threshold=0.8, github_api=False
+                ),
+            ),
+        )
+
+    operation = dispatch.call_args.args[1]
+    assert operation.operation == "read.correlation"
+    assert operation.payload == {
+        "session_id": "target",
+        "repo_path": "/work/repo",
+        "since_hours": 8,
+        "confidence_threshold": 0.8,
+    }
+    enrich.assert_not_called()
+    assert json.loads(capsys.readouterr().out)["repo"] == "/work/repo"
 
 
 def _session() -> SimpleNamespace:

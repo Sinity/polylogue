@@ -294,6 +294,15 @@ class DaemonOperationRuntime:
             on_commit=self._notify,
         )
 
+    def begin_unbound_write(self, request: DaemonOperationRequest) -> None:
+        """Fence a snapshotless filesystem write before its first possible effect."""
+        with self._condition:
+            exchange = self._exchanges[str(request.request_id)]
+            if exchange.cancellation.cancelled or monotonic() >= exchange.deadline:
+                raise BeforeAcceptanceCancelledError("operation cancelled before backup admission")
+            exchange.acceptance_started = True
+            self._condition.notify_all()
+
     def _durable(self, exchange: _Exchange) -> dict[str, object] | None:
         if exchange.binding is None:
             return None
@@ -553,6 +562,7 @@ class DaemonOperationRuntime:
                         "ingest",
                         "maintenance.insights.rebuild",
                         "maintenance.embeddings.backfill",
+                        "maintenance.backup",
                     }:
                         if self._owner_loop is None:
                             self._exchanges.pop(request_id)
@@ -562,6 +572,7 @@ class DaemonOperationRuntime:
                                 outcome="rejected",
                                 error={"code": "ingest_runtime_unavailable", "retryable": False},
                             ).to_dict()
+                        from polylogue.daemon.backup import execute_backup_operation
                         from polylogue.daemon.embedding_owner import execute_embedding_backfill_operation
                         from polylogue.operations.daemon_ingest import execute_ingest_operation
                         from polylogue.operations.daemon_insights import execute_insights_rebuild_operation
@@ -570,6 +581,7 @@ class DaemonOperationRuntime:
                             "ingest": execute_ingest_operation,
                             "maintenance.insights.rebuild": execute_insights_rebuild_operation,
                             "maintenance.embeddings.backfill": execute_embedding_backfill_operation,
+                            "maintenance.backup": execute_backup_operation,
                         }[request.operation]
 
                         exchange.future = asyncio.run_coroutine_threadsafe(staged(request, context), self._owner_loop)

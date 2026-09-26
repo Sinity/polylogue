@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import time
 import webbrowser
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import replace
+from itertools import chain
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -17,10 +19,8 @@ import yaml
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.hydration import archive_summary_to_domain
 from polylogue.archive.query.transaction import run_archive_read_sync
-from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.cli.read_views.base import ReadViewInvocation, deliver_content, execute_query_request
-from polylogue.cli.read_views.streaming_markdown import stream_exact_session_markdown
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
@@ -127,31 +127,22 @@ def run_read_summary_or_transcript(env: AppEnv, request: RootModeRequest, invoca
 def run_read_dialogue(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
     """Render one session as authored dialogue using the shared content projection."""
 
-    del request
     assert invocation.session_id is not None
-    if (
-        invocation.destination == RenderDestination.FILE
-        and (invocation.output_format or "markdown") == "markdown"
-        and invocation.out_path
-        and invocation.projection_spec is None
-        and stream_exact_session_markdown(
-            env.config.archive_root,
-            invocation.session_id,
-            Path(invocation.out_path),
-            prose_only=True,
-        )
-    ):
-        _warn_on_written_file_secret_candidates(env, invocation.out_path)
-        env.ui.console.print(f"Wrote to {invocation.out_path}")
-        return
     projection = invocation.projection_spec.projection if invocation.projection_spec is not None else None
-    session = run_coroutine_sync(
-        env.polylogue.get_session(invocation.session_id, content_projection=ContentProjectionSpec.prose_only())
-    )
+    fmt = invocation.output_format or "markdown"
+    if invocation.destination == RenderDestination.FILE and fmt == "markdown" and invocation.projection_spec is None:
+        if not invocation.out_path:
+            raise click.UsageError("--to file requires --out <path>.")
+        if _stream_dialogue_markdown(env, request, invocation.session_id, Path(invocation.out_path)):
+            _warn_on_written_file_secret_candidates(env, invocation.out_path)
+            env.ui.console.print(f"Wrote to {invocation.out_path}")
+        else:
+            env.ui.error(f"Session not found: {invocation.session_id}")
+        return
+    session = _read_dialogue_session(env, request, invocation.session_id, projection)
     if session is None:
         env.ui.error(f"Session not found: {invocation.session_id}")
         return
-    fmt = invocation.output_format or "markdown"
     content = _format_dialogue_session(session, fmt, projection=projection)
     # open_in_browser() re-derives HTML from `session` for non-html formats
     # rather than using `content` directly, so it must receive the same
@@ -168,6 +159,154 @@ def run_read_dialogue(env: AppEnv, request: RootModeRequest, invocation: ReadVie
         output_format=fmt,
         session=windowed_session,
     )
+
+
+def _stream_dialogue_markdown(env: AppEnv, request: RootModeRequest, session_id: str, out_path: Path) -> bool:
+    """Export operation pages while retaining only one rendered page."""
+
+    from polylogue.archive.message.messages import MessageCollection
+
+    pages = _iter_dialogue_pages(env, request, session_id, None)
+    first = next(pages, None)
+    if first is None:
+        return False
+    empty = MessageCollection(messages=[])
+    header_session = first.model_copy(update={"messages": empty, "attachments": []})
+    header = format_session(header_session, "markdown", None)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=out_path.parent, delete=False) as output:
+        temporary_path = Path(output.name)
+        try:
+            output.write(header)
+            wrote_messages = False
+            for page in chain((first,), pages):
+                if not page.messages:
+                    continue
+                rendered = format_session(page.model_copy(update={"attachments": []}), "markdown", None)
+                if not rendered.startswith(header):
+                    raise ValueError("read.dialogue changed markdown header during paging")
+                section = rendered[len(header) :]
+                if not section:
+                    continue
+                if wrote_messages:
+                    output.write("\n")
+                output.write(section)
+                wrote_messages = True
+            if first.attachments:
+                attachments = format_session(first.model_copy(update={"messages": empty}), "markdown", None)
+                if not attachments.startswith(header):
+                    raise ValueError("read.dialogue changed markdown attachment header")
+                if wrote_messages:
+                    output.write("\n")
+                output.write(attachments[len(header) :])
+            output.flush()
+            temporary_path.replace(out_path)
+        except BaseException:
+            temporary_path.unlink(missing_ok=True)
+            raise
+    return True
+
+
+def _read_dialogue_session(
+    env: AppEnv, request: RootModeRequest, session_id: str, projection: ProjectionSpec | None
+) -> Session | None:
+    """Compose bounded daemon pages into the dialogue renderer's session model."""
+
+    from polylogue.archive.message.messages import MessageCollection
+
+    pages = _iter_dialogue_pages(env, request, session_id, projection)
+    first = next(pages, None)
+    if first is None:
+        return None
+    messages = list(first.messages)
+    for page in pages:
+        messages.extend(page.messages)
+    return first.model_copy(update={"messages": MessageCollection(messages=messages)})
+
+
+def _iter_dialogue_pages(
+    env: AppEnv, request: RootModeRequest, session_id: str, projection: ProjectionSpec | None
+) -> Iterator[Session]:
+    """Validate and yield each snapshot-bound operation page in order."""
+
+    from polylogue.archive.message.messages import MessageCollection
+    from polylogue.archive.message.models import Message
+    from polylogue.cli.lowering import _selection_params
+    from polylogue.cli.operation_kernel import (
+        OperationEnvelopeError,
+        OperationKernelError,
+        OperationRequest,
+    )
+    from polylogue.cli.read_dispatch import daemon_route_disabled, dispatch_read
+
+    params = _selection_params(request)
+    params["query"] = list(request.query_terms)
+    body_projection = projection.model_dump(mode="json") if projection is not None else {}
+    first: Session | None = None
+    offset = 0
+    continuation: str | None = None
+    total: int | None = None
+    while True:
+        try:
+            result, served_by = dispatch_read(
+                env.config,
+                OperationRequest(
+                    "read.dialogue",
+                    {
+                        "session_id": session_id,
+                        "params": params,
+                        "projection": body_projection,
+                        "offset": offset,
+                        "limit": 100,
+                        "continuation": continuation,
+                    },
+                ),
+                daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
+            )
+        except OperationKernelError as exc:
+            from polylogue.cli.render.outcome import exit_for_read_failure
+
+            exit_for_read_failure(exc)
+        body = result.get("payload")
+        if result.get("view") != "dialogue" or not isinstance(body, Mapping):
+            raise OperationEnvelopeError("read.dialogue returned an invalid view envelope")
+        raw_session = body.get("session")
+        if raw_session is None and first is None:
+            return
+        if not isinstance(raw_session, Mapping):
+            raise OperationEnvelopeError("read.dialogue returned no session page")
+        page = Session.model_validate(raw_session)
+        page = page.model_copy(
+            update={
+                "messages": MessageCollection(messages=[Message.model_validate(message) for message in page.messages])
+            }
+        )
+        if first is None:
+            first = page
+            if request.verbose:
+                click.echo(f"served-by: {served_by.line()}", err=True)
+        elif page.id != first.id:
+            raise OperationEnvelopeError("read.dialogue changed session during paging")
+        raw_total = body.get("total_message_count")
+        if isinstance(raw_total, bool) or not isinstance(raw_total, int) or raw_total < 0:
+            raise OperationEnvelopeError("read.dialogue returned an invalid message count")
+        if total is not None and total != raw_total:
+            raise OperationEnvelopeError("read.dialogue changed total during paging")
+        total = raw_total
+        next_offset = body.get("next_offset")
+        if next_offset is None:
+            yield page
+            break
+        if isinstance(next_offset, bool) or not isinstance(next_offset, int) or next_offset <= offset:
+            raise OperationEnvelopeError("read.dialogue returned an invalid continuation offset")
+        if next_offset > raw_total:
+            raise OperationEnvelopeError("read.dialogue continuation exceeded its message count")
+        raw_continuation = body.get("continuation")
+        if not isinstance(raw_continuation, str) or not raw_continuation:
+            raise OperationEnvelopeError("read.dialogue omitted its snapshot-bound continuation")
+        continuation = raw_continuation
+        offset = next_offset
+        yield page
 
 
 def _format_dialogue_session(
@@ -395,7 +534,6 @@ def build_read_temporal_window(
 ) -> TemporalEvidenceWindow:
     """Project selected session summaries into a temporal evidence window."""
 
-    from polylogue.api.sync.bridge import run_coroutine_sync
     from polylogue.cli.query import _create_query_vector_provider
 
     started = time.perf_counter()
@@ -457,7 +595,42 @@ def build_read_temporal_window(
 def run_read_temporal(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
     """Project selected session summaries into a temporal evidence window."""
 
-    window = build_read_temporal_window(env.config, request)
+    from polylogue.cli.lowering import _selection_params
+    from polylogue.cli.operation_kernel import (
+        OperationEnvelopeError,
+        OperationKernelError,
+        OperationRequest,
+    )
+    from polylogue.cli.read_dispatch import daemon_route_disabled, dispatch_read
+
+    params = _selection_params(request)
+    params["query"] = list(request.query_terms)
+    projection = invocation.projection_spec.projection if invocation.projection_spec is not None else None
+    try:
+        result, served_by = dispatch_read(
+            env.config,
+            OperationRequest(
+                "read.temporal",
+                {
+                    "session_id": invocation.session_id,
+                    "params": params,
+                    "projection": projection.model_dump(mode="json") if projection is not None else {},
+                },
+            ),
+            daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
+        )
+    except OperationKernelError as exc:
+        from polylogue.cli.render.outcome import exit_for_read_failure
+
+        exit_for_read_failure(exc)
+    body = result.get("payload")
+    if result.get("view") != "temporal" or not isinstance(body, Mapping):
+        raise OperationEnvelopeError("read.temporal returned an invalid view envelope")
+    if not isinstance(body.get("temporal_window"), Mapping):
+        raise OperationEnvelopeError("read.temporal returned no temporal window")
+    window = TemporalEvidenceWindow.model_validate(body["temporal_window"])
+    if request.verbose:
+        click.echo(f"served-by: {served_by.line()}", err=True)
     fmt = invocation.output_format or "markdown"
     if fmt == "json":
         content = json.dumps({"temporal_window": window.model_dump(mode="json")}, indent=2) + "\n"
@@ -469,7 +642,6 @@ def run_read_temporal(env: AppEnv, request: RootModeRequest, invocation: ReadVie
 def run_read_browser(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
     """Open the first matched session in the daemon web reader."""
 
-    from polylogue.api.sync.bridge import run_coroutine_sync
     from polylogue.cli.query import _create_query_vector_provider
 
     config = env.config

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
-from polylogue.config import load_polylogue_config
+from polylogue.config import Source, load_polylogue_config
 from polylogue.demo import (
     DemoSeedTargetUnsafeError,
     apply_demo_post_ingest_augmentation,
@@ -20,7 +20,9 @@ from polylogue.demo.seed import (
     demo_source_specs,
     materialize_demo_source,
 )
+from polylogue.operations.canonical_archive_ingest import ingest_sources_archive as canonical_ingest
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.scenarios import (
     DEMO_CHATGPT_SESSION_ID,
     DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,
@@ -387,37 +389,30 @@ async def test_seed_gives_demo_session_canonical_repo(tmp_path: Path) -> None:
 async def test_seed_demo_archive_forces_sequential_parse_workers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The demo seeder must never route its fixed, dozen-file synthetic corpus
-    through the real subprocess parse pool.
+    """The demo seeder offers its fixed synthetic corpus to canonical intake.
 
-    Guards polylogue-b054.1.1.1: ``parse_sources_archive``'s ambient worker
-    count defaults to up to ``cpus-1`` real ``ProcessPoolExecutor`` (spawn)
-    subprocesses. Under pytest-xdist every worker process independently
-    spawns its own sub-pool, and a per-file worker task failure under host
-    load (BrokenProcessPool, transient spawn/OOM) is caught by
-    ``except Exception: failed += 1; continue`` in the pool driver and
-    silently drops that file's sessions with only a log line -- no raised
-    error. That is the reproduced root cause of the nondeterministic
-    declared-construct-below-minimum failure observed under xdist. Spies on
-    the real ``parse_sources_archive`` call the demo seeder makes (through a
-    delegating wrapper, so the actual archive tiers are still populated by
-    the genuine ingest route) and asserts it always pins ``parse_workers=1``.
+    A missing delegation to the canonical intake owner leaves the demo
+    archive empty and this test fails on its session and construct checks.
     """
 
     import polylogue.demo.seed as seed_module
 
-    captured: dict[str, object] = {}
+    calls = 0
+    workers: int | None = None
 
-    async def spy(archive_root: Path, sources: object, **kwargs: object):  # type: ignore[no-untyped-def]
-        captured.update(kwargs)
-        return await parse_sources_archive(archive_root, sources, **kwargs)  # type: ignore[arg-type]
+    async def spy(archive_root: Path, sources: list[Source], *, parse_workers: int | None = None) -> ParseResult:
+        nonlocal calls, workers
+        calls += 1
+        workers = parse_workers
+        return await canonical_ingest(archive_root, sources, parse_workers=parse_workers)
 
-    monkeypatch.setattr(seed_module, "parse_sources_archive", spy)
+    monkeypatch.setattr(seed_module, "ingest_sources_archive", spy)
 
     archive_root = tmp_path / "archive"
     result = await seed_demo_archive(archive_root, force=True)
 
-    assert captured.get("parse_workers") == 1
+    assert calls == 1
+    assert workers == 1
     assert result.session_count == len(DEMO_SESSION_IDS)
 
 
