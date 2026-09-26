@@ -31,7 +31,12 @@ from devtools.pytest_invocation import (
     managed_plugin_args,
 )
 from devtools.pytest_rerun import rerun_failed_once
-from devtools.pytest_slot import PytestSlotUnavailableError, run_pytest, run_pytest_isolated
+from devtools.pytest_slot import (
+    PytestSlotObservationUnavailableError,
+    PytestSlotUnavailableError,
+    run_pytest,
+    run_pytest_isolated,
+)
 from devtools.pytest_stream_report import REPORT_FILE_OPTION, report_file_argument, spool_paths
 from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV, write_run_receipt
 from devtools.required_gate import executable_gate_result
@@ -593,6 +598,18 @@ def _run(
             outcome = executor(command, cwd=str(ROOT), env=env, root=ROOT, stdout=sys.stderr)
         except PytestSlotUnavailableError as exc:
             early_metadata = {"diagnosis": "pytest_slot_unavailable", "error": str(exc)}
+            if isinstance(exc, PytestSlotObservationUnavailableError):
+                early_metadata["pytest_slot_observation"] = {
+                    "job_id": exc.job_id,
+                    "errors": exc.observation_errors,
+                    "cancellation_attempted": exc.cancellation_attempted,
+                    "cancellation_succeeded": exc.cancellation_succeeded,
+                    "pytest_slot_receipt": exc.receipt,
+                    "pytest_slot_log": str(exc.log_path),
+                }
+            runtime_evidence = getattr(exc, "runtime_evidence", None)
+            if runtime_evidence is not None:
+                early_metadata["pytest_slot_terminal"] = runtime_evidence
             run.finish_step(
                 step_id=artifacts.step_id,
                 result=_early_gate_failure_result(started, early_metadata),
