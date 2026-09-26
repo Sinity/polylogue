@@ -19,6 +19,7 @@ class MeasurementScope(str, Enum):
     """Kernel accounting boundary used for a workload run."""
 
     PROCESS_TREE = "process-tree"
+    PROCESS = "process"
     CGROUP = "cgroup"
 
 
@@ -663,7 +664,13 @@ def watcher_append_cohort_canary_spec(
         "watcher_append:after",
         "quiescent",
     )
-    phases = tuple(f"{phase}:{scope.value}" for phase in route_phases for scope in MeasurementScope)
+    # This canary's declared matrix is specifically process-tree plus cgroup.
+    # New scope vocabulary must not silently create a third observation lane.
+    phases = tuple(
+        f"{phase}:{scope.value}"
+        for phase in route_phases
+        for scope in (MeasurementScope.PROCESS_TREE, MeasurementScope.CGROUP)
+    )
     spec = _schema_profile_canary_spec(
         workload_id="canary:watcher-append-cohort",
         profile_id=profile_id,

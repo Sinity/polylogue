@@ -19,6 +19,7 @@ from polylogue.scenarios.workload import (
     evaluate_budgets,
     exact_session_actions_canary_spec,
     raw_authority_fixed_point_spec,
+    watcher_append_cohort_canary_spec,
     workload_adapter_declarations,
 )
 from polylogue.schemas.workload_tiers import WorkloadScaleTier, WorkloadSelectivityTier
@@ -58,6 +59,14 @@ def _spec() -> WorkloadEnvelopeSpec:
             ),
         ),
     )
+
+
+def test_process_scope_does_not_expand_watcher_scope_matrix() -> None:
+    spec = watcher_append_cohort_canary_spec(profile_id="profile", archive_id="archive")
+
+    assert MeasurementScope.PROCESS.value == "process"
+    assert len(spec.phases) == 10
+    assert all(phase.endswith(("process-tree", "cgroup")) for phase in spec.phases)
 
 
 def test_named_measurement_paths_have_receipt_or_explicit_adapter() -> None:

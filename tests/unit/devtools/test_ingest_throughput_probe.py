@@ -68,11 +68,15 @@ def test_measure_emits_expected_shape(provider: str, tmp_path: Path) -> None:
     # independently measured workloads.  This catches unit drift (MiB vs
     # bytes) and prevents a mutation from dropping the common adapter.
     receipt = report["workload_receipt"]
-    assert receipt["spec"]["measurement_scope"] == "process-tree"
+    assert receipt["spec"]["measurement_scope"] == "process"
     phase = receipt["phases"][0]
     assert phase["peak_rss_bytes"] == round(report["peak_rss_mb"] * 1024 * 1024)
     assert phase["cpu_ms"] == report["cpu_seconds_total"] * 1000.0
     assert phase["progress_completed"] == report["total_messages"]
+    assert phase["progress_total"] == report["expected_messages"]
+    assert report["output_membership"]
+    assert all(item["matched"] for item in report["output_membership"])
+    assert report["peak_rss_scope"] == "process-lifetime ru_maxrss"
     if report["proc_io_available"]:
         assert phase["read_io_bytes"] == report["proc_io"]["read_bytes"]
         assert phase["write_io_bytes"] == report["proc_io"]["write_bytes"]
@@ -136,7 +140,7 @@ def test_measure_emits_expected_shape(provider: str, tmp_path: Path) -> None:
     # SQLite storage growth is reported with non-negative sizes.
     storage = report["storage"]
     assert isinstance(storage, dict)
-    for size_key in ("index_db_bytes", "index_wal_peak_bytes", "source_db_bytes"):
+    for size_key in ("index_db_bytes", "index_wal_final_bytes", "source_db_bytes"):
         assert isinstance(storage[size_key], int)
         assert storage[size_key] >= 0
     for ratio_key in ("bytes_written_per_message", "db_growth_per_message"):
@@ -166,6 +170,208 @@ def test_main_json_round_trips(tmp_path: Path, capsys: pytest.CaptureFixture[str
 def test_rejects_unavailable_provider(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="not available"):
         measure_ingest_throughput(provider="nope-not-real", batches=1, workdir=tmp_path)
+
+
+def test_refuses_populated_workdir_archive_before_mutation(tmp_path: Path) -> None:
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    sentinel = archive / "keep.txt"
+    sentinel.write_text("preserve", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="archive destination is not empty"):
+        measure_ingest_throughput(batches=1, workdir=tmp_path)
+
+    assert sentinel.read_text(encoding="utf-8") == "preserve"
+
+
+def test_lineage_rejects_mislabeled_provider(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="lineage currently uses the codex provider"):
+        measure_ingest_throughput(lineage=True, provider="chatgpt", workdir=tmp_path)
+
+
+def test_receipt_build_identity_uses_the_imported_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    import devtools.ingest_throughput_probe as probe
+
+    repository_root = Path(probe.__file__).resolve().parents[1]
+    expected_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repository_root, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    monkeypatch.chdir(tmp_path)
+
+    assert probe._current_build_id().startswith(f"git:{expected_head}:tracked-diff:")
+
+
+def test_unreportable_private_failure_cleans_its_scratch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import devtools.ingest_throughput_probe as probe
+
+    scratch = tmp_path / "unreportable"
+    monkeypatch.setattr(probe.tempfile, "mkdtemp", lambda **kwargs: str(scratch))
+
+    def fail_before_report(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("controlled route failure")
+
+    monkeypatch.setattr(probe, "_run_corpus_workload", fail_before_report)
+    with pytest.raises(RuntimeError, match="controlled route failure"):
+        measure_ingest_throughput(batches=1)
+
+    assert not scratch.exists()
+
+
+def test_parse_failure_is_a_failed_cli_receipt_with_expected_denominator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from polylogue.pipeline.services import archive_ingest
+    from polylogue.pipeline.services.parsing_models import ParseResult
+
+    async def failed_parse(*args: object, **kwargs: object) -> ParseResult:
+        result = ParseResult()
+        result.parse_failures = 1
+        result.counts["skipped_sessions"] = 1
+        return result
+
+    monkeypatch.setattr(archive_ingest, "parse_sources_archive", failed_parse)
+    exit_code = main(
+        ["--json", "--batches", "1", "--messages-min", "2", "--messages-max", "2", "--workdir", str(tmp_path)]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["total_messages"] == 0
+    assert payload["messages_per_s"] is None
+    assert payload["expected_messages"] == 2
+    assert payload["parse_outcomes"]["parse_failures"] == 1
+    assert payload["workload_receipt"]["status"] == "failed"
+    assert payload["workload_receipt"]["phases"][0]["progress_total"] == 2
+    assert payload["workdir_disposition"] == "retained-by-caller"
+
+
+def test_partial_population_keeps_expected_denominator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from polylogue.pipeline.services import archive_ingest
+    from polylogue.pipeline.services.parsing_models import ParseResult
+
+    async def partial_parse(*args: object, **kwargs: object) -> ParseResult:
+        result = ParseResult()
+        result.parse_failures = 1
+        result.counts["sessions"] = 1
+        result.counts["messages"] = 1
+        return result
+
+    monkeypatch.setattr(archive_ingest, "parse_sources_archive", partial_parse)
+    exit_code = main(
+        ["--json", "--batches", "2", "--messages-min", "2", "--messages-max", "2", "--workdir", str(tmp_path)]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert payload["total_messages"] == 2
+    assert payload["expected_messages"] == 4
+    assert payload["workload_receipt"]["phases"][0]["progress_total"] == 4
+    assert payload["workload_receipt"]["status"] == "failed"
+
+
+def test_retained_raw_hash_detects_same_count_content_substitution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import devtools.ingest_throughput_probe as probe
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    original = ArchiveStore.raw_revision_material
+
+    def substituted(self: ArchiveStore, raw_id: str) -> tuple[object, bytes, str, object]:
+        provider, raw_bytes, source_path, kind = original(self, raw_id)
+        return provider, raw_bytes + b" altered", source_path, kind
+
+    monkeypatch.setattr(ArchiveStore, "raw_revision_material", substituted)
+    report = probe.measure_ingest_throughput(batches=1, messages_min=2, messages_max=2, workdir=tmp_path)
+
+    assert report["total_sessions"] == report["expected_sessions"] == 1
+    assert report["total_messages"] == report["expected_messages"] == 2
+    assert report["output_membership"][0]["source_matches"] is False
+    assert report["ok"] is False
+    assert report["messages_per_s"] is None
+
+
+def test_success_claim_explicitly_excludes_normalized_text_semantics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    import devtools.ingest_throughput_probe as probe
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
+
+    original = ArchiveStore.read_session
+
+    def alter_text(self: ArchiveStore, session_id: str) -> ArchiveSessionEnvelope:
+        envelope = original(self, session_id)
+        message = envelope.messages[0]
+        assert message.blocks
+        altered_block = replace(message.blocks[0], text=(message.blocks[0].text or "") + " altered")
+        altered_message = replace(message, blocks=(altered_block, *message.blocks[1:]))
+        return replace(envelope, messages=(altered_message, *envelope.messages[1:]))
+
+    monkeypatch.setattr(ArchiveStore, "read_session", alter_text)
+    report = probe.measure_ingest_throughput(batches=1, messages_min=2, messages_max=2, workdir=tmp_path)
+
+    assert report["output_membership"][0]["source_matches"] is True
+    assert report["output_membership"][0]["matched"] is True
+    assert report["semantic_content_verified"] is False
+    assert "canonical-parser preflight" in report["verification_scope"]
+    assert report["ok"] is True
+
+
+def test_ordered_message_identity_mismatch_fails_membership(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dataclasses import replace
+
+    import devtools.ingest_throughput_probe as probe
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    original = ArchiveStore.read_session
+
+    def alter_identity(self: ArchiveStore, session_id: str) -> object:
+        envelope = original(self, session_id)
+        message = envelope.messages[0]
+        return replace(
+            envelope,
+            messages=(replace(message, message_id=message.message_id + ":altered"), *envelope.messages[1:]),
+        )
+
+    monkeypatch.setattr(ArchiveStore, "read_session", alter_identity)
+    report = probe.measure_ingest_throughput(batches=1, messages_min=2, messages_max=2, workdir=tmp_path)
+
+    assert report["output_membership"][0]["source_matches"] is True
+    assert report["output_membership"][0]["matched"] is False
+    assert report["semantic_content_verified"] is False
+    assert report["ok"] is False
+
+
+def test_excision_and_budget_evidence_survive_in_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from polylogue.pipeline.services import archive_ingest
+    from polylogue.pipeline.services.parsing_models import ParseResult
+
+    async def incomplete_parse(*args: object, **kwargs: object) -> ParseResult:
+        result = ParseResult()
+        result.excised_skips = 1
+        result.time_budget_exceeded = True
+        return result
+
+    monkeypatch.setattr(archive_ingest, "parse_sources_archive", incomplete_parse)
+    exit_code = main(["--json", "--batches", "1", "--workdir", str(tmp_path)])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["parse_outcomes"]["excised_skips"] == 1
+    assert payload["parse_outcomes"]["budget_exhausted"] == 1
+    assert payload["workload_receipt"]["status"] == "failed"
+    assert "excised_skips" in " ".join(payload["workload_receipt"]["notes"])
 
 
 def test_lineage_workload_composes(tmp_path: Path) -> None:

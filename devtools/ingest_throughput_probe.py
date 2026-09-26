@@ -6,16 +6,17 @@ lineage workload — both using the WAL write profile) over a deterministic
 synthetic workload and captures, per run:
 
 * **wall-clock** — total + per-batch-ms distribution (min/max/mean/p90),
-* **per-stage attribution** — the pipeline's ``ParseResult.stage_timings_s``
-  accumulated across batches, plus the dominant ``top_stages``,
+* **stage totals** — the pipeline's ``ParseResult.stage_timings_s`` summed
+  across batches, plus the dominant ``top_stages``. Nested stage totals do not
+  decompose the outer wall time,
 * **CPU** — rusage user/sys seconds and ``cpu_utilization`` (cpu_total /
   wall) so a run immediately shows whether ingest is CPU-bound (~1.0),
   I/O-wait-bound (<1.0), or parallel (>1.0),
-* **memory** — ``peak_rss_mb`` (process max), page faults, optional
+* **memory** — ``peak_rss_mb`` (process-lifetime maximum), page faults, optional
   ``tracemalloc_peak_mb`` allocation profiling under ``--memory``,
 * **storage I/O** — ``/proc/self/io`` byte/syscall deltas plus block-I/O
   rusage counters, and SQLite file growth (``index.db`` / ``-wal`` /
-  ``source.db``) with ``bytes_written_per_message`` and
+  ``source.db``), including final WAL size, with ``bytes_written_per_message`` and
   ``db_growth_per_message`` efficiency ratios.
 
 It is additive tooling.  It does **not** touch production ingest logic — it
@@ -33,23 +34,29 @@ Wall-clock and resource numbers are host-variable: this probe has **no CI
 thresholds**.  Message/session *counts* are deterministic for a fixed
 (provider/workload, batches, seed); the timings, CPU, memory, and I/O are not.
 
-REPORT_VERSION 2 added: ``workload``, ``stage_timings_s``, ``top_stages``,
-``cpu_seconds_total``, ``cpu_utilization``, ``peak_rss_mb``, ``resources``,
-``proc_io``, ``proc_io_available``, ``storage``, and (under ``--memory``)
-``tracemalloc_peak_mb``.
+REPORT_VERSION 4 adds sealed expected membership and parse outcomes, process
+scope and RSS provenance, and names the final WAL size accurately.
+Success verifies source membership, retained raw bytes, session identity and
+exact message-ID membership. The expected IDs are sealed by the
+canonical parser before timed ingest, so this proves persistence membership
+stability rather than independently validating parser output. It does not
+validate normalized message text or block semantics.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
+import platform
+import subprocess
 import tempfile
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from polylogue.scenarios import (
     MeasurementScope,
@@ -61,7 +68,7 @@ from polylogue.scenarios import (
 )
 
 # Bumped when the JSON shape gains/changes a top-level key or field type.
-REPORT_VERSION = 3
+REPORT_VERSION = 4
 
 _DEFAULT_PROVIDER = "codex"
 _DEFAULT_BATCHES = 16
@@ -75,6 +82,22 @@ _DEFAULT_MESSAGES_MAX = 320
 _LINEAGE_TAIL_MESSAGES = 4
 
 
+class _BatchOutcome(TypedDict):
+    source: str
+    sessions: int
+    messages: int
+    skipped_counts: dict[str, int]
+    skipped_sessions: int
+    skipped_messages: int
+    parse_failures: int
+    failed_observations: int
+    skipped_raw_count: int
+    excised_skips: int
+    time_budget_exceeded: bool
+    batch_observations: list[Any]
+    stage_timings_s: dict[str, float]
+
+
 def _workload_receipt(
     *,
     provider: str,
@@ -86,10 +109,17 @@ def _workload_receipt(
     peak_rss_mb: float,
     proc_io: dict[str, Any],
     total_messages: int,
+    expected_messages: int,
+    expected_sessions: int,
+    complete: bool,
+    input_digest: str,
+    cleanup_complete: bool | None,
+    cleanup_disposition: str,
+    outcome: dict[str, int],
 ) -> dict[str, Any]:
     """Adapt the legacy ingest probe into the shared physical receipt.
 
-    The probe is intentionally one process-tree scoped phase: per-batch
+    The probe is intentionally one process scoped phase: per-batch
     timings remain in the legacy report, while this receipt is the common
     comparable envelope.  ``ru_maxrss`` is Linux KiB and is converted here to
     bytes; absent proc I/O stays explicitly unavailable rather than zero.
@@ -120,14 +150,14 @@ def _workload_receipt(
         version=1,
         inputs=(
             WorkloadInputRef(
-                input_id=f"synthetic:{provider}:{seed}:{batches}:{'lineage' if lineage else 'corpus'}",
+                input_id=(f"synthetic:{provider}:{seed}:{batches}:{'lineage' if lineage else 'corpus'}:{input_digest}"),
                 package_ref=provider,
                 seed=seed,
                 distribution_refs=("ingest-throughput.synthetic-corpus-v1",),
             ),
         ),
         phases=("ingest",),
-        measurement_scope=MeasurementScope.PROCESS_TREE,
+        measurement_scope=MeasurementScope.PROCESS,
     )
     phase = WorkloadPhaseObservation(
         name="ingest",
@@ -139,23 +169,75 @@ def _workload_receipt(
         read_io_bytes=proc_io.get("read_bytes"),
         write_io_bytes=proc_io.get("write_bytes"),
         progress_completed=total_messages,
-        progress_total=total_messages,
-        cleanup_complete=True,
+        progress_total=expected_messages,
+        cleanup_complete=cleanup_complete,
         quiescent=True,
         unavailable=tuple(sorted(unavailable)),
     )
     return WorkloadReceipt.from_observations(
         spec=spec,
-        status=WorkloadRunStatus.SUCCEEDED,
-        build_id=None,
-        runtime_id=None,
+        status=WorkloadRunStatus.SUCCEEDED if complete else WorkloadRunStatus.FAILED,
+        build_id=_current_build_id(),
+        runtime_id=f"python:{platform.python_version()}",
         archive_id=None,
         generation_id=None,
         frame_id=None,
         phases=(phase,),
-        cleanup_complete=True,
-        notes=("Legacy ingest probe adapter; stage distributions remain in the report.",),
+        cleanup_complete=cleanup_complete,
+        notes=(
+            "Synthetic stage probe; stage timings are summed totals, not a decomposition of outer wall time.",
+            f"Expected sessions={expected_sessions}; input digest={input_digest}.",
+            f"Parse outcomes: {json.dumps(outcome, sort_keys=True)}.",
+            f"Workdir disposition={cleanup_disposition}; ru_maxrss is process-lifetime RSS.",
+            "Success checks source membership, retained raw bytes, session identity and message cardinality only; parsed text and block semantics are not independently checked.",
+        ),
     ).to_payload()
+
+
+def _current_build_id() -> str | None:
+    """Bind the receipt to HEAD and the current probe's working-tree diff."""
+    repository_root = Path(__file__).resolve().parents[1]
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repository_root,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=2,
+        )
+        diff = subprocess.run(
+            ["git", "diff", "--binary", "HEAD"],
+            cwd=repository_root,
+            capture_output=True,
+            check=True,
+            timeout=2,
+        )
+        status = subprocess.run(
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+            cwd=repository_root,
+            capture_output=True,
+            check=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    revision = head.stdout.strip()
+    if not revision:
+        return None
+    return (
+        f"git:{revision}:tracked-diff:{hashlib.sha256(diff.stdout).hexdigest()}:"
+        f"status:{hashlib.sha256(status.stdout).hexdigest()}"
+    )
+
+
+def _input_digest(files: list[Path]) -> str:
+    digest = hashlib.sha256()
+    for path in files:
+        digest.update(path.name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -216,8 +298,9 @@ def _build_fixture_files(
     seed: int,
     messages_min: int,
     messages_max: int,
-) -> list[Path]:
+) -> tuple[list[Path], list[dict[str, Any]]]:
     """Write ``batches`` single-session synthetic source files deterministically."""
+    from polylogue.core.sources import origin_from_provider
     from polylogue.scenarios import build_default_corpus_specs
     from polylogue.schemas.synthetic import SyntheticCorpus
 
@@ -235,12 +318,36 @@ def _build_fixture_files(
     corpus_dir = workdir / "corpus" / provider
     written = SyntheticCorpus.write_spec_artifacts(spec, corpus_dir, prefix="batch", index_width=3)
     # One artifact == one session == one append batch.
-    return list(written.files)
+    from polylogue.sources.source_parsing import parse_one_source_path
+
+    expected = []
+    for artifact, path in zip(written.batch.artifacts, written.files, strict=True):
+        parsed_sessions = [
+            session
+            for _raw, session in parse_one_source_path(
+                str(path),
+                file_mtime=None,
+                source_name=provider,
+                sidecar_data={},
+                capture_raw=False,
+            )
+        ]
+        if len(parsed_sessions) != 1:
+            raise ValueError(f"synthetic fixture {path.name} produced {len(parsed_sessions)} sessions")
+        parsed = parsed_sessions[0]
+        session_id = f"{origin_from_provider(provider).value}:{parsed.provider_session_id}"
+        expected.append(
+            {
+                "session_id": artifact.facts.expected_session_id or session_id,
+                "messages": artifact.message_count,
+                "message_ids": _parsed_message_ids(parsed, session_id),
+                "source_sha256": artifact.facts.raw_sha256,
+            }
+        )
+    return list(written.files), expected
 
 
-async def _ingest_batch(
-    archive_root: Path, provider: str, source_file: Path
-) -> tuple[dict[str, int], dict[str, float]]:
+async def _ingest_batch(archive_root: Path, provider: str, source_file: Path) -> _BatchOutcome:
     from polylogue.config import Source
     from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 
@@ -249,7 +356,26 @@ async def _ingest_batch(
         "sessions": int(result.counts.get("sessions", 0)),
         "messages": int(result.counts.get("messages", 0)),
     }
-    return counts, dict(result.stage_timings_s)
+    batch_observations = list(result.batch_observations)
+    failed_observations = sum(
+        bool(observation.get("failed")) or int(observation.get("failed_raw_count", 0)) > 0
+        for observation in batch_observations
+    )
+    skipped_raw_count = sum(int(observation.get("skipped_raw_count", 0)) for observation in batch_observations)
+    return {
+        "source": source_file.name,
+        **counts,
+        "skipped_counts": {key: int(value) for key, value in result.counts.items() if key.startswith("skipped_")},
+        "skipped_sessions": int(result.counts.get("skipped_sessions", 0)),
+        "skipped_messages": int(result.counts.get("skipped_messages", 0)),
+        "parse_failures": int(result.parse_failures),
+        "failed_observations": failed_observations,
+        "skipped_raw_count": skipped_raw_count,
+        "excised_skips": int(result.excised_skips),
+        "time_budget_exceeded": bool(result.time_budget_exceeded),
+        "batch_observations": batch_observations,
+        "stage_timings_s": dict(result.stage_timings_s),
+    }
 
 
 def _accumulate(target: dict[str, float], delta: dict[str, float]) -> None:
@@ -262,32 +388,56 @@ def _run_corpus_workload(
     *,
     provider: str,
     source_files: list[Path],
+    expected_rows: list[dict[str, Any]],
     batches: int,
-) -> tuple[list[dict[str, Any]], list[float], int, int, dict[str, float]]:
+) -> tuple[list[dict[str, Any]], list[float], int, int, dict[str, float], dict[str, int]]:
     batch_reports: list[dict[str, Any]] = []
     per_batch_ms: list[float] = []
     total_sessions = 0
     total_messages = 0
     stage_timings_s: dict[str, float] = {}
+    outcome = {
+        "parse_failures": 0,
+        "failed_observations": 0,
+        "excised_skips": 0,
+        "skipped_raw_count": 0,
+        "budget_exhausted": 0,
+    }
 
     for index in range(batches):
         source_file = source_files[index]
         batch_start = time.perf_counter()
-        ingested, stage_delta = asyncio.run(_ingest_batch(archive_root, provider, source_file))
+        ingested = asyncio.run(_ingest_batch(archive_root, provider, source_file))
         elapsed_ms = (time.perf_counter() - batch_start) * 1000.0
         per_batch_ms.append(elapsed_ms)
         total_sessions += ingested["sessions"]
         total_messages += ingested["messages"]
-        _accumulate(stage_timings_s, stage_delta)
+        _accumulate(stage_timings_s, ingested["stage_timings_s"])
+        for key in ("parse_failures", "failed_observations", "excised_skips", "skipped_raw_count"):
+            outcome[key] += ingested[key]
+        for key, value in ingested["skipped_counts"].items():
+            outcome[key] = outcome.get(key, 0) + value
+        outcome["budget_exhausted"] += int(ingested["time_budget_exceeded"])
         batch_reports.append(
             {
                 "batch_index": index,
+                "offered_source": ingested["source"],
+                "expected_session_id": expected_rows[index]["session_id"],
+                "expected_messages": expected_rows[index]["messages"],
+                "expected_source_sha256": expected_rows[index]["source_sha256"],
                 "sessions_ingested": ingested["sessions"],
                 "messages_ingested": ingested["messages"],
+                "parse_failures": ingested["parse_failures"],
+                "excised_skips": ingested["excised_skips"],
+                "skipped_sessions": ingested["skipped_sessions"],
+                "skipped_messages": ingested["skipped_messages"],
+                "skipped_counts": ingested["skipped_counts"],
+                "time_budget_exceeded": ingested["time_budget_exceeded"],
+                "batch_observations": ingested["batch_observations"],
                 "batch_ms": round(elapsed_ms, 3),
             }
         )
-    return batch_reports, per_batch_ms, total_sessions, total_messages, stage_timings_s
+    return batch_reports, per_batch_ms, total_sessions, total_messages, stage_timings_s, outcome
 
 
 def _lineage_message(*, provider_message_id: str, position: int, text: str) -> Any:
@@ -359,6 +509,22 @@ def _build_lineage_sessions(*, batches: int, prefix_len: int) -> tuple[Any, list
             )
         )
     return parent, forks
+
+
+def _parsed_message_ids(parsed: Any, session_id: str, messages: Any | None = None) -> list[str]:
+    from polylogue.pipeline.ids import message_content_identities
+
+    selected_messages = parsed.messages if messages is None else messages
+    return sorted(
+        (
+            f"{session_id}:n:{message.provider_message_id.strip()}"
+            if message.provider_message_id.strip()
+            else f"{session_id}:c:{digest}.{occurrence}"
+        )
+        for message, (digest, occurrence) in zip(
+            selected_messages, message_content_identities(selected_messages), strict=True
+        )
+    )
 
 
 def _run_lineage_workload(
@@ -439,8 +605,9 @@ def measure_ingest_throughput(
     """Run ``batches`` ingest batches and capture time/CPU/memory/I/O/stage cost.
 
     Returns a stable, JSON-serializable report.  When ``workdir`` is omitted a
-    private temporary directory is created and torn down automatically; the
-    archive and its blob store stay entirely inside that directory.
+    private temporary directory is created; successful runs remove it, while
+    failed measurements retain it with their report evidence. The archive and
+    blob store stay entirely inside that directory.
 
     ``lineage=True`` replaces the single-session corpus with a fork-heavy
     workload: one parent session and ``batches`` forks that each replay the
@@ -454,6 +621,16 @@ def measure_ingest_throughput(
     """
     if batches < 1:
         raise ValueError("batches must be >= 1")
+    if lineage and provider != "codex":
+        raise ValueError("--lineage currently uses the codex provider")
+    if not lineage:
+        from polylogue.schemas.synthetic import SyntheticCorpus
+
+        available = set(SyntheticCorpus.available_providers())
+        if provider not in available:
+            raise ValueError(f"provider {provider!r} not available; choose from {sorted(available)}")
+        if messages_min < 1 or messages_max < messages_min:
+            raise ValueError("message bounds must satisfy 1 <= messages_min <= messages_max")
 
     owns_workdir = workdir is None
     base = Path(workdir) if workdir is not None else Path(tempfile.mkdtemp(prefix="plg-ingest-tput-"))
@@ -462,11 +639,20 @@ def measure_ingest_throughput(
     # Isolate every global path (archive root + blob store) inside the workdir so
     # the probe never reads or writes real user data.
     archive_root = base / "archive"
+    if archive_root.is_symlink():
+        raise ValueError(f"workdir archive destination must not be a symlink: {archive_root}")
+    if archive_root.exists() and any(archive_root.iterdir()):
+        if owns_workdir:
+            with suppress(OSError):
+                base.rmdir()
+        raise ValueError(f"workdir archive destination is not empty: {archive_root}; choose a fresh workdir")
     archive_root.mkdir(parents=True, exist_ok=True)
     saved_env = {key: os.environ.get(key) for key in ("XDG_DATA_HOME", "POLYLOGUE_ARCHIVE_ROOT")}
     os.environ["XDG_DATA_HOME"] = str(base / "xdg-data")
     os.environ["POLYLOGUE_ARCHIVE_ROOT"] = str(archive_root)
 
+    report: dict[str, Any] | None = None
+    receipt_args: dict[str, Any] = {}
     try:
         from polylogue.operations.canonical_archive_ingest import scoped_one_shot_archive_owner
         from polylogue.pipeline.services.archive_ingest import _admit_one_shot_root
@@ -482,9 +668,17 @@ def measure_ingest_throughput(
             ArchiveStore.open_existing(archive_root, read_only=False).close()
 
         source_files: list[Path] = []
+        expected_rows: list[dict[str, Any]] = []
+        outcome = {
+            "parse_failures": 0,
+            "failed_observations": 0,
+            "excised_skips": 0,
+            "skipped_raw_count": 0,
+            "budget_exhausted": 0,
+        }
         prefix_len = messages_max
         if not lineage:
-            source_files = _build_fixture_files(
+            source_files, expected_rows = _build_fixture_files(
                 base,
                 provider=provider,
                 batches=batches,
@@ -494,6 +688,40 @@ def measure_ingest_throughput(
             )
             if len(source_files) < batches:
                 batches = len(source_files)
+            expected_sessions = len(expected_rows)
+            expected_messages = sum(int(row["messages"]) for row in expected_rows)
+            input_digest = _input_digest(source_files)
+        else:
+            lineage_parent, lineage_forks = _build_lineage_sessions(batches=batches, prefix_len=prefix_len)
+            expected_sessions = batches + 1
+            expected_messages = (batches + 1) * prefix_len + batches * _LINEAGE_TAIL_MESSAGES
+            from polylogue.core.sources import origin_from_provider
+
+            lineage_origin = origin_from_provider(provider).value
+            expected_rows = []
+            parent_session_id = f"{lineage_origin}:{lineage_parent.provider_session_id}"
+            parent_ids = _parsed_message_ids(lineage_parent, parent_session_id)
+            for session in [lineage_parent, *lineage_forks]:
+                session_id = f"{lineage_origin}:{session.provider_session_id}"
+                if session.parent_session_provider_id:
+                    # Lineage readback recomposes the parent's stored prefix;
+                    # child-local prefix IDs are deliberately not persisted.
+                    message_ids = parent_ids + _parsed_message_ids(session, session_id, session.messages[prefix_len:])
+                else:
+                    message_ids = parent_ids
+                expected_rows.append(
+                    {
+                        "session_id": session_id,
+                        "messages": len(session.messages),
+                        "message_ids": sorted(message_ids),
+                        "source_sha256": hashlib.sha256(
+                            json.dumps({"provider_session_id": session.provider_session_id}).encode("utf-8")
+                        ).hexdigest(),
+                    }
+                )
+            input_digest = hashlib.sha256(
+                f"lineage:{provider}:{seed}:{batches}:{prefix_len}:{_LINEAGE_TAIL_MESSAGES}".encode()
+            ).hexdigest()
 
         index_db = archive_root / "index.db"
         index_wal = archive_root / "index.db-wal"
@@ -525,7 +753,14 @@ def measure_ingest_throughput(
                 total_sessions,
                 total_messages,
                 stage_timings_s,
-            ) = _run_corpus_workload(archive_root, provider=provider, source_files=source_files, batches=batches)
+                outcome,
+            ) = _run_corpus_workload(
+                archive_root,
+                provider=provider,
+                source_files=source_files,
+                expected_rows=expected_rows,
+                batches=batches,
+            )
         total_wall_s = time.perf_counter() - wall_start
 
         rusage_after = _rusage_snapshot()
@@ -568,7 +803,7 @@ def measure_ingest_throughput(
         cpu_seconds_total = ru_utime_delta + ru_stime_delta
         cpu_utilization = round(cpu_seconds_total / total_wall_s, 3) if total_wall_s > 0 else 0.0
 
-        # ---- memory: ru_maxrss is process peak (KiB on Linux), not a delta ----
+        # ---- memory: ru_maxrss is process-lifetime peak (KiB on Linux) ----
         peak_rss_mb = round(rusage_after.ru_maxrss / 1024.0, 2)
 
         resources = {
@@ -597,15 +832,88 @@ def measure_ingest_throughput(
         index_db_growth = index_db_after - index_db_before
         storage = {
             "index_db_bytes": index_db_after,
-            "index_wal_peak_bytes": _file_size(index_wal),
+            "index_wal_final_bytes": _file_size(index_wal),
             "source_db_bytes": _file_size(source_db),
             "index_db_growth_bytes": index_db_growth,
             "bytes_written_per_message": (round(write_bytes_delta / total_messages, 2) if total_messages > 0 else 0.0),
             "db_growth_per_message": (round(index_db_growth / total_messages, 2) if total_messages > 0 else 0.0),
         }
 
-        report: dict[str, Any] = {
-            "ok": True,
+        membership: list[dict[str, Any]] = []
+        membership_matches = True
+        verification_start = time.perf_counter()
+        with ArchiveStore.open_existing(archive_root, read_only=True) as check_store:
+            for row in expected_rows:
+                session_id = str(row["session_id"])
+                try:
+                    session = check_store.read_session(session_id)
+                    present_messages = len(session.messages)
+                    actual_ids = sorted(message.message_id for message in session.messages)
+                    matched = (
+                        session.session_id == session_id
+                        and present_messages == int(row["messages"])
+                        and actual_ids == row["message_ids"]
+                    )
+                except KeyError:
+                    present_messages = 0
+                    matched = False
+                raw_rows, raw_count = check_store.raw_artifacts_for_session(session_id)
+                expected_sha = str(row["source_sha256"])
+                observed_hashes: list[str] = []
+                source_errors: list[str] = []
+                for raw_row in raw_rows:
+                    try:
+                        _provider, raw_bytes, _source_path, _kind = check_store.raw_revision_material(
+                            str(raw_row["raw_id"])
+                        )
+                    except Exception as exc:
+                        source_errors.append(f"{type(exc).__name__}: {exc}")
+                        continue
+                    observed_hashes.append(hashlib.sha256(raw_bytes).hexdigest())
+                source_matches = raw_count == 1 and observed_hashes == [expected_sha]
+                matched = matched and source_matches
+                membership.append(
+                    {
+                        "session_id": session_id,
+                        "expected_messages": row["messages"],
+                        "observed_messages": present_messages,
+                        "expected_source_sha256": expected_sha,
+                        "observed_source_sha256": observed_hashes,
+                        "source_errors": source_errors,
+                        "raw_artifact_count": raw_count,
+                        "source_matches": source_matches,
+                        "matched": matched,
+                    }
+                )
+                membership_matches = membership_matches and matched
+        verification_wall_s = time.perf_counter() - verification_start
+        complete = (
+            len(batch_reports) == batches
+            and total_sessions == expected_sessions
+            and total_messages == expected_messages
+            and membership_matches
+            and not any(outcome.values())
+        )
+        receipt_args = {
+            "provider": provider,
+            "batches": len(batch_reports),
+            "seed": seed,
+            "lineage": lineage,
+            "total_wall_s": total_wall_s,
+            "cpu_seconds_total": cpu_seconds_total,
+            "peak_rss_mb": peak_rss_mb,
+            "proc_io": proc_io,
+            "total_messages": total_messages,
+            "expected_messages": expected_messages,
+            "expected_sessions": expected_sessions,
+            "complete": complete,
+            "input_digest": input_digest,
+            "cleanup_complete": None,
+            "cleanup_disposition": "pending",
+            "outcome": outcome,
+        }
+        report = {
+            "ok": complete,
             "report_version": REPORT_VERSION,
             "tool": "bench ingest-throughput",
             "workload": "lineage" if lineage else "corpus",
@@ -616,14 +924,32 @@ def measure_ingest_throughput(
             "messages_max": messages_max,
             "total_sessions": total_sessions,
             "total_messages": total_messages,
+            "expected_sessions": expected_sessions,
+            "expected_messages": expected_messages,
+            "parse_outcomes": outcome,
+            "output_membership": membership,
+            "verification_scope": "source membership, retained raw hash, session identity, and exact message-ID membership from canonical-parser preflight",
+            "semantic_content_verified": False,
+            "verification_wall_s": round(verification_wall_s, 4),
+            "input_digest": input_digest,
             "total_wall_s": round(total_wall_s, 4),
-            "messages_per_s": round(total_messages / total_wall_s, 2) if total_wall_s > 0 else 0.0,
-            "sessions_per_s": round(total_sessions / total_wall_s, 2) if total_wall_s > 0 else 0.0,
+            "messages_per_s": (
+                round(total_messages / total_wall_s, 2)
+                if complete and total_wall_s > 0
+                else (0.0 if complete else None)
+            ),
+            "sessions_per_s": (
+                round(total_sessions / total_wall_s, 2)
+                if complete and total_wall_s > 0
+                else (0.0 if complete else None)
+            ),
             "cpu_seconds_total": round(cpu_seconds_total, 4),
             "cpu_utilization": cpu_utilization,
             "peak_rss_mb": peak_rss_mb,
+            "peak_rss_scope": "process-lifetime ru_maxrss",
             "per_batch_ms": per_batch_block,
             "stage_timings_s": stage_timings_sorted,
+            "stage_timing_basis": "summed stage totals; not a decomposition of outer wall time",
             "top_stages": top_stages,
             "resources": resources,
             "proc_io": proc_io,
@@ -639,6 +965,13 @@ def measure_ingest_throughput(
                 peak_rss_mb=peak_rss_mb,
                 proc_io=proc_io,
                 total_messages=total_messages,
+                expected_messages=expected_messages,
+                expected_sessions=expected_sessions,
+                complete=complete,
+                input_digest=input_digest,
+                cleanup_complete=None,
+                cleanup_disposition="pending",
+                outcome=outcome,
             ),
             "per_batch": batch_reports,
         }
@@ -656,11 +989,25 @@ def measure_ingest_throughput(
             from polylogue.storage.blob_store import reset_blob_store as _reset
 
             _reset()
-        if owns_workdir:
+        disposition = "retained-by-caller" if workdir is not None else "retained-failed-run"
+        cleanup_complete = None
+        if owns_workdir and (report is None or report.get("ok")):
             import shutil
 
-            with suppress(OSError):
+            try:
                 shutil.rmtree(base)
+            except OSError:
+                disposition = "cleanup-failed" if report is not None else disposition
+            else:
+                disposition = "removed"
+                cleanup_complete = True
+        if report is not None:
+            report["workdir_disposition"] = disposition
+            report["workdir"] = str(base)
+            if receipt_args:
+                receipt_args["cleanup_complete"] = cleanup_complete
+                receipt_args["cleanup_disposition"] = disposition
+                report["workload_receipt"] = _workload_receipt(**receipt_args)
 
 
 # ---------------------------------------------------------------------------
@@ -690,7 +1037,7 @@ def _parser() -> argparse.ArgumentParser:
         "--workdir",
         type=Path,
         default=None,
-        help="Reuse a directory for the fixture/archive instead of a private temp dir",
+        help="Use this work directory; its archive destination must be empty",
     )
     return parser
 
@@ -707,10 +1054,13 @@ def _format_human(report: dict[str, Any]) -> str:
         f"  totals: {report.get('total_sessions', 0)} sessions, "
         f"{report.get('total_messages', 0)} messages in {report.get('total_wall_s', 0.0):.3f}s"
     )
-    lines.append(
-        f"  throughput: {report.get('messages_per_s', 0.0):.1f} msg/s, "
-        f"{report.get('sessions_per_s', 0.0):.1f} sessions/s"
-    )
+    if report.get("ok"):
+        lines.append(
+            f"  throughput: {report.get('messages_per_s', 0.0):.1f} msg/s, "
+            f"{report.get('sessions_per_s', 0.0):.1f} sessions/s"
+        )
+    else:
+        lines.append("  throughput: unavailable (incomplete workload)")
     storage = report.get("storage") or {}
     lines.append(
         f"  cpu: {report.get('cpu_seconds_total', 0.0):.3f}s "
