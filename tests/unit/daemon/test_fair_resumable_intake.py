@@ -41,6 +41,7 @@ from polylogue.logging import capture
 from polylogue.operations.intake_adapters import (
     CallbackIntakeAdapter,
     DaemonIntakeContext,
+    DaemonIntakeService,
     FileIntakeAdapter,
     RawMaterializationDiscovery,
     RawMaterializationIntakeAdapter,
@@ -259,6 +260,110 @@ def test_bounded_walk_emits_exact_lexicographic_path_order(tmp_path: Path, monke
     emitted = _bounded_source_paths(source, (source,), limit=len(on_disk) + 5, after=None, scandir=scandir)
     assert emitted == sorted(on_disk, key=str)
     assert str(tmp_path / "a.json") < str(tmp_path / "a" / "b.json")
+
+
+@pytest.mark.asyncio
+async def test_file_discovery_resumes_after_a_page_of_rejected_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "source"
+    root.mkdir()
+    for index in range(300):
+        (root / f"{index:04d}.txt").write_text("ignored")
+    accepted = root / "z.json"
+    accepted.write_text("{}")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+    watcher = SimpleNamespace(intake_revision=lambda _source: 0)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    seen: list[Path] = []
+    monkeypatch.setattr(
+        "polylogue.sources.live.discovery._log_unclaimed_intake_candidate",
+        lambda path, **_kwargs: seen.append(path),
+    )
+
+    assert await adapter.discover(limit=1) == ()
+    assert len(seen) == 256
+    page = await adapter.discover(limit=1)
+    assert [item.payload for item in page] == [accepted]
+    assert len(seen) == 300
+    await adapter.acknowledge(page[0])
+    assert await adapter.discover(limit=1) == ()
+    assert len(seen) == 300
+
+
+@pytest.mark.asyncio
+async def test_exhausted_file_walk_recovers_a_missed_nested_change(tmp_path: Path) -> None:
+    root = tmp_path / "source"
+    nested = root / "a"
+    nested.mkdir(parents=True)
+    original = root / "z.json"
+    original.write_text("{}")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+    watcher = SimpleNamespace(intake_revision=lambda _source: 0)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    page = await adapter.discover(limit=1)
+    assert [item.payload for item in page] == [original]
+    await adapter.acknowledge(page[0])
+    assert await adapter.discover(limit=1) == ()
+    assert adapter._fresh_exhausted
+
+    root_mtime = root.stat().st_mtime_ns
+    inserted = nested / "new.json"
+    inserted.write_text("{}")
+    assert root.stat().st_mtime_ns == root_mtime
+    adapter._fresh_exhausted_at = 0.0
+    replay = await adapter.discover(limit=1)
+    assert [item.payload for item in replay] == [inserted]
+
+
+@pytest.mark.asyncio
+async def test_intake_service_keeps_scanning_before_declaring_backlog_drained(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "source"
+    root.mkdir()
+    for index in range(300):
+        (root / f"{index:04d}.txt").write_text("ignored")
+    accepted = root / "z.json"
+    accepted.write_text("{}")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+    watcher = SimpleNamespace(intake_revision=lambda _source: 0)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    monkeypatch.setattr(
+        "polylogue.sources.live.discovery._log_unclaimed_intake_candidate", lambda *_args, **_kwargs: None
+    )
+
+    async def admit_page(items: Sequence[IntakeItem]) -> dict[str, AdmissionResult]:
+        return {item.item_id: AdmissionResult(AdmissionOutcome.DUPLICATE) for item in items}
+
+    monkeypatch.setattr(adapter, "admit_page", admit_page)
+    dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="capture", adapter=adapter, page_size=1)])
+    drained = asyncio.Event()
+    drained_after: list[str | None] = []
+
+    def on_drained() -> None:
+        drained_after.append(adapter._after)
+        drained.set()
+
+    service = DaemonIntakeService(dispatcher, idle_delay_s=5.0, on_backlog_drained=on_drained)
+    service._progressed_once = True
+    task = asyncio.create_task(service.run())
+    try:
+        await asyncio.wait_for(drained.wait(), timeout=2.0)
+        assert drained_after == [str(accepted)]
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
 
 def test_raw_discovery_uses_canonical_adapter_and_returns_payload_costs(

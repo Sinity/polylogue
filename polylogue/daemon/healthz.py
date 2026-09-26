@@ -109,7 +109,12 @@ def handle_healthz_ready(responder: ProbeResponder) -> None:
             )
             return
 
-        health = check_health(tiers={HealthTier.FAST})
+        watch_sources = getattr(getattr(responder, "server", None), "watch_sources", None)
+        health = (
+            check_health(tiers={HealthTier.FAST})
+            if watch_sources is None
+            else check_health(tiers={HealthTier.FAST}, sources=watch_sources)
+        )
         checks = [
             {
                 "name": alert.check_name,

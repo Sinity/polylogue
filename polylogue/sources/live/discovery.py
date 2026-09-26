@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -264,6 +264,27 @@ def _bounded_source_paths(
 
     if limit <= 0:
         return []
+    found: list[Path] = []
+    accepted_count = 0
+    for path in _source_path_steps(source, all_sources, after=after, scandir=scandir, on_disposition=on_disposition):
+        if path is not None:
+            accepted_count += 1
+            if collect:
+                found.append(path)
+            if accepted_count >= limit:
+                break
+    return found
+
+
+def _source_path_steps(
+    source: WatchSource,
+    all_sources: tuple[WatchSource, ...],
+    *,
+    after: str | None,
+    scandir: Callable[[Path], Any] = os.scandir,
+    on_disposition: Callable[[Path, str, str], None] | None = None,
+) -> Iterator[Path | None]:
+    """Yield one step per entry so a caller can resume after rejected files."""
     if not source.root.is_dir():
         # A missing or unmounted root is a refusal, not an empty backlog.
         # ``operations/raw_sessions/sessions.py`` already raises for exactly
@@ -273,8 +294,6 @@ def _bounded_source_paths(
             "intake discovery could not read a source root",
             [WalkFault(source.root, "source root is unavailable")],
         )
-    found: list[Path] = []
-    accepted_count = 0
     visited_real_paths: set[str] = {_real_path(source.root)}
     stack: list[list[tuple[str, Path, bool]]] = [
         _ordered_children(
@@ -286,7 +305,7 @@ def _bounded_source_paths(
             on_disposition=on_disposition,
         )
     ]
-    while stack and accepted_count < limit:
+    while stack:
         level = stack[-1]
         if not level:
             stack.pop()
@@ -304,13 +323,16 @@ def _bounded_source_paths(
                     on_disposition=on_disposition,
                 )
             )
+            yield None
             continue
         if after is not None and key <= after:
+            yield None
             continue
         try:
             if deepest_source_for_path(path, all_sources) is not source:
                 if on_disposition is not None:
                     on_disposition(path, "excluded", "owned_by_other_source")
+                yield None
                 continue
             if not source.accepts(path):
                 if on_disposition is not None:
@@ -320,17 +342,16 @@ def _bounded_source_paths(
                 # or not an operator runs the standalone sweep, and discovery
                 # is the only production walk left that reaches it.
                 _log_unclaimed_intake_candidate(path, source_name=source.name, suffixes=source.suffixes)
+                yield None
                 continue
         except FileNotFoundError:
+            yield None
             continue
         except OSError as exc:
             raise WalkRefusedError(
                 "intake discovery could not resolve a source file's owner",
                 [WalkFault(path, f"ownership resolution failed: {exc}")],
             ) from exc
-        accepted_count += 1
-        if collect:
-            found.append(path)
         if on_disposition is not None:
             on_disposition(path, "accepted", "source_artifact")
-    return found
+        yield path

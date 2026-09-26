@@ -122,8 +122,17 @@ EXPECTED_READINESS_REASONS: frozenset[str] = frozenset(
 def _seed_ready_message_fts(index_db: Path) -> None:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
     initialize_archive_database(index_db, ArchiveTier.INDEX)
+    # A first read-only open of a fresh WAL-mode archive may create its empty
+    # -wal sidecar. The readiness collector fingerprints that sidecar, so
+    # settle this setup effect before asserting the readiness result itself.
+    conn = open_readonly_connection(index_db)
+    try:
+        conn.execute("SELECT 1").fetchone()
+    finally:
+        conn.close()
 
 
 def _seed_stale_message_fts(index_db: Path) -> None:
@@ -486,6 +495,35 @@ class TestReadinessProbeContract:
         assert isinstance(payload["checks"], list)
         names = {check["name"] for check in payload["checks"]}
         assert names == EXPECTED_FAST_CHECKS
+
+    def test_readiness_uses_daemon_watch_source_selection(
+        self,
+        workspace_env: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from polylogue.daemon.health import DaemonHealth
+
+        selected_sources = (object(),)
+        observed: dict[str, object] = {}
+
+        def _health(*, tiers: set[HealthTier], sources: object) -> DaemonHealth:
+            observed["tiers"] = tiers
+            observed["sources"] = sources
+            return DaemonHealth(overall_status=HealthSeverity.OK)
+
+        monkeypatch.setattr(health_module, "check_health", _health)
+        _seed_ready_message_fts(workspace_env["archive_root"] / "index.db")
+        handler = _make_handler("GET", "/healthz/ready")
+        handler.server.watch_sources = selected_sources
+        _, send_json = _capture_responses(handler)
+
+        handler.do_GET()
+
+        status, payload = send_json.call_args.args
+        assert status == HTTPStatus.OK
+        assert payload["status"] == "ready"
+        assert observed["tiers"] == {HealthTier.FAST}
+        assert observed["sources"] is selected_sources
 
     def test_readiness_inspects_authoritative_fts_membership(
         self,

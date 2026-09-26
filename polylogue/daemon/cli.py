@@ -1502,7 +1502,7 @@ def _failed_convergence_stage_names(stages: object) -> tuple[str, ...]:
     return tuple(failed)
 
 
-async def _periodic_health_check() -> None:
+async def _periodic_health_check(*, sources: tuple[WatchSource, ...] | None = None) -> None:
     """Run periodic health checks with config-driven notification backend.
 
     Health check tiers and interval are read from PolylogueConfig.
@@ -1519,6 +1519,7 @@ async def _periodic_health_check() -> None:
             "maintenance.health_check",
             check_health,
             tiers=resolve_health_tiers(cfg.health_check_tiers),
+            sources=sources,
         )
         if health.overall_status != "ok":
             send_notifications(health.alerts, config=cfg.raw)
@@ -2287,7 +2288,10 @@ async def _run_daemon_services_under_active_writer_lease(
         )
 
     supervisor.start("lifecycle_heartbeat", _periodic_lifecycle_heartbeat)
-    supervisor.start("health_check", _periodic_health_check)
+    supervisor.start(
+        "health_check",
+        lambda: _periodic_health_check(sources=sources if enable_watch else ()),
+    )
     supervisor.start("schema_preflight_recheck", _periodic_schema_preflight_recheck)
 
     api_server: DaemonAPIHTTPServer | None = None
@@ -2379,6 +2383,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 api_host=api_host,
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
                 archive_root=archive_root_path,
+                watch_sources=sources if enable_watch else (),
             )
             # Daemon-internal lease-free work shares the capacity the API
             # server already owns rather than standing up a second pool

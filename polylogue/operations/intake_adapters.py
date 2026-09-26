@@ -11,7 +11,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
-from collections.abc import Awaitable, Callable, Sequence
+import time
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar, cast
@@ -34,6 +35,7 @@ from polylogue.sources.live.cold_build import (
     register_cold_build_generation,
 )
 from polylogue.sources.live.discovery import _bounded_source_paths as _bounded_source_paths
+from polylogue.sources.live.discovery import _source_path_steps
 from polylogue.sources.live.metrics import (
     REFUSED_DAEMON_DEGRADED,
     REFUSED_UNATTEMPTED,
@@ -63,6 +65,8 @@ __all__ = [
 
 
 _RAW_DISCOVERY_INSPECTION_LIMIT = 32
+_FILE_DISCOVERY_STEP_LIMIT = 256
+_FILE_DISCOVERY_RESCAN_S = 600.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,10 +99,68 @@ class FileIntakeAdapter(IntakeAdapter):
         self._retry_page_pending = False
         self._ops_ledger_generation = self._ledger_generation()
         self._last_root_mtime_ns: int | None = None
-        self._last_source_entries = self._source_entries()
+        self._last_source_entries: tuple[int, int] | None = None
         self._last_hint_revision = context.watcher.intake_revision(source)
+        self._fresh_walk: Iterator[Path | None] | None = None
+        self._fresh_pending: list[Path] = []
+        self._fresh_exhausted = False
+        self._fresh_exhausted_at: float | None = None
 
     async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+        # Filesystem enumeration and path probes can be slow on mounted
+        # sources. Keep them off the daemon's event loop.
+        return await asyncio.to_thread(self._discover_sync, limit)
+
+    def _reset_fresh_walk(self) -> None:
+        self._fresh_walk = None
+        self._fresh_pending.clear()
+        self._fresh_exhausted = False
+        self._fresh_exhausted_at = None
+
+    @property
+    def discovery_pending(self) -> bool:
+        return self._fresh_walk is not None or bool(self._fresh_pending)
+
+    def _discover_fresh_paths(self, limit: int) -> list[Path]:
+        if limit <= 0:
+            return []
+        if self._after is not None:
+            self._fresh_pending = [path for path in self._fresh_pending if str(path) > self._after]
+        if self._fresh_pending:
+            return self._fresh_pending[:limit]
+        if self._fresh_exhausted:
+            if (
+                self._fresh_exhausted_at is None
+                or time.monotonic() - self._fresh_exhausted_at < _FILE_DISCOVERY_RESCAN_S
+            ):
+                return []
+            # A missed recursive watcher event may have inserted a file
+            # before the acknowledged cursor. Reconcile from the beginning;
+            # durable ingest identity makes previously admitted files cheap
+            # duplicates rather than skipping the new file forever.
+            self._after = None
+            self._reset_fresh_walk()
+        if self._fresh_walk is None:
+            self._fresh_walk = _source_path_steps(self.source, self.context.sources, after=self._after)
+        steps = max(_FILE_DISCOVERY_STEP_LIMIT, limit)
+        for _ in range(steps):
+            if len(self._fresh_pending) >= limit:
+                break
+            try:
+                path = next(self._fresh_walk)
+            except StopIteration:
+                self._fresh_walk = None
+                self._fresh_exhausted = True
+                self._fresh_exhausted_at = time.monotonic()
+                break
+            except Exception:
+                self._reset_fresh_walk()
+                raise
+            if path is not None:
+                self._fresh_pending.append(path)
+        return self._fresh_pending[:limit]
+
+    def _discover_sync(self, limit: int) -> Sequence[IntakeItem]:
         generation = self._ledger_generation()
         if generation != self._ops_ledger_generation:
             # ops.db is disposable. Losing or replacing its inode invalidates
@@ -108,6 +170,7 @@ class FileIntakeAdapter(IntakeAdapter):
             self._retry_skip_after = None
             self._retry_through = None
             self._ops_ledger_generation = generation
+            self._reset_fresh_walk()
         if self._retry_page_pending and self._retry_page_paths:
             # No item from the previous page reached admission or ack (for
             # example every item was in the dispatcher's cooldown). Rotate
@@ -119,6 +182,7 @@ class FileIntakeAdapter(IntakeAdapter):
         if hint_revision != self._last_hint_revision:
             self._after = None
             self._last_hint_revision = hint_revision
+            self._reset_fresh_walk()
         # A producer may add a file before the walk's position. Root mtime
         # catches direct additions without a watcher hint, but SQLite sidecars
         # in a coincident archive/source root change that mtime too. Compare
@@ -129,8 +193,9 @@ class FileIntakeAdapter(IntakeAdapter):
             root_mtime_ns = None
         if root_mtime_ns is not None and root_mtime_ns != self._last_root_mtime_ns:
             entries = self._source_entries()
-            if entries != self._last_source_entries:
+            if self._last_source_entries is not None and entries != self._last_source_entries:
                 self._after = None
+                self._reset_fresh_walk()
             self._last_source_entries = entries
             self._last_root_mtime_ns = root_mtime_ns
         # The cursor advances in ``acknowledge``, over items the dispatcher
@@ -147,7 +212,7 @@ class FileIntakeAdapter(IntakeAdapter):
         paths = self._due_retry_paths(limit) if retry_turn else []
         self._retry_page = bool(paths)
         if not paths:
-            paths = _bounded_source_paths(self.source, self.context.sources, limit=limit, after=self._after)
+            paths = self._discover_fresh_paths(limit)
         if not paths and not retry_turn:
             paths = self._due_retry_paths(limit)
             self._retry_page = bool(paths)
@@ -571,6 +636,10 @@ class MultiplexIntakeAdapter(IntakeAdapter):
             schedulable.append(adapter)
         return tuple(schedulable)
 
+    @property
+    def discovery_pending(self) -> bool:
+        return any(bool(getattr(adapter, "discovery_pending", False)) for adapter in self.schedulable_adapters())
+
     async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
         if limit <= 0:
             return ()
@@ -987,13 +1056,22 @@ class DaemonIntakeService:
         while True:
             self._wakeup.clear()
             result = await self.dispatcher.run_once(budget=self.budget)
+            discovery_pending = any(
+                bool(getattr(spec.adapter, "discovery_pending", False))
+                for spec in self.dispatcher.schedulable_classes()
+            )
             if result.progressed:
                 self._progressed_once = True
                 if self._on_pass_complete is not None:
                     outcome = self._on_pass_complete(result)
                     if isinstance(outcome, Awaitable):
                         await outcome
-            elif self._progressed_once and result.quiescent and self._on_backlog_drained is not None:
+            elif (
+                self._progressed_once
+                and result.quiescent
+                and not discovery_pending
+                and self._on_backlog_drained is not None
+            ):
                 pending = self._has_pending_backlog() if self._has_pending_backlog is not None else False
                 if isinstance(pending, Awaitable):
                     pending = await pending
@@ -1005,7 +1083,7 @@ class DaemonIntakeService:
                     # completed one-shot callback.
                     self._on_backlog_drained = None
             try:
-                async with asyncio.timeout(0.05 if result.progressed else self.idle_delay_s):
+                async with asyncio.timeout(0.05 if result.progressed or discovery_pending else self.idle_delay_s):
                     await self._wakeup.wait()
             except TimeoutError:
                 pass
