@@ -25,9 +25,8 @@ ReadViewOptionName = str
 #:     by a ``session:`` filter.  The view id must name a unit the grammar
 #:     declares; see ``test_read_view_classification_is_total``.
 #: ``distinct-operation``
-#:     The view needs an operation of its own (``session.lineage``,
-#:     ``context.compile``); those declarations land with S9, so these rows
-#:     carry no operation name yet.
+#:     The view has an operation of its own, or awaits one when its product
+#:     execution still lives behind the Python facade.
 #: ``renderer``
 #:     A client-side renderer composed from operations that already exist; it
 #:     adds no operation of its own.
@@ -214,10 +213,7 @@ IN_PROCESS_READ_VIEWS: frozenset[str] = frozenset()
 # reported bound and ``operations/evidence_window.py`` the per-relation
 # continuation family.
 #
-# The six views below have separate read operations. ``dialogue``, ``temporal``
-# and ``chronicle`` accept query sets; ``effective_context`` replays a
-# compaction boundary, while ``neighbors`` and ``correlation`` read distinct
-# evidence relations.
+# Distinct read operations serve the query-set, graph, and evidence views.
 READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
     "summary": ReadViewHandlerMetadata(
         "summary",
@@ -293,12 +289,14 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
         "required",
         declared_options=(NODE_OFFSET_OPTION, NODE_LIMIT_OPTION, EDGE_OFFSET_OPTION, EDGE_LIMIT_OPTION),
         execution_kind="distinct-operation",
+        operations=("read.lineage",),
     ),
     "topology": ReadViewHandlerMetadata(
         "topology",
         "required",
         declared_options=(NODE_OFFSET_OPTION, NODE_LIMIT_OPTION, EDGE_LIMIT_OPTION),
         execution_kind="distinct-operation",
+        operations=("read.topology",),
     ),
     "file-edits": ReadViewHandlerMetadata(
         "file-edits",

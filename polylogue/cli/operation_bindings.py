@@ -92,6 +92,14 @@ CLI_OPERATION_BINDINGS: Mapping[str, CliOperationBinding] = {
         lowering="polylogue.cli.read_views.effective_context:run_read_effective_context",
         renderers=("polylogue.cli.read_views.effective_context:run_read_effective_context",),
     ),
+    "read.lineage": CliOperationBinding(
+        lowering="polylogue.cli.read_views.lineage:run_read_lineage",
+        renderers=("polylogue.cli.read_views.lineage:run_read_lineage",),
+    ),
+    "read.topology": CliOperationBinding(
+        lowering="polylogue.cli.read_views.lineage:run_read_topology",
+        renderers=("polylogue.cli.read_views.lineage:run_read_topology",),
+    ),
     "read.neighbors": CliOperationBinding(
         lowering="polylogue.cli.read_views.neighbors:run_read_neighbors",
         renderers=("polylogue.cli.read_views.neighbors:run_read_neighbors",),

@@ -197,6 +197,35 @@ def test_transcript_file_delivery_does_not_bypass_its_declared_operation(
     assert reached == ["cli.query"]
 
 
+@pytest.mark.parametrize("view", ("lineage", "topology"))
+def test_graph_read_cancellation_is_final(
+    view: str, probe_env: tuple[Any, Config, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.cli.operation_kernel import OperationCancelledError
+    from polylogue.cli.read_view_handlers import run_read_view
+    from polylogue.cli.read_views import lineage as lineage_view
+    from polylogue.cli.read_views.base import ReadViewInvocation
+
+    env, config, session_id = probe_env
+    attempts: list[str] = []
+
+    def cancelled(_config: object, operation: Any, **_kwargs: object) -> object:
+        attempts.append(operation.operation)
+        raise OperationCancelledError(operation.operation, "cancelled", request_id="graph-read")
+
+    monkeypatch.setattr(lineage_view, "dispatch_read", cancelled)
+    request = RootModeRequest.from_params({"_config": config, "id": session_id})
+    invocation = ReadViewInvocation(
+        view=view, session_id=session_id, output_format=None, destination="stdout", out_path=None
+    )
+
+    with pytest.raises(SystemExit) as refusal:
+        run_read_view(env, request, invocation)
+
+    assert refusal.value.code != 0
+    assert attempts == [f"read.{view}"]
+
+
 def test_session_read_projections_name_a_kind_the_operation_actually_serves() -> None:
     """The second mirror: what ``session.read`` serves, not what a row claims.
 

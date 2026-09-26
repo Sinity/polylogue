@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from pathlib import Path
 
+from polylogue.analysis.lineage_graph import CompactLineageGraph
+from polylogue.analysis.topology import SessionTopology
+from polylogue.config import Config
 from polylogue.operations.daemon_protocol import validate_operation_result
 from polylogue.operations.daemon_reads import execute_read_operation
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -54,6 +58,51 @@ def test_effective_context_uses_the_declared_pinned_operation(tmp_path: Path) ->
     messages = body["messages"]
     assert isinstance(messages, list)
     assert [message["text"] for message in messages] == ["shared build marker", "shared build marker solved"]
+
+
+def test_lineage_and_topology_use_the_pinned_graph_engines(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    first, _ = _seed(root)
+    with ArchiveStore.open_existing(root) as archive:
+        lineage = execute_read_operation(
+            "read.lineage",
+            {"session_id": first, "node_offset": 0, "node_limit": 1, "edge_offset": 0, "edge_limit": 1},
+            archive=archive,
+            serving_identity="test",
+        )
+        topology = execute_read_operation(
+            "read.topology",
+            {"session_id": first, "node_offset": 0, "node_limit": 1, "edge_limit": 1},
+            archive=archive,
+            serving_identity="test",
+        )
+    validate_operation_result("read.lineage", lineage)
+    validate_operation_result("read.topology", topology)
+    lineage_payload = lineage["payload"]
+    topology_payload = topology["payload"]
+    assert isinstance(lineage_payload, dict)
+    assert isinstance(topology_payload, dict)
+    assert lineage_payload["seed_id"] == first
+    assert topology_payload["target_id"] == first
+    assert topology_payload["nodes"]
+
+    async def facade_results() -> tuple[CompactLineageGraph | None, SessionTopology | None]:
+        from polylogue.api import Polylogue
+
+        config = Config(archive_root=root, db_path=root / "index.db", render_root=tmp_path / "render", sources=[])
+        async with Polylogue.open(config=config) as api:
+            return (
+                await api.compact_lineage(first, node_offset=0, node_limit=1, edge_offset=0, edge_limit=1),
+                await api.get_session_topology(first, node_offset=0, node_limit=1, edge_limit=1),
+            )
+
+    facade_lineage, facade_topology = asyncio.run(facade_results())
+    assert facade_lineage is not None
+    assert facade_topology is not None
+    from polylogue.operations.topology_envelope import topology_public_envelope
+
+    assert lineage_payload == facade_lineage.model_dump(mode="json")
+    assert topology_payload == topology_public_envelope(facade_topology, session_id=first)
 
 
 def test_neighbors_keeps_ranked_evidence_on_the_operation_route(tmp_path: Path) -> None:
