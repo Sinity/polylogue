@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Literal, TypedDict
 
 import click
 
+from polylogue.api.archive import open_readonly_connection
 from polylogue.cli.shared.embed_stats import show_embedding_stats
 from polylogue.cli.shared.types import AppEnv
 
@@ -93,7 +94,7 @@ def _active_archive_location(db_path: Path) -> ArchiveLocation | None:
         location = ArchiveLocation.resolve(candidate_root)
         index_db = location.active_index_path
         try:
-            conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            conn = open_readonly_connection(index_db, validate_schema=False)
             try:
                 row = conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions' LIMIT 1"

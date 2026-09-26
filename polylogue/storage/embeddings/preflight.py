@@ -181,7 +181,9 @@ def _read_archive_pending_message_count(
             return 0, 0, 0
         embeddings_db = index_db.with_name("embeddings.db")
         if embeddings_db.exists():
-            conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
+            from polylogue.storage.sqlite.connection_profile import attach_readonly_database
+
+            attach_readonly_database(conn, embeddings_db, alias="embeddings")
             status_table = "embeddings.embedding_status"
         else:
             status_table = ""

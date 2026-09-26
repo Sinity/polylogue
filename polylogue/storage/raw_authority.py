@@ -24,7 +24,11 @@ from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.archive.session_revision_membership import MembershipDecision
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
-from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection, open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import (
+    attach_readonly_database,
+    open_isolated_write_connection,
+    open_readonly_connection,
+)
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
 #: Fingerprints previously stamped by ``RAW_AUTHORITY_PARSER_FINGERPRINT``
@@ -263,7 +267,7 @@ def build_raw_replay_plans(
 
         index_db_path = resolve_active_index_path(archive_root)
     with closing(_readonly(archive_root / "source.db")) as conn:
-        conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db_path),))
+        attach_readonly_database(conn, index_db_path, alias="index_tier")
         return tuple(build_raw_replay_plan(conn, component) for component in components)
 
 
@@ -311,7 +315,7 @@ def raw_replay_application_receipt(
 
         index_db_path = resolve_active_index_path(archive_root)
     with closing(_readonly(archive_root / "source.db")) as conn:
-        conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db_path),))
+        attach_readonly_database(conn, index_db_path, alias="index_tier")
         return raw_replay_application_receipt_from_connection(conn, plan, index_db_path=index_db_path)
 
 

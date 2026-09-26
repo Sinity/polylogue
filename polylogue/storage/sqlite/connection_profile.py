@@ -18,6 +18,7 @@ thread-local cached connection used by the async runtime, use the factories in
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -28,7 +29,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Literal, Self
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlsplit
 
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.write_lease import require_write_lease
@@ -1196,10 +1197,132 @@ def open_readonly_connection(
             _assert_schema_supported(conn, path, tier)
         for stmt in profile.pragma_statements:
             conn.execute(stmt)
+        conn.set_authorizer(_authorize_read_operation)
     except BaseException:
         conn.close()
         raise
     return conn
+
+
+def _authorize_read_operation(
+    action: int,
+    argument1: str | None,
+    argument2: str | None,
+    _database: str | None,
+    _trigger: str | None,
+) -> int:
+    """Keep a profiled reader read-only after its connection setup."""
+    if action in {
+        sqlite3.SQLITE_SELECT,
+        sqlite3.SQLITE_READ,
+        sqlite3.SQLITE_FUNCTION,
+        sqlite3.SQLITE_TRANSACTION,
+        sqlite3.SQLITE_SAVEPOINT,
+        sqlite3.SQLITE_RECURSIVE,
+        sqlite3.SQLITE_DETACH,
+    }:
+        return sqlite3.SQLITE_OK
+    if action == sqlite3.SQLITE_PRAGMA:
+        pragma = (argument1 or "").lower()
+        read_pragmas = {
+            "application_id",
+            "busy_timeout",
+            "cache_size",
+            "database_list",
+            "data_version",
+            "foreign_keys",
+            "foreign_key_check",
+            "foreign_key_list",
+            "freelist_count",
+            "index_info",
+            "index_list",
+            "index_xinfo",
+            "integrity_check",
+            "journal_mode",
+            "journal_size_limit",
+            "locking_mode",
+            "mmap_size",
+            "page_count",
+            "page_size",
+            "query_only",
+            "quick_check",
+            "schema_version",
+            "synchronous",
+            "table_info",
+            "table_xinfo",
+            "temp_store",
+            "user_version",
+            "wal_autocheckpoint",
+        }
+        parameterized_reads = {
+            "foreign_key_check",
+            "foreign_key_list",
+            "index_info",
+            "index_list",
+            "index_xinfo",
+            "table_info",
+            "table_xinfo",
+        }
+        if pragma in read_pragmas and (argument2 is None or pragma in parameterized_reads):
+            return sqlite3.SQLITE_OK
+        return sqlite3.SQLITE_DENY
+    if action == sqlite3.SQLITE_ATTACH and argument1 is not None:
+        uri = urlsplit(argument1)
+        if uri.scheme == "file" and parse_qs(uri.query).get("mode") == ["ro"]:
+            return sqlite3.SQLITE_OK
+    return sqlite3.SQLITE_DENY
+
+
+def attach_readonly_database(conn: sqlite3.Connection, path: str | Path, *, alias: str) -> None:
+    """Attach a second read-only tier to a profiled reader."""
+    if conn.execute("PRAGMA query_only").fetchone()[0] != 1:
+        raise ValueError("read-only attachment requires a query-only connection")
+    if re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", alias) is None:
+        raise ValueError(f"invalid SQLite attachment alias: {alias!r}")
+    uri = f"file:{quote(str(path))}?mode=ro"
+    conn.set_authorizer(None)
+    try:
+        conn.execute(f"ATTACH DATABASE ? AS {alias}", (uri,))
+    finally:
+        conn.set_authorizer(_authorize_read_operation)
+
+
+def _authorize_read_temp_operation(
+    action: int,
+    argument1: str | None,
+    argument2: str | None,
+    database: str | None,
+    trigger: str | None,
+) -> int:
+    if database == "temp" and action in {
+        sqlite3.SQLITE_INSERT,
+        sqlite3.SQLITE_UPDATE,
+        sqlite3.SQLITE_DELETE,
+        sqlite3.SQLITE_CREATE_TEMP_TABLE,
+        sqlite3.SQLITE_CREATE_TEMP_INDEX,
+        sqlite3.SQLITE_DROP_TEMP_TABLE,
+        sqlite3.SQLITE_DROP_TEMP_INDEX,
+    }:
+        return sqlite3.SQLITE_OK
+    return _authorize_read_operation(action, argument1, argument2, database, trigger)
+
+
+@contextmanager
+def readonly_temp_staging(conn: sqlite3.Connection) -> Iterator[None]:
+    """Permit TEMP projection rows while persistent attached tiers stay read-only."""
+    if conn.execute("PRAGMA query_only").fetchone()[0] != 1:
+        raise ValueError("TEMP staging requires a query-only reader")
+    conn.set_authorizer(None)
+    try:
+        conn.execute("PRAGMA query_only = OFF")
+        conn.set_authorizer(_authorize_read_temp_operation)
+        yield
+    finally:
+        conn.set_authorizer(None)
+        try:
+            conn.execute("PRAGMA query_only = ON")
+        finally:
+            conn.set_authorizer(_authorize_read_operation)
 
 
 @contextmanager

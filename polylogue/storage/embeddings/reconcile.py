@@ -62,7 +62,11 @@ from typing import Literal
 
 from polylogue.storage.embeddings.generations import EmbeddingGenerationBinding
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
-from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection, open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import (
+    attach_readonly_database,
+    open_isolated_write_connection,
+    open_readonly_connection,
+)
 
 DEFAULT_QUIET_WINDOW_MS = 5 * 60 * 1000  # 5 minutes
 DEFAULT_SAMPLE_SIZE = 30
@@ -341,7 +345,10 @@ def _reconcile_embedding_orphans(
             raise RuntimeError("embedding orphan reconciliation requires sqlite-vec") from error
 
         expected_index_identity = _index_identity(index_path)
-        conn.execute("ATTACH DATABASE ? AS idx", (expected_index_identity.resolved_path,))
+        if dry_run:
+            attach_readonly_database(conn, expected_index_identity.resolved_path, alias="idx")
+        else:
+            conn.execute("ATTACH DATABASE ? AS idx", (expected_index_identity.resolved_path,))
         if not dry_run:
             actual_index_schema_version = _scalar(conn, "PRAGMA idx.user_version")
             if actual_index_schema_version != INDEX_SCHEMA_VERSION:

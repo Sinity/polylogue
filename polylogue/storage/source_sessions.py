@@ -8,6 +8,7 @@ from pathlib import Path
 
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.logging import get_logger
+from polylogue.storage.sqlite.connection_profile import attach_readonly_database
 
 logger = get_logger(__name__)
 
@@ -81,7 +82,10 @@ def _ensure_source_tier_attached(conn: sqlite3.Connection, source_db: Path) -> s
     for row in conn.execute("PRAGMA database_list").fetchall():
         if str(row[1]) == "source_tier":
             return "source_tier"
-    conn.execute("ATTACH DATABASE ? AS source_tier", (str(source_db),))
+    if conn.execute("PRAGMA query_only").fetchone()[0]:
+        attach_readonly_database(conn, source_db, alias="source_tier")
+    else:
+        conn.execute("ATTACH DATABASE ? AS source_tier", (str(source_db),))
     return "source_tier"
 
 

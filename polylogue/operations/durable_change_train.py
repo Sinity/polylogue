@@ -1682,10 +1682,10 @@ def restore_adopted_audit_tier(
             # ``-shm``/``-wal`` pair inside the backup directory, and the
             # ``revalidate_exact_backup()`` below inventories that same
             # directory and refuses unbound sidecars.
-            backup_source_uri = (
-                f"{(manifest_path.parent / 'source.db').resolve(strict=True).as_uri()}?mode=ro&immutable=1"
-            )
-            with closing(sqlite3.connect(backup_source_uri, uri=True)) as backup_source:
+            backup_source_path = (manifest_path.parent / "source.db").resolve(strict=True)
+            with closing(
+                open_readonly_connection(backup_source_path, immutable=True, validate_schema=False)
+            ) as backup_source:
                 backup_head = backup_source.execute(
                     "SELECT committed_generation, committed_head_sha256 FROM audit_continuity_control WHERE singleton = 1"
                 ).fetchone()
