@@ -146,6 +146,31 @@ class TestFormatMetricsExpositionShape:
             assert name in parsed, f"missing series for fresh archive: {name}"
             assert parsed[name]["type"] is not None, f"missing TYPE for {name}"
 
+    def test_unreadable_status_frame_has_one_unavailable_metric(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from polylogue.daemon.status_snapshot import (
+            get_status_snapshot_payload,
+            refresh_status_snapshot,
+            reset_status_snapshot,
+        )
+
+        missing_index = tmp_path / "missing-index.db"
+        monkeypatch.setattr("polylogue.daemon.status_snapshot.resolve_active_index_path", lambda _root: missing_index)
+        try:
+            refresh_status_snapshot(payload={"ok": True})
+            status = get_status_snapshot_payload()
+            snapshot = cast(dict[str, object], status["status_snapshot"])
+            assert snapshot["state"] == "unavailable"
+            assert snapshot["frame_error"] == "archive frame unavailable"
+
+            body = format_metrics(missing_index)
+            assert 'polylogue_status_snapshot_state{state="unavailable"} 1' in body
+            for state in ("fresh", "stale", "missing"):
+                assert f'polylogue_status_snapshot_state{{state="{state}"}} 0' in body
+        finally:
+            reset_status_snapshot()
+
     def test_every_sample_line_has_preceding_help_and_type(self, tmp_path: Path) -> None:
         body = format_metrics(tmp_path / "missing.db")
         parsed = _parse_exposition(body)

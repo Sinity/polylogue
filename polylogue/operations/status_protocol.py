@@ -93,6 +93,8 @@ class ComponentSnapshot:
     fingerprint: str | None = None
     error: str | None = None
     last_good_at: str | None = None
+    completed_at: str | None = None
+    collection_duration_s: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -106,6 +108,8 @@ class ComponentSnapshot:
             "fingerprint": self.fingerprint,
             "error": self.error,
             "last_good_at": self.last_good_at,
+            "completed_at": self.completed_at,
+            "collection_duration_s": self.collection_duration_s,
         }
 
 
@@ -113,9 +117,13 @@ class ComponentSnapshot:
 class _Attempt:
     """One in-flight or completed collector invocation, run on a daemon thread."""
 
-    thread: threading.Thread
+    thread: threading.Thread | None
     done: threading.Event
     submitted_monotonic: float
+    submitted_at: str
+    fingerprint: str | None
+    completed_monotonic: float | None = None
+    completed_at: str | None = None
     reported_timeout: bool = False
     outcome: list[tuple[str, Any]] = field(default_factory=list)
 
@@ -199,7 +207,7 @@ class StatusComponentRegistry:
                     results[spec.name] = self._fresh_snapshot(good)
                     continue
 
-                new_attempt = self._start_attempt_locked(spec)
+                new_attempt = self._start_attempt_locked(spec, fp)
                 if good is not None:
                     results[spec.name] = self._stale_snapshot(spec, good)
                 else:
@@ -213,7 +221,6 @@ class StatusComponentRegistry:
                         fp = self._safe_fingerprint(spec)
                         fingerprint_error = self._fingerprint_errors.pop(spec.name, None)
                         if fingerprint_error is not None:
-                            del self._pending[name]
                             good = self._good.get(name)
                             results[name] = ComponentSnapshot(
                                 name=spec.name,
@@ -242,7 +249,9 @@ class StatusComponentRegistry:
         with self._lock:
             attempt = self._pending.get(name)
             if attempt is None or attempt.done.is_set():
-                self._start_attempt_locked(spec)
+                fingerprint = self._safe_fingerprint(spec)
+                if self._fingerprint_errors.get(name) is None:
+                    self._start_attempt_locked(spec, fingerprint)
 
     def last_good(self, name: str) -> ComponentSnapshot | None:
         with self._lock:
@@ -267,13 +276,21 @@ class StatusComponentRegistry:
         if spec.fingerprint is None:
             return None
         try:
-            return spec.fingerprint()
+            fingerprint = spec.fingerprint()
+            self._fingerprint_errors.pop(spec.name, None)
+            return fingerprint
         except Exception as exc:
             self._fingerprint_errors[spec.name] = f"{type(exc).__name__}: {exc}"
             return None
 
-    def _start_attempt_locked(self, spec: StatusComponentSpec) -> _Attempt:
-        attempt = _Attempt(thread=None, done=threading.Event(), submitted_monotonic=monotonic())  # type: ignore[arg-type]
+    def _start_attempt_locked(self, spec: StatusComponentSpec, fingerprint: str | None) -> _Attempt:
+        attempt = _Attempt(
+            thread=None,
+            done=threading.Event(),
+            submitted_monotonic=monotonic(),
+            submitted_at=_now_iso(),
+            fingerprint=fingerprint,
+        )
         thread = threading.Thread(
             target=_run_collector,
             args=(spec, attempt),
@@ -290,21 +307,45 @@ class StatusComponentRegistry:
     ) -> ComponentSnapshot:
         del self._pending[spec.name]
         kind, payload = attempt.outcome[0]
-        now_iso, now_mono = _now_iso(), monotonic()
+        completed_mono = attempt.completed_monotonic
+        assert completed_mono is not None and attempt.completed_at is not None
+        age_s = max(0.0, monotonic() - attempt.submitted_monotonic)
+        duration_s = max(0.0, completed_mono - attempt.submitted_monotonic)
         good = self._good.get(spec.name)
+        if attempt.fingerprint != fingerprint:
+            return ComponentSnapshot(
+                name=spec.name,
+                scope=spec.scope,
+                state="stale" if good is not None else "unavailable",
+                value=good.snapshot.value if good is not None else None,
+                captured_at=good.snapshot.captured_at if good is not None else attempt.submitted_at,
+                age_s=max(0.0, monotonic() - good.captured_monotonic) if good is not None else age_s,
+                deadline_s=spec.deadline_s,
+                fingerprint=good.fingerprint if good is not None else attempt.fingerprint,
+                error="source fingerprint changed during collection",
+                last_good_at=good.snapshot.captured_at if good is not None else None,
+                completed_at=attempt.completed_at,
+                collection_duration_s=duration_s,
+            )
         if kind == "ok":
             snapshot = ComponentSnapshot(
                 name=spec.name,
                 scope=spec.scope,
                 state="fresh",
                 value=payload,
-                captured_at=now_iso,
-                age_s=0.0,
+                captured_at=attempt.submitted_at,
+                age_s=age_s,
                 deadline_s=spec.deadline_s,
-                fingerprint=fingerprint,
-                last_good_at=now_iso,
+                fingerprint=attempt.fingerprint,
+                last_good_at=attempt.submitted_at,
+                completed_at=attempt.completed_at,
+                collection_duration_s=duration_s,
             )
-            self._good[spec.name] = _Good(snapshot=snapshot, captured_monotonic=now_mono, fingerprint=fingerprint)
+            self._good[spec.name] = _Good(
+                snapshot=snapshot, captured_monotonic=attempt.submitted_monotonic, fingerprint=attempt.fingerprint
+            )
+            if spec.ttl_s > 0 and age_s >= spec.ttl_s:
+                return self._stale_snapshot(spec, self._good[spec.name])
             return snapshot
         state: ComponentState = "unavailable" if isinstance(payload, ComponentUnavailableError) else "degraded"
         return ComponentSnapshot(
@@ -316,12 +357,14 @@ class StatusComponentRegistry:
             # adapter that forgets to inspect ``state``. Degraded collection
             # keeps last-good evidence for diagnostics; unavailable does not.
             value=(good.snapshot.value if good is not None and state != "unavailable" else None),
-            captured_at=now_iso,
-            age_s=0.0,
+            captured_at=attempt.submitted_at,
+            age_s=age_s,
             deadline_s=spec.deadline_s,
-            fingerprint=fingerprint,
+            fingerprint=attempt.fingerprint,
             error=str(payload),
             last_good_at=good.snapshot.captured_at if good is not None else None,
+            completed_at=attempt.completed_at,
+            collection_duration_s=duration_s,
         )
 
     def _fresh_snapshot(self, good: _Good) -> ComponentSnapshot:
@@ -336,6 +379,8 @@ class StatusComponentRegistry:
             deadline_s=good.snapshot.deadline_s,
             fingerprint=good.fingerprint,
             last_good_at=good.snapshot.captured_at,
+            completed_at=good.snapshot.completed_at,
+            collection_duration_s=good.snapshot.collection_duration_s,
         )
 
     def _stale_snapshot(self, spec: StatusComponentSpec, good: _Good) -> ComponentSnapshot:
@@ -350,6 +395,8 @@ class StatusComponentRegistry:
             deadline_s=spec.deadline_s,
             fingerprint=good.fingerprint,
             last_good_at=good.snapshot.captured_at,
+            completed_at=good.snapshot.completed_at,
+            collection_duration_s=good.snapshot.collection_duration_s,
         )
 
     def _refreshing_snapshot(self, spec: StatusComponentSpec, good: _Good | None) -> ComponentSnapshot:
@@ -387,6 +434,8 @@ def _run_collector(spec: StatusComponentSpec, attempt: _Attempt) -> None:
     except Exception as exc:
         attempt.outcome.append(("error", exc))
     finally:
+        attempt.completed_monotonic = monotonic()
+        attempt.completed_at = _now_iso()
         attempt.done.set()
 
 

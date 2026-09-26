@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import itertools
 import sqlite3
 import sys
 from datetime import timedelta
@@ -97,6 +96,7 @@ def _complete_raw_materialization_readiness() -> status_module.RawMaterializatio
 
 
 def test_status_snapshot_serves_cached_payload_without_rebuilding_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("polylogue.daemon.status_snapshot._status_frame", lambda: "frame-A")
     payload: JSONDocument = {"ok": True, "daemon_liveness": True, "checked_at": "cached"}
     refresh_status_snapshot(payload=payload)
 
@@ -130,6 +130,69 @@ def test_status_snapshot_serves_cached_payload_without_rebuilding_status(monkeyp
     assert isinstance(writer, dict)
     assert "active_actor" in writer
     assert "queued_actors" in writer
+
+
+def test_status_snapshot_unreadable_frame_never_certifies_fresh(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from polylogue.daemon.status_snapshot import snapshot_state_for_metrics
+
+    missing_index = tmp_path / "missing-index.db"
+    monkeypatch.setattr("polylogue.daemon.status_snapshot.resolve_active_index_path", lambda _root: missing_index)
+    refresh_status_snapshot(payload={"ok": True, "raw_frontier_integrity": _complete_healthy_frontier()})
+    result = get_status_snapshot_payload()
+    metadata = cast(dict[str, Any], result["status_snapshot"])
+    freshness = cast(dict[str, Any], cast(dict[str, Any], metadata["state_evidence"])["freshness"])
+    assert metadata["state"] == "unavailable"
+    assert metadata["frame"] is None
+    assert metadata["current_frame"] is None
+    assert metadata["frame_changed"] is False
+    assert metadata["frame_error"] == "archive frame unavailable"
+    assert freshness["cause"] == metadata["frame_error"]
+    assert result["ok"] is False
+    metrics = snapshot_state_for_metrics()
+    assert metrics["state"] == "unavailable"
+    assert metrics["frame_error"] == metadata["frame_error"]
+
+
+def test_status_snapshot_rejects_payload_collected_across_frame_promotion(monkeypatch: pytest.MonkeyPatch) -> None:
+    frame = {"value": "A"}
+    monkeypatch.setattr("polylogue.daemon.status_snapshot._status_frame", lambda: frame["value"])
+    refresh_status_snapshot(payload={"ok": False, "checked_at": "coherent-A"})
+
+    def promote(**_kwargs: object) -> JSONDocument:
+        frame["value"] = "B"
+        return {"ok": True, "checked_at": "mixed-A-B"}
+
+    monkeypatch.setattr("polylogue.daemon.status.daemon_status_payload", promote)
+    refresh_status_snapshot()
+    result = get_status_snapshot_payload()
+    metadata = cast(dict[str, Any], result["status_snapshot"])
+    freshness = cast(dict[str, Any], cast(dict[str, Any], metadata["state_evidence"])["freshness"])
+    assert result["checked_at"] == "coherent-A"
+    assert metadata["state"] == "stale"
+    assert metadata["frame"] == "A"
+    assert metadata["current_frame"] == "B"
+    assert metadata["frame_error"] == "archive frame changed during status collection"
+    assert freshness["cause"] == metadata["frame_error"]
+
+    refresh_status_snapshot(payload={"ok": True, "checked_at": "coherent-B"})
+    current = get_status_snapshot_payload()
+    assert current["checked_at"] == "coherent-B"
+    assert cast(dict[str, Any], current["status_snapshot"])["state"] == "fresh"
+
+
+def test_caller_payload_refresh_uses_invocation_frame(monkeypatch: pytest.MonkeyPatch) -> None:
+    frames = iter(("A", "B", "B"))
+    monkeypatch.setattr("polylogue.daemon.status_snapshot._status_frame", lambda: next(frames))
+    refresh_status_snapshot(payload={"ok": True, "checked_at": "unbound"})
+    result = get_status_snapshot_payload()
+    metadata = cast(dict[str, Any], result["status_snapshot"])
+    assert result.get("checked_at") != "unbound"
+    assert metadata["state"] == "stale"
+    assert metadata["frame"] == "A"
+    assert metadata["current_frame"] == "B"
+    assert metadata["frame_error"] == "archive frame changed during status collection"
 
 
 def test_daemon_status_plain_output_reports_schema_and_cursor_debt() -> None:
@@ -207,6 +270,7 @@ def test_daemon_status_command_exit_matches_json_health_claim(payload_ok: bool, 
 
 
 def test_status_snapshot_stale_healthy_authority_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("polylogue.daemon.status_snapshot._status_frame", lambda: "frame-A")
     payload: JSONDocument = {
         "ok": True,
         "daemon_liveness": True,
@@ -3110,7 +3174,7 @@ def test_medium_health_tier_is_not_re_run_by_wal_fingerprint_churn() -> None:
 
     configured = {HealthTier.FAST, HealthTier.MEDIUM}
     asked: list[frozenset[HealthTier]] = []
-    churn = itertools.count()
+    fingerprint = {"value": "wal-A"}
 
     def _checked_health(tiers: set[HealthTier]) -> DaemonHealth:
         asked.append(frozenset(tiers))
@@ -3138,9 +3202,8 @@ def test_medium_health_tier_is_not_re_run_by_wal_fingerprint_churn() -> None:
             health_tiers=lambda: configured,
             include_raw_replay_backlog=False,
             include_exact_raw_materialization_readiness=False,
-            # Stands in for the real WAL-mtime fingerprint under active ingest:
-            # a different value on every single observation.
-            fingerprint=lambda: str(next(churn)),
+            # Stands in for WAL-mtime churn between status polls.
+            fingerprint=lambda: fingerprint["value"],
         )
     }
     fast_spec = specs["health_fast"]
@@ -3155,6 +3218,7 @@ def test_medium_health_tier_is_not_re_run_by_wal_fingerprint_churn() -> None:
     registry = StatusComponentRegistry([fast_spec, medium_spec])
     names = ["health_fast", "health_medium"]
     registry.collect(names=names)
+    fingerprint["value"] = "wal-B"
     merged = status_module._merge_health_snapshots(registry.collect(names=names))
 
     # The cheap tier may be re-collected as often as the fingerprint churns;

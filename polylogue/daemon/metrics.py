@@ -1215,7 +1215,10 @@ def _emit_status_metrics(lines: list[str]) -> None:
         name="polylogue_status_snapshot_state",
         help_text="1 for the current daemon status snapshot freshness state.",
         metric_type="gauge",
-        samples=[({"state": state}, 1 if state == snapshot_state else 0) for state in ("fresh", "stale", "missing")],
+        samples=[
+            ({"state": state}, 1 if state == snapshot_state else 0)
+            for state in ("fresh", "stale", "missing", "unavailable")
+        ],
     )
 
 

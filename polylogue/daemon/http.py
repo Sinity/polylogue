@@ -3183,13 +3183,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # entirely and folded the resulting ``None`` into the ETag, so a
         # client that had seen a live value got a 304 over an unmeasured one.
         # The probe's failure is now a published state and part of the ETag.
-        liveness_measured = True
         try:
             from polylogue.daemon.status import _check_daemon_liveness
 
             status["daemon_liveness"] = _check_daemon_liveness()
         except Exception as exc:
-            liveness_measured = False
             status["daemon_liveness"] = None
             status["daemon_liveness_state"] = "unmeasured"
             emit(
@@ -3203,27 +3201,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
         else:
             status["daemon_liveness_state"] = "measured"
-        snapshot = status.get("status_snapshot")
-        snapshot_state = str(snapshot.get("state") or "missing") if isinstance(snapshot, Mapping) else "missing"
-        snapshot_captured_at = (
-            str(snapshot.get("captured_at") or "missing") if isinstance(snapshot, Mapping) else "missing"
-        )
-        etag_material = json.dumps(
-            [
-                latest_event_id,
-                snapshot_state,
-                snapshot_captured_at,
-                status.get("ok"),
-                status.get("daemon_liveness"),
-                # A suppressed probe must change the ETag, not hide behind the
-                # same ``null`` a genuinely absent value would produce.
-                "measured" if liveness_measured else "unmeasured",
-                status.get("daemon_write_coordinator"),
-            ],
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-        etag_digest = hashlib.sha256(etag_material).hexdigest()[:24]
+        # The frame and live discovery overlay can change without a daemon event.
+        raw = _json_bytes(status)
+        etag_digest = hashlib.sha256(raw).hexdigest()[:24]
         etag = f'W/"status-{etag_digest}"'
         if_none_match = self.headers.get("If-None-Match", "")
         if if_none_match and if_none_match == etag:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from datetime import UTC, datetime
 from time import sleep
 
 import pytest
@@ -199,6 +200,124 @@ def test_fingerprint_change_forces_refresh_inside_ttl() -> None:
     assert calls["n"] == 2
 
 
+def test_generation_switch_during_collection_never_relabels_old_result() -> None:
+    generation = {"value": "A"}
+    started = threading.Event()
+    release = threading.Event()
+
+    def collect() -> dict[str, str]:
+        observed = generation["value"]
+        started.set()
+        assert release.wait(2)
+        return {"observed_generation": observed}
+
+    registry = StatusComponentRegistry(
+        [StatusComponentSpec(name="probe", scope="test", collector=collect, fingerprint=lambda: generation["value"])]
+    )
+    registry.request_refresh("probe")
+    assert started.wait(2)
+    generation["value"] = "B"
+    release.set()
+    assert registry._pending["probe"].done.wait(2)
+    old = registry.collect()["probe"]
+    assert old.state == "unavailable"
+    assert old.value is None
+    assert old.fingerprint == "A"
+    assert "fingerprint changed" in (old.error or "")
+    newer = registry.collect()["probe"]
+    assert newer.state == "fresh"
+    assert newer.value == {"observed_generation": "B"}
+    assert newer.fingerprint == "B"
+
+
+def test_generation_switch_preserves_old_good_as_advisory() -> None:
+    generation = {"value": "A"}
+    started = threading.Event()
+    release = threading.Event()
+    calls = {"count": 0}
+
+    def collect() -> str:
+        calls["count"] += 1
+        observed = generation["value"]
+        if calls["count"] == 2:
+            started.set()
+            assert release.wait(2)
+        return observed
+
+    registry = StatusComponentRegistry(
+        [StatusComponentSpec(name="probe", scope="test", collector=collect, fingerprint=lambda: generation["value"])]
+    )
+    first = registry.collect()["probe"]
+    assert first.state == "fresh"
+    registry.request_refresh("probe")
+    assert started.wait(2)
+    generation["value"] = "B"
+    registry.request_refresh("probe")
+    assert calls["count"] == 2
+    release.set()
+    assert registry._pending["probe"].done.wait(2)
+    stale = registry.collect()["probe"]
+    assert stale.state == "stale"
+    assert stale.value == "A"
+    assert stale.fingerprint == "A"
+    assert stale.last_good_at == first.captured_at
+    assert "fingerprint changed" in (stale.error or "")
+
+
+def test_delayed_harvest_keeps_observation_age_and_collection_duration(monkeypatch: pytest.MonkeyPatch) -> None:
+    import polylogue.operations.status_protocol as protocol
+
+    clock = {"value": 10.0}
+    monkeypatch.setattr(protocol, "monotonic", lambda: clock["value"])
+    started = threading.Event()
+    release = threading.Event()
+
+    def collect() -> str:
+        started.set()
+        assert release.wait(2)
+        return "measured"
+
+    registry = StatusComponentRegistry([StatusComponentSpec(name="probe", scope="test", collector=collect, ttl_s=5.0)])
+    registry.request_refresh("probe")
+    assert started.wait(2)
+    clock["value"] = 12.0
+    release.set()
+    assert registry._pending["probe"].done.wait(2)
+    completed_at = registry._pending["probe"].completed_at
+    clock["value"] = 20.0
+    snapshot = registry.collect()["probe"]
+    assert snapshot.state == "stale"
+    assert snapshot.age_s == 10.0
+    assert snapshot.collection_duration_s == 2.0
+    assert snapshot.completed_at == completed_at
+    assert datetime.fromisoformat(snapshot.captured_at).tzinfo == UTC
+
+
+def test_fingerprint_failure_does_not_start_or_certify_collection() -> None:
+    generation = {"value": "A"}
+    calls = {"count": 0}
+
+    def fingerprint() -> str:
+        if generation["value"] == "unreadable":
+            raise OSError("identity missing")
+        return generation["value"]
+
+    def collect() -> str:
+        calls["count"] += 1
+        return generation["value"]
+
+    registry = StatusComponentRegistry(
+        [StatusComponentSpec(name="probe", scope="test", collector=collect, fingerprint=fingerprint)]
+    )
+    assert registry.collect()["probe"].state == "fresh"
+    generation["value"] = "unreadable"
+    registry.request_refresh("probe")
+    failed = registry.collect()["probe"]
+    assert failed.state == "unavailable"
+    assert "fingerprint unavailable" in (failed.error or "")
+    assert calls["count"] == 1
+
+
 def test_detail_only_component_excluded_from_default_collection() -> None:
     registry = StatusComponentRegistry(
         [
@@ -230,6 +349,8 @@ def test_to_dict_is_json_serializable_shape() -> None:
         "fingerprint",
         "error",
         "last_good_at",
+        "completed_at",
+        "collection_duration_s",
     }
 
 
