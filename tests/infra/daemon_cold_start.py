@@ -80,6 +80,60 @@ def fixture_tree_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
+def write_retained_measurement_receipt(receipt: dict[str, object], report_file: Path | None) -> Path | None:
+    """Export sanitized cold-route scalars beside the managed pytest report."""
+    if report_file is None:
+        return None
+    fixture = receipt.get("fixture")
+    if not isinstance(fixture, dict) or fixture.get("rejected") != 4096:
+        return None
+    discovery = receipt.get("discovery_measurement")
+    intake = receipt.get("intake_counts")
+    candidate = receipt.get("candidate")
+    if not isinstance(discovery, dict) or not isinstance(intake, dict) or not isinstance(candidate, dict):
+        raise AssertionError("4096-sibling receipt is missing retained measurement evidence")
+
+    retained = {
+        "format": "polylogue.daemon-cold-discovery-retained.v1",
+        "candidate_sha": candidate.get("sha"),
+        "workload": {
+            "rejected_siblings": fixture.get("rejected"),
+            "accepted_sessions": fixture.get("accepted"),
+            "source_unchanged": fixture.get("unchanged_after_run"),
+            "source_tree_sha256": fixture.get("sha256"),
+            "source_tree_sha256_after": fixture.get("sha256_after_run"),
+        },
+        "outcome": receipt.get("outcome"),
+        "outer_elapsed_s": receipt.get("outer_elapsed_s"),
+        "discovery": discovery,
+        "intake_counts": {
+            key: intake.get(key)
+            for key in (
+                "event",
+                "outcome",
+                "files",
+                "offered_bytes",
+                "succeeded",
+                "failed",
+                "retried",
+                "deferred",
+                "refused",
+            )
+        },
+        "process_tree_rss": {
+            "sampled_peak_bytes": receipt.get("process_tree_rss_bytes"),
+            "sample_count": receipt.get("process_tree_rss_sample_count"),
+            "process_count_at_peak": receipt.get("process_tree_rss_process_count_at_peak"),
+            "sampling_interval_target_ms": receipt.get("process_tree_rss_sampling_interval_target_ms"),
+            "missing_reason": receipt.get("process_tree_rss_missing_reason"),
+            "scope": receipt.get("process_tree_rss_scope"),
+        },
+    }
+    path = report_file.with_name("cold-daemon-4096-measurement.json")
+    path.write_text(json.dumps(retained, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
 def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -273,6 +327,8 @@ def _read_discovery_trace(path: Path, process_start: float, milestones: dict[str
 
     publication = milestones.get("first_publication")
     publication_s = float(publication) if isinstance(publication, (int, float)) else None
+    if publication_s is not None:
+        elapsed["first_publication_upper_bound"] = round(publication_s, 6)
     first_yield_elapsed = elapsed.get("first_yielded_entry")
     listing_start_elapsed = elapsed.get("root_listing_start")
     return {
@@ -570,7 +626,7 @@ def qualify(
                             if observed == expected:
                                 verified.add(session_id)
                                 milestone.setdefault("public_read_first", round(time.monotonic() - start, 3))
-                                milestone.setdefault("first_publication", round(time.monotonic() - start, 3))
+                                milestone.setdefault("first_publication", round(time.monotonic() - start, 6))
                     if len(verified) == 3:
                         # Search returns message hits. The three sessions have 36
                         # matching messages, so the first page must contain all of them.
