@@ -568,45 +568,6 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
     assert terminals[-1]["error_type"] == "OperationalError"
 
 
-def test_periodic_drive_source_catchup_waits_for_watcher_registration(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Remote Drive work cannot monopolize startup ahead of local sessions."""
-    from polylogue.daemon import cli as daemon_cli
-
-    calls: list[str] = []
-
-    async def fake_run(_callback: object) -> int:
-        from polylogue.storage.sqlite.write_lease import current_write_lease
-
-        assert current_write_lease() is None
-        calls.append("drive")
-        raise asyncio.CancelledError
-
-    async def exercise() -> None:
-        watcher_registered = asyncio.Event()
-        monkeypatch.setattr(
-            daemon_cli,
-            "_run_drive_source_catchup_safely",
-            fake_run,
-        )
-        task = asyncio.create_task(
-            daemon_cli._periodic_drive_source_catchup(
-                session_profile_callback=_unused_session_profile_callback,
-                watcher_registered=watcher_registered,
-            )
-        )
-        await asyncio.sleep(0)
-        assert calls == []
-        watcher_registered.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-    asyncio.run(exercise())
-
-    assert calls == ["drive"]
-
-
 def test_spool_pending_check_ignores_terminal_cursor_states(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2384,9 +2345,6 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         stack.enter_context(patch.object(daemon_cli, "_periodic_db_optimize", lambda: fake_loop("optimize")))
         stack.enter_context(patch.object(daemon_cli, "_periodic_status_snapshot_refresh", lambda: fake_loop("status")))
         stack.enter_context(
-            patch.object(daemon_cli, "_periodic_drive_source_catchup", lambda **_kwargs: fake_loop("drive"))
-        )
-        stack.enter_context(
             patch(
                 "polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check",
                 lambda **_kwargs: fake_loop("embedding"),
@@ -3228,7 +3186,6 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
             lambda **_kwargs: wait_forever(),
         ),
         patch.object(daemon_cli, "_periodic_heartbeat", wait_forever),
-        patch.object(daemon_cli, "_periodic_drive_source_catchup", wait_forever),
         patch.object(daemon_cli, "_periodic_health_check", wait_forever),
         patch.object(daemon_cli, "_periodic_db_optimize", wait_forever),
         patch.object(daemon_cli, "_periodic_status_snapshot_refresh", wait_forever),
@@ -3327,7 +3284,6 @@ def test_run_daemon_services_schema_block_skips_write_but_starts_health_check() 
         patch.object(daemon_cli, "_periodic_health_check", fake_health_check),
         patch.object(daemon_cli, "_periodic_db_optimize", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_status_snapshot_refresh", side_effect=fail_background_work),
-        patch.object(daemon_cli, "_periodic_drive_source_catchup", side_effect=fail_background_work),
         patch("polylogue.daemon.convergence.DaemonConverger", side_effect=fail_background_work),
         patch.object(daemon_cli, "make_server", return_value=server),
         pytest.raises(RuntimeError, match="server stopped"),
@@ -4535,7 +4491,6 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
             "_periodic_db_optimize",
             "_periodic_status_snapshot_refresh",
             "_periodic_raw_materialization_convergence",
-            "_periodic_drive_source_catchup",
         ):
             stack.enter_context(patch.object(daemon_cli, attribute, idle_loop))
         stack.enter_context(patch.object(daemon_cli, "_periodic_convergence_check", lambda *_a, **_k: idle_loop()))
@@ -4688,7 +4643,6 @@ def test_unconfigured_embeddings_skip_the_backlog_service_on_the_production_rout
             "_periodic_db_optimize",
             "_periodic_status_snapshot_refresh",
             "_periodic_raw_materialization_convergence",
-            "_periodic_drive_source_catchup",
         ):
             stack.enter_context(patch.object(daemon_cli, attribute, idle_loop))
         stack.enter_context(patch.object(daemon_cli, "_periodic_convergence_check", lambda *_a, **_k: idle_loop()))

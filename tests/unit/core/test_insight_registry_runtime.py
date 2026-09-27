@@ -52,10 +52,6 @@ def test_registry_accessors_format_values_and_defaults() -> None:
         origin="claude-code-session",
         thread_id="thread-1",
         nested=SimpleNamespace(value="nested-value"),
-        values=("a", "b", "c", "d"),
-        ratio=12.345,
-        count=7,
-        percentage=82.5,
     )
 
     assert insight_registry._stringify(None) == "-"
@@ -64,11 +60,6 @@ def test_registry_accessors_format_values_and_defaults() -> None:
     assert insight_registry._nested("nested", "value")(item) == "nested-value"
     assert insight_registry._nested("missing", "value")(item) == "-"
     assert insight_registry._id_with_origin("thread_id")(item) == "thread-1 [claude-code-session]"
-    assert insight_registry._list_preview("values", limit=2)(item) == "a, b"
-    assert insight_registry._formatted_float("ratio", precision=2)(item) == "12.35"
-    assert insight_registry._formatted_float("missing")(item) == "-"
-    assert insight_registry._count_with_percentage("count", "percentage")(item) == "7 (82.5%)"
-    assert insight_registry._count_with_percentage("missing", "percentage")(item) == "-"
 
 
 def test_insight_type_registry_helpers_cover_register_lookup_and_sorting() -> None:

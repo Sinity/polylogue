@@ -139,7 +139,6 @@ def test_run_daemon_services_schema_block_logs_parked_loops_and_emits_event() ->
         patch.object(daemon_cli, "_periodic_health_check", fake_health_check),
         patch.object(daemon_cli, "_periodic_db_optimize", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_status_snapshot_refresh", side_effect=fail_background_work),
-        patch.object(daemon_cli, "_periodic_drive_source_catchup", side_effect=fail_background_work),
         patch("polylogue.daemon.convergence.DaemonConverger", side_effect=fail_background_work),
         patch.object(daemon_cli, "make_server", return_value=server),
         patch("polylogue.daemon.events.emit_daemon_event", side_effect=fake_emit_daemon_event),

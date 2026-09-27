@@ -66,7 +66,7 @@ def test_prepared_cohort_preserves_merge_order_title_and_duplicate_leaf(tmp_path
 
     aggregate = prepare_retained_cohort_artifact(ordered, tmp_path)
     aggregate.verify_files(full=True)
-    session = aggregate.load_sessions()[0]
+    session = list(aggregate.iter_sessions())[0]
     expected = merge_parsed_session_chunks([first, second])[0]
 
     assert aggregate.blob_hash == prepared_cohort_source_hash(ordered)
@@ -118,7 +118,7 @@ def test_prepared_claude_cohort_reduces_chunk_summaries(tmp_path: Path) -> None:
     ]
 
     aggregate = prepare_retained_cohort_artifact(ordered, tmp_path)
-    session = aggregate.load_sessions()[0]
+    session = list(aggregate.iter_sessions())[0]
     expected = merge_parsed_session_chunks([first, second])[0]
 
     assert [event.event_type for event in session.session_events] == [

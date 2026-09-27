@@ -19,18 +19,16 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict
 
 import click
 
-from polylogue.api.archive import open_readonly_connection
 from polylogue.cli.shared.embed_stats import show_embedding_stats
 from polylogue.cli.shared.types import AppEnv
 
 if TYPE_CHECKING:
-    from polylogue.storage.archive_identity import ArchiveLocation
+    pass
 from polylogue.storage.embeddings.preflight import (
     PreflightReport,
     build_preflight_report,
@@ -69,43 +67,6 @@ def _build_preflight_report(
         max_cost_usd=max_cost_usd,
         min_messages=min_messages,
     )
-
-
-def _active_archive_location(db_path: Path) -> ArchiveLocation | None:
-    """Resolve the active archive, preferring the one rooted at ``db_path`` itself.
-
-    ``db_path`` (``env.config.db_path``) does not always live inside the
-    globally configured archive root -- callers may override it. Try the
-    archive rooted at ``db_path``'s own directory first; fall back to the
-    globally configured archive root only when that fails, since that is a
-    genuinely different candidate location, not a redundant re-check.
-
-    Returns the whole :class:`ArchiveLocation`, not just the active index
-    path: an index-only external generation (an active ``.index-active-pointer``
-    naming a directory with no durable-tier siblings) has an index path whose
-    parent does NOT contain the archive's real ``embeddings.db`` -- callers
-    that need the embeddings tier must resolve it via
-    ``location.active_tier("embeddings")``, never by renaming the index path.
-    """
-    from polylogue.paths import archive_root
-    from polylogue.storage.archive_identity import ArchiveLocation
-
-    for candidate_root in dict.fromkeys((db_path.parent, archive_root())):
-        location = ArchiveLocation.resolve(candidate_root)
-        index_db = location.active_index_path
-        try:
-            conn = open_readonly_connection(index_db, validate_schema=False)
-            try:
-                row = conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions' LIMIT 1"
-                ).fetchone()
-                if row is not None:
-                    return location
-            finally:
-                conn.close()
-        except sqlite3.Error:
-            continue
-    return None
 
 
 def _render_preflight(env: AppEnv, report: PreflightReport) -> None:

@@ -229,20 +229,6 @@ class IndexService:
             logger.error("Failed to rebuild index", error=str(exc), exc_info=True)
             return False
 
-    async def ensure_index_exists(self) -> bool:
-        """Ensure the FTS5 index table exists.
-
-        Returns:
-            True if index exists or was created, False on error
-        """
-        try:
-            if self.backend is not None:
-                await ensure_index(self.backend)
-            return True
-        except sqlite3.DatabaseError as exc:
-            logger.error("Failed to ensure index exists", error=str(exc), exc_info=True)
-            return False
-
     async def get_index_status(self) -> IndexStatus:
         """Get the current status of the search index.
 

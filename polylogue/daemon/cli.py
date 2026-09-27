@@ -189,7 +189,6 @@ def _lineage_startup_lifecycle_phase(census: LineageStartupCensus) -> str:
     return "component_ready" if census.converged else "component_degraded"
 
 
-_DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS = 3600
 _BLOB_REFERENCE_RESTORE_CONVERGENCE_BATCH_LIMIT = 25
 _SCHEMA_PREFLIGHT_RECHECK_INTERVAL_SECONDS = 60
 #: Cadences that used to be bare literals inside their own ``while True``.
@@ -771,33 +770,6 @@ async def _run_drive_source_catchup_safely(
             error_detail=str(exc),
         )
         return 0
-
-
-async def _periodic_drive_source_catchup(
-    *,
-    session_profile_callback: SessionProfileCallback,
-    watcher_registered: asyncio.Event | None = None,
-) -> None:
-    """Periodically converge remote Drive sources such as AiStudio exports.
-
-    The first pass normally runs immediately in the background.  A live
-    watcher supplies ``watcher_registered`` so fresh local session evidence
-    gets the single archive writer before remote download/index work.  The
-    gate is deliberately absent for maintenance-only callers.
-    """
-
-    async def once() -> None:
-        changed = await _run_drive_source_catchup_safely(session_profile_callback)
-        if changed:
-            emit("daemon.drive_catchup.refreshed", outcome="ok", loop="drive source catch-up", changed=changed)
-
-    await daemon_periodic_runner().run(
-        "drive_source_catchup",
-        once,
-        interval_s=_DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS,
-        gate=watcher_registered_gate(watcher_registered),
-        run_first=True,
-    )
 
 
 async def _periodic_heartbeat(*, sources: tuple[WatchSource, ...] = ()) -> None:
