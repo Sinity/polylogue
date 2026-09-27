@@ -725,6 +725,7 @@ class LiveParseStage:
                             directory=result.attempt_directory / "retained",
                             worker_executor=self._executor,
                             member_timeout_s=self._warm_timeout_seconds,
+                            index_db_path=_publication_index_path(Path(archive.archive_root)),
                         )
                 return replace(result, prepared_writes=tuple(writes)), retained
             except Exception as exc:

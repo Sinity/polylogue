@@ -5102,11 +5102,11 @@ class LiveBatchProcessor:
             sessions: Sequence[ParsedSession]
             if raw_id == current_raw_id and current_session is not None:
                 sessions = [current_session]
-            elif member is not None:
-                if not member.current(archive):
-                    raise PreparedSessionWriteRefusedError(f"retained raw {raw_id} changed after preparation")
+            elif member is not None and member.current(archive):
                 sessions = member.artifact.session_sequence()
             else:
+                # No carrier, or one this writer cannot publish (its evidence
+                # or index moved): the writer owns the member's replay.
                 sessions = self._parse_retained_raw_sessions(archive, raw_id)
             if len(sessions) != 1:
                 raise RuntimeError(f"raw revision {raw_id} did not replay to exactly one session")
@@ -5193,9 +5193,8 @@ class LiveBatchProcessor:
             cached = retained_sessions_cache.get(raw_id)
             if cached is None:
                 member = (retained_preparations_by_raw_id or {}).get(raw_id)
-                if member is not None:
-                    if not member.current(archive):
-                        raise PreparedSessionWriteRefusedError(f"retained raw {raw_id} changed after preparation")
+                # A carrier this writer cannot publish is a prewarm miss.
+                if member is not None and member.current(archive):
                     if member.artifact.error is not None:
                         raise RuntimeError(member.artifact.error)
                     sequence = member.artifact.session_sequence()

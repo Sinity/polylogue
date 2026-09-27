@@ -88,13 +88,15 @@ def prepare_live_retained_raws(
     directory: Path,
     worker_executor: Executor,
     member_timeout_s: float | None = None,
+    index_db_path: Path | None = None,
 ) -> dict[str, PreparedLiveRetainedRaw]:
     """Over-approximate existing members needed by a pending live path.
 
     The writer may select a narrower subset after admitting the current raw.
     Every consumed member is checked against this exact descriptor again.
-    ``member_timeout_s`` bounds the wait for any one member (the stage's warm
-    timeout when omitted).
+    ``member_timeout_s`` bounds the whole prewarm (the stage's warm timeout
+    when omitted). ``index_db_path`` names the index the writer publishes
+    into, when it is not the snapshot's (a cold build's candidate).
     """
     if member_timeout_s is None:
         from polylogue.sources.live.parse_prefetch import live_watcher_parse_stage_warm_timeout_seconds
@@ -138,7 +140,7 @@ def prepare_live_retained_raws(
                 native_id,
                 str(archive.archive_root / "blob"),
                 str(archive.source_db_path),
-                str(archive.index_db_path),
+                str(index_db_path if index_db_path is not None else archive.index_db_path),
                 str(directory),
                 fallback_timestamp,
             )

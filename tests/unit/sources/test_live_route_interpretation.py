@@ -467,3 +467,32 @@ def test_retained_prewarm_spends_one_deadline_across_members(tmp_path: Path) -> 
     )
     assert prepared == {}
     assert submitted == ["raw-0"]
+
+
+def test_unpublishable_retained_carrier_falls_back_to_the_writer_parse(tmp_path: Path) -> None:
+    """A carrier the writer cannot publish is a prewarm miss, not a refusal.
+
+    During a cold build the carrier may be enriched against the active index
+    while the writer publishes into the candidate. Anti-vacuity: restore the
+    ``PreparedSessionWriteRefusedError`` raise in ``_parse_raw_revision_chain``
+    and this chain defers instead of replaying the member inline.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.sources.parsers.base import ParsedSession
+
+    processor = LiveBatchProcessor(
+        Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db"),
+        (),
+        cursor=CursorStore(tmp_path / "index.db"),
+        parser_fingerprint=_PARSER_FINGERPRINT,
+    )
+    replayed = ParsedSession(source_name=Provider.CODEX, provider_session_id="inline", messages=[])
+    processor._parse_retained_raw_sessions = lambda _archive, _raw_id: [replayed]  # type: ignore[method-assign]
+    stale = SimpleNamespace(current=lambda _archive: False)
+    parsed = processor._parse_raw_revision_chain(
+        SimpleNamespace(),
+        SimpleNamespace(accepted_raw_ids=("older",)),
+        retained_preparations_by_raw_id={"older": stale},  # type: ignore[dict-item]
+    )
+    assert parsed == {"older": replayed}
