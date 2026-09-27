@@ -120,8 +120,20 @@ def compute_session_cost(
         # docs/cost-model.md's estimate-only disposition for those origins).
         # Fall back to the text-length heuristic over messages instead of
         # reporting a hollow zero-token "reported" breakdown (polylogue-9kjtc).
-        message_based = _per_model_from_messages(session)
+        #
+        # The canonical rows still own model identity. Messages that declare no
+        # model of their own are attributed to the one declared model when the
+        # rows name exactly one, and every declared identity the estimate did
+        # not reach stays as an identity-only row. Replacing the map outright
+        # filed a known model's estimate under ``unknown`` and dropped its
+        # catalog price (polylogue-jgngs).
+        declared = [breakdown for key, breakdown in per_model.items() if key != "unknown"]
+        sole_declared = declared[0].provider_model_name if len(declared) == 1 else None
+        message_based = _per_model_from_messages(session, fallback_model_name=sole_declared)
         if message_based:
+            for key, identity in per_model.items():
+                if key != "unknown" and key not in message_based:
+                    message_based[key] = identity
             per_model = message_based
 
     breakdowns: list[SessionCostBreakdown] = []
@@ -308,7 +320,9 @@ def _per_model_from_model_usage(model_usage: Sequence[ModelUsageTotals]) -> dict
     return per_model
 
 
-def _per_model_from_messages(session: Session) -> dict[str, SessionCostBreakdown]:
+def _per_model_from_messages(
+    session: Session, *, fallback_model_name: str | None = None
+) -> dict[str, SessionCostBreakdown]:
     """Fallback: estimate per-model tokens by walking ``session.messages``.
 
     Only used when no ``session_model_usage`` rows are supplied (e.g. an ad
@@ -325,7 +339,9 @@ def _per_model_from_messages(session: Session) -> dict[str, SessionCostBreakdown
       back to the session's dominant declared model instead of an unpriced
       "unknown" bucket. This reuses the same Counter/``most_common`` dominant-
       model pattern ``pricing.py``'s ``_session_level_estimate`` uses, rather
-      than inventing a new heuristic.
+      than inventing a new heuristic. When no message declares a model,
+      ``fallback_model_name`` (the session's one canonically declared model)
+      takes that role.
     - Estimated word-count tokens are classified by the message's role: user/
       human turns are ``input_tokens``, assistant turns are ``output_tokens``.
       Dumping everything into ``input_tokens`` regardless of role systematically
@@ -338,7 +354,7 @@ def _per_model_from_messages(session: Session) -> dict[str, SessionCostBreakdown
         declared_model = _get_message_model_name(message)
         if declared_model:
             model_counts[declared_model] += 1
-    dominant_model_name = model_counts.most_common(1)[0][0] if model_counts else None
+    dominant_model_name = model_counts.most_common(1)[0][0] if model_counts else fallback_model_name
 
     for message in session.messages:
         model_name = _get_message_model_name(message) or dominant_model_name
