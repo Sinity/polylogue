@@ -3514,10 +3514,7 @@ main.add_command(browser_capture_command)
 main.add_command(api_command)
 
 
-_LIVE_DAEMON_STATUS_TIMEOUT_S = 0.3
-
-
-def _live_daemon_status_payload(*, timeout: float = _LIVE_DAEMON_STATUS_TIMEOUT_S) -> JSONDocument | None:
+def _live_daemon_status_payload() -> JSONDocument | None:
     """Return the running daemon's status through its machine socket, or ``None``.
 
     ``polylogued status`` used to always recompute the full rich status
@@ -3546,12 +3543,10 @@ def _live_daemon_status_payload(*, timeout: float = _LIVE_DAEMON_STATUS_TIMEOUT_
 
     config = load_polylogue_config()
     try:
-        result = dispatch(
-            config,
-            OperationRequest("status", {}),
-            daemon_only=True,
-            deadline_ms=round(timeout * 1000),
-        )
+        # The operation's own declared deadline: a pinned read on a large
+        # archive can legitimately take longer than a connect probe, and
+        # cutting it short would fall back to the slower local path.
+        result = dispatch(config, OperationRequest("status", {}), daemon_only=True)
     except OperationUnavailableError:
         return None
     except OperationKernelError as exc:

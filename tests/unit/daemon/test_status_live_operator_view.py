@@ -33,7 +33,7 @@ def test_live_probe_reads_the_running_daemon_over_its_socket(
     socket. Anti-vacuity: the previous HTTP probe sent no bearer, every
     running daemon refused it, and the probe returned ``None``."""
     with cli_daemon_archive(tmp_path / "archive", monkeypatch, home=tmp_path / "home"):
-        payload = daemon_cli._live_daemon_status_payload(timeout=30.0)
+        payload = daemon_cli._live_daemon_status_payload()
     assert payload is not None
     assert "total_sessions" in payload
 
@@ -43,7 +43,7 @@ def test_live_probe_without_a_daemon_falls_back_silently(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """No socket means no daemon: a local recomputation, with nothing on stderr."""
-    assert daemon_cli._live_daemon_status_payload(timeout=1.0) is None
+    assert daemon_cli._live_daemon_status_payload() is None
     assert capsys.readouterr().err == ""
 
 
@@ -60,7 +60,7 @@ def test_live_probe_reports_a_daemon_that_fails_the_request(
         "polylogue.cli.operation_kernel.dispatch",
         side_effect=OperationFailedError("unauthorized", "machine authentication required"),
     ):
-        assert daemon_cli._live_daemon_status_payload(timeout=1.0) is None
+        assert daemon_cli._live_daemon_status_payload() is None
     assert "did not answer the status request" in capsys.readouterr().err
 
 
