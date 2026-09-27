@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Protocol
+from typing import IO, Protocol
 
 from polylogue.core.json import JSONValue
 
@@ -17,3 +17,4 @@ class DriveSourceAPI(Protocol):
     def download_json_payload(self, file_id: str, *, name: str) -> JSONValue: ...
     def download_to_path(self, file_id: str, dest: Path) -> DriveFile: ...
     def download_bytes(self, file_id: str) -> bytes: ...
+    def download_into(self, file_id: str, handle: IO[bytes]) -> None: ...

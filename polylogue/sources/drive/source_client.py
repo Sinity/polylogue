@@ -6,7 +6,7 @@ import os
 import tempfile
 from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import ParamSpec, Protocol, TypeVar
+from typing import IO, ParamSpec, Protocol, TypeVar
 
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.logging import get_logger
@@ -143,6 +143,16 @@ class DriveSourceClient:
             return buffer.getvalue()
 
         return self._gateway.call_with_retry(_download)
+
+    def download_into(self, file_id: str, handle: IO[bytes]) -> None:
+        """Stream a file's bytes into ``handle``; a retry restarts it from empty."""
+
+        def _download() -> None:
+            handle.seek(0)
+            handle.truncate()
+            self._gateway.download_file(file_id, handle)
+
+        self._gateway.call_with_retry(_download)
 
     def download_to_path(self, file_id: str, dest: Path) -> DriveFile:
         meta = self.get_metadata(file_id)

@@ -905,8 +905,8 @@ def _drive_structural_growth_predecessor(
     (below) only ever proves lineage via
     ``classify_raw_revision_cohort_for_live_watch``'s byte-prefix classifier
     (``archive/revision_authority.py``), which -- per PR #3656's finding --
-    can never recognize the realistic ``_inject_live_drive_attachment_bytes``
-    growth shape (a whole-document JSON re-serialization, not a byte-append).
+    can never recognize a Drive document's realistic growth shape: the
+    provider re-serializes the whole JSON on each save rather than appending.
     This looks for exactly one existing ``revision_kind='full'`` sibling for
     ``logical_source_key`` whose bytes are a JSON-structural predecessor of
     ``raw_id``'s own bytes (see ``sources.drive.structural_diff``) and, if

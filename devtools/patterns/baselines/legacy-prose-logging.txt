@@ -149,8 +149,6 @@ polylogue/sources/dispatch.py:85b335906ac0af77902886854638b6240bfe3049:3
 polylogue/sources/drive/__init__.py:80ca57c81fcfdb2d9c1f15abc963ef62d98a3f5d
 polylogue/sources/drive/__init__.py:85b335906ac0af77902886854638b6240bfe3049
 polylogue/sources/drive/__init__.py:e72f145746f1e05e08206463a1c5c211307b8125
-polylogue/sources/drive/attachment_fetch.py:2cc8c1fadaa21b1eb668d3cf9635d5333814d82e
-polylogue/sources/drive/attachment_fetch.py:85b335906ac0af77902886854638b6240bfe3049
 polylogue/sources/drive/auth.py:e8705806f9b1f04ead245036a064cb71509f93a8
 polylogue/sources/drive/auth.py:ee516b6e67003f438e6a35c5dcaa1e0dd465f237
 polylogue/sources/drive/gateway.py:fd0bfe97ef8f5fbda4e63372d7d6a0d2a218b48e
