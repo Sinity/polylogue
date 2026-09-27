@@ -18,10 +18,12 @@ from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from contextlib import redirect_stdout
 from dataclasses import replace
 from datetime import UTC, datetime
+from email.message import Message as HTTPMessage
 from functools import partial
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
+from typing import IO, TYPE_CHECKING, Any, Literal, TypeVar, cast
+from urllib.request import BaseHandler, HTTPRedirectHandler, Request
 
 import click
 
@@ -3518,6 +3520,21 @@ main.add_command(api_command)
 _LIVE_DAEMON_STATUS_TIMEOUT_S = 0.3
 
 
+class _RefuseRedirects(HTTPRedirectHandler):
+    """Never follow a status redirect: urllib would carry the bearer to the new origin."""
+
+    def redirect_request(
+        self,
+        req: Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: HTTPMessage,
+        newurl: str,
+    ) -> Request | None:
+        return None
+
+
 def _from_discovered_project_config(config: PolylogueConfig, key: str) -> bool:
     """Whether ``key`` came from a ``polylogue.toml`` discovered in the working directory.
 
@@ -3539,7 +3556,6 @@ def _status_probe_token(config: PolylogueConfig, url: str) -> str | None:
     """
     from urllib.parse import urlparse
 
-    from polylogue.core.loopback import is_loopback_host
     from polylogue.daemon.api_auth import load_api_auth_token
 
     url_is_discovered = _from_discovered_project_config(config, "daemon_url")
@@ -3579,7 +3595,8 @@ def _live_daemon_status_payload(*, timeout: float = _LIVE_DAEMON_STATUS_TIMEOUT_
     running daemon's view.
     """
     from urllib.error import HTTPError, URLError
-    from urllib.request import ProxyHandler, Request, build_opener
+    from urllib.parse import urlparse
+    from urllib.request import ProxyHandler, build_opener
 
     from polylogue.config import load_polylogue_config
 
@@ -3591,9 +3608,17 @@ def _live_daemon_status_payload(*, timeout: float = _LIVE_DAEMON_STATUS_TIMEOUT_
         headers["Authorization"] = f"Bearer {token}"
     try:
         req = Request(f"{url}/api/status", headers=headers, method="GET")
-        # Never through an environment proxy: the request can carry the
-        # daemon's bearer, and the daemon is reached directly.
-        with build_opener(ProxyHandler({})).open(req, timeout=timeout) as resp:
+        handlers: list[BaseHandler] = [_RefuseRedirects()]
+        try:
+            host = urlparse(url).hostname
+        except ValueError:
+            host = None
+        if host is not None and is_loopback_host(host):
+            # A loopback daemon is reached directly; an environment proxy
+            # would otherwise receive the bearer. A remote daemon keeps the
+            # ordinary proxy-aware transport its operator configured.
+            handlers.append(ProxyHandler({}))
+        with build_opener(*handlers).open(req, timeout=timeout) as resp:
             body = resp.read()
     except HTTPError as exc:
         click.echo(

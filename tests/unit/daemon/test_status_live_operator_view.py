@@ -291,3 +291,54 @@ def test_malformed_daemon_url_falls_back_without_a_traceback(
     ``ValueError`` out of the probe."""
     monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "http://[::1")
     assert daemon_cli._live_daemon_status_payload(timeout=1.0) is None
+
+
+def test_probe_never_follows_a_redirect_with_the_bearer(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """urllib copies ``Authorization`` onto a followed redirect. Anti-vacuity:
+    with redirects followed, the second server receives the bearer."""
+    received: list[str | None] = []
+
+    class _Target(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            received.append(self.headers.get("Authorization"))
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, format: str, *args: Any) -> None:
+            return None
+
+    target = ThreadingHTTPServer(("127.0.0.1", 0), _Target)
+    target_url = f"http://127.0.0.1:{target.server_address[1]}/elsewhere"
+
+    class _Redirect(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(302)
+            self.send_header("Location", target_url)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, format: str, *args: Any) -> None:
+            return None
+
+    redirector = ThreadingHTTPServer(("127.0.0.1", 0), _Redirect)
+    threads = [threading.Thread(target=server.serve_forever, daemon=True) for server in (target, redirector)]
+    for thread in threads:
+        thread.start()
+    token_file = tmp_path / "api-token"
+    token_file.write_text(_TOKEN, encoding="utf-8")
+    token_file.chmod(0o600)
+    monkeypatch.setenv("POLYLOGUE_DAEMON_URL", f"http://127.0.0.1:{redirector.server_address[1]}")
+    try:
+        with patch("polylogue.daemon.api_auth.api_auth_token_path", return_value=token_file):
+            assert daemon_cli._live_daemon_status_payload(timeout=5.0) is None
+        assert received == []
+    finally:
+        for server in (target, redirector):
+            server.shutdown()
+            server.server_close()
