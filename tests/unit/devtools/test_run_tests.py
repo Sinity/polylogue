@@ -837,8 +837,12 @@ def test_a_run_that_never_acquired_the_slot_keeps_its_reason(
     assert history["diagnosis"] == "pytest_slot_unavailable"
     assert history["steps"][0]["diagnosis"] == "pytest_slot_unavailable"
 
-    final = capsys.readouterr().err.strip().splitlines()[-1]
-    assert final.startswith("devtools test: artifacts=")
+    lines = capsys.readouterr().err.strip().splitlines()
+    # The artifact pointer precedes the verdict, which stays the last line and
+    # names the checkout it tested.
+    assert lines[-2].startswith("devtools test: artifacts=")
+    assert lines[-1].startswith("devtools test: FAILED exit=125 diagnosis=pytest_slot_unavailable receipt=")
+    assert " branch=" in lines[-1]
     receipt = tmp_path / run_tests.PYTEST_REPORT_DIR / "runs" / history["run_id"] / "run.json"
     recorded = json.loads(receipt.read_text(encoding="utf-8"))
     assert recorded["exit_code"] == 125

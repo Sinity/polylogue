@@ -60,7 +60,7 @@ jobs:
         if: steps.pr-state.outputs.skip != 'true'
         run: |
           export PATH="/run/current-system/sw/bin:$PATH"
-          nix develop --command devtools verify
+          nix develop --command devtools verify --on-default-branch
           echo "run_id=$(jq --raw-output .run_id .cache/verify/current-run.json)" >> "$GITHUB_OUTPUT"
         env:
           POLYLOGUE_FORCE_PLAIN: "1"

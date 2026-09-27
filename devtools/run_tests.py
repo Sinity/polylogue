@@ -724,14 +724,15 @@ def main(argv: list[str] | None = None) -> int:
     # reach of that mistake. The receipt is this run's own file, never a
     # `current-*` name a concurrent run in the same checkout would overwrite.
     receipt = run.relative_run_dir / "run.json"
+    # The rest of the artifacts are reference material, not a result. Printing
+    # them after every green run trains the reader to skip the tail of the
+    # output, which is exactly where a failure summary appears. `devtools why`
+    # reaches them on demand. When they are printed, it is before the verdict,
+    # so the verdict and the checkout it tested stay the last line.
+    if _verbose_output() or rc != 0:
+        sys.stderr.write(f"\ndevtools test: artifacts={run.relative_run_dir}/steps/{artifacts.step_id}")
     sys.stderr.write(
         f"\ndevtools test: {'PASSED' if rc == 0 else 'FAILED'} exit={rc} "
         f"diagnosis={metadata.get('diagnosis') or 'unknown'} receipt={receipt} {identity.describe()}\n"
     )
-    # The rest of the artifacts are reference material, not a result. Printing
-    # them after every green run trains the reader to skip the tail of the
-    # output, which is exactly where a failure summary appears. `devtools why`
-    # reaches them on demand.
-    if _verbose_output() or rc != 0:
-        sys.stderr.write(f"devtools test: artifacts={run.relative_run_dir}/steps/{artifacts.step_id}\n")
     return rc

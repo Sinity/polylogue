@@ -55,7 +55,7 @@ jobs:
         with:
           python-version: "3.14"
       - run: uv sync --extra dev --group audit --frozen
-      - run: uv run devtools test --runner isolated -q -n 0 tests/unit/cli/test_interactive_cli.py
+      - run: uv run devtools test --runner isolated --on-default-branch -q -n 0 tests/unit/cli/test_interactive_cli.py
         env:
           POLYLOGUE_PYTEST_BASETEMP_ROOT: ${{ runner.temp }}/polylogue-pytest
 
@@ -76,7 +76,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --extra dev --group audit --frozen
-      - run: uv run devtools verify --runner isolated --all
+      - run: uv run devtools verify --runner isolated --all --on-default-branch
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
           HYPOTHESIS_PROFILE: ci
@@ -105,7 +105,7 @@ jobs:
         with:
           python-version: "3.14"
       - run: uv sync --extra dev --group audit --frozen
-      - run: uv run devtools test --runner isolated -q tests/unit/cli/test_demo_command.py tests/unit/demo/test_demo_seed_verify.py tests/visual
+      - run: uv run devtools test --runner isolated --on-default-branch -q tests/unit/cli/test_demo_command.py tests/unit/demo/test_demo_seed_verify.py tests/visual
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
 
