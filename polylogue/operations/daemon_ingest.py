@@ -1061,6 +1061,7 @@ class IngestExecution:
                 refusal_digest = IngestRefusalPagesDigest()
                 refusal_page_count = 0
                 while refusal_rows := refusal_cursor.fetchmany(MAX_PAGE_ITEMS):
+                    self.check_stop()
                     refusal_page = IngestRefusalPageHistoricalReceipt(
                         ordinal=refusal_page_count,
                         refusals=[
