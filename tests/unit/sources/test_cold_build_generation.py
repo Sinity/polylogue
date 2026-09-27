@@ -148,8 +148,9 @@ def test_receipt_tail_reconciles_active_generation_without_repromotion(
     assert clears == 2
 
 
+@pytest.mark.parametrize("fault", ("busy", "wrapped_io"))
 def test_pointer_swapped_before_metadata_failure_recovers_once(
-    tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch, fault: str
 ) -> None:
     from polylogue.storage.index_generation import IndexGenerationStore
 
@@ -165,6 +166,10 @@ def test_pointer_swapped_before_metadata_failure_recovers_once(
         nonlocal writes_failed
         if generation.generation_id == cold_build.generation_id and generation.state == "active" and not writes_failed:
             writes_failed += 1
+            if fault == "wrapped_io":
+                raise RuntimeError("cannot create active metadata temporary") from OSError(
+                    errno.EIO, "active metadata I/O unavailable"
+                )
             raise OSError(errno.EBUSY, "active metadata temporarily busy")
         original_write(self, generation)
 

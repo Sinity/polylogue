@@ -68,6 +68,11 @@ if TYPE_CHECKING:
 _ACCEPTED_PROGRESS_STALL_AFTER_S = 60.0
 
 
+def is_transient_cold_storage_errno(error_no: int | None) -> bool:
+    """I/O errors eligible for a same-process cold-settlement retry."""
+    return error_no in {errno.EAGAIN, errno.EBUSY, errno.EIO, errno.ESTALE, errno.ETIMEDOUT}
+
+
 def _typed_promotion_io_failure(exc: Exception) -> bool:
     current: BaseException | None = exc
     while current is not None:
@@ -82,14 +87,13 @@ def _typed_promotion_io_failure(exc: Exception) -> bool:
                 sqlite3.SQLITE_NOTADB,
             }:
                 return True
-        if isinstance(current, OSError) and current.errno in {
-            errno.EAGAIN,
-            errno.EBUSY,
-            errno.ENOSPC,
-            errno.EDQUOT,
-            errno.ENOENT,
-            errno.EACCES,
-        }:
+        # The pointer is already published and reconcile_promoted() succeeded:
+        # capacity and access faults can be swallowed here as well as the
+        # transient pre-swap retry errors.
+        if isinstance(current, OSError) and (
+            is_transient_cold_storage_errno(current.errno)
+            or current.errno in {errno.ENOSPC, errno.EDQUOT, errno.ENOENT, errno.EACCES}
+        ):
             return True
         current = current.__cause__
     return False
@@ -100,6 +104,7 @@ __all__ = [
     "active_cold_build_generation",
     "active_index_generation_is_empty",
     "clear_cold_build_generation",
+    "is_transient_cold_storage_errno",
     "register_cold_build_generation",
 ]
 

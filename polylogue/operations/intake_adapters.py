@@ -39,6 +39,7 @@ from polylogue.sources.live.cold_build import (
     ColdBuildGeneration,
     active_index_generation_is_empty,
     clear_cold_build_generation,
+    is_transient_cold_storage_errno,
     register_cold_build_generation,
 )
 from polylogue.sources.live.discovery import _bounded_source_paths as _bounded_source_paths
@@ -104,18 +105,10 @@ def classify_cold_build_settlement_failure(exc: Exception) -> tuple[str, bool] |
         capacity_cause = exc.__cause__
         if isinstance(capacity_cause, ArchiveLocationError):
             capacity_cause = capacity_cause.__cause__
-        if isinstance(capacity_cause, OSError) and capacity_cause.errno in {
-            errno.EIO,
-            errno.EACCES,
-            errno.EPERM,
-            errno.ESTALE,
-            errno.ETIMEDOUT,
-            errno.EAGAIN,
-            errno.EBUSY,
-            errno.ENOENT,
-            errno.ENOSPC,
-            errno.EDQUOT,
-        }:
+        if isinstance(capacity_cause, OSError) and (
+            is_transient_cold_storage_errno(capacity_cause.errno)
+            or capacity_cause.errno in {errno.EACCES, errno.EPERM, errno.ENOENT, errno.ENOSPC, errno.EDQUOT}
+        ):
             return "capacity_inventory_unavailable", True
     if isinstance(exc, sqlite3.Error):
         code = getattr(exc, "sqlite_errorcode", None)
@@ -130,10 +123,8 @@ def classify_cold_build_settlement_failure(exc: Exception) -> tuple[str, bool] |
             return "candidate_storage_unavailable", False
         return None
     if isinstance(exc, OSError):
-        if exc.errno in (errno.EAGAIN, errno.EBUSY):
-            return "storage_busy", True
-        if exc.errno in (errno.EIO, errno.ESTALE, errno.ETIMEDOUT):
-            return "storage_io_unavailable", True
+        if is_transient_cold_storage_errno(exc.errno):
+            return ("storage_busy" if exc.errno in (errno.EAGAIN, errno.EBUSY) else "storage_io_unavailable"), True
         if exc.errno in (errno.ENOSPC, errno.EDQUOT):
             return "capacity_unavailable", False
         if exc.errno in (errno.ENOENT, errno.EACCES):
