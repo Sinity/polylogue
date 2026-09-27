@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import io
 import time
 import zipfile
 from collections.abc import Callable, Iterable
@@ -17,15 +15,14 @@ from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.archive.zip_admission import ZipBombError
 from polylogue.config import Source
 from polylogue.core.content_identity import (
-    STRUCTURAL_IDENTITY_MAX_BYTES,
-    bounded_payload_content_identity,
+    payload_content_identity,
+    stream_payload_content_identity,
 )
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, normalize_json_decimal
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.metrics import read_current_rss_mb, read_peak_rss_self_mb
 from polylogue.core.raw_coordinates import MemberAddressingMode
-from polylogue.logging import WARNING, emit
 from polylogue.sources.live.admission import (
     AdmissionAttempt,
     AdmissionReceipt,
@@ -50,21 +47,6 @@ AcquisitionObservation: TypeAlias = JSONDocument
 ObservationCallback: TypeAlias = Callable[[AcquisitionObservation], None]
 StatusCallback: TypeAlias = Callable[[str], None]
 CursorState: TypeAlias = CursorStatePayload
-
-
-def _bounded_payload_identity_info(payload_bytes: bytes) -> tuple[str, str | None]:
-    """Return the split payload identity and any declared fallback reason.
-
-    ZIP splitting has already bounded the payload in memory, but the identity
-    contract is still the decoded structural value (with the declared byte
-    digest fallback above the ceiling). Keeping the reason alongside the
-    digest prevents a byte fallback from masquerading as structural identity.
-    """
-    return bounded_payload_content_identity(
-        io.BytesIO(payload_bytes),
-        size=len(payload_bytes),
-        byte_digest=hashlib.sha256(payload_bytes).hexdigest(),
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +104,6 @@ class SerializedSplitPayload:
     source_index: int | None
     addressing_mode: MemberAddressingMode = MemberAddressingMode.ELEMENT_OF_CONTAINER
     content_identity: str | None = None
-    content_identity_skipped_reason: str | None = None
 
 
 @dataclass(slots=True)
@@ -139,14 +120,13 @@ class SplitPayloadBuffer:
 
     def add(self, provider: Provider, payload_bytes: bytes) -> tuple[SerializedSplitPayload, ...]:
         if self.did_split:
-            identity, skipped_reason = _bounded_payload_identity_info(payload_bytes)
+            identity = payload_content_identity(payload_bytes)
             payload = SerializedSplitPayload(
                 provider=provider,
                 payload_bytes=payload_bytes,
                 source_index=self._next_source_index,
                 addressing_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
                 content_identity=identity,
-                content_identity_skipped_reason=skipped_reason,
             )
             self._next_source_index += 1
             return (payload,)
@@ -161,7 +141,7 @@ class SplitPayloadBuffer:
             self._pending,
             start=self._next_source_index,
         ):
-            identity, skipped_reason = _bounded_payload_identity_info(pending_payload_bytes)
+            identity = payload_content_identity(pending_payload_bytes)
             emitted_items.append(
                 SerializedSplitPayload(
                     provider=pending_provider,
@@ -169,7 +149,6 @@ class SplitPayloadBuffer:
                     source_index=index,
                     addressing_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
                     content_identity=identity,
-                    content_identity_skipped_reason=skipped_reason,
                 )
             )
         emitted = tuple(emitted_items)
@@ -296,7 +275,6 @@ def raw_data_record(
     blob_publication_receipt_id: str | None = None,
     addressing_mode: MemberAddressingMode | None = None,
     content_identity: str | None = None,
-    content_identity_skipped_reason: str | None = None,
 ) -> RawSessionData:
     return RawSessionData(
         raw_bytes=b"",
@@ -309,7 +287,6 @@ def raw_data_record(
         blob_publication_receipt_id=blob_publication_receipt_id,
         addressing_mode=addressing_mode,
         content_identity=content_identity,
-        content_identity_skipped_reason=content_identity_skipped_reason,
     )
 
 
@@ -354,9 +331,8 @@ def make_split_entry_raw_data(
     from polylogue.storage.blob_publication import publication_receipt_id
 
     identity = split_payload.content_identity
-    skipped_reason = split_payload.content_identity_skipped_reason
     if identity is None:
-        identity, skipped_reason = _bounded_payload_identity_info(split_payload.payload_bytes)
+        identity = payload_content_identity(split_payload.payload_bytes)
     return raw_data_record(
         source_path=source_path,
         file_mtime=file_mtime,
@@ -367,7 +343,6 @@ def make_split_entry_raw_data(
         blob_publication_receipt_id=publication_receipt_id(blob_store, blob_hash),
         addressing_mode=split_payload.addressing_mode,
         content_identity=identity,
-        content_identity_skipped_reason=skipped_reason,
     )
 
 
@@ -570,25 +545,10 @@ def stream_preserved_zip_entry_raw_data(
             source_name=context.source.name,
             source_path=context.source_path,
         )
-    # Read the already-published bytes to derive structural identity without
-    # weakening the bounded streaming publication route. The re-read is
-    # ceiling-bounded: an unbounded ``stored_handle.read()`` here threw away
-    # the bound the streaming publication had just honoured
-    # (polylogue-dhkuu Finding C).
+    # Derive structural identity from the published bytes. The identity
+    # streams, so this re-read holds one window, never the whole member.
     with context.blob_store.open(blob_hash) as stored_handle:
-        content_identity, identity_skipped = bounded_payload_content_identity(
-            stored_handle, size=blob_size, byte_digest=blob_hash
-        )
-    if identity_skipped is not None:
-        emit(
-            "sources.acquisition.structural_identity_skipped",
-            level=WARNING,
-            outcome="degraded",
-            reason=identity_skipped,
-            source_path=context.source_path,
-            blob_bytes=blob_size,
-            identity_ceiling_bytes=STRUCTURAL_IDENTITY_MAX_BYTES,
-        )
+        content_identity = stream_payload_content_identity(stored_handle)
     from polylogue.storage.blob_publication import publication_receipt_id
 
     publication_id = publication_receipt_id(context.blob_store, blob_hash)
@@ -599,7 +559,6 @@ def stream_preserved_zip_entry_raw_data(
         provider_hint=provider_hint,
         blob_size=blob_size,
         blob_publication_receipt_id=publication_id,
-        content_identity_skipped_reason=identity_skipped,
     )
     return raw_data_record(
         source_path=context.source_path,
@@ -615,7 +574,6 @@ def stream_preserved_zip_entry_raw_data(
         blob_publication_receipt_id=publication_id,
         addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
         content_identity=content_identity,
-        content_identity_skipped_reason=identity_skipped,
     )
 
 
@@ -707,14 +665,13 @@ def replay_zip_entry_acquisition_payloads(
     ):
         with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
             payload_bytes = handle.read()
-            identity, skipped_reason = _bounded_payload_identity_info(payload_bytes)
+            identity = payload_content_identity(payload_bytes)
             yield SerializedSplitPayload(
                 provider=entry_provider_hint,
                 payload_bytes=payload_bytes,
                 source_index=None,
                 addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
                 content_identity=identity,
-                content_identity_skipped_reason=skipped_reason,
             )
         return
 
@@ -730,14 +687,13 @@ def replay_zip_entry_acquisition_payloads(
     # session document, matching the ordinary acquisition fallback.
     with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
         payload_bytes = handle.read()
-        identity, skipped_reason = _bounded_payload_identity_info(payload_bytes)
+        identity = payload_content_identity(payload_bytes)
         yield SerializedSplitPayload(
             provider=state.detected_provider,
             payload_bytes=payload_bytes,
             source_index=None,
             addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
             content_identity=identity,
-            content_identity_skipped_reason=skipped_reason,
         )
 
 

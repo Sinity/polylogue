@@ -1,0 +1,123 @@
+"""Member content identity has one definition for every payload size.
+
+The byte route streams the document (``stream_payload_content_identity``);
+the value route walks an already-decoded value
+(``structural_content_identity``). Both must name the same content with the
+same digest, and no size may switch the definition to a byte digest.
+"""
+
+from __future__ import annotations
+
+import io
+import json
+from hashlib import sha256
+
+import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
+from polylogue.core.content_identity import (
+    _STREAM_READ_BYTES,
+    payload_content_identity,
+    stream_payload_content_identity,
+    structural_content_identity,
+)
+from polylogue.core.json import loads
+
+
+def _decoded_identity(payload: bytes) -> str:
+    """The identity through the in-memory decoder, or the byte digest if it refuses."""
+    try:
+        value = loads(payload)
+    except Exception:
+        return sha256(payload).hexdigest()
+    try:
+        return structural_content_identity(value)
+    except (TypeError, ValueError):
+        return sha256(payload).hexdigest()
+
+
+_json_values = st.recursive(
+    st.none()
+    | st.booleans()
+    | st.integers(min_value=-(10**30), max_value=10**30)
+    | st.floats(allow_nan=False, allow_infinity=False)
+    | st.text(alphabet=st.characters(blacklist_categories=("Cs",)), max_size=12),
+    lambda children: (
+        st.lists(children, max_size=5) | st.dictionaries(st.text(alphabet="abéé", max_size=3), children, max_size=5)
+    ),
+    max_leaves=25,
+)
+
+
+@settings(max_examples=300, deadline=None)
+@given(value=_json_values, ensure_ascii=st.booleans(), compact=st.booleans())
+def test_streamed_identity_equals_decoded_identity(value: object, ensure_ascii: bool, compact: bool) -> None:
+    """Anti-vacuity: any divergence between the stream encoder and the value
+    encoder (object entry order, number or text form) fails a generated case."""
+    separators = (",", ":") if compact else (", ", ": ")
+    payload = json.dumps(value, ensure_ascii=ensure_ascii, separators=separators).encode()
+    assert payload_content_identity(payload) == _decoded_identity(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'{"a":1,"a":2}',
+        b"\xef\xbb\xbf" + b'{"a":1}',
+        b'"\\ud800"',
+        b'"\\ud83d\\ude00"',
+        b'"\\\\ud83d\\ude00"',
+        b'"\\ude00\\ud83d"',
+        b'["\\ud83d", "\\ude00"]',
+        b'{"k\\ud800":1}',
+        b'{"\\u00e9":1,"e\\u0301":2}',
+        b"1e300",
+        b"1e400",
+        b"18446744073709551616",
+        b"-0.0",
+        b'{"a":1} {"b":1}',
+        b"",
+        b"not json",
+        b'"\xff"',
+    ],
+)
+def test_edge_cases_match_the_decoder(payload: bytes) -> None:
+    """Duplicate keys, byte-order marks, surrogate escapes, number forms and
+    non-JSON bytes all resolve exactly as the in-memory decoder resolves them."""
+    assert payload_content_identity(payload) == _decoded_identity(payload)
+
+
+def test_a_lone_surrogate_escape_is_not_confused_with_a_question_mark() -> None:
+    """Anti-vacuity: drop the surrogate scan and the C tokenizer decodes the
+    lone escape to ``?``, giving two different documents one identity."""
+    assert payload_content_identity(b'"\\ud800"') != payload_content_identity(b'"?"')
+
+
+def test_identity_does_not_switch_method_above_any_size() -> None:
+    """A document larger than several read windows keeps its structural
+    identity: re-serializing it changes the bytes but not the identity.
+
+    Anti-vacuity: reinstate a size ceiling that substitutes the byte digest and
+    the two serializations get different identities.
+    """
+    value = [{"id": index, "text": "\U0001f600" * 4000, "meta": {"b": 1, "a": [1.5, None]}} for index in range(120)]
+    compact = json.dumps(value, ensure_ascii=True, separators=(",", ":")).encode()
+    spaced = json.dumps(value, ensure_ascii=False, indent=1, sort_keys=True).encode()
+    assert len(compact) > 3 * _STREAM_READ_BYTES
+
+    streamed_compact = stream_payload_content_identity(io.BytesIO(compact))
+    streamed_spaced = stream_payload_content_identity(io.BytesIO(spaced))
+
+    assert streamed_compact == streamed_spaced == structural_content_identity(value)
+    assert streamed_compact != sha256(compact).hexdigest()
+
+
+def test_surrogate_escape_split_across_read_windows_is_seen() -> None:
+    """An escape pair and a lone escape straddling a window boundary resolve
+    like the decoder does."""
+    prefix = b'["' + b"x" * (_STREAM_READ_BYTES - 5)
+    paired = prefix + b'\\ud83d\\ude00"]'
+    lone = prefix + b'\\ud83dx"]'
+    assert payload_content_identity(paired) == _decoded_identity(paired)
+    assert payload_content_identity(lone) == _decoded_identity(lone)
