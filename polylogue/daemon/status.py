@@ -3414,41 +3414,33 @@ def halted_unit_status() -> list[dict[str, str]]:
     return [record.as_dict() for record in registry.halted_units()]
 
 
-def supervised_service_states() -> dict[str, str] | None:
-    """Return this process' service states, or ``None`` outside a daemon.
-
-    ``None`` is not "everything is fine": it means no supervisor is composed
-    here, which is the honest answer from a one-shot CLI process.
-    """
-    from polylogue.daemon.cli import active_supervisor
-
-    supervisor = active_supervisor()
-    if supervisor is None:
-        return None
-    return {name: state.value for name, state in supervisor.states().items()}
-
-
 _FAILED_SERVICE_STATES = frozenset({"failed", "orphaned"})
 _SERVICE_FAILURE_REASON_MAX_CHARS = 300
 
 
-def supervised_service_failures() -> list[dict[str, object]] | None:
-    """Return this process' failed or orphaned services with their reasons.
+def supervised_service_snapshot() -> tuple[dict[str, str], list[dict[str, object]]] | None:
+    """Return this process' service states and its failed or orphaned services.
+
+    Both come from one read of the supervisor's states, so a service that
+    fails while status is being collected cannot appear as ``failed`` in one
+    field and be missing from the other (the refresh runs off the daemon
+    loop, which is where the supervisor mutates state).
 
     An ``isolate`` service that raised is marked failed and never restarted;
     an orphan outlived its shutdown deadline. Either is work the daemon was
     asked to do and is no longer doing, so it is named with its reason rather
-    than left as a bare state string. ``None`` outside a daemon, as for
-    :func:`supervised_service_states`.
+    than left as a bare state string. ``None`` outside a daemon: that is not
+    "everything is fine", only that no supervisor is composed here.
     """
     from polylogue.daemon.cli import active_supervisor
 
     supervisor = active_supervisor()
     if supervisor is None:
         return None
+    states = dict(supervisor.states())
     last_transition = {transition.service: transition for transition in supervisor.transitions()}
     failures: list[dict[str, object]] = []
-    for name, state in sorted(supervisor.states().items()):
+    for name, state in sorted(states.items()):
         if state.value not in _FAILED_SERVICE_STATES:
             continue
         exc = supervisor.failure(name)
@@ -3466,7 +3458,7 @@ def supervised_service_failures() -> list[dict[str, object]] | None:
                 "at": transition.at if transition is not None else None,
             }
         )
-    return failures
+    return {name: state.value for name, state in states.items()}, failures
 
 
 def daemon_status_payload(
@@ -3618,7 +3610,8 @@ def daemon_status_payload(
     # the resulting snapshot metadata after collection completes.
     if collecting_status_snapshot:
         status_snapshot = {**status_snapshot, "state": "refreshing"}
-    service_failures = supervised_service_failures()
+    service_snapshot = supervised_service_snapshot()
+    service_states, service_failures = service_snapshot if service_snapshot is not None else (None, None)
 
     return json_document(
         {
@@ -3640,7 +3633,7 @@ def daemon_status_payload(
                 status_snapshot=status_snapshot,
             ),
             "halted_units": halted_units,
-            "services": supervised_service_states(),
+            "services": service_states,
             "service_failures": service_failures,
             # Per-loop cadence evidence: last run, next due, last error and
             # which startup gate (if any) a loop is waiting on. Without it an

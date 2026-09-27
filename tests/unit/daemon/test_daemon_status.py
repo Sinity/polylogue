@@ -3469,11 +3469,14 @@ def _daemon_payload_for_verdict_variant(variant: str, *, collecting_status_snaps
         patch("polylogue.daemon.status.periodic_loop_payload", return_value={"loops": []}),
         patch("polylogue.daemon.status_snapshot.snapshot_state_for_metrics", return_value=snapshot),
         patch(
-            "polylogue.daemon.status.supervised_service_failures",
+            "polylogue.daemon.status.supervised_service_snapshot",
             return_value=(
-                [{"service": "secret_scan_sweep", "state": "failed", "reason": "RuntimeError: boom", "at": 1.0}]
+                (
+                    {"secret_scan_sweep": "failed"},
+                    [{"service": "secret_scan_sweep", "state": "failed", "reason": "RuntimeError: boom", "at": 1.0}],
+                )
                 if variant == "failed_service"
-                else []
+                else ({}, [])
             ),
         ),
     ):

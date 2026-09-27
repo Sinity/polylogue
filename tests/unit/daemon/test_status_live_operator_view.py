@@ -19,7 +19,7 @@ from polylogue.daemon import cli as daemon_cli
 from polylogue.daemon.services import ServiceCapability, ServiceState
 from polylogue.daemon.status import (
     format_daemon_status_lines,
-    supervised_service_failures,
+    supervised_service_snapshot,
 )
 from polylogue.daemon.supervisor import DaemonSupervisor
 from tests.infra.daemon_operations import cli_daemon_archive
@@ -65,9 +65,10 @@ def test_live_probe_reports_a_daemon_that_fails_the_request(
 
 
 def test_a_failed_isolated_service_is_named_with_its_reason() -> None:
-    """Anti-vacuity: without ``supervised_service_failures`` status carried only
-    the bare state string, so the reason an ``isolate`` service stopped was
-    visible nowhere outside the supervisor."""
+    """Anti-vacuity: without the failure projection status carried only the
+    bare state string, so the reason an ``isolate`` service stopped was
+    visible nowhere outside the supervisor. States and failures come from one
+    read, so the failed state and its failure row always agree."""
 
     async def failing() -> None:
         raise RuntimeError("sweep exploded")
@@ -83,7 +84,11 @@ def test_a_failed_isolated_service_is_named_with_its_reason() -> None:
         assert supervisor.state("secret_scan_sweep") is ServiceState.FAILED
         daemon_cli._set_active_supervisor(supervisor)
         try:
-            return supervised_service_failures()
+            snapshot = supervised_service_snapshot()
+            assert snapshot is not None
+            states, failures = snapshot
+            assert states["secret_scan_sweep"] == "failed"
+            return failures
         finally:
             daemon_cli._set_active_supervisor(None)
 
