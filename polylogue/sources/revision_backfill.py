@@ -15,7 +15,7 @@ import uuid
 from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Set
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import closing, contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import wraps
@@ -24,7 +24,6 @@ from itertools import chain, islice
 from pathlib import Path
 from types import TracebackType
 from typing import BinaryIO, Final, Literal, Protocol, cast
-from urllib.parse import quote
 
 import ijson
 from ijson.common import ObjectBuilder
@@ -108,6 +107,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     apply_source_raw_state_update,
     upsert_raw_artifact,
 )
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     PreparedRows,
     PreparedSessionWrite,
@@ -116,6 +116,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     prepare_session_shard,
 )
 from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError, discard_session_shard
+from polylogue.storage.sqlite.connection_profile import ReadFrame, read_frame
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
 _LOGGER = _polylogue_logging.get_logger(__name__)
@@ -657,7 +658,10 @@ def _expand_frozen_revision_link_selection(archive_root: Path, raw_ids: Sequence
     """Include every predecessor and baseline needed to validate selected APPEND authority."""
     expanded = set(raw_ids)
     pending = set(raw_ids)
-    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as source_conn:
+    with read_frame(
+        archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
+    ) as source_frame:
+        source_conn = source_frame.connection
         while pending:
             current = tuple(sorted(pending))
             pending.clear()
@@ -989,13 +993,13 @@ def prepare_retained_jsonl_artifact(
             )
     kind = RawRevisionKind(kind_token)
     fallback_id = (native_id or Path(source_path).stem) if kind is RawRevisionKind.APPEND else Path(source_path).stem
-    source_uri = f"file:{quote(source_db_path)}?mode=ro"
-    index_uri = f"file:{quote(index_db_path)}?mode=ro"
     try:
         with (
-            closing(sqlite3.connect(source_uri, uri=True)) as source_conn,
-            closing(sqlite3.connect(index_uri, uri=True)) as index_conn,
+            read_frame(source_db_path, tier=ArchiveTier.SOURCE, timeout_class="background-read") as source_frame,
+            read_frame(index_db_path, tier=ArchiveTier.INDEX, timeout_class="background-read") as index_frame,
         ):
+            source_conn = source_frame.connection
+            index_conn = index_frame.connection
             source_conn.execute("BEGIN")
             index_conn.execute("BEGIN")
             evidence_digest: str | None = None
@@ -1615,7 +1619,10 @@ def uncensused_historical_revision_raw_ids(
     )
     known_fingerprints = [RAW_AUTHORITY_PARSER_FINGERPRINT, *sorted(SUPERSEDED_MEMBERSHIP_FINGERPRINTS)]
     known_placeholders = ",".join("?" for _ in known_fingerprints)
-    with sqlite_connection(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
+    with read_frame(
+        archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
+    ) as source_frame:
+        conn = source_frame.connection
         uncensused: list[str] = []
         for offset in range(0, len(raw_ids), 500):
             raw_id_chunk = raw_ids[offset : offset + 500]
@@ -2340,7 +2347,10 @@ def require_current_parser_source_census(
         selections = tuple(
             tuple(selected_raw_ids[offset : offset + 500]) for offset in range(0, len(selected_raw_ids), 500)
         )
-    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as source_conn:
+    with read_frame(
+        archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
+    ) as source_frame:
+        source_conn = source_frame.connection
         for selection in selections:
             where = "" if selection is None else f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
             params: tuple[object, ...] = () if selection is None else selection
@@ -2377,7 +2387,10 @@ def require_current_parser_source_census(
     durable_bindings: dict[str, tuple[object, object, list[object], bool, bool, bool]] = {
         raw_id: (None, RawRevisionKind.UNKNOWN.value, [], False, False, False) for raw_id in recorded_logical_keys
     }
-    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as source_conn:
+    with read_frame(
+        archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
+    ) as source_frame:
+        source_conn = source_frame.connection
         for selection in selections:
             where = "" if selection is None else f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
             params = (
@@ -2497,7 +2510,10 @@ def require_current_parser_source_census(
         )
 
     authority_rows: dict[str, tuple[str | None, str, str, int, str | None, str | None]] = {}
-    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as source_conn:
+    with read_frame(
+        archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
+    ) as source_frame:
+        source_conn = source_frame.connection
         for selection in selections:
             where = "" if selection is None else f"WHERE raw_id IN ({','.join('?' for _ in selection)})"
             params = () if selection is None else selection
@@ -2594,7 +2610,10 @@ def require_current_parser_source_census(
         )
 
     unresolved_raw_ids: list[str] = []
-    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as source_conn:
+    with read_frame(
+        archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
+    ) as source_frame:
+        source_conn = source_frame.connection
         for selection in selections:
             authority_where = "" if selection is None else f"AND r.raw_id IN ({','.join('?' for _ in selection)})"
             authority_params: tuple[object, ...] = () if selection is None else selection
@@ -2877,7 +2896,10 @@ def _replay_representative_raw_ids(sorted_keys: list[str], archive_root: Path) -
     raws claim different parents resolves to the same claim on every run.
     """
     representative: dict[str, str] = {}
-    with sqlite_connection(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
+    with read_frame(
+        archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
+    ) as source_frame:
+        conn = source_frame.connection
         for start in range(0, len(sorted_keys), _REPLAY_KEY_QUERY_CHUNK):
             chunk = sorted_keys[start : start + _REPLAY_KEY_QUERY_CHUNK]
             placeholders = ",".join("?" for _ in chunk)
@@ -5208,8 +5230,8 @@ class _ReplaySpillPrefetcher:
     parse threads starving the writer instead of helping. The worker reads
     ``_ParsedSessionSpill._decoded``/``_whales`` dicts concurrently with
     writer mutation (per-op-atomic dict access; a stale read only causes a
-    harmless duplicate decode) and opens its own ``mode=ro`` source.db
-    connection (WAL -- snapshot reads never block the writer) plus its own
+    harmless duplicate decode) and opens its own profiled source.db read frame
+    (WAL -- snapshot reads never block the writer) plus its own
     spill-file connection (``busy_timeout`` bridges the journal-less spill's
     short exclusive write windows).
     """
@@ -5241,6 +5263,8 @@ class _ReplaySpillPrefetcher:
             self._budget = max(floor, min(ceiling, physical // 16)) if physical else floor
         self._lock = threading.Lock()
         self._wakeup = threading.Condition(self._lock)
+        self._read_frames_lock = threading.Lock()
+        self._read_frames: set[ReadFrame] = set()
         #: raw_id -> (sessions, payload_bytes, tree_bytes, from_reparse, seq,
         #: needs_enrichment). ``needs_enrichment`` marks a reparse this worker
         #: decoded but could NOT enrich, because the provider's enrichment
@@ -5285,6 +5309,7 @@ class _ReplaySpillPrefetcher:
             self._writer_floor_seq = 0
             self._wakeup.notify_all()
         if previous is not None:
+            self._cancel_read_frames()
             previous.join()
         if self._closed:
             return
@@ -5338,6 +5363,7 @@ class _ReplaySpillPrefetcher:
             self._generation += 1
             self._drop_buffer_locked()
             self._wakeup.notify_all()
+        self._cancel_read_frames()
         if self._thread is not None:
             self._thread.join()
             self._thread = None
@@ -5360,6 +5386,26 @@ class _ReplaySpillPrefetcher:
         self._buffer.clear()
         self._buffered_tree_bytes = 0
 
+    def _register_read_frame(self, frame: ReadFrame, generation: int) -> bool:
+        """Track a worker-owned archive read so phase changes can interrupt it."""
+        with self._read_frames_lock:
+            with self._lock:
+                current = not self._closed and generation == self._generation
+            if current:
+                self._read_frames.add(frame)
+                return True
+        frame.cancel()
+        return False
+
+    def _unregister_read_frame(self, frame: ReadFrame) -> None:
+        with self._read_frames_lock:
+            self._read_frames.discard(frame)
+
+    def _cancel_read_frames(self) -> None:
+        with self._read_frames_lock:
+            for frame in tuple(self._read_frames):
+                frame.cancel()
+
     def _run(self, generation: int, keys: tuple[str, ...], extra_members: dict[str, frozenset[str]]) -> None:
         try:
             self._run_inner(generation, keys, extra_members)
@@ -5367,75 +5413,90 @@ class _ReplaySpillPrefetcher:
             # A prefetch failure must never take down the replay: the writer
             # keeps decoding inline, identical to prefetching never having
             # been enabled.
-            _LOGGER.warning("replay spill prefetch worker failed; falling back to inline decode", exc_info=True)
+            with self._lock:
+                expected_stop = self._closed or generation != self._generation
+            if not expected_stop:
+                _LOGGER.warning("replay spill prefetch worker failed; falling back to inline decode", exc_info=True)
 
     def _run_inner(self, generation: int, keys: tuple[str, ...], extra_members: dict[str, frozenset[str]]) -> None:
         if not keys:
             return
-        # NOTE: ``with sqlite_connection(...)`` would only manage a
-        # transaction, not the connection lifetime -- close explicitly.
-        source_conn = sqlite3.connect(f"file:{self._source_db_path}?mode=ro", uri=True, timeout=30.0)
-        # Per-thread read-only index handle (WAL: snapshot reads never block
-        # the writer). Opened and closed entirely on this worker thread so no
-        # connection is ever shared across threads.
-        index_conn: sqlite3.Connection | None = None
-        if self._index_db_path is not None and self._index_db_path.exists():
-            try:
-                index_conn = sqlite3.connect(f"file:{self._index_db_path}?mode=ro", uri=True, timeout=30.0)
-                index_conn.execute("PRAGMA busy_timeout = 30000")
-            except sqlite3.Error:
-                _LOGGER.warning("replay prefetch could not open a read-only index handle", exc_info=True)
-                index_conn = None
-        spill_conn: sqlite3.Connection | None = None
-        try:
-            plan, descriptors = self._build_plan(source_conn, keys, extra_members)
-            if not plan:
+        with ExitStack() as stack:
+            source_frame = stack.enter_context(
+                read_frame(self._source_db_path, tier=ArchiveTier.SOURCE, timeout_class="background-read")
+            )
+            if not self._register_read_frame(source_frame, generation):
                 return
-            spill_conn = sqlite3.connect(self._spill.path, timeout=30.0)
-            spill_conn.execute("PRAGMA busy_timeout = 30000")
-            for seq, raw_id in plan:
-                if self._wait_for_budget(generation, seq) is False:
-                    return
-                with self._lock:
-                    if seq < self._writer_floor_seq or raw_id in self._buffer:
-                        # Already passed by the writer (decoding it now would
-                        # be pure waste) or already buffered.
-                        continue
-                if raw_id in self._spill._decoded or raw_id in self._spill._whales:
-                    continue
-                decoded = self._decode(
-                    spill_conn,
-                    source_conn,
-                    index_conn,
-                    raw_id,
-                    descriptors,
-                )
-                if decoded is None:
-                    continue
-                sessions, payload_bytes, from_reparse, needs_enrichment = decoded
-                tree_bytes = estimate_parsed_tree_bytes(sessions)
-                with self._wakeup:
-                    if self._generation != generation or self._closed:
-                        return
-                    if seq < self._writer_floor_seq:
-                        # The writer already moved past this key while we
-                        # were decoding; buffering it would only pin budget.
-                        continue
-                    self._buffer[raw_id] = (
-                        sessions,
-                        payload_bytes,
-                        tree_bytes,
-                        from_reparse,
-                        seq,
-                        needs_enrichment,
+            stack.callback(self._unregister_read_frame, source_frame)
+            source_conn = source_frame.connection
+            # The optional index handle is worker-private too. A missing or
+            # locked index still degrades enrichment exactly as before.
+            index_frame: ReadFrame | None = None
+            index_conn: sqlite3.Connection | None = None
+            if self._index_db_path is not None and self._index_db_path.exists():
+                try:
+                    index_frame = stack.enter_context(
+                        read_frame(
+                            self._index_db_path,
+                            tier=ArchiveTier.INDEX,
+                            timeout_class="background-read",
+                        )
                     )
-                    self._buffered_tree_bytes += tree_bytes
-        finally:
-            if spill_conn is not None:
-                spill_conn.close()
-            if index_conn is not None:
-                index_conn.close()
-            source_conn.close()
+                    if not self._register_read_frame(index_frame, generation):
+                        return
+                    stack.callback(self._unregister_read_frame, index_frame)
+                    index_conn = index_frame.connection
+                except sqlite3.Error:
+                    _LOGGER.warning("replay prefetch could not open a read-only index handle", exc_info=True)
+                    index_frame = None
+                    index_conn = None
+            spill_conn: sqlite3.Connection | None = None
+            try:
+                plan, descriptors = self._build_plan(source_conn, keys, extra_members)
+                if not plan:
+                    return
+                spill_conn = sqlite3.connect(self._spill.path, timeout=30.0)
+                spill_conn.execute("PRAGMA busy_timeout = 30000")
+                for seq, raw_id in plan:
+                    if self._wait_for_budget(generation, seq) is False:
+                        return
+                    with self._lock:
+                        if seq < self._writer_floor_seq or raw_id in self._buffer:
+                            # Already passed by the writer (decoding it now would
+                            # be pure waste) or already buffered.
+                            continue
+                    if raw_id in self._spill._decoded or raw_id in self._spill._whales:
+                        continue
+                    decoded = self._decode(
+                        spill_conn,
+                        source_conn,
+                        index_conn,
+                        raw_id,
+                        descriptors,
+                    )
+                    if decoded is None:
+                        continue
+                    sessions, payload_bytes, from_reparse, needs_enrichment = decoded
+                    tree_bytes = estimate_parsed_tree_bytes(sessions)
+                    with self._wakeup:
+                        if self._generation != generation or self._closed:
+                            return
+                        if seq < self._writer_floor_seq:
+                            # The writer already moved past this key while we
+                            # were decoding; buffering it would only pin budget.
+                            continue
+                        self._buffer[raw_id] = (
+                            sessions,
+                            payload_bytes,
+                            tree_bytes,
+                            from_reparse,
+                            seq,
+                            needs_enrichment,
+                        )
+                        self._buffered_tree_bytes += tree_bytes
+            finally:
+                if spill_conn is not None:
+                    spill_conn.close()
 
     def _wait_for_budget(self, generation: int, seq: int) -> bool:
         """Block until buffer headroom exists; False means phase over."""
