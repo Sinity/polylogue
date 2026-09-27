@@ -839,14 +839,28 @@ def test_verified_audit_reader_observes_a_committed_live_wal_head(tmp_path: Path
             ).fetchone() == (archive_id,)
 
 
-def test_verified_audit_reader_translates_sqlite_failure_without_writing(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "statement",
+    (
+        "INSERT INTO archive_authority(archive_instance_id, created_at_ms, authority_format) VALUES ('new', 1, 1)",
+        "UPDATE audit_continuity_head SET generation = generation + 1",
+        "DELETE FROM archive_authority",
+        "CREATE TABLE unauthorized_audit_table(value TEXT)",
+        "PRAGMA user_version = 2",
+        "ATTACH",
+    ),
+)
+def test_verified_audit_reader_translates_sqlite_failure_without_writing(tmp_path: Path, statement: str) -> None:
     bootstrap_archive_root(tmp_path)
     audit_path = tmp_path / "audit.db"
+    if statement == "ATTACH":
+        statement = f"ATTACH DATABASE '{(tmp_path / 'auxiliary.db').as_uri()}?mode=rwc' AS auxiliary"
     with pytest.raises(AuditLeafError, match="audit SQLite read is unavailable") as failure:
         with open_verified_audit_read_connection(audit_path) as reader:
-            reader.execute("DELETE FROM archive_authority")
-    assert isinstance(failure.value.__cause__, sqlite3.OperationalError)
-    assert "readonly" in str(failure.value.__cause__)
+            assert reader.execute("PRAGMA query_only").fetchone() == (1,)
+            reader.execute(statement)
+    assert isinstance(failure.value.__cause__, sqlite3.DatabaseError)
+    assert not (tmp_path / "auxiliary.db").exists()
 
 
 def test_settled_audit_read_reports_sqlite_failure_as_pending(tmp_path: Path) -> None:
