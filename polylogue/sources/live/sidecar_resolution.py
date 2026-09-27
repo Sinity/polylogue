@@ -232,10 +232,12 @@ class RetainedSidecarResolver:
     def _retained_siblings(self, conn: sqlite3.Connection, source_path: str | Path) -> tuple[SiblingTranscript, ...]:
         """Retained transcripts sharing this scope, excluding ``source_path``.
 
-        The root ``.jsonl`` plus every ``subagents/agent-*.jsonl``. An append
-        delta is a partial view of its file, so a full revision of the same
-        path is preferred when the archive holds one -- a sibling index only
-        corroborates ownership, and a partial one can only over-report debt.
+        The root ``.jsonl`` plus every ``subagents/agent-*.jsonl``. A sibling
+        that grew through append ingest is a full baseline plus append
+        revisions; its records are the newest full revision followed by every
+        append admitted after it, so tool ids introduced in appended tails are
+        in the ownership index. A sibling index only corroborates ownership,
+        and a partial one can only over-report debt.
         """
         path = Path(source_path)
         session_dir = path.parent.parent if path.parent.name == "subagents" else path.parent / path.stem
@@ -243,30 +245,47 @@ class RetainedSidecarResolver:
         low, high = _prefix_range(f"{(session_dir / 'subagents').as_posix()}/")
         rows = conn.execute(
             """
-            SELECT source_path, hex(blob_hash), revision_kind
+            SELECT source_path, hex(blob_hash), revision_kind, acquired_at_ms, raw_id,
+                   COALESCE(append_start_offset, 0)
             FROM raw_sessions
             WHERE source_path = ? OR (source_path >= ? AND source_path < ?)
-            ORDER BY
-                CASE WHEN revision_kind = 'append' THEN 1 ELSE 0 END,
-                blob_size DESC,
-                acquired_at_ms DESC,
-                raw_id DESC
+            ORDER BY source_path, acquired_at_ms, raw_id
             """,
             (root_path.as_posix(), low, high),
         ).fetchall()
         own = path.as_posix()
-        chosen: dict[str, str] = {}
-        for candidate_path, blob_hash, _revision_kind in rows:
+        revisions: dict[str, list[tuple[str, str, int, str, int]]] = {}
+        for candidate_path, blob_hash, revision_kind, acquired_at_ms, raw_id, append_start in rows:
             candidate = str(candidate_path)
             if candidate == own:
                 continue
             if candidate != root_path.as_posix() and not candidate.endswith(".jsonl"):
                 continue
-            chosen.setdefault(candidate, str(blob_hash).lower())
-        return tuple(
-            SiblingTranscript(coordinate=candidate, open_records=self._records_from_blob(blob_hash))
-            for candidate, blob_hash in sorted(chosen.items())
-        )
+            revisions.setdefault(candidate, []).append(
+                (str(blob_hash).lower(), str(revision_kind), int(acquired_at_ms or 0), str(raw_id), int(append_start))
+            )
+        siblings: list[SiblingTranscript] = []
+        for candidate, candidate_rows in sorted(revisions.items()):
+            fulls = [row for row in candidate_rows if row[1] != "append"]
+            baseline = fulls[-1] if fulls else None
+            appends = sorted(
+                (
+                    row
+                    for row in candidate_rows
+                    if row[1] == "append" and (baseline is None or (row[2], row[3]) > (baseline[2], baseline[3]))
+                ),
+                key=lambda row: (row[4], row[2], row[3]),
+            )
+            blob_hashes = ([baseline[0]] if baseline is not None else []) + [row[0] for row in appends]
+            siblings.append(SiblingTranscript(coordinate=candidate, open_records=self._records_from_blobs(blob_hashes)))
+        return tuple(siblings)
+
+    def _records_from_blobs(self, blob_hashes: list[str]):  # type: ignore[no-untyped-def]
+        def open_records() -> Iterator[object]:
+            for blob_hash in blob_hashes:
+                yield from self._records_from_blob(blob_hash)()
+
+        return open_records
 
     def _blob_path(self, blob_hash: str) -> Path:
         """Locate retained bytes in the archive this resolver was given.

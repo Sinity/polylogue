@@ -407,3 +407,44 @@ def test_display_content_equal_to_content_adds_no_block() -> None:
 
     [message] = session.messages
     assert [block.text for block in message.blocks if block.type is BlockType.TEXT] == ["same text"]
+
+
+def test_sidecar_shorter_than_the_inline_envelope_does_not_replace_it(tmp_path: Path) -> None:
+    """A partially written sidecar never replaces the masked envelope.
+
+    Anti-vacuity: drop the completeness check in
+    ``GeminiToolOutputIndex.join`` and the empty sidecar is recorded as a
+    match that replaces the envelope with nothing.
+    """
+    filename = "run_shell_command_run_shell_command_1773524726450_0_keyt3f.txt"
+    snapshot = _sidecar_corpus(tmp_path, filename=filename)
+    outputs = resolve_tool_outputs_dir(snapshot, "sess-1")
+    assert outputs is not None
+    (outputs / filename).write_text("", encoding="utf-8")
+
+    result = join_gemini_tool_output_sidecars(json.loads(snapshot.read_text(encoding="utf-8")), _dir_scope(outputs))
+
+    assert not result.matched
+    [debt] = result.debt
+    assert debt.reason == "sidecar_less_complete_than_inline"
+
+
+def test_sidecar_that_changes_during_the_read_is_read_error_debt(tmp_path: Path) -> None:
+    """A sidecar whose bytes moved after enumeration is not joined.
+
+    Anti-vacuity: drop the size check in ``_read_text_from_path`` and the
+    grown file's text is joined as if it were the enumerated file.
+    """
+    filename = "run_shell_command_run_shell_command_1773524726450_0_keyt3f.txt"
+    snapshot = _sidecar_corpus(tmp_path, filename=filename)
+    outputs = resolve_tool_outputs_dir(snapshot, "sess-1")
+    assert outputs is not None
+    scope = _dir_scope(outputs)
+    with (outputs / filename).open("a", encoding="utf-8") as handle:
+        handle.write("still being written\n")
+
+    result = join_gemini_tool_output_sidecars(json.loads(snapshot.read_text(encoding="utf-8")), scope)
+
+    assert not result.matched
+    [debt] = result.debt
+    assert debt.reason == "read_error:SidecarChangedDuringReadError"

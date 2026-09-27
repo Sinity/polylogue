@@ -4718,7 +4718,9 @@ _PATH_INDEPENDENT_PARSE_PROVIDERS: Final[frozenset[Provider]] = frozenset(
         Provider.CHATGPT,
         Provider.CLAUDE_AI,
         Provider.CLAUDE_DESIGN,
-        Provider.CLAUDE_CODE,
+        # Provider.CLAUDE_CODE is absent for the Gemini CLI reason below: its
+        # stream parse resolves retained ``tool-results/`` sidecars and
+        # subagent siblings from ``source_path``.
         Provider.CODEX,
         Provider.GEMINI,
         # Provider.GEMINI_CLI is deliberately absent: ``parse_gemini_cli``

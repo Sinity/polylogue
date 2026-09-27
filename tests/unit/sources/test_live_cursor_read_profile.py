@@ -118,3 +118,49 @@ def test_interrupted_cursor_recovery_keeps_cursor_when_source_tier_is_missing(tm
     record = store.get_record(source_path)
     assert record is not None
     assert record.byte_offset == 64
+
+
+def test_interrupted_attempts_stay_running_when_the_recovery_read_expires(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recovery read that keeps expiring leaves the obligation in place.
+
+    Anti-vacuity: mark attempts interrupted before the rewind read (the old
+    order in ``_mark_interrupted_ops_attempts``) and the attempt leaves
+    ``running``, so the next startup no longer knows the path owes a rewind.
+    """
+    from polylogue.storage.sqlite.connection_profile import ReadFrameExpiredError
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    source_db = archive_root / "source.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    source_path = str(archive_root / "capture.jsonl")
+    _seed_unparsed_raw(source_db, source_path, "raw-0")
+    store = _store(archive_root)
+    store.set(Path(source_path), 64, byte_offset=64, last_complete_newline=64)
+    with store._connect_ops() as conn:
+        conn.execute(
+            "INSERT INTO ingest_attempts (attempt_id, source_path, origin, status, phase, started_at_ms, "
+            "heartbeat_at_ms, parsed_raw_count, materialized_count) "
+            "VALUES ('attempt-1', ?, 'codex-session', 'running', 'parse', 1, 1, 0, 0)",
+            (source_path,),
+        )
+        conn.commit()
+
+    def always_expired(_frame: ReadFrame, _sql: str, _parameters: Any = ()) -> Iterator[sqlite3.Row]:
+        raise ReadFrameExpiredError("synthetic expiry")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(ReadFrame, "stream", always_expired)
+    monkeypatch.setattr(ReadFrame, "rebind", lambda _frame: None)
+
+    store._mark_interrupted_ops_attempts()
+
+    with store._connect_ops() as conn:
+        assert conn.execute("SELECT status FROM ingest_attempts WHERE attempt_id = 'attempt-1'").fetchone() == (
+            "running",
+        )
+    record = store.get_record(Path(source_path))
+    assert record is not None and record.byte_offset == 64

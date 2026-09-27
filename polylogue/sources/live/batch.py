@@ -242,6 +242,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     prepared_row_dispositions,
 )
 from polylogue.storage.sqlite.archive_tiers.write_shard import discard_session_shard
+from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 
 if TYPE_CHECKING:
     from polylogue.storage.raw_retention import RawFrontierBlockedPaths
@@ -2699,7 +2700,7 @@ class LiveBatchProcessor:
         if not sidecars or not source_db.exists():
             yield
             return
-        with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+        with closing(open_readonly_connection(source_db)) as conn:
             self._pinned_raw_fingerprints = self._pinned_latest_raw_fingerprints(
                 conn, sidecars, archive_root=source_db.parent
             )
@@ -2813,7 +2814,7 @@ class LiveBatchProcessor:
         pinned = self._pinned_history_sidecars
         if pinned is not None and str(path) in pinned:
             return pinned[str(path)]
-        conn = sqlite3.connect(f"file:{self._archive_source_db_path()}?mode=ro", uri=True)
+        conn = open_readonly_connection(self._archive_source_db_path())
         try:
             declared = conn.execute(
                 "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'history_sidecars'"
@@ -2836,7 +2837,7 @@ class LiveBatchProcessor:
         if not source_db.exists():
             return None
         try:
-            conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+            conn = open_readonly_connection(source_db)
             try:
                 row = conn.execute(
                     """
@@ -4009,7 +4010,8 @@ class LiveBatchProcessor:
                 user_versions[tier] = None
                 continue
             try:
-                conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+                # Reports the stamped version, so it must not refuse on skew.
+                conn = open_readonly_connection(path, validate_schema=False)
                 try:
                     user_versions[tier] = int(conn.execute("PRAGMA user_version").fetchone()[0])
                 finally:
@@ -5736,7 +5738,7 @@ class LiveBatchProcessor:
         if not source_db.exists():
             return None
         try:
-            conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+            conn = open_readonly_connection(source_db)
         except sqlite3.Error:
             return None
         try:
@@ -6213,7 +6215,7 @@ class LiveBatchProcessor:
             for _ in RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS
         )
         try:
-            conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+            conn = open_readonly_connection(source_db)
             try:
                 return (
                     conn.execute(
@@ -6596,9 +6598,9 @@ class LiveBatchProcessor:
         if not source_db.exists() or not index_db.exists():
             return False
         try:
-            conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            conn = open_readonly_connection(index_db)
             try:
-                conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
+                attach_readonly_database(conn, source_db, alias="source_tier")
                 row = conn.execute(
                     """
                     SELECT 1
@@ -6610,7 +6612,6 @@ class LiveBatchProcessor:
                     """,
                     (str(path), expected_origin, expected_origin),
                 ).fetchone()
-                conn.execute("DETACH DATABASE source_tier")
             finally:
                 conn.close()
         except sqlite3.Error as exc:
@@ -6651,7 +6652,7 @@ class LiveBatchProcessor:
         if not index_db.exists():
             return False
         try:
-            conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            conn = open_readonly_connection(index_db)
             try:
                 row = conn.execute(
                     """
@@ -6675,9 +6676,9 @@ class LiveBatchProcessor:
         if not index_db.exists() or not source_db.exists():
             return None
         try:
-            conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            conn = open_readonly_connection(index_db)
             try:
-                conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
+                attach_readonly_database(conn, source_db, alias="source_tier")
                 row = conn.execute(
                     """
                     SELECT s.native_id
@@ -6689,7 +6690,6 @@ class LiveBatchProcessor:
                     """,
                     (expected_origin, expected_origin, str(path)),
                 ).fetchone()
-                conn.execute("DETACH DATABASE source_tier")
             finally:
                 conn.close()
         except sqlite3.Error:
@@ -6835,7 +6835,7 @@ class LiveBatchProcessor:
             index_db = ArchiveLocation.resolve(archive_root).active_index_path
             with (
                 closing(sqlite3.connect(source_db)) as conn,
-                closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as index_conn,
+                closing(open_readonly_connection(index_db)) as index_conn,
                 conn,
             ):
                 conn.row_factory = sqlite3.Row
