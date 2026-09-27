@@ -181,7 +181,8 @@ def test_gate_is_registered_against_its_module() -> None:
     gate = GATES_BY_NAME["rebuild-routes"]
     assert gate.args == ("devtools.verify_rebuild_routes", "--json")
     assert gate.kind == "module"
-    assert gate.in_quick is True
+    # Periodic tier: zero real catches in 622 quick runs (2026-08-31..09-27).
+    assert gate.tier == "periodic"
     assert gate.blocking is True
 
 

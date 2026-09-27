@@ -42,10 +42,10 @@ def test_rendering_is_deterministic() -> None:
 
 
 def test_gate_and_command_are_registered() -> None:
-    """The gate runs in the quick set and the command is in the catalog."""
+    """The gate runs in the periodic tier and the command is in the catalog."""
 
     gate = GATES_BY_NAME["api-parity"]
-    assert gate.in_quick and gate.blocking
+    assert gate.tier == "periodic" and gate.blocking
     assert "verify api-parity" in COMMANDS
     assert "api-parity" in GENERATED_SURFACE_BY_NAME
 

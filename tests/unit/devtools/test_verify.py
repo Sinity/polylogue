@@ -9,6 +9,8 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -102,8 +104,96 @@ def test_quick_steps_are_static_gates() -> None:
     labels = [label for label, _command in verify.build_verify_steps(quick=True)]
 
     assert "gate lint" in labels
-    assert "gate oracle-integrity" in labels
+    assert "gate layering" in labels
     assert not any(label.startswith("pytest") for label in labels)
+
+
+def test_every_periodic_gate_runs_in_the_scheduled_and_complete_runs_only() -> None:
+    """A gate moved out of the quick tier still runs somewhere declared.
+
+    Anti-vacuity: build ``--periodic`` or ``--all`` from ``quick_gates()`` and a
+    periodic gate is orphaned; build ``--quick`` from ``periodic_gates()`` and
+    the quick tier pays for it again.
+    """
+    periodic = {declared.label for declared in gate.GATES if declared.tier == "periodic"}
+    assert "gate oracle-integrity" in periodic
+
+    quick = {label for label, _command in verify.build_verify_steps(quick=True)}
+    scheduled = {label for label, _command in verify.build_verify_steps(quick=True, periodic=True)}
+    complete = {label for label, _command in verify.build_verify_steps(quick=False, selection="all")}
+    affected = {label for label, _command in verify.build_verify_steps(quick=False, selection="affected")}
+
+    assert not periodic & quick
+    assert not periodic & affected
+    assert periodic <= scheduled
+    assert periodic <= complete
+    assert quick <= scheduled
+    assert not any(label.startswith("pytest") for label in scheduled)
+
+
+def test_static_gates_run_side_by_side_and_report_in_declared_order(tmp_path: Path) -> None:
+    """Gates overlap in time, and their outcomes keep the declared order.
+
+    Anti-vacuity: run the gates one after another and the rendezvous below
+    times out; return outcomes in completion order and the first gate, which
+    finishes last, is reported last.
+    """
+    rendezvous = threading.Barrier(2, timeout=10)
+    finished: list[str] = []
+
+    def fake_run(label: str, command: list[str], *, run: Any, runner: str) -> tuple[int, float, dict[str, Any]]:
+        del command, run, runner
+        rendezvous.wait()
+        if label == "gate first":
+            time.sleep(0.05)
+        finished.append(label)
+        return 0, 0.0, {"diagnosis": "gate_passed"}
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(verify, "_run", fake_run)
+        patch.setattr(verify, "GATE_PARALLELISM", 2)
+        outcomes = verify._run_steps([("gate first", ["a"]), ("gate second", ["b"])], run=None, runner="managed")  # type: ignore[arg-type]
+
+    assert finished == ["gate second", "gate first"]
+    assert [label for label, _outcome in outcomes] == ["gate first", "gate second"]
+
+
+def test_an_interrupted_run_stops_its_running_gate_processes(tmp_path: Path) -> None:
+    """Anti-vacuity: drop ``_stop_gate_processes`` from the interruption path and
+    the sleeping gate process is still alive after the interrupted run."""
+    spawned: list[subprocess.Popen[str]] = []
+    real_popen = subprocess.Popen
+
+    def tracking_popen(*args: Any, **kwargs: Any) -> subprocess.Popen[str]:
+        process = real_popen(*args, **kwargs)
+        spawned.append(process)
+        return process
+
+    def interrupting_run(label: str, command: list[str], *, run: Any, runner: str) -> tuple[int, float, dict[str, Any]]:
+        del run, runner
+        if label == "gate slow":
+            completed = verify._run_gate_process(command, env=dict(os.environ))
+            return completed.returncode, 0.0, {}
+        for _ in range(1000):
+            if verify._LIVE_GATE_PROCESSES:
+                break
+            time.sleep(0.01)
+        raise verify.VerificationInterrupted(signal.SIGTERM)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(verify, "ROOT", tmp_path)
+        patch.setattr(subprocess, "Popen", tracking_popen)
+        patch.setattr(verify, "_run", interrupting_run)
+        with pytest.raises(verify.VerificationInterrupted):
+            verify._run_steps(
+                [("gate slow", ["sleep", "30"]), ("gate interrupted", ["true"])],
+                run=None,  # type: ignore[arg-type]
+                runner="managed",
+            )
+
+    assert len(spawned) == 1
+    # Terminated by the interruption, not left to sleep out its 30 seconds.
+    assert spawned[0].poll() is not None
 
 
 def test_verification_tools_are_absolute_paths_in_checkout_venv() -> None:
@@ -114,7 +204,7 @@ def test_verification_tools_are_absolute_paths_in_checkout_venv() -> None:
     assert commands["gate lint"][0] == str(verify.ROOT / ".venv/bin/ruff")
     assert commands["gate mypy"][0].startswith(str(verify.ROOT / ".venv/bin/"))
     assert commands["gate generated-surfaces"][0] == str(verify.ROOT / ".venv/bin/python")
-    assert commands["gate schema-privacy"][0] == str(verify.ROOT / ".venv/bin/python")
+    assert commands["gate schema-closure"][0] == str(verify.ROOT / ".venv/bin/python")
 
 
 @pytest.mark.parametrize(
@@ -205,7 +295,7 @@ def test_required_gate_subprocess_launch_failure_is_typed(monkeypatch: pytest.Mo
     monkeypatch.setattr(required_gate.shutil, "which", lambda *_args, **_kwargs: "/bin/ruff")  # type: ignore[attr-defined]
     monkeypatch.setattr(
         subprocess,
-        "run",
+        "Popen",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("ruff")),
     )
     monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))

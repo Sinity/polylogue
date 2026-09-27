@@ -27,7 +27,7 @@ def test_gate_is_registered_against_its_module() -> None:
     gate = GATES_BY_NAME["test-packages"]
     assert gate.args == ("devtools.verify_test_packages",)
     assert gate.kind == "module"
-    assert gate.in_quick is True
+    assert gate.tier == "quick"
     assert gate.blocking is True
 
 

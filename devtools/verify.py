@@ -13,8 +13,10 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Mapping, Sequence
+from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +31,7 @@ from devtools.checkout_identity import (
     default_branch_refusal,
 )
 from devtools.cloud_sentinels import cloud_sentinel_declined
-from devtools.gate import quick_gates
+from devtools.gate import GATES, periodic_gates, quick_gates
 from devtools.pytest_invocation import (
     CLOSED_WORLD_COLLECTION_ARGS,
     DEVTOOLS_PLUGIN_ARGS,
@@ -106,7 +108,12 @@ PYTEST_EVENTS_DIR = CURRENT_EVENTS_DIR
 PYTEST_SELECTION_PATH = PYTEST_REPORT_DIR / "current-pytest-selection.json"
 PYTEST_SUMMARY_PATH = PYTEST_REPORT_DIR / "current-pytest-summary.json"
 PYTEST_JUNIT_REPORT_DIR = PYTEST_REPORT_DIR / "junit"
-_AGENTCTL_OPERATION_ARGV = {"verify_affected": (), "verify_quick": ("--quick",), "verify_all": ("--all",)}
+_AGENTCTL_OPERATION_ARGV = {
+    "verify_affected": (),
+    "verify_quick": ("--quick",),
+    "verify_periodic": ("--periodic",),
+    "verify_all": ("--all",),
+}
 _PROJECT_DESCRIPTOR = ".agentctl/project.toml"
 #: Path classes no test exercises: orchestration metadata, documentation and
 #: hosted workflow definitions. A change set inside them selects no pytest
@@ -248,13 +255,20 @@ def _pytest_steps(
 
 
 #: Labels whose verdict is recorded but does not decide the verifier's exit.
-NON_BLOCKING_LABELS: frozenset[str] = frozenset(gate.label for gate in quick_gates() if not gate.blocking)
+NON_BLOCKING_LABELS: frozenset[str] = frozenset(gate.label for gate in GATES if not gate.blocking)
+
+#: Static gates are independent processes, so they run side by side; the
+#: quick tier then costs its slowest gate rather than the sum of all of them.
+GATE_PARALLELISM = max(1, min(8, os.cpu_count() or 1))
 
 
 def build_verify_steps(
-    *, quick: bool, selection: str = "all", hypothesis_profile: str | None = None
+    *, quick: bool, selection: str = "all", hypothesis_profile: str | None = None, periodic: bool = False
 ) -> list[tuple[str, list[str]]]:
-    steps: list[tuple[str, list[str]]] = [(gate.label, gate.command(root=ROOT)) for gate in quick_gates()]
+    # A scheduled static run and a complete run owe the periodic tier too; the
+    # per-change runs (quick, affected) owe only the quick tier.
+    gates = periodic_gates() if periodic or (not quick and selection == "all") else quick_gates()
+    steps: list[tuple[str, list[str]]] = [(gate.label, gate.command(root=ROOT)) for gate in gates]
     if not quick and selection != "none":
         PYTEST_JUNIT_REPORT_DIR.mkdir(parents=True, exist_ok=True)
         steps += _pytest_steps(
@@ -568,13 +582,94 @@ def _subprocess_env() -> dict[str, str]:
     return {**os.environ, "POLYLOGUE_ROOT": str(ROOT), "PYTHONPYCACHEPREFIX": str(ROOT / ".cache" / "pycache")}
 
 
+#: Serializes the output lines of gates running side by side.
+_STEP_LOCK = threading.RLock()
+#: Gate processes still running, so an interrupted run can stop them.
+_LIVE_GATE_PROCESSES: set[subprocess.Popen[str]] = set()
+
+
+def _write_step_line(text: str, *, end: str = "\n") -> None:
+    with _STEP_LOCK:
+        sys.stderr.write(text + end)
+        sys.stderr.flush()
+
+
+def _write_step_result(label: str, pytest_step: bool, verdict: str, detail: str = "") -> None:
+    """Write one step's verdict, and any failure output, as one uninterrupted block.
+
+    A gate's line is written only when it finishes, so parallel gates never
+    interleave a verdict with another gate's name.
+    """
+    prefix = "" if pytest_step else f"  {label} ... "
+    _write_step_line(prefix + verdict + "\n" + detail, end="")
+
+
+def _run_gate_process(command: list[str], *, env: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
+    """Run one gate to completion, registered so an interruption can stop it."""
+    process = subprocess.Popen(
+        command, cwd=ROOT, env=dict(env), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+    with _STEP_LOCK:
+        _LIVE_GATE_PROCESSES.add(process)
+    try:
+        stdout, stderr = process.communicate()
+    finally:
+        with _STEP_LOCK:
+            _LIVE_GATE_PROCESSES.discard(process)
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def _stop_gate_processes() -> None:
+    with _STEP_LOCK:
+        live = tuple(_LIVE_GATE_PROCESSES)
+    for process in live:
+        with contextlib.suppress(OSError):
+            process.terminate()
+    for process in live:
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(OSError):
+                process.kill()
+
+
+def _run_steps(
+    steps: Sequence[tuple[str, list[str]]], *, run: VerifyRun, runner: str
+) -> list[tuple[str, tuple[int, float, dict[str, Any]]]]:
+    """Run the static gates side by side, then any pytest step alone.
+
+    Outcomes come back in declared order whatever order the gates finish in.
+    An interruption stops the running gate processes before it propagates.
+    """
+    gates = [(label, command) for label, command in steps if not label.startswith("pytest")]
+    tests = [(label, command) for label, command in steps if label.startswith("pytest")]
+    outcomes: list[tuple[str, tuple[int, float, dict[str, Any]]]] = []
+    if gates:
+        pool = ThreadPoolExecutor(max_workers=min(GATE_PARALLELISM, len(gates)), thread_name_prefix="gate")
+        try:
+            futures = [pool.submit(_run, label, command, run=run, runner=runner) for label, command in gates]
+            done, _pending = wait(futures, return_when=FIRST_EXCEPTION)
+            for future in done:
+                future.result()
+            outcomes.extend((label, future.result()) for (label, _command), future in zip(gates, futures, strict=True))
+        except BaseException:
+            pool.shutdown(wait=False, cancel_futures=True)
+            _stop_gate_processes()
+            raise
+        pool.shutdown(wait=True)
+    for label, command in tests:
+        outcomes.append((label, _run(label, command, run=run, runner=runner)))
+    return outcomes
+
+
 def _run(
     label: str, command: list[str], *, run: VerifyRun, runner: str = "managed"
 ) -> tuple[int, float, dict[str, Any]]:
     started = time.monotonic()
-    sys.stderr.write(f"  {label} ... ")
-    sys.stderr.flush()
     pytest_step = label.startswith("pytest")
+    if pytest_step:
+        # A pytest step streams its own output; name it before that begins.
+        _write_step_line(f"  {label} ... ", end="")
     artifacts = run.start_step(label=label, cmd=command)
     env = _subprocess_env()
     hypothesis_profile: str | None = None
@@ -591,9 +686,12 @@ def _run(
             step_id=artifacts.step_id,
             result=_early_gate_failure_result(started, early_metadata),
         )
-        sys.stderr.write(f"FAILED ({executable_result.diagnosis})\n")
-        for detail in executable_result.details:
-            sys.stderr.write(f"    {detail}\n")
+        _write_step_result(
+            label,
+            pytest_step,
+            f"FAILED ({executable_result.diagnosis})",
+            "".join(f"    {detail}\n" for detail in executable_result.details),
+        )
         return 127, time.monotonic() - started, early_metadata
     slot = None
     metadata_receipt = None
@@ -628,7 +726,7 @@ def _run(
                 step_id=artifacts.step_id,
                 result=_early_gate_failure_result(started, early_metadata),
             )
-            sys.stderr.write(f"FAILED ({exc})\n")
+            _write_step_result(label, pytest_step, f"FAILED ({exc})")
             return 125, time.monotonic() - started, early_metadata
         slot = outcome.slot
         completed = subprocess.CompletedProcess(command, outcome.returncode)
@@ -653,14 +751,14 @@ def _run(
         )
     else:
         try:
-            completed = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True)
+            completed = _run_gate_process(command, env=env)
         except OSError as exc:
             early_metadata = {"diagnosis": "gate_subprocess_launch_failed", "error": str(exc)}
             run.finish_step(
                 step_id=artifacts.step_id,
                 result=_early_gate_failure_result(started, early_metadata),
             )
-            sys.stderr.write("FAILED (subprocess launch)\n")
+            _write_step_result(label, pytest_step, "FAILED (subprocess launch)")
             return 127, time.monotonic() - started, early_metadata
     elapsed = time.monotonic() - started
     metadata: dict[str, Any] = {
@@ -736,17 +834,27 @@ def _run(
     if pytest_step and step is not None:
         effective_exit = int(step["exit"])
         metadata = step
-    sys.stderr.write(f"{'ok' if effective_exit == 0 else 'FAILED'} ({elapsed:.1f}s)\n")
+    detail = ""
     if not pytest_step and effective_exit and isinstance(completed.stdout, str):
-        sys.stderr.write(completed.stdout)
+        detail += completed.stdout
     if not pytest_step and completed.returncode and isinstance(completed.stderr, str):
-        sys.stderr.write(completed.stderr)
+        detail += completed.stderr
+    _write_step_result(label, pytest_step, f"{'ok' if effective_exit == 0 else 'FAILED'} ({elapsed:.1f}s)", detail)
     return effective_exit, elapsed, metadata
 
 
 def _early_gate_failure_result(started: float, metadata: Mapping[str, Any]) -> dict[str, Any]:
     """Finalize an early required-gate failure with its authoritative exit."""
     return {**metadata, "duration_s": round(time.monotonic() - started, 2), "exit": 127}
+
+
+def _static_tier(args: argparse.Namespace) -> str | None:
+    """The static-only tier this run asked for, or ``None`` when it runs pytest."""
+    if args.quick:
+        return "quick"
+    if args.periodic:
+        return "periodic"
+    return None
 
 
 def _scope(*, quick: bool, selection: str) -> VerificationScope:
@@ -882,7 +990,7 @@ def _finish_interrupted_verification(
         verification_scope=scope.value,
         final_git_head=git_head(ROOT),
         pytest_aggregate={
-            "selection_mode": "quick" if args.quick else selection,
+            "selection_mode": _static_tier(args) or selection,
             "outcomes": {},
             "terminal_green": False,
             "complete_corpus_covered": False,
@@ -980,8 +1088,14 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             sys.stderr.write(refusal + "\n")
         return 2
     parser = argparse.ArgumentParser(description="Run project semantic verification.")
-    parser.add_argument("--quick", action="store_true", help="run the static gates only")
-    parser.add_argument(
+    tiers = parser.add_mutually_exclusive_group()
+    tiers.add_argument("--quick", action="store_true", help="run the quick static gates only")
+    tiers.add_argument(
+        "--periodic",
+        action="store_true",
+        help="run the quick and periodic static gates only: the scheduled static run",
+    )
+    tiers.add_argument(
         "--all",
         dest="all_tests",
         action="store_true",
@@ -1032,11 +1146,12 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     validate_authority_matrix()
     started = time.monotonic()
     selection = "all" if args.all_tests else "affected"
-    if not args.quick and not args.all_tests:
+    static_tier = _static_tier(args)
+    if static_tier is None and not args.all_tests:
         selection = _selection_for_changes(_git_changed_paths(ROOT))
     seeded_from_primary = sync_testmon_graph(ROOT)
     graph = inspect_testmon_graph(ROOT)
-    scope = _scope(quick=args.quick, selection=selection)
+    scope = _scope(quick=static_tier is not None, selection=selection)
     try:
         assert_polylogue_matches_checkout(ROOT, context="devtools verify")
     except CheckoutImportMismatchError as exc:
@@ -1054,7 +1169,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         _emit(payload, use_json=args.json, operation=agentctl_operation)
         return 125
     head = git_head(ROOT)
-    tier = "quick" if args.quick else selection
+    tier = static_tier or selection
     run = VerifyRun(
         tier=tier,
         argv=list(argv or []),
@@ -1063,7 +1178,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         mirror_current=agentctl_operation is None,
         agentctl_operation=agentctl_operation,
     )
-    if not args.quick:
+    if static_tier is None:
         admission: AffectedAdmission | None = None
         if selection == "affected":
             admission = _affected_admission(root=ROOT, graph=graph)
@@ -1106,12 +1221,16 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             _emit_affected_admission_refusal(graph=graph, decision=admission)
             _emit(payload, use_json=args.json, operation=agentctl_operation)
             return 2
-    steps = build_verify_steps(quick=args.quick, selection=selection, hypothesis_profile=args.hypothesis_profile)
+    steps = build_verify_steps(
+        quick=static_tier is not None,
+        selection=selection,
+        hypothesis_profile=args.hypothesis_profile,
+        periodic=static_tier == "periodic",
+    )
     try:
         results: list[dict[str, Any]] = []
         exit_code = 0
-        for label, command in steps:
-            rc, elapsed, metadata = _run(label, command, run=run, runner=args.runner)
+        for label, (rc, elapsed, metadata) in _run_steps(steps, run=run, runner=args.runner):
             blocking = label not in NON_BLOCKING_LABELS
             results.append(
                 {"name": label, "duration_s": round(elapsed, 2), "exit": rc, "blocking": blocking, **metadata}
@@ -1175,7 +1294,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     aggregate = _aggregate_pytest_results(
         results,
         expected_step_count=sum(label.startswith("pytest") for label, _command in steps),
-        mode="quick" if args.quick else selection,
+        mode=static_tier or selection,
         exit_code=exit_code,
     )
     # The retained exit code is the first failure's; its diagnosis must be too.
