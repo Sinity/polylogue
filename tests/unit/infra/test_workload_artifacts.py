@@ -12,7 +12,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -90,6 +90,35 @@ def test_finished_build_resource_probe_skips_linked_source_authority(tmp_path: P
     measurement = FinishedBuildResourceProbe.start().finish(candidate)
 
     assert measurement.storage_bytes == len(b"index")
+
+
+def test_finished_build_resource_probe_includes_output_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A slow output walk is charged to the finished interval.
+
+    Anti-vacuity: sampling elapsed time before _pinned_paths returns zero
+    here, while the measured interval includes the nine-second fake tail.
+    """
+    import tests.infra.workload_artifacts as artifacts
+
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    (candidate / "index.db").write_bytes(b"index")
+    clock = [100.0]
+    monkeypatch.setattr(artifacts, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    original_pinned_paths = artifacts._pinned_paths
+
+    def delayed_pinned_paths(root: Path, *, skip_symlinks: bool = False) -> Iterator[Path]:
+        clock[0] += 9.0
+        yield from original_pinned_paths(root, skip_symlinks=skip_symlinks)
+
+    monkeypatch.setattr(artifacts, "_pinned_paths", delayed_pinned_paths)
+
+    measurement = FinishedBuildResourceProbe.start().finish(candidate)
+
+    assert measurement.storage_bytes == len(b"index")
+    assert measurement.elapsed_seconds == 9.0
 
 
 def test_complete_orphan_inventory_exceeds_diagnostic_sample_limit(

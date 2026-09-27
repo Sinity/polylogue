@@ -306,9 +306,15 @@ class FinishedBuildResourceProbe:
         )
 
     def finish(self, storage_root: Path) -> FinishedBuildResourceMeasurement:
-        """Record the interval after the build's output has been finalized."""
+        """Record the interval through output-size observation and closure."""
         if self._finished:
             raise RuntimeError("finished-build resource probe has already been closed")
+        # This walk can be material for a large generation. Keep it inside the
+        # reported interval instead of presenting an earlier snapshot as the
+        # total cost of finish().
+        storage_bytes = sum(
+            path.stat().st_size for path in _pinned_paths(storage_root, skip_symlinks=True) if _is_regular(path)
+        )
         self_usage = resource.getrusage(resource.RUSAGE_SELF)
         child_usage = resource.getrusage(resource.RUSAGE_CHILDREN)
         interval_peak_kib = _peak_rss_kib() if self.peak_rss_reset else None
@@ -325,9 +331,7 @@ class FinishedBuildResourceProbe:
             # than copying them. Measure only files this finished arm owns;
             # following a link would charge external source authority to the
             # candidate and would make the denominator depend on its parent.
-            storage_bytes=sum(
-                path.stat().st_size for path in _pinned_paths(storage_root, skip_symlinks=True) if _is_regular(path)
-            ),
+            storage_bytes=storage_bytes,
         )
         self._finished = True
         return measurement
