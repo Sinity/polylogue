@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, cast
 
 import ijson
 import pytest
@@ -19,6 +19,7 @@ from polylogue.archive.ingest_flags import (
 )
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
+from polylogue.core.errors import SchemaSkew
 from polylogue.pipeline.parsed_tree_size import estimate_parsed_tree_bytes
 from polylogue.sources import revision_backfill
 from polylogue.sources.decoders import _iter_json_stream
@@ -49,8 +50,10 @@ from polylogue.storage.sqlite.agent_thread_state import read_thread_titles
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.connection_profile import ReadFrameCancelledError
 from polylogue.storage.sqlite.runtime_indexes import DEFERRED_SECONDARY_INDEX_NAMES
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.revision_backfill_benchmark import (
@@ -87,6 +90,66 @@ def _seed_historical_revision(archive: ArchiveStore, raw_id: str, revision: RawR
                 raw_id,
             ),
         )
+
+
+def test_revision_backfill_archive_readers_use_declared_tier_profiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Archive read helpers acquire cancellable frames with explicit tier identity."""
+    root = tmp_path / "archive"
+    bootstrap_archive_root(root)
+    real_read_frame = cast(Any, revision_backfill).read_frame
+    opened: list[tuple[Path, ArchiveTier | None, str]] = []
+
+    @contextmanager
+    def capture_read_frame(path: str | Path, **kwargs: Any) -> Iterator[Any]:
+        with real_read_frame(path, **kwargs) as frame:
+            opened.append((Path(path).resolve(), kwargs.get("tier"), str(kwargs.get("timeout_class"))))
+            yield frame
+
+    monkeypatch.setattr(revision_backfill, "read_frame", capture_read_frame)
+
+    assert revision_backfill._expand_frozen_revision_link_selection(root, []) == ()
+    assert revision_backfill.require_current_parser_source_census(root, selected_raw_ids=[]) == {}
+    assert revision_backfill._replay_representative_raw_ids([], root) == {}
+    assert revision_backfill.uncensused_historical_revision_raw_ids(root, ["missing-raw"]) == ()
+
+    # The prefetch producer opens both archive tiers on its own worker route.
+    with revision_backfill._ParsedSessionSpill(tmp_path, max_cached_payload_bytes=None) as spill:
+        prefetcher = revision_backfill._ReplaySpillPrefetcher(spill, archive_root=root, index_db_path=root / "index.db")
+        monkeypatch.setattr(prefetcher, "_build_plan", lambda *_args: ([], {}))
+        prefetcher._run_inner(0, ("unused",), {})
+
+    assert opened
+    assert all(
+        (path == (root / "source.db").resolve() and tier is ArchiveTier.SOURCE)
+        or (path == (root / "index.db").resolve() and tier is ArchiveTier.INDEX)
+        for path, tier, _timeout in opened
+    )
+    assert all(timeout == "background-read" for _path, _tier, timeout in opened)
+
+    assert (root / "source.db").resolve() in {path for path, _tier, _timeout in opened}
+    assert (root / "index.db").resolve() in {path for path, _tier, _timeout in opened}
+
+    # The frame registry is also the worker's cancellation route. Its declared
+    # profile lets a phase stop an in-flight SQLite statement during close.
+    with real_read_frame(root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read") as frame:
+        with revision_backfill._ParsedSessionSpill(tmp_path, max_cached_payload_bytes=None) as spill:
+            prefetcher = revision_backfill._ReplaySpillPrefetcher(spill, archive_root=root)
+            assert prefetcher._register_read_frame(frame, 0)
+            prefetcher.close()
+            with pytest.raises(ReadFrameCancelledError):
+                _ = frame.connection
+
+
+def test_revision_backfill_profile_preserves_stale_source_tier_diagnostic(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    bootstrap_archive_root(root)
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.execute("PRAGMA user_version = 999")
+
+    with pytest.raises(SchemaSkew, match="source schema skew"):
+        revision_backfill._expand_frozen_revision_link_selection(root, [])
 
 
 def _chatgpt_session(native_id: str, *texts: str) -> dict[str, object]:
