@@ -5,12 +5,14 @@ import logging
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from polylogue.sources.live import hook_paste_enrichment
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 _HOOK_TIME_MS = int(datetime(2026, 5, 7, 12, 0, tzinfo=UTC).timestamp() * 1000)
 
@@ -201,6 +203,39 @@ def test_hook_paste_enrichment_reads_only_the_batch_sessions_events(tmp_path: Pa
     with sqlite3.connect(index_db) as conn:
         rows = conn.execute("SELECT session_id, has_paste FROM messages ORDER BY session_id").fetchall()
     assert rows == [("codex-session:batch-native", 1), ("codex-session:other-native", 0)]
+
+
+def test_hook_event_reader_uses_the_profiled_source_tier_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_db = _source_tier(tmp_path)
+    _seed_hook_event(
+        source_db,
+        origin="codex-session",
+        session_native_id="profiled-read",
+        record=_paste_record("session_id", "profiled-read"),
+        event_id="profiled",
+    )
+    real_open = open_readonly_connection
+    calls: list[tuple[Path, ArchiveTier | None, str]] = []
+
+    def open_and_probe_write(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
+        connection = real_open(path, **kwargs)
+        calls.append((Path(path), kwargs.get("tier"), str(kwargs.get("timeout_class"))))
+        with pytest.raises(sqlite3.DatabaseError):
+            connection.execute("DELETE FROM raw_hook_events")
+        return connection
+
+    monkeypatch.setattr(
+        "polylogue.sources.live.hook_paste_enrichment.open_readonly_connection",
+        open_and_probe_write,
+    )
+
+    events = hook_paste_enrichment._iter_hook_paste_events(source_db, ("codex-session:profiled-read",))
+
+    assert len(events) == 1
+    assert calls == [(source_db, ArchiveTier.SOURCE, "background-read")]
 
 
 def test_camelcase_hook_payload_sets_has_paste(tmp_path: Path) -> None:
