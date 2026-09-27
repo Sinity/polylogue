@@ -3357,6 +3357,118 @@ def test_grandchild_follows_rows_its_parent_materialized(tmp_path: Path) -> None
     conn.close()
 
 
+def test_materialized_prefix_restores_a_swept_attachment(tmp_path: Path) -> None:
+    """The dropped branch-point message was the only reference to an
+    attachment, so the parent's replace sweeps the attachment row before the
+    child's copy needs it.
+
+    Anti-vacuity: skip restoring the snapshotted attachment rows and the
+    copied ref fails its foreign key, rolling back the parent's write.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        title="parent",
+        messages=[_msg("p0", Role.USER, "hello", 0), _msg("p1", Role.ASSISTANT, "hi there", 1)],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id="prefix-attachment",
+                message_provider_id="p1",
+                name="prefix.txt",
+                path="prefix.txt",
+            )
+        ],
+    )
+    parent_id = write_parsed_session_to_archive(conn, parent)
+    child_id = write_parsed_session_to_archive(
+        conn, _codex_session("child", ["hello", "hi there", "child diverges here"], parent="parent")
+    )
+    conn.commit()
+
+    write_parsed_session_to_archive(
+        conn, parent.model_copy(update={"messages": [_msg("p0", Role.USER, "hello", 0)], "attachments": []})
+    )
+    conn.commit()
+
+    assert _edge_state(conn, child_id) == (parent_id, "spawned-fresh", None)
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert [tuple(row) for row in conn.execute("SELECT session_id FROM attachment_refs")] == [(child_id,)]
+    assert [tuple(row) for row in conn.execute("SELECT ref_count FROM attachments")] == [(1,)]
+    conn.close()
+
+
+def test_materialized_prefix_remaps_child_event_refs_with_fks_suspended(tmp_path: Path) -> None:
+    """In a bulk rebuild the parent's delete does not null the child's event
+    reference, so the remap must match the captured id as well as NULL.
+
+    Anti-vacuity: restore only ``source_message_id IS NULL`` rows and the
+    event keeps naming the deleted parent row.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    child_id = write_parsed_session_to_archive(
+        conn,
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="child",
+            title="child",
+            parent_session_provider_id="parent",
+            branch_type=BranchType.FORK,
+            messages=[
+                _msg("c0", Role.USER, "hello", 0),
+                _msg("c1", Role.ASSISTANT, "hi there", 1),
+                _msg("cx", Role.USER, "child diverges here", 2),
+            ],
+            session_events=[
+                ParsedSessionEvent(
+                    event_type="capture_gap", source_message_provider_id="c1", payload={"summary": "prefix event"}
+                )
+            ],
+        ),
+    )
+    parent = _codex_session("parent", ["hello", "hi there"])
+    parent_id = write_parsed_session_to_archive(conn, parent)
+    conn.commit()
+    events = "SELECT source_message_id FROM session_events WHERE session_id = ?"
+    assert [tuple(row) for row in conn.execute(events, (child_id,))] == [(f"{parent_id}:n:hi there",)]
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("BEGIN IMMEDIATE")
+    write_parsed_session_to_archive(conn, _codex_session("parent", ["hello"]), manage_transaction=False)
+    conn.commit()
+
+    assert _composed_texts(conn, child_id) == ["hello", "hi there", "child diverges here"]
+    assert [tuple(row) for row in conn.execute(events, (child_id,))] == [(f"{child_id}:n:hi there",)]
+    conn.close()
+
+
+def test_materialized_empty_tail_child_gets_an_active_leaf(tmp_path: Path) -> None:
+    """A child that replayed its parent completely stored no rows of its own;
+    once it owns the prefix, its last message is its active leaf.
+
+    Anti-vacuity: drop ``_keep_an_active_leaf`` and the child's pointer names
+    no row.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1"]))
+    child_id = write_parsed_session_to_archive(conn, _codex_session("child", ["m0", "m1"], parent="parent"))
+    assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (child_id,)).fetchone()[0] == 0
+
+    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0"]))
+    conn.commit()
+
+    assert _composed_texts(conn, child_id) == ["m0", "m1"]
+    leaf = archive_message_id(child_id, "m1")
+    pointer = conn.execute("SELECT active_leaf_message_id FROM sessions WHERE session_id = ?", (child_id,)).fetchone()
+    assert tuple(pointer) == (leaf,)
+    leaves = conn.execute("SELECT message_id FROM messages WHERE session_id = ? AND is_active_leaf = 1", (child_id,))
+    assert [tuple(row) for row in leaves] == [(leaf,)]
+    conn.close()
+
+
 def test_relocated_branch_point_repairs_in_write(tmp_path: Path) -> None:
     """The repairable half of polylogue-gy2yu, closed by the producer itself.
 

@@ -10248,7 +10248,13 @@ def _snapshot_table(table: str) -> str:
 
 
 def _drop_prefix_guard_tables(conn: sqlite3.Connection) -> None:
-    for table in ("messages", *_MESSAGE_DEPENDENT_TABLES, "attachment_native_ids", "session_provider_usage_events"):
+    for table in (
+        "messages",
+        *_MESSAGE_DEPENDENT_TABLES,
+        "attachment_native_ids",
+        "attachments",
+        "session_provider_usage_events",
+    ):
         conn.execute(f"DROP TABLE IF EXISTS {_snapshot_table(table)}")
     conn.execute(f"DROP TABLE IF EXISTS temp.{_GUARD_PREFIX}ids")
     conn.execute(f"DROP TABLE IF EXISTS temp.{_GUARD_PREFIX}plan")
@@ -10320,6 +10326,13 @@ def _capture_inherited_prefixes(conn: sqlite3.Connection, parent_session_id: str
         f"""CREATE TEMP TABLE {_GUARD_PREFIX}attachment_native_ids AS
             SELECT n.* FROM main.attachment_native_ids AS n
             WHERE n.ref_id IN (SELECT ref_id FROM {_snapshot_table("attachment_refs")})"""
+    )
+    # The replace sweeps an attachment whose last reference was a dropped
+    # parent message, so the copied refs need their attachment rows back.
+    conn.execute(
+        f"""CREATE TEMP TABLE {_GUARD_PREFIX}attachments AS
+            SELECT a.* FROM main.attachments AS a
+            WHERE a.attachment_id IN (SELECT attachment_id FROM {_snapshot_table("attachment_refs")})"""
     )
     conn.execute(
         f"""CREATE TEMP TABLE {_GUARD_PREFIX}session_provider_usage_events AS
@@ -10409,11 +10422,13 @@ def _restore_source_refs(
 ) -> None:
     for table, rowid, message_id in refs:
         target = message_id if remap is None else remap.get(message_id, message_id)
+        # With foreign keys on, the parent's delete nulled the reference; with
+        # them suspended (bulk rebuild) it still names the deleted row.
         conn.execute(
             f"""UPDATE {table} SET source_message_id = ?
-                WHERE rowid = ? AND source_message_id IS NULL
+                WHERE rowid = ? AND (source_message_id IS NULL OR source_message_id = ?)
                   AND EXISTS (SELECT 1 FROM messages WHERE message_id = ?)""",
-            (target, rowid, target),
+            (target, rowid, message_id, target),
         )
 
 
@@ -10502,12 +10517,22 @@ def _materialize_inherited_prefix(
         "parent_message_id": f"(SELECT q.new_id FROM temp.{_GUARD_PREFIX}plan AS q WHERE q.old_id = s.parent_message_id)",
     }
     params = {"child": child, "parent": parent_session_id}
+    attachment_columns = ", ".join(_insertable_columns(conn, "attachments"))
+    conn.execute(
+        f"""INSERT OR IGNORE INTO main.attachments ({attachment_columns})
+            SELECT {attachment_columns} FROM {_snapshot_table("attachments")}"""
+    )
     with _bulk_fts_session_guard(conn, child, enabled=bulk_fts, bulk_build=bulk_build):
         _copy_planned_rows(conn, "messages", overrides, params)
         for table in _MESSAGE_DEPENDENT_TABLES:
             _copy_planned_rows(conn, table, _DEPENDENT_OVERRIDES[table], params)
         _copy_attachment_native_ids(conn, params)
     _copy_prefix_usage_events(conn, params)
+    refresh_and_sweep_attachment_rows(
+        conn,
+        {str(row[0]) for row in conn.execute(f"SELECT attachment_id FROM {_snapshot_table('attachments')}")},
+    )
+    _keep_an_active_leaf(conn, child)
     stored = {
         str(row[0])
         for row in conn.execute(
@@ -10548,6 +10573,30 @@ def _materialize_inherited_prefix(
     conn.execute("DELETE FROM session_latency_profiles WHERE session_id = ?", (child,))
     conn.execute(f"DROP TABLE temp.{_GUARD_PREFIX}plan")
     return remap
+
+
+def _keep_an_active_leaf(conn: sqlite3.Connection, child: str) -> None:
+    """Give a now self-contained child an active leaf when its own tail had none.
+
+    A child that replayed its parent completely stored no tail, so its session
+    pointer names no row; the last materialized message is its leaf.
+    """
+    pointer = conn.execute(
+        """SELECT s.active_leaf_message_id FROM sessions AS s
+           WHERE s.session_id = ?
+             AND EXISTS (SELECT 1 FROM messages AS m WHERE m.message_id = s.active_leaf_message_id)""",
+        (child,),
+    ).fetchone()
+    if pointer is not None:
+        return
+    leaf = conn.execute(
+        "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position DESC, variant_index DESC LIMIT 1",
+        (child,),
+    ).fetchone()
+    if leaf is None:
+        return
+    conn.execute("UPDATE messages SET is_active_leaf = (message_id = ?) WHERE session_id = ?", (leaf[0], child))
+    conn.execute("UPDATE sessions SET active_leaf_message_id = ? WHERE session_id = ?", (leaf[0], child))
 
 
 def _moved_id(column: str) -> str:
