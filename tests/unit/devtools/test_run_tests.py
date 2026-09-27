@@ -1147,3 +1147,43 @@ def test_identical_selections_in_one_checkout_share_one_run(tmp_path: Path, monk
         for handle in run_tests._SELECTION_LOCKS:
             os.close(handle)
         run_tests._SELECTION_LOCKS.clear()
+
+
+def test_reuse_is_keyed_on_the_execution_environment(tmp_path: Path) -> None:
+    """A run under a different Hypothesis profile never answers from another's receipt.
+
+    Anti-vacuity: drop the ``execution_environment_key`` comparison and the
+    ``default``-profile lookup returns the ``verify``-profile receipt.
+    """
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/property/test_a.py"]
+    verify_key = run_tests.execution_environment_key({"HYPOTHESIS_PROFILE": "verify", "HOME": "/h"})
+    default_key = run_tests.execution_environment_key({"HYPOTHESIS_PROFILE": "default", "HOME": "/h"})
+    receipt = _green_receipt(
+        runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1", execution_environment_key=verify_key
+    )
+
+    assert verify_key != default_key
+    assert run_tests.execution_environment_key({"HYPOTHESIS_PROFILE": "verify", "HOME": "/other"}) == verify_key
+    assert (
+        run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1", environment_key=verify_key)
+        == receipt
+    )
+    assert (
+        run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1", environment_key=default_key)
+        is None
+    )
+
+
+def test_a_reused_receipt_is_emitted_as_json_when_asked(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """Anti-vacuity: drop the ``use_json`` branch on reuse and stdout is empty."""
+    monkeypatch.setenv(run_tests.REUSE_ENV, "1")
+    receipt = tmp_path / "run.json"
+    receipt.write_text(json.dumps({"status": "success", "run_id": "r1"}), encoding="utf-8")
+    monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: receipt)
+    monkeypatch.setattr(run_tests, "git_worktree_content_sha256", lambda _root: "d1")
+
+    assert run_tests.main(["tests/unit/devtools/test_run_tests.py", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["run_id"] == "r1"

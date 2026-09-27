@@ -21,6 +21,7 @@ loop, not a substitute for it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import platform
@@ -28,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -231,7 +233,24 @@ def _parse_rerun(selection: list[str]) -> tuple[bool, list[str]]:
     return "--rerun" in selection, [argument for argument in selection if argument != "--rerun"]
 
 
-def reusable_green_receipt(selection: list[str], *, root: Path, content_sha256: str | None) -> Path | None:
+#: Caller environment that can change what a selection executes or how
+#: (Hypothesis profiles, pytest options, Polylogue test switches). Its values
+#: are part of the reuse key, so a run under a different profile never answers
+#: from a weaker one's receipt.
+_EXECUTION_ENV_PREFIXES = ("HYPOTHESIS_", "PYTEST_", "POLYLOGUE_")
+
+
+def execution_environment_key(environ: Mapping[str, str]) -> str:
+    """A digest of the caller's execution-affecting environment."""
+    import hashlib
+
+    relevant = sorted((key, value) for key, value in environ.items() if key.startswith(_EXECUTION_ENV_PREFIXES))
+    return hashlib.sha256(json.dumps(relevant).encode("utf-8")).hexdigest()
+
+
+def reusable_green_receipt(
+    selection: list[str], *, root: Path, content_sha256: str | None, environment_key: str | None = None
+) -> Path | None:
     """A green focused run of exactly this selection over exactly this tree.
 
     Keyed on the declared inputs only: the normalized selection, the
@@ -262,6 +281,7 @@ def reusable_green_receipt(selection: list[str], *, root: Path, content_sha256: 
             payload.get("status") == "success"
             and payload.get("exit_code") == 0
             and payload.get("argv") == selection
+            and payload.get("execution_environment_key") == environment_key
             and payload.get("git_worktree_content_sha256") == content_sha256
             and (payload.get("pytest_aggregate") or {}).get("terminal_green") is True
             and (str(Path(fingerprint.get("python_executable", "")).resolve()), fingerprint.get("python_version"))
@@ -701,8 +721,16 @@ def main(argv: list[str] | None = None) -> int:
         # Two callers in one checkout asking for the same selection share one
         # run: the second waits here, then finds the first's receipt below.
         _hold_selection_lock(selection)
-        reused = reusable_green_receipt(selection, root=ROOT, content_sha256=git_worktree_content_sha256(ROOT))
+        reused = reusable_green_receipt(
+            selection,
+            root=ROOT,
+            content_sha256=git_worktree_content_sha256(ROOT),
+            environment_key=execution_environment_key(os.environ),
+        )
         if reused is not None:
+            if use_json:
+                with contextlib.suppress(OSError, ValueError):
+                    print(json.dumps(json.loads(reused.read_text(encoding="utf-8")), indent=2, ensure_ascii=False))
             sys.stderr.write(
                 "devtools test: this selection already passed on this exact tree; not queueing again "
                 "(--rerun to force).\n"
@@ -716,6 +744,7 @@ def main(argv: list[str] | None = None) -> int:
         git_head=git_head(ROOT),
         root=ROOT,
     )
+    run.record_execution_environment_key(execution_environment_key(os.environ))
     # The report and its PID-named spool must live with this receipt.  A
     # checkout-global spool lets a later focused run delete an earlier run's
     # completed tests between teardown and controller-side assembly.

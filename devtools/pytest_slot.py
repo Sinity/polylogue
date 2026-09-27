@@ -1210,7 +1210,13 @@ def _read_launch(path: Path) -> dict[str, Any]:
     return document
 
 
-def _rerun_failures_in_slot(environment: Mapping[str, str], *, cwd: str, log_path: Path) -> None:
+def _rerun_failures_in_slot(
+    environment: Mapping[str, str],
+    *,
+    cwd: str,
+    log: IO[bytes],
+    on_start: Callable[[subprocess.Popen[Any]], None],
+) -> None:
     """Rerun a failed run's failures once, alone, while this job holds the slot.
 
     A focused client used to adjudicate its failures by queueing a second
@@ -1235,22 +1241,25 @@ def _rerun_failures_in_slot(environment: Mapping[str, str], *, cwd: str, log_pat
     if plan is None:
         return
     failed, command, _rerun_report = plan
-    with open(log_path, "ab") as log:
-        log.write(f"\n  rerun {len(failed)} failed test(s) alone, in this slot ...\n".encode())
-        log.flush()
-        try:
-            rerun_exit = subprocess.run(
-                command,
-                cwd=cwd,
-                env=rerun_environment(environment),
-                stdout=log,
-                stderr=log,
-                start_new_session=True,
-                check=False,
-            ).returncode
-        except OSError as exc:
-            log.write(f"devtools.pytest_slot: could not start the rerun: {exc}\n".encode())
-            return
+    log.write(f"\n  rerun {len(failed)} failed test(s) alone, in this slot ...\n".encode())
+    log.flush()
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=rerun_environment(environment),
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        log.write(f"devtools.pytest_slot: could not start the rerun: {exc}\n".encode())
+        return
+    # The launch's signal handlers stop whichever child is registered, so a
+    # cancelled or deadline-killed job reaps the rerun and still writes its
+    # interrupted receipt.
+    on_start(process)
+    rerun_exit = process.wait()
     with contextlib.suppress(OSError):
         (step_dir / RERUN_IN_SLOT_RESULT).write_text(
             json.dumps({"attempted": failed, "rerun_exit": rerun_exit}), encoding="utf-8"
@@ -1327,19 +1336,27 @@ def _run_launch(launch_path: Path) -> int:
                 stderr=log,
                 start_new_session=True,
             )
+            first_run = child
             sampler = ProcessGroupMemorySampler(
-                child.pid,
+                first_run.pid,
                 snapshot_path=telemetry_path,
                 snapshot_context=lambda: {
                     "status": "running",
-                    "pid": child.pid,
-                    "process_group": child.pid,
+                    "pid": first_run.pid,
+                    "process_group": first_run.pid,
                     "sizing": sizing,
                     "progress": progress(),
                 },
             )
             sampler.start()
             returncode = child.wait()
+            if returncode == 1:
+
+                def register(process: subprocess.Popen[Any]) -> None:
+                    nonlocal child
+                    child = process
+
+                _rerun_failures_in_slot(environment, cwd=launch["working_directory"], log=log, on_start=register)
         except OSError as exc:
             log.write(f"devtools.pytest_slot: could not start pytest: {exc}\n".encode())
             return 125
@@ -1348,8 +1365,6 @@ def _run_launch(launch_path: Path) -> int:
             for number, handler in previous.items():
                 with contextlib.suppress(ValueError, OSError):
                     signal.signal(number, handler)
-    if returncode == 1:
-        _rerun_failures_in_slot(environment, cwd=launch["working_directory"], log_path=log_path)
     receipt = _slot_receipt(
         status="success" if returncode == 0 else "failed",
         exit_code=returncode,
