@@ -22,6 +22,10 @@ class SessionError(ValueError):
     pass
 
 
+class SessionSnapshotChangedError(SessionError):
+    """The selected raw-session population changed after a search page began."""
+
+
 _SCAN_BLOCK_BYTES = 64 * 1_024
 DEFAULT_SCAN_BYTES = 8 * 1_024 * 1_024
 MAX_CURSOR_BYTES = 8_192
@@ -325,11 +329,19 @@ class SessionLogService:
                     [file_key(path), info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns] for path, info in files
                 ]
                 state["snapshot"] = snapshot
-            if not isinstance(snapshot, list):
+            if (
+                not isinstance(snapshot, list)
+                or isinstance(state.get("file"), bool)
+                or not isinstance(state.get("file"), int)
+                or state["file"] < 0
+                or state["file"] > len(snapshot)
+            ):
                 raise SessionError("session continuation cursor is malformed")
             current = {file_key(path): (path, info) for path, info in files}
             selected: list[tuple[Path, os.stat_result]] = []
-            for item in snapshot:
+            start_index = state["file"]
+            remaining_snapshot = snapshot[start_index:]
+            for item in remaining_snapshot:
                 if (
                     not isinstance(item, list)
                     or len(item) != 5
@@ -339,15 +351,15 @@ class SessionLogService:
                     raise SessionError("session continuation cursor is malformed")
                 candidate = current.get(item[0])
                 if candidate is None:
-                    raise SessionError("session source changed within the selected search snapshot")
+                    raise SessionSnapshotChangedError("session source changed within the selected search snapshot")
                 path, info = candidate
-                if (info.st_dev, info.st_ino) != tuple(item[1:3]) or info.st_size < item[3]:
-                    raise SessionError("session source changed within the selected search snapshot")
-                if info.st_size == item[3] and info.st_mtime_ns != item[4]:
-                    raise SessionError("session source changed within the selected search snapshot")
+                if (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) != tuple(item[1:]):
+                    raise SessionSnapshotChangedError("session source changed within the selected search snapshot")
                 snapshot_ends[item[0]] = item[3]
                 selected.append((path, info))
             files = selected
+            snapshot = remaining_snapshot
+            state["file"] = 0
 
         def cursor_state(value: dict[str, Any]) -> dict[str, Any]:
             return {**value, "snapshot": snapshot} if snapshot is not None else value

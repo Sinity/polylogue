@@ -377,7 +377,7 @@ def raw_operation(
     else:
         provider = _provider(request.origin)
         if isinstance(request, RawSearch):
-            from polylogue.operations.raw_sessions.sessions import SessionError
+            from polylogue.operations.raw_sessions.sessions import SessionSnapshotChangedError
 
             try:
                 result = service.search(
@@ -389,9 +389,7 @@ def raw_operation(
                     cursor_key=key,
                     scan_bytes=request.scan_bytes,
                 )
-            except SessionError as exc:
-                if "selected search snapshot" not in str(exc):
-                    raise
+            except SessionSnapshotChangedError as exc:
                 reason = str(exc)
                 return RawPage(
                     items=[],
