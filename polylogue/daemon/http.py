@@ -2737,7 +2737,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.daemon.webui import (
             WebUIAssetBundle,
             WebUIAssetError,
-            build_observability_payload,
+            build_observability_status_payload,
             render_observability_page,
             render_webui_asset_error,
         )
@@ -2745,7 +2745,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         bundle: WebUIAssetBundle | None = None
         try:
             bundle = WebUIAssetBundle.discover(self.server.webui_dist_root)
-            payload = self._sync_run(lambda poly: build_observability_payload(poly, get_status_snapshot_payload()))
+            payload = build_observability_status_payload(get_status_snapshot_payload())
             if not isinstance(payload, Mapping):
                 raise RuntimeError("observability projection returned an invalid payload")
         except WebUIAssetError as exc:
@@ -2786,6 +2786,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                         "contract_version": 1,
                         "status": {"adapter": "unavailable", "components": []},
                         "insights": [],
+                        "insights_loaded": False,
                     },
                     notice="Observability data is temporarily unavailable.",
                 ),

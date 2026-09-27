@@ -331,6 +331,58 @@ def test_observability_status_adapter_preserves_timeout_evidence() -> None:
     assert component["state"] == "timed_out"
     assert component["last_good"] == {"rows": 12}
 
+    production_payload = _status_panel_payload(
+        {
+            "status_components": [
+                {"component": "archive_storage", "state": "degraded", "age_s": 3.5, "error": "stale frame"}
+            ]
+        }
+    )
+    production_component = cast(list[dict[str, object]], production_payload["components"])[0]
+    assert production_component["name"] == "archive_storage"
+    assert production_component["detail"] == "stale frame"
+
+
+def test_observability_status_shell_keeps_unknown_progress_and_frame_evidence() -> None:
+    from polylogue.daemon.webui import build_observability_status_payload
+
+    payload = build_observability_status_payload(
+        {
+            "status_snapshot": {
+                "state": "stale",
+                "age_s": 12.5,
+                "captured_at": "2026-09-27T10:00:00+00:00",
+                "frame": "frame-a",
+                "current_frame": "frame-b",
+                "frame_changed": True,
+            },
+            "status_components": [],
+            "catchup": {
+                "mode": "discovering",
+                "current_phase": "discovering",
+                "current_source": "codex",
+                "discovery_inspected_count": 17,
+                "discovery_accepted_count": 3,
+                "discovery_rejected_count": 14,
+                "planned_raw_revision_count": None,
+                "completed_raw_revision_count": None,
+                "eta_s": None,
+            },
+        }
+    )
+
+    projected = cast(dict[str, object], payload["status"])
+    catchup = cast(dict[str, object], projected["catchup"])
+    snapshot = cast(dict[str, object], projected["snapshot"])
+    assert payload["insights_loaded"] is False
+    assert payload["insights"] == []
+    assert catchup["discovery_inspected_count"] == 17
+    assert catchup["planned_raw_revision_count"] is None
+    assert catchup["eta_s"] is None
+    assert snapshot["state"] == "stale"
+    assert snapshot["frame"] == "frame-a"
+    assert snapshot["current_frame"] == "frame-b"
+
 
 def _materialize_run_projection(index_db: Path) -> None:
     """Rebuild session insights for richer digest-derived run-projection rows."""
@@ -2104,14 +2156,20 @@ class TestWebUIV2:
     ) -> None:
         """The real / route consumes the manifest and descriptor projection."""
         headers = {"Authorization": "Bearer webui-test-token"}
-        with _running_server(workspace_env, auth_token="webui-test-token") as (_, base_url):
-            missing_status, _, _ = _get_text(base_url, "/observability")
-            with urlopen(Request(f"{base_url}/observability", headers=headers), timeout=10) as response:
-                assert response.status == 200
-                html_body = response.read().decode("utf-8")
+        with patch(
+            "polylogue.daemon.webui.build_observability_payload",
+            side_effect=RuntimeError("an insight query is held"),
+        ):
+            with _running_server(workspace_env, auth_token="webui-test-token") as (_, base_url):
+                missing_status, _, _ = _get_text(base_url, "/observability")
+                with urlopen(Request(f"{base_url}/observability", headers=headers), timeout=10) as response:
+                    assert response.status == 200
+                    html_body = response.read().decode("utf-8")
 
         assert missing_status == HTTPStatus.UNAUTHORIZED
         assert "<h1>Archive observability</h1>" in html_body
+        assert "Live build monitor" in html_body
+        assert 'data-insights-state="not-loaded"' in html_body
         assert 'data-island="observability"' in html_body
         assert "Named-source freshness" in html_body
         assert "Insights" in html_body
@@ -2123,7 +2181,7 @@ class TestWebUIV2:
     ) -> None:
         """A server-side projection failure still bootstraps the unavailable island safely."""
         headers = {"Authorization": "Bearer webui-test-token"}
-        with patch("polylogue.daemon.webui.build_observability_payload", side_effect=RuntimeError("offline")):
+        with patch("polylogue.daemon.webui.build_observability_status_payload", side_effect=RuntimeError("offline")):
             with _running_server(workspace_env, auth_token="webui-test-token") as (_, base_url):
                 status, _, body = _get_text(base_url, "/observability", headers=headers)
 
