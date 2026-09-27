@@ -25,7 +25,7 @@ from polylogue.sources.decoder_json import claude_design_object_envelope, iter_g
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
 from polylogue.sources.live.sidecar_resolution import FilesystemSidecarResolver
-from polylogue.sources.parsers import chatgpt
+from polylogue.sources.parsers import chatgpt, local_agent
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.sources.prepared_jsonl import PreparedJsonl, _write_artifact, prepare_jsonl_blob
 from polylogue.sources.prepared_message_sink import (
@@ -840,6 +840,7 @@ def test_gemini_cli_object_spills_and_matches_parser(tmp_path: Path, monkeypatch
     assert [event.model_dump(mode="json") for event in actual.session_events] == [
         event.model_dump(mode="json") for event in expected.session_events
     ]
+    assert actual.unit_accounting == expected.unit_accounting
     assert [message.is_active_leaf for message in actual.messages] == [False, False, True]
     artifact.discard()
 
@@ -937,6 +938,66 @@ def test_gemini_cli_object_keeps_sidecar_debt_on_existing_scope(tmp_path: Path) 
         event.model_dump(mode="json") for event in expected.session_events
     ]
     assert any(event.event_type == "gemini_cli_tool_output_sidecar" for event in actual.session_events)
+    artifact.discard()
+
+
+def test_gemini_cli_object_preserves_future_wire_admission(tmp_path: Path) -> None:
+    record = {
+        "sessionId": "process-1",
+        "kind": "chat",
+        "messages": [
+            {"id": "m1", "type": "user", "content": "A neutral request"},
+            {"id": "m2", "type": "future_turn", "content": "A neutral future turn"},
+        ],
+    }
+    source = tmp_path / "session.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+    [expected] = parse_payload(Provider.GEMINI_CLI, record, "fallback")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.GEMINI_CLI.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert artifact.error is None
+    [actual] = artifact.iter_sessions()
+    assert [event.model_dump(mode="json") for event in actual.session_events] == [
+        event.model_dump(mode="json") for event in expected.session_events
+    ]
+    assert actual.unit_accounting == expected.unit_accounting
+    assert any(event.event_type == "gemini_cli_unknown_input" for event in actual.session_events)
+    artifact.discard()
+
+
+def test_gemini_cli_turnless_stub_accepts_sidecar_resolver(tmp_path: Path) -> None:
+    stub: dict[str, JSONValue] = {"sessionId": "process-1", "projectHash": "project-1", "kind": "chat"}
+    session = local_agent.parse_gemini_cli(
+        stub, "fallback", source_path=tmp_path / "session.jsonl", sidecar_resolver=FilesystemSidecarResolver()
+    )
+    assert session.messages == []
+    assert session.unit_accounting is not None
+    session.unit_accounting.assert_conserved()
+
+
+def test_gemini_cli_object_honors_direct_record_transform(tmp_path: Path) -> None:
+    source = tmp_path / "session.json"
+    source.write_text(
+        json.dumps({"sessionId": "process-1", "kind": "chat", "messages": [{"type": "user", "content": "Hi"}]}),
+        encoding="utf-8",
+    )
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.GEMINI_CLI.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+        prepare_records=lambda _records: iter(()),
+    )
+    assert artifact.error is None
+    assert list(artifact.iter_sessions()) == []
     artifact.discard()
 
 

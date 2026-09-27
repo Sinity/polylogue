@@ -293,8 +293,6 @@ def parse_gemini_cli_records(
     # whether those bytes come from the source tree (acquisition) or from what
     # the archive retained (derivation); see ``dispatch.parse_payload``.
     if sidecar_resolver is not None:
-        if not isinstance(payload.get("messages"), list):
-            raise ValueError("Gemini CLI sidecar join requires document messages")
         scope = sidecar_resolver.gemini_cli_scope(source_path, session_id)
         if scope.available:
             session = apply_gemini_tool_output_sidecars(

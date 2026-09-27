@@ -56,6 +56,7 @@ from polylogue.sources.parsers import (
     local_agent,
 )
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.parsers.base_support import _unknown_wire_type
 from polylogue.sources.parsers.claude.ai_parser import parse_design_stream
 from polylogue.sources.prepared_message_sink import (
     ChatGPTNodeMapping,
@@ -635,16 +636,30 @@ def prepare_jsonl_blob(
                 chatgpt_envelope, chatgpt_mapping = read_result
             else:
                 store.conn.execute("DROP TABLE chatgpt_node")
-        if not is_stream and provider is Provider.GEMINI_CLI and Path(source_path).name.lower().endswith(".json"):
+        if (
+            not is_stream
+            and provider is Provider.GEMINI_CLI
+            and (prepare_sessions is None or classify_gemini_object is not None)
+            and (prepare_records is None or classify_gemini_object is not None)
+            and Path(source_path).name.lower().endswith(".json")
+        ):
             store.conn.execute(
                 "CREATE TABLE gemini_raw_message (ordinal INTEGER PRIMARY KEY, message_json TEXT NOT NULL)"
             )
+            future_wire_type = False
             with source.open("rb") as handle:
                 for ordinal, item in enumerate(ijson.items(handle, "messages.item")):
+                    if not future_wire_type and _unknown_wire_type(item) is not None:
+                        future_wire_type = True
                     _append_gemini_raw_message(store.conn, ordinal, item)
             with source.open("rb") as handle:
                 gemini_envelope = _gemini_cli_envelope(handle)
-            if gemini_envelope is None or not local_agent.looks_like_gemini_cli(gemini_envelope):
+            if (
+                gemini_envelope is None
+                or future_wire_type
+                or _unknown_wire_type(gemini_envelope) is not None
+                or not local_agent.looks_like_gemini_cli(gemini_envelope)
+            ):
                 gemini_envelope = None
                 store.conn.execute("DROP TABLE gemini_raw_message")
             elif sidecar_resolver is not None:
@@ -747,6 +762,8 @@ def prepare_jsonl_blob(
                     messages=store.new_sink(),
                     session_events=store.new_event_sink(),
                 )
+                admitted = local_agent.parse_gemini_cli(gemini_envelope, fallback_id)
+                gemini_session = gemini_session.model_copy(update={"unit_accounting": admitted.unit_accounting})
             store.conn.execute("DROP TABLE gemini_raw_message")
             if gemini_session is not None and require_positive_conversational_evidence(
                 [gemini_session], provider=provider, source_path=source_path
