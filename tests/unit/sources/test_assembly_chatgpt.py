@@ -909,6 +909,8 @@ def test_uppercase_zip_suffix_is_its_own_export_scope() -> None:
     from polylogue.sources.retained_assembly import chatgpt_export_scope
 
     assert chatgpt_export_scope("/archive/exports/first.ZIP:conversations.json") == "/archive/exports/first.ZIP:"
+    # "İ" lowercases to two code points; the scope still ends at the separator.
+    assert chatgpt_export_scope("/archive/İ/first.Zip:conversations.json") == "/archive/İ/first.Zip:"
 
 
 def test_retained_asset_member_names_still_carry_their_provider_id() -> None:

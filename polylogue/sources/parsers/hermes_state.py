@@ -295,21 +295,35 @@ def parse_state_db(
 
 
 def _without_unreferenced_empty_sessions(sessions: list[ParsedSession]) -> list[ParsedSession]:
-    """Drop content-less sessions unless a kept session descends from them.
+    """Drop content-less sessions, re-parenting their children onto a kept ancestor.
 
-    A compression continuation that contributed no messages is still a node
-    of the chain: a later child names it as ``parent_session_provider_id``,
-    and dropping it leaves that child's lineage edge unresolvable, so reads
-    return only the child's tail instead of recomposing the chain.
+    A compression continuation that contributed no messages carries no row
+    the archive admits (positive-evidence admission and the writer both skip
+    empty sessions), yet a later child names it as
+    ``parent_session_provider_id``. Pointing that child at the nearest
+    ancestor that is kept keeps its lineage edge resolvable. The child's
+    ``branch_point_provider_message_id`` already names the composed leaf,
+    which for an empty parent is its own ancestor's last message.
     """
     by_id = {session.provider_session_id: session for session in sessions}
-    kept = {session.provider_session_id for session in sessions if session.messages or session.instructions_text}
-    for session_id in list(kept):
-        parent_id = by_id[session_id].parent_session_provider_id
-        while parent_id is not None and parent_id in by_id and parent_id not in kept:
-            kept.add(parent_id)
+    kept_ids = {session.provider_session_id for session in sessions if session.messages or session.instructions_text}
+
+    def kept_ancestor(parent_id: str | None) -> str | None:
+        seen: set[str] = set()
+        while parent_id is not None and parent_id in by_id and parent_id not in kept_ids and parent_id not in seen:
+            seen.add(parent_id)
             parent_id = by_id[parent_id].parent_session_provider_id
-    return [session for session in sessions if session.provider_session_id in kept]
+        return parent_id if parent_id is None or parent_id in kept_ids or parent_id not in by_id else None
+
+    kept: list[ParsedSession] = []
+    for session in sessions:
+        if session.provider_session_id not in kept_ids:
+            continue
+        parent_id = session.parent_session_provider_id
+        if parent_id is not None and parent_id in by_id and parent_id not in kept_ids:
+            session = session.model_copy(update={"parent_session_provider_id": kept_ancestor(parent_id)})
+        kept.append(session)
+    return kept
 
 
 def import_fidelity_declaration(

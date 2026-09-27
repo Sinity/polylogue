@@ -905,12 +905,13 @@ def test_hermes_state_db_retains_empty_rows_and_their_state(tmp_path: Path) -> N
     assert session_content_hash(state_changed) != session_content_hash(child)
 
 
-def test_hermes_state_db_keeps_an_empty_continuation_that_a_later_child_names(tmp_path: Path) -> None:
-    """A message-less middle continuation stays, so its child's parent edge resolves.
+def test_hermes_state_db_reparents_a_child_of_an_empty_continuation(tmp_path: Path) -> None:
+    """A child of a message-less continuation points at a kept ancestor.
 
-    Anti-vacuity: restore the plain ``session.messages or
-    session.instructions_text`` filter in ``parse_state_db`` and the middle
-    session disappears while ``hermes-tail`` still names it as its parent.
+    Admission and the writer drop empty sessions, so the child must not name
+    the empty one. Anti-vacuity: drop the re-parenting in
+    ``_without_unreferenced_empty_sessions`` and ``hermes-tail`` names the
+    dropped ``hermes-middle``, an edge no stored session can resolve.
     """
     db_path = tmp_path / "state.db"
     _write_hermes_state_db(db_path)
@@ -930,11 +931,11 @@ def test_hermes_state_db_keeps_an_empty_continuation_that_a_later_child_names(tm
 
     sessions = {session.provider_session_id: session for session in hermes_state.parse_state_db(db_path)}
     tail = next(session for native_id, session in sessions.items() if native_id.startswith("hermes-tail@"))
-    middle_id = tail.parent_session_provider_id
+    root = next(session for native_id, session in sessions.items() if native_id.startswith("hermes-root@"))
 
-    assert middle_id is not None and middle_id.startswith("hermes-middle@")
-    assert middle_id in sessions
-    assert sessions[middle_id].messages == []
+    assert not any(native_id.startswith("hermes-middle@") for native_id in sessions)
+    assert tail.parent_session_provider_id == root.provider_session_id
+    assert tail.branch_point_provider_message_id == root.messages[-1].provider_message_id
 
 
 def test_hermes_state_db_later_repository_capability_is_optional(tmp_path: Path) -> None:
