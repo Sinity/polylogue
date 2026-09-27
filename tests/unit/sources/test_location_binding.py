@@ -177,3 +177,67 @@ def test_refusal_survives_process_boundaries() -> None:
     restored = pickle.loads(pickle.dumps(error))
     assert isinstance(restored, ForeignOriginContentError)
     assert (restored.expected, restored.found, restored.evidence) == (Provider.CLAUDE_CODE, Provider.CODEX, "probe")
+
+
+def test_provider_wires_of_one_origin_are_not_foreign() -> None:
+    """``drive`` and ``gemini`` wires both name AI Studio on Drive.
+
+    Anti-vacuity: comparing wires by identity refuses a genuine AI Studio
+    prompt at the Drive location.
+    """
+    prompt = {"chunkedPrompt": {"chunks": [{"role": "user", "text": "Summarize this."}]}}
+    assert detect_provider(prompt) is Provider.GEMINI
+    assert detect_provider(prompt, expected=Provider.DRIVE) is Provider.GEMINI
+
+
+def test_json_document_sampling_does_not_swallow_the_refusal(tmp_path: Path) -> None:
+    """A foreign ``.json`` array is refused, not quietly given the fallback.
+
+    Anti-vacuity: the sampler's ``except (OSError, ValueError)`` catches the
+    refusal (a ``ValueError`` subclass) and returns ``CLAUDE_CODE``.
+    """
+    document = tmp_path / "projects" / "proj" / "export.json"
+    document.parent.mkdir(parents=True)
+    document.write_text(json.dumps(_CODEX_ROLLOUT), encoding="utf-8")
+    with pytest.raises(ForeignOriginContentError):
+        _detect_provider_from_path_sample(document, Provider.CLAUDE_CODE, json_document=True)
+
+
+def test_raw_only_paths_are_classified_by_location_before_any_probe(tmp_path: Path) -> None:
+    """Declared raw-only evidence keeps its location's origin whatever it holds.
+
+    ``history.jsonl`` is Claude Code's raw-only prompt log. Holding
+    Codex-shaped rows, it is still retained Claude Code evidence and never
+    refused as foreign.
+
+    Anti-vacuity: probing content before the raw-only declaration raises
+    ``ForeignOriginContentError`` here.
+    """
+    history = tmp_path / "history.jsonl"
+    history.write_bytes(_jsonl(_CODEX_ROLLOUT))
+    assert _jsonl_provider_and_session_artifact(history, Provider.CLAUDE_CODE) == (Provider.CLAUDE_CODE, False)
+
+
+def test_archive_members_at_a_bound_location_are_validated() -> None:
+    """ZIP members inherit their archive's location binding.
+
+    Anti-vacuity: an unbound member sniff classifies the Codex member as
+    Codex under Claude Code's root.
+    """
+    from io import BytesIO
+
+    from polylogue.sources.source_acquisition_components import iter_entry_payloads
+
+    with pytest.raises(ForeignOriginContentError):
+        list(
+            iter_entry_payloads(
+                BytesIO(_jsonl(_CODEX_ROLLOUT)),
+                stream_name="member.jsonl",
+                provider_hint=Provider.CLAUDE_CODE,
+                bound_provider=Provider.CLAUDE_CODE,
+            )
+        )
+    unbound = list(
+        iter_entry_payloads(BytesIO(_jsonl(_CODEX_ROLLOUT)), stream_name="member.jsonl", provider_hint=Provider.UNKNOWN)
+    )
+    assert {entry.provider for entry in unbound} == {Provider.CODEX}

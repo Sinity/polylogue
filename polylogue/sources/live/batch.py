@@ -3282,6 +3282,7 @@ class LiveBatchProcessor:
                     )
             elif (hermes_owned_sqlite_name) or (
                 not source_only
+                and fallback_provider in (Provider.HERMES, Provider.UNKNOWN)
                 and (
                     hermes_state.looks_like_state_db_path(path)
                     or hermes_verification.looks_like_verification_evidence_db_path(path)
@@ -3332,7 +3333,8 @@ class LiveBatchProcessor:
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
             elif codex_owned_sqlite_name or (
-                codex_member is not None
+                fallback_provider in (Provider.CODEX, Provider.UNKNOWN)
+                and codex_member is not None
                 and codex_member.disposition != "out-of-scope"
                 and codex_state.is_in_scope_codex_sqlite_path(path)
             ):
@@ -3344,17 +3346,12 @@ class LiveBatchProcessor:
                 # traffic (JSONL rollouts); ``is_in_scope_codex_sqlite_path``
                 # then re-confirms the table shape before trusting the name.
                 #
-                # That structural re-confirmation, not the operator's watch
-                # source name, is what admits the file (polylogue-bzx7h's
-                # foreign ``state_5.sqlite`` classifies as ``unknown`` and is
-                # still refused here). Gating this arm on
-                # ``fallback_provider is Provider.CODEX`` made admission depend
-                # on the watch source being named exactly ``codex-state``, so
-                # two Codex installs watched as ``codex-state-a``/``-b`` had
-                # their state databases silently excluded. Only the
-                # source-only/degraded route -- ``codex_owned_sqlite_name``,
-                # where the schema is deliberately never inspected -- keeps the
-                # provider requirement, because there the name is all there is.
+                # Admission needs both the Codex location and the structural
+                # re-confirmation (polylogue-bzx7h's foreign ``state_5.sqlite``
+                # classifies as ``unknown`` and is still refused here): a
+                # Codex-shaped database under another origin's root is not
+                # Codex material. Sources are canonical locations, so the
+                # ``codex-state`` watch source always resolves to CODEX.
                 provider = Provider.CODEX
                 source_name = provider.value
                 try:
@@ -3476,6 +3473,23 @@ class LiveBatchProcessor:
                 )
                 continue
             elif origin_artifact_rule is not None and origin_artifact_rule.parse_policy != "session":
+                if origin_artifact_rule.parse_policy == "fact" and path.suffix.lower() in (".json", ".jsonl"):
+                    # A fact document is parsed as its origin's evidence, so it
+                    # is validated like a session; only ``raw-only`` bytes are
+                    # classified by location alone.
+                    try:
+                        _detect_provider_from_path_sample(
+                            path, fallback_provider, json_document=path.suffix.lower() == ".json"
+                        )
+                    except ForeignOriginContentError as exc:
+                        self._mark_refused_cursor(
+                            path,
+                            stat,
+                            source_name=fallback_provider.value,
+                            reason=f"{exc.code}: {exc}",
+                            excluded=excluded_paths,
+                        )
+                        continue
                 provider = fallback_provider
                 source_name = provider.value
                 try:

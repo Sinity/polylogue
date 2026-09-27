@@ -18,7 +18,7 @@ from . import cursor as _cursor
 from . import decoders as _decoders
 from .cursor import _log_source_iteration_summary, _record_cursor_failure
 from .decoders import _ZipEntryValidator
-from .dispatch import ForeignOriginContentError
+from .dispatch import ForeignOriginContentError, bound_location_provider
 from .parsers.base import RawSessionData
 from .source_acquisition_components import (
     ObservationCallback,
@@ -133,6 +133,7 @@ def iter_source_raw_data(
                                 blob_store=blob_store,
                                 observation_callback=observation_callback,
                                 status_callback=status_callback,
+                                bound_provider=bound_location_provider(provider_hint),
                             ),
                         )
             else:

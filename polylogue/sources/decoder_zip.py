@@ -264,7 +264,7 @@ def process_zip(
     from polylogue.storage.blob_publication import flush_blob_publications, publication_receipt_id
 
     from .cursor import _ParseContext
-    from .dispatch import GROUP_PROVIDERS
+    from .dispatch import GROUP_PROVIDERS, bound_location_provider
     from .emitter import _SessionEmitter
 
     resolved_sidecar_data: SidecarData = sidecar_data if sidecar_data is not None else {}
@@ -296,6 +296,9 @@ def process_zip(
                 file_mtime=file_mtime,
                 capture_raw=capture_raw,
                 sidecar_data=resolved_sidecar_data,
+                # The archive's own location binds; an inbox export (UNKNOWN)
+                # classifies its members.
+                bound_provider=bound_location_provider(provider_hint),
             )
             emitter = _SessionEmitter(ctx)
             precomputed_raw: RawSessionData | None = None

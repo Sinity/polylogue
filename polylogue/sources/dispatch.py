@@ -231,7 +231,7 @@ def _declared_capture_provider(record: PayloadRecord, runtime_provider: Provider
     if provider in (None, Provider.UNKNOWN):
         return None
     bound = bound_location_provider(runtime_provider)
-    if bound is not None and provider is not bound:
+    if bound is not None and not same_origin(provider, bound):
         raise ForeignOriginContentError(expected=bound, found=provider, evidence="browser-capture envelope provider")
     return provider
 
@@ -453,9 +453,23 @@ def detect_provider_evidence(
     del path
     provider, evidence = _classify_provider_evidence(payload)
     bound = bound_location_provider(expected)
-    if bound is not None and provider is not None and provider is not bound:
+    if bound is not None and provider is not None and not same_origin(provider, bound):
         raise ForeignOriginContentError(expected=bound, found=provider, evidence=evidence)
     return provider, evidence
+
+
+def same_origin(left: Provider, right: Provider) -> bool:
+    """Whether two provider wires name the same archive origin.
+
+    Wires are not origins: ``drive`` and ``gemini`` both denote AI Studio on
+    Drive, so a Drive location validating a ``gemini``-shaped prompt is its
+    own origin, not foreign content.
+    """
+    if left is right:
+        return True
+    from polylogue.core.sources import origin_from_provider
+
+    return origin_from_provider(left) is origin_from_provider(right)
 
 
 def _classify_provider_evidence(payload: object) -> tuple[Provider | None, str]:
@@ -2316,6 +2330,7 @@ __all__ = [
     "detect_provider",
     "ForeignOriginContentError",
     "bound_location_provider",
+    "same_origin",
     "detect_provider_evidence",
     "detect_provider_from_raw_bytes_evidence",
     "is_jsonl_source_path",

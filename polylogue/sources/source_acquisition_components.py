@@ -93,6 +93,9 @@ class ZipEntryReadContext:
     blob_store: BlobStore
     observation_callback: ObservationCallback | None = None
     status_callback: StatusCallback | None = None
+    # The origin the archive's location binds; ``None`` for an import-inbox
+    # export, whose members classify.
+    bound_provider: Provider | None = None
 
     @property
     def source_path(self) -> str:
@@ -318,8 +321,13 @@ def iter_entry_payloads(
     *,
     stream_name: str,
     provider_hint: Provider,
+    bound_provider: Provider | None = None,
 ) -> Iterable[DetectedEntryPayload]:
-    """Yield payloads from a streamed JSON/JSONL document with provider hints."""
+    """Yield payloads from a streamed JSON/JSONL document with provider hints.
+
+    ``bound_provider`` names the origin the document's location binds; a
+    payload of another origin then raises ``ForeignOriginContentError``.
+    """
     current_provider = provider_hint
     last_detected_provider: Provider | None = None
     provider_locked = False
@@ -330,7 +338,7 @@ def iter_entry_payloads(
             continue
 
         detect_start = time.perf_counter()
-        detected_provider = detect_provider(normalized_payload)
+        detected_provider = detect_provider(normalized_payload, expected=bound_provider)
         detect_provider_ms = (time.perf_counter() - detect_start) * 1000.0
         provider = detected_provider or current_provider
         if detected_provider is not None and detected_provider is not Provider.UNKNOWN:
@@ -641,6 +649,7 @@ def _iter_zip_entry_split_payloads(
             handle,
             stream_name=context.entry.filename,
             provider_hint=entry_provider_hint,
+            bound_provider=context.bound_provider,
         ):
             # Never downgrade the ZIP-level hint to UNKNOWN. A GDPR export ships
             # non-conversation siblings (message_feedback.json, user.json, ...)

@@ -2835,22 +2835,66 @@ def test_iter_entry_payloads_preserves_decimal_bearing_chatgpt_records() -> None
     assert all(isinstance(payload.get("mapping"), dict) and payload["mapping"] for payload in dict_payloads)
 
 
-def test_iter_source_raw_data_keeps_source_family_hints_for_mixed_zip_sources(tmp_path: Path) -> None:
+_CHATGPT_EXPORT_MEMBER: JSONDocument = {
+    "id": "chatgpt-1",
+    "title": "t",
+    "create_time": 1700000000.0,
+    "mapping": {
+        "n1": {
+            "id": "n1",
+            "message": {"id": "n1", "author": {"role": "user"}, "content": {"content_type": "text", "parts": ["hi"]}},
+            "children": [],
+        }
+    },
+}
+
+
+def test_iter_source_raw_data_classifies_mixed_members_of_an_inbox_export(tmp_path: Path) -> None:
+    """The import inbox has no single owning origin, so each member classifies.
+
+    Anti-vacuity: binding the inbox to one origin refuses the Gemini member.
+    """
     archive_path = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:
-        zf.writestr("nested/chatgpt-export.json", b'{"mapping": {}, "id": "chatgpt-1"}')
+        zf.writestr("nested/chatgpt-export.json", json.dumps(_CHATGPT_EXPORT_MEMBER).encode("utf-8"))
         zf.writestr(
             "nested/gemini-export.json",
             b'{"chunkedPrompt": {"chunks": [{"role": "user", "text": "hi"}]}}',
         )
 
-    items = list(iter_source_raw_data(Source(name="chatgpt", path=archive_path)))
+    items = list(iter_source_raw_data(Source(name="inbox", path=archive_path)))
 
     assert [item.source_path for item in items] == [
         f"{archive_path}:nested/chatgpt-export.json",
         f"{archive_path}:nested/gemini-export.json",
     ]
     assert [item.provider_hint for item in items] == [Provider.CHATGPT, Provider.GEMINI]
+
+
+def test_iter_source_raw_data_refuses_foreign_members_at_a_bound_location(tmp_path: Path) -> None:
+    """A location bound to one origin does not admit another origin's member.
+
+    Only the import inbox classifies mixed exports. The same archive under a
+    ChatGPT location yields its ChatGPT member and records the Gemini member
+    as a foreign-origin refusal.
+
+    Anti-vacuity: without location binding the Gemini member is yielded with
+    a GEMINI hint.
+    """
+    archive_path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("nested/chatgpt-export.json", json.dumps(_CHATGPT_EXPORT_MEMBER).encode("utf-8"))
+        zf.writestr(
+            "nested/gemini-export.json",
+            b'{"chunkedPrompt": {"chunks": [{"role": "user", "text": "hi"}]}}',
+        )
+
+    cursor_state: CursorStatePayload = _empty_cursor_state()
+    items = list(iter_source_raw_data(Source(name="chatgpt", path=archive_path), cursor_state=cursor_state))
+
+    assert [item.provider_hint for item in items] == [Provider.CHATGPT]
+    assert cursor_state["failed_count"] == 1
+    assert "foreign_origin_content" in str(cursor_state["failed_files"])
 
 
 def test_iter_source_raw_data_skips_known_mtimes_without_reading_file(tmp_path: Path) -> None:

@@ -34,6 +34,7 @@ from polylogue.sources.dispatch import (
     bound_location_provider,
     detect_provider,
     is_jsonl_source_path,
+    same_origin,
 )
 from polylogue.sources.parsers import antigravity, hermes_state, hermes_verification
 from polylogue.storage.runtime import RawSessionRecord
@@ -896,7 +897,7 @@ def _detect_provider_from_path_sample(
         browser_capture, capture_provider = _browser_capture_prefix_probe(path)
         if browser_capture and capture_provider is not None:
             bound = bound_location_provider(fallback_provider)
-            if bound is not None and capture_provider is not bound:
+            if bound is not None and not same_origin(capture_provider, bound):
                 raise ForeignOriginContentError(
                     expected=bound, found=capture_provider, evidence="browser-capture envelope provider"
                 )
@@ -907,7 +908,7 @@ def _detect_provider_from_path_sample(
             with path.open("rb") as handle:
                 if grok_export_item_count(handle) is not None:
                     bound = bound_location_provider(fallback_provider)
-                    if bound is not None and bound is not Provider.GROK:
+                    if bound is not None and not same_origin(Provider.GROK, bound):
                         raise ForeignOriginContentError(
                             expected=bound, found=Provider.GROK, evidence="grok export envelope"
                         )
@@ -926,6 +927,8 @@ def _detect_provider_from_path_sample(
                     sample.append(record)
                     if len(sample) >= 32:
                         break
+        except ForeignOriginContentError:
+            raise
         except (OSError, ValueError):
             return fallback_provider
         return detect_provider(sample, expected=fallback_provider) or fallback_provider
@@ -945,12 +948,15 @@ def _jsonl_provider_and_session_artifact(
 ) -> tuple[Provider, bool]:
     from polylogue.sources.origin_specs import path_declaration_refuses_session
 
-    records = _jsonl_sample_from_path(path)
-    provider = (detect_provider(records, expected=fallback_provider) if records else None) or fallback_provider
     # A ``raw-only`` declaration is terminal: its bytes are evidence and the
     # record shape cannot decide otherwise (polylogue-ximhz). Checked before
-    # the content probe so a prompt-history log -- whose rows carry the same
-    # ``sessionId`` keys a transcript does -- is never session-parsed.
+    # any content probe, so a prompt-history log -- whose rows carry the same
+    # ``sessionId`` keys a transcript does -- is never session-parsed, and a
+    # sidecar holding another tool's output is never refused as foreign.
+    if path_declaration_refuses_session(fallback_provider, path):
+        return fallback_provider, False
+    records = _jsonl_sample_from_path(path)
+    provider = (detect_provider(records, expected=fallback_provider) if records else None) or fallback_provider
     if path_declaration_refuses_session(provider, path):
         return provider, False
     if jsonl_session_artifact(path, provider=provider) is not None:
