@@ -604,6 +604,29 @@ def test_hermes_snapshot_stream_discards_corrupt_suffix(tmp_path: Path) -> None:
     assert list(directory.glob("*.db")) == []
 
 
+def test_hermes_snapshot_retained_callbacks_discard_corrupt_suffix(tmp_path: Path) -> None:
+    source = tmp_path / "session_damaged.json"
+    source.write_text(
+        '{"session_id":"neutral","platform":"linux","messages":[{"role":"user","content":"hello"}]} trailing',
+        encoding="utf-8",
+    )
+    directory = tmp_path / "prepared"
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.HERMES.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(directory),
+        prepare_sessions=lambda sessions: sessions,
+        prepare_records=lambda records: records,
+        classify_hermes_object=lambda _envelope, _messages: True,
+    )
+    assert artifact.error is not None
+    assert artifact.sessions_path is None
+    assert list(directory.glob("*.db")) == []
+
+
 def test_hermes_snapshot_retained_callbacks_keep_stream_route(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     record = {
         "session_id": "retained-hermes",

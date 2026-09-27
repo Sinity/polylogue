@@ -7624,6 +7624,99 @@ def test_membership_publication_reads_retained_whole_json_by_index_without_cohor
     assert not failed_shard_path.exists()
 
 
+def test_membership_publication_prepares_retained_hermes_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
+
+    source_raw_id = "incoming-hermes"
+    retained_raw_id = "retained-hermes"
+    source_path = tmp_path / "session.json"
+    snapshot = {
+        "session_id": "neutral-hermes",
+        "platform": "linux",
+        "messages": [{"role": "user", "content": "A neutral prompt"}],
+    }
+    source_path.write_text(json.dumps(snapshot), encoding="utf-8")
+    retained_artifact = prepare_jsonl_blob(
+        str(source_path),
+        str(source_path),
+        Provider.HERMES.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert retained_artifact.error is None
+    current_sessions = list(retained_artifact.session_sequence())
+
+    class MembershipArchive:
+        archive_root = tmp_path
+        source_db_path = tmp_path / "source.db"
+        index_db_path = tmp_path / "index.db"
+
+        def __init__(self) -> None:
+            self.classified_keys: list[str] = []
+
+        def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]:
+            assert raw_id == retained_raw_id
+            return Provider.HERMES, cast(str, retained_artifact.blob_hash), str(source_path), RawRevisionKind.FULL, 1
+
+        def raw_revision_file_mtime(self, _raw_id: str) -> None:
+            return None
+
+        def convertible_full_revision_raw_ids(self, _logical_source_key: str) -> tuple[str, ...]:
+            return ()
+
+        def raw_membership_raw_ids(
+            self, _logical_source_key: str, *, include_complete_raw_ids: frozenset[str]
+        ) -> tuple[str, ...]:
+            assert include_complete_raw_ids == frozenset({source_raw_id})
+            return source_raw_id, retained_raw_id
+
+        def raw_revision_head_raw_id(self, _logical_source_key: str) -> None:
+            return None
+
+        def raw_revision_acquired_at_ms(self, _raw_id: str) -> int:
+            return 1
+
+        def apply_raw_membership_classification(self, logical_source_key: str, *_args: Any, **_kwargs: Any) -> None:
+            self.classified_keys.append(logical_source_key)
+
+        def raw_membership_authority_complete(self, _raw_id: str) -> bool:
+            return True
+
+    archive = MembershipArchive()
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (),
+        cursor=CursorStore(tmp_path / "index.db"),
+        parser_fingerprint="test-parser",
+    )
+    prepared_raw_ids: list[str] = []
+
+    def capture_prepare(raw_id: str, *args: Any, **kwargs: Any) -> Any:
+        prepared_raw_ids.append(raw_id)
+        return retained_artifact
+
+    monkeypatch.setattr(live_batch, "prepare_retained_jsonl_artifact", capture_prepare)
+    _, session_count, _, complete = processor._apply_membership_sessions(
+        archive,
+        source_raw_id,
+        current_sessions,
+        acquired_at_ms=1,
+        allow_current_complete_raw=True,
+    )
+
+    assert complete is True
+    assert session_count == 0
+    assert prepared_raw_ids == [retained_raw_id]
+    expected_key = (
+        f"{origin_from_provider(current_sessions[0].source_name).value}:{current_sessions[0].provider_session_id}"
+    )
+    assert archive.classified_keys == [expected_key]
+    assert retained_artifact.sessions_path is not None and not retained_artifact.sessions_path.exists()
+
+
 def test_live_membership_reprocesses_parser_drift_without_retiring_unrelated_head(tmp_path: Path) -> None:
     """A current parse of the accepted raw is authority, even after parser drift.
 

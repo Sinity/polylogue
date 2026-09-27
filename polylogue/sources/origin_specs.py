@@ -680,12 +680,9 @@ def _looks_like_extracted_transcript_corpus_path(
     return looks_like_extracted_transcript_corpus(dict_items)
 
 
-#: Ceiling on the whole-document read this structural probe is allowed to
-#: perform. Admission runs over semi-trusted provider roots, so a candidate
-#: larger than any real Hermes/Antigravity artifact is refused on its stat
-#: size rather than loaded to decide a source class. Peak here is several
-#: multiples of the file (bytes, decoded text, parsed tree), so the ceiling
-#: bounds the reader's working set, not the input.
+#: Ceiling for structural probes that still require a whole document. Large
+#: Hermes snapshots use the parser's bounded envelope probe below, so this
+#: value does not reject that supported shape based on file size.
 SOURCE_CLASS_JSON_PROBE_MAX_BYTES = 64 * 1024 * 1024
 
 
@@ -813,6 +810,22 @@ def recognize_source_class(
                 payload = _bounded_jsonl_records(path, limit=32, max_record_bytes=JSONL_RECORD_INSPECTION_BYTES)
             else:
                 if source_size_bytes is not None and source_size_bytes > SOURCE_CLASS_JSON_PROBE_MAX_BYTES:
+                    if provider is Provider.HERMES:
+                        # Hermes snapshots have one production bounded probe
+                        # that retains the parser's required envelope and
+                        # leaves the messages array out of Python memory. Use
+                        # it to admit that supported shape even when unrelated
+                        # document fields make the file large. Other large
+                        # JSON shapes remain explicitly unrecognized here.
+                        from polylogue.sources.decoder_json import hermes_snapshot_envelope
+
+                        with path.open("rb") as handle:
+                            envelope = hermes_snapshot_envelope(handle)
+                        candidate = {**envelope, "messages": []} if envelope is not None else None
+                        if candidate is not None and local_agent.looks_like_hermes(candidate):
+                            return SourceClassRecognition(
+                                "session", "Hermes snapshot recognized by bounded structural probe"
+                            )
                     return SourceClassRecognition(
                         "unsupported",
                         "candidate exceeds the structural source-class inspection ceiling",
