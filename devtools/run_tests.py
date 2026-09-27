@@ -251,6 +251,25 @@ def _parse_rerun(selection: list[str]) -> tuple[bool, list[str]]:
 #: are part of the reuse key, so a run under a different profile never answers
 #: from a weaker one's receipt.
 _EXECUTION_ENV_PREFIXES = ("HYPOTHESIS_", "PYTEST_", "POLYLOGUE_")
+#: Individual switches the suite reads outside those prefixes: golden-file
+#: regeneration, fuzz depth, colour, time zone and the XDG roots.
+_EXECUTION_ENV_NAMES = frozenset(
+    {
+        "UPDATE_GOLDEN",
+        "FUZZ_ITERATIONS",
+        "NO_COLOR",
+        "TZ",
+        "TZDIR",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+    }
+)
+#: The Hypothesis example database ``tests/conftest.py`` declares. A run can
+#: save a new counterexample there, which the next run of the same selection
+#: replays; its contents are therefore an input of every property test.
+_HYPOTHESIS_DATABASE = Path(".cache/hypothesis/examples")
 
 
 #: The only options a reusable selection may carry: ones that change neither
@@ -283,18 +302,50 @@ def _reuse_eligible(selection: list[str], *, root: Path) -> bool:
             return False
         target = Path(argument.split("::", 1)[0])
         target = (target if target.is_absolute() else root / target).resolve()
-        if not target.is_relative_to(resolved_root):
+        if not target.is_relative_to(resolved_root) or _git_ignored(target, root=resolved_root):
             return False
         index += 1
     return True
+
+
+def _git_ignored(path: Path, *, root: Path) -> bool:
+    """Whether Git ignores ``path``, so the tree digest does not cover it."""
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", "--quiet", str(path)], cwd=root, capture_output=True, timeout=10, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    # 0: ignored; 1: not ignored; anything else: cannot tell, so do not reuse.
+    return result.returncode != 1
 
 
 def execution_environment_key(environ: Mapping[str, str]) -> str:
     """A digest of the caller's execution-affecting environment."""
     import hashlib
 
-    relevant = sorted((key, value) for key, value in environ.items() if key.startswith(_EXECUTION_ENV_PREFIXES))
+    relevant = sorted(
+        (key, value)
+        for key, value in environ.items()
+        if key.startswith(_EXECUTION_ENV_PREFIXES) or key in _EXECUTION_ENV_NAMES
+    )
     return hashlib.sha256(json.dumps(relevant).encode("utf-8")).hexdigest()
+
+
+def _reuse_environment_key() -> str:
+    """The caller environment plus the example database this run starts from."""
+    return f"{execution_environment_key(os.environ)}:{hypothesis_database_revision(ROOT)}"
+
+
+def hypothesis_database_revision(root: Path) -> str:
+    """A digest of the example database's entry names (each names its content)."""
+    import hashlib
+
+    database = root / _HYPOTHESIS_DATABASE
+    names: list[str] = []
+    with contextlib.suppress(OSError):
+        names = sorted(str(path.relative_to(database)) for path in database.rglob("*") if path.is_file())
+    return hashlib.sha256("\n".join(names).encode("utf-8")).hexdigest()
 
 
 def reusable_green_receipt(
@@ -787,7 +838,7 @@ def main(argv: list[str] | None = None) -> int:
             selection,
             root=ROOT,
             content_sha256=git_worktree_content_sha256(ROOT),
-            environment_key=execution_environment_key(os.environ),
+            environment_key=_reuse_environment_key(),
         )
         if reused is not None:
             if use_json:
@@ -806,7 +857,7 @@ def main(argv: list[str] | None = None) -> int:
         git_head=git_head(ROOT),
         root=ROOT,
     )
-    run.record_execution_environment_key(execution_environment_key(os.environ))
+    run.record_execution_environment_key(_reuse_environment_key())
     # The report and its PID-named spool must live with this receipt.  A
     # checkout-global spool lets a later focused run delete an earlier run's
     # completed tests between teardown and controller-side assembly.

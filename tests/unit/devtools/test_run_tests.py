@@ -1052,6 +1052,11 @@ def _green_receipt(runs: Path, name: str, *, argv: list[str], digest: str, **ove
     import platform
     import sys
 
+    # Reuse consults Git for ignored paths, so the checkout is a repository.
+    checkout = runs.parents[2]
+    if not (checkout / ".git").exists():
+        subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+
     run_dir = runs / name
     run_dir.mkdir(parents=True)
     payload: dict[str, Any] = {
@@ -1228,4 +1233,36 @@ def test_only_checkout_local_selections_with_inert_options_are_reused(
     Anti-vacuity: accept any option, or any path, in ``_reuse_eligible`` and
     one of the refused selections is answered from a receipt without running.
     """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     assert run_tests._reuse_eligible(selection, root=tmp_path) is eligible
+
+
+def test_a_new_hypothesis_counterexample_or_golden_switch_changes_the_key(tmp_path: Path) -> None:
+    """Inputs outside the tree digest still decide whether a receipt answers.
+
+    Anti-vacuity: drop the database revision or ``UPDATE_GOLDEN`` from the key
+    and the corresponding pair below compares equal.
+    """
+    before = run_tests.hypothesis_database_revision(tmp_path)
+    example = tmp_path / ".cache" / "hypothesis" / "examples" / "abc" / "def"
+    example.parent.mkdir(parents=True)
+    example.write_bytes(b"counterexample")
+    assert run_tests.hypothesis_database_revision(tmp_path) != before
+
+    assert run_tests.execution_environment_key({}) != run_tests.execution_environment_key({"UPDATE_GOLDEN": "1"})
+
+
+def test_a_git_ignored_selection_is_never_reused(tmp_path: Path) -> None:
+    """The tree digest omits ignored files, so an ignored test is always run.
+
+    Anti-vacuity: drop the ``_git_ignored`` check and ``.cache/test_x.py`` is
+    eligible for reuse.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_text(".cache/\n", encoding="utf-8")
+    (tmp_path / ".cache").mkdir()
+    (tmp_path / ".cache" / "test_x.py").write_text("", encoding="utf-8")
+    (tmp_path / "test_y.py").write_text("", encoding="utf-8")
+
+    assert run_tests._reuse_eligible([".cache/test_x.py"], root=tmp_path) is False
+    assert run_tests._reuse_eligible(["test_y.py"], root=tmp_path) is True
