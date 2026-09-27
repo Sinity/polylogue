@@ -702,9 +702,11 @@ def test_periodic_wal_checkpoint_targets_archive_root_tiers(
     ]
 
 
+@pytest.mark.parametrize("raw_failure", (False, True))
 def test_periodic_convergence_check_waits_for_watcher_registration(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    raw_failure: bool,
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
 
@@ -713,6 +715,7 @@ def test_periodic_convergence_check_waits_for_watcher_registration(
     drains: list[Path] = []
     fts_scopes: list[object] = []
     profile_scopes: list[tuple[str, ...] | None] = []
+    raw_retention_calls: list[None] = []
     drained = asyncio.Event()
 
     def fake_drain(drain_db: Path) -> int:
@@ -727,6 +730,11 @@ def test_periodic_convergence_check_waits_for_watcher_registration(
         fts_scopes.append(None)
         drained.set()
         return SimpleNamespace()
+
+    async def fake_raw_retention() -> None:
+        raw_retention_calls.append(None)
+        if raw_failure:
+            raise sqlite3.OperationalError("retention unavailable")
 
     async def exercise() -> None:
         watcher_registered = asyncio.Event()
@@ -744,6 +752,7 @@ def test_periodic_convergence_check_waits_for_watcher_registration(
                 fts_owner=cast(Any, SimpleNamespace(converge=fake_fts_converge)),
                 watcher_registered=watcher_registered,
                 session_profile_callback=fake_session_profiles,
+                raw_retention_callback=fake_raw_retention,
             )
         )
         await asyncio.sleep(0)
@@ -755,11 +764,15 @@ def test_periodic_convergence_check_waits_for_watcher_registration(
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    asyncio.run(exercise())
+    with capture() as records:
+        asyncio.run(exercise())
 
     assert drains == [db]
     assert fts_scopes == [None]
     assert profile_scopes == [None]
+    assert raw_retention_calls == [None]
+    failures = [record for record in records if record["event"] == "daemon.raw_retention.retry_failed"]
+    assert len(failures) == int(raw_failure)
 
 
 def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -> None:

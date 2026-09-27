@@ -462,6 +462,17 @@ class LiveWatcher:
         """Disposable invalidation of one source's file-discovery position."""
         return self._intake_revisions[source.root]
 
+    async def retry_raw_retention_backlog(self) -> None:
+        """Drain retry-due retention debt even when no source changed."""
+        async with self._ingest_lock:
+            if not self._batch_processor._raw_retention_backlog_paths(exclude=set()):
+                return
+            await self._run_writer_sync(
+                "watcher.live_ingest.raw_compaction_retry",
+                self._batch_processor._compact_superseded_raw_snapshots,
+                [],
+            )
+
     def _existing_source_roots(self) -> list[Path]:
         """Return configured roots that exist at the instant of a scan."""
         return [source.root for source in self._sources if source.exists()]

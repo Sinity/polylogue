@@ -6246,7 +6246,8 @@ class LiveBatchProcessor:
         # bounded pass named. Both populations go through the one authority
         # resolution below, so draining the backlog costs no extra hold.
         scoped_paths = list(dict.fromkeys(paths))
-        scoped_paths.extend(self._raw_retention_backlog_paths(exclude=set(scoped_paths)))
+        backlog_paths = self._raw_retention_backlog_paths(exclude=set())
+        scoped_paths = list(dict.fromkeys((*scoped_paths, *backlog_paths)))
         if not scoped_paths:
             return
         from polylogue.sources.live.cold_build import active_cold_build_generation
@@ -6293,28 +6294,45 @@ class LiveBatchProcessor:
                         deferred=False,
                     )
                     return
-                result = compact_paths_superseded_raw_snapshots(
-                    conn,
-                    scoped_paths,
-                    limit_per_path=RAW_RETENTION_LIMIT_PER_PATH,
-                    min_acquired_at=self._raw_compaction_min_acquired_at,
-                    protected_raw_ids=retention_authority.protected_raw_ids,
-                    eligible_raw_ids=retention_authority.eligible_raw_ids,
-                    index_conn=index_conn,
-                )
+                backlog_set = set(backlog_paths)
+                current_paths = [path for path in scoped_paths if path not in backlog_set]
+                results = [
+                    compact_paths_superseded_raw_snapshots(
+                        conn,
+                        selected_paths,
+                        limit_per_path=RAW_RETENTION_LIMIT_PER_PATH,
+                        # Only recorded backlog may predate this watcher.
+                        min_acquired_at=min_acquired_at,
+                        protected_raw_ids=retention_authority.protected_raw_ids,
+                        eligible_raw_ids=retention_authority.eligible_raw_ids,
+                        index_conn=index_conn,
+                    )
+                    for selected_paths, min_acquired_at in (
+                        (current_paths, self._raw_compaction_min_acquired_at),
+                        (backlog_paths, None),
+                    )
+                    if selected_paths
+                ]
         finally:
             lease.close()
-        if result.errors:
+        errors = tuple(error for result in results for error in result.errors)
+        if errors:
             # Blob-unlink errors only. Their subjects are already unreferenced,
             # so the ordinary blob-GC owner collects them; routing them into
             # retention debt would file work under the wrong owner and leave a
             # row that no retention pass can ever clear.
-            logger.warning("live.watcher: raw snapshot compaction errors: %s", "; ".join(result.errors[:3]))
+            emit(
+                "live.watcher.raw_retention.blob_unlink_failed",
+                level=WARNING,
+                outcome="degraded",
+                error_count=len(errors),
+                error_detail="; ".join(errors[:3]),
+            )
         # A bound that truncates silently reports a finished answer it did not
         # compute. Name the bound in the debt row instead.
         self._record_raw_retention_outcome(
             scoped_paths,
-            residual={Path(path) for path in result.residual_source_paths},
+            residual={Path(path) for result in results for path in result.residual_source_paths},
             error=(
                 f"raw retention bounded at {RAW_RETENTION_LIMIT_PER_PATH} superseded snapshots "
                 "per source path per pass; backlog retained"
