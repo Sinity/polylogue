@@ -14,7 +14,7 @@ from contextlib import closing
 from dataclasses import asdict, dataclass
 from itertools import islice
 from pathlib import Path
-from typing import BinaryIO, overload
+from typing import BinaryIO, cast, overload
 from urllib.parse import quote
 
 import ijson
@@ -536,6 +536,7 @@ def prepare_jsonl_blob(
     parse_prefix_size: int | None = None,
     prepare_records: Callable[[Iterable[JSONValue]], Iterable[JSONValue]] | None = None,
     classify_grok_export: Callable[[int, bool], bool] | None = None,
+    classify_generic_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
     attempt_directory: Path | None = None,
 ) -> PreparedJsonl:
     """Parse and seal one source without transferring a parsed tree over IPC."""
@@ -599,8 +600,8 @@ def prepare_jsonl_blob(
         if (
             not is_stream
             and provider in {Provider.DRIVE, Provider.GEMINI, Provider.UNKNOWN}
-            and prepare_sessions is None
-            and prepare_records is None
+            and (prepare_sessions is None or classify_generic_object is not None)
+            and (prepare_records is None or classify_generic_object is not None)
             and Path(source_path).name.lower().endswith(".json")
         ):
             with source.open("rb") as handle:
@@ -611,20 +612,43 @@ def prepare_jsonl_blob(
         if generic_envelope is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
-            with source.open("rb") as handle:
-                session = parse_generic_messages_stream(
-                    provider,
-                    generic_envelope,
-                    (normalize_ijson_stdlib_numbers(item) for item in ijson.items(handle, "messages.item")),
-                    fallback_id,
-                    message_sink=store.new_sink(),
-                )
+            generic_admitted = True
+            if classify_generic_object is not None:
+                with source.open("rb") as handle:
+                    sample = tuple(
+                        islice(
+                            (
+                                cast(JSONValue, normalize_ijson_stdlib_numbers(item))
+                                for item in ijson.items(handle, "messages.item")
+                            ),
+                            64,
+                        )
+                    )
+                generic_admitted = classify_generic_object(generic_envelope, sample)
+            session = None
+            if generic_admitted:
+                with source.open("rb") as handle:
+                    session = parse_generic_messages_stream(
+                        provider,
+                        generic_envelope,
+                        (normalize_ijson_stdlib_numbers(item) for item in ijson.items(handle, "messages.item")),
+                        fallback_id,
+                        message_sink=store.new_sink(),
+                    )
             session_count = 0
             if session is not None and require_positive_conversational_evidence(
                 [session], provider=provider, source_path=source_path
             ):
-                if prepare_session is not None:
+                if prepare_sessions is not None:
+                    selected = prepare_sessions([session])
+                    if len(selected) > 1:
+                        raise ValueError("generic object finalizer expanded one session")
+                    session = selected[0] if selected else None
+                elif prepare_session is not None:
                     session = prepare_session(session)
+            else:
+                session = None
+            if session is not None:
                 session.content_hash = session_content_hash(session)
                 append_session_to_shard(shard_builder, session)
                 _append_artifact_session(store, session_count, session)

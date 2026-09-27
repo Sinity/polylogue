@@ -353,6 +353,117 @@ def test_generic_single_object_stream_discards_corrupt_suffix(tmp_path: Path) ->
     assert list(directory.glob("*.db")) == []
 
 
+def test_generic_retained_callbacks_keep_bounded_message_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "session.json"
+    record = {
+        "id": "retained-generic",
+        "messages": [
+            {"id": f"message-{index}", "role": "user", "text": f"Neutral prompt {index}"} for index in range(100)
+        ],
+    }
+    source.write_text(json.dumps(record), encoding="utf-8")
+    expected = parse_payload(Provider.DRIVE, record, "fallback")[0]
+
+    def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("retained generic object decoded as a whole document")
+
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
+    first_written_after: int | None = None
+    decoded = 0
+    original_items = ijson.items
+    original_append = SqliteMessageSink.append
+
+    def tracked_items(*args: object, **kwargs: object) -> object:
+        nonlocal decoded
+        for item in original_items(*args, **kwargs):
+            decoded += 1
+            yield item
+
+    def tracked_append(self: SqliteMessageSink, value: ParsedMessage) -> None:
+        nonlocal first_written_after
+        if first_written_after is None:
+            first_written_after = decoded
+        original_append(self, value)
+
+    monkeypatch.setattr(ijson, "items", tracked_items)
+    monkeypatch.setattr(SqliteMessageSink, "append", tracked_append)
+    finalized: list[str] = []
+
+    def finalize(sessions: list[ParsedSession]) -> list[ParsedSession]:
+        finalized.extend(session.provider_session_id for session in sessions)
+        return sessions
+
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.DRIVE.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+        prepare_records=lambda records: records,
+        prepare_sessions=finalize,
+        classify_generic_object=lambda _envelope, messages: bool(messages),
+    )
+    assert artifact.error is None
+    assert first_written_after == 65
+    assert finalized == ["retained-generic"]
+    [actual] = artifact.iter_sessions()
+    assert (actual.provider_session_id, actual.content_hash) == (
+        expected.provider_session_id,
+        session_content_hash(expected),
+    )
+    assert [message.text for message in actual.messages] == [message.text for message in expected.messages]
+    artifact.discard()
+
+
+def test_retained_generic_object_uses_streamed_replay_route(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import polylogue.sources.revision_backfill as revision_backfill
+
+    record = {
+        "id": "retained-drive",
+        "messages": [{"id": "repeated", "role": "user", "text": f"Neutral prompt {index}"} for index in range(120)],
+    }
+    blob_root = tmp_path / "blob"
+    blob_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(record).encode())
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
+        with sqlite3.connect(path) as conn:
+            initialize_archive_tier(conn, tier)
+
+    def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("retained replay decoded the complete object")
+
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
+    artifact = revision_backfill.prepare_retained_jsonl_artifact(
+        "synthetic-raw",
+        Provider.DRIVE.value,
+        blob_hash,
+        str(tmp_path / "session.json"),
+        "full",
+        None,
+        str(blob_root),
+        str(source_db),
+        str(index_db),
+        str(tmp_path / "prepared"),
+        "2025-01-02T03:04:05Z",
+    )
+    assert artifact.error is None
+    [actual] = artifact.iter_sessions()
+    [expected] = parse_payload(Provider.DRIVE, record, "session")
+    assert actual.provider_session_id == expected.provider_session_id
+    assert [message.provider_message_id for message in actual.messages] == [
+        message.provider_message_id for message in expected.messages
+    ]
+    assert [message.text for message in actual.messages] == [message.text for message in expected.messages]
+    assert actual.created_at == "2025-01-02T03:04:05+00:00"
+    artifact.discard()
+
+
 def test_grok_single_object_streams_responses_with_parser_parity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
