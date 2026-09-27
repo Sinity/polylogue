@@ -1,11 +1,175 @@
 from __future__ import annotations
 
+import json
+import sqlite3
+from collections.abc import Iterable
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import polylogue.sources.source_parsing as source_parsing
+import polylogue.sources.source_root_admission as source_root_admission
+from polylogue.config import Source
+from polylogue.maintenance.source_conservation import SourceConservationReport, audit_source_conservation
 from polylogue.operations.canonical_archive_ingest import _ingest_selected_paths
+from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+from polylogue.sources.parsers.antigravity import AntigravitySessionSummary, parse_markdown_export
+from polylogue.sources.parsers.base import ParsedSession, RawSessionData
+from polylogue.storage.blob_store import BlobStore
+
+
+def _install_antigravity_export_stub(monkeypatch: pytest.MonkeyPatch, roots: list[Path]) -> None:
+    def export(
+        source: Source,
+        *,
+        capture_raw: bool,
+        blob_root: Path | None,
+        blob_store: BlobStore | None,
+        only_cascade_ids: frozenset[str] | None = None,
+    ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
+        assert source.path is not None
+        roots.append(source.path)
+        for cascade_id in sorted(only_cascade_ids or ()):
+            pb_path = source.path / "conversations" / f"{cascade_id}.pb"
+            session = parse_markdown_export(
+                f"### User Input\n\nQuestion from {cascade_id}.\n\n### Planner Response\n\nAnswer.\n",
+                AntigravitySessionSummary(cascade_id=cascade_id),
+            )
+            raw = source_parsing._antigravity_raw_snapshot(
+                pb_path,
+                session,
+                capture_raw=capture_raw,
+                blob_root=blob_root,
+                blob_store=blob_store,
+            )
+            yield raw, session
+
+    monkeypatch.setattr(source_parsing, "iter_antigravity_language_server_sessions", export)
+
+
+def _source_conservation(archive_root: Path) -> SourceConservationReport:
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute("ATTACH DATABASE ? AS idx_tier", (str(archive_root / "index.db"),))
+        return audit_source_conservation(conn, archive_root=archive_root)
+
+
+@pytest.mark.asyncio
+async def test_canonical_ingest_resolves_relative_antigravity_conversation_path(
+    tmp_path: Path,
+    one_shot_workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "antigravity"
+    conversations = root / "conversations"
+    conversations.mkdir(parents=True)
+    pb_path = conversations / "cascade.pb"
+    pb_path.write_bytes(b"synthetic trajectory")
+    monkeypatch.chdir(conversations)
+    parser_roots: list[Path] = []
+    _install_antigravity_export_stub(monkeypatch, parser_roots)
+
+    archive_root = one_shot_workspace_env["archive_root"]
+    result = await parse_sources_archive(
+        archive_root,
+        [Source(name="antigravity", path=Path("cascade.pb"))],
+        parse_workers=1,
+    )
+
+    assert result.counts.get("sessions", 0) == 1
+    assert parser_roots == [root.resolve()]
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        [source_path] = conn.execute("SELECT source_path FROM raw_sessions").fetchone()
+    assert Path(source_path) == pb_path.resolve()
+    assert _source_conservation(archive_root).term("source_missing").count == 0
+
+
+@pytest.mark.asyncio
+async def test_canonical_ingest_records_a_resolvable_path_for_relative_session_jsonl(
+    tmp_path: Path,
+    one_shot_workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_dir = tmp_path / "external-source"
+    source_dir.mkdir()
+    source_path = source_dir / "session.jsonl"
+    source_path.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in (
+                {"type": "session_meta", "payload": {"id": "relative-source", "timestamp": "2026-01-01T00:00:00Z"}},
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "id": "message-1",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "hello"}],
+                    },
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(source_dir)
+    archive_root = one_shot_workspace_env["archive_root"]
+
+    result = await parse_sources_archive(
+        archive_root,
+        [Source(name="codex", path=Path("session.jsonl"))],
+        parse_workers=1,
+    )
+
+    assert result.counts.get("sessions", 0) == 1
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        [recorded_path] = conn.execute("SELECT source_path FROM raw_sessions").fetchone()
+    assert Path(recorded_path) == source_path.resolve()
+    assert _source_conservation(archive_root).term("source_missing").count == 0
+
+
+@pytest.mark.asyncio
+async def test_canonical_ingest_traverses_the_source_root_that_passed_admission(
+    tmp_path: Path,
+    one_shot_workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_root = tmp_path / "original"
+    replacement_root = tmp_path / "replacement"
+    for root, cascade_id in ((original_root, "admitted"), (replacement_root, "retargeted")):
+        conversations = root / "conversations"
+        conversations.mkdir(parents=True)
+        (conversations / f"{cascade_id}.pb").write_bytes(cascade_id.encode())
+    source_link = tmp_path / "capture"
+    source_link.symlink_to(original_root, target_is_directory=True)
+    monkeypatch.chdir(tmp_path)
+    parser_roots: list[Path] = []
+    _install_antigravity_export_stub(monkeypatch, parser_roots)
+
+    original_admission = source_root_admission.refuse_non_capture_source_root
+    checked_roots: list[Path] = []
+
+    def admit_then_retarget(path: Path, *, destination: Path | None = None) -> None:
+        original_admission(path, destination=destination)
+        checked_roots.append(path)
+        source_link.unlink()
+        source_link.symlink_to(replacement_root, target_is_directory=True)
+
+    monkeypatch.setattr(source_root_admission, "refuse_non_capture_source_root", admit_then_retarget)
+    archive_root = one_shot_workspace_env["archive_root"]
+    result = await parse_sources_archive(
+        archive_root,
+        [Source(name="antigravity", path=Path("capture"))],
+        parse_workers=1,
+    )
+
+    assert checked_roots == [original_root.resolve()]
+    assert parser_roots == [original_root.resolve()]
+    assert result.processed_ids == {"antigravity-session:admitted"}
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        [source_path] = conn.execute("SELECT source_path FROM raw_sessions").fetchone()
+    assert Path(source_path) == (original_root / "conversations" / "admitted.pb").resolve()
+    assert _source_conservation(archive_root).term("source_missing").count == 0
 
 
 @pytest.mark.asyncio
