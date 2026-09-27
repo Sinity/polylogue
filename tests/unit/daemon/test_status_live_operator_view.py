@@ -144,8 +144,10 @@ def test_a_failed_isolated_service_is_named_with_its_reason() -> None:
 
 def test_text_status_lists_failed_services_and_currently_failing_loops() -> None:
     """Anti-vacuity: the formatter printed neither ``services`` nor
-    ``periodic_loops``, so these errors reached only ``--format json``. A loop
-    whose later run completed is recovered and must not be listed."""
+    ``periodic_loops``, so these errors reached only ``--format json``. The
+    verdict is the recorded outcome of the latest pass, not an ordering of
+    wall-clock stamps: the timestamps here are deliberately inverted, as after
+    a clock step, and must not change which loop is listed."""
     lines = format_daemon_status_lines(
         {
             "ok": False,
@@ -156,7 +158,8 @@ def test_text_status_lists_failed_services_and_currently_failing_loops() -> None
                     "last_error": "disk I/O error",
                     "last_error_type": "OperationalError",
                     "last_error_at": 200.0,
-                    "last_run_completed_at": 100.0,
+                    "last_run_completed_at": 300.0,
+                    "last_run_failed": True,
                     "failures": 3,
                     "runs": 10,
                 },
@@ -164,8 +167,9 @@ def test_text_status_lists_failed_services_and_currently_failing_loops() -> None
                     "name": "fts_sweep",
                     "last_error": "old",
                     "last_error_type": "OperationalError",
-                    "last_error_at": 50.0,
+                    "last_error_at": 500.0,
                     "last_run_completed_at": 100.0,
+                    "last_run_failed": False,
                     "failures": 1,
                     "runs": 9,
                 },
@@ -178,3 +182,44 @@ def test_text_status_lists_failed_services_and_currently_failing_loops() -> None
     assert "Failing loops: 1" in text
     assert "wal_checkpoint: OperationalError: disk I/O error" in text
     assert "fts_sweep" not in text
+
+
+def test_persisted_token_is_not_sent_to_a_url_from_a_discovered_project_config(
+    workspace_env: dict[str, Path],
+    status_server: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``polylogue.toml`` in the working directory is the one layer an
+    untrusted checkout controls; the daemon's persisted bearer must not follow
+    a URL it names. Anti-vacuity: without ``_may_forward_persisted_token`` the
+    fake server receives the bearer and answers 200."""
+    token_file = tmp_path / "api-token"
+    token_file.write_text(_TOKEN, encoding="utf-8")
+    token_file.chmod(0o600)
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "polylogue.toml").write_text(f'[daemon]\nurl = "{status_server}"\n', encoding="utf-8")
+    monkeypatch.delenv("POLYLOGUE_DAEMON_URL")
+    monkeypatch.delenv("POLYLOGUE_CONFIG", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty-config-home"))
+    monkeypatch.chdir(checkout)
+    with patch("polylogue.daemon.api_auth.api_auth_token_path", return_value=token_file):
+        assert daemon_cli._live_daemon_status_payload(timeout=5.0) is None
+
+
+def test_explicit_spool_is_answered_locally_even_with_a_live_daemon() -> None:
+    """``--spool`` names a path the daemon's cached status does not describe.
+    Anti-vacuity: probing first returns the daemon payload and drops the
+    requested spool."""
+    from click.testing import CliRunner
+
+    local = {"ok": True, "daemon": "polylogued", "probe": "local"}
+    with (
+        patch.object(daemon_cli, "_live_daemon_status_payload", return_value={"ok": True, "probe": "live"}) as probe,
+        patch.object(daemon_cli, "daemon_status_payload", return_value=local) as local_payload,
+    ):
+        result = CliRunner().invoke(daemon_cli.main, ["status", "--spool", "/nonexistent/spool", "--format", "json"])
+    assert result.exit_code == 0, result.output
+    probe.assert_not_called()
+    assert local_payload.call_args.kwargs["include_browser_capture_spool_path"] is True

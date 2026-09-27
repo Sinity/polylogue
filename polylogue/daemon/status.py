@@ -3803,18 +3803,7 @@ def _failing_periodic_loops(loops: object) -> list[dict[str, object]]:
     """Loops whose most recent run raised (an earlier, since-recovered error is not failing)."""
     if not isinstance(loops, list):
         return []
-    failing: list[dict[str, object]] = []
-    for loop in loops:
-        if not isinstance(loop, dict):
-            continue
-        error_at = loop.get("last_error_at")
-        completed_at = loop.get("last_run_completed_at")
-        if not isinstance(error_at, int | float):
-            continue
-        if isinstance(completed_at, int | float) and completed_at > error_at:
-            continue
-        failing.append(loop)
-    return failing
+    return [loop for loop in loops if isinstance(loop, dict) and loop.get("last_run_failed") is True]
 
 
 def format_daemon_status_lines(payload: JSONDocument) -> list[str]:

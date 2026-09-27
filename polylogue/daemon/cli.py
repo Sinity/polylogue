@@ -118,6 +118,7 @@ def validate_api_bind_policy(*, enabled: bool, host: str, allow_remote: bool, au
 
 
 if TYPE_CHECKING:
+    from polylogue.config import PolylogueConfig
     from polylogue.daemon.fts_convergence import FtsConvergenceOwner
     from polylogue.daemon.http import DaemonAPIHTTPServer
     from polylogue.daemon.intake_adapters import ColdBuildGeneration
@@ -3517,6 +3518,29 @@ main.add_command(api_command)
 _LIVE_DAEMON_STATUS_TIMEOUT_S = 0.3
 
 
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _may_forward_persisted_token(config: PolylogueConfig, url: str) -> bool:
+    """Whether the daemon's persisted bearer may be sent to ``url``.
+
+    The persisted token authorizes archive reads and mutations on the real
+    daemon. Send it only to a loopback URL that did not come from a
+    ``polylogue.toml`` discovered in the working directory, which is the one
+    configuration layer an untrusted checkout controls. A token configured
+    explicitly alongside the URL is that configuration's own credential and
+    is sent as configured.
+    """
+    from urllib.parse import urlparse
+
+    if urlparse(url).hostname not in _LOOPBACK_HOSTS:
+        return False
+    if config.layer_of("daemon_url") != "user" or os.environ.get("POLYLOGUE_CONFIG"):
+        return True
+    user_path = config.layer_paths.get("user")
+    return user_path is None or user_path.resolve() != (Path.cwd() / "polylogue.toml").resolve()
+
+
 def _live_daemon_status_payload(*, timeout: float = _LIVE_DAEMON_STATUS_TIMEOUT_S) -> JSONDocument | None:
     """Return a running daemon's cached ``/api/status`` snapshot, or ``None``.
 
@@ -3546,7 +3570,7 @@ def _live_daemon_status_payload(*, timeout: float = _LIVE_DAEMON_STATUS_TIMEOUT_
     config = load_polylogue_config()
     url = (config.daemon_url or "http://127.0.0.1:8766").rstrip("/")
     headers = {"Accept": "application/json"}
-    token = config.api_auth_token or load_api_auth_token()
+    token = config.api_auth_token or (load_api_auth_token() if _may_forward_persisted_token(config, url) else None)
     if token:
         headers["Authorization"] = f"Bearer {token}"
     try:
@@ -3586,7 +3610,9 @@ def _live_daemon_status_payload(*, timeout: float = _LIVE_DAEMON_STATUS_TIMEOUT_
 )
 def status_command(spool_path: Path | None, output_format: str | None) -> None:
     configure_logging()
-    payload = _live_daemon_status_payload()
+    # An explicit ``--spool`` asks about a path the running daemon's cached
+    # status does not describe, so it is always answered in this process.
+    payload = None if spool_path is not None else _live_daemon_status_payload()
     if payload is None:
         if output_format == "json":
             with redirect_stdout(sys.stderr):
