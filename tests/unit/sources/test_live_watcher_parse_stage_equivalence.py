@@ -289,6 +289,64 @@ async def _ingest(
 
 
 @pytest.mark.asyncio
+async def test_large_hermes_snapshot_uses_bounded_live_route(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A supported Hermes snapshot stays admitted and prepared above 64 MiB.
+
+    The padding is an irrelevant single scalar: the snapshot envelope reader
+    must skip it without materializing the containing JSON document.
+    """
+    from polylogue.sources.live import batch as live_batch
+
+    root = tmp_path / "hermes"
+    root.mkdir()
+    source = root / "session.json"
+
+    def write_snapshot(*, large: bool, prompt: str = "A neutral prompt") -> None:
+        with source.open("wb") as handle:
+            handle.write(
+                (
+                    '{"session_id":"large-hermes","platform":"linux",'
+                    f'"messages":[{{"role":"user","content":{json.dumps(prompt)}}}]'
+                ).encode()
+            )
+            if large:
+                handle.write(b',"padding":"')
+                chunk = b"x" * (1024 * 1024)
+                for _ in range(65):
+                    handle.write(chunk)
+                handle.write(b'"')
+            handle.write(b"}")
+
+    write_snapshot(large=False)
+    archive_root = tmp_path / "archive"
+    db_path = archive_root / "index.db"
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    processor = LiveBatchProcessor(
+        Polylogue(archive_root=archive_root, db_path=db_path),
+        (WatchSource(name="hermes", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint=_PARSER_FINGERPRINT,
+        parse_stage=stage,
+        read_snapshot=open_operation_read,
+    )
+    try:
+        initial = await processor.ingest_files([source], emit_event=False, defer_convergence=True)
+        assert initial.succeeded_file_count == 1
+
+        def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("large Hermes detection decoded the whole JSON document")
+
+        monkeypatch.setattr("polylogue.sources.decoders._iter_json_stream", refuse_whole_document)
+        monkeypatch.setattr(live_batch, "_iter_json_stream", refuse_whole_document)
+        write_snapshot(large=True)
+        assert source.stat().st_size > 64 * 1024 * 1024
+        revised = await processor.ingest_files([source], emit_event=False, defer_convergence=True)
+        assert revised.succeeded_file_count == 1
+    finally:
+        stage.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_parse_stage_flag_on_and_off_produce_identical_archive_content(tmp_path: Path) -> None:
     baseline_root = tmp_path / "baseline"
     prefetch_root = tmp_path / "prefetch"

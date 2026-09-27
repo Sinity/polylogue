@@ -892,6 +892,18 @@ def _jsonl_sample_from_path(path: Path, *, max_records: int = 32) -> list[JSONVa
 def _detect_provider_from_path_sample(
     path: Path, fallback_provider: Provider, *, json_document: bool = False
 ) -> Provider:
+    if fallback_provider is Provider.HERMES and (json_document or path.suffix.lower() == ".json"):
+        # Hermes snapshots have a streaming envelope recognizer. Avoid routing
+        # them through the generic document sampler, whose fallback builds the
+        # complete JSON object merely to confirm the already-declared provider.
+        from polylogue.sources.decoder_json import hermes_snapshot_envelope
+
+        try:
+            with path.open("rb") as handle:
+                if hermes_snapshot_envelope(handle) is not None:
+                    return Provider.HERMES
+        except OSError:
+            return fallback_provider
     if fallback_provider is Provider.ANTIGRAVITY and antigravity.looks_like_trajectory_db_path(path):
         return Provider.ANTIGRAVITY
     if hermes_state.looks_like_state_db_path(path) or hermes_verification.looks_like_verification_evidence_db_path(

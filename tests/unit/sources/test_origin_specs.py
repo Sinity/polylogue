@@ -1325,17 +1325,11 @@ class TestSemanticSourceClosureMemo:
 # -----------------------------------------------------------------------------
 
 
-def test_hermes_json_probe_refuses_above_the_inspection_ceiling(tmp_path: Path) -> None:
-    """A candidate larger than the ceiling is refused on its stat size, unread.
+def test_unsupported_large_hermes_json_remains_refused_after_bounded_probe(tmp_path: Path) -> None:
+    """Large Hermes JSON without the supported snapshot envelope stays refused.
 
-    ``recognize_source_class`` runs in the daemon's normal mode over
-    semi-trusted provider roots and previously did
-    ``json.loads(path.read_text())`` with no ceiling. The caller already holds
-    ``stat().st_size``, so the size decides before any read.
-
-    Anti-vacuity: drop the ``source_size_bytes`` gate and this call reads and
-    parses the file, returning the structural signature instead of the typed
-    refusal.
+    The bounded probe may admit recognized Hermes snapshots, but other shapes
+    cannot fall through to the whole-document structural reader.
     """
     from polylogue.core.enums import Provider
     from polylogue.sources.origin_specs import SOURCE_CLASS_JSON_PROBE_MAX_BYTES, recognize_source_class

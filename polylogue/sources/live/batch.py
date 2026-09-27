@@ -4683,7 +4683,9 @@ class LiveBatchProcessor:
                     retained_sessions_cache[raw_id] = legacy
                     return legacy
                 provider, blob_hash, source_path, kind, _size = descriptor_reader(raw_id)
-                if Path(source_path).suffix.lower() == ".json" and provider in BUNDLE_PROVIDERS:
+                if Path(source_path).suffix.lower() == ".json" and (
+                    provider in BUNDLE_PROVIDERS or provider is Provider.HERMES
+                ):
                     native_id = archive.raw_native_id(raw_id) if kind is RawRevisionKind.APPEND else None
                     artifact = prepare_retained_jsonl_artifact(
                         raw_id,
