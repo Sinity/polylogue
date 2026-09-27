@@ -66,23 +66,6 @@ def _is_trusted_token_file(target: Path) -> bool:
     return stat.S_IMODE(info.st_mode) & 0o077 == 0
 
 
-def load_api_auth_token(path: Path | None = None) -> str | None:
-    """Return the persisted daemon API bearer token without minting one.
-
-    A client reading from a daemon that is already running needs the token
-    that daemon minted; it must not mint a new one (a read that writes the
-    credential store) or trust a file :func:`_is_trusted_token_file` refuses.
-    """
-    target = path if path is not None else api_auth_token_path()
-    if not _is_trusted_token_file(target):
-        return None
-    try:
-        token = target.read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    return token or None
-
-
 def load_or_mint_api_auth_token(path: Path | None = None, *, rotate: bool = False) -> str:
     """Return the daemon API's persisted bearer token, minting one on first use.
 
@@ -186,7 +169,6 @@ __all__ = [
     "API_ALLOW_NO_AUTH_ENV",
     "API_AUTH_TOKEN_ENTROPY_BYTES",
     "api_command",
-    "load_api_auth_token",
     "load_or_mint_api_auth_token",
     "resolve_api_auth_token",
 ]

@@ -378,11 +378,13 @@ Enabled by default on `127.0.0.1:8765`. Disable with `--no-browser-capture`.
 `polylogued health` runs tiered health checks (fast by default,
 `--expensive` to include full integrity checks).
 
-`polylogued status` asks the running daemon first, authenticating with the
-configured API token or the one the daemon persisted (it never mints one).
-If the daemon answers but refuses, stderr says so before the command falls
-back to a recomputation in its own process, which cannot see the daemon's
-in-process state such as cold-build progress, the writer holder or the ETA.
+`polylogued status` asks the running daemon first, for its `status`
+operation over the machine socket every CLI verb uses; the client checks the
+listener's uid with `SO_PEERCRED` before it sends any credential. With no
+socket it recomputes status in its own process. If the daemon answers but
+fails the request, stderr says so first, because that recomputation cannot
+see the daemon's in-process state such as cold-build progress, the writer
+holder or the ETA.
 
 ### Status Fields
 

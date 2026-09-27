@@ -18,12 +18,10 @@ from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from contextlib import redirect_stdout
 from dataclasses import replace
 from datetime import UTC, datetime
-from email.message import Message as HTTPMessage
 from functools import partial
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any, Literal, TypeVar, cast
-from urllib.request import BaseHandler, HTTPRedirectHandler, Request
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 import click
 
@@ -31,7 +29,7 @@ from polylogue.api import Polylogue
 from polylogue.browser_capture.receiver import resolve_receiver_auth_token
 from polylogue.browser_capture.server import BrowserCaptureHTTPServer, make_server
 from polylogue.core.degraded import DegradedReason, set_degraded
-from polylogue.core.json import JSONDocument, dumps, json_document, loads
+from polylogue.core.json import JSONDocument, dumps, json_document
 from polylogue.core.loopback import bind_hosts_overlap, is_loopback_host
 from polylogue.core.stage_admission import (
     StageWriteAdmission,
@@ -120,7 +118,6 @@ def validate_api_bind_policy(*, enabled: bool, host: str, allow_remote: bool, au
 
 
 if TYPE_CHECKING:
-    from polylogue.config import PolylogueConfig
     from polylogue.daemon.fts_convergence import FtsConvergenceOwner
     from polylogue.daemon.http import DaemonAPIHTTPServer
     from polylogue.daemon.intake_adapters import ColdBuildGeneration
@@ -3520,120 +3517,51 @@ main.add_command(api_command)
 _LIVE_DAEMON_STATUS_TIMEOUT_S = 0.3
 
 
-class _RefuseRedirects(HTTPRedirectHandler):
-    """Never follow a status redirect: urllib would carry the bearer to the new origin."""
-
-    def redirect_request(
-        self,
-        req: Request,
-        fp: IO[bytes],
-        code: int,
-        msg: str,
-        headers: HTTPMessage,
-        newurl: str,
-    ) -> Request | None:
-        return None
-
-
-def _from_discovered_project_config(config: PolylogueConfig, key: str) -> bool:
-    """Whether ``key`` came from a ``polylogue.toml`` discovered in the working directory.
-
-    That file is the one configuration layer an untrusted checkout controls.
-    """
-    if config.layer_of(key) != "user" or os.environ.get("POLYLOGUE_CONFIG"):
-        return False
-    user_path = config.layer_paths.get("user")
-    return user_path is not None and user_path.resolve() == (Path.cwd() / "polylogue.toml").resolve()
-
-
-def _status_probe_token(config: PolylogueConfig, url: str) -> str | None:
-    """The bearer the live status probe may send to ``url``, if any.
-
-    A daemon token authorizes archive reads and mutations, so it never follows
-    a URL chosen by a discovered project config unless that same file supplied
-    the token (then it is that file's own credential). The persisted token is
-    sent only to a loopback URL, where the daemon that minted it listens.
-    """
-    from urllib.parse import urlparse
-
-    from polylogue.daemon.api_auth import load_api_auth_token
-
-    url_is_discovered = _from_discovered_project_config(config, "daemon_url")
-    if config.api_auth_token:
-        if url_is_discovered and not _from_discovered_project_config(config, "api_auth_token"):
-            return None
-        return config.api_auth_token
-    try:
-        host = urlparse(url).hostname
-    except ValueError:
-        # A malformed URL (``http://[::1``) earns no credential; the probe's
-        # own request then fails and status falls back as before.
-        return None
-    if url_is_discovered or host is None or not is_loopback_host(host):
-        return None
-    return load_api_auth_token()
-
-
 def _live_daemon_status_payload(*, timeout: float = _LIVE_DAEMON_STATUS_TIMEOUT_S) -> JSONDocument | None:
-    """Return a running daemon's cached ``/api/status`` snapshot, or ``None``.
+    """Return the running daemon's status through its machine socket, or ``None``.
 
     ``polylogued status`` used to always recompute the full rich status
-    in-process, cold, with every expensive diagnostic flag on by default —
-    the same collection a running daemon already keeps refreshed
-    off-request and exposes here. Preferring the live daemon's answer
-    (bounded, cheap) avoids repeating that expensive collection when a
-    daemon is already up, which was the reported ">15s although
-    heartbeat/DB descriptors were healthy" hang (polylogue-20d.17). Honours
-    ``POLYLOGUE_DAEMON_URL`` like the archive CLI's ``polylogue status`` so
-    tests can route this probe to an unreachable address (#1325).
+    in-process, cold, with every expensive diagnostic flag on by default --
+    the same collection a running daemon already keeps refreshed off-request
+    (polylogue-20d.17). It asks the daemon for its ``status`` operation, which
+    merges the daemon's cached runtime snapshot (writer, services, cold-build
+    progress, ETA) with the pinned archive reading.
 
-    ``/api/status`` requires the daemon's bearer token. The probe sends the
-    configured token, or the one the running daemon persisted; it never mints
-    one. A daemon that answers but refuses is reported on stderr: silently
-    recomputing in this process would present the CLI's own configuration and
-    an empty in-process state (no build progress, no writer, no ETA) as the
-    running daemon's view.
+    The request goes over the daemon's AF_UNIX socket, the route every CLI
+    verb uses: the client verifies the listener's uid with ``SO_PEERCRED``
+    before any credential is sent, so neither a squatted TCP port, a proxy, a
+    redirect nor a URL from an untrusted ``polylogue.toml`` can receive the
+    daemon's bearer. No socket means no daemon and a silent local fallback. A
+    daemon that answers but refuses is reported on stderr: a silent
+    recomputation here would present the CLI's own configuration and an empty
+    in-process state as the running daemon's view.
     """
-    from urllib.error import HTTPError, URLError
-    from urllib.parse import urlparse
-    from urllib.request import ProxyHandler, build_opener
-
+    from polylogue.cli.operation_kernel import (
+        OperationKernelError,
+        OperationRequest,
+        OperationUnavailableError,
+        dispatch,
+    )
     from polylogue.config import load_polylogue_config
 
     config = load_polylogue_config()
-    url = (config.daemon_url or "http://127.0.0.1:8766").rstrip("/")
-    headers = {"Accept": "application/json"}
-    token = _status_probe_token(config, url)
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
     try:
-        req = Request(f"{url}/api/status", headers=headers, method="GET")
-        handlers: list[BaseHandler] = [_RefuseRedirects()]
-        try:
-            host = urlparse(url).hostname
-        except ValueError:
-            host = None
-        if host is not None and is_loopback_host(host):
-            # A loopback daemon is reached directly; an environment proxy
-            # would otherwise receive the bearer. A remote daemon keeps the
-            # ordinary proxy-aware transport its operator configured.
-            handlers.append(ProxyHandler({}))
-        with build_opener(*handlers).open(req, timeout=timeout) as resp:
-            body = resp.read()
-    except HTTPError as exc:
+        result = dispatch(
+            config,
+            OperationRequest("status", {}),
+            daemon_only=True,
+            deadline_ms=round(timeout * 1000),
+        )
+    except OperationUnavailableError:
+        return None
+    except OperationKernelError as exc:
         click.echo(
-            f"polylogued status: the daemon at {url} refused the status request (HTTP {exc.code}); "
+            f"polylogued status: the running daemon did not answer the status request ({exc}); "
             "showing a recomputation in this process, which cannot see the daemon's in-process state",
             err=True,
         )
         return None
-    except (OSError, URLError, ValueError):
-        return None
-    try:
-        parsed = loads(body)
-    except ValueError:
-        return None
-    document = json_document(parsed)
+    document = json_document(result.value)
     return document or None
 
 

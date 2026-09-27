@@ -1,20 +1,16 @@
 """What ``polylogued status`` shows an operator during a long daemon run.
 
 Two gaps made the plain status command misleading while a build ran: the live
-probe never authenticated, so a running daemon always refused it and the CLI
-silently recomputed status in its own process; and a declared service that
-failed was invisible to the ``ok`` verdict and to the text output.
+HTTP probe never authenticated, so a running daemon always refused it and the
+CLI silently recomputed status in its own process; and a declared service that
+failed was invisible to the ``ok`` verdict and to the text output. The probe
+now uses the daemon's peer-verified machine socket, as every CLI verb does.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
-import threading
-from collections.abc import Iterator
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -26,90 +22,46 @@ from polylogue.daemon.status import (
     supervised_service_failures,
 )
 from polylogue.daemon.supervisor import DaemonSupervisor
-
-_TOKEN = "neutral-test-token"
-
-
-class _StatusHandler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:
-        if self.headers.get("Authorization") != f"Bearer {_TOKEN}":
-            self.send_response(401)
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-            return
-        body = json.dumps({"ok": True, "daemon": "polylogued", "probe": "live"}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, format: str, *args: Any) -> None:
-        return None
+from tests.infra.daemon_operations import cli_daemon_archive
 
 
-@pytest.fixture
-def status_server(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _StatusHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    url = f"http://127.0.0.1:{server.server_address[1]}"
-    monkeypatch.setenv("POLYLOGUE_DAEMON_URL", url)
-    try:
-        yield url
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
-
-
-def test_live_probe_sends_the_daemons_persisted_token(
-    workspace_env: dict[str, Path],
-    status_server: str,
+def test_live_probe_reads_the_running_daemon_over_its_socket(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Anti-vacuity: without the ``Authorization`` header the fake daemon
-    answers 401 and the probe returns ``None`` -- which is what every running
-    daemon did to ``polylogued status`` before."""
-    token_file = tmp_path / "api-token"
-    token_file.write_text(_TOKEN, encoding="utf-8")
-    token_file.chmod(0o600)
-    with patch("polylogue.daemon.api_auth.api_auth_token_path", return_value=token_file):
-        payload = daemon_cli._live_daemon_status_payload(timeout=5.0)
+    """The probe gets the daemon's own ``status`` operation over the machine
+    socket. Anti-vacuity: the previous HTTP probe sent no bearer, every
+    running daemon refused it, and the probe returned ``None``."""
+    with cli_daemon_archive(tmp_path / "archive", monkeypatch, home=tmp_path / "home"):
+        payload = daemon_cli._live_daemon_status_payload(timeout=30.0)
     assert payload is not None
-    assert payload["probe"] == "live"
+    assert "total_sessions" in payload
 
 
-def test_live_probe_reports_a_refusal_instead_of_recomputing_silently(
+def test_live_probe_without_a_daemon_falls_back_silently(
     workspace_env: dict[str, Path],
-    status_server: str,
-    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A daemon that answers but refuses is named on stderr; a probe that
-    swallowed the 401 printed nothing and the in-process recomputation looked
-    like the daemon's view. Anti-vacuity: drop the ``HTTPError`` branch and
-    stderr stays empty."""
-    token_file = tmp_path / "api-token"
-    token_file.write_text("a-stale-token", encoding="utf-8")
-    token_file.chmod(0o600)
-    with patch("polylogue.daemon.api_auth.api_auth_token_path", return_value=token_file):
-        payload = daemon_cli._live_daemon_status_payload(timeout=5.0)
-    assert payload is None
-    assert "refused the status request (HTTP 401)" in capsys.readouterr().err
+    """No socket means no daemon: a local recomputation, with nothing on stderr."""
+    assert daemon_cli._live_daemon_status_payload(timeout=1.0) is None
+    assert capsys.readouterr().err == ""
 
 
-def test_live_probe_never_mints_a_token(
+def test_live_probe_reports_a_daemon_that_fails_the_request(
     workspace_env: dict[str, Path],
-    status_server: str,
-    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A status read must not write the credential store. Anti-vacuity: using
-    ``load_or_mint_api_auth_token`` in the probe creates the file."""
-    token_file = tmp_path / "absent-token"
-    with patch("polylogue.daemon.api_auth.api_auth_token_path", return_value=token_file):
-        daemon_cli._live_daemon_status_payload(timeout=5.0)
-    assert not token_file.exists()
+    """A daemon that answers but fails is named on stderr before the local
+    fallback. Anti-vacuity: swallowing the failure leaves stderr empty and
+    the in-process recomputation looks like the daemon's view."""
+    from polylogue.cli.operation_kernel import OperationFailedError
+
+    with patch(
+        "polylogue.cli.operation_kernel.dispatch",
+        side_effect=OperationFailedError("unauthorized", "machine authentication required"),
+    ):
+        assert daemon_cli._live_daemon_status_payload(timeout=1.0) is None
+    assert "did not answer the status request" in capsys.readouterr().err
 
 
 def test_a_failed_isolated_service_is_named_with_its_reason() -> None:
@@ -184,30 +136,6 @@ def test_text_status_lists_failed_services_and_currently_failing_loops() -> None
     assert "fts_sweep" not in text
 
 
-def test_persisted_token_is_not_sent_to_a_url_from_a_discovered_project_config(
-    workspace_env: dict[str, Path],
-    status_server: str,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A ``polylogue.toml`` in the working directory is the one layer an
-    untrusted checkout controls; the daemon's persisted bearer must not follow
-    a URL it names. Anti-vacuity: without ``_may_forward_persisted_token`` the
-    fake server receives the bearer and answers 200."""
-    token_file = tmp_path / "api-token"
-    token_file.write_text(_TOKEN, encoding="utf-8")
-    token_file.chmod(0o600)
-    checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    (checkout / "polylogue.toml").write_text(f'[daemon]\nurl = "{status_server}"\n', encoding="utf-8")
-    monkeypatch.delenv("POLYLOGUE_DAEMON_URL")
-    monkeypatch.delenv("POLYLOGUE_CONFIG", raising=False)
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty-config-home"))
-    monkeypatch.chdir(checkout)
-    with patch("polylogue.daemon.api_auth.api_auth_token_path", return_value=token_file):
-        assert daemon_cli._live_daemon_status_payload(timeout=5.0) is None
-
-
 def test_explicit_spool_is_answered_locally_even_with_a_live_daemon() -> None:
     """``--spool`` names a path the daemon's cached status does not describe.
     Anti-vacuity: probing first returns the daemon payload and drops the
@@ -223,122 +151,3 @@ def test_explicit_spool_is_answered_locally_even_with_a_live_daemon() -> None:
     assert result.exit_code == 0, result.output
     probe.assert_not_called()
     assert local_payload.call_args.kwargs["include_browser_capture_spool_path"] is True
-
-
-def test_configured_token_does_not_follow_a_discovered_project_url(
-    workspace_env: dict[str, Path],
-    status_server: str,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An operator token from the environment must not be sent to a URL a
-    working-directory ``polylogue.toml`` chose. Anti-vacuity: sending
-    ``config.api_auth_token`` unconditionally makes the fake server answer 200."""
-    checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    (checkout / "polylogue.toml").write_text(f'[daemon]\nurl = "{status_server}"\n', encoding="utf-8")
-    monkeypatch.delenv("POLYLOGUE_DAEMON_URL")
-    monkeypatch.delenv("POLYLOGUE_CONFIG", raising=False)
-    monkeypatch.setenv("POLYLOGUE_API_AUTH_TOKEN", _TOKEN)
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty-config-home"))
-    monkeypatch.chdir(checkout)
-    assert daemon_cli._live_daemon_status_payload(timeout=5.0) is None
-
-
-def test_persisted_token_reaches_any_loopback_address(
-    workspace_env: dict[str, Path],
-    tmp_path: Path,
-) -> None:
-    """The bind policy accepts all of 127.0.0.0/8, so the probe must too.
-    Anti-vacuity: a literal {127.0.0.1, localhost, ::1} set withholds the
-    token from 127.0.0.2 and the running daemon answers 401."""
-    from polylogue.config import load_polylogue_config
-
-    token_file = tmp_path / "api-token"
-    token_file.write_text(_TOKEN, encoding="utf-8")
-    token_file.chmod(0o600)
-    with patch("polylogue.daemon.api_auth.api_auth_token_path", return_value=token_file):
-        token = daemon_cli._status_probe_token(load_polylogue_config(), "http://127.0.0.2:8766")
-    assert token == _TOKEN
-
-
-def test_probe_bypasses_environment_proxies(
-    workspace_env: dict[str, Path],
-    status_server: str,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The bearer must reach the daemon directly. Anti-vacuity: with plain
-    ``urlopen`` the request goes to the dead proxy below and the probe
-    returns ``None``."""
-    token_file = tmp_path / "api-token"
-    token_file.write_text(_TOKEN, encoding="utf-8")
-    token_file.chmod(0o600)
-    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
-    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
-    monkeypatch.delenv("NO_PROXY", raising=False)
-    monkeypatch.delenv("no_proxy", raising=False)
-    with patch("polylogue.daemon.api_auth.api_auth_token_path", return_value=token_file):
-        payload = daemon_cli._live_daemon_status_payload(timeout=5.0)
-    assert payload is not None
-
-
-def test_malformed_daemon_url_falls_back_without_a_traceback(
-    workspace_env: dict[str, Path],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Anti-vacuity: reading ``urlparse(url).hostname`` unguarded raises
-    ``ValueError`` out of the probe."""
-    monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "http://[::1")
-    assert daemon_cli._live_daemon_status_payload(timeout=1.0) is None
-
-
-def test_probe_never_follows_a_redirect_with_the_bearer(
-    workspace_env: dict[str, Path],
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """urllib copies ``Authorization`` onto a followed redirect. Anti-vacuity:
-    with redirects followed, the second server receives the bearer."""
-    received: list[str | None] = []
-
-    class _Target(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:
-            received.append(self.headers.get("Authorization"))
-            self.send_response(200)
-            self.send_header("Content-Length", "2")
-            self.end_headers()
-            self.wfile.write(b"{}")
-
-        def log_message(self, format: str, *args: Any) -> None:
-            return None
-
-    target = ThreadingHTTPServer(("127.0.0.1", 0), _Target)
-    target_url = f"http://127.0.0.1:{target.server_address[1]}/elsewhere"
-
-    class _Redirect(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:
-            self.send_response(302)
-            self.send_header("Location", target_url)
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-
-        def log_message(self, format: str, *args: Any) -> None:
-            return None
-
-    redirector = ThreadingHTTPServer(("127.0.0.1", 0), _Redirect)
-    threads = [threading.Thread(target=server.serve_forever, daemon=True) for server in (target, redirector)]
-    for thread in threads:
-        thread.start()
-    token_file = tmp_path / "api-token"
-    token_file.write_text(_TOKEN, encoding="utf-8")
-    token_file.chmod(0o600)
-    monkeypatch.setenv("POLYLOGUE_DAEMON_URL", f"http://127.0.0.1:{redirector.server_address[1]}")
-    try:
-        with patch("polylogue.daemon.api_auth.api_auth_token_path", return_value=token_file):
-            assert daemon_cli._live_daemon_status_payload(timeout=5.0) is None
-        assert received == []
-    finally:
-        for server in (target, redirector):
-            server.shutdown()
-            server.server_close()
