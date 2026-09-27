@@ -951,15 +951,19 @@ def _focused_worktree_provenance(cwd: str, environment: Mapping[str, str]) -> di
     if environment.get(WORKTREE_PROVENANCE_ENV) != "1":
         return None
     from devtools.checkout_identity import ALLOW_DEFAULT_BRANCH_ENV, checkout_identity, default_branch_refusal
-    from devtools.verify_runs import git_dirty, git_head, git_worktree_content_sha256
+    from devtools.verify_runs import git_dirty, git_worktree_content_sha256
 
     root = Path(cwd)
-    head = git_head(root)
-    digest = git_worktree_content_sha256(root)
-    if head is None or digest is None:
-        raise PytestSlotUnavailableError("focused worktree content could not be identified")
-    # The branch admitted at submission may have changed while the run queued.
+    # Identity, content, identity again: the three describe one checkout state
+    # only if nothing moved between them.
     identity = checkout_identity(root)
+    digest = git_worktree_content_sha256(root)
+    if identity.head is None or digest is None:
+        raise PytestSlotUnavailableError("focused worktree content could not be identified")
+    if checkout_identity(root) != identity or git_worktree_content_sha256(root) != digest:
+        raise PytestSlotUnavailableError("the checkout changed while its content was being identified")
+    head = identity.head
+    # The branch admitted at submission may have changed while the run queued.
     refusal = default_branch_refusal(
         identity, command="devtools test", allowed=environment.get(ALLOW_DEFAULT_BRANCH_ENV) == "1"
     )

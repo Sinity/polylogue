@@ -46,10 +46,15 @@ class CheckoutIdentity:
     branch: str | None
     head: str | None
     default_branch: str
+    #: Commits the default branch names locally and on ``origin``.
+    default_tips: frozenset[str] = frozenset()
 
     @property
     def on_default_branch(self) -> bool:
-        return self.branch == self.default_branch
+        """On the default branch, or detached at one of its tips."""
+        if self.branch is not None:
+            return self.branch == self.default_branch
+        return self.head is not None and self.head in self.default_tips
 
     def describe(self) -> str:
         head = self.head[:12] if self.head else "unknown"
@@ -58,12 +63,19 @@ class CheckoutIdentity:
 
 def checkout_identity(root: Path) -> CheckoutIdentity:
     remote_default = _git(root, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
-    default = remote_default.split("/", 1)[1] if remote_default and "/" in remote_default else None
+    default = (remote_default.split("/", 1)[1] if remote_default and "/" in remote_default else None) or (
+        _FALLBACK_DEFAULT_BRANCH
+    )
+    tips = {
+        _git(root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+        for ref in (f"refs/heads/{default}", f"refs/remotes/origin/{default}")
+    }
     return CheckoutIdentity(
         root=root.resolve(),
         branch=_git(root, "symbolic-ref", "--quiet", "--short", "HEAD"),
         head=_git(root, "rev-parse", "HEAD"),
-        default_branch=default or _FALLBACK_DEFAULT_BRANCH,
+        default_branch=default,
+        default_tips=frozenset(tip for tip in tips if tip),
     )
 
 
@@ -71,9 +83,10 @@ def default_branch_refusal(identity: CheckoutIdentity, *, command: str, allowed:
     """Why *command* refuses to run in this checkout, or ``None``."""
     if allowed or not identity.on_default_branch:
         return None
+    where = identity.branch or f"{identity.default_branch} (detached at its tip)"
     return (
-        f"{command}: refused on the default branch `{identity.branch}` in {identity.root}.\n"
-        f"  A run here tests `{identity.branch}`, not your change. Run it in your worktree:\n"
+        f"{command}: refused on the default branch `{where}` in {identity.root}.\n"
+        f"  A run here tests `{identity.default_branch}`, not your change. Run it in your worktree:\n"
         f"    env -C /path/to/your/worktree {command} ...\n"
         f"  For a deliberate run on the base, pass {ON_DEFAULT_BRANCH_FLAG}."
     )

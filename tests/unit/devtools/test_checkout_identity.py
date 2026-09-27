@@ -260,3 +260,54 @@ def test_a_rerun_of_different_content_clears_no_failure(monkeypatch: pytest.Monk
     assert rerun is not None
     assert rerun["still_failed"] == ["tests/test_a.py::test_x"]
     assert rerun["content_moved"] is True
+
+
+def test_a_content_edit_during_verification_voids_the_result(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Branch and HEAD alone do not identify the tree; an uncommitted edit mid-run voids it.
+
+    Anti-vacuity: compare only branch and HEAD and this run passes.
+    """
+    from devtools import verify as verify_module
+
+    root = _repository(tmp_path / "feature", "claude/change")
+    history: dict[str, object] = {}
+
+    def gate_that_edits(
+        label: str, command: list[str], *, run: object, runner: str
+    ) -> tuple[int, float, dict[str, object]]:
+        del label, command, run, runner
+        (root / "seed.txt").write_text("edited\n", encoding="utf-8")
+        return 0, 0.0, {"diagnosis": "gate_passed"}
+
+    monkeypatch.setattr(verify_module, "ROOT", root)
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(verify_module, "assert_polylogue_matches_checkout", lambda *_a, **_k: None)
+    monkeypatch.setattr(verify_module, "build_verify_steps", lambda **_kwargs: [("gate only", ["true"])])
+    monkeypatch.setattr(verify_module, "_run", gate_that_edits)
+    monkeypatch.setattr(verify_module, "append_verify_history", lambda payload: history.update(payload))
+
+    assert verify_module._main(["--quick"]) == 1
+    assert history["diagnosis"] == "checkout_moved_during_run"
+
+
+def test_a_detached_head_at_the_default_tip_is_refused(tmp_path: Path) -> None:
+    """Anti-vacuity: treat every detached HEAD as off the default branch and this is admitted."""
+    root = _repository(tmp_path / "base", "master")
+    subprocess.run(["git", "switch", "-q", "--detach", "master"], cwd=root, check=True)
+
+    identity = checkout_identity(root)
+
+    assert identity.branch is None
+    assert default_branch_refusal(identity, command="devtools test", allowed=False) is not None
+
+
+def test_slot_provenance_names_the_head_it_checked(tmp_path: Path) -> None:
+    """The recorded HEAD, branch and content come from one stable capture."""
+    from devtools import pytest_slot
+
+    root = _repository(tmp_path / "feature", "claude/change")
+    provenance = pytest_slot._focused_worktree_provenance(str(root), {"POLYLOGUE_FOCUSED_WORKTREE_PROVENANCE": "1"})
+
+    assert provenance is not None
+    assert provenance["git_head"] == checkout_identity(root).head
+    assert provenance["git_branch"] == "claude/change"

@@ -81,6 +81,7 @@ from devtools.verify_runs import (
     copy_current_pytest_artifacts,
     env_for_pytest_step,
     git_head,
+    git_worktree_content_sha256,
     prune_successful_verify_runs,
     reconcile_and_record_abandoned_verify_runs,
 )
@@ -1019,6 +1020,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         # Carried to the pytest slot, which re-checks the branch at start.
         os.environ[ALLOW_DEFAULT_BRANCH_ENV] = "1"
     sys.stderr.write(f"verify: {identity.describe()}\n")
+    # Every step must see one tree: its Git-visible content is compared at the end.
+    started_content = git_worktree_content_sha256(ROOT)
     # Before this run writes its own ``running`` receipt, give a terminal state
     # to any earlier one whose process is gone. A verification killed outright
     # runs no handler of its own, so the next reader is the only thing that can
@@ -1137,16 +1140,24 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             exit_code=130,
             termination_reason="operator_interrupt",
         )
+    executed_contents: set[object] = set()
     for result in results:
         slot_receipt = result.get("pytest_slot_receipt")
         provenance = slot_receipt.get("worktree_provenance") if isinstance(slot_receipt, Mapping) else None
         if isinstance(provenance, Mapping):
             # The receipt and verdict name what pytest executed, not what was admitted.
             run.record_execution_worktree(provenance)
+            executed_contents.add(provenance.get("git_worktree_content_sha256"))
     # The static gates read the checkout directly, with no slot to re-check it:
-    # a checkout whose branch or HEAD moved while they ran proves nothing.
+    # a run whose branch, HEAD or Git-visible content changed while it ran, or
+    # whose pytest step executed other content, verified no single tree.
     finished_identity = checkout_identity(ROOT)
-    checkout_moved = (finished_identity.branch, finished_identity.head) != (identity.branch, identity.head)
+    finished_content = git_worktree_content_sha256(ROOT)
+    checkout_moved = (
+        (finished_identity.branch, finished_identity.head) != (identity.branch, identity.head)
+        or finished_content != started_content
+        or (started_content is not None and bool(executed_contents - {started_content}))
+    )
     if checkout_moved:
         sys.stderr.write(
             f"verify: the checkout moved during the run (started {identity.describe()}, "
