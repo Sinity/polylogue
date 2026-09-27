@@ -1,0 +1,2400 @@
+{
+ "kind": "polylogue.synthetic-workload-profile",
+ "non_ascii_by_kind": {
+  "assistant_message": 0.9082,
+  "custom_tool_call": 0.0207,
+  "custom_tool_call_output": 0.0032,
+  "developer_message": 0.0817,
+  "function_call": 0.0059,
+  "function_call_output": 0.1253,
+  "record:response_item:agent_message": 0.0517,
+  "user_message": 0.1748
+ },
+ "origin": "codex",
+ "shares": {
+  "assistant_usage_share": 1.0,
+  "non_ascii_text_share": 0.1577,
+  "orphan_subagents_per_session": 0.0102,
+  "sidecar_share_of_large": 0.0,
+  "tool_error_share": 0.03
+ },
+ "source_bytes": 45000000000,
+ "streams": {
+  "main": {
+   "gap_ms": {
+    "0": 1700000.0,
+    "1": 550000.0,
+    "10": 500000.0,
+    "11": 750000.0,
+    "12": 680000.0,
+    "13": 530000.0,
+    "14": 230000.0,
+    "15": 140000.0,
+    "16": 26000.0,
+    "17": 11000.0,
+    "18": 3500.0,
+    "19": 2500.0,
+    "2": 260000.0,
+    "20": 1600.0,
+    "21": 1100.0,
+    "22": 680.0,
+    "23": 530.0,
+    "24": 310.0,
+    "25": 220.0,
+    "26": 170.0,
+    "27": 49.0,
+    "28": 39.0,
+    "29": 3.0,
+    "3": 300000.0,
+    "30": 3.0,
+    "4": 340000.0,
+    "5": 360000.0,
+    "6": 330000.0,
+    "7": 290000.0,
+    "8": 150000.0,
+    "9": 150000.0
+   },
+   "lengths": {
+    "assistant_message": {
+     "0": 28.0,
+     "10": 10000.0,
+     "11": 7600.0,
+     "12": 3800.0,
+     "13": 1300.0,
+     "14": 250.0,
+     "15": 34.0,
+     "16": 3.0,
+     "17": 6.0,
+     "18": 3.0,
+     "21": 3.0,
+     "3": 16.0,
+     "4": 270.0,
+     "5": 660.0,
+     "6": 4400.0,
+     "7": 30000.0,
+     "8": 150000.0,
+     "9": 120000.0
+    },
+    "custom_tool_call": {
+     "10": 76000.0,
+     "11": 43000.0,
+     "12": 22000.0,
+     "13": 9900.0,
+     "14": 3600.0,
+     "15": 710.0,
+     "16": 110.0,
+     "17": 15.0,
+     "20": 3.0,
+     "4": 3.0,
+     "5": 1.0,
+     "6": 91.0,
+     "7": 50000.0,
+     "8": 110000.0,
+     "9": 140000.0
+    },
+    "custom_tool_call_output": {
+     "10": 32000.0,
+     "11": 27000.0,
+     "12": 27000.0,
+     "13": 26000.0,
+     "14": 25000.0,
+     "15": 21000.0,
+     "16": 22000.0,
+     "17": 84.0,
+     "18": 39.0,
+     "19": 45.0,
+     "20": 51.0,
+     "21": 45.0,
+     "22": 26.0,
+     "23": 5.0,
+     "4": 3.0,
+     "5": 34.0,
+     "6": 16000.0,
+     "7": 79000.0,
+     "8": 130000.0,
+     "9": 50000.0
+    },
+    "developer_message": {
+     "10": 630.0,
+     "11": 180.0,
+     "12": 590.0,
+     "13": 75.0,
+     "14": 2800.0,
+     "15": 1000.0,
+     "16": 21.0,
+     "6": 9.0,
+     "8": 290.0,
+     "9": 740.0
+    },
+    "function_call": {
+     "10": 35000.0,
+     "11": 18000.0,
+     "12": 6000.0,
+     "13": 1900.0,
+     "14": 460.0,
+     "15": 87.0,
+     "16": 25.0,
+     "17": 9.0,
+     "2": 3200.0,
+     "4": 110.0,
+     "5": 6300.0,
+     "6": 50000.0,
+     "7": 330000.0,
+     "8": 340000.0,
+     "9": 110000.0
+    },
+    "function_call_output": {
+     "0": 3100.0,
+     "10": 88000.0,
+     "11": 88000.0,
+     "12": 110000.0,
+     "13": 100000.0,
+     "14": 65000.0,
+     "15": 19000.0,
+     "16": 14000.0,
+     "17": 1000.0,
+     "18": 190.0,
+     "19": 63.0,
+     "20": 21.0,
+     "21": 33.0,
+     "22": 1.0,
+     "23": 1.0,
+     "3": 21.0,
+     "4": 18000.0,
+     "5": 840.0,
+     "6": 37000.0,
+     "7": 130000.0,
+     "8": 120000.0,
+     "9": 100000.0
+    },
+    "reasoning": {
+     "10": 250000.0,
+     "11": 520000.0,
+     "12": 150000.0,
+     "13": 57000.0,
+     "14": 12000.0,
+     "15": 3300.0,
+     "16": 500.0,
+     "17": 21.0,
+     "18": 3.0
+    },
+    "user_message": {
+     "0": 36.0,
+     "1": 30.0,
+     "10": 2000.0,
+     "11": 1500.0,
+     "12": 1200.0,
+     "13": 5200.0,
+     "14": 980.0,
+     "15": 2500.0,
+     "16": 590.0,
+     "17": 1500.0,
+     "18": 160.0,
+     "19": 9.0,
+     "2": 120.0,
+     "20": 9.0,
+     "21": 3.0,
+     "3": 480.0,
+     "4": 1000.0,
+     "5": 1900.0,
+     "6": 3700.0,
+     "7": 5400.0,
+     "8": 6200.0,
+     "9": 2900.0
+    }
+   },
+   "records": {
+    "1": 6.0,
+    "10": 930.0,
+    "11": 370.0,
+    "12": 160.0,
+    "13": 84.0,
+    "14": 33.0,
+    "15": 48.0,
+    "16": 28.0,
+    "17": 10.0,
+    "18": 6.0,
+    "2": 120.0,
+    "3": 12.0,
+    "4": 140.0,
+    "5": 66.0,
+    "6": 160.0,
+    "7": 540.0,
+    "8": 750.0,
+    "9": 1100.0
+   },
+   "start": {
+    "session_meta": 4500.0
+   },
+   "transitions": {
+    "assistant_message": {
+     "assistant_message": 3.0,
+     "custom_tool_call": 87000.0,
+     "custom_tool_call_output": 3.0,
+     "event_token_count": 14000.0,
+     "function_call": 210000.0,
+     "reasoning": 5000.0,
+     "record:event_msg:item_completed": 3300.0,
+     "record:event_msg:task_complete": 390.0,
+     "record:event_msg:task_started": 1.0,
+     "record:event_msg:thread_goal_updated": 4.0,
+     "record:event_msg:thread_settings_applied": 6.0,
+     "record:response_item:tool_search_call": 1700.0,
+     "record:response_item:web_search_call": 48.0,
+     "record:token_usage_record": 1400.0,
+     "turn_context": 57.0,
+     "user_message": 6400.0
+    },
+    "custom_tool_call": {
+     "custom_tool_call": 15.0,
+     "custom_tool_call_output": 200000.0,
+     "developer_message": 3.0,
+     "event_token_count": 29000.0,
+     "reasoning": 18.0,
+     "record:event_msg:item_completed": 150000.0,
+     "record:event_msg:thread_goal_updated": 320.0,
+     "record:event_msg:thread_settings_applied": 9.0,
+     "record:token_usage_record": 78000.0
+    },
+    "custom_tool_call_output": {
+     "custom_tool_call": 3900.0,
+     "custom_tool_call_output": 140.0,
+     "event_token_count": 400000.0,
+     "function_call": 1800.0,
+     "reasoning": 14000.0,
+     "record:compacted": 150.0,
+     "record:event_msg:item_completed": 470.0,
+     "record:event_msg:thread_settings_applied": 3.0,
+     "turn_context": 33000.0,
+     "user_message": 260.0
+    },
+    "developer_message": {
+     "custom_tool_call": 3.0,
+     "developer_message": 1600.0,
+     "function_call": 39.0,
+     "reasoning": 12.0,
+     "record:event_msg:item_completed": 18.0,
+     "record:event_msg:turn_aborted": 100.0,
+     "record:world_state": 220.0,
+     "turn_context": 310.0,
+     "user_message": 4100.0
+    },
+    "event_token_count": {
+     "assistant_message": 1200.0,
+     "custom_tool_call": 37000.0,
+     "custom_tool_call_output": 43000.0,
+     "developer_message": 170.0,
+     "event_token_count": 37000.0,
+     "function_call": 76000.0,
+     "function_call_output": 280000.0,
+     "reasoning": 470000.0,
+     "record:compacted": 5600.0,
+     "record:event_msg:item_completed": 510000.0,
+     "record:event_msg:task_complete": 12000.0,
+     "record:event_msg:task_started": 59.0,
+     "record:event_msg:thread_goal_updated": 320.0,
+     "record:event_msg:thread_settings_applied": 48.0,
+     "record:event_msg:turn_aborted": 580.0,
+     "record:inter_agent_communication_metadata": 3400.0,
+     "record:response_item:tool_search_call": 90.0,
+     "record:response_item:tool_search_output": 45.0,
+     "record:token_usage_record": 230.0,
+     "record:world_state": 1200.0,
+     "turn_context": 240.0,
+     "user_message": 7100.0
+    },
+    "function_call": {
+     "event_token_count": 270000.0,
+     "function_call": 230000.0,
+     "function_call_output": 330000.0,
+     "reasoning": 15.0,
+     "record:event_msg:item_completed": 31000.0,
+     "record:event_msg:task_started": 9.0,
+     "record:event_msg:thread_goal_updated": 25000.0,
+     "record:event_msg:thread_settings_applied": 9.0,
+     "record:response_item:tool_search_call": 15.0,
+     "record:token_usage_record": 8400.0,
+     "user_message": 360.0
+    },
+    "function_call_output": {
+     "assistant_message": 3.0,
+     "custom_tool_call": 1700.0,
+     "event_token_count": 260000.0,
+     "function_call": 27000.0,
+     "function_call_output": 220000.0,
+     "reasoning": 88000.0,
+     "record:compacted": 1300.0,
+     "record:event_msg:item_completed": 28000.0,
+     "record:event_msg:task_complete": 3.0,
+     "record:event_msg:task_started": 22.0,
+     "record:event_msg:thread_goal_updated": 3600.0,
+     "record:event_msg:turn_aborted": 9.0,
+     "record:response_item:tool_search_call": 6.0,
+     "record:response_item:tool_search_output": 15.0,
+     "turn_context": 270000.0,
+     "user_message": 1500.0
+    },
+    "reasoning": {
+     "assistant_message": 5800.0,
+     "custom_tool_call": 320000.0,
+     "custom_tool_call_output": 21.0,
+     "event_token_count": 1500.0,
+     "function_call": 350000.0,
+     "function_call_output": 15.0,
+     "reasoning": 20000.0,
+     "record:event_msg:agent_message": 9.0,
+     "record:event_msg:item_completed": 290000.0,
+     "record:event_msg:task_started": 58.0,
+     "record:event_msg:thread_goal_updated": 17.0,
+     "record:event_msg:thread_settings_applied": 28.0,
+     "record:event_msg:turn_aborted": 57.0,
+     "record:response_item:tool_search_call": 310.0,
+     "record:response_item:web_search_call": 1000.0,
+     "turn_context": 24.0,
+     "user_message": 51.0
+    },
+    "record:compacted": {
+     "event_token_count": 150.0,
+     "record:compacted": 4.0,
+     "record:event_msg:item_completed": 2000.0,
+     "record:event_msg:task_started": 16.0,
+     "record:event_msg:thread_settings_applied": 6.0,
+     "record:world_state": 1700.0,
+     "turn_context": 4000.0
+    },
+    "record:event_msg:agent_message": {
+     "assistant_message": 9.0
+    },
+    "record:event_msg:item_completed": {
+     "assistant_message": 320000.0,
+     "custom_tool_call": 2500.0,
+     "custom_tool_call_output": 170000.0,
+     "developer_message": 170.0,
+     "event_token_count": 170000.0,
+     "function_call": 5200.0,
+     "function_call_output": 36000.0,
+     "reasoning": 370000.0,
+     "record:compacted": 330.0,
+     "record:event_msg:item_completed": 110000.0,
+     "record:event_msg:task_complete": 85.0,
+     "record:event_msg:task_started": 38.0,
+     "record:event_msg:thread_goal_updated": 5700.0,
+     "record:event_msg:thread_settings_applied": 65.0,
+     "record:event_msg:turn_aborted": 90.0,
+     "record:inter_agent_communication_metadata": 12.0,
+     "record:response_item:web_search_call": 500.0,
+     "record:token_usage_record": 9600.0,
+     "record:world_state": 15.0,
+     "turn_context": 14000.0,
+     "user_message": 490.0
+    },
+    "record:event_msg:task_complete": {
+     "custom_tool_call": 12.0,
+     "event_token_count": 3.0,
+     "function_call_output": 3.0,
+     "reasoning": 36.0,
+     "record:event_msg:item_completed": 200.0,
+     "record:event_msg:task_complete": 42.0,
+     "record:event_msg:task_started": 18000.0,
+     "record:event_msg:thread_goal_updated": 73.0,
+     "record:event_msg:thread_settings_applied": 1100.0,
+     "user_message": 30.0
+    },
+    "record:event_msg:task_started": {
+     "custom_tool_call": 18.0,
+     "custom_tool_call_output": 3.0,
+     "developer_message": 4000.0,
+     "event_token_count": 9.0,
+     "reasoning": 3.0,
+     "record:compacted": 150.0,
+     "record:event_msg:item_completed": 12000.0,
+     "record:event_msg:task_complete": 3.0,
+     "record:event_msg:thread_goal_updated": 3.0,
+     "record:event_msg:thread_settings_applied": 3.0,
+     "record:token_usage_record": 6.0,
+     "record:world_state": 30.0,
+     "turn_context": 8900.0,
+     "user_message": 740.0
+    },
+    "record:event_msg:thread_goal_updated": {
+     "custom_tool_call": 4.0,
+     "custom_tool_call_output": 6000.0,
+     "event_token_count": 6.0,
+     "function_call": 1800.0,
+     "function_call_output": 27000.0,
+     "reasoning": 11.0,
+     "record:compacted": 8.0,
+     "record:event_msg:item_completed": 27.0,
+     "record:event_msg:task_complete": 310.0,
+     "record:event_msg:task_started": 160.0,
+     "record:event_msg:thread_goal_updated": 790.0,
+     "record:event_msg:thread_settings_applied": 19.0,
+     "record:event_msg:turn_aborted": 1.0,
+     "record:response_item:tool_search_output": 6.0,
+     "user_message": 7.0
+    },
+    "record:event_msg:thread_settings_applied": {
+     "custom_tool_call": 1.0,
+     "custom_tool_call_output": 3.0,
+     "event_token_count": 340.0,
+     "reasoning": 12.0,
+     "record:event_msg:item_completed": 6.0,
+     "record:event_msg:task_complete": 3.0,
+     "record:event_msg:task_started": 1400.0,
+     "record:event_msg:thread_goal_updated": 6.0,
+     "record:event_msg:thread_settings_applied": 200.0
+    },
+    "record:event_msg:turn_aborted": {
+     "event_token_count": 15.0,
+     "record:event_msg:item_completed": 20.0,
+     "record:event_msg:task_complete": 3.0,
+     "record:event_msg:task_started": 730.0,
+     "record:event_msg:thread_goal_updated": 94.0,
+     "record:event_msg:thread_settings_applied": 120.0,
+     "turn_context": 15.0,
+     "user_message": 940.0
+    },
+    "record:event_msg:user_message": {
+     "reasoning": 3.0
+    },
+    "record:inter_agent_communication_metadata": {
+     "record:response_item:agent_message": 3900.0
+    },
+    "record:response_item:agent_message": {
+     "custom_tool_call": 200.0,
+     "event_token_count": 9.0,
+     "function_call": 160.0,
+     "reasoning": 250.0,
+     "record:event_msg:item_completed": 2800.0,
+     "record:event_msg:thread_settings_applied": 3.0,
+     "record:inter_agent_communication_metadata": 480.0,
+     "record:world_state": 15.0
+    },
+    "record:response_item:tool_search_call": {
+     "event_token_count": 45.0,
+     "function_call_output": 9.0,
+     "record:event_msg:item_completed": 6.0,
+     "record:event_msg:thread_goal_updated": 6.0,
+     "record:response_item:tool_search_output": 2100.0
+    },
+    "record:response_item:tool_search_output": {
+     "event_token_count": 2100.0,
+     "function_call": 18.0,
+     "reasoning": 24.0,
+     "record:compacted": 3.0
+    },
+    "record:response_item:web_search_call": {
+     "reasoning": 1100.0,
+     "record:event_msg:item_completed": 400.0
+    },
+    "record:token_usage_record": {
+     "custom_tool_call_output": 36000.0,
+     "event_token_count": 1400.0,
+     "function_call_output": 4400.0,
+     "record:compacted": 290.0,
+     "record:event_msg:item_completed": 56000.0
+    },
+    "record:world_state": {
+     "custom_tool_call": 53.0,
+     "event_token_count": 5.0,
+     "function_call": 340.0,
+     "reasoning": 320.0,
+     "record:event_msg:item_completed": 570.0,
+     "turn_context": 5200.0
+    },
+    "session_meta": {
+     "developer_message": 250.0,
+     "record:event_msg:task_started": 3500.0,
+     "record:event_msg:thread_settings_applied": 3.0,
+     "user_message": 780.0
+    },
+    "turn_context": {
+     "custom_tool_call": 340.0,
+     "developer_message": 150.0,
+     "event_token_count": 300000.0,
+     "function_call": 210.0,
+     "reasoning": 5700.0,
+     "record:event_msg:item_completed": 14000.0,
+     "record:event_msg:task_complete": 21.0,
+     "record:event_msg:task_started": 3.0,
+     "record:event_msg:thread_settings_applied": 330.0,
+     "record:event_msg:turn_aborted": 330.0,
+     "turn_context": 270.0,
+     "user_message": 13000.0
+    },
+    "user_message": {
+     "developer_message": 20.0,
+     "event_token_count": 550.0,
+     "function_call": 1.0,
+     "function_call_output": 180.0,
+     "reasoning": 3500.0,
+     "record:event_msg:item_completed": 15000.0,
+     "record:event_msg:task_complete": 9900.0,
+     "record:event_msg:task_started": 1900.0,
+     "record:event_msg:thread_goal_updated": 19.0,
+     "record:event_msg:thread_settings_applied": 8.0,
+     "record:event_msg:turn_aborted": 920.0,
+     "record:event_msg:user_message": 3.0,
+     "record:inter_agent_communication_metadata": 3.0,
+     "record:world_state": 3400.0,
+     "turn_context": 860.0,
+     "user_message": 1500.0
+    }
+   }
+  },
+  "subagent": {
+   "gap_ms": {
+    "0": 3400000.0,
+    "1": 290000.0,
+    "10": 89000.0,
+    "11": 150000.0,
+    "12": 150000.0,
+    "13": 100000.0,
+    "14": 58000.0,
+    "15": 24000.0,
+    "16": 4600.0,
+    "17": 1700.0,
+    "18": 610.0,
+    "19": 410.0,
+    "2": 100000.0,
+    "20": 240.0,
+    "21": 200.0,
+    "22": 96.0,
+    "23": 93.0,
+    "24": 47.0,
+    "25": 50.0,
+    "26": 28.0,
+    "27": 9.3,
+    "3": 53000.0,
+    "4": 43000.0,
+    "5": 53000.0,
+    "6": 67000.0,
+    "7": 130000.0,
+    "8": 130000.0,
+    "9": 56000.0
+   },
+   "lengths": {
+    "assistant_message": {
+     "0": 36.0,
+     "1": 3.1,
+     "10": 7200.0,
+     "11": 4000.0,
+     "12": 4400.0,
+     "13": 1700.0,
+     "14": 430.0,
+     "15": 16.0,
+     "16": 3.1,
+     "3": 6.2,
+     "4": 3.1,
+     "5": 16.0,
+     "6": 140.0,
+     "7": 2200.0,
+     "8": 50000.0,
+     "9": 170000.0
+    },
+    "custom_tool_call": {
+     "10": 48000.0,
+     "11": 31000.0,
+     "12": 18000.0,
+     "13": 11000.0,
+     "14": 4500.0,
+     "15": 1400.0,
+     "16": 270.0,
+     "17": 25.0,
+     "4": 16.0,
+     "5": 22.0,
+     "6": 210.0,
+     "7": 16000.0,
+     "8": 43000.0,
+     "9": 71000.0
+    },
+    "custom_tool_call_output": {
+     "10": 16000.0,
+     "11": 13000.0,
+     "12": 13000.0,
+     "13": 16000.0,
+     "14": 17000.0,
+     "15": 16000.0,
+     "16": 19000.0,
+     "17": 22.0,
+     "5": 78.0,
+     "6": 7300.0,
+     "7": 28000.0,
+     "8": 74000.0,
+     "9": 25000.0
+    },
+    "developer_message": {
+     "10": 990.0,
+     "11": 970.0,
+     "12": 1700.0,
+     "13": 9.3,
+     "14": 520.0,
+     "15": 2700.0,
+     "16": 740.0,
+     "6": 6.2,
+     "8": 380.0,
+     "9": 1800.0
+    },
+    "function_call": {
+     "10": 60000.0,
+     "11": 17000.0,
+     "12": 4700.0,
+     "13": 1500.0,
+     "14": 1200.0,
+     "15": 320.0,
+     "16": 59.0,
+     "17": 16.0,
+     "2": 380.0,
+     "20": 3.1,
+     "5": 2900.0,
+     "6": 17000.0,
+     "7": 160000.0,
+     "8": 320000.0,
+     "9": 130000.0
+    },
+    "function_call_output": {
+     "0": 9600.0,
+     "10": 65000.0,
+     "11": 79000.0,
+     "12": 93000.0,
+     "13": 97000.0,
+     "14": 86000.0,
+     "15": 30000.0,
+     "16": 14000.0,
+     "17": 990.0,
+     "18": 84.0,
+     "19": 6.2,
+     "4": 12000.0,
+     "5": 5700.0,
+     "6": 12000.0,
+     "7": 74000.0,
+     "8": 69000.0,
+     "9": 71000.0
+    },
+    "reasoning": {
+     "10": 200000.0,
+     "11": 300000.0,
+     "12": 120000.0,
+     "13": 59000.0,
+     "14": 12000.0,
+     "15": 3100.0,
+     "16": 570.0,
+     "17": 28.0
+    },
+    "user_message": {
+     "1": 34.0,
+     "10": 4300.0,
+     "11": 1500.0,
+     "12": 990.0,
+     "13": 2000.0,
+     "14": 460.0,
+     "15": 1600.0,
+     "16": 850.0,
+     "17": 1900.0,
+     "18": 230.0,
+     "2": 120.0,
+     "3": 700.0,
+     "4": 570.0,
+     "5": 830.0,
+     "6": 1800.0,
+     "7": 3000.0,
+     "8": 6000.0,
+     "9": 3200.0
+    }
+   },
+   "records": {
+    "10": 470.0,
+    "11": 260.0,
+    "12": 93.0,
+    "13": 59.0,
+    "14": 12.0,
+    "15": 16.0,
+    "16": 40.0,
+    "17": 5.0,
+    "3": 3.1,
+    "4": 50.0,
+    "5": 140.0,
+    "6": 190.0,
+    "7": 1100.0,
+    "8": 1400.0,
+    "9": 910.0
+   },
+   "start": {
+    "session_meta": 4700.0
+   },
+   "transitions": {
+    "assistant_message": {
+     "custom_tool_call": 46000.0,
+     "event_token_count": 11000.0,
+     "function_call": 170000.0,
+     "reasoning": 5200.0,
+     "record:event_msg:agent_message": 4.0,
+     "record:event_msg:item_completed": 3100.0,
+     "record:event_msg:task_complete": 600.0,
+     "record:response_item:tool_search_call": 75.0,
+     "record:response_item:web_search_call": 78.0,
+     "record:token_usage_record": 3100.0,
+     "user_message": 140.0
+    },
+    "custom_tool_call": {
+     "custom_tool_call_output": 45000.0,
+     "event_token_count": 60000.0,
+     "record:event_msg:item_completed": 28000.0,
+     "record:token_usage_record": 110000.0
+    },
+    "custom_tool_call_output": {
+     "custom_tool_call": 5300.0,
+     "event_token_count": 200000.0,
+     "function_call": 550.0,
+     "reasoning": 32000.0,
+     "record:compacted": 390.0,
+     "record:event_msg:agent_message": 81.0,
+     "record:event_msg:item_completed": 200.0,
+     "record:event_msg:task_complete": 13.0,
+     "turn_context": 8600.0,
+     "user_message": 900.0
+    },
+    "developer_message": {
+     "developer_message": 3700.0,
+     "function_call": 3.1,
+     "record:event_msg:item_completed": 25.0,
+     "record:event_msg:task_complete": 110.0,
+     "record:event_msg:task_started": 53.0,
+     "record:event_msg:thread_settings_applied": 250.0,
+     "record:event_msg:turn_aborted": 120.0,
+     "record:world_state": 450.0,
+     "turn_context": 270.0,
+     "user_message": 4800.0
+    },
+    "event_token_count": {
+     "custom_tool_call": 12000.0,
+     "custom_tool_call_output": 60000.0,
+     "developer_message": 240.0,
+     "event_token_count": 210000.0,
+     "function_call": 8900.0,
+     "function_call_output": 420000.0,
+     "reasoning": 150000.0,
+     "record:compacted": 1500.0,
+     "record:event_msg:agent_message": 16.0,
+     "record:event_msg:context_compacted": 1800.0,
+     "record:event_msg:item_completed": 190000.0,
+     "record:event_msg:task_complete": 14000.0,
+     "record:event_msg:task_started": 350.0,
+     "record:event_msg:thread_goal_updated": 3.1,
+     "record:event_msg:thread_rolled_back": 9.3,
+     "record:event_msg:thread_settings_applied": 6.2,
+     "record:inter_agent_communication_metadata": 6400.0,
+     "record:response_item:tool_search_call": 3.1,
+     "record:response_item:tool_search_output": 16.0,
+     "record:token_usage_record": 390.0,
+     "record:world_state": 16.0,
+     "turn_context": 3.1,
+     "user_message": 2800.0
+    },
+    "function_call": {
+     "event_token_count": 420000.0,
+     "function_call": 280000.0,
+     "function_call_output": 11000.0,
+     "record:event_msg:item_completed": 3500.0,
+     "record:response_item:tool_search_call": 9.3,
+     "record:token_usage_record": 11000.0,
+     "user_message": 71.0
+    },
+    "function_call_output": {
+     "custom_tool_call": 300.0,
+     "developer_message": 160.0,
+     "event_token_count": 120000.0,
+     "function_call": 16000.0,
+     "function_call_output": 280000.0,
+     "reasoning": 250000.0,
+     "record:compacted": 5300.0,
+     "record:event_msg:agent_message": 410.0,
+     "record:event_msg:item_completed": 1500.0,
+     "record:event_msg:task_complete": 37.0,
+     "record:event_msg:task_started": 96.0,
+     "record:response_item:tool_search_output": 9.3,
+     "record:response_item:web_search_call": 3.1,
+     "turn_context": 42000.0,
+     "user_message": 5600.0
+    },
+    "reasoning": {
+     "assistant_message": 25.0,
+     "custom_tool_call": 180000.0,
+     "event_token_count": 2900.0,
+     "function_call": 250000.0,
+     "reasoning": 8500.0,
+     "record:event_msg:agent_message": 48000.0,
+     "record:event_msg:item_completed": 200000.0,
+     "record:event_msg:task_started": 3.1,
+     "record:response_item:tool_search_call": 37.0,
+     "record:response_item:web_search_call": 830.0,
+     "turn_context": 31.0,
+     "user_message": 56.0
+    },
+    "record:compacted": {
+     "event_token_count": 360.0,
+     "record:compacted": 9.3,
+     "record:event_msg:item_completed": 390.0,
+     "record:event_msg:thread_settings_applied": 6.2,
+     "record:world_state": 1500.0,
+     "turn_context": 6600.0,
+     "user_message": 3.1
+    },
+    "record:event_msg:agent_message": {
+     "assistant_message": 49000.0
+    },
+    "record:event_msg:context_compacted": {
+     "developer_message": 69.0,
+     "event_token_count": 190.0,
+     "function_call": 6.2,
+     "reasoning": 1400.0,
+     "record:event_msg:agent_message": 50.0,
+     "record:event_msg:task_complete": 16.0,
+     "user_message": 17.0
+    },
+    "record:event_msg:item_completed": {
+     "assistant_message": 190000.0,
+     "custom_tool_call": 1200.0,
+     "custom_tool_call_output": 110000.0,
+     "developer_message": 320.0,
+     "event_token_count": 35000.0,
+     "function_call": 200.0,
+     "function_call_output": 11000.0,
+     "reasoning": 220000.0,
+     "record:compacted": 9.3,
+     "record:event_msg:item_completed": 54000.0,
+     "record:event_msg:task_complete": 100.0,
+     "record:event_msg:task_started": 78.0,
+     "record:event_msg:thread_settings_applied": 6.2,
+     "record:token_usage_record": 5800.0,
+     "turn_context": 1800.0,
+     "user_message": 880.0
+    },
+    "record:event_msg:task_complete": {
+     "record:event_msg:item_completed": 220.0,
+     "record:event_msg:task_complete": 59.0,
+     "record:event_msg:task_started": 9600.0,
+     "record:event_msg:thread_settings_applied": 96.0,
+     "user_message": 450.0
+    },
+    "record:event_msg:task_started": {
+     "developer_message": 4300.0,
+     "event_token_count": 47.0,
+     "record:compacted": 300.0,
+     "record:event_msg:item_completed": 330.0,
+     "record:token_usage_record": 3.1,
+     "record:world_state": 56.0,
+     "turn_context": 9600.0,
+     "user_message": 1600.0
+    },
+    "record:event_msg:thread_goal_updated": {
+     "record:event_msg:item_completed": 3.1,
+     "record:event_msg:thread_settings_applied": 3.1
+    },
+    "record:event_msg:thread_rolled_back": {
+     "event_token_count": 1.0,
+     "record:event_msg:task_started": 9.3
+    },
+    "record:event_msg:thread_settings_applied": {
+     "event_token_count": 450.0,
+     "record:event_msg:task_complete": 31.0,
+     "record:event_msg:task_started": 500.0
+    },
+    "record:event_msg:turn_aborted": {
+     "event_token_count": 9.3,
+     "record:event_msg:item_completed": 34.0,
+     "record:event_msg:task_complete": 12.0,
+     "record:event_msg:task_started": 850.0,
+     "record:event_msg:thread_goal_updated": 3.1,
+     "record:event_msg:thread_rolled_back": 1.0,
+     "record:event_msg:thread_settings_applied": 3.1,
+     "user_message": 6.2
+    },
+    "record:event_msg:user_message": {
+     "event_token_count": 1100.0,
+     "reasoning": 570.0,
+     "record:event_msg:agent_message": 12.0,
+     "user_message": 34.0
+    },
+    "record:inter_agent_communication_metadata": {
+     "record:response_item:agent_message": 11000.0
+    },
+    "record:response_item:agent_message": {
+     "custom_tool_call": 360.0,
+     "developer_message": 3.1,
+     "event_token_count": 22.0,
+     "function_call": 190.0,
+     "reasoning": 890.0,
+     "record:event_msg:item_completed": 8600.0,
+     "record:inter_agent_communication_metadata": 680.0,
+     "record:world_state": 3.1
+    },
+    "record:response_item:tool_search_call": {
+     "event_token_count": 16.0,
+     "function_call_output": 9.3,
+     "record:response_item:tool_search_output": 100.0
+    },
+    "record:response_item:tool_search_output": {
+     "event_token_count": 110.0,
+     "reasoning": 16.0
+    },
+    "record:response_item:web_search_call": {
+     "reasoning": 840.0,
+     "record:event_msg:item_completed": 65.0,
+     "user_message": 3.1
+    },
+    "record:token_usage_record": {
+     "custom_tool_call_output": 28000.0,
+     "event_token_count": 3100.0,
+     "function_call_output": 3000.0,
+     "record:compacted": 430.0,
+     "record:event_msg:item_completed": 97000.0
+    },
+    "record:world_state": {
+     "assistant_message": 200.0,
+     "developer_message": 140.0,
+     "function_call": 3.1,
+     "record:compacted": 360.0,
+     "record:event_msg:item_completed": 40.0,
+     "record:event_msg:thread_settings_applied": 6.2,
+     "record:world_state": 1200.0,
+     "turn_context": 5000.0,
+     "user_message": 120.0
+    },
+    "session_meta": {
+     "developer_message": 690.0,
+     "record:compacted": 390.0,
+     "record:event_msg:task_started": 3400.0,
+     "record:event_msg:thread_settings_applied": 120.0,
+     "session_meta": 290.0,
+     "user_message": 62.0
+    },
+    "turn_context": {
+     "assistant_message": 65.0,
+     "custom_tool_call": 620.0,
+     "developer_message": 25.0,
+     "event_token_count": 16000.0,
+     "function_call": 1000.0,
+     "reasoning": 15000.0,
+     "record:compacted": 22.0,
+     "record:event_msg:item_completed": 29000.0,
+     "record:event_msg:thread_settings_applied": 450.0,
+     "record:inter_agent_communication_metadata": 3700.0,
+     "record:world_state": 430.0,
+     "turn_context": 530.0,
+     "user_message": 11000.0
+    },
+    "user_message": {
+     "assistant_message": 330.0,
+     "developer_message": 120.0,
+     "event_token_count": 1800.0,
+     "function_call_output": 800.0,
+     "reasoning": 1900.0,
+     "record:compacted": 93.0,
+     "record:event_msg:item_completed": 14000.0,
+     "record:event_msg:task_complete": 44.0,
+     "record:event_msg:task_started": 1300.0,
+     "record:event_msg:thread_settings_applied": 50.0,
+     "record:event_msg:turn_aborted": 960.0,
+     "record:event_msg:user_message": 1700.0,
+     "record:world_state": 3400.0,
+     "turn_context": 2300.0,
+     "user_message": 1600.0
+    }
+   }
+  }
+ },
+ "subagents_per_session": {
+  "0": 4300,
+  "1": 72,
+  "2": 65,
+  "3": 46,
+  "4": 16,
+  "5": 13,
+  "6": 10,
+  "7": 11,
+  "8": 5,
+  "9": 4
+ },
+ "template_strings": {
+  "record:compacted": {
+   "0": 17000.0,
+   "1": 3.0,
+   "10": 7500.0,
+   "11": 4300.0,
+   "12": 5800.0,
+   "13": 3700.0,
+   "14": 1600.0,
+   "15": 2500.0,
+   "16": 950.0,
+   "17": 750.0,
+   "18": 23.0,
+   "19": 24.0,
+   "2": 350.0,
+   "3": 130000.0,
+   "4": 110000.0,
+   "5": 24000.0,
+   "6": 59000.0,
+   "7": 16000.0,
+   "8": 13000.0,
+   "9": 9200.0
+  },
+  "record:event_msg:agent_message": {
+   "0": 11.0,
+   "10": 820.0,
+   "11": 270.0,
+   "12": 600.0,
+   "13": 260.0,
+   "14": 75.0,
+   "4": 150000.0,
+   "5": 49000.0,
+   "6": 18.0,
+   "7": 250.0,
+   "8": 11000.0,
+   "9": 36000.0
+  },
+  "record:event_msg:context_compacted": {
+   "4": 1800.0,
+   "5": 3500.0
+  },
+  "record:event_msg:item_completed": {
+   "0": 380000.0,
+   "1": 2700.0,
+   "10": 410000.0,
+   "11": 150000.0,
+   "12": 150000.0,
+   "13": 140000.0,
+   "14": 140000.0,
+   "15": 91000.0,
+   "16": 47000.0,
+   "17": 8000.0,
+   "18": 4000.0,
+   "19": 2000.0,
+   "2": 410000.0,
+   "20": 3000.0,
+   "21": 410.0,
+   "22": 3.0,
+   "23": 9.2,
+   "24": 2.0,
+   "3": 1900000.0,
+   "4": 7200000.0,
+   "5": 3800000.0,
+   "6": 5400000.0,
+   "7": 490000.0,
+   "8": 550000.0,
+   "9": 650000.0
+  },
+  "record:event_msg:task_complete": {
+   "10": 5500.0,
+   "11": 7300.0,
+   "12": 5800.0,
+   "13": 2200.0,
+   "14": 580.0,
+   "15": 38.0,
+   "16": 6.1,
+   "17": 6.0,
+   "3": 44.0,
+   "4": 86000.0,
+   "5": 38000.0,
+   "6": 27000.0,
+   "7": 260.0,
+   "8": 1300.0,
+   "9": 2800.0
+  },
+  "record:event_msg:task_started": {
+   "3": 42000.0,
+   "4": 95000.0,
+   "5": 42000.0,
+   "6": 32000.0
+  },
+  "record:event_msg:thread_goal_updated": {
+   "10": 120.0,
+   "11": 5700.0,
+   "3": 36000.0,
+   "4": 36000.0,
+   "5": 73000.0,
+   "6": 110000.0,
+   "7": 24000.0,
+   "8": 73.0,
+   "9": 6200.0
+  },
+  "record:event_msg:thread_rolled_back": {
+   "4": 10.0,
+   "5": 21.0
+  },
+  "record:event_msg:thread_settings_applied": {
+   "10": 940.0,
+   "11": 650.0,
+   "14": 110.0,
+   "2": 700.0,
+   "3": 21000.0,
+   "4": 14000.0,
+   "5": 9000.0,
+   "6": 2100.0,
+   "7": 27.0
+  },
+  "record:event_msg:turn_aborted": {
+   "4": 11000.0,
+   "5": 3200.0,
+   "6": 2100.0
+  },
+  "record:event_msg:user_message": {
+   "10": 110.0,
+   "11": 29.0,
+   "12": 14.0,
+   "13": 5.0,
+   "14": 16.0,
+   "2": 19.0,
+   "3": 110.0,
+   "4": 3500.0,
+   "5": 1800.0,
+   "6": 260.0,
+   "7": 300.0,
+   "8": 310.0,
+   "9": 250.0
+  },
+  "record:inter_agent_communication_metadata": {
+   "5": 15000.0,
+   "6": 15000.0
+  },
+  "record:response_item:agent_message": {
+   "10": 7300.0,
+   "11": 2800.0,
+   "12": 580.0,
+   "13": 290.0,
+   "14": 70.0,
+   "15": 6.0,
+   "3": 12000.0,
+   "4": 44000.0,
+   "5": 42000.0,
+   "6": 30000.0,
+   "7": 13000.0,
+   "8": 280.0,
+   "9": 3400.0
+  },
+  "record:response_item:tool_search_call": {
+   "3": 2300.0,
+   "4": 4500.0,
+   "5": 8100.0,
+   "6": 2500.0,
+   "7": 110.0,
+   "8": 3.0
+  },
+  "record:response_item:tool_search_output": {
+   "0": 23.0,
+   "10": 150.0,
+   "11": 380.0,
+   "12": 93.0,
+   "13": 55.0,
+   "3": 2300.0,
+   "4": 23000.0,
+   "5": 12000.0,
+   "6": 5300.0,
+   "7": 1100.0,
+   "8": 2600.0,
+   "9": 2700.0
+  },
+  "record:response_item:web_search_call": {
+   "2": 3.0,
+   "3": 1000.0,
+   "4": 8300.0,
+   "5": 2700.0,
+   "6": 2200.0,
+   "7": 1500.0,
+   "8": 42.0
+  },
+  "record:token_usage_record": {
+   "5": 460000.0,
+   "6": 1100000.0
+  },
+  "record:world_state": {
+   "0": 3900.0,
+   "10": 97.0,
+   "11": 270.0,
+   "13": 6.0,
+   "14": 3800.0,
+   "15": 9800.0,
+   "16": 720.0,
+   "17": 3700.0,
+   "2": 60000.0,
+   "3": 6300.0,
+   "4": 77000.0,
+   "5": 57000.0,
+   "6": 34000.0,
+   "7": 1200.0,
+   "8": 9600.0,
+   "9": 3300.0
+  }
+ },
+ "templates": {
+  "record:compacted": [
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "compaction_response_id": "null",
+      "latest_token_usage_record": "null",
+      "message": "str",
+      "replacement_history": [
+       {
+        "content": [
+         {
+          "text": "str",
+          "type": "str"
+         }
+        ],
+        "role": "str",
+        "type": "str"
+       }
+      ]
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 9600.0
+   },
+   {
+    "skeleton": {
+     "payload": {
+      "message": "str",
+      "replacement_history": [
+       {
+        "content": [
+         {
+          "text": "str",
+          "type": "str"
+         }
+        ],
+        "role": "str",
+        "type": "str"
+       }
+      ]
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 1500.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "compaction_response_id": "null",
+      "first_window_id": "str",
+      "latest_token_usage_record": "null",
+      "message": "str",
+      "previous_window_id": "str",
+      "replacement_history": [
+       {
+        "content": [
+         {
+          "text": "str",
+          "type": "str"
+         }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+         "turn_id": "str"
+        },
+        "role": "str",
+        "type": "str"
+       }
+      ],
+      "window_id": "str",
+      "window_number": "int"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 1300.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "compaction_response_id": "null",
+      "latest_token_usage_record": "null",
+      "message": "str",
+      "replacement_history": [
+       {
+        "content": [
+         {
+          "text": "str",
+          "type": "str"
+         }
+        ],
+        "role": "str",
+        "type": "str"
+       }
+      ],
+      "window_number": "int"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 1000.0
+   }
+  ],
+  "record:event_msg:agent_message": [
+   {
+    "skeleton": {
+     "payload": {
+      "message": "str",
+      "phase": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 49000.0
+   }
+  ],
+  "record:event_msg:context_compacted": [
+   {
+    "skeleton": {
+     "payload": {
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 1800.0
+   }
+  ],
+  "record:event_msg:item_completed": [
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "completed_at_ms": "int",
+      "item": {
+       "content": [
+        {
+         "text": "str",
+         "type": "str"
+        }
+       ],
+       "id": "str",
+       "phase": "str",
+       "type": "str"
+      },
+      "thread_id": "str",
+      "turn_id": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 460000.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "completed_at_ms": "int",
+      "item": {
+       "id": "str",
+       "raw_content": [],
+       "summary_text": [],
+       "type": "str"
+      },
+      "started_at_ms": "int",
+      "thread_id": "str",
+      "turn_id": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 410000.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "completed_at_ms": "int",
+      "item": {
+       "id": "str",
+       "raw_content": [],
+       "summary_text": [
+        "str"
+       ],
+       "type": "str"
+      },
+      "thread_id": "str",
+      "turn_id": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 330000.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "completed_at_ms": "int",
+      "item": {
+       "aggregated_output": "str",
+       "command": [
+        "str"
+       ],
+       "cwd": "str",
+       "duration": {
+        "nanos": "int",
+        "secs": "int"
+       },
+       "exit_code": "int",
+       "formatted_output": "str",
+       "id": "str",
+       "parsed_cmd": [
+        {
+         "cmd": "str",
+         "type": "str"
+        }
+       ],
+       "process_id": "str",
+       "source": "str",
+       "status": "str",
+       "stderr": "str",
+       "stdout": "str",
+       "type": "str"
+      },
+      "started_at_ms": "int",
+      "thread_id": "str",
+      "turn_id": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 220000.0
+   }
+  ],
+  "record:event_msg:task_complete": [
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "completed_at": "int",
+      "last_agent_message": "null",
+      "turn_id": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 11000.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "completed_at": "int",
+      "duration_ms": "int",
+      "last_agent_message": "str",
+      "started_at": "int",
+      "time_to_first_token_ms": "int",
+      "turn_id": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 11000.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "last_agent_message": "str",
+      "turn_id": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 8000.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "completed_at": "int",
+      "duration_ms": "int",
+      "last_agent_message": "str",
+      "time_to_first_token_ms": "int",
+      "turn_id": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 5100.0
+   }
+  ],
+  "record:event_msg:task_started": [
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "collaboration_mode_kind": "str",
+      "model_context_window": "int",
+      "started_at": "int",
+      "turn_id": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 17000.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "collaboration_mode_kind": "str",
+      "model_context_window": "null",
+      "started_at": "int",
+      "turn_id": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 12000.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "collaboration_mode_kind": "str",
+      "model_context_window": "int",
+      "turn_id": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 9500.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "collaboration_mode_kind": "str",
+      "model_context_window": "int",
+      "root_turn_id": "str",
+      "started_at": "int",
+      "turn_id": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 1700.0
+   }
+  ],
+  "record:event_msg:thread_goal_updated": [
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "goal": {
+       "createdAt": "int",
+       "objective": "str",
+       "status": "str",
+       "threadId": "str",
+       "timeUsedSeconds": "int",
+       "tokensUsed": "int",
+       "updatedAt": "int"
+      },
+      "threadId": "str",
+      "turnId": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 36000.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "goal": {
+       "createdAt": "int",
+       "objective": "str",
+       "status": "str",
+       "threadId": "str",
+       "timeUsedSeconds": "int",
+       "tokensUsed": "int",
+       "updatedAt": "int"
+      },
+      "threadId": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 240.0
+   }
+  ],
+  "record:event_msg:thread_rolled_back": [
+   {
+    "skeleton": {
+     "payload": {
+      "num_turns": "int",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 10.0
+   }
+  ],
+  "record:event_msg:thread_settings_applied": [
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "thread_settings": {
+       "approval_policy": "str",
+       "approvals_reviewer": "str",
+       "collaboration_mode": {
+        "mode": "str",
+        "settings": {
+         "developer_instructions": "str",
+         "model": "str",
+         "reasoning_effort": "str"
+        }
+       },
+       "cwd": "str",
+       "model": "str",
+       "model_provider_id": "str",
+       "permission_profile": {
+        "type": "str"
+       },
+       "personality": "str",
+       "reasoning_effort": "str",
+       "service_tier": "str"
+      },
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 970.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "thread_id": "str",
+      "thread_settings": {
+       "approval_policy": "str",
+       "approvals_reviewer": "str",
+       "collaboration_mode": {
+        "mode": "str",
+        "settings": {
+         "developer_instructions": "str",
+         "model": "str",
+         "reasoning_effort": "str"
+        }
+       },
+       "cwd": "str",
+       "model": "str",
+       "model_provider_id": "str",
+       "permission_profile": {
+        "type": "str"
+       },
+       "personality": "str",
+       "reasoning_effort": "str",
+       "service_tier": "str"
+      },
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 680.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "thread_id": "str",
+      "thread_settings": {
+       "approval_policy": "str",
+       "approvals_reviewer": "str",
+       "collaboration_mode": {
+        "mode": "str",
+        "settings": {
+         "developer_instructions": "null",
+         "model": "str",
+         "reasoning_effort": "str"
+        }
+       },
+       "cwd": "str",
+       "disabled_plugin_ids": [],
+       "model": "str",
+       "model_provider_id": "str",
+       "permission_profile": {
+        "type": "str"
+       },
+       "reasoning_effort": "str",
+       "reasoning_summary": "str",
+       "runtime_workspace_roots": [
+        "str"
+       ],
+       "service_tier": "str"
+      },
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 450.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "thread_id": "str",
+      "thread_settings": {
+       "approval_policy": "str",
+       "approvals_reviewer": "str",
+       "collaboration_mode": {
+        "mode": "str",
+        "settings": {
+         "developer_instructions": "null",
+         "model": "str",
+         "reasoning_effort": "str"
+        }
+       },
+       "cwd": "str",
+       "model": "str",
+       "model_provider_id": "str",
+       "permission_profile": {
+        "type": "str"
+       },
+       "personality": "str",
+       "reasoning_effort": "str",
+       "reasoning_summary": "str",
+       "service_tier": "str"
+      },
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 450.0
+   }
+  ],
+  "record:event_msg:turn_aborted": [
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "reason": "str",
+      "turn_id": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 1900.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "completed_at": "int",
+      "duration_ms": "int",
+      "reason": "str",
+      "turn_id": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 780.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "completed_at": "int",
+      "duration_ms": "int",
+      "reason": "str",
+      "started_at": "int",
+      "turn_id": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 380.0
+   },
+   {
+    "skeleton": {
+     "payload": {
+      "reason": "str",
+      "turn_id": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 96.0
+   }
+  ],
+  "record:event_msg:user_message": [
+   {
+    "skeleton": {
+     "payload": {
+      "images": [],
+      "local_images": [],
+      "message": "str",
+      "text_elements": [],
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 1700.0
+   }
+  ],
+  "record:inter_agent_communication_metadata": [
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "trigger_turn": "bool"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 15000.0
+   }
+  ],
+  "record:response_item:agent_message": [
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "author": "str",
+      "content": [
+       {
+        "text": "str",
+        "type": "str"
+       }
+      ],
+      "id": "str",
+      "internal_chat_message_metadata_passthrough": {
+       "create_time": "float",
+       "turn_id": "str"
+      },
+      "recipient": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 13000.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "author": "str",
+      "content": [
+       {
+        "text": "str",
+        "type": "str"
+       }
+      ],
+      "internal_chat_message_metadata_passthrough": {
+       "turn_id": "str"
+      },
+      "recipient": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 1200.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "author": "str",
+      "content": [
+       {
+        "text": "str",
+        "type": "str"
+       }
+      ],
+      "id": "str",
+      "internal_chat_message_metadata_passthrough": {
+       "turn_id": "str"
+      },
+      "recipient": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 27.0
+   }
+  ],
+  "record:response_item:tool_search_call": [
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "arguments": {
+       "limit": "int",
+       "query": "str"
+      },
+      "call_id": "str",
+      "execution": "str",
+      "status": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 1400.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "arguments": {
+       "limit": "int",
+       "query": "str"
+      },
+      "call_id": "str",
+      "execution": "str",
+      "id": "str",
+      "internal_chat_message_metadata_passthrough": {
+       "turn_id": "str"
+      },
+      "status": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 870.0
+   }
+  ],
+  "record:response_item:tool_search_output": [
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "call_id": "str",
+      "execution": "str",
+      "status": "str",
+      "tools": [
+       {
+        "description": "str",
+        "name": "str",
+        "tools": [
+         {
+          "defer_loading": "bool",
+          "description": "str",
+          "name": "str",
+          "parameters": "obj",
+          "strict": "bool",
+          "type": "str"
+         }
+        ],
+        "type": "str"
+       }
+      ],
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 1700.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "call_id": "str",
+      "execution": "str",
+      "internal_chat_message_metadata_passthrough": {
+       "turn_id": "str"
+      },
+      "status": "str",
+      "tools": [
+       {
+        "description": "str",
+        "name": "str",
+        "tools": [
+         {
+          "defer_loading": "bool",
+          "description": "str",
+          "name": "str",
+          "parameters": "obj",
+          "strict": "bool",
+          "type": "str"
+         }
+        ],
+        "type": "str"
+       }
+      ],
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 590.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "call_id": "str",
+      "execution": "str",
+      "internal_chat_message_metadata_passthrough": {
+       "turn_id": "str"
+      },
+      "status": "str",
+      "tools": [],
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 11.0
+   }
+  ],
+  "record:response_item:web_search_call": [
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "action": {
+       "queries": [
+        "str"
+       ],
+       "query": "str",
+       "type": "str"
+      },
+      "status": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 860.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "status": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 450.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "action": {
+       "type": "str",
+       "url": "str"
+      },
+      "status": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 420.0
+   },
+   {
+    "skeleton": {
+     "payload": {
+      "status": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 200.0
+   }
+  ],
+  "record:token_usage_record": [
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "response_id": "str",
+      "root_turn_id": "str",
+      "session_id": "str",
+      "thread_id": "str",
+      "thread_token_usage": {
+       "cache_write_input_tokens": "int",
+       "cached_input_tokens": "int",
+       "input_tokens": "int",
+       "output_tokens": "int",
+       "reasoning_output_tokens": "int",
+       "total_tokens": "int"
+      },
+      "turn_id": "str",
+      "turn_token_usage": {
+       "cache_write_input_tokens": "int",
+       "cached_input_tokens": "int",
+       "input_tokens": "int",
+       "output_tokens": "int",
+       "reasoning_output_tokens": "int",
+       "total_tokens": "int"
+      },
+      "usage": {
+       "cache_write_input_tokens": "int",
+       "cached_input_tokens": "int",
+       "input_tokens": "int",
+       "output_tokens": "int",
+       "reasoning_output_tokens": "int",
+       "total_tokens": "int"
+      }
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 230000.0
+   }
+  ],
+  "record:world_state": [
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "full": "bool",
+      "state": {
+       "environments": {
+        "subagents": "str"
+       }
+      }
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 3200.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "full": "bool",
+      "state": {
+       "agents_md": {
+        "directory": "str",
+        "text": "str"
+       },
+       "apps_instructions": "bool",
+       "environments": {
+        "current_date": "str",
+        "environments": {
+         "local": {
+          "cwd": "str",
+          "shell": "str",
+          "status": "str"
+         }
+        },
+        "filesystem": "str",
+        "timezone": "str"
+       },
+       "environments_instructions": "bool",
+       "git_attribution": "bool",
+       "host_skills": {
+        "body": "str",
+        "includeInstructions": "bool"
+       },
+       "model": "str",
+       "multi_agent_mode": {},
+       "orchestrator_skills": {
+        "enabled": "bool",
+        "includeInstructions": "bool"
+       },
+       "permissions": {
+        "approved_command_prefixes": [
+         [
+          "str"
+         ]
+        ],
+        "instructions": "str"
+       },
+       "personality": {
+        "model": "str",
+        "personality": "str"
+       },
+       "plugins_instructions": "bool",
+       "realtime": {
+        "active": "bool"
+       },
+       "skills": {
+        "includeInstructions": "bool"
+       }
+      }
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 1300.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "full": "bool",
+      "state": {
+       "agents_md": {
+        "directory": "str",
+        "text": "str"
+       },
+       "apps_instructions": "bool",
+       "collaboration_mode": {
+        "instructions": "str",
+        "mode": "str",
+        "model": "str"
+       },
+       "environments": {
+        "current_date": "str",
+        "environments": {
+         "local": {
+          "cwd": "str",
+          "shell": "str",
+          "status": "str"
+         }
+        },
+        "filesystem": "str",
+        "timezone": "str"
+       },
+       "environments_instructions": "bool",
+       "git_attribution": "bool",
+       "host_skills": {
+        "body": "str",
+        "includeInstructions": "bool"
+       },
+       "model": "str",
+       "multi_agent_mode": {},
+       "orchestrator_skills": {
+        "enabled": "bool",
+        "includeInstructions": "bool"
+       },
+       "permissions": {
+        "approved_command_prefixes": [
+         [
+          "str"
+         ]
+        ],
+        "instructions": "str"
+       },
+       "personality": {
+        "model": "str",
+        "personality": "str"
+       },
+       "plugins_instructions": "bool",
+       "realtime": {
+        "active": "bool"
+       },
+       "skills": {
+        "includeInstructions": "bool"
+       }
+      }
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 1300.0
+   },
+   {
+    "skeleton": {
+     "ordinal": "int",
+     "payload": {
+      "full": "bool",
+      "state": {
+       "agents_md": {
+        "directory": "str",
+        "text": "str"
+       },
+       "apps_instructions": "bool",
+       "collaboration_mode": {
+        "instructions": "str",
+        "mode": "str",
+        "model": "str"
+       },
+       "context_window_guidance": "str",
+       "environments": {
+        "current_date": "str",
+        "environments": {
+         "local": {
+          "cwd": "str",
+          "shell": "str",
+          "status": "str"
+         }
+        },
+        "filesystem": "str",
+        "timezone": "str"
+       },
+       "environments_instructions": "bool",
+       "git_attribution": "bool",
+       "host_skills": {
+        "body": "str",
+        "includeInstructions": "bool"
+       },
+       "managed_developer_instructions": {},
+       "model": "str",
+       "multi_agent_mode": {
+        "mode": "str",
+        "usage_hint_hash": "str"
+       },
+       "multi_agent_usage_hint": "str",
+       "orchestrator_skills": {
+        "enabled": "bool",
+        "includeInstructions": "bool"
+       },
+       "permissions": {
+        "approved_command_prefixes": [
+         [
+          "str"
+         ]
+        ],
+        "instructions": "str"
+       },
+       "persistent_mode": {},
+       "personality": {
+        "model": "str",
+        "personality": "str"
+       },
+       "plugins_instructions": "bool",
+       "realtime": {
+        "active": "bool"
+       },
+       "skills": {
+        "includeInstructions": "bool"
+       }
+      }
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 1200.0
+   }
+  ]
+ },
+ "version": 1
+}

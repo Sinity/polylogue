@@ -97,6 +97,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools schema parser-diff` | List observed provider wire keys that no parser references. |
 | `devtools schema promote` | Promote a schema evidence cluster into a registered package version. |
 | `devtools schema reconcile` | Account for every declared schema subject after a generation pass. |
+| `devtools schema workload-profile` | Measure the aggregate-only synthetic workload profile of an origin from its real sources. |
 
 ### Benchmarking
 

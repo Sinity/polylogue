@@ -294,6 +294,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "schema workload-profile",
+        "schema",
+        "Measure the aggregate-only synthetic workload profile of an origin from its real sources.",
+        "devtools.schema_workload_profile",
+        use_when=(
+            "After provider formats or usage patterns drift, re-measure the committed "
+            "workload-corpus.json that fixtures and benchmarks generate from."
+        ),
+        examples=(
+            "devtools schema workload-profile --origin claude-code",
+            "devtools schema workload-profile --origin codex --write",
+        ),
+    ),
+    CommandSpec(
         "schema compare",
         "schema",
         "Compare two committed schema package versions for a provider.",
