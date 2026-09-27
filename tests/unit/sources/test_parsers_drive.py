@@ -1047,3 +1047,22 @@ def test_drive_parent_chain_orders_by_instant_not_by_timestamp_text() -> None:
         later_text_earlier_instant,
     ]
     assert _sort_instant(None) <= _sort_instant("garbage") < _sort_instant(earlier_text_later_instant)
+
+
+def test_thought_signatures_stay_out_of_hashed_block_metadata() -> None:
+    """Gemini thought signatures are re-issued on replay, like Claude's signature.
+
+    Anti-vacuity: copy every metadata key again and the THINKING block's
+    hashed metadata carries ``thoughtSignatures``, so an otherwise identical
+    replay changes the block's content identity.
+    """
+    from polylogue.sources.parsers.drive_support_blocks import parsed_blocks_from_meta
+
+    blocks = parsed_blocks_from_meta(
+        [{"type": "thinking", "text": "why", "metadata": {"thoughtSignatures": ["sig-a"], "thinkingBudget": 64}}]
+    )
+
+    assert len(blocks) == 1
+    metadata = blocks[0].metadata or {}
+    assert "thoughtSignatures" not in metadata
+    assert metadata.get("thinkingBudget") == 64

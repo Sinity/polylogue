@@ -279,3 +279,15 @@ def test_fast_walk_still_names_the_path_of_a_refused_value() -> None:
     with pytest.raises(UnhashablePayloadValueError) as caught:
         _normalize_nested_for_hash({"outer": {"inner": [1, {"leaf": object()}]}})
     assert "payload.outer.inner[].leaf" in str(caught.value)
+
+
+def test_decimals_beyond_float_precision_keep_distinct_identities() -> None:
+    """Two decimals a float cannot tell apart must not hash alike.
+
+    Anti-vacuity: lower every ``Decimal`` through ``float`` again and both
+    values become ``9007199254740992.0``, so the payloads compare equal.
+    """
+    low = _normalize_nested_for_hash({"k": Decimal("9007199254740992")})
+    high = _normalize_nested_for_hash({"k": Decimal("9007199254740993")})
+    assert low != high
+    assert hash_payload(low) != hash_payload(high)

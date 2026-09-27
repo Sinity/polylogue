@@ -634,3 +634,27 @@ def test_over_ceiling_member_resolves_against_the_identity_acquisition_recorded(
         ).outcome
         == "hint_verified"
     )
+
+
+def test_replay_refuses_to_guess_a_provider_from_the_public_origin(tmp_path: Path) -> None:
+    """An unrecorded capture mode leaves the member unproven.
+
+    The public ``aistudio-drive`` origin maps onto more than one provider, so
+    it cannot stand in for the recorded capture mode.
+
+    Anti-vacuity: restore the ``provider_from_origin`` fallback and replay
+    proceeds under a guessed provider instead of returning this refusal.
+    """
+    zip_path = tmp_path / "export.zip"
+    _write_member(zip_path, [_META, _session("only")])
+    recorded_path = f"{zip_path}:conversations.json"
+    row = {
+        **_row(recorded_path, payload=dumps_bytes(_session("only")), source_index=0),
+        "capture_mode": "",
+        "origin": "aistudio-drive",
+    }
+
+    payload, error = zip_reacquisition_payload(row, source_path=recorded_path, zip_payload_cache={})
+
+    assert payload is None
+    assert error == "replay_provider_unrecorded"

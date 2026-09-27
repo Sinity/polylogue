@@ -145,3 +145,22 @@ def test_a_newline_separated_transition_still_applies() -> None:
     conn.execute("INSERT INTO records (value) VALUES ('new')")
     assert conn.execute("SELECT note FROM records WHERE value = 'new'").fetchone()[0] == "seen;"
     assert conn.execute("SELECT note FROM records WHERE value = 'kept'").fetchone()[0] == "a;b"
+
+
+@pytest.mark.parametrize("control", ["COMMIT;", "ROLLBACK;", "BEGIN;", "END;", "SAVEPOINT s;", "RELEASE s;"])
+def test_transaction_control_is_refused_before_it_runs(control: str) -> None:
+    """A step may not end or nest the engine's transaction.
+
+    Anti-vacuity: without the leading-keyword refusal a ``COMMIT`` executes,
+    commits the preceding ``ALTER`` outside the engine's rollback, and the
+    column survives the failed step.
+    """
+    conn = _seeded_connection()
+    engine = SchemaFastForwardEngine(
+        (SchemaFastForwardStep(2, f"ALTER TABLE records ADD COLUMN escaped TEXT; {control}"),),
+        tier="fixture",
+    )
+
+    with pytest.raises(SchemaFastForwardError, match="transaction control"):
+        engine.execute(conn)
+    assert "escaped" not in {row[1] for row in conn.execute("PRAGMA table_info(records)")}
