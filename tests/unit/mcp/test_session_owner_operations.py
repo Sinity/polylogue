@@ -479,13 +479,15 @@ async def test_session_continuation_freezes_relative_date_scope(tmp_path: Path, 
 
 
 @pytest.mark.parametrize("operation", ["search", "memory", "list", "timeline"])
-def test_raw_owner_withholds_a_match_changed_between_scan_and_emission(
+def test_raw_owner_emits_the_observation_its_text_was_read_under(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
-    """A first-page result cannot combine an old snippet with a newer file observation.
+    """A result never combines an old snippet with a newer file observation.
 
-    The stale row is withheld and named as a coverage gap (typed degraded
-    outcome) instead of aborting the whole page with an internal error.
+    A change after the scan does not withhold the row (the continuation has
+    already moved past it) and does not relabel it: the emitted size and
+    mtime are the scan-time observation. Anti-vacuity: re-stating the file
+    at emission reports the appended size.
     """
     from polylogue.operations.raw_sessions.sessions import SessionLogService
 
@@ -509,10 +511,12 @@ def test_raw_owner_withholds_a_match_changed_between_scan_and_emission(
         "list": RawList(origin="codex-session"),
         "timeline": RawTimeline(origins=["codex-session"]),
     }
+    target = sources[0].root / "original-2.jsonl"
+    before = target.stat()
     page = raw_operation(requests[operation], sources=sources)
-    assert page.outcome == "degraded"
-    assert "codex:original-2.jsonl" not in [item.reference for item in page.items]
-    assert any("codex:original-2.jsonl" in gap and "between scan and emission" in gap for gap in page.coverage.gaps)
+    emitted = [item for item in page.items if item.reference == "codex:original-2.jsonl"]
+    assert emitted and target.stat().st_size > before.st_size
+    assert all(item.bytes == before.st_size and item.mtime_ns == before.st_mtime_ns for item in emitted)
 
 
 @pytest.mark.asyncio

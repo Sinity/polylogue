@@ -484,9 +484,17 @@ class SessionLogService:
             raise SessionError("max_results must be a positive integer")
         budget = self._scan_bytes(scan_bytes)
         query_sha256 = hashlib.sha256(query.encode("utf-8")).hexdigest()
-        # The reference filter is part of the scope: a continuation begun on
-        # one file can never resume over another population.
-        scope = {"principal": self.scope, "provider": provider, "query_sha256": query_sha256, "reference": reference}
+        # The reference filter is part of the scope, so a continuation begun on
+        # one file never resumes over another population. It is bound by
+        # digest: an exact path of any valid length stays in the private
+        # snapshot binding, not in the size-bounded token.
+        reference_sha256 = hashlib.sha256(reference.encode()).hexdigest() if reference is not None else None
+        scope = {
+            "principal": self.scope,
+            "provider": provider,
+            "query_sha256": query_sha256,
+            "reference_sha256": reference_sha256,
+        }
         binding = SnapshotBinding(self.scope, provider, query_sha256, reference, source.root)
         purpose = "session-search"
         snapshot_handle: str | None = None
@@ -551,33 +559,6 @@ class SessionLogService:
             "next_cursor": result["next_cursor"],
             "gaps": gaps,
         }
-
-    def carry_withheld(
-        self,
-        cursor: str,
-        *,
-        cursor_key: bytes,
-        provider: str,
-        query: str,
-        reference: str | None,
-        withheld: int,
-    ) -> str:
-        """Re-sign a search continuation so matches withheld at emission stay counted.
-
-        Emission-time withholding happens after the scanner issued its token;
-        without this the final page of the continuation would report complete
-        coverage although a selected file was never represented.
-        """
-        scope = {
-            "principal": self.scope,
-            "provider": provider,
-            "query_sha256": hashlib.sha256(query.encode("utf-8")).hexdigest(),
-            "reference": reference,
-        }
-        codec = OpaqueSessionCursor(self.scope, cursor_key, "session-search")
-        handle, state = codec.decode_snapshot(cursor, scope)
-        state = {**state, "skipped": int(state["skipped"]) + withheld}
-        return codec.encode({**scope, "snapshot": handle}, state, version=SNAPSHOT_CURSOR_VERSION)
 
     def timeline(
         self,

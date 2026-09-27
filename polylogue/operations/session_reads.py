@@ -399,32 +399,21 @@ def raw_operation(
                 "coverage": {"scanned_bytes": result["scanned_bytes"], "truncated": result["truncated"]},
             }
         ]
-    from polylogue.operations.raw_sessions.sessions import SessionError
-
+    # Each row carries the stat identity its text was read under; the scanner
+    # verified the descriptor before and after that read. Emission reports
+    # that observation instead of re-stating the file, so a later change can
+    # neither mix a newer observation with an older snippet nor withhold a
+    # match the continuation has already moved past.
     observations = []
-    emission_gaps: list[str] = []
-    withheld: dict[str, int] = {}
     for row in rows:
         reference = row.get("reference") or row["object_reference"]
-        try:
-            source, path = service._path_from_reference(reference)
-            info = path.stat()
-        except (SessionError, OSError):
-            emission_gaps.append(f"{reference}: selected file disappeared between scan and emission; match withheld")
-            withheld[reference.partition(":")[0]] = withheld.get(reference.partition(":")[0], 0) + 1
-            continue
-        expected = row["source_observation"]
-        if tuple(expected) != (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns):
-            # The match was read from an observation this file no longer has.
-            emission_gaps.append(f"{reference}: selected file changed between scan and emission; match withheld")
-            withheld[reference.partition(":")[0]] = withheld.get(reference.partition(":")[0], 0) + 1
-            continue
+        _dev, _ino, size, mtime_ns = row["source_observation"]
         observations.append(
             RawObservation(
                 reference=reference,
-                origin=_raw_origin(source.provider),
-                mtime_ns=info.st_mtime_ns,
-                bytes=info.st_size,
+                origin=_raw_origin(reference.partition(":")[0]),
+                mtime_ns=mtime_ns,
+                bytes=size,
                 line=row.get("line"),
                 offset=row.get("offset"),
                 text=row.get("text", row.get("snippet")),
@@ -444,27 +433,6 @@ def raw_operation(
     if result.get("available") is False:
         gaps.append(result["reason"])
     gaps.extend(result.get("gaps", ()))
-    gaps.extend(emission_gaps)
-    # Search continuations carry a running skipped count; fold withheld
-    # matches into it so the continuation's final page stays degraded. List
-    # and timeline continuations bind the exact observation, so the changed
-    # file already makes their next page a typed stale refusal.
-    if withheld and isinstance(request, RawSearch) and result.get("next_cursor"):
-        result["next_cursor"] = service.carry_withheld(
-            result["next_cursor"],
-            cursor_key=key,
-            provider=_provider(request.origin),
-            query=request.query,
-            reference=request.reference,
-            withheld=sum(withheld.values()),
-        )
-    if withheld and isinstance(request, RawMemorySearch) and result.get("next_cursors"):
-        for provider, count in withheld.items():
-            token = result["next_cursors"].get(provider)
-            if token:
-                result["next_cursors"][provider] = service.carry_withheld(
-                    token, cursor_key=key, provider=provider, query=request.query, reference=None, withheld=count
-                )
     return RawPage(
         items=observations,
         sources=sources_out,

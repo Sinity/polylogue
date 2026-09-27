@@ -235,25 +235,6 @@ def test_write_during_read_discards_the_block_and_reports_a_gap(
     assert any("changed while it was being searched" in gap for gap in page.coverage.gaps)
 
 
-def test_change_between_scan_and_emission_withholds_the_match_typed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = tmp_path / "codex"
-    target = _write(root / "a.jsonl", "needle a\n", 1)
-    original = SessionLogService.search
-
-    def search_then_append(self: SessionLogService, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        result = original(self, *args, **kwargs)
-        with target.open("a") as handle:
-            handle.write("appended\n")
-        return result
-
-    monkeypatch.setattr(SessionLogService, "search", search_then_append)
-    page = _search(_sources(root))
-    assert page.items == [] and page.outcome == "degraded"
-    assert any("between scan and emission" in gap for gap in page.coverage.gaps)
-
-
 def test_snapshot_expiry_is_a_degraded_outcome(tmp_path: Path, frozen_clock: Any) -> None:
     root = tmp_path / "codex"
     first_file = _write(root / "a.jsonl", "needle a\n", 2)
@@ -442,35 +423,6 @@ def test_timeline_fanout_preserves_the_stale_continuation_code(tmp_path: Path) -
     assert envelope.model_dump()["code"] == "stale_continuation"
 
 
-def test_match_withheld_at_emission_keeps_the_continuation_degraded(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Anti-vacuity: a page-local emission gap lets the final page report complete."""
-    root = tmp_path / "codex"
-    first_file = _write(root / "a.jsonl", "needle a\n", 3)
-    _write(root / "b.jsonl", "needle b\n", 2)
-    _write(root / "c.jsonl", "needle c\n", 1)
-    sources = _sources(root)
-    original = SessionLogService.search
-    calls = {"n": 0}
-
-    def search_then_append_once(self: SessionLogService, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        result = original(self, *args, **kwargs)
-        calls["n"] += 1
-        if calls["n"] == 1:
-            with first_file.open("a") as handle:
-                handle.write("appended\n")
-        return result
-
-    monkeypatch.setattr(SessionLogService, "search", search_then_append_once)
-    first = _search(sources, scan_bytes=first_file.stat().st_size)
-    assert first.items == [] and first.continuation is not None
-    final = _search(sources, continuation=first.continuation)
-    assert [item.reference for item in final.items] == ["codex:b.jsonl", "codex:c.jsonl"]
-    assert final.continuation is None and final.outcome == "degraded"
-    assert any("1 selected files were skipped on earlier pages" in gap for gap in final.coverage.gaps)
-
-
 def test_short_resumed_budget_keeps_the_returned_match_high_water_mark(tmp_path: Path) -> None:
     """Anti-vacuity: clearing ``after`` at every block end re-emits match 1 via the replay tail."""
     root = tmp_path / "codex"
@@ -558,3 +510,21 @@ def test_raced_reads_are_charged_to_the_scan_budget(tmp_path: Path, monkeypatch:
     page = _search(_sources(root), scan_bytes=1)
     assert page.coverage.scanned_bytes == 1
     assert len(page.coverage.gaps) == 1 and page.continuation is not None
+
+
+def test_long_reference_filter_fits_the_token_through_its_digest(tmp_path: Path) -> None:
+    """Anti-vacuity: embedding a ~3.6 KB backslash path in the scope overflows MAX_CURSOR_BYTES after escaping."""
+    root = tmp_path / "codex"
+    directory = root
+    for _ in range(14):
+        directory = directory / ("\\" * 250)
+    target = _write(directory / "s.jsonl", "x" * 64 + "needle\n", 1)
+    reference = "codex:" + target.relative_to(root).as_posix()
+    assert len(reference) > 3_500
+    sources = _sources(root)
+    first = _search(sources, reference=reference, scan_bytes=1)
+    assert first.continuation is not None and len(first.continuation.encode()) < 1_024
+    resumed = _search(sources, reference=reference, continuation=first.continuation)
+    assert [item.reference for item in resumed.items] == [reference]
+    with pytest.raises(StaleContinuationError):
+        _search(sources, continuation=first.continuation)
