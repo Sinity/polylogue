@@ -15,26 +15,28 @@ from polylogue.operations.mutation_transaction import (
     build_typed_plan,
 )
 from polylogue.storage.derived.session.derivation import SESSION_PROFILE_RECIPE_VERSION
-from polylogue.storage.sqlite.archive_tiers.source_items import FrozenSourceManifest
+from polylogue.storage.sqlite.archive_tiers.source_items import FrozenSourceManifest, SealedSourceManifestRef
 
 INGEST_OPERATION = "ingest-archive-runtime"
 
 
-def ingest_context(manifest: FrozenSourceManifest) -> dict[str, object]:
+def ingest_context(manifest: FrozenSourceManifest | SealedSourceManifestRef) -> dict[str, object]:
     context: dict[str, object] = {
         "source_generation_id": manifest.source_generation_id,
         "manifest_digest": manifest.manifest_digest,
         "enumeration_fingerprint": manifest.enumeration_fingerprint,
-        "input_count": len(manifest.inputs),
+        "input_count": manifest.input_count if isinstance(manifest, SealedSourceManifestRef) else len(manifest.inputs),
         "recipe_version": SESSION_PROFILE_RECIPE_VERSION,
     }
+    if isinstance(manifest, SealedSourceManifestRef):
+        context["custody_digest"] = manifest.custody_digest
     if manifest.source_name is not None:
         context["source_name"] = manifest.source_name
     return context
 
 
 def ingest_plan(
-    manifest: FrozenSourceManifest,
+    manifest: FrozenSourceManifest | SealedSourceManifestRef,
     *,
     archive_instance_id: str,
     archive_identity_digest: str,
@@ -73,7 +75,7 @@ def ingest_plan(
 class IngestActuator:
     """Plan/inspection adapter; only the daemon's phased owner publishes."""
 
-    manifest: FrozenSourceManifest
+    manifest: FrozenSourceManifest | SealedSourceManifestRef
     archive_instance_id: str
     archive_identity_digest: str
     now_ms: int

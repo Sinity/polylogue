@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 from polylogue.archive.revision_replay import ApplicationDecision
+from polylogue.operations.daemon_ingest import _spool_source_receipt
 from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
-from polylogue.storage.source_generation_receipts import SourceGenerationBlocker, source_generation_receipt
+from polylogue.storage.source_generation_receipts import (
+    SourceGenerationBlocker,
+    source_generation_receipt,
+    source_generation_receipt_page,
+)
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.revision_application import (
     RevisionApplicationReceipt,
@@ -178,7 +184,7 @@ def test_receipt_requires_membership_census_and_keeps_byte_governed_logical_deno
     source.execute(
         """
         UPDATE raw_membership_census
-        SET status = 'failed', member_count = 0,
+        SET status = 'failed', member_count = 0, revision_authority = 'byte_proven',
             detail = 'append fragments are governed by byte revision authority'
         WHERE raw_id = 'raw-1'
         """
@@ -329,3 +335,63 @@ def test_the_retired_candidate_membership_relation_is_neither_created_nor_read()
     assert receipt.complete is True
     assert receipt.active_generation == "index-generation-1"
     assert not hasattr(receipt, "index_generation_binding")
+
+
+def test_receipt_pages_large_denominator_and_reduces_raw_ids_globally(tmp_path: Path) -> None:
+    source = sqlite3.connect(":memory:")
+    index = sqlite3.connect(":memory:")
+    initialize_archive_tier(source, ArchiveTier.SOURCE)
+    initialize_archive_tier(index, ArchiveTier.INDEX)
+    coordinates = tuple(f"input:{number:05d}" for number in range(10_241))
+    ids = publish_source_generation(
+        source,
+        source_generation_id="large",
+        manifest_digest="a" * 64,
+        addressing_mode="physical-file-v1",
+        coordinates=coordinates,
+        input_blob_hashes=dict.fromkeys(coordinates, b"i" * 32),
+        enumeration_fingerprint="b" * 64,
+        observed_at_ms=1,
+    )
+    source.execute(
+        "INSERT INTO raw_sessions(raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms) "
+        "VALUES ('shared-raw', 'codex-session', '/synthetic/shared', ?, 1, 1)",
+        (b"r" * 32,),
+    )
+    for item_id in (ids[0], ids[-1]):
+        record_source_item_raw_member(
+            source,
+            source_generation_id="large",
+            source_item_id=item_id,
+            record_coordinate="record:0",
+            raw_id="shared-raw",
+            raw_blob_hash=b"r" * 32,
+        )
+    receipt = source_generation_receipt(
+        source, index, source_generation_id="large", active_generation="index-generation:synthetic"
+    )
+    assert len(receipt.items) == 10_241
+    assert receipt.unresolved_raw_ids == ("shared-raw",)
+    assert receipt.confirmed_raw_ids == ()
+    assert receipt.items[0].logical_coordinate == coordinates[0]
+    assert receipt.items[-1].logical_coordinate == coordinates[-1]
+    cursor = None
+    page_count = 0
+    while True:
+        page = source_generation_receipt_page(source, index, source_generation_id="large", after=cursor)
+        if not page.items:
+            break
+        assert len(page.items) <= 256
+        page_count += 1
+        cursor = page.next_cursor
+    assert page_count == 41
+    spool = _spool_source_receipt(source, index, "large", tmp_path / "receipt.sqlite")
+    try:
+        assert spool.item_count == 10_241
+        assert spool.unresolved_raw_count == 1
+        assert spool.confirmed_raw_count == 0
+        assert spool.pending_raw_page() == ("shared-raw",)
+        with sqlite3.connect(spool.path) as check:
+            assert check.execute("SELECT COUNT(*) FROM items").fetchone() == (10_241,)
+    finally:
+        spool.close()

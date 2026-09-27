@@ -112,8 +112,7 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
             unattempted.append(ordinal)
             continue
         run = audit.get_operation(str(operation_id))
-        events = audit.list_events(str(operation_id))
-        sequence += 1 + (_audit_int(events[-1]["sequence"], field="event sequence") if events else 0)
+        sequence += 1 + audit.last_event_sequence(str(operation_id))
         if run is None:
             outcome = "indeterminate"
         else:
@@ -169,8 +168,13 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
     result: dict[str, object] | None = None
     if kind == "source-generation" and len(attempted) == 1 and attempted[0]["outcome"] == "completed":
         receipt = attempted[0]["receipt"]
-        if isinstance(receipt, dict) and receipt.get("kind") == "ingest/v1":
-            result = receipt
+        if isinstance(receipt, dict) and receipt.get("kind") in {"ingest/v1", "ingest/v2"}:
+            result = {
+                "source_generation_id": receipt["source_generation_id"],
+                "outcome": "completed",
+                "sequence": receipt["final_sequence"],
+                "historical_receipt": receipt,
+            }
     if record.get("operation_name") == "maintenance.embeddings.backfill" and attempted:
         run = audit.get_operation(str(attempted[0]["operation_id"])) if attempted[0]["operation_id"] else None
         result = None if run is None else _embedding_terminal_receipt(run.get("error_summary"))

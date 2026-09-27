@@ -19,6 +19,8 @@ from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_H
 SOURCE_HAND_WRITTEN_DDL_REASONS: dict[str, str] = dict.fromkeys(
     (
         "source_generations",
+        "prepared_source_manifests",
+        "prepared_source_manifest_members",
         "pending_accepted_marker_inputs",
         "accepted_marker_stream",
         "accepted_marker_inputs",
@@ -174,6 +176,29 @@ CREATE TABLE IF NOT EXISTS source_generations (
     item_count           INTEGER NOT NULL CHECK(item_count >= 0),
     sealed_at_ms         INTEGER,
     created_at_ms        INTEGER NOT NULL CHECK(created_at_ms >= 0)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS prepared_source_manifests (
+    source_generation_id TEXT PRIMARY KEY,
+    publisher_id TEXT NOT NULL UNIQUE CHECK(length(publisher_id) > 0),
+    enumeration_fingerprint TEXT NOT NULL CHECK(length(enumeration_fingerprint) = 64),
+    source_name TEXT,
+    input_count INTEGER NOT NULL DEFAULT 0 CHECK(input_count >= 0),
+    semantic_digest TEXT CHECK(semantic_digest IS NULL OR length(semantic_digest) = 64),
+    custody_digest TEXT CHECK(custody_digest IS NULL OR length(custody_digest) = 64),
+    sealed_at_ms INTEGER CHECK(sealed_at_ms IS NULL OR sealed_at_ms >= 0),
+    CHECK ((sealed_at_ms IS NULL AND semantic_digest IS NULL AND custody_digest IS NULL)
+        OR (sealed_at_ms IS NOT NULL AND semantic_digest IS NOT NULL AND custody_digest IS NOT NULL))
+) STRICT;
+CREATE TABLE IF NOT EXISTS prepared_source_manifest_members (
+    source_generation_id TEXT NOT NULL REFERENCES prepared_source_manifests(source_generation_id),
+    ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+    coordinate TEXT NOT NULL CHECK(length(trim(coordinate)) > 0),
+    source_path TEXT NOT NULL CHECK(length(trim(source_path)) > 0),
+    blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
+    publication_receipt_id TEXT NOT NULL CHECK(length(publication_receipt_id) > 0),
+    PRIMARY KEY(source_generation_id, ordinal),
+    UNIQUE(source_generation_id, coordinate)
 ) STRICT;
 
 -- The excision policy revision one source generation was admitted under.

@@ -1372,6 +1372,25 @@ def recover_interrupted_operations(archive_root: Path) -> None:
         attempt_owner_id=AuditRepository.current_process_attempt_owner(),
     )
     audit.reconcile_continuity()
+    # Startup is the single-writer point where a dead ingest cannot still be
+    # preparing pages. Continuity has promoted every accepted generation or
+    # refused startup, so the remaining unpromoted headers are pre-accept work.
+    if (archive_root / "source.db").is_file():
+        from contextlib import closing
+
+        from polylogue.storage.sqlite.archive_tiers.source_items import reconcile_unaccepted_prepared_source_manifests
+        from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
+
+        with (
+            closing(
+                open_isolated_write_connection(
+                    archive_root / "source.db", purpose="startup ingest preparation recovery", archive_root=archive_root
+                )
+            ) as source,
+            source,
+        ):
+            source.execute("BEGIN IMMEDIATE")
+            reconcile_unaccepted_prepared_source_manifests(source)
     # Terminalize dead attempts *before* discovering orphans so one startup
     # converges: otherwise a run this call marks interrupted would only be
     # classified by the next restart.

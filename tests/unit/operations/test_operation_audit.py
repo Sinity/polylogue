@@ -29,6 +29,7 @@ from polylogue.operations.ingest_acceptance import INGEST_OPERATION
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.machine_receipts import (
     IngestHistoricalReceipt,
+    IngestHistoricalReceiptV2,
     IngestInputHistoricalReceipt,
     IngestInputPageHistoricalReceipt,
     IngestInputRawMemberHistorical,
@@ -38,6 +39,7 @@ from polylogue.operations.machine_receipts import (
     InsightCertifiedCountsHistorical,
     InsightPartHistoricalReceipt,
     InsightTargetHistoricalReceipt,
+    ingest_input_pages_digest,
     ingest_input_raw_pages_digest,
     ingest_insight_pages_digest,
     ingest_session_ids_digest,
@@ -3233,3 +3235,93 @@ def test_ingest_input_raw_page_replays_and_verifies_unresolved_flags(
             unresolved_count=0,
             digest=ingest_input_raw_pages_digest([page]),
         )
+
+
+def test_ingest_v2_input_pages_are_ordered_and_audit_owned(tmp_path: Path) -> None:
+    audit = _audit(tmp_path)
+    actuator = _IngestPageActuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "ingest-v2-page-token")
+    binding = _binding(actuator, operation_name=INGEST_OPERATION)
+    preview = executor.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:v2-page",
+        archive_identity_digest="identity:v2-page",
+        parameter_digest="params:v2-page",
+    )
+    authorization = executor.authorize_bound(binding, preview, _principal())
+    started = executor.begin_bound(binding, preview, authorization, object())
+    assert started.operation_id is not None
+    pages = [
+        IngestInputPageHistoricalReceipt.from_items(
+            ordinal,
+            [
+                IngestInputHistoricalReceipt(
+                    source_item_id=f"item:{number}",
+                    logical_coordinate=f"input:{number:04d}",
+                    denominator=1,
+                    raw_ids=[f"raw:{number}"],
+                )
+                for number in range(ordinal * 256, min((ordinal + 1) * 256, 257))
+            ],
+        )
+        for ordinal in range(2)
+    ]
+    audit.append_ingest_input_page(started.operation_id, pages[0])
+    audit.append_ingest_input_page(started.operation_id, pages[0])
+    with pytest.raises(ValueError, match="conflicts"):
+        audit.append_ingest_input_page(
+            started.operation_id,
+            IngestInputPageHistoricalReceipt.from_items(
+                0,
+                [
+                    IngestInputHistoricalReceipt(
+                        source_item_id="other", logical_coordinate="input:0000", denominator=0, raw_ids=[]
+                    )
+                ],
+            ),
+        )
+    with pytest.raises(ValueError, match="contiguous"):
+        audit.append_ingest_input_page(started.operation_id, pages[1].model_copy(update={"ordinal": 3}))
+    audit.append_ingest_input_page(started.operation_id, pages[1])
+    root = IngestHistoricalReceiptV2(
+        source_generation_id="generation:v2",
+        final_sequence=1,
+        input_count=257,
+        input_pages_ref=started.operation_id,
+        input_page_count=2,
+        input_pages_digest=ingest_input_pages_digest(pages),
+        summary=IngestTerminalSummaryHistorical(
+            enumeration_complete=True,
+            source_complete=True,
+            confirmed_raw_count=257,
+            unresolved_raw_count=0,
+            profile_targets_observed=0,
+        ),
+    )
+    assert audit.read_ingest_input_pages(root) == pages
+    executor.finalize_bound(
+        started,
+        receipt=MutationReceipt(
+            operation=started.plan.operation,
+            plan_hash=started.plan.plan_hash,
+            status="applied",
+            target_refs=started.plan.target_refs,
+            affected_count=1,
+            detail=None,
+            receipt_ref=None,
+            applied_at=started.plan.prepared_at,
+            historical_receipt=root,
+        ),
+    )
+    (tmp_path / "source.db").rename(tmp_path / "source.unavailable")
+    (tmp_path / "index.db").unlink(missing_ok=True)
+    assert audit.historical_machine_receipt(started.operation_id) == root
+    assert list(audit.iter_ingest_input_pages(root)) == pages
+    with pytest.raises(ValueError, match="missing"):
+        audit.read_ingest_input_pages(root.model_copy(update={"input_page_count": 3}))
+    with pytest.raises(ValueError, match="missing"):
+        audit.read_ingest_input_pages(root.model_copy(update={"input_pages_ref": "operation:foreign"}))
+    with pytest.raises(ValueError, match="terminal root"):
+        audit.read_ingest_input_pages(root.model_copy(update={"input_pages_digest": "0" * 64}))

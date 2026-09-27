@@ -87,6 +87,16 @@
     ]
   },
   {
+    "file": "polylogue/operations/daemon_ingest.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/operations/ingest_inputs.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/pipeline/ids.py",
     "tiers": [],
     "authority": "scratch"

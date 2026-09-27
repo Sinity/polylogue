@@ -30,6 +30,10 @@ from polylogue.storage.ingest_governance import (
 )
 from polylogue.storage.sqlite.archive_tiers import revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.source_items import (
+    publish_source_generation,
+    record_source_item_raw_member,
+)
 from tests.infra.archive_templates import bootstrap_archive_root
 
 ParseFunction: TypeAlias = Callable[[ArchiveStore, str], list[ParsedSession]]
@@ -319,6 +323,60 @@ def test_membership_that_becomes_eligible_after_preparation_defers_publication(t
         assert late_raw in fresh.selector_raw_ids
         assert unaccepted_raw not in fresh.selector_raw_ids
         assert publish_ingest_cohort(archive, fresh).published
+
+
+def test_generation_owned_cohort_spans_input_pages(tmp_path: Path) -> None:
+    """The generation selector includes members from distant input pages.
+
+    Anti-vacuity: selecting only the current 256-input page loses the last
+    member from the cohort classified for this logical key.
+    """
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        first_raw, last_raw = _write_raws(archive, 2)
+        sessions = {
+            first_raw: _session("one"),
+            last_raw: _session("one", "two"),
+        }
+        parse = _parse_from(sessions)
+        for at_ms, raw_id in enumerate((first_raw, last_raw), start=1):
+            _publish_census(archive, raw_id, parse, at_ms=at_ms)
+
+        source = archive._ensure_source_conn()
+        generation_id = "cross-page-cohort"
+        coordinates = tuple(f"input-{index:03d}" for index in range(257))
+        item_ids = publish_source_generation(
+            source,
+            source_generation_id=generation_id,
+            manifest_digest="a" * 64,
+            addressing_mode="path",
+            coordinates=coordinates,
+            input_blob_hashes={coordinate: bytes.fromhex("b" * 64) for coordinate in coordinates},
+            enumeration_fingerprint="c" * 64,
+            observed_at_ms=1,
+        )
+        source.execute("BEGIN IMMEDIATE")
+        for item_id, raw_id in ((item_ids[0], first_raw), (item_ids[256], last_raw)):
+            _provider, blob_hash, _path, _kind, _size = archive.raw_revision_descriptor(raw_id)
+            record_source_item_raw_member(
+                source,
+                source_generation_id=generation_id,
+                source_item_id=item_id,
+                record_coordinate="record-0",
+                raw_id=raw_id,
+                raw_blob_hash=bytes.fromhex(blob_hash),
+            )
+        source.commit()
+
+        prepared = prepare_ingest_cohort(
+            archive,
+            logical_source_key="codex-session:prepared-membership",
+            source_generation_id=generation_id,
+            parser_fingerprint="prepared-test-parser",
+            parse_retained_raw=parse,
+            acquired_at_ms=4,
+        )
+        assert {first_raw, last_raw} <= set(prepared.selector_raw_ids)
 
 
 def test_read_only_compute_defers_attachment_publication_until_writer_revalidation(tmp_path: Path) -> None:

@@ -81,9 +81,11 @@ class _IngestContext(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     source_generation_id: str = Field(min_length=1)
     manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    custody_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     enumeration_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
-    input_count: int = Field(ge=1, le=10_000)
+    input_count: int = Field(ge=1)
     recipe_version: str = Field(min_length=1)
+    source_name: str | None = Field(default=None, min_length=1, max_length=255)
 
 
 _CONTEXT_MODELS: dict[str, type[BaseModel]] = {
@@ -101,10 +103,15 @@ def replay_context(operation: str, context: Mapping[str, object]) -> dict[str, o
     model = _CONTEXT_MODELS.get(operation)
     if model is None:
         return None
+    decoded = model.model_validate(dict(context)).model_dump(mode="json")
+    if operation == "ingest-archive-runtime":
+        for field in ("custody_digest", "source_name"):
+            if decoded.get(field) is None:
+                decoded.pop(field)
     return {
         "format": _FORMAT,
         "operation": operation,
-        "context": model.model_validate(dict(context)).model_dump(mode="json"),
+        "context": decoded,
     }
 
 
@@ -119,4 +126,9 @@ def context_from_replay(operation: str, value: object) -> dict[str, object]:
         or not isinstance(value["context"], dict)
     ):
         raise ValueError("unsupported machine plan replay context")
-    return _CONTEXT_MODELS[operation].model_validate(value["context"]).model_dump(mode="json")
+    decoded = _CONTEXT_MODELS[operation].model_validate(value["context"]).model_dump(mode="json")
+    if operation == "ingest-archive-runtime":
+        for field in ("custody_digest", "source_name"):
+            if decoded.get(field) is None:
+                decoded.pop(field)
+    return decoded
