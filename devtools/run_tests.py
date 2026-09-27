@@ -27,12 +27,20 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
+)
+from devtools.checkout_identity import (
+    ALLOW_DEFAULT_BRANCH_ENV,
+    ON_DEFAULT_BRANCH_FLAG,
+    REFUSAL_EXIT,
+    checkout_identity,
+    default_branch_refusal,
 )
 from devtools.pytest_invocation import (
     CLEAR_CONFIGURED_ADDOPTS,
@@ -44,6 +52,7 @@ from devtools.pytest_invocation import (
 )
 from devtools.pytest_rerun import rerun_failed_once
 from devtools.pytest_slot import (
+    WORKTREE_PROVENANCE_ENV,
     PytestSlotObservationUnavailableError,
     PytestSlotUnavailableError,
     basetemp_root,
@@ -64,6 +73,7 @@ from devtools.verify_runs import (
     append_verify_history,
     env_for_pytest_step,
     git_head,
+    git_worktree_content_sha256,
     prune_successful_verify_runs,
     pytest_command_worker_request,
 )
@@ -409,7 +419,7 @@ def _run(
     started = time.monotonic()
     try:
         executor = run_pytest if runner == "managed" else run_pytest_isolated
-        env["POLYLOGUE_FOCUSED_WORKTREE_PROVENANCE"] = "1"
+        env[WORKTREE_PROVENANCE_ENV] = "1"
         outcome = executor(command, cwd=cwd, env=env, root=ROOT)
     except PytestSlotUnavailableError as exc:
         sys.stderr.write(f"devtools test: {exc}\n")
@@ -458,6 +468,9 @@ def _run(
             env=env,
             root=ROOT,
             runner=runner,
+            first_provenance=(
+                outcome.receipt.get("worktree_provenance") if isinstance(outcome.receipt, dict) else None
+            ),
         )
         if returncode == 1
         else None
@@ -571,12 +584,22 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if outlier_count is not None:
         return print_outliers(outlier_count)
+    on_default_branch = ON_DEFAULT_BRANCH_FLAG in selection
+    selection = [arg for arg in selection if arg != ON_DEFAULT_BRANCH_FLAG]
     selection = _normalize_selection_paths(selection, invocation_directory=invocation_directory)
     _anchor_test_paths()
+    identity = checkout_identity(ROOT)
+    refusal = default_branch_refusal(identity, command="devtools test", allowed=on_default_branch)
+    if refusal is not None:
+        sys.stderr.write(refusal + "\n")
+        return REFUSAL_EXIT
+    sys.stderr.write(f"devtools test: {identity.describe()}\n")
     try:
         assert_polylogue_matches_checkout(ROOT, context="devtools test")
     except CheckoutImportMismatchError as exc:
+        # The detail first: the verdict, naming the checkout, is the last line.
         sys.stderr.write(f"{exc}\n")
+        sys.stderr.write(f"devtools test: FAILED exit=125 diagnosis=checkout_import_mismatch {identity.describe()}\n")
         return 125
     use_json = "--json" in selection
     # The control-plane dispatch may append a bare ``--json`` machine-readable
@@ -656,6 +679,11 @@ def main(argv: list[str] | None = None) -> int:
         # body SETS this variable. The call below must stay this module's.
         pytest_env.pop("POLYLOGUE_BROAD_PREWARM", None)
         _normalize_managed_pytest_environment(pytest_env)
+        # Only this invocation's flag authorizes the default branch; an
+        # inherited value must not reach the slot's start-time re-check.
+        pytest_env.pop(ALLOW_DEFAULT_BRANCH_ENV, None)
+        if on_default_branch:
+            pytest_env[ALLOW_DEFAULT_BRANCH_ENV] = "1"
         hypothesis_profile, hypothesis_profile_source = effective_hypothesis_profile(
             selection, pytest_env, default="verify"
         )
@@ -705,6 +733,20 @@ def main(argv: list[str] | None = None) -> int:
     provenance = metadata.get("worktree_provenance")
     if isinstance(provenance, dict):
         run.record_execution_worktree(provenance)
+        # Report what actually ran, not what was admitted at submission.
+        identity = replace(identity, branch=provenance.get("git_branch"), head=provenance.get("git_head"))
+        # pytest may import files at any point of its run: content that moved
+        # after the slot identified it means no single tree was tested.
+        finished = checkout_identity(ROOT)
+        if (finished.branch, finished.head) != (identity.branch, identity.head) or git_worktree_content_sha256(
+            ROOT
+        ) != provenance.get("git_worktree_content_sha256"):
+            sys.stderr.write(
+                f"devtools test: the checkout moved during the run (tested {identity.describe()}, "
+                f"finished {finished.describe()}); the result is void\n"
+            )
+            rc = rc or 1
+            metadata = {**metadata, "diagnosis": "checkout_moved_during_run"}
     statistics: dict[str, Any] = cast(
         dict[str, Any], metadata.get("statistics") if isinstance(metadata.get("statistics"), dict) else {}
     )
@@ -752,14 +794,15 @@ def main(argv: list[str] | None = None) -> int:
     # reach of that mistake. The receipt is this run's own file, never a
     # `current-*` name a concurrent run in the same checkout would overwrite.
     receipt = run.relative_run_dir / "run.json"
-    sys.stderr.write(
-        f"\ndevtools test: {'PASSED' if rc == 0 else 'FAILED'} exit={rc} "
-        f"diagnosis={metadata.get('diagnosis') or 'unknown'} receipt={receipt}\n"
-    )
     # The rest of the artifacts are reference material, not a result. Printing
     # them after every green run trains the reader to skip the tail of the
     # output, which is exactly where a failure summary appears. `devtools why`
-    # reaches them on demand.
+    # reaches them on demand. When they are printed, it is before the verdict,
+    # so the verdict and the checkout it tested stay the last line.
     if _verbose_output() or rc != 0:
-        sys.stderr.write(f"devtools test: artifacts={run.relative_run_dir}/steps/{artifacts.step_id}\n")
+        sys.stderr.write(f"\ndevtools test: artifacts={run.relative_run_dir}/steps/{artifacts.step_id}")
+    sys.stderr.write(
+        f"\ndevtools test: {'PASSED' if rc == 0 else 'FAILED'} exit={rc} "
+        f"diagnosis={metadata.get('diagnosis') or 'unknown'} receipt={receipt} {identity.describe()}\n"
+    )
     return rc

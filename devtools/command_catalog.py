@@ -85,7 +85,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.run_tests",
         use_when=(
             "Run a specific test file, directory, or -k/-m selection in the inner loop, or inspect the latest "
-            "full-run timing receipts, without invoking raw pytest."
+            "full-run timing receipts, without invoking raw pytest. Refuses in a checkout on the default branch "
+            "unless given --on-default-branch."
         ),
         examples=(
             "devtools test tests/unit/pipeline",
@@ -158,6 +159,10 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         flags=(
             ("--quick", "Run the static gates only."),
             ("--all", "Run the static gates plus the complete test corpus."),
+            (
+                "--on-default-branch",
+                "Run in a checkout on the default branch deliberately; without it the verifier refuses there.",
+            ),
         ),
         use_when="Run the gates and bounded affected tests locally before pushing. --quick stops at static gates; --all runs the complete corpus at the explicit master/corpus boundary. Unknown or oversized affected plans are refused before pytest and name the count, reason, and next boundary.",
         examples=("devtools verify", "devtools verify --quick", "devtools verify --all"),

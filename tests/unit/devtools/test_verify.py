@@ -825,6 +825,9 @@ def test_zero_exit_without_a_report_is_a_failed_pytest_step(monkeypatch: pytest.
         "devtools.verify.subprocess.run",
         lambda *_args, **_kwargs: subprocess.CompletedProcess(["pytest"], 0, stdout="", stderr=""),
     )
+    # The stubbed ``subprocess.run`` cannot answer the slot's git provenance
+    # queries; this case is about the missing report, not the checkout.
+    monkeypatch.setattr("devtools.pytest_slot._focused_worktree_provenance", lambda *_args, **_kwargs: None)
     run = VerifyRun(tier="test", argv=[], git_head="head", root=tmp_path)
 
     exit_code, _elapsed, metadata = verify._run("pytest serial (all)", ["pytest"], run=run)
