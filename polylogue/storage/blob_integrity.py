@@ -671,22 +671,16 @@ def project_source_blob_liveness(
     *,
     index_db: Path | None = None,
     immutable: bool = False,
-    source_generation_id: str | None = None,
 ) -> BlobLivenessProjection:
     """Return a complete canonical source projection or refuse incomplete evidence."""
 
     with closing(open_readonly_connection(source_db, immutable=immutable, validate_schema=False)) as source_conn:
         if index_db is None:
-            projection = project_live_blob_hashes(source_conn, source_generation_id=source_generation_id)
+            projection = project_live_blob_hashes(source_conn)
             index_conn = None
         else:
             with closing(open_readonly_connection(index_db, immutable=immutable, validate_schema=False)) as index_conn:
-                projection = project_live_blob_hashes(
-                    source_conn,
-                    index_conn=index_conn,
-                    require_index=True,
-                    source_generation_id=source_generation_id,
-                )
+                projection = project_live_blob_hashes(source_conn, index_conn=index_conn, require_index=True)
                 return _historical_projection(source_conn, projection, index_conn=index_conn, require_index=True)
         return _historical_projection(source_conn, projection, index_conn=index_conn)
 
