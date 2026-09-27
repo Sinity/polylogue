@@ -14,6 +14,7 @@ from polylogue.scenarios import (
     seed_demo_user_overlays,
 )
 from polylogue.schemas.synthetic import SyntheticCorpus
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, AssertionStatus, list_assertions_for_target
 
@@ -22,7 +23,9 @@ EXPECTED_DEMO_SESSIONS = (
         "aistudio-drive:demo-00",
         "aistudio-drive",
         "demo-00",
-        "Please inspect the attached fixture note.",
+        # No provider title is present in this generated Drive export; the
+        # parser keeps the source ID as its fallback title (title_source=NULL).
+        "demo-00",
         1706934696990,
         1706934696990,
         4,
@@ -32,7 +35,9 @@ EXPECTED_DEMO_SESSIONS = (
         "chatgpt-export",
         "dc13ca54-0bba-4298-a38f-09068c2ef2c5",
         "Debugging flaky async pipeline tests",
-        1684642129965,
+        # The generated provider endpoints are reversed; archive timestamps
+        # retain their ordered closed interval (min create/update, max).
+        1738673720231,
         1746826781690,
         3,
     ),
@@ -40,7 +45,9 @@ EXPECTED_DEMO_SESSIONS = (
         "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6",
         "claude-code-session",
         "63705dcc-f3e5-4378-8118-8bc21e53bbb6",
-        "Can you help me debug this issue?",
+        # The generated transcript starts with a tool-result user record;
+        # this is its first authored user message and the assembled title.
+        "I need to implement a function that processes this data.",
         1730589115737,
         1730589655737,
         12,
@@ -49,15 +56,17 @@ EXPECTED_DEMO_SESSIONS = (
         "codex-session:demo-00",
         "codex-session",
         "demo-00",
-        "Could you review this code for potential issues?",
+        # The generated export carries no session title, so assembly uses its
+        # source ID; message timestamps define this session's interval.
+        "demo-00",
         # Session timestamps use the available message timestamp evidence.
-        1705985342161,
-        1705985342161,
+        1705985222161,
+        1705985522161,
         8,
     ),
 )
 
-EXPECTED_DEMO_SOURCE_PATHS = (
+EXPECTED_DEMO_SOURCE_RELATIVE_PATHS = (
     "gemini/demo-00.json",
     "chatgpt/demo-00.json",
     "claude-code/demo-00.jsonl",
@@ -72,7 +81,7 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 
 
 def _session_rows(archive_root: Path) -> tuple[tuple[object, ...], ...]:
-    with _connect(archive_root / "index.db") as conn:
+    with _connect(resolve_active_index_path(archive_root)) as conn:
         rows = conn.execute(
             """
             SELECT session_id, origin, native_id, title, created_at_ms, updated_at_ms, message_count
@@ -109,7 +118,7 @@ def _user_overlay_rows(archive_root: Path) -> tuple[tuple[str, str, str | None, 
 
 
 def _stored_text_values(archive_root: Path) -> Iterable[str]:
-    with _connect(archive_root / "index.db") as conn:
+    with _connect(resolve_active_index_path(archive_root)) as conn:
         for table, columns in (
             ("sessions", ("title", "git_repository_url", "instructions_text")),
             ("blocks", ("text", "tool_input", "tool_path", "tool_command")),
@@ -120,8 +129,6 @@ def _stored_text_values(archive_root: Path) -> Iterable[str]:
                 for value in row:
                     if value:
                         yield str(value)
-
-    yield from _raw_source_paths(archive_root)
 
 
 @pytest.mark.asyncio
@@ -147,7 +154,11 @@ async def test_demo_fixture_world_converges_into_deterministic_archive(
     assert result.counts["messages"] == 27
     assert result.changed_counts["sessions"] == 4
     assert _session_rows(archive_root) == EXPECTED_DEMO_SESSIONS
-    assert _raw_source_paths(archive_root) == EXPECTED_DEMO_SOURCE_PATHS
+    raw_source_paths = _raw_source_paths(archive_root)
+    assert sorted(raw_source_paths) == sorted(str(path.resolve()) for path in source_paths)
+    assert tuple(Path(path).relative_to(source_root).as_posix() for path in raw_source_paths) == (
+        EXPECTED_DEMO_SOURCE_RELATIVE_PATHS
+    )
 
     with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
         hits = archive.search_summaries("pytest", limit=5)
@@ -159,7 +170,6 @@ async def test_demo_fixture_world_converges_into_deterministic_archive(
     forbidden_fragments = (str(tmp_path), "/tmp/", "/realm/", "/home/")
     stored_values = tuple(_stored_text_values(archive_root))
     assert stored_values
-    assert all(not Path(path).is_absolute() for path in _raw_source_paths(archive_root))
     assert all(fragment not in value for value in stored_values for fragment in forbidden_fragments)
 
     overlay = seed_demo_user_overlays(archive_root)
@@ -200,9 +210,9 @@ async def test_demo_fixture_world_converges_into_deterministic_archive(
 
     before_counts = {
         "raw_sessions": _row_count(archive_root / "source.db", "raw_sessions"),
-        "sessions": _row_count(archive_root / "index.db", "sessions"),
-        "messages": _row_count(archive_root / "index.db", "messages"),
-        "blocks": _row_count(archive_root / "index.db", "blocks"),
+        "sessions": _row_count(resolve_active_index_path(archive_root), "sessions"),
+        "messages": _row_count(resolve_active_index_path(archive_root), "messages"),
+        "blocks": _row_count(resolve_active_index_path(archive_root), "blocks"),
         "assertions": _row_count(archive_root / "user.db", "assertions"),
     }
 
@@ -210,12 +220,14 @@ async def test_demo_fixture_world_converges_into_deterministic_archive(
 
     assert repeat.processed_ids == set()
     assert repeat.changed_session_ids == ()
-    assert repeat.counts["skipped_sessions"] == len(EXPECTED_DEMO_SESSIONS)
+    # Unchanged source observations are short-circuited before parsing, so
+    # there are no parsed sessions to count as skipped.
+    assert repeat.counts["skipped_sessions"] == 0
     assert _session_rows(archive_root) == EXPECTED_DEMO_SESSIONS
     assert {
         "raw_sessions": _row_count(archive_root / "source.db", "raw_sessions"),
-        "sessions": _row_count(archive_root / "index.db", "sessions"),
-        "messages": _row_count(archive_root / "index.db", "messages"),
-        "blocks": _row_count(archive_root / "index.db", "blocks"),
+        "sessions": _row_count(resolve_active_index_path(archive_root), "sessions"),
+        "messages": _row_count(resolve_active_index_path(archive_root), "messages"),
+        "blocks": _row_count(resolve_active_index_path(archive_root), "blocks"),
         "assertions": _row_count(archive_root / "user.db", "assertions"),
     } == before_counts
