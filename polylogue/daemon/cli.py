@@ -29,7 +29,7 @@ from polylogue.api import Polylogue
 from polylogue.browser_capture.receiver import resolve_receiver_auth_token
 from polylogue.browser_capture.server import BrowserCaptureHTTPServer, make_server
 from polylogue.core.degraded import DegradedReason, set_degraded
-from polylogue.core.json import JSONDocument, dumps, json_document, loads
+from polylogue.core.json import JSONDocument, dumps, json_document
 from polylogue.core.loopback import bind_hosts_overlap, is_loopback_host
 from polylogue.core.stage_admission import (
     StageWriteAdmission,
@@ -3514,39 +3514,49 @@ main.add_command(browser_capture_command)
 main.add_command(api_command)
 
 
-_LIVE_DAEMON_STATUS_TIMEOUT_S = 0.3
-
-
-def _live_daemon_status_payload(*, timeout: float = _LIVE_DAEMON_STATUS_TIMEOUT_S) -> JSONDocument | None:
-    """Return a running daemon's cached ``/api/status`` snapshot, or ``None``.
+def _live_daemon_status_payload() -> JSONDocument | None:
+    """Return the running daemon's status through its machine socket, or ``None``.
 
     ``polylogued status`` used to always recompute the full rich status
-    in-process, cold, with every expensive diagnostic flag on by default —
-    the same collection a running daemon already keeps refreshed
-    off-request and exposes here. Preferring the live daemon's answer
-    (bounded, cheap) avoids repeating that expensive collection when a
-    daemon is already up, which was the reported ">15s although
-    heartbeat/DB descriptors were healthy" hang (polylogue-20d.17). Honours
-    ``POLYLOGUE_DAEMON_URL`` like the archive CLI's ``polylogue status`` so
-    tests can route this probe to an unreachable address (#1325).
-    """
-    from urllib.error import URLError
-    from urllib.request import Request, urlopen
+    in-process, cold, with every expensive diagnostic flag on by default --
+    the same collection a running daemon already keeps refreshed off-request
+    (polylogue-20d.17). It asks the daemon for its ``status`` operation, which
+    merges the daemon's cached runtime snapshot (writer, services, cold-build
+    progress, ETA) with the pinned archive reading.
 
+    The request goes over the daemon's AF_UNIX socket, the route every CLI
+    verb uses: the client verifies the listener's uid with ``SO_PEERCRED``
+    before any credential is sent, so neither a squatted TCP port, a proxy, a
+    redirect nor a URL from an untrusted ``polylogue.toml`` can receive the
+    daemon's bearer. No socket means no daemon and a silent local fallback. A
+    daemon that answers but refuses is reported on stderr: a silent
+    recomputation here would present the CLI's own configuration and an empty
+    in-process state as the running daemon's view.
+    """
+    from polylogue.cli.operation_kernel import (
+        OperationKernelError,
+        OperationRequest,
+        OperationUnavailableError,
+        dispatch,
+    )
     from polylogue.config import load_polylogue_config
 
-    url = (load_polylogue_config().daemon_url or "http://127.0.0.1:8766").rstrip("/")
+    config = load_polylogue_config()
     try:
-        req = Request(f"{url}/api/status", headers={"Accept": "application/json"}, method="GET")
-        with urlopen(req, timeout=timeout) as resp:
-            body = resp.read()
-    except (OSError, URLError, ValueError):
+        # The operation's own declared deadline: a pinned read on a large
+        # archive can legitimately take longer than a connect probe, and
+        # cutting it short would fall back to the slower local path.
+        result = dispatch(config, OperationRequest("status", {}), daemon_only=True)
+    except OperationUnavailableError:
         return None
-    try:
-        parsed = loads(body)
-    except ValueError:
+    except OperationKernelError as exc:
+        click.echo(
+            f"polylogued status: the running daemon did not answer the status request ({exc}); "
+            "showing a recomputation in this process, which cannot see the daemon's in-process state",
+            err=True,
+        )
         return None
-    document = json_document(parsed)
+    document = json_document(result.value)
     return document or None
 
 
@@ -3566,7 +3576,9 @@ def _live_daemon_status_payload(*, timeout: float = _LIVE_DAEMON_STATUS_TIMEOUT_
 )
 def status_command(spool_path: Path | None, output_format: str | None) -> None:
     configure_logging()
-    payload = _live_daemon_status_payload()
+    # An explicit ``--spool`` asks about a path the running daemon's cached
+    # status does not describe, so it is always answered in this process.
+    payload = None if spool_path is not None else _live_daemon_status_payload()
     if payload is None:
         if output_format == "json":
             with redirect_stdout(sys.stderr):
