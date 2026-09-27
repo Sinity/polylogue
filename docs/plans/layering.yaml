@@ -97,7 +97,10 @@ writer_modules:
           interruption: atomic
       entrypoints: [publish_source_generation, seal_source_generation, transition_source_item,
         record_source_item_raw_member, record_source_item_member_disposition,
-        complete_source_item_enumeration, publish_frozen_source_manifest]
+        complete_source_item_enumeration, publish_frozen_source_manifest,
+        begin_prepared_source_manifest, append_prepared_source_inputs,
+        seal_prepared_source_manifest, publish_sealed_source_manifest,
+        abort_prepared_source_manifest, reconcile_unaccepted_prepared_source_manifests]
     - path: polylogue/storage/sqlite/archive_tiers/source_attachments.py
       surfaces:
         - tier: source

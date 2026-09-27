@@ -157,7 +157,7 @@ def _page_digest(items: list[IngestInputHistoricalReceipt]) -> str:
 
 
 class IngestInputPageHistoricalReceipt(_Receipt):
-    ordinal: int = Field(ge=0, lt=MAX_MACHINE_RECEIPT_PAGES)
+    ordinal: int = Field(ge=0)
     digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     items: list[IngestInputHistoricalReceipt] = Field(min_length=1, max_length=MAX_PAGE_ITEMS)
 
@@ -299,7 +299,58 @@ class IngestHistoricalReceipt(_Receipt):
         return self
 
 
-MachineHistoricalReceipt: TypeAlias = InsightPartHistoricalReceipt | IngestHistoricalReceipt
+def ingest_input_pages_digest(pages: list[IngestInputPageHistoricalReceipt]) -> str:
+    """Bind the exact ordered page sequence without copying its item payloads."""
+    digest = hashlib.sha256()
+    for page in pages:
+        digest.update(f"{page.ordinal}:{page.digest}\n".encode("ascii"))
+    return digest.hexdigest()
+
+
+class IngestHistoricalReceiptV2(_Receipt):
+    """Terminal root whose input denominator lives in immutable audit pages."""
+
+    kind: Literal["ingest/v2"] = "ingest/v2"
+    source_generation_id: str = Field(min_length=1)
+    final_sequence: int = Field(ge=1)
+    input_count: int = Field(ge=1)
+    input_pages_ref: str = Field(min_length=1)
+    input_page_count: int = Field(ge=1)
+    input_pages_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    insight_pages: list[IngestInsightPageHistoricalReceipt] = Field(
+        default_factory=list, max_length=MAX_MACHINE_RECEIPT_PAGES
+    )
+    insight_pages_ref: str | None = Field(default=None, min_length=1)
+    insight_page_count: int = Field(default=0, ge=0)
+    insight_pages_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    summary: IngestTerminalSummaryHistorical
+
+    @model_validator(mode="after")
+    def valid_root(self) -> IngestHistoricalReceiptV2:
+        if self.input_page_count != (self.input_count + MAX_PAGE_ITEMS - 1) // MAX_PAGE_ITEMS:
+            raise ValueError("historical ingest input page count differs from denominator")
+        paged_insights = self.insight_pages_ref is not None
+        if paged_insights != bool(self.insight_page_count) or paged_insights != bool(self.insight_pages_digest):
+            raise ValueError("historical ingest insight page reference is incomplete")
+        if paged_insights and self.insight_pages:
+            raise ValueError("historical ingest cannot mix inline and referenced insight pages")
+        if [page.ordinal for page in self.insight_pages] != list(range(len(self.insight_pages))):
+            raise ValueError("historical ingest insight pages are not contiguous")
+        if not paged_insights and self.summary.profile_targets_observed != sum(
+            len(page.targets) for page in self.insight_pages
+        ):
+            raise ValueError("historical ingest profile total does not match its pages")
+        if paged_insights and self.summary.profile_targets_observed > self.insight_page_count * MAX_PAGE_ITEMS:
+            raise ValueError("historical ingest profile total exceeds its referenced pages")
+        if self.summary.refused_membership_count < len(self.summary.refused_memberships):
+            raise ValueError("historical ingest refusal count is smaller than its enumerated refusals")
+        if self.summary.refused_membership_count and self.summary.source_complete:
+            raise ValueError("historical ingest cannot be source-complete while memberships were refused")
+        return self
+
+
+IngestTerminalReceipt: TypeAlias = IngestHistoricalReceipt | IngestHistoricalReceiptV2
+MachineHistoricalReceipt: TypeAlias = InsightPartHistoricalReceipt | IngestTerminalReceipt
 
 
 def encode_machine_receipt(receipt: MachineHistoricalReceipt) -> dict[str, object]:
@@ -319,6 +370,8 @@ def decode_machine_receipt(raw: object) -> MachineHistoricalReceipt:
             return InsightPartHistoricalReceipt.model_validate(raw)
         if kind == "ingest/v1":
             return IngestHistoricalReceipt.model_validate(raw)
+        if kind == "ingest/v2":
+            return IngestHistoricalReceiptV2.model_validate(raw)
     except ValidationError as exc:
         raise ValueError("historical machine receipt is malformed") from exc
     raise ValueError("historical machine receipt kind is not recognized")
@@ -326,6 +379,8 @@ def decode_machine_receipt(raw: object) -> MachineHistoricalReceipt:
 
 __all__ = [
     "IngestHistoricalReceipt",
+    "IngestHistoricalReceiptV2",
+    "IngestTerminalReceipt",
     "IngestInputHistoricalReceipt",
     "IngestInputPageHistoricalReceipt",
     "IngestInsightPageHistoricalReceipt",
@@ -336,4 +391,5 @@ __all__ = [
     "MachineHistoricalReceipt",
     "decode_machine_receipt",
     "encode_machine_receipt",
+    "ingest_input_pages_digest",
 ]

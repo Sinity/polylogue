@@ -28,7 +28,7 @@ from polylogue.storage.raw_authority import (
 )
 from polylogue.storage.sqlite.archive_tiers.revision_governance import _application_decision_for
 
-_MAX_SOURCE_ITEMS = 10_000
+_SOURCE_PAGE_ITEMS = 256
 
 
 class SourceGenerationBlocker(StrEnum):
@@ -145,6 +145,86 @@ class SourceGenerationReceipt:
     items: tuple[SourceGenerationItemReceipt, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class SourceGenerationReceiptPage:
+    """At most 256 exact input witnesses from one pinned source/index pair."""
+
+    items: tuple[SourceGenerationItemReceipt, ...]
+    retired_coordinates: tuple[SourceGenerationRetiredCoordinate, ...]
+    next_cursor: tuple[str, str] | None
+
+
+def source_generation_receipt_page(
+    source_conn: sqlite3.Connection,
+    index_conn: sqlite3.Connection,
+    *,
+    source_generation_id: str,
+    after: tuple[str, str] | None = None,
+    limit: int = _SOURCE_PAGE_ITEMS,
+) -> SourceGenerationReceiptPage:
+    """Project one keyset page without an archive-wide item fetch."""
+    if not 1 <= limit <= _SOURCE_PAGE_ITEMS:
+        raise ValueError("source generation receipt page must be between 1 and 256 inputs")
+    rows = source_conn.execute(
+        "SELECT source_item_id, logical_coordinate, enumeration_fingerprint, enumerated_record_count, "
+        "enumeration_digest, enumerated_at_ms, enumerated_member_count, enumeration_member_digest "
+        "FROM main.source_items WHERE source_generation_id=? AND (logical_coordinate, source_item_id) > (?, ?) "
+        "ORDER BY logical_coordinate, source_item_id LIMIT ?",
+        (source_generation_id, *(after or ("", "")), limit),
+    ).fetchall()
+    items: list[SourceGenerationItemReceipt] = []
+    retired: list[SourceGenerationRetiredCoordinate] = []
+    for row in rows:
+        item, coordinates = _project_item_receipt(source_conn, index_conn, source_generation_id, row)
+        items.append(item)
+        retired.extend(coordinates)
+    cursor = (str(rows[-1][1]), str(rows[-1][0])) if rows else None
+    return SourceGenerationReceiptPage(tuple(items), tuple(retired), cursor)
+
+
+def _project_item_receipt(
+    source_conn: sqlite3.Connection,
+    index_conn: sqlite3.Connection,
+    source_generation_id: str,
+    item: tuple[object, ...],
+) -> tuple[SourceGenerationItemReceipt, tuple[SourceGenerationRetiredCoordinate, ...]]:
+    item_id = str(item[0])
+    coordinate = str(item[1])
+    member_rows = source_conn.execute(
+        "SELECT record_coordinate, raw_id, raw_blob_hash FROM main.source_item_raw_members "
+        "WHERE source_generation_id=? AND source_item_id=? ORDER BY record_coordinate",
+        (source_generation_id, item_id),
+    ).fetchall()
+    retired = tuple(
+        SourceGenerationRetiredCoordinate(item_id, coordinate, str(row[0])) for row in member_rows if row[1] is None
+    )
+    disposition_rows = source_conn.execute(
+        "SELECT entry_ordinal, member_name, disposition, diagnostic FROM main.source_item_member_dispositions "
+        "WHERE source_generation_id=? AND source_item_id=? ORDER BY entry_ordinal",
+        (source_generation_id, item_id),
+    ).fetchall()
+    dispositions = tuple(
+        SourceGenerationMemberDisposition(int(row[0]), str(row[1]), str(row[2]), str(row[3]))
+        for row in disposition_rows
+    )
+    enumeration_complete = _enumeration_complete(source_conn, source_generation_id, item, member_rows, disposition_rows)
+    blockers: list[SourceGenerationBlocker] = []
+    if not enumeration_complete:
+        blockers.append(SourceGenerationBlocker.ENUMERATION_INCOMPLETE)
+    if retired:
+        blockers.append(SourceGenerationBlocker.RETIRED_MEMBER)
+    if any(row[2] == "refused" for row in disposition_rows):
+        blockers.append(SourceGenerationBlocker.MEMBER_REFUSED)
+    if any(row[2] == "unselected" for row in disposition_rows):
+        blockers.append(SourceGenerationBlocker.MEMBER_UNSELECTED)
+    raw_ids = sorted({str(row[1]) for row in member_rows if row[1] is not None})
+    raws = tuple(_raw_receipt(source_conn, index_conn, raw_id) for raw_id in raw_ids)
+    return (
+        SourceGenerationItemReceipt(item_id, coordinate, enumeration_complete, tuple(blockers), dispositions, raws),
+        retired,
+    )
+
+
 def source_generation_receipt(
     source_conn: sqlite3.Connection,
     index_conn: sqlite3.Connection,
@@ -183,79 +263,18 @@ def source_generation_receipt(
             items=(),
         )
     item_count = _int_cell(generation[0])
-    if item_count is not None and item_count > _MAX_SOURCE_ITEMS:
-        raise ValueError(f"source generation receipt exceeds {_MAX_SOURCE_ITEMS} item limit")
-
-    item_rows = source_conn.execute(
-        """
-        SELECT source_item_id, logical_coordinate, enumeration_fingerprint,
-               enumerated_record_count, enumeration_digest, enumerated_at_ms,
-               enumerated_member_count, enumeration_member_digest
-        FROM main.source_items
-        WHERE source_generation_id = ?
-        ORDER BY logical_coordinate, source_item_id
-        """,
-        (source_generation_id,),
-    ).fetchall()
-    if len(item_rows) > _MAX_SOURCE_ITEMS:
-        raise ValueError(f"source generation receipt exceeds {_MAX_SOURCE_ITEMS} item limit")
-
     retired_coordinates: list[SourceGenerationRetiredCoordinate] = []
     items: list[SourceGenerationItemReceipt] = []
-    for item in item_rows:
-        item_id = str(item[0])
-        coordinate = str(item[1])
-        member_rows = source_conn.execute(
-            """
-            SELECT record_coordinate, raw_id, raw_blob_hash
-            FROM main.source_item_raw_members
-            WHERE source_generation_id = ? AND source_item_id = ?
-            ORDER BY record_coordinate
-            """,
-            (source_generation_id, item_id),
-        ).fetchall()
-        retired = [row for row in member_rows if row[1] is None]
-        retired_coordinates.extend(
-            SourceGenerationRetiredCoordinate(item_id, coordinate, str(row[0])) for row in retired
+    cursor: tuple[str, str] | None = None
+    while True:
+        page = source_generation_receipt_page(
+            source_conn, index_conn, source_generation_id=source_generation_id, after=cursor
         )
-        disposition_rows = source_conn.execute(
-            "SELECT entry_ordinal, member_name, disposition, diagnostic FROM main.source_item_member_dispositions "
-            "WHERE source_generation_id=? AND source_item_id=? ORDER BY entry_ordinal",
-            (source_generation_id, item_id),
-        ).fetchall()
-        member_dispositions = tuple(
-            SourceGenerationMemberDisposition(int(row[0]), str(row[1]), str(row[2]), str(row[3]))
-            for row in disposition_rows
-        )
-        enumeration_complete = _enumeration_complete(
-            source_conn, source_generation_id, item, member_rows, disposition_rows
-        )
-        item_blockers: list[SourceGenerationBlocker] = []
-        if not enumeration_complete:
-            item_blockers.append(SourceGenerationBlocker.ENUMERATION_INCOMPLETE)
-        if retired:
-            item_blockers.append(SourceGenerationBlocker.RETIRED_MEMBER)
-        if any(row[2] == "refused" for row in disposition_rows):
-            item_blockers.append(SourceGenerationBlocker.MEMBER_REFUSED)
-        if any(row[2] == "unselected" for row in disposition_rows):
-            item_blockers.append(SourceGenerationBlocker.MEMBER_UNSELECTED)
-
-        # Source-43 record members are the receipt denominator.  In
-        # particular, do not turn a legacy item-level ``source_items.raw_id``
-        # into an enumerated member: it has no record coordinate or exhausted
-        # decoder witness.
-        raw_ids = [str(row[1]) for row in member_rows if row[1] is not None]
-        raws = tuple(_raw_receipt(source_conn, index_conn, raw_id) for raw_id in sorted(set(raw_ids)))
-        items.append(
-            SourceGenerationItemReceipt(
-                source_item_id=item_id,
-                logical_coordinate=coordinate,
-                enumeration_complete=enumeration_complete,
-                blockers=tuple(item_blockers),
-                member_dispositions=member_dispositions,
-                raws=raws,
-            )
-        )
+        if not page.items:
+            break
+        items.extend(page.items)
+        retired_coordinates.extend(page.retired_coordinates)
+        cursor = page.next_cursor
 
     confirmed = sorted({raw.raw_id for item in items for raw in item.raws if raw.complete})
     unresolved = sorted({raw.raw_id for item in items for raw in item.raws if not raw.complete})
@@ -268,11 +287,11 @@ def source_generation_receipt(
         }
     )
     enumeration_complete = (
-        item_count is not None and len(item_rows) == item_count and all(item.enumeration_complete for item in items)
+        item_count is not None and len(items) == item_count and all(item.enumeration_complete for item in items)
     )
     complete = (
         item_count is not None
-        and len(item_rows) == item_count
+        and len(items) == item_count
         and enumeration_complete
         and not retired_coordinates
         and not unresolved
@@ -411,7 +430,7 @@ def _raw_receipt(
         except ValueError:
             membership_identity_matches = False
             continue
-        if key.rpartition(":")[2] != str(membership[1]):
+        if key.partition(":")[2] != str(membership[1]):
             membership_identity_matches = False
         memberships_by_key.setdefault(key, membership)
     if not membership_identity_matches:

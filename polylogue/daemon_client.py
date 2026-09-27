@@ -494,7 +494,11 @@ class DaemonClient:
                 raise DaemonMutationIndeterminateError(method="POST", path="/api/operation", request_id=target)
             state = waited.get("result")
             if not isinstance(state, dict) or "sequence" not in state or "outcome" not in state:
-                raise DaemonOperationProtocolError("operation await omitted its durable lifecycle")
+                error = waited.get("error")
+                error_code = error.get("code") if isinstance(error, dict) else None
+                raise DaemonOperationProtocolError(
+                    f"operation await omitted its durable lifecycle (outcome={waited.get('outcome')}, code={error_code})"
+                )
             reference = state.get("reference")
             accepted = envelope.get("accepted_reference")
             identity_fields = ("request_id", "archive_identity", "principal_ref", "fingerprint", "operation_name")

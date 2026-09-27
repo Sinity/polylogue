@@ -11,11 +11,19 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.source_attachments import SourceAttachment
 from polylogue.storage.sqlite.archive_tiers.source_items import (
     AcquisitionDisposition,
+    FrozenSourceInput,
+    FrozenSourceManifest,
     SourceItemMemberDisposition,
+    abort_prepared_source_manifest,
+    append_prepared_source_inputs,
+    begin_prepared_source_manifest,
     complete_source_item_enumeration,
+    page_retained_source_inputs,
+    publish_sealed_source_manifest,
     publish_source_generation,
     record_source_item_member_disposition,
     record_source_item_raw_member,
+    seal_prepared_source_manifest,
     seal_source_generation,
     source_generation_census,
     source_item_id,
@@ -39,6 +47,85 @@ def _source() -> sqlite3.Connection:
     initialize_archive_tier(conn, ArchiveTier.SOURCE)
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+def _reservation(conn: sqlite3.Connection, receipt_id: str, blob_hash: bytes) -> None:
+    conn.execute(
+        "INSERT INTO blob_publication_reservations VALUES (?, ?, 1, 'synthetic', 1)",
+        (receipt_id, blob_hash),
+    )
+
+
+def test_fresh_source_v1_contains_prepared_manifest_tables() -> None:
+    """Fresh campaign bootstrap carries the new relations without a version step."""
+    conn = _source()
+    assert conn.execute("PRAGMA user_version").fetchone() == (1,)
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_schema WHERE type='table' AND name LIKE 'prepared_source_manifest%'"
+        )
+    }
+    assert tables == {"prepared_source_manifests", "prepared_source_manifest_members"}
+
+
+def test_sealed_prepared_manifest_preserves_v1_digest_and_binds_custody() -> None:
+    conn = _source()
+    inputs = (
+        FrozenSourceInput("a", "/tmp/α", "a" * 64, "receipt:a"),
+        FrozenSourceInput("b", "/tmp/β", "b" * 64, "receipt:b"),
+    )
+    for item in inputs:
+        _reservation(conn, item.publication_receipt_id, bytes.fromhex(item.blob_hash))
+    conn.commit()
+    conn.execute("BEGIN")
+    begin_prepared_source_manifest(
+        conn,
+        source_generation_id="synthetic",
+        publisher_id="synthetic-publisher",
+        enumeration_fingerprint="d" * 64,
+        source_name="codex",
+    )
+    append_prepared_source_inputs(conn, "synthetic", 0, inputs)
+    ref = seal_prepared_source_manifest(conn, "synthetic", sealed_at_ms=1)
+    assert ref.manifest_digest == FrozenSourceManifest("synthetic", "d" * 64, inputs, "codex").manifest_digest
+    assert conn.execute("SELECT COUNT(*) FROM source_generations").fetchone()[0] == 0
+    publish_sealed_source_manifest(conn, ref, prepared_at_ms=2)
+    assert conn.execute("SELECT COUNT(*) FROM source_items").fetchone()[0] == 2
+    publish_sealed_source_manifest(conn, ref, prepared_at_ms=2)
+    assert conn.execute("SELECT COUNT(*) FROM source_items").fetchone()[0] == 2
+    with pytest.raises(ValueError, match="accepted source generation cannot be aborted"):
+        abort_prepared_source_manifest(conn, source_generation_id="synthetic", publisher_id="synthetic-publisher")
+    assert conn.execute("SELECT COUNT(*) FROM source_items").fetchone()[0] == 2
+
+
+def test_sealed_manifest_pages_beyond_old_total_bound() -> None:
+    conn = _source()
+    conn.execute("BEGIN")
+    begin_prepared_source_manifest(
+        conn,
+        source_generation_id="large",
+        publisher_id="large-publisher",
+        enumeration_fingerprint="d" * 64,
+        source_name=None,
+    )
+    for start in range(0, 10_241, 256):
+        batch = tuple(
+            FrozenSourceInput(f"input:{number:05d}", f"/synthetic/{number:05d}", "a" * 64, "shared")
+            for number in range(start, min(start + 256, 10_241))
+        )
+        append_prepared_source_inputs(conn, "large", start, batch)
+    _reservation(conn, "shared", bytes.fromhex("a" * 64))
+    ref = seal_prepared_source_manifest(conn, "large", sealed_at_ms=1)
+    assert ref.input_count == 10_241
+    publish_sealed_source_manifest(conn, ref, prepared_at_ms=2)
+    seen = 0
+    cursor = None
+    while page := page_retained_source_inputs(conn, "large", after=cursor):
+        assert len(page) <= 256
+        seen += len(page)
+        cursor = (page[-1][0].coordinate, page[-1][0].source_item_id)
+    assert seen == 10_241
 
 
 def _frozen_item(conn: sqlite3.Connection, generation: str = "frozen") -> str:

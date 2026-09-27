@@ -164,6 +164,7 @@ class PreparedIngestCohort:
     prepared_attachment_blobs: tuple[PreparedAttachmentBlob, ...]
     affected_session_ids: tuple[str, ...]
     acquired_at_ms: int
+    source_generation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -417,15 +418,20 @@ def _selector_raw_ids(
     archive: Any,
     logical_source_key: str,
     request_owned_complete_raw_ids: frozenset[str],
+    source_generation_id: str | None = None,
 ) -> tuple[str, ...]:
     selected: set[str] = set()
-    if request_owned_complete_raw_ids:
+    if request_owned_complete_raw_ids or source_generation_id is not None:
         # One membership read for the whole request, not one per accepted raw.
         # A request that accepted nothing still selects nothing: it owns no
         # complete census to classify, so it must not pull established
         # byte-proven members into a cohort it never proposed.
         selected.update(
-            archive.raw_membership_raw_ids(logical_source_key, include_complete_raw_ids=request_owned_complete_raw_ids)
+            archive.raw_membership_raw_ids(
+                logical_source_key,
+                include_complete_raw_ids=request_owned_complete_raw_ids,
+                source_generation_id=source_generation_id,
+            )
         )
     selected.update(archive.raw_membership_retired_full_revision_siblings(logical_source_key))
     head_raw_id = archive.raw_revision_head_raw_id(logical_source_key)
@@ -554,7 +560,8 @@ def prepare_ingest_cohort(
     reader_archive: Any,
     *,
     logical_source_key: str,
-    accepted_raw_ids: Collection[str],
+    accepted_raw_ids: Collection[str] = (),
+    source_generation_id: str | None = None,
     parser_fingerprint: str,
     parse_retained_raw: ParseRetainedRaw,
     acquired_at_ms: int,
@@ -562,7 +569,7 @@ def prepare_ingest_cohort(
     """Prepare one exact live membership cohort without taking the writer."""
     request_owned = frozenset(accepted_raw_ids)
     convertible = tuple(reader_archive.convertible_full_revision_raw_ids(logical_source_key))
-    selector = _selector_raw_ids(reader_archive, logical_source_key, request_owned)
+    selector = _selector_raw_ids(reader_archive, logical_source_key, request_owned, source_generation_id)
     head = _head_binding(reader_archive, logical_source_key)
     append_frontier = _append_frontier(reader_archive, logical_source_key)
 
@@ -586,6 +593,7 @@ def prepare_ingest_cohort(
             logical_source_key=logical_source_key,
             blob_root=str(reader_archive.archive_root / "blob"),
             request_owned_complete_raw_ids=request_owned,
+            source_generation_id=source_generation_id,
             selector_raw_ids=selector,
             member_bindings=tuple(
                 _raw_binding(reader_archive, raw_id, logical_source_key=logical_source_key) for raw_id in selector
@@ -637,6 +645,7 @@ def prepare_ingest_cohort(
         logical_source_key=logical_source_key,
         blob_root=str(reader_archive.archive_root / "blob"),
         request_owned_complete_raw_ids=request_owned,
+        source_generation_id=source_generation_id,
         selector_raw_ids=selector,
         member_bindings=tuple(bindings),
         existing_head=head,
@@ -669,7 +678,12 @@ def _cohort_still_current(writer_archive: Any, prepared: PreparedIngestCohort) -
     ):
         return "convertible full-revision route changed"
     if (
-        _selector_raw_ids(writer_archive, prepared.logical_source_key, prepared.request_owned_complete_raw_ids)
+        _selector_raw_ids(
+            writer_archive,
+            prepared.logical_source_key,
+            prepared.request_owned_complete_raw_ids,
+            prepared.source_generation_id,
+        )
         != prepared.selector_raw_ids
     ):
         return "eligible membership selector changed"

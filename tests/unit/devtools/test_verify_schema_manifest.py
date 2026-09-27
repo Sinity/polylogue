@@ -44,12 +44,14 @@ def test_schema_manifest_normalization_keeps_escaped_literal_values_exact() -> N
     assert _normalize_schema_sql(compact.replace("'A  B'", "'a b'")) != _normalize_schema_sql(compact)
 
 
-def _schema_state(*, source_version: int = 1, source_ddl: str = "source") -> verify_schema_manifest._SchemaState:
+def _schema_state(
+    *, source_version: int = 1, source_ddl: str = "source", lineage: str = "polylogue.archive-format.v3"
+) -> verify_schema_manifest._SchemaState:
     ddl = {tier: tier.value for tier in ArchiveTier}
     ddl[ArchiveTier.SOURCE] = source_ddl
     versions = dict.fromkeys(ArchiveTier, 1)
     versions[ArchiveTier.SOURCE] = source_version
-    return verify_schema_manifest._SchemaState(ddl=ddl, versions=versions)
+    return verify_schema_manifest._SchemaState(ddl=ddl, versions=versions, lineage=lineage)
 
 
 def test_durable_evolution_requires_every_numbered_migration_for_a_version_bump(
@@ -84,6 +86,22 @@ def test_durable_evolution_compares_rendered_ddl_transformations(
     violations = verify_schema_manifest._durable_ddl_evolution_violations()
 
     assert "source: rendered DDL changed without a schema-version bump" in violations
+
+
+def test_new_fresh_lineage_allows_floor_ddl_change_without_migration(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A new marker fences old v1 files while all durable counters remain one."""
+    monkeypatch.setattr(verify_schema_manifest, "_merge_base", lambda _explicit=None: "base")
+    monkeypatch.setattr(
+        verify_schema_manifest,
+        "_render_schema_state",
+        lambda ref: _schema_state(
+            source_ddl="before" if ref == "base" else "after",
+            lineage="polylogue.archive-format.v2" if ref == "base" else "polylogue.archive-format.v3",
+        ),
+    )
+    monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: ())
+
+    assert verify_schema_manifest._durable_ddl_evolution_violations() == []
 
 
 _RETIRED_DDL = """

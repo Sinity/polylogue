@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from polylogue.core.annotation_limits import MAX_ANNOTATION_IMPORT_BYTES
 from polylogue.core.enums import OperationStatus
-from polylogue.operations.machine_receipts import IngestHistoricalReceipt
+from polylogue.operations.machine_receipts import IngestTerminalReceipt
 from polylogue.operations.read_contracts import (
     QueryAggregateRequest,
     QueryAggregateResult,
@@ -1069,7 +1069,7 @@ class IngestResult(_OperationResult):
     source_generation_id: str = Field(min_length=1)
     outcome: OperationStatus
     sequence: int = Field(ge=0)
-    historical_receipt: IngestHistoricalReceipt
+    historical_receipt: IngestTerminalReceipt
 
     @model_validator(mode="after")
     def binds_terminal_receipt(self) -> IngestResult:

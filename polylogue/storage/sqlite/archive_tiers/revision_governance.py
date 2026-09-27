@@ -2921,6 +2921,7 @@ def raw_membership_raw_ids(
     logical_source_key: str,
     *,
     include_complete_raw_ids: frozenset[str] = frozenset(),
+    source_generation_id: str | None = None,
 ) -> tuple[str, ...]:
     """Return byte-proven candidates plus the complete raws being classified.
 
@@ -2943,7 +2944,9 @@ def raw_membership_raw_ids(
         store._ensure_source_conn()
         .execute(
             """
-            SELECT m.raw_id, m.revision_authority
+            SELECT m.raw_id, m.revision_authority,
+                   EXISTS(SELECT 1 FROM source_item_raw_members sm
+                          WHERE sm.raw_id=m.raw_id AND sm.source_generation_id=?) AS generation_owned
             FROM raw_session_memberships AS m
             LEFT JOIN raw_membership_census AS c ON c.raw_id = m.raw_id
             WHERE m.logical_source_key = ?
@@ -2953,11 +2956,15 @@ def raw_membership_raw_ids(
               )
             ORDER BY m.raw_id
             """,
-            (logical_source_key,),
+            (source_generation_id, logical_source_key),
         )
         .fetchall()
     )
-    return tuple(str(row[0]) for row in rows if row[1] == "byte_proven" or str(row[0]) in include_complete_raw_ids)
+    return tuple(
+        str(row[0])
+        for row in rows
+        if row[1] == "byte_proven" or bool(row[2]) or str(row[0]) in include_complete_raw_ids
+    )
 
 
 def raw_revision_acquired_at_ms(store: RawRevisionGovernanceHost, raw_id: str) -> int:

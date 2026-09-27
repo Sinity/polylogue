@@ -17,9 +17,16 @@ from polylogue.operations.mutation_transaction import (
     MutationPreview,
     MutationPrincipal,
     OperationExecutor,
+    recover_interrupted_operations,
 )
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
-from polylogue.storage.sqlite.archive_tiers.source_items import FrozenSourceInput, FrozenSourceManifest
+from polylogue.storage.sqlite.archive_tiers.source_items import (
+    FrozenSourceInput,
+    FrozenSourceManifest,
+    append_prepared_source_inputs,
+    begin_prepared_source_manifest,
+    seal_prepared_source_manifest,
+)
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditMutation
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.frozen_clock import FrozenClock
@@ -72,6 +79,101 @@ def test_ingest_acceptance_replays_identity_without_acquiring(tmp_path: Path, ph
     with pytest.raises(MachineRequestRecoveredError):
         with recovered.bind_machine_request(binding, transition="accept_ingest"):
             recovered.accept_ingest(manifest, principal)
+
+
+def test_startup_reclaims_interrupted_preaccept_pages_and_unattached_reservations(tmp_path: Path) -> None:
+    """A killed producer cannot leave staged members or GC-immune receipts."""
+    bootstrap_archive_root(tmp_path)
+    publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+    first_hash, _ = publisher.write_from_bytes(b"first page")
+    first_receipt = publisher.receipt_id(first_hash)
+    assert first_receipt is not None
+    publisher.flush()
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute("BEGIN IMMEDIATE")
+        begin_prepared_source_manifest(
+            source,
+            source_generation_id="interrupted:page",
+            publisher_id=publisher.publisher_id,
+            enumeration_fingerprint="d" * 64,
+            source_name=None,
+        )
+        append_prepared_source_inputs(
+            source,
+            "interrupted:page",
+            0,
+            tuple(
+                FrozenSourceInput(f"input:{ordinal}", f"/synthetic/{ordinal}", first_hash, first_receipt)
+                for ordinal in range(256)
+            ),
+        )
+        source.commit()
+    # The next page's publication can commit before its member batch does.
+    publisher.write_from_bytes(b"unattached second page")
+    publisher.flush()
+
+    recover_interrupted_operations(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM prepared_source_manifests").fetchone() == (0,)
+        assert source.execute("SELECT COUNT(*) FROM prepared_source_manifest_members").fetchone() == (0,)
+        assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone() == (0,)
+        assert source.execute("SELECT COUNT(*) FROM source_generations").fetchone() == (0,)
+
+
+@pytest.mark.parametrize("phase", ["after_source_prepare", "after_audit_commit", "after_source_promotion"])
+def test_sealed_manifest_acceptance_promotes_every_member_atomically(tmp_path: Path, phase: str) -> None:
+    """A crash cannot expose a machine acceptance with partial source membership."""
+    bootstrap_archive_root(tmp_path)
+    publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+    inputs = []
+    for ordinal in range(2):
+        blob_hash, _ = publisher.write_from_bytes(f"synthetic-{ordinal}".encode())
+        receipt_id = publisher.receipt_id(blob_hash)
+        assert receipt_id is not None
+        inputs.append(FrozenSourceInput(f"input:{ordinal}", f"/synthetic/{ordinal}", blob_hash, receipt_id))
+    publisher.flush()
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute("BEGIN IMMEDIATE")
+        begin_prepared_source_manifest(
+            source,
+            source_generation_id="sealed:test",
+            publisher_id=publisher.publisher_id,
+            enumeration_fingerprint="d" * 64,
+            source_name=None,
+        )
+        append_prepared_source_inputs(source, "sealed:test", 0, tuple(inputs))
+        manifest = seal_prepared_source_manifest(source, "sealed:test", sealed_at_ms=1)
+        source.commit()
+    principal = MutationPrincipal("actor:test", frozenset({"archive.ingest"}), "cli", "user")
+    binding = MachineRequestBinding("archive:test", "request:sealed", principal.actor_ref, "f" * 64, "ingest")
+    audit = AuditRepository.for_archive_root(tmp_path)
+
+    def crash(at: str, _mutation: AuditMutation) -> None:
+        if at == phase:
+            raise RuntimeError("synthetic interruption")
+
+    audit._continuity = AuditContinuityCoordinator(tmp_path, phase_hook=crash)
+    with pytest.raises(RuntimeError, match="synthetic interruption"):
+        with audit.bind_machine_request(binding, transition="accept_ingest", deadline_unix_ms=1000):
+            audit.accept_ingest(manifest, principal)
+    recovered = AuditRepository.for_archive_root(tmp_path)
+    recovered.reconcile_continuity()
+    record = recovered.machine_request(binding)
+    assert record is not None and record["artifact_ref"] == manifest.source_generation_id
+    assert machine_request_state(recovered, record)["outcome"] == "accepted"
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute(
+            "SELECT COUNT(*) FROM source_items WHERE source_generation_id='sealed:test'"
+        ).fetchone() == (2,)
+        assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone() == (0,)
+    recover_interrupted_operations(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute(
+            "SELECT COUNT(*) FROM prepared_source_manifest_members WHERE source_generation_id='sealed:test'"
+        ).fetchone() == (2,)
+        assert source.execute(
+            "SELECT COUNT(*) FROM source_items WHERE source_generation_id='sealed:test'"
+        ).fetchone() == (2,)
 
 
 def test_ingest_principal_is_checked_before_source_prepare(tmp_path: Path) -> None:

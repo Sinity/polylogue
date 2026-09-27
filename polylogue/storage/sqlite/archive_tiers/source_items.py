@@ -110,6 +110,7 @@ class RetainedSourceGeneration:
     source_generation_id: str
     enumeration_fingerprint: str
     inputs: tuple[RetainedSourceInput, ...]
+    item_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,28 +131,66 @@ def retained_source_generation(conn: sqlite3.Connection, source_generation_id: s
     ).fetchone()
     if generation is None:
         raise KeyError(source_generation_id)
+    fingerprint: str | None = None
+    inputs: list[RetainedSourceInput] = []
+    cursor: tuple[str, str] | None = None
+    while True:
+        page = page_retained_source_inputs(conn, source_generation_id, after=cursor)
+        if not page:
+            break
+        for item, item_fingerprint in page:
+            if fingerprint is None:
+                fingerprint = item_fingerprint
+            elif fingerprint != item_fingerprint:
+                raise ValueError("accepted source generation has mixed decoder identities")
+            inputs.append(item)
+        cursor = (page[-1][0].coordinate, page[-1][0].source_item_id)
+    if not inputs or len(inputs) != int(generation[0]) or fingerprint is None:
+        raise ValueError("accepted source generation has an incomplete manifest")
+    _require_digest(fingerprint, "enumeration_fingerprint")
+    return RetainedSourceGeneration(source_generation_id, fingerprint, tuple(inputs), len(inputs))
+
+
+def retained_source_generation_header(conn: sqlite3.Connection, source_generation_id: str) -> RetainedSourceGeneration:
+    """Read the accepted decoder and count without materializing input members."""
+    row = conn.execute(
+        "SELECT item_count FROM source_generations WHERE source_generation_id=?", (source_generation_id,)
+    ).fetchone()
+    if row is None or type(row[0]) is not int or row[0] < 1:
+        raise ValueError("accepted source generation is absent or empty")
+    first = page_retained_source_inputs(conn, source_generation_id, limit=1)
+    if not first:
+        raise ValueError("accepted source generation has no retained input")
+    fingerprint = first[0][1]
+    _require_digest(fingerprint, "enumeration_fingerprint")
+    return RetainedSourceGeneration(source_generation_id, fingerprint, (), row[0])
+
+
+def page_retained_source_inputs(
+    conn: sqlite3.Connection, source_generation_id: str, *, after: tuple[str, str] | None = None, limit: int = 256
+) -> tuple[tuple[RetainedSourceInput, str], ...]:
+    """Read a bounded accepted input page with a stable two-column keyset."""
+    if not 1 <= limit <= 256:
+        raise ValueError("accepted input page limit must be between 1 and 256")
     rows = conn.execute(
         "SELECT source_item_id, logical_coordinate, source_path, blob_hash, enumeration_fingerprint, "
-        "enumerated_at_ms, stage, revision FROM source_items WHERE source_generation_id=? ORDER BY logical_coordinate",
-        (source_generation_id,),
+        "enumerated_at_ms, stage, revision FROM source_items WHERE source_generation_id=? "
+        "AND (logical_coordinate, source_item_id) > (?, ?) ORDER BY logical_coordinate, source_item_id LIMIT ?",
+        (source_generation_id, *(after or ("", "")), limit),
     ).fetchall()
-    if not 1 <= len(rows) <= 10_000 or len(rows) != int(generation[0]):
-        raise ValueError("accepted source generation has an incomplete manifest")
-    fingerprints = {row[4] for row in rows}
-    if len(fingerprints) != 1 or None in fingerprints:
-        raise ValueError("accepted source generation has no exact decoder identity")
-    fingerprint = str(next(iter(fingerprints)))
-    _require_digest(fingerprint, "enumeration_fingerprint")
-    inputs = []
+    result: list[tuple[RetainedSourceInput, str]] = []
     for row in rows:
-        if row[2] is None or not isinstance(row[3], bytes) or len(row[3]) != 32:
+        if row[2] is None or not isinstance(row[3], bytes) or len(row[3]) != 32 or row[4] is None:
             raise ValueError("accepted source input lost its retained physical identity")
-        inputs.append(
-            RetainedSourceInput(
-                str(row[0]), str(row[1]), str(row[2]), row[3].hex(), row[5] is not None, str(row[6]), int(row[7])
+        result.append(
+            (
+                RetainedSourceInput(
+                    str(row[0]), str(row[1]), str(row[2]), row[3].hex(), row[5] is not None, str(row[6]), int(row[7])
+                ),
+                str(row[4]),
             )
         )
-    return RetainedSourceGeneration(source_generation_id, fingerprint, tuple(inputs))
+    return tuple(result)
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +260,331 @@ class FrozenSourceManifest:
                 raise ValueError("invalid frozen source input fields")
             inputs.append(FrozenSourceInput(**item))
         return cls(value["source_generation_id"], value["enumeration_fingerprint"], tuple(inputs), source_name)
+
+
+@dataclass(frozen=True, slots=True)
+class SealedSourceManifestRef:
+    """Bounded authority for a complete prepared denominator in source.db."""
+
+    source_generation_id: str
+    enumeration_fingerprint: str
+    manifest_digest: str
+    custody_digest: str
+    input_count: int
+    source_name: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.source_generation_id or self.input_count < 1:
+            raise ValueError("sealed manifest requires a nonempty generation")
+        for name in ("enumeration_fingerprint", "manifest_digest", "custody_digest"):
+            _require_digest(getattr(self, name), name)
+        if self.source_name is not None and (not self.source_name.strip() or len(self.source_name) > 255):
+            raise ValueError("sealed source name must be bounded and nonempty")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "source_generation_id": self.source_generation_id,
+            "enumeration_fingerprint": self.enumeration_fingerprint,
+            "manifest_digest": self.manifest_digest,
+            "custody_digest": self.custody_digest,
+            "input_count": self.input_count,
+            "source_name": self.source_name,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> SealedSourceManifestRef:
+        fields = {
+            "source_generation_id",
+            "enumeration_fingerprint",
+            "manifest_digest",
+            "custody_digest",
+            "input_count",
+            "source_name",
+        }
+        if not isinstance(value, dict) or set(value) != fields:
+            raise ValueError("invalid sealed source manifest reference")
+        if any(type(value[field]) is not str for field in fields - {"input_count", "source_name"}):
+            raise ValueError("invalid sealed source manifest identity")
+        if type(value["input_count"]) is not int or (
+            value["source_name"] is not None and type(value["source_name"]) is not str
+        ):
+            raise ValueError("invalid sealed source manifest count or name")
+        return cls(**value)
+
+
+def source_manifest_from_dict(value: object) -> FrozenSourceManifest | SealedSourceManifestRef:
+    """Decode old bounded audit commands and new sealed references exactly."""
+    if isinstance(value, dict) and "inputs" in value:
+        return FrozenSourceManifest.from_dict(value)
+    return SealedSourceManifestRef.from_dict(value)
+
+
+def begin_prepared_source_manifest(
+    conn: sqlite3.Connection,
+    *,
+    source_generation_id: str,
+    publisher_id: str,
+    enumeration_fingerprint: str,
+    source_name: str | None,
+) -> None:
+    if not conn.in_transaction or not source_generation_id or not publisher_id:
+        raise ValueError("prepared source manifest needs a source transaction and generation")
+    _require_digest(enumeration_fingerprint, "enumeration_fingerprint")
+    if source_name is not None and (not source_name.strip() or len(source_name) > 255):
+        raise ValueError("invalid source name")
+    conn.execute(
+        "INSERT INTO prepared_source_manifests(source_generation_id, publisher_id, enumeration_fingerprint, source_name) "
+        "VALUES (?, ?, ?, ?)",
+        (source_generation_id, publisher_id, enumeration_fingerprint, source_name),
+    )
+
+
+def abort_prepared_source_manifest(conn: sqlite3.Connection, *, source_generation_id: str, publisher_id: str) -> None:
+    """Release this attempt's staged rows and reservations before acceptance.
+
+    The publisher belongs to this ingest execution alone. A promoted generation
+    is never abortable, including after an ambiguous audit interruption.
+    """
+    if not conn.in_transaction or not source_generation_id or not publisher_id:
+        raise ValueError("prepared source abort requires a transaction and identities")
+    header = conn.execute(
+        "SELECT publisher_id FROM prepared_source_manifests WHERE source_generation_id=?", (source_generation_id,)
+    ).fetchone()
+    if header is not None and header[0] != publisher_id:
+        raise ValueError("prepared source publisher identity changed")
+    if (
+        conn.execute(
+            "SELECT 1 FROM source_generations WHERE source_generation_id=?", (source_generation_id,)
+        ).fetchone()
+        is not None
+    ):
+        raise ValueError("accepted source generation cannot be aborted")
+    conn.execute("DELETE FROM prepared_source_manifest_members WHERE source_generation_id=?", (source_generation_id,))
+    conn.execute("DELETE FROM prepared_source_manifests WHERE source_generation_id=?", (source_generation_id,))
+    conn.execute("DELETE FROM blob_publication_reservations WHERE publisher_id=?", (publisher_id,))
+
+
+def reconcile_unaccepted_prepared_source_manifests(conn: sqlite3.Connection) -> int:
+    """Reclaim dead pre-accept staging after audit continuity has settled.
+
+    The daemon startup owner calls this before admitting requests. A surviving
+    accepted audit transition has already promoted its source generation; an
+    unresolved audit transition prevents startup from reaching this call.
+    """
+    if not conn.in_transaction:
+        raise ValueError("prepared source reconciliation requires a source transaction")
+    orphan = (
+        "SELECT source_generation_id, publisher_id FROM prepared_source_manifests p "
+        "WHERE NOT EXISTS (SELECT 1 FROM source_generations g "
+        "WHERE g.source_generation_id=p.source_generation_id)"
+    )
+    count = int(conn.execute(f"SELECT COUNT(*) FROM ({orphan})").fetchone()[0])
+    conn.execute(
+        f"DELETE FROM blob_publication_reservations WHERE publisher_id IN (SELECT publisher_id FROM ({orphan}))"
+    )
+    conn.execute(
+        "DELETE FROM prepared_source_manifest_members WHERE source_generation_id IN "
+        f"(SELECT source_generation_id FROM ({orphan}))"
+    )
+    conn.execute(
+        "DELETE FROM prepared_source_manifests WHERE NOT EXISTS "
+        "(SELECT 1 FROM source_generations g WHERE g.source_generation_id=prepared_source_manifests.source_generation_id)"
+    )
+    return count
+
+
+def append_prepared_source_inputs(
+    conn: sqlite3.Connection, source_generation_id: str, start_ordinal: int, inputs: tuple[FrozenSourceInput, ...]
+) -> None:
+    if not conn.in_transaction or not 1 <= len(inputs) <= 256:
+        raise ValueError("prepared source input batch must be bounded by 256")
+    row = conn.execute(
+        "SELECT input_count, sealed_at_ms FROM prepared_source_manifests WHERE source_generation_id=?",
+        (source_generation_id,),
+    ).fetchone()
+    if row is None or row[1] is not None or int(row[0]) != start_ordinal:
+        raise ValueError("prepared source input batch is not the next unsealed page")
+    for offset, item in enumerate(inputs):
+        _require_digest(item.blob_hash, "input blob_hash")
+        if not item.coordinate.strip() or not item.source_path.strip() or not item.publication_receipt_id:
+            raise ValueError("prepared source input is incomplete")
+        conn.execute(
+            "INSERT INTO prepared_source_manifest_members VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                source_generation_id,
+                start_ordinal + offset,
+                item.coordinate,
+                item.source_path,
+                bytes.fromhex(item.blob_hash),
+                item.publication_receipt_id,
+            ),
+        )
+    conn.execute(
+        "UPDATE prepared_source_manifests SET input_count=? WHERE source_generation_id=?",
+        (start_ordinal + len(inputs), source_generation_id),
+    )
+
+
+def _prepared_manifest_digests(
+    conn: sqlite3.Connection, generation_id: str, fingerprint: str, source_name: str | None
+) -> tuple[str, str, int]:
+    semantic = hashlib.sha256()
+    semantic.update(("[" + json.dumps(fingerprint, ensure_ascii=False, separators=(",", ":")) + ",[").encode())
+    custody = hashlib.sha256()
+    custody.update(
+        json.dumps([generation_id, fingerprint, source_name], ensure_ascii=False, separators=(",", ":")).encode()
+    )
+    count = 0
+    for ordinal, coordinate, source_path, blob_hash, receipt_id in conn.execute(
+        "SELECT ordinal, coordinate, source_path, blob_hash, publication_receipt_id "
+        "FROM prepared_source_manifest_members WHERE source_generation_id=? ORDER BY ordinal",
+        (generation_id,),
+    ):
+        if type(ordinal) is not int or ordinal != count or not isinstance(blob_hash, bytes) or len(blob_hash) != 32:
+            raise ValueError("prepared source manifest has a missing or malformed ordinal")
+        item = [str(coordinate), str(source_path), blob_hash.hex()]
+        semantic.update((("," if count else "") + json.dumps(item, ensure_ascii=False, separators=(",", ":"))).encode())
+        custody.update(
+            ("\n" + json.dumps([ordinal, *item, str(receipt_id)], ensure_ascii=False, separators=(",", ":"))).encode()
+        )
+        count += 1
+    semantic.update(b"]")
+    if source_name is not None:
+        semantic.update(
+            (',["source_name",' + json.dumps(source_name, ensure_ascii=False, separators=(",", ":")) + "]").encode()
+        )
+    semantic.update(b"]")
+    return semantic.hexdigest(), custody.hexdigest(), count
+
+
+def seal_prepared_source_manifest(
+    conn: sqlite3.Connection, generation_id: str, *, sealed_at_ms: int
+) -> SealedSourceManifestRef:
+    if not conn.in_transaction:
+        raise ValueError("prepared source seal requires a source transaction")
+    row = conn.execute(
+        "SELECT enumeration_fingerprint, source_name, input_count, sealed_at_ms FROM prepared_source_manifests WHERE source_generation_id=?",
+        (generation_id,),
+    ).fetchone()
+    if row is None or row[3] is not None or int(row[2]) < 1:
+        raise ValueError("prepared source manifest is absent, empty, or already sealed")
+    semantic, custody, count = _prepared_manifest_digests(conn, generation_id, str(row[0]), row[1])
+    if count != int(row[2]):
+        raise ValueError("prepared source manifest count differs from its rows")
+    ref = SealedSourceManifestRef(generation_id, str(row[0]), semantic, custody, count, row[1])
+    _require_prepared_reservations(conn, ref)
+    conn.execute(
+        "UPDATE prepared_source_manifests SET semantic_digest=?, custody_digest=?, sealed_at_ms=? WHERE source_generation_id=?",
+        (semantic, custody, sealed_at_ms, generation_id),
+    )
+    return ref
+
+
+def _require_prepared_reservations(conn: sqlite3.Connection, ref: SealedSourceManifestRef) -> None:
+    missing = conn.execute(
+        "SELECT 1 FROM prepared_source_manifest_members m LEFT JOIN blob_publication_reservations r "
+        "ON r.publication_id=m.publication_receipt_id AND r.blob_hash=m.blob_hash "
+        "WHERE m.source_generation_id=? AND r.publication_id IS NULL LIMIT 1",
+        (ref.source_generation_id,),
+    ).fetchone()
+    if missing is not None:
+        raise ValueError("sealed input publication reservation is missing or mismatched")
+
+
+def validate_sealed_source_manifest(conn: sqlite3.Connection, ref: SealedSourceManifestRef) -> None:
+    if not conn.in_transaction:
+        raise ValueError("sealed source manifest requires a source transaction")
+    row = conn.execute(
+        "SELECT enumeration_fingerprint, source_name, input_count, semantic_digest, custody_digest, sealed_at_ms "
+        "FROM prepared_source_manifests WHERE source_generation_id=?",
+        (ref.source_generation_id,),
+    ).fetchone()
+    if (
+        row is None
+        or tuple(row[:5])
+        != (ref.enumeration_fingerprint, ref.source_name, ref.input_count, ref.manifest_digest, ref.custody_digest)
+        or row[5] is None
+    ):
+        raise ValueError("sealed source manifest reference differs from durable header")
+    semantic, custody, count = _prepared_manifest_digests(
+        conn, ref.source_generation_id, ref.enumeration_fingerprint, ref.source_name
+    )
+    if (semantic, custody, count) != (ref.manifest_digest, ref.custody_digest, ref.input_count):
+        raise ValueError("sealed source manifest rows differ from its digests")
+    accepted = conn.execute(
+        "SELECT manifest_digest, item_count FROM source_generations WHERE source_generation_id=?",
+        (ref.source_generation_id,),
+    ).fetchone()
+    if accepted is None:
+        _require_prepared_reservations(conn, ref)
+    elif tuple(accepted) != (ref.manifest_digest, ref.input_count):
+        raise ValueError("accepted source generation differs from sealed manifest")
+    else:
+        accepted_count = conn.execute(
+            "SELECT COUNT(*) FROM source_items WHERE source_generation_id=?",
+            (ref.source_generation_id,),
+        ).fetchone()[0]
+        mismatch = conn.execute(
+            "SELECT 1 FROM prepared_source_manifest_members m LEFT JOIN source_items i "
+            "ON i.source_generation_id=m.source_generation_id AND i.logical_coordinate=m.coordinate "
+            "WHERE m.source_generation_id=? AND (i.source_item_id IS NULL OR i.source_path<>m.source_path "
+            "OR i.blob_hash<>m.blob_hash OR i.enumeration_fingerprint<>?) LIMIT 1",
+            (ref.source_generation_id, ref.enumeration_fingerprint),
+        ).fetchone()
+        if int(accepted_count) != ref.input_count or mismatch is not None:
+            raise ValueError("accepted source inputs differ from sealed manifest")
+
+
+def publish_sealed_source_manifest(
+    conn: sqlite3.Connection, ref: SealedSourceManifestRef, *, prepared_at_ms: int
+) -> None:
+    """Publish all accepted members and consume custody in one source transaction."""
+    from polylogue.storage.blob_publication import consume_blob_publication_receipt
+
+    validate_sealed_source_manifest(conn, ref)
+    existing = conn.execute(
+        "SELECT 1 FROM source_generations WHERE source_generation_id=?",
+        (ref.source_generation_id,),
+    ).fetchone()
+    if existing is not None:
+        actual_count = conn.execute(
+            "SELECT COUNT(*) FROM source_items WHERE source_generation_id=?",
+            (ref.source_generation_id,),
+        ).fetchone()[0]
+        if int(actual_count) != ref.input_count:
+            raise ValueError("accepted source generation is incomplete")
+        return
+    conn.execute(
+        "INSERT INTO source_generations(source_generation_id, manifest_digest, addressing_mode, item_count, created_at_ms) "
+        "VALUES (?, ?, 'physical-file-v1', ?, ?)",
+        (ref.source_generation_id, ref.manifest_digest, ref.input_count, prepared_at_ms),
+    )
+    for _ordinal, coordinate, source_path, blob_hash, receipt_id in conn.execute(
+        "SELECT ordinal, coordinate, source_path, blob_hash, publication_receipt_id "
+        "FROM prepared_source_manifest_members WHERE source_generation_id=? ORDER BY ordinal",
+        (ref.source_generation_id,),
+    ):
+        item_id = source_item_id(
+            source_generation_id=ref.source_generation_id,
+            logical_coordinate=str(coordinate),
+            addressing_mode="physical-file-v1",
+        )
+        conn.execute(
+            "INSERT INTO source_items(source_generation_id, source_item_id, logical_coordinate, addressing_mode, "
+            "source_path, disposition, outcome_code, stage, observed_at_ms, updated_at_ms, blob_hash, enumeration_fingerprint) "
+            "VALUES (?, ?, ?, 'physical-file-v1', ?, 'pending', 'interrupted', 'manifest', ?, ?, ?, ?)",
+            (
+                ref.source_generation_id,
+                item_id,
+                coordinate,
+                source_path,
+                prepared_at_ms,
+                prepared_at_ms,
+                blob_hash,
+                ref.enumeration_fingerprint,
+            ),
+        )
+        consume_blob_publication_receipt(conn, str(receipt_id), blob_hash)
 
 
 def validate_frozen_source_manifest(conn: sqlite3.Connection, manifest: FrozenSourceManifest) -> None:

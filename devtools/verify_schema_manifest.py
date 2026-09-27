@@ -22,6 +22,7 @@ from polylogue.storage.sqlite.archive_tiers import (
     ARCHIVE_FORMAT_FLOOR_VERSION,
     ARCHIVE_VERSION_BY_TIER,
 )
+from polylogue.storage.sqlite.archive_tiers.archive_plan import ARCHIVE_FORMAT_LINEAGE
 from polylogue.storage.sqlite.archive_tiers.index_convergence import INDEX_BENIGN_DDL_REGISTRY
 from polylogue.storage.sqlite.archive_tiers.ops import OPS_BENIGN_DDL_CONVERGENCE_PLAN
 from polylogue.storage.sqlite.archive_tiers.schema_inventory import _objects_from_connection
@@ -38,6 +39,7 @@ _MIGRATION_NAME_RE = re.compile(r"^(?P<version>\d{3,})_[a-z0-9_]+\.sql$")
 class _SchemaState:
     ddl: dict[ArchiveTier, str]
     versions: dict[ArchiveTier, int]
+    lineage: str = ARCHIVE_FORMAT_LINEAGE
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +113,7 @@ def _current_schema_state() -> _SchemaState:
     return _SchemaState(
         ddl=dict(ARCHIVE_DDL_BY_TIER),
         versions={tier: int(version) for tier, version in ARCHIVE_VERSION_BY_TIER.items()},
+        lineage=ARCHIVE_FORMAT_LINEAGE,
     )
 
 
@@ -131,8 +134,10 @@ def _render_schema_state(ref: str | None) -> _SchemaState:
         script = (
             "import json\n"
             "from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER\n"
+            "from polylogue.storage.sqlite.archive_tiers.archive_plan import ARCHIVE_FORMAT_LINEAGE\n"
             "print(json.dumps({'ddl': {tier.value: ddl for tier, ddl in ARCHIVE_DDL_BY_TIER.items()}, "
-            "'versions': {tier.value: version for tier, version in ARCHIVE_VERSION_BY_TIER.items()}}))\n"
+            "'versions': {tier.value: version for tier, version in ARCHIVE_VERSION_BY_TIER.items()}, "
+            "'lineage': ARCHIVE_FORMAT_LINEAGE}))\n"
         )
         environment = os.environ.copy()
         environment["PYTHONPATH"] = checkout
@@ -153,6 +158,7 @@ def _render_schema_state(ref: str | None) -> _SchemaState:
             ArchiveTier(tier): cast(int, version)
             for tier, version in cast(dict[str, object], payload["versions"]).items()
         },
+        lineage=str(payload["lineage"]),
     )
 
 
@@ -346,6 +352,17 @@ def _durable_ddl_evolution_violations(explicit_base: str | None = None) -> list[
     retire_predecessor_chain = all(
         current.versions.get(tier) == ARCHIVE_FORMAT_FLOOR_VERSION for tier in _DURABLE_TIERS
     )
+    # A new marker lineage fences every earlier archive before its tiers open.
+    # It may therefore revise the fresh floor's DDL while keeping all six
+    # user_version counters at one, but it must not also add a migration route.
+    new_fresh_lineage = (
+        previous.lineage != current.lineage
+        and all(
+            previous.versions.get(tier) == current.versions.get(tier) == ARCHIVE_FORMAT_FLOOR_VERSION
+            for tier in _DURABLE_TIERS
+        )
+        and not any(_added_migration_versions(base, tier)[0] for tier in _DURABLE_TIERS)
+    )
 
     for tier in _DURABLE_TIERS:
         violations.extend(
@@ -394,7 +411,12 @@ def _durable_ddl_evolution_violations(explicit_base: str | None = None) -> list[
                 f"{tier.value}: added durable migrations without a schema-version bump: {sorted(added_versions)}"
             )
 
-        if old_ddl != new_ddl and old_version == new_version and not _is_retirement_only(old_ddl, new_ddl, tier):
+        if (
+            old_ddl != new_ddl
+            and old_version == new_version
+            and not new_fresh_lineage
+            and not _is_retirement_only(old_ddl, new_ddl, tier)
+        ):
             violations.append(f"{tier.value}: rendered DDL changed without a schema-version bump")
     return violations
 

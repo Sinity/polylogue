@@ -22,7 +22,9 @@ from polylogue.operations.ingest_acceptance import INGEST_OPERATION
 from polylogue.operations.machine_receipts import (
     MAX_PAGE_ITEMS,
     IngestHistoricalReceipt,
+    IngestHistoricalReceiptV2,
     IngestInputHistoricalReceipt,
+    IngestInputPageHistoricalReceipt,
     IngestInputRawPageHistoricalReceipt,
     IngestInsightPageHistoricalReceipt,
     MachineHistoricalReceipt,
@@ -47,7 +49,11 @@ from polylogue.operations.mutation_transaction import (
     TokenExpiredError,
     validate_mutation_plan_integrity,
 )
-from polylogue.storage.sqlite.archive_tiers.source_items import FrozenSourceManifest
+from polylogue.storage.sqlite.archive_tiers.source_items import (
+    FrozenSourceManifest,
+    SealedSourceManifestRef,
+    source_manifest_from_dict,
+)
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditMutation
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityError as AuditContinuityError
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityPendingError as AuditContinuityPendingError
@@ -763,7 +769,7 @@ class AuditRepository:
             return
         binding = MachineRequestBinding(**cast(dict[str, str], raw))
         if mutation.kind == "accept_ingest":
-            manifest = FrozenSourceManifest.from_dict(mutation.payload["manifest"])
+            manifest = source_manifest_from_dict(mutation.payload["manifest"])
             conn.execute(
                 """INSERT INTO machine_requests(
                     archive_identity, request_id, principal_ref, fingerprint, operation_name,
@@ -1124,7 +1130,10 @@ class AuditRepository:
 
         values = dict(kwargs)
         if kind == "accept_ingest":
-            manifest, principal = cast(FrozenSourceManifest, args[0]), cast(MutationPrincipal, args[1])
+            manifest, principal = (
+                cast(FrozenSourceManifest | SealedSourceManifestRef, args[0]),
+                cast(MutationPrincipal, args[1]),
+            )
             if self._machine_binding is None or self._machine_binding[1] != kind:
                 raise ValueError("ingest acceptance requires an authenticated machine binding")
             binding = self._machine_binding[0]
@@ -1400,6 +1409,16 @@ class AuditRepository:
                 "page": raw_page.model_dump(mode="json"),
                 "now_ms": int(time.time() * 1000),
             }
+        if kind == "append_ingest_input_page":
+            operation_id = cast(str, args[0])
+            input_page = cast(IngestInputPageHistoricalReceipt, args[1])
+            if not operation_id or not isinstance(input_page, IngestInputPageHistoricalReceipt):
+                raise ValueError("ingest input page requires a typed operation and page")
+            return {
+                "operation_id": operation_id,
+                "page": input_page.model_dump(mode="json"),
+                "now_ms": int(time.time() * 1000),
+            }
         if kind == "recover_abandoned_attempts":
             return {"now_ms": int(time.time() * 1000)}
         if kind == "record_recovery_disposition":
@@ -1448,7 +1467,7 @@ class AuditRepository:
             if mutation.kind == "accept_ingest":
                 # The source-WAL prepare has already accepted this denominator.
                 # Replaying the audit reference cannot reauthorize or acquire.
-                manifest = FrozenSourceManifest.from_dict(payload["manifest"])
+                manifest = source_manifest_from_dict(payload["manifest"])
                 if "plan" not in payload:
                     return manifest.source_generation_id
                 self._apply_ingest_runtime_payload(payload)
@@ -1539,6 +1558,12 @@ class AuditRepository:
                     cast(str, payload["operation_id"]),
                     IngestInputRawPageHistoricalReceipt.model_validate(payload["page"]),
                 )
+            if mutation.kind == "append_ingest_input_page":
+                return cast(Any, self.append_ingest_input_page).__wrapped__(
+                    self,
+                    cast(str, payload["operation_id"]),
+                    IngestInputPageHistoricalReceipt.model_validate(payload["page"]),
+                )
             if mutation.kind == "recover_abandoned_attempts":
                 return cast(Any, self._recover_abandoned_attempts).__wrapped__(self)
             if mutation.kind == "record_recovery_disposition":
@@ -1623,7 +1648,7 @@ class AuditRepository:
     @_continuity_mutation("accept_ingest")
     def accept_ingest(
         self,
-        manifest: FrozenSourceManifest,
+        manifest: FrozenSourceManifest | SealedSourceManifestRef,
         principal: MutationPrincipal,
         *,
         plan: MutationPlan | None = None,
@@ -2394,6 +2419,12 @@ class AuditRepository:
                     raise ValueError("mutation receipt targets do not match the audited target set")
                 if receipt.operation_id not in (None, operation_id):
                     raise ValueError("mutation receipt operation id does not match the audited operation")
+                history = receipt.historical_receipt
+                if isinstance(history, IngestHistoricalReceiptV2):
+                    if history.input_pages_ref != operation_id:
+                        raise ValueError("historical ingest input pages belong to another operation")
+                    for _page in self._scan_ingest_input_pages(conn, history):
+                        pass
                 receipt = replace(
                     receipt,
                     receipt_ref=receipt.receipt_ref or f"mutation-operation:{operation_id}",
@@ -3100,6 +3131,18 @@ class AuditRepository:
             ).fetchall()
             return tuple(dict(row) for row in rows)
 
+    def last_event_sequence(self, operation_id: str) -> int:
+        """Read lifecycle position without materializing historical page payloads."""
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT MAX(sequence) FROM operation_events WHERE operation_id=?", (operation_id,)
+            ).fetchone()
+            if row is None or row[0] is None:
+                return 0
+            if type(row[0]) is not int or row[0] < 0:
+                raise ValueError("audit event sequence is malformed")
+            return row[0]
+
     @_continuity_mutation("append_ingest_session_id_page")
     def append_ingest_session_id_page(self, operation_id: str, ordinal: int, session_ids: tuple[str, ...]) -> None:
         """Retain one bounded changed-ID page before the terminal receipt refers to it."""
@@ -3233,7 +3276,7 @@ class AuditRepository:
         return pages
 
     def resolve_ingest_insight_pages(
-        self, receipt: IngestHistoricalReceipt
+        self, receipt: IngestHistoricalReceipt | IngestHistoricalReceiptV2
     ) -> list[IngestInsightPageHistoricalReceipt]:
         """Return every historical profile target, including referenced pages."""
         if receipt.insight_pages_ref is None:
@@ -3245,6 +3288,93 @@ class AuditRepository:
             target_count=receipt.summary.profile_targets_observed,
             digest=receipt.insight_pages_digest,
         )
+
+    @_continuity_mutation("append_ingest_input_page")
+    def append_ingest_input_page(self, operation_id: str, page: IngestInputPageHistoricalReceipt) -> None:
+        """Retain one complete input page before an ingest/v2 root cites it."""
+        payload = page.model_dump(mode="json")
+        with self._connection() as conn:
+            run = conn.execute(
+                "SELECT operation_name, status FROM operation_runs WHERE operation_id = ?", (operation_id,)
+            ).fetchone()
+            if run is None or str(run[0]) != INGEST_OPERATION or str(run[1]) == "completed":
+                raise ValueError("ingest input page lacks an open ingest operation")
+            last = conn.execute(
+                "SELECT detail_json FROM operation_events WHERE operation_id = ? AND event_type = 'ingest_input_page' "
+                "ORDER BY sequence DESC LIMIT 1",
+                (operation_id,),
+            ).fetchone()
+            previous = None if last is None else IngestInputPageHistoricalReceipt.model_validate_json(str(last[0]))
+            last_ordinal = -1 if previous is None else previous.ordinal
+            if page.ordinal <= last_ordinal:
+                prior = conn.execute(
+                    "SELECT detail_json FROM operation_events WHERE operation_id = ? AND event_type = 'ingest_input_page' "
+                    "AND json_extract(detail_json, '$.ordinal') = ? LIMIT 1",
+                    (operation_id, page.ordinal),
+                ).fetchone()
+                if prior is None or json.loads(str(prior[0])) != payload:
+                    raise ValueError("ingest input page conflicts with durable page")
+                return
+            if page.ordinal != last_ordinal + 1:
+                raise ValueError("ingest input pages must be contiguous")
+            if previous is not None and previous.items[-1].logical_coordinate >= page.items[0].logical_coordinate:
+                raise ValueError("ingest input pages must be globally ordered")
+            coordinates = [item.logical_coordinate for item in page.items]
+            if coordinates != sorted(set(coordinates)):
+                raise ValueError("ingest input page repeats or reorders a coordinate")
+            self._append_event(
+                conn,
+                operation_id=operation_id,
+                event_type="ingest_input_page",
+                occurred_at_ms=cast(int, self._command_value("now_ms", int(time.time() * 1000))),
+                detail=payload,
+            )
+
+    @staticmethod
+    def _scan_ingest_input_pages(
+        conn: sqlite3.Connection, receipt: IngestHistoricalReceiptV2
+    ) -> Iterator[IngestInputPageHistoricalReceipt]:
+        digest = hashlib.sha256()
+        previous_sequence = 0
+        previous_coordinate: str | None = None
+        item_count = 0
+        for ordinal in range(receipt.input_page_count):
+            row = conn.execute(
+                "SELECT sequence, detail_json FROM operation_events WHERE operation_id = ? "
+                "AND event_type = 'ingest_input_page' AND sequence > ? ORDER BY sequence LIMIT 1",
+                (receipt.input_pages_ref, previous_sequence),
+            ).fetchone()
+            if row is None:
+                raise ValueError("historical ingest input page is missing")
+            previous_sequence = int(row[0])
+            page = IngestInputPageHistoricalReceipt.model_validate_json(str(row[1]))
+            if page.ordinal != ordinal:
+                raise ValueError("historical ingest input pages are reordered")
+            coordinates = [item.logical_coordinate for item in page.items]
+            if coordinates != sorted(set(coordinates)) or (
+                previous_coordinate is not None and previous_coordinate >= coordinates[0]
+            ):
+                raise ValueError("historical ingest input coordinates repeat or reorder")
+            previous_coordinate = coordinates[-1]
+            item_count += len(page.items)
+            digest.update(f"{page.ordinal}:{page.digest}\n".encode("ascii"))
+            yield page
+        extra = conn.execute(
+            "SELECT 1 FROM operation_events WHERE operation_id = ? AND event_type = 'ingest_input_page' "
+            "AND sequence > ? LIMIT 1",
+            (receipt.input_pages_ref, previous_sequence),
+        ).fetchone()
+        if extra is not None or item_count != receipt.input_count or digest.hexdigest() != receipt.input_pages_digest:
+            raise ValueError("historical ingest input pages differ from terminal root")
+
+    def iter_ingest_input_pages(self, receipt: IngestHistoricalReceiptV2) -> Iterator[IngestInputPageHistoricalReceipt]:
+        """Read the operation-owned denominator one ordered audit page at a time."""
+        with self._connection() as conn:
+            yield from self._scan_ingest_input_pages(conn, receipt)
+
+    def read_ingest_input_pages(self, receipt: IngestHistoricalReceiptV2) -> list[IngestInputPageHistoricalReceipt]:
+        """Resolve the exact historical denominator from audit alone."""
+        return list(self.iter_ingest_input_pages(receipt))
 
     @_continuity_mutation("append_ingest_input_raw_page")
     def append_ingest_input_raw_page(self, operation_id: str, page: IngestInputRawPageHistoricalReceipt) -> None:

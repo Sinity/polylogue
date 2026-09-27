@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import os
+import sqlite3
 import stat
+import tempfile
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from polylogue.pipeline.services.acquisition_records import make_raw_record, pending_pre_parse_raw_admission_request
-from polylogue.sources.origin_specs import retained_enumeration_fingerprint
 from polylogue.sources.retained_acquisition import iter_retained_source_records
 from polylogue.sources.sqlite_snapshot import is_sqlite_path, snapshot_sqlite_to_blob
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
@@ -21,7 +23,6 @@ from polylogue.storage.sqlite.archive_tiers.raw_admission import (
 )
 from polylogue.storage.sqlite.archive_tiers.source_items import (
     FrozenSourceInput,
-    FrozenSourceManifest,
     RetainedSourceInput,
     source_item_id,
 )
@@ -46,57 +47,61 @@ class PreparedSourceMemberDisposition:
     member_count: int
 
 
-def prepare_ingest_inputs(
-    path: Path,
+def discover_ingest_input_spool(path: Path, *, source_path: str | None, check_stop: Callable[[], None]) -> Path:
+    """Sort the physical denominator on disk before retaining any input."""
+    fd, name = tempfile.mkstemp(prefix="polylogue-ingest-paths-", suffix=".sqlite", dir=os.environ.get("TMPDIR"))
+    os.close(fd)
+    spool = Path(name)
+    try:
+        with sqlite3.connect(spool) as conn:
+            conn.execute("CREATE TABLE paths(coordinate TEXT PRIMARY KEY, physical TEXT NOT NULL) WITHOUT ROWID")
+            mode = path.lstat().st_mode
+            if stat.S_ISREG(mode):
+                conn.execute("INSERT INTO paths VALUES (?, ?)", ("input:0", str(path)))
+            elif stat.S_ISDIR(mode):
+                if source_path is not None:
+                    raise ValueError("a directory ingest cannot rename its physical input coordinates")
+                for candidate in path.rglob("*"):
+                    check_stop()
+                    candidate_mode = candidate.lstat().st_mode
+                    if stat.S_ISDIR(candidate_mode):
+                        continue
+                    if not stat.S_ISREG(candidate_mode):
+                        raise ValueError("ingest inputs must be regular files, not links or special files")
+                    conn.execute("INSERT INTO paths VALUES (?, ?)", (str(candidate.relative_to(path)), str(candidate)))
+            else:
+                raise ValueError("ingest input must be a regular file or directory")
+            if conn.execute("SELECT 1 FROM paths LIMIT 1").fetchone() is None:
+                raise ValueError("ingest input contains no physical files")
+        return spool
+    except BaseException:
+        spool.unlink(missing_ok=True)
+        raise
+
+
+def retain_input_page(
+    spool: Path,
     *,
+    after_coordinate: str | None,
     source_path: str | None,
-    source_name: str | None = None,
-    source_generation_id: str,
     publisher: ArchiveBlobPublisher,
     check_stop: Callable[[], None],
-) -> FrozenSourceManifest:
-    """Prepare retained bytes without source rows or raw admission.
-
-    The caller subsequently flushes publication reservations under the
-    writer, then binds the manifest and consumes those exact receipts in
-    source-WAL acceptance. A failed prepare is not a no-bytes-change claim.
-    """
-    check_stop()
-    mode = path.lstat().st_mode
-    paths: tuple[Path, ...]
-    if stat.S_ISREG(mode):
-        paths = (path,)
-        root = None
-    elif stat.S_ISDIR(mode):
-        if source_path is not None:
-            raise ValueError("a directory ingest cannot rename its physical input coordinates")
-        found: list[Path] = []
-        for candidate in path.rglob("*"):
-            check_stop()
-            candidate_mode = candidate.lstat().st_mode
-            if stat.S_ISDIR(candidate_mode):
-                continue
-            if not stat.S_ISREG(candidate_mode):
-                raise ValueError("ingest inputs must be regular files, not links or special files")
-            found.append(candidate)
-            if len(found) > 10_000:
-                raise ValueError("ingest manifest exceeds the 10000-input bound")
-        paths = tuple(sorted(found))
-        root = path
-    else:
-        raise ValueError("ingest input must be a regular file or directory")
-    if not paths:
-        raise ValueError("ingest input contains no physical files")
-
-    inputs: list[FrozenSourceInput] = []
-    for physical in paths:
+) -> tuple[FrozenSourceInput, ...]:
+    """One compute-phase page; its SQLite connection never crosses threads."""
+    with sqlite3.connect(f"file:{spool}?mode=ro", uri=True) as conn:
+        rows = conn.execute(
+            "SELECT coordinate, physical FROM paths WHERE coordinate > ? ORDER BY coordinate LIMIT 256",
+            (after_coordinate or "",),
+        ).fetchall()
+    batch: list[FrozenSourceInput] = []
+    for coordinate, physical_name in rows:
         check_stop()
+        physical = Path(physical_name)
         before = physical.stat()
         if is_sqlite_path(physical):
-            retained = snapshot_sqlite_to_blob(physical, publisher)
-            blob_hash = retained.blob_hash
+            blob_hash = snapshot_sqlite_to_blob(physical, publisher).blob_hash
         else:
-            blob_hash, _size = publisher.write_from_path(physical, heartbeat=check_stop)
+            blob_hash, _ = publisher.write_from_path(physical, heartbeat=check_stop)
             after = physical.stat()
             if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
                 after.st_dev,
@@ -109,10 +114,8 @@ def prepare_ingest_inputs(
         publication_id = publisher.receipt_id(blob_hash)
         if publication_id is None:
             raise RuntimeError("retained input has no publication reservation identity")
-        coordinate = str(physical.relative_to(root)) if root is not None else "input:0"
-        inputs.append(FrozenSourceInput(coordinate, source_path or str(physical), blob_hash, publication_id))
-    check_stop()
-    return FrozenSourceManifest(source_generation_id, retained_enumeration_fingerprint(), tuple(inputs), source_name)
+        batch.append(FrozenSourceInput(str(coordinate), source_path or physical_name, blob_hash, publication_id))
+    return tuple(batch)
 
 
 def enumerate_ingest_input(

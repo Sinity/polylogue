@@ -512,13 +512,16 @@ class AuditContinuityCoordinator:
                 # accept_ingest wedge every later audit mutation and read.
                 from polylogue.storage.sqlite.archive_tiers.source_items import (
                     FrozenSourceManifest,
+                    source_manifest_from_dict,
                     validate_frozen_source_manifest,
+                    validate_sealed_source_manifest,
                 )
 
-                validate_frozen_source_manifest(
-                    conn,
-                    FrozenSourceManifest.from_dict(mutation.payload.get("manifest")),
-                )
+                manifest = source_manifest_from_dict(mutation.payload.get("manifest"))
+                if isinstance(manifest, FrozenSourceManifest):
+                    validate_frozen_source_manifest(conn, manifest)
+                else:
+                    validate_sealed_source_manifest(conn, manifest)
             payload_json = _canonical_json(prepared)
             conn.execute(
                 """
@@ -617,13 +620,15 @@ class AuditContinuityCoordinator:
                 from polylogue.storage.sqlite.archive_tiers.source_items import (
                     FrozenSourceManifest,
                     publish_frozen_source_manifest,
+                    publish_sealed_source_manifest,
+                    source_manifest_from_dict,
                 )
 
-                publish_frozen_source_manifest(
-                    conn,
-                    FrozenSourceManifest.from_dict(mutation.payload.get("manifest")),
-                    prepared_at_ms=mutation.created_at_ms,
-                )
+                manifest = source_manifest_from_dict(mutation.payload.get("manifest"))
+                if isinstance(manifest, FrozenSourceManifest):
+                    publish_frozen_source_manifest(conn, manifest, prepared_at_ms=mutation.created_at_ms)
+                else:
+                    publish_sealed_source_manifest(conn, manifest, prepared_at_ms=mutation.created_at_ms)
             cursor = conn.execute(
                 """
                 UPDATE audit_continuity_control
