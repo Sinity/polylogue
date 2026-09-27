@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import closing
 from pathlib import Path
 
 from polylogue.analysis.delegation_work_evidence import materialize_delegation_work_evidence_graph
@@ -11,6 +12,8 @@ from polylogue.archive.query.predicate import QueryBoolPredicate
 from polylogue.core.refs import ObjectRef
 from polylogue.core.stage_admission import admit_stage_write
 from polylogue.operations.operation_context import open_operation_read
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
 DELEGATION_WORK_EVIDENCE_GRAPH_ID = "delegation:archive"
@@ -45,7 +48,9 @@ def delegation_work_evidence_snapshot(archive_root: Path) -> ObjectRef:
     digest = hashlib.sha256()
     row_count = 0
     byte_count = 0
-    with sqlite_connection(f"{index_db.absolute().as_uri()}?mode=ro", uri=True) as conn:
+    with closing(
+        open_readonly_connection(index_db.absolute(), tier=ArchiveTier.INDEX, timeout_class="background-read")
+    ) as conn:
         # ``SELECT *`` deliberately: the digest must stay as sensitive as the
         # whole relation, and a hand-kept column list would silently stop
         # tracking a column added later -- freshness would go blind exactly
@@ -103,7 +108,9 @@ def delegation_work_evidence_materialization_needed(archive_root: Path) -> bool:
 
     index_db = Path(archive_root) / "index.db"
     snapshot = delegation_work_evidence_snapshot(archive_root).format()
-    with sqlite_connection(f"{index_db.absolute().as_uri()}?mode=ro", uri=True) as conn:
+    with closing(
+        open_readonly_connection(index_db.absolute(), tier=ArchiveTier.INDEX, timeout_class="background-read")
+    ) as conn:
         row = conn.execute(
             "SELECT corpus_snapshot_ref FROM work_evidence_graphs WHERE graph_id = ?",
             (DELEGATION_WORK_EVIDENCE_GRAPH_ID,),

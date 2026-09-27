@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -165,7 +167,7 @@ def test_open_profiled_connection_applies_the_selected_profile(
         if profile_name == "publication":
             assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
         else:
-            with pytest.raises(sqlite3.OperationalError, match="attempt to write a readonly database"):
+            with pytest.raises(sqlite3.DatabaseError, match="not authorized|attempt to write a readonly database"):
                 connection.execute("INSERT INTO evidence VALUES ('blocked')")
     finally:
         connection.close()
@@ -179,7 +181,10 @@ def test_index_schema_guard_distinguishes_uninitialized_from_stale(tmp_path: Pat
     with connection_profile.open_readonly_connection(db_path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM evidence").fetchone() == (0,)
 
-    stale_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] - 1
+    # A version this runtime cannot serve. The index sits at the format
+    # floor, so stepping one below collapses onto 0 -- the uninitialized
+    # sentinel this test distinguishes from skew.
+    stale_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] + 1
     with sqlite3.connect(db_path) as connection:
         connection.execute(f"PRAGMA user_version = {stale_version}")
 
@@ -233,7 +238,7 @@ def test_schema_skew_remedy_matches_tier_durability(tier: ArchiveTier, expected_
 def test_schema_skew_read_profile_refuses_stale_archive_tier(tmp_path: Path) -> None:
     db_path = tmp_path / "index.db"
     with sqlite3.connect(db_path) as connection:
-        connection.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] - 1}")
+        connection.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] + 1}")
 
     with pytest.raises(SchemaSkew, match="index schema skew"):
         connection_profile.open_readonly_connection(db_path)
@@ -241,7 +246,10 @@ def test_schema_skew_read_profile_refuses_stale_archive_tier(tmp_path: Path) -> 
 
 def test_schema_skew_diagnostic_read_profile_opens_stale_archive_tier(tmp_path: Path) -> None:
     db_path = tmp_path / "index.db"
-    stale_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] - 1
+    # A version this runtime cannot serve. The index sits at the format
+    # floor, so stepping one below collapses onto 0 -- the uninitialized
+    # sentinel this test distinguishes from skew.
+    stale_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] + 1
     with sqlite3.connect(db_path) as connection:
         connection.execute(f"PRAGMA user_version = {stale_version}")
 
@@ -389,5 +397,24 @@ def test_ordinary_immutable_reader_still_rejects_temp_staging(tmp_path: Path) ->
 
     with connection_profile.open_readonly_connection(db_path, immutable=True, validate_schema=False) as connection:
         assert connection.execute("PRAGMA query_only").fetchone() == (1,)
-        with pytest.raises(sqlite3.OperationalError, match="readonly database"):
+        with pytest.raises(sqlite3.DatabaseError, match="not authorized|readonly database"):
             connection.execute("CREATE TEMP TABLE forbidden (value TEXT)")
+
+
+def test_explicit_read_timeout_bounds_the_lock_wait_even_at_the_default_value(tmp_path: Path) -> None:
+    """An explicit bound equal to the old default sentinel used to be discarded.
+
+    Anti-vacuity: comparing ``timeout`` against ``READ_DB_TIMEOUT`` (5 s)
+    instead of ``None`` makes the background profile's 30 s busy_timeout win.
+    """
+    db_path = tmp_path / "evidence.db"
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute("CREATE TABLE evidence (value TEXT)")
+
+    def busy_ms(**kwargs: Any) -> int:
+        with closing(connection_profile.open_readonly_connection(db_path, **kwargs)) as connection:
+            return int(connection.execute("PRAGMA busy_timeout").fetchone()[0])
+
+    assert busy_ms(timeout_class="background-read") == 30_000
+    assert busy_ms(timeout_class="background-read", timeout=5.0) == 5_000
+    assert busy_ms(timeout=0.2) == 200

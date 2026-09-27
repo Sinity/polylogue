@@ -53,7 +53,8 @@ from polylogue.core.evidence_value import (
 from polylogue.core.refs import ObjectRef
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.logging import WARNING, emit
-from polylogue.storage.sqlite.connection_profile import attach_readonly_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 
 UsageReportDetail = Literal["headline", "full"]
 
@@ -1068,8 +1069,9 @@ def _resolve_subscription_tier_setting(archive_root: Path) -> str | None:
             get_user_setting,
         )
 
-        uri = user_db.resolve().as_uri() + "?mode=ro"
-        conn = sqlite3.connect(uri, uri=True)
+        # A settings probe with a documented fallback: an unsupported user
+        # schema degrades to the default rather than failing the report.
+        conn = open_readonly_connection(user_db.resolve(), tier=ArchiveTier.USER, validate_schema=False)
         try:
             envelope = get_user_setting(conn, SETTING_KEY_SUBSCRIPTION_TIER)
         finally:
@@ -1113,8 +1115,7 @@ def origin_usage_report_for_archive_root(
             caveats=(f"index.db not found at {index_db}",),
         )
     subscription_tier = _resolve_subscription_tier_setting(Path(archive_root))
-    uri = index_db.resolve().as_uri() + "?mode=ro"
-    conn = sqlite3.connect(uri, uri=True)
+    conn = open_readonly_connection(index_db.resolve(), tier=ArchiveTier.INDEX)
     conn.row_factory = sqlite3.Row
     try:
         return origin_usage_report_from_connection(

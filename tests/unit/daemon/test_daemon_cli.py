@@ -4405,7 +4405,7 @@ class _SpawnedTask:
         return f"{self.name} ({self.frame})"
 
 
-def _run_with_task_inventory(coro: Any, *, into: list[_SpawnedTask]) -> None:
+def _run_with_task_inventory(coro: Any, *, into: list[_SpawnedTask], orphans: list[str] | None = None) -> None:
     """Run *coro* under ``asyncio.run``, recording every task the loop creates.
 
     The denominator is taken from the event loop, not from the registry.
@@ -4423,8 +4423,11 @@ def _run_with_task_inventory(coro: Any, *, into: list[_SpawnedTask]) -> None:
     """
     import traceback as _tb
 
+    tasks: list[asyncio.Task[Any]] = []
+
     def factory(loop: Any, task_coro: Any, **kwargs: Any) -> Any:
         task = asyncio.Task(task_coro, loop=loop, **kwargs)
+        tasks.append(task)
         frame = "<unknown>"
         for entry in reversed(_tb.extract_stack()[:-1]):
             if "/asyncio/" in entry.filename or entry.filename == __file__:
@@ -4444,6 +4447,10 @@ def _run_with_task_inventory(coro: Any, *, into: list[_SpawnedTask]) -> None:
             # coroutine settles. Those belong to the runner, not to the
             # daemon, so the inventory closes with the route it audits.
             loop.set_task_factory(None)
+            # ``asyncio.run`` would cancel any survivor after this point, which
+            # would hide an orphan; read what the route itself left running.
+            if orphans is not None:
+                orphans.extend(task.get_name() for task in tasks if not task.done())
 
     asyncio.run(_main())
 
@@ -4481,6 +4488,11 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
       exists;
     * drop one ``supervisor.start`` call and ``unresolved`` names the declared
       service the route never resolved.
+
+    The route's own exit is also the orphan count: every task it spawned must
+    be finished when ``run_daemon_services`` returns, before ``asyncio.run``
+    would cancel survivors on its behalf. Skipping the supervisor's
+    cancel-and-await on shutdown leaves the idle services pending here.
     """
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.services import ServiceState, service_spec
@@ -4510,6 +4522,7 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
     with contextlib.ExitStack() as stack:
         _daemon_startup_stubs(stack, daemon_cli, tmp_path)
         created: list[_SpawnedTask] = []
+        orphans: list[str] = []
         supervisors = _capture_supervisor(stack, daemon_cli)
         stack.enter_context(patch.object(daemon_cli, "Polylogue", FakePolylogue))
         stack.enter_context(patch.object(daemon_cli, "LiveWatcher", FakeWatcher))
@@ -4546,8 +4559,10 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
                 browser_capture_spool_path=None,
             ),
             into=created,
+            orphans=orphans,
         )
     assert created, "the task factory recorded nothing; the inventory never observed the route"
+    assert orphans == [], f"the composition route returned with live children: {orphans}"
 
     unowned = [
         entry

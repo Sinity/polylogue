@@ -175,52 +175,33 @@ advances or rewinds a position to make one fit.
 
 ## Connection inventory
 
-Counts over `polylogue/` at the head that introduced this document. The
-inventory is review evidence: it records what is migrated and what remains, and
-is deliberately not a source-text gate.
+Counts over `polylogue/` at the head that last revised this section, excluding
+the policy module itself. The inventory is review evidence: it records what is
+migrated and what remains, and is deliberately not a source-text gate.
 
 | Shape | Count |
 | --- | --- |
-| Declared read factory (`open_readonly_connection`, `open_profiled_connection`, `read_frame`) | 165 |
-| Declared write factory (`open_connection`, `open_daemon_connection`, `open_isolated_write_connection`) | 60 |
-| Hand-built `immutable=1` URI | 0 |
-| Direct `mode=ro` open | 155 |
-| Raw `PRAGMA busy_timeout` outside the policy module | 9 (8 files) |
+| Declared read factory call (`open_readonly_connection`, `open_profiled_connection`, `read_frame`, `one_shot_diagnostic_read`) | 286 |
+| Declared write factory call (`open_connection`, `open_daemon_connection`, `open_isolated_write_connection`, `open_source_tier_write_connection`) | 78 |
+| Direct `sqlite3.connect(` | 145 |
+| Direct `mode=ro` open or URI | 55 |
+| Hand-built `immutable=1` URI | 5 (two files, both classified below) |
+| Raw `PRAGMA busy_timeout` outside the policy module | 5 (four files, all classified below) |
 | `PRAGMA wal_checkpoint` outside `wal_checkpoint.py` | 0 |
 
-Migrated in this pass: `daemon/backup.py` (live-tier snapshot writer and the
-pre-migration backup reader), `security/secret_scan.py`,
-`security/excision.py`'s writer, `api/archive.py`'s two-tier audit seam (to a
-pair of read frames), `operations/mutation_actuators.py`,
-`operations/raw_authority_verdict_cache.py`,
-`archive/query/source_freshness.py`, and every hand-built
-`immutable=1` wrapper in `storage/blob_integrity.py`,
-`storage/artifacts/inspection.py`, `storage/sqlite/migration_runner.py`,
-`sources/sqlite_snapshot.py`, `sources/parsers/{codex_state,hermes_state,hermes_verification}.py`,
-`maintenance/embedding_preservation.py` and
-`operations/durable_change_train.py`.
+The `aiosqlite` read pool in `storage/sqlite/async_sqlite.py` applies the read
+profile's pragmas, attaches sibling tiers through `mode=ro` URIs and installs
+the same read authorizer as the synchronous factory, so it is a profiled reader
+even though it cannot call the synchronous factory.
 
-The archive store's source-tier version probe, persistent read-only source
-handle, raw-artifact and hook-event readers, and operation-debt probe now use
-the named factory. They keep their previous schema-validation behavior so a
-diagnostic read can still report a stale or absent tier through its caller.
+Every other direct open is one of these roles, not a profiled archive reader:
 
-The API, CLI status, `operations/archive_debt.py` and `daemon/similarity.py`
-readers already used the declared factories and named classes.
-
-Classified but not migrated, with the reason each keeps its own connection:
-
-| Site | Classification |
-| --- | --- |
-| `sources/revision_backfill.py` spill connections | non-archive scratch database owned by one pass |
-| `sinex/service.py` | an external Sinex database, not an archive tier |
-| `storage/blob_publication.py`, `daemon/convergence_stages.py` | one-tier writers inside a held lease |
-| `storage/sqlite/archive_tiers/{archive,user_write}.py` | the tier writers the profiles are applied *by* |
-| `storage/embeddings/status_payload.py` | diagnostic status read over a possibly-absent tier |
-
-The remaining direct `mode=ro` opens are concentrated in `storage/blob_gc.py`,
-`storage/raw_authority.py`, `daemon/convergence_stages.py` and
-`sources/live/`. They are one-shot
-maintenance and reconciliation reads over a single tier; migrating them is a
-mechanical follow-up, not a correctness gap, because none of them holds a frame
-across a request boundary.
+| Role | Where | Why it keeps its own connection |
+| --- | --- | --- |
+| Private scratch, spool or spill database owned by one pass | `pipeline/ids.py`, `operations/{daemon_ingest,ingest_inputs}.py`, `sources/{prepared_jsonl,prepared_message_sink,tool_outcomes,assembly_claude_code}.py`, `sources/parsers/claude/stream_scratch.py`, `sources/live/tool_result_sidecars.py`, `storage/sqlite/archive_tiers/{write,write_shard,revision_governance}.py`, `sources/revision_backfill.py`, `archive/session_revision_membership.py` | not an archive tier; its lifetime is the owning pass |
+| In-memory database | schema identity, disposition, inventory and manifest builders; durable change train; migration runner | no file |
+| External or provider database | `sinex/service.py`, `sources/{assembly_codex,sqlite_export,sqlite_snapshot}.py`, `schemas/source_cache.py`, `schemas/source_inference.py`, `browser_capture/capture_jobs.py` | not an archive tier; opened under that source's own contract |
+| Tier writer under a held lease | `storage/{blob_integrity,blob_publication,raw_reconciler}.py` (index exclusion lock), `analysis/claude_workflow_materializer.py`, `sources/live/hook_paste_enrichment.py`, `operations/{route_observation,mutation_actuators}.py`, `storage/sqlite/archive_tiers/{archive,user_write,bootstrap}.py`, `storage/sqlite/durable_change_train.py` | a writer, guarded by the lease and `write_guard.py` |
+| Sealed or anchored copy | `storage/embeddings/generations.py` (unpublished generation, loads sqlite-vec), `storage/sqlite/audit_leaf.py`, `storage/index_generation.py` (descriptor-bound exclusive checkpoint) | the file is proven immutable or exclusively owned before the open |
+| Demo, scenario and schema-generation tooling | `demo/`, `scenarios/corpus.py`, `schemas/generation/`, `pipeline/services/archive_ingest.py` (one-shot ownership probe) | development tooling or a probe outside the archive read path |
+| Archive reader not yet migrated | `sources/live/{batch,watcher,batch_observability}.py`, `storage/raw_retention.py` | live-intake and retention readers; migrate with those modules' next owner change |
