@@ -185,6 +185,7 @@ from polylogue.sources.live.metrics import (
     split_offered_bytes,
 )
 from polylogue.sources.live.parse_prefetch import LiveParseCandidate, LiveParseStage, ReadSnapshot
+from polylogue.sources.live.retained_prefetch import PreparedLiveRetainedRaw
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.origin_specs import (
@@ -2968,6 +2969,7 @@ class LiveBatchProcessor:
         parsed_sessions_by_raw_id: dict[str, list[ParsedSession]] = {}
         shard_paths_by_raw_id: dict[str, Path] = {}
         path_preparations_by_source_path: dict[str, PreparedJsonl] = {}
+        retained_preparations_by_raw_id: dict[str, PreparedLiveRetainedRaw] = {}
         raw_source_names: dict[Path, str] = {}
         raw_source_revisions: dict[Path, str] = {}
         raw_source_fingerprints: dict[Path, str] = {}
@@ -3575,6 +3577,11 @@ class LiveBatchProcessor:
                     preparation = self._parse_stage.pop_path(str(path), blob_hash=raw_id)
                     if preparation is not None:
                         path_preparations_by_source_path[str(path)] = preparation
+                        for retained_id, member in self._parse_stage.take_retained_path(str(path)).items():
+                            if retained_id in retained_preparations_by_raw_id:
+                                member.discard()
+                            else:
+                                retained_preparations_by_raw_id[retained_id] = member
                 if heartbeat is not None:
                     heartbeat(
                         "full_blob_copy",
@@ -3628,6 +3635,11 @@ class LiveBatchProcessor:
                     preparation = self._parse_stage.pop_path(str(path), blob_hash=raw_id)
                     if preparation is not None:
                         path_preparations_by_source_path[str(path)] = preparation
+                        for retained_id, member in self._parse_stage.take_retained_path(str(path)).items():
+                            if retained_id in retained_preparations_by_raw_id:
+                                member.discard()
+                            else:
+                                retained_preparations_by_raw_id[retained_id] = member
                 if json_document:
                     # The captured blob, rather than the pre-copy path, owns
                     # provider identity when the source changes after prewarm.
@@ -3762,6 +3774,7 @@ class LiveBatchProcessor:
                     parsed_sessions_by_raw_id,
                     shard_paths_by_raw_id,
                     path_preparations_by_source_path,
+                    retained_preparations_by_raw_id,
                     max_pass_seconds=max_pass_seconds,
                     pass_started=pass_clock_started,
                 )
@@ -3782,6 +3795,9 @@ class LiveBatchProcessor:
                 for preparation in path_preparations_by_source_path.values():
                     preparation.discard()
                 path_preparations_by_source_path.clear()
+                for member in retained_preparations_by_raw_id.values():
+                    member.discard()
+                retained_preparations_by_raw_id.clear()
             # skipped_raw_ids (polylogue-11cg9) are records the time budget
             # never let the archive-write loop reach at all -- neither a
             # failure nor a conveyor hand-off, so they must be excluded from
@@ -3966,6 +3982,7 @@ class LiveBatchProcessor:
         parsed_sessions_by_raw_id: dict[str, list[ParsedSession]] | None = None,
         shard_paths_by_raw_id: dict[str, Path] | None = None,
         path_preparations_by_source_path: dict[str, PreparedJsonl] | None = None,
+        retained_preparations_by_raw_id: Mapping[str, PreparedLiveRetainedRaw] | None = None,
         *,
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
@@ -4587,6 +4604,7 @@ class LiveBatchProcessor:
                                 shard_paths_by_raw_id=shard_paths_by_raw_id,
                                 fresh_build_batch=fresh_build_batch,
                                 prepared_writes=prepared_writes,
+                                retained_preparations_by_raw_id=retained_preparations_by_raw_id,
                             )
                         else:
                             archive.bind_raw_revision(
@@ -4615,6 +4633,7 @@ class LiveBatchProcessor:
                                     plan,
                                     current_raw_id=source_raw_id,
                                     current_session=session,
+                                    retained_preparations_by_raw_id=retained_preparations_by_raw_id,
                                 )
                                 replay_fresh = _fresh_build_admits(parsed_by_raw_id.values(), fresh_build_batch)
                                 index_conn = archive.index_connection
@@ -4764,6 +4783,7 @@ class LiveBatchProcessor:
                                     shard_paths_by_raw_id=shard_paths_by_raw_id,
                                     fresh_build_batch=fresh_build_batch,
                                     prepared_writes=prepared_writes,
+                                    retained_preparations_by_raw_id=retained_preparations_by_raw_id,
                                 )
                     else:
                         archive.replace_raw_membership_census(
@@ -4789,6 +4809,7 @@ class LiveBatchProcessor:
                             shard_paths_by_raw_id=shard_paths_by_raw_id,
                             fresh_build_batch=fresh_build_batch,
                             prepared_writes=prepared_writes,
+                            retained_preparations_by_raw_id=retained_preparations_by_raw_id,
                         )
                     if raw_authority_complete:
                         result.raw_ids[_full_record_key(record)] = record_raw_id
@@ -4988,14 +5009,19 @@ class LiveBatchProcessor:
         *,
         current_raw_id: str | None = None,
         current_session: ParsedSession | None = None,
+        retained_preparations_by_raw_id: Mapping[str, PreparedLiveRetainedRaw] | None = None,
     ) -> dict[str, Any]:
         parsed_by_raw_id: dict[str, Any] = {}
         for raw_id in plan.accepted_raw_ids:
-            sessions = (
-                [current_session]
-                if raw_id == current_raw_id and current_session is not None
-                else self._parse_retained_raw_sessions(archive, raw_id)
-            )
+            member = (retained_preparations_by_raw_id or {}).get(raw_id)
+            if raw_id == current_raw_id and current_session is not None:
+                sessions = [current_session]
+            elif member is not None:
+                if not member.current(archive):
+                    raise PreparedSessionWriteRefusedError(f"retained raw {raw_id} changed after preparation")
+                sessions = member.artifact.session_sequence()
+            else:
+                sessions = self._parse_retained_raw_sessions(archive, raw_id)
             if len(sessions) != 1:
                 raise RuntimeError(f"raw revision {raw_id} did not replay to exactly one session")
             parsed_by_raw_id[raw_id] = sessions[0]
@@ -5043,6 +5069,7 @@ class LiveBatchProcessor:
         shard_paths_by_raw_id: Mapping[str, Path] | None = None,
         fresh_build_batch: set[str] | None = None,
         prepared_writes: Mapping[str, PreparedSessionWrite] | None = None,
+        retained_preparations_by_raw_id: Mapping[str, PreparedLiveRetainedRaw] | None = None,
     ) -> tuple[list[str], int, int, bool]:
         """Apply membership-governed classification for one logical identity.
 
@@ -5079,6 +5106,15 @@ class LiveBatchProcessor:
                 return sessions
             cached = retained_sessions_cache.get(raw_id)
             if cached is None:
+                member = (retained_preparations_by_raw_id or {}).get(raw_id)
+                if member is not None:
+                    if not member.current(archive):
+                        raise PreparedSessionWriteRefusedError(f"retained raw {raw_id} changed after preparation")
+                    if member.artifact.error is not None:
+                        raise RuntimeError(member.artifact.error)
+                    sequence = member.artifact.session_sequence()
+                    retained_sessions_cache[raw_id] = sequence
+                    return sequence
                 descriptor_reader = getattr(archive, "raw_revision_descriptor", None)
                 if descriptor_reader is None:
                     legacy = cast(Sequence[ParsedSession], self._parse_retained_raw_sessions(archive, raw_id))
@@ -5279,7 +5315,9 @@ class LiveBatchProcessor:
             )
         finally:
             for cached in retained_sessions_cache.values():
-                if isinstance(cached, PreparedSessionSequence):
+                if isinstance(cached, PreparedSessionSequence) and not any(
+                    member.artifact is cached.artifact for member in (retained_preparations_by_raw_id or {}).values()
+                ):
                     cached.artifact.discard()
 
     @staticmethod

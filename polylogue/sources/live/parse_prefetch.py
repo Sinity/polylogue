@@ -33,6 +33,7 @@ from polylogue.core.enums import Provider
 from polylogue.logging import WARNING, emit, get_logger
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload, parse_stream_payload
+from polylogue.sources.live.retained_prefetch import PreparedLiveRetainedRaw, prepare_live_retained_raws
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.prepared_jsonl import PreparedJsonl as LivePathPreparation
 from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
@@ -403,6 +404,7 @@ class LiveParseStage:
         #: warning to show for it.
         self.shard_build_failure_count = 0
         self._path_results: dict[str, LivePathPreparation] = {}
+        self._retained_by_path: dict[str, dict[str, PreparedLiveRetainedRaw]] = {}
         self._path_futures: dict[str, Future[LivePathPreparation]] = {}
         self._path_sizes: dict[str, int] = {}
         self._path_attempt_dirs: dict[str, Path] = {}
@@ -595,10 +597,13 @@ class LiveParseStage:
                 )
             return
 
-        def prepare_one(path: str, result: LivePathPreparation) -> LivePathPreparation:
+        def prepare_one(
+            path: str, result: LivePathPreparation
+        ) -> tuple[LivePathPreparation, dict[str, PreparedLiveRetainedRaw]]:
             # Each task owns its read transaction. Sharing one SQLite
             # connection across threads would also share its snapshot state.
             writes: list[PreparedSessionWrite] = []
+            retained: dict[str, PreparedLiveRetainedRaw] = {}
             opened_snapshot = False
             try:
                 with read_snapshot(archive_root) as pinned:
@@ -622,11 +627,13 @@ class LiveParseStage:
                         source_index,
                         bytes.fromhex(result.blob_hash),
                     )
+                    logical_keys: set[str] = set()
                     for session in result.iter_sessions():
                         session_id = archive_session_id(
                             origin_from_provider(session.source_name).value,
                             session.provider_session_id,
                         )
+                        logical_keys.add(session_id)
                         row = index_conn.execute(
                             "SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)
                         ).fetchone()
@@ -644,10 +651,20 @@ class LiveParseStage:
                                 else None,
                             )
                         )
-                return replace(result, prepared_writes=tuple(writes))
+                    if result.attempt_directory is not None:
+                        retained = prepare_live_retained_raws(
+                            archive,
+                            logical_keys=logical_keys,
+                            current_raw_id=expected_raw_id,
+                            directory=result.attempt_directory / "retained",
+                            worker_executor=self._executor,
+                        )
+                return replace(result, prepared_writes=tuple(writes)), retained
             except Exception as exc:
                 for prepared in writes:
                     prepared.close()
+                for member in retained.values():
+                    member.discard()
                 result.discard()
                 return LivePathPreparation(
                     None,
@@ -659,15 +676,24 @@ class LiveParseStage:
                         else f"read-only preparation snapshot unavailable: {type(exc).__name__}"
                     )[:500],
                     deferred=True,
-                )
+                ), {}
 
         # Bound reconciliation to the same path admission width as parsing.
         # Results are installed on the caller thread, so publication order is
         # still the intake order even when read tasks finish out of order.
         with ThreadPoolExecutor(max_workers=min(self._max_path_pending, len(pending))) as executor:
             futures = {path: executor.submit(prepare_one, path, result) for path, result in pending.items()}
+            broken_pool = False
             for path, future in futures.items():
-                self._path_results[path] = future.result()
+                result, retained = future.result()
+                broken_pool |= result.error is not None and "BrokenProcessPool" in result.error
+                for member in self._retained_by_path.pop(path, {}).values():
+                    member.discard()
+                self._path_results[path] = result
+                if retained:
+                    self._retained_by_path[path] = retained
+            if broken_pool:
+                self._restart_broken_process_pool()
 
     def _collect_path_future(self, source_path: str, future: Future[LivePathPreparation]) -> None:
         if self._path_futures.get(source_path) is not future:
@@ -826,16 +852,19 @@ class LiveParseStage:
             # Retryable worker failures may have no hash and must retain their
             # original reason.
             if result.blob_hash is not None and result.blob_hash != blob_hash:
+                self._discard_retained_path(source_path)
                 result.discard()
                 return LivePathPreparation(None, None, None, "captured source changed after preparation", deferred=True)
             return result
         if result.blob_hash != blob_hash:
+            self._discard_retained_path(source_path)
             result.discard()
             return LivePathPreparation(None, None, None, "captured source changed after preparation", deferred=True)
         if result.error is None:
             try:
                 result.verify_files(full=False)
             except (OSError, ValueError) as exc:
+                self._discard_retained_path(source_path)
                 result.discard()
                 return LivePathPreparation(
                     None,
@@ -845,6 +874,14 @@ class LiveParseStage:
                     deferred=True,
                 )
         return result
+
+    def take_retained_path(self, source_path: str) -> dict[str, PreparedLiveRetainedRaw]:
+        """Transfer sealed retained members alongside one accepted path carrier."""
+        return self._retained_by_path.pop(source_path, {})
+
+    def _discard_retained_path(self, source_path: str) -> None:
+        for member in self._retained_by_path.pop(source_path, {}).values():
+            member.discard()
 
     def resolved_path_provider(self, source_path: str) -> Provider | None:
         """Return a sealed worker's detection before durable source admission."""
@@ -984,6 +1021,8 @@ class LiveParseStage:
         for result in self._path_results.values():
             result.discard()
         self._path_results.clear()
+        for source_path in tuple(self._retained_by_path):
+            self._discard_retained_path(source_path)
         if self._attempt_root is not None:
             try:
                 residues = tuple(self._attempt_root.iterdir())
