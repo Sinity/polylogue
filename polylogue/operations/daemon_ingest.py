@@ -47,6 +47,8 @@ from polylogue.operations.machine_receipts import (
     InsightTargetHistoricalReceipt,
     ingest_input_raw_pages_digest,
     ingest_insight_pages_digest,
+    ingest_terminal_outcome,
+    ingest_unconverged_error,
 )
 from polylogue.operations.mutation_transaction import (
     MutationPreview,
@@ -260,6 +262,7 @@ class IngestExecution:
         self.insight_pages_ref: str | None = None
         self.insight_page_count = 0
         self.insight_pages_digest: str | None = None
+        self.profile_convergence_complete = False
         self.publisher = ArchiveBlobPublisher(context.archive_root / "source.db", context.archive_root / "blob")
 
     def record_refusal(self, refusal: CohortMembershipRefusalError) -> None:
@@ -841,7 +844,13 @@ class IngestExecution:
         return await self.receipt(generation_id)
 
     async def converge_profiles(self, receipt: SourceReceiptSpool) -> tuple[SessionInsightPartReceipt, ...]:
-        """Derive only the exact sessions proved by this source denominator."""
+        """Derive only the exact sessions proved by this source denominator.
+
+        Stops at the first page with an unattempted or unsuccessful target;
+        ``profile_convergence_complete`` records whether every page was
+        carried through, so a stopped convergence cannot read as done.
+        """
+        self.profile_convergence_complete = False
         if not receipt.complete:
             return ()
         parts: list[SessionInsightPartReceipt] = []
@@ -860,8 +869,9 @@ class IngestExecution:
             if part.remaining_unattempted_target_refs or any(
                 target.disposition not in {"already_satisfied", "published"} for target in part.targets
             ):
-                break
+                return tuple(parts)
             cursor = session_ids[-1]
+        self.profile_convergence_complete = True
         return tuple(parts)
 
     async def historical_receipt(
@@ -965,6 +975,7 @@ class IngestExecution:
                 processed_message_count=self.changed_message_count,
                 changed_session_count=self.changed_session_count,
                 changed_message_count=self.changed_message_count,
+                profile_convergence_complete=self.profile_convergence_complete,
             ),
         )
         return root
@@ -1127,22 +1138,25 @@ async def execute_ingest_operation(
         if execution.resumed:
             state = await execution.state()
             restored = state.get("result")
-            if state["outcome"] == "completed" and isinstance(restored, dict):
+            if state["outcome"] in {"completed", "degraded"} and isinstance(restored, dict):
                 from polylogue.operations.machine_receipts import decode_machine_receipt
 
-                history = decode_machine_receipt(restored)
+                # The durable state wraps the receipt; decode the receipt itself.
+                history = decode_machine_receipt(restored.get("historical_receipt"))
                 if not isinstance(history, (IngestHistoricalReceipt, IngestHistoricalReceiptV2)):
                     raise ValueError("completed ingest has another historical receipt kind")
+                outcome = ingest_terminal_outcome(history)
                 return operation_envelope(
                     request,
                     context,
                     snapshot=execution.snapshot,
                     started_at=started,
-                    outcome="completed",
+                    outcome=outcome,
                     reference=execution.record,
+                    error=None if outcome == "completed" else ingest_unconverged_error(history),
                     result={
                         "source_generation_id": history.source_generation_id,
-                        "outcome": "completed",
+                        "outcome": outcome,
                         "sequence": history.final_sequence,
                         "historical_receipt": history.model_dump(mode="json"),
                     },
@@ -1205,16 +1219,18 @@ async def execute_ingest_operation(
             history = await execution.finalize(generation, receipt, profile_parts)
         finally:
             receipt.close()
+        outcome = ingest_terminal_outcome(history)
         return operation_envelope(
             request,
             context,
             snapshot=execution.snapshot,
             started_at=started,
-            outcome="completed",
+            outcome=outcome,
             reference=execution.record,
+            error=None if outcome == "completed" else ingest_unconverged_error(history),
             result={
                 "source_generation_id": generation.source_generation_id,
-                "outcome": "completed",
+                "outcome": outcome,
                 "sequence": history.final_sequence,
                 "historical_receipt": history.model_dump(mode="json"),
             },

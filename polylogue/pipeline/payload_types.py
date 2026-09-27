@@ -47,6 +47,9 @@ class ParseBatchObservation(TypedDict, total=False):
     workers: int
     failed_raw_count: int
     skipped_raw_count: int
+    #: False when the daemon ingest committed its rows but stopped converging
+    #: profiles/insights (a ``degraded`` terminal outcome).
+    converged: bool
     elapsed_ms: float
     sync_ingest_elapsed_ms: float
     sync_setup_elapsed_ms: float

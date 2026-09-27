@@ -575,7 +575,7 @@ class DaemonClient:
                             continue
             if state["outcome"] not in {"accepted", "running"}:
                 result = state.get("result", state)
-                if state["outcome"] == "completed":
+                if state["outcome"] == "completed" or (operation == "ingest" and state["outcome"] == "degraded"):
                     try:
                         validate_operation_result(operation, result)
                     except RuntimeError as exc:
@@ -600,6 +600,7 @@ class DaemonClient:
                     },
                     "outcome": state["outcome"],
                     "result": result,
+                    "error": state.get("error", envelope.get("error")),
                     "accepted_reference": reference,
                     "progress": {
                         "state": state["outcome"],

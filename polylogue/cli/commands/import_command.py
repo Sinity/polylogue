@@ -100,7 +100,9 @@ def _wait_for_demo_ingest(env: AppEnv, accepted: dict[str, object], *, timeout_s
 
     The ingest operation reaches ``completed`` only after its material is
     parsed, materialized and its session profiles converged, so its receipt is
-    the convergence signal; no archive file is re-read on a timer. The
+    the convergence signal; no archive file is re-read on a timer. A
+    ``degraded`` ingest committed its rows but stopped converging on a
+    retryable target, so it is refused here rather than verified early. The
     demo-only constructs (provider usage, synthetic embeddings, the canonical
     repo name) are layered on by ``apply_demo_post_ingest_augmentation`` after
     this returns, which is why the final verification runs after that.
@@ -120,6 +122,13 @@ def _wait_for_demo_ingest(env: AppEnv, accepted: dict[str, object], *, timeout_s
             "import",
             f"Timed out waiting {timeout_s:g}s for the demo ingest to converge; it is still the daemon's "
             "work. Check `polylogued status`, then re-run with --wait to verify.",
+        )
+    if outcome == "degraded":
+        fail(
+            "import",
+            "The demo ingest committed its sessions but did not finish converging their profiles and "
+            "insights; the daemon's convergence continues it. Check `polylogued status`, then re-run "
+            "with --wait to verify.",
         )
     error = receipt.get("error")
     detail = error.get("detail") if isinstance(error, dict) else None

@@ -225,6 +225,21 @@ class IngestTerminalSummaryHistorical(_Receipt):
     processed_message_count: int = Field(default=0, ge=0)
     changed_session_count: int = Field(default=0, ge=0)
     changed_message_count: int = Field(default=0, ge=0)
+    # Whether every session this generation proved was carried through profile
+    # and insight convergence. ``None`` only on receipts written before the
+    # fact was recorded. A committed ingest whose convergence stopped on a
+    # retryable target is ``degraded``, never ``completed`` (polylogue-5639
+    # review): its rows are durable, its derived readiness is not.
+    profile_convergence_complete: bool | None = None
+
+    @property
+    def converged(self) -> bool | None:
+        """Whether the ingest's source and derived convergence both finished."""
+        if not self.source_complete:
+            # Known on every receipt, including ones written before profile
+            # convergence was recorded.
+            return False
+        return self.profile_convergence_complete
 
     @model_validator(mode="after")
     def valid_parse_projection(self) -> IngestTerminalSummaryHistorical:
@@ -353,6 +368,53 @@ IngestTerminalReceipt: TypeAlias = IngestHistoricalReceipt | IngestHistoricalRec
 MachineHistoricalReceipt: TypeAlias = InsightPartHistoricalReceipt | IngestTerminalReceipt
 
 
+def ingest_terminal_outcome(history: IngestHistoricalReceipt | IngestHistoricalReceiptV2) -> str:
+    """``completed`` only when the committed ingest also finished converging.
+
+    The ingest's rows are durable either way. When source enumeration refused
+    members or profile convergence stopped on a retryable target, the daemon's
+    ordinary convergence owns the rest, and the terminal outcome says so
+    instead of certifying readiness it did not reach.
+    """
+    summary = getattr(history, "summary", None)
+    converged = getattr(summary, "converged", None)
+    return "degraded" if converged is False else "completed"
+
+
+def ingest_unconverged_error(history: IngestHistoricalReceipt | IngestHistoricalReceiptV2) -> dict[str, object]:
+    summary = getattr(history, "summary", None)
+    source_complete = bool(getattr(summary, "source_complete", False))
+    if not source_complete:
+        # Recorded membership refusals and unresolved raws are this source
+        # generation's terminal facts; nothing retries them at this head.
+        return {
+            "code": "ingest_source_incomplete",
+            "detail": (
+                "ingest committed its rows, but source admission refused or could not resolve some members; "
+                "the receipt names them"
+            ),
+            "retryable": False,
+            "data": {
+                "source_complete": False,
+                "refused_membership_count": getattr(summary, "refused_membership_count", 0),
+                "unresolved_raw_count": getattr(summary, "unresolved_raw_count", 0),
+                "profile_convergence_complete": getattr(summary, "profile_convergence_complete", None),
+            },
+        }
+    return {
+        "code": "ingest_convergence_pending",
+        "detail": (
+            "ingest committed its rows, but profile and insight convergence did not finish; "
+            "the daemon's convergence continues it"
+        ),
+        "retryable": True,
+        "data": {
+            "source_complete": source_complete,
+            "profile_convergence_complete": getattr(summary, "profile_convergence_complete", None),
+        },
+    }
+
+
 def encode_machine_receipt(receipt: MachineHistoricalReceipt) -> dict[str, object]:
     """Return the sole JSON representation accepted by audit persistence."""
 
@@ -378,6 +440,8 @@ def decode_machine_receipt(raw: object) -> MachineHistoricalReceipt:
 
 
 __all__ = [
+    "ingest_terminal_outcome",
+    "ingest_unconverged_error",
     "IngestHistoricalReceipt",
     "IngestHistoricalReceiptV2",
     "IngestTerminalReceipt",

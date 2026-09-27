@@ -275,3 +275,149 @@ def test_zip_like_input_raw_attribution_crosses_inline_threshold_without_loss(
     assert replayed.input_pages[0].items[0].raw_id_count == 4
     with pytest.raises(ValueError, match="pages disagree"):
         IngestInputHistoricalReceipt.model_validate({**item.model_dump(mode="json"), "raw_id_count": 5})
+
+
+@pytest.mark.parametrize(
+    ("source_complete", "profile_convergence_complete", "outcome"),
+    [
+        (True, True, "completed"),
+        # Committed rows whose profile/insight convergence stopped on a
+        # retryable target: the ingest is not done (#5639 review).
+        (True, False, "degraded"),
+        (False, True, "degraded"),
+        # Written before the fact was recorded: unknowable, left as it was.
+        (True, None, "completed"),
+        # ...unless the receipt already records incomplete source admission.
+        (False, None, "degraded"),
+    ],
+)
+def test_ingest_terminal_outcome_is_completed_only_when_converged(
+    source_complete: bool, profile_convergence_complete: bool | None, outcome: str
+) -> None:
+    """An ingest whose derived convergence stopped is ``degraded``, not ``completed``.
+
+    Anti-vacuity: returning ``completed`` unconditionally from
+    ``ingest_terminal_outcome`` (the previous behaviour of
+    ``execute_ingest_operation``) turns both degraded rows red.
+    """
+    from polylogue.operations.machine_receipts import ingest_terminal_outcome
+
+    item = IngestInputHistoricalReceipt(
+        source_item_id="source-item:fixture",
+        logical_coordinate="fixture.json",
+        denominator=1,
+        raw_ids=["raw:complete"],
+    )
+    history = IngestHistoricalReceipt(
+        source_generation_id="generation:fixture",
+        final_sequence=1,
+        input_count=1,
+        input_pages=[IngestInputPageHistoricalReceipt.from_items(0, [item])],
+        summary=IngestTerminalSummaryHistorical(
+            enumeration_complete=True,
+            source_complete=source_complete,
+            confirmed_raw_count=1,
+            unresolved_raw_count=0,
+            profile_targets_observed=0,
+            profile_convergence_complete=profile_convergence_complete,
+        ),
+    )
+
+    assert ingest_terminal_outcome(decode_machine_receipt(history.model_dump(mode="json"))) == outcome  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("profile_convergence_complete", [True, False])
+def test_ingest_result_contract_binds_its_outcome_to_the_receipt(profile_convergence_complete: bool) -> None:
+    """The declared ingest result admits ``degraded`` only when the receipt records it.
+
+    Anti-vacuity: restoring the completed-only validator rejects the degraded
+    row; dropping the receipt binding accepts the mismatched outcome.
+    """
+    from polylogue.operations.daemon_protocol import OperationResultContractError, validate_operation_result
+    from polylogue.operations.machine_receipts import ingest_terminal_outcome
+
+    item = IngestInputHistoricalReceipt(
+        source_item_id="source-item:fixture",
+        logical_coordinate="fixture.json",
+        denominator=1,
+        raw_ids=["raw:complete"],
+    )
+    history = IngestHistoricalReceipt(
+        source_generation_id="generation:fixture",
+        final_sequence=1,
+        input_count=1,
+        input_pages=[IngestInputPageHistoricalReceipt.from_items(0, [item])],
+        summary=IngestTerminalSummaryHistorical(
+            enumeration_complete=True,
+            source_complete=True,
+            confirmed_raw_count=1,
+            unresolved_raw_count=0,
+            profile_targets_observed=0,
+            profile_convergence_complete=profile_convergence_complete,
+        ),
+    )
+    outcome = ingest_terminal_outcome(history)
+    payload = {
+        "source_generation_id": "generation:fixture",
+        "sequence": 1,
+        "historical_receipt": history.model_dump(mode="json"),
+    }
+
+    validate_operation_result("ingest", {**payload, "outcome": outcome})
+    wrong = "completed" if outcome == "degraded" else "degraded"
+    with pytest.raises(OperationResultContractError, match="recorded convergence"):
+        validate_operation_result("ingest", {**payload, "outcome": wrong})
+
+
+def test_unconverged_ingest_error_is_permanent_for_source_refusals_and_retryable_for_profiles() -> None:
+    """A recorded admission refusal cannot change at this head; pending profiles can.
+
+    Anti-vacuity: a blanket ``retryable=True`` error fails the first assertion.
+    """
+    from polylogue.operations.machine_receipts import ingest_unconverged_error
+
+    def history(source_complete: bool) -> IngestHistoricalReceipt:
+        item = IngestInputHistoricalReceipt(
+            source_item_id="source-item:fixture",
+            logical_coordinate="fixture.json",
+            denominator=1,
+            raw_ids=["raw:complete"],
+        )
+        return IngestHistoricalReceipt(
+            source_generation_id="generation:fixture",
+            final_sequence=1,
+            input_count=1,
+            input_pages=[IngestInputPageHistoricalReceipt.from_items(0, [item])],
+            summary=IngestTerminalSummaryHistorical(
+                enumeration_complete=True,
+                source_complete=source_complete,
+                confirmed_raw_count=1,
+                unresolved_raw_count=0,
+                profile_targets_observed=0,
+                profile_convergence_complete=False,
+            ),
+        )
+
+    refused = ingest_unconverged_error(history(False))
+    pending = ingest_unconverged_error(history(True))
+    assert (refused["code"], refused["retryable"]) == ("ingest_source_incomplete", False)
+    assert (pending["code"], pending["retryable"]) == ("ingest_convergence_pending", True)
+
+
+def test_await_state_of_a_degraded_ingest_satisfies_the_control_result_contract() -> None:
+    """The lifecycle ``error`` is a declared field of the control result contract.
+
+    Anti-vacuity: remove ``error`` from ``MutationResult`` and operation.await
+    of a degraded ingest fails ``validate_operation_result``.
+    """
+    from polylogue.operations.daemon_protocol import validate_operation_result
+
+    for control in ("operation.await", "operation.status", "operation.cancel"):
+        validate_operation_result(
+            control,
+            {
+                "outcome": "degraded",
+                "sequence": 3,
+                "error": {"code": "ingest_convergence_pending", "retryable": True},
+            },
+        )
