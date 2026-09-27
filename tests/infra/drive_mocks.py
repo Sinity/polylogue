@@ -10,7 +10,7 @@ from typing import ParamSpec, Protocol, TypeVar
 
 from polylogue.core.json import json_document, json_document_list
 from polylogue.sources.drive.gateway import DriveListFilesResponse, DrivePayloadRecord
-from polylogue.sources.drive.types import DriveError, DriveNotFoundError
+from polylogue.sources.drive.types import DriveNotFoundError
 
 P = ParamSpec("P")
 T = TypeVar("T")
@@ -357,24 +357,6 @@ class FakeDriveServiceGateway:
             raise self._download_error
         content = self._mock_service.files().get_media(fileId=file_id).execute()
         handle.write(content)
-
-    def _download_request(
-        self,
-        request: MockGetMediaResponse,
-        handle: BinaryWritable,
-        downloader_cls: type[MockMediaIoBaseDownload],
-        *,
-        file_id: str,
-    ) -> None:
-        downloader = downloader_cls(handle, request)
-        done = False
-        max_chunks = 10_000
-        chunks = 0
-        while not done:
-            _, done = downloader.next_chunk()
-            chunks += 1
-            if chunks >= max_chunks:
-                raise DriveError(f"Download exceeded {max_chunks} chunks for file {file_id}")
 
 
 def mock_drive_file(
