@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 import platform
@@ -25,6 +26,15 @@ from devtools.measurement_receipts import emit_receipt
 SESSION_IDS = tuple(f"claude-code-session:ccccd500-0000-0000-0000-{i:012d}" for i in range(3))
 SEARCH_TOKEN = "coldqualificationuniquetoken"
 DEADLINE_S = 120.0
+RSS_TREE_MAX_PROCESSES = 1024
+RSS_TREE_MAX_TASK_IDS = 4096
+RSS_PROC_READ_LIMIT_BYTES = 4096
+
+
+def _proc_children_supported(proc_root: Path = Path("/proc")) -> bool:
+    """Whether this procfs exposes per-task child lists for the current task."""
+    probe = proc_root / str(os.getpid()) / "task" / str(threading.get_native_id()) / "children"
+    return probe.is_file()
 
 
 def write_fixture(root: Path, *, rejected: int, malformed_last: bool = False) -> str:
@@ -121,12 +131,17 @@ def write_retained_measurement_receipt(receipt: dict[str, object], report_file: 
             )
         },
         "process_tree_rss": {
+            "available": receipt.get("process_tree_rss_available"),
             "sampled_peak_bytes": receipt.get("process_tree_rss_bytes"),
             "sample_count": receipt.get("process_tree_rss_sample_count"),
             "process_count_at_peak": receipt.get("process_tree_rss_process_count_at_peak"),
+            "task_count_at_peak": receipt.get("process_tree_rss_task_count_at_peak"),
+            "truncated_sample_count": receipt.get("process_tree_rss_truncated_sample_count"),
+            "peak_sample_truncated": receipt.get("process_tree_rss_peak_sample_truncated"),
             "sampling_interval_target_ms": receipt.get("process_tree_rss_sampling_interval_target_ms"),
             "missing_reason": receipt.get("process_tree_rss_missing_reason"),
             "scope": receipt.get("process_tree_rss_scope"),
+            "limits": receipt.get("process_tree_rss_limits"),
         },
     }
     path = report_file.with_name("cold-daemon-4096-measurement.json")
@@ -279,29 +294,127 @@ def _unpublished_candidate_session_count(archive: Path) -> int | None:
     return max(counts) if counts else None
 
 
-def _process_tree_rss(root_pid: int) -> dict[str, int] | None:
-    """Return a sampled RSS sum for the owned PID and its current descendants."""
+def _process_tree_rss(
+    root_pid: int,
+    *,
+    proc_root: Path = Path("/proc"),
+    max_processes: int = RSS_TREE_MAX_PROCESSES,
+    max_task_ids: int = RSS_TREE_MAX_TASK_IDS,
+    children_file_limit_bytes: int = RSS_PROC_READ_LIMIT_BYTES,
+) -> dict[str, int | bool] | None:
+    """Sum RSS while following children reported by every scanned task ID.
+
+    Procfs is a live view: thread and child sets can change during a sample.
+    Process and task limits bound each pass, and ``truncated`` makes a capped
+    sample explicitly incomplete instead of presenting it as a full tree.
+    """
     pending = [root_pid]
+    queued = {root_pid}
     seen: set[int] = set()
     rss_total = 0
     measured = 0
+    task_count = 0
+    truncated = False
     while pending:
+        if len(seen) >= max_processes:
+            truncated = True
+            break
         pid = pending.pop()
+        queued.discard(pid)
         if pid in seen:
             continue
         seen.add(pid)
-        status_path = Path(f"/proc/{pid}/status")
+        process_path = proc_root / str(pid)
+        status_path = process_path / "status"
+        found_rss = False
         try:
-            for line in status_path.read_text(encoding="ascii").splitlines():
-                if line.startswith("VmRSS:"):
-                    rss_total += int(line.split()[1]) * 1024
-                    measured += 1
-                    break
-            children_path = Path(f"/proc/{pid}/task/{pid}/children")
-            pending.extend(int(child) for child in children_path.read_text(encoding="ascii").split())
-        except (FileNotFoundError, ProcessLookupError, PermissionError, ValueError, OSError):
+            with status_path.open(encoding="ascii") as stream:
+                for line in itertools.islice(stream, 128):
+                    if line.startswith("VmRSS:"):
+                        rss_total += int(line.split()[1]) * 1024
+                        measured += 1
+                        found_rss = True
+                        break
+        except (FileNotFoundError, ProcessLookupError):
+            # A PID reached through a parent's children list may exit before
+            # its status is read. Its descendants may still be alive, so the
+            # process-tree sample is incomplete even when the PID is gone.
+            if pid != root_pid:
+                truncated = True
             continue
-    return {"rss_bytes": rss_total, "process_count": measured} if measured else None
+        except (PermissionError, ValueError, OSError):
+            truncated = True
+            continue
+        if not found_rss:
+            truncated = True
+
+        remaining_tasks = max_task_ids - task_count
+        if remaining_tasks <= 0:
+            truncated = True
+            break
+        task_ids: list[int] = []
+        task_path = process_path / "task"
+        try:
+            with os.scandir(task_path) as entries:
+                for entry in itertools.islice(entries, remaining_tasks + 1):
+                    if not entry.name.isdecimal():
+                        continue
+                    if len(task_ids) == remaining_tasks:
+                        truncated = True
+                        break
+                    task_ids.append(int(entry.name))
+        except (FileNotFoundError, ProcessLookupError):
+            truncated = True
+            continue
+        except (PermissionError, OSError):
+            truncated = True
+            continue
+
+        # Include the process leader's task even if procfs reordered a large
+        # task directory and the scan cap was reached before its entry.
+        if pid not in task_ids:
+            if len(task_ids) < remaining_tasks:
+                task_ids.insert(0, pid)
+            elif task_ids:
+                task_ids[-1] = pid
+                truncated = True
+        task_count += len(task_ids)
+
+        for task_id in task_ids:
+            children_path = task_path / str(task_id) / "children"
+            try:
+                with children_path.open(encoding="ascii") as stream:
+                    child_text = stream.read(children_file_limit_bytes + 1)
+            except (FileNotFoundError, ProcessLookupError):
+                truncated = True
+                continue
+            except (PermissionError, OSError):
+                truncated = True
+                continue
+            if len(child_text) > children_file_limit_bytes:
+                truncated = True
+                child_text = child_text[:children_file_limit_bytes]
+                # A bounded read can end in the middle of a decimal PID.
+                # Discard that suffix instead of treating its prefix as a PID.
+                if child_text and not child_text[-1].isspace():
+                    child_text = child_text.rsplit(maxsplit=1)[0] if child_text.split()[:-1] else ""
+            for child_text_id in child_text.split()[: max_processes + 1]:
+                try:
+                    child_pid = int(child_text_id)
+                except ValueError:
+                    continue
+                if child_pid in seen or child_pid in queued:
+                    continue
+                if len(seen) + len(pending) >= max_processes:
+                    truncated = True
+                    break
+                pending.append(child_pid)
+                queued.add(child_pid)
+    return (
+        {"rss_bytes": rss_total, "process_count": measured, "task_count": task_count, "truncated": truncated}
+        if measured
+        else None
+    )
 
 
 def _read_discovery_trace(path: Path, process_start: float, milestones: dict[str, object]) -> dict[str, object]:
@@ -424,6 +537,7 @@ def qualify(
         "--api-auth-token",
         token,
     ]
+    rss_available = _proc_children_supported()
     receipt: dict[str, object] = {
         "format": "polylogue.daemon-cold-qualification.v1",
         "candidate": {
@@ -455,11 +569,21 @@ def qualify(
         "internal_intervals": None,
         "internal_intervals_missing_reason": "no_owner_interval_evidence",
         "process_tree_rss_bytes": None,
-        "process_tree_rss_missing_reason": "no_samples",
-        "process_tree_rss_scope": "sum of VmRSS for the daemon PID and descendants found through /proc children files, sampled during the run",
+        "process_tree_rss_available": rss_available,
+        "process_tree_rss_missing_reason": None if rss_available else "proc_children_unavailable",
+        "process_tree_rss_scope": "sum of VmRSS for the daemon PID and descendants found through children files for every scanned task ID; live procfs races and any cap are reported as truncated samples",
         "process_tree_rss_sample_count": 0,
         "process_tree_rss_process_count_at_peak": None,
+        "process_tree_rss_task_count_at_peak": None,
+        "process_tree_rss_truncated_sample_count": 0,
+        "process_tree_rss_peak_sample_truncated": None,
         "process_tree_rss_sampling_interval_target_ms": 250,
+        "process_tree_rss_limits": {
+            "processes_per_sample": RSS_TREE_MAX_PROCESSES,
+            "task_ids_per_sample": RSS_TREE_MAX_TASK_IDS,
+            "children_file_bytes_per_task": RSS_PROC_READ_LIMIT_BYTES,
+            "status_lines_per_process": 128,
+        },
     }
     counts: Counter[str] = Counter()
     max_latency: dict[str, float] = {}
@@ -482,19 +606,27 @@ def qualify(
     durable_raw_count_max = 0
     peak_tree_rss_bytes = 0
     peak_tree_process_count: int | None = None
+    peak_tree_task_count: int | None = None
+    peak_tree_truncated = False
     rss_samples = 0
+    rss_truncated_samples = 0
     rss_stop = threading.Event()
     rss_thread: threading.Thread | None = None
 
     def sample_owned_tree(root_pid: int) -> None:
-        nonlocal peak_tree_rss_bytes, peak_tree_process_count, rss_samples
+        nonlocal peak_tree_rss_bytes, peak_tree_process_count, peak_tree_task_count
+        nonlocal peak_tree_truncated, rss_samples, rss_truncated_samples
         while not rss_stop.is_set():
             tree_rss = _process_tree_rss(root_pid)
             if tree_rss is not None:
                 rss_samples += 1
+                if tree_rss["truncated"]:
+                    rss_truncated_samples += 1
                 if tree_rss["rss_bytes"] > peak_tree_rss_bytes:
                     peak_tree_rss_bytes = tree_rss["rss_bytes"]
                     peak_tree_process_count = tree_rss["process_count"]
+                    peak_tree_task_count = tree_rss["task_count"]
+                    peak_tree_truncated = bool(tree_rss["truncated"])
             rss_stop.wait(0.25)
 
     error: str | None = None
@@ -507,8 +639,9 @@ def qualify(
             proc = subprocess.Popen(command, cwd=candidate_root, env=env, stdout=stream, stderr=subprocess.STDOUT)
             receipt["pid"] = proc.pid
             receipt["outcome"] = "incomplete_population"
-            rss_thread = threading.Thread(target=sample_owned_tree, args=(proc.pid,), daemon=True)
-            rss_thread.start()
+            if receipt["process_tree_rss_available"]:
+                rss_thread = threading.Thread(target=sample_owned_tree, args=(proc.pid,), daemon=True)
+                rss_thread.start()
             while time.monotonic() < deadline:
                 if proc.poll() is not None:
                     receipt["outcome"] = "daemon_exit"
@@ -701,12 +834,19 @@ def qualify(
                 error = "forced kill after graceful shutdown timeout"
             rss_stop.set()
             if rss_thread is not None:
-                rss_thread.join(timeout=1.0)
+                # Each pass has strict process, task and file-size caps. Wait
+                # for the final bounded pass before publishing its counters.
+                rss_thread.join()
             if rss_samples:
                 receipt["process_tree_rss_bytes"] = peak_tree_rss_bytes
                 receipt["process_tree_rss_process_count_at_peak"] = peak_tree_process_count
+                receipt["process_tree_rss_task_count_at_peak"] = peak_tree_task_count
+                receipt["process_tree_rss_truncated_sample_count"] = rss_truncated_samples
+                receipt["process_tree_rss_peak_sample_truncated"] = peak_tree_truncated
                 receipt["process_tree_rss_sample_count"] = rss_samples
                 receipt["process_tree_rss_missing_reason"] = None
+            elif receipt["process_tree_rss_available"]:
+                receipt["process_tree_rss_missing_reason"] = "no_samples"
             receipt["exit_code"] = proc.returncode
             receipt["signal"] = -proc.returncode if proc.returncode < 0 else None
             if proc.returncode != 0 and receipt["outcome"] == "success":
