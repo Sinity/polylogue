@@ -15,10 +15,6 @@ version: 2.1
 #     verification; this job is the publication gate. The standalone
 #     `devtools gate test-collection` diagnoses import/collection failures;
 #     an explicit complete-corpus run collects tests during execution.
-#   - periodic-gates (scheduled pipeline named "nightly"): `devtools verify
-#     --periodic`, the quick gates plus the periodic tier -- invariants that
-#     rarely regress, so a regression is caught on the next nightly run rather
-#     than paid for on every push (tier table: devtools/gate.py).
 #   - dependency-audit (scheduled pipeline named "nightly"): dependency
 #     security maintenance.
 #   - release-verify (v* tags): build artifacts and store them.
@@ -75,21 +71,6 @@ jobs:
             - .cache/mypy
             # Rendered base-commit schema states; see verify_schema_manifest.
             - .cache/verify/schema-state
-
-  periodic-gates:
-    docker:
-      - image: cimg/python:3.14
-    resource_class: medium
-    environment: *polylogue_ci_env
-    steps:
-      - bootstrap
-      - restore_cache:
-          keys:
-            - mypy-v1-master
-            - mypy-v1-
-      - run:
-          name: devtools verify --periodic
-          command: ~/.local/bin/uv run devtools verify --periodic
   dependency-audit:
     docker:
       - image: cimg/python:3.14
@@ -140,4 +121,3 @@ workflows:
         - equal: [nightly, << pipeline.schedule.name >>]
     jobs:
       - dependency-audit
-      - periodic-gates

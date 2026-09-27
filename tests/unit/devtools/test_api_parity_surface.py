@@ -41,11 +41,14 @@ def test_rendering_is_deterministic() -> None:
     assert render_api_parity.build_document() == render_api_parity.build_document()
 
 
-def test_gate_and_command_are_registered() -> None:
-    """The gate runs in the periodic tier and the command is in the catalog."""
+def test_command_and_surface_are_registered() -> None:
+    """The check is a catalog command and a live test, not a quick gate.
 
-    gate = GATES_BY_NAME["api-parity"]
-    assert gate.tier == "periodic" and gate.blocking
+    ``test_live_repository_passes_the_gate`` below enforces it; a second gate
+    would run the same check again (polylogue-j325x).
+    """
+
+    assert "api-parity" not in GATES_BY_NAME
     assert "verify api-parity" in COMMANDS
     assert "api-parity" in GENERATED_SURFACE_BY_NAME
 

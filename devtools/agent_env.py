@@ -136,15 +136,13 @@ def refuse_verify_tier(
         inside_pytest_pool(env, cgroup_reader=cgroup_reader)
         or not inside_agent_job(env, cgroup_reader=cgroup_reader)
         or "--quick" in argv
-        or "--periodic" in argv
     ):
         return None
     return (
         "devtools verify: test tiers do not run inside agent jobs; the lane's tests run once as the "
         "pull request's hosted `verify` check (by hand: "
         "`agentctl job start polylogue verify_affected --workspace <workspace>`). "
-        "Use `devtools verify --quick` (or `--periodic`) for the static gates and `devtools test <selection>` "
-        "for focused runs."
+        "Use `devtools verify --quick` for the static gates and `devtools test <selection>` for focused runs."
     )
 
 

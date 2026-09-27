@@ -10,7 +10,7 @@ nested-group set was a second site to forget.
 This module is now the single declaration site.  The CLI group derives its
 registration table from :data:`MAINTENANCE_COMMAND_DECLARATIONS`, and every
 declared handler symbol, owner path, output target, and example is resolved by
-``devtools gate declaration-bindings`` against the live checkout, so the break
+``tests/unit/devtools/test_declaration_binding_registries.py`` against the live checkout, so the break
 is reported once, with its repair command, instead of at dispatch.
 
 The module deliberately imports nothing from the maintenance runtime: the CLI

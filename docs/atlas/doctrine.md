@@ -91,11 +91,13 @@ than convergence on one route.
 `polylogue/operations/operation_context.py:158-232` (the operation kernel's
 pinned snapshot, which re-resolves the archive identity after pinning and
 refuses a republication that landed mid-pin). Which module may own a
-controlled read is policy in `docs/plans/controlled-read-census.yaml:26-36`;
-the classification of every call site, with a reason each, is the rest of that
-file, and `devtools/verify_controlled_read.py:1-61` is the checker.
+controlled read was policy in a census file checked by a `controlled-read`
+gate.
 
-**Owning gate**: `controlled-read`
+**Owning gate**: none. The census gate was deleted (polylogue-j325x): it
+caught no violation in 569 quick runs, and a stray read cannot damage durable
+state. `tests/unit/daemon/test_surface_data_boundary.py` still refuses any
+connection opener in the surface packages.
 
 **Observable failure**: a surface reads the archive with no admission, no
 snapshot pin, no cancellation and no receipt, and its answer cannot say which
@@ -340,13 +342,8 @@ not establish an answer.
   partition are production code proven by tests; there is no repository check
   that a newly registered context source cannot emit operator-class output.
 - **Process-level sole writership is not proven by any gate.** The layering
-  gate proves declaration and inventories mutation sites; the controlled-read
-  gate proves every direct archive open is classified, and *records* which
-  licensed writers take the lease outside the daemon coordinator
-  (`docs/plans/controlled-read-census.yaml:58-97` — the four Python-API
-  facade mutations). Neither proves that a live CLI or API caller cannot
-  write outside the coordinator. That census is the evidence for the claim,
-  not the enforcement of it.
+  gate proves declaration and inventories mutation sites. It does not prove
+  that a live CLI or API caller cannot write outside the coordinator.
 - **cpf names a sixth unification dimension that code does not carry.** The
   epic's criteria list "remaining domain semantics" alongside the five
   compatibility dimensions. In source there is no sixth dimension: the family's

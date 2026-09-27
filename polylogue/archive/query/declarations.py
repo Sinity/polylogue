@@ -14,7 +14,7 @@ each terminal unit is projected into a :class:`~polylogue.declarations.
 DeclarationSpec` together with the exact catalog payload the detail route
 serves, so:
 
-* ``devtools gate declaration-bindings`` resolves every declared executor
+* ``tests/unit/devtools/test_declaration_binding_registries.py`` resolves every declared executor
   symbol and owner path against the live checkout;
 * :func:`query_binding_diagnostics` additionally resolves each declaration's
   *domain* binding -- the spec/plan attribute and the ``ArchiveStore`` executor

@@ -598,7 +598,7 @@ _REGISTRY_NAME_BY_FAMILY: dict[str, str] = {"mcp-tool": "mcp", "daemon-route": "
 def validate_owner_registry(family_name: str, *, root: Path = ROOT) -> tuple[str, ...]:
     """Return actionable diagnostics for the family's live owning registry.
 
-    Delegates to the ``declaration-bindings`` gate so the scaffold and the gate
+    Delegates to ``devtools.verify_declaration_bindings`` so the scaffold and the checker
     cannot disagree about what a complete registration means.
     """
 

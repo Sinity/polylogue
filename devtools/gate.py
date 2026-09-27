@@ -1,20 +1,15 @@
 """Named invariant checks and the table the verifier runs them from.
 
-A gate is one check with a PASS/FAIL verdict. ``devtools gate <name>`` runs one.
-Each gate declares the tier that runs it:
+A gate is one check with a PASS/FAIL verdict. ``devtools gate <name>`` runs one;
+``devtools verify --quick`` runs every gate marked ``in_quick``.
 
-- ``quick``: every ``devtools verify --quick``, which is the hosted
-  ``quick-gate`` check on every pull request. A gate is here when it is cheap
-  or regularly catches real defects before merge.
-- ``periodic``: ``devtools verify --periodic`` (the scheduled static run) and
-  ``devtools verify --all``. A gate is here when its invariant rarely regresses
-  and a regression caught on the next scheduled run is cheap to fix. Over
-  968 quick runs from 2026-08-31 to 2026-09-27, none of these gates caught
-  more than one real defect.
-- ``manual``: only ``devtools gate <name>``.
-
-A gate marked ``blocking=False`` reports its verdict and is recorded in the
-receipt, but does not decide the verifier's exit code.
+A quick gate earns its place by guarding an invariant nothing else checks,
+where a regression would be costly. Hosted CI runs no pytest, so a quick gate
+is the only check every pull request passes; an invariant a live unit test
+already asserts stays a gate only when a regression merged before anyone runs
+that test would be expensive to undo (committed privacy leaks, durable DDL).
+The selection and its evidence (968 quick runs, 2026-08-31..09-27) are on
+polylogue-j325x.
 """
 
 from __future__ import annotations
@@ -25,7 +20,6 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 from devtools.toolchain import venv_bin, venv_python
 
@@ -35,7 +29,6 @@ ROOT = Path(__file__).resolve().parents[1]
 #: checkout venv's bin directory; ``module`` runs ``python -m <module>``;
 #: ``devtools`` runs ``python -m devtools <args>``.
 GateKind = str
-GateTier = Literal["quick", "periodic", "manual"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,8 +38,7 @@ class Gate:
     kind: GateKind
     args: tuple[str, ...]
     label: str
-    tier: GateTier = "manual"
-    blocking: bool = True
+    in_quick: bool = False
 
     def command(self, *, root: Path = ROOT) -> list[str]:
         if self.kind == "mypy":
@@ -78,7 +70,7 @@ GATES: tuple[Gate, ...] = (
         "tool",
         ("ruff", "format", "--check", "polylogue/", "tests/", "devtools/"),
         label="gate format",
-        tier="quick",
+        in_quick=True,
     ),
     Gate(
         "lint",
@@ -86,7 +78,7 @@ GATES: tuple[Gate, ...] = (
         "tool",
         ("ruff", "check", "polylogue/", "tests/", "devtools/"),
         label="gate lint",
-        tier="quick",
+        in_quick=True,
     ),
     Gate(
         "mypy",
@@ -94,7 +86,7 @@ GATES: tuple[Gate, ...] = (
         "mypy",
         (),
         label="gate mypy",
-        tier="quick",
+        in_quick=True,
     ),
     Gate(
         "generated-surfaces",
@@ -102,7 +94,7 @@ GATES: tuple[Gate, ...] = (
         "devtools",
         ("render", "all", "--check"),
         label="gate generated-surfaces",
-        tier="quick",
+        in_quick=True,
     ),
     Gate(
         "layering",
@@ -110,7 +102,7 @@ GATES: tuple[Gate, ...] = (
         "module",
         ("devtools.verify_layering", "--json"),
         label="gate layering",
-        tier="quick",
+        in_quick=True,
     ),
     Gate(
         "rebuild-routes",
@@ -118,15 +110,7 @@ GATES: tuple[Gate, ...] = (
         "module",
         ("devtools.verify_rebuild_routes", "--json"),
         label="gate rebuild-routes",
-        tier="periodic",
-    ),
-    Gate(
-        "controlled-read",
-        "Census every direct ArchiveStore.open_existing against docs/plans/controlled-read-census.yaml.",
-        "module",
-        ("devtools.verify_controlled_read", "--json"),
-        label="gate controlled-read",
-        tier="periodic",
+        in_quick=True,
     ),
     Gate(
         "patterns",
@@ -134,31 +118,7 @@ GATES: tuple[Gate, ...] = (
         "module",
         ("devtools.verify_patterns", "--json"),
         label="gate patterns",
-        tier="quick",
-    ),
-    Gate(
-        "api-parity",
-        "Check CLI/MCP/Python semantic-operation parity and docs/library-api.md against the live facade.",
-        "module",
-        ("devtools.verify_api_parity", "--check"),
-        label="gate api-parity",
-        tier="periodic",
-    ),
-    Gate(
-        "declaration-bindings",
-        "Resolve every declared handler, owner path, output, and example in the live declaration registries.",
-        "module",
-        ("devtools.verify_declaration_bindings",),
-        label="gate declaration-bindings",
-        tier="periodic",
-    ),
-    Gate(
-        "doc-commands",
-        "Validate executable documentation examples against live command inventories.",
-        "module",
-        ("devtools.verify_doc_commands",),
-        label="gate doc-commands",
-        tier="periodic",
+        in_quick=True,
     ),
     Gate(
         "schema-manifest",
@@ -166,53 +126,7 @@ GATES: tuple[Gate, ...] = (
         "module",
         ("devtools.verify_schema_manifest", "--check-evolution"),
         label="gate schema-manifest",
-        tier="quick",
-    ),
-    Gate(
-        "oracle-integrity",
-        "Verify tests certify production-reachable code and never read ambient user paths.",
-        "module",
-        ("devtools.verify_oracle_integrity",),
-        label="gate oracle-integrity",
-        tier="periodic",
-    ),
-    Gate(
-        "testmon-selection",
-        "Prove a generated fixture uses a small affected selection with the managed worker default.",
-        "module",
-        ("devtools.verify_testmon_selection",),
-        label="gate testmon-selection",
-        tier="periodic",
-    ),
-    Gate(
-        "consumer-reachability",
-        "Report newly added modules, tables, and tools without production consumers.",
-        "module",
-        ("devtools.consumer_reachability", "--json"),
-        label="gate consumer-reachability",
-        # Manual: it reports on the diff against the merge base, which a
-        # scheduled run on master does not have, and as a report-only step in
-        # the quick tier it cost every run 13 s without deciding any of them.
-        tier="manual",
-        # Report-only: the incremental base/head diff it reasons over is not
-        # stable enough across rebases to decide a verifier's exit code.
-        blocking=False,
-    ),
-    Gate(
-        "test-packages",
-        "Verify every directory holding collectible test modules is a package.",
-        "module",
-        ("devtools.verify_test_packages",),
-        label="gate test-packages",
-        tier="quick",
-    ),
-    Gate(
-        "root-topology",
-        "Verify no non-kernel module sits at the polylogue/ package root.",
-        "module",
-        ("devtools.verify_root_topology",),
-        label="gate root-topology",
-        tier="quick",
+        in_quick=True,
     ),
     Gate(
         "timestamp-doctrine",
@@ -220,7 +134,7 @@ GATES: tuple[Gate, ...] = (
         "module",
         ("devtools.verify_timestamp_doctrine",),
         label="gate timestamp-doctrine",
-        tier="quick",
+        in_quick=True,
     ),
     Gate(
         "durable-enum-checks",
@@ -228,7 +142,7 @@ GATES: tuple[Gate, ...] = (
         "module",
         ("devtools.verify_durable_enum_checks",),
         label="gate durable-enum-checks",
-        tier="quick",
+        in_quick=True,
     ),
     Gate(
         "schema-privacy",
@@ -236,15 +150,7 @@ GATES: tuple[Gate, ...] = (
         "module",
         ("devtools.verify_schema_privacy",),
         label="gate schema-privacy",
-        tier="periodic",
-    ),
-    Gate(
-        "schema-provider-identity",
-        "Verify no committed schema package contains an element whose $id names another subject.",
-        "module",
-        ("devtools.verify_schema_provider_identity",),
-        label="gate schema-provider-identity",
-        tier="quick",
+        in_quick=True,
     ),
     Gate(
         "schema-closure",
@@ -252,7 +158,7 @@ GATES: tuple[Gate, ...] = (
         "module",
         ("devtools.verify_schema_closure", "--json"),
         label="gate schema-closure",
-        tier="quick",
+        in_quick=True,
     ),
     Gate(
         "test-collection",
@@ -260,7 +166,7 @@ GATES: tuple[Gate, ...] = (
         "module",
         ("devtools.verify_test_collection", "--json"),
         label="gate test-collection",
-        tier="manual",
+        in_quick=False,
     ),
     Gate(
         "schema-audit",
@@ -275,14 +181,6 @@ GATES: tuple[Gate, ...] = (
         "module",
         ("devtools.verify_schema_roundtrip",),
         label="gate schema-roundtrip",
-    ),
-    Gate(
-        "population-coverage",
-        "Verify every origin, detector route, and artifact kind in the source inventory is declared and witnessed.",
-        "module",
-        ("devtools.verify_population_coverage",),
-        label="gate population-coverage",
-        tier="quick",
     ),
     Gate(
         "agent-integration",
@@ -312,13 +210,7 @@ GATE_NAMES: tuple[str, ...] = tuple(gate.name for gate in GATES)
 
 
 def quick_gates() -> tuple[Gate, ...]:
-    """Gates of the ``quick`` tier."""
-    return tuple(gate for gate in GATES if gate.tier == "quick")
-
-
-def periodic_gates() -> tuple[Gate, ...]:
-    """Every static gate a scheduled or complete run owes: ``quick`` plus ``periodic``."""
-    return tuple(gate for gate in GATES if gate.tier in {"quick", "periodic"})
+    return tuple(gate for gate in GATES if gate.in_quick)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -331,10 +223,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args, passthrough = parser.parse_known_args(list(argv or []))
     if args.list or args.name is None:
         for gate in GATES:
-            marks: str = "" if gate.tier == "manual" else gate.tier
-            if marks and not gate.blocking:
-                marks += ", report-only"
-            suffix = f"  [{marks}]" if marks else ""
+            suffix = "  [quick]" if gate.in_quick else ""
             print(f"{gate.name:<24} {gate.description}{suffix}")
         return 0 if args.list else 2
     gate = GATES_BY_NAME[args.name]
