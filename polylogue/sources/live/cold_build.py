@@ -727,6 +727,17 @@ class ColdBuildGeneration:
                 revision.extend(unavailable(exc))
             else:
                 revision.extend((0, metadata.st_ino, metadata.st_mode))
+        # Baseline rebinding may replace this file itself. Only its access mode
+        # is external permission evidence; watching its inode would mistake
+        # our own publication for an external repair during the callback.
+        try:
+            binding_metadata = (self.generation_root / "source-baseline.json").stat()
+        except FileNotFoundError:
+            revision.extend((-1, -1, -1))
+        except OSError as exc:
+            revision.extend(unavailable(exc))
+        else:
+            revision.extend((0, binding_metadata.st_mode, 0))
         if self.settlement_reason == "capacity_unavailable":
             try:
                 space = os.statvfs(self.archive_root)
@@ -743,16 +754,17 @@ class ColdBuildGeneration:
             self.archive_root / MAINTENANCE_STATE_DIRNAME / "production-source-baseline" / "pending.json",
             Path(self.generation.index_path),
             self.generation_root / "generation.json",
+            self.generation_root / "source-baseline.json",
         ):
             try:
                 metadata = path.stat()
             except FileNotFoundError:
-                revision.extend((-1, -1, -1))
+                revision.extend((-1, -1, -1, -1))
             except OSError as exc:
                 error_type = f"{type(exc).__module__}.{type(exc).__qualname__}"
-                revision.extend((-2, exc.errno if exc.errno is not None else -1, zlib.crc32(error_type.encode())))
+                revision.extend((-2, exc.errno if exc.errno is not None else -1, zlib.crc32(error_type.encode()), -1))
             else:
-                revision.extend((metadata.st_ino, metadata.st_size, metadata.st_mtime_ns))
+                revision.extend((metadata.st_ino, metadata.st_size, metadata.st_mtime_ns, metadata.st_mode))
         return tuple(revision)
 
     def observe_faulted_baseline(

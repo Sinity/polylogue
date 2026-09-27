@@ -587,7 +587,9 @@ class IndexGenerationStore:
         # Only this process may resume a pre-swap rollback whose metadata
         # replace also failed. The prepared file is durable; this guard binds
         # it to the pointer inode and owner observed before promotion.
-        self._unpublished_rollbacks: dict[str, tuple[IndexGeneration, Path, tuple[int, int] | None]] = {}
+        self._unpublished_rollbacks: dict[
+            str, tuple[IndexGeneration, Path, Path, tuple[int, int] | None, tuple[str, ...]]
+        ] = {}
         self._active_parent_identity = _stable_directory(self.active_pointer.parent, label="active pointer parent")
         self._lifecycle_lock_fd: int | None = None
         if self._lifecycle_lock_path.is_symlink():
@@ -797,7 +799,7 @@ class IndexGenerationStore:
         pointer = self.active_pointer
         predecessor_generation_id = self._generation_id_for_active_target(pointer)
         retired = self.generations_root / f"retired-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
-        retired.mkdir(parents=True, exist_ok=False)
+        sidecars: list[str] = []
         if pointer.exists() or pointer.is_symlink():
             _checkpoint_truncate(pointer, label="active index", archive_root=self.archive_root)
             for suffix in ("-wal", "-shm"):
@@ -805,10 +807,7 @@ class IndexGenerationStore:
                 if sidecar.exists():
                     if suffix == "-wal" and sidecar.stat().st_size != 0:
                         raise RuntimeError(f"non-empty active index sidecar blocks promotion: {sidecar}")
-                    os.replace(sidecar, retired / sidecar.name)
-        if pointer.exists() or pointer.is_symlink():
-            os.link(pointer, retired / "index.db", follow_symlinks=False)
-            _fsync_directory(retired)
+                    sidecars.append(suffix)
         promoting = IndexGeneration(
             **{
                 **asdict(current),
@@ -825,7 +824,11 @@ class IndexGenerationStore:
         rollback = self._metadata_path(current.generation_id).with_name("generation.rollback.json")
         pointer_proof = self._rollback_pointer_proof_path(current.generation_id)
         for path, payload, label in (
-            (pointer_proof, self._rollback_pointer_proof(current, prior_identity), "prior pointer proof"),
+            (
+                pointer_proof,
+                self._rollback_pointer_proof(current, prior_identity, tuple(sidecars), retired.name),
+                "prior pointer proof",
+            ),
             (rollback, asdict(current), "generation rollback"),
         ):
             try:
@@ -836,6 +839,15 @@ class IndexGenerationStore:
                 raise
         try:
             self._write(promoting)
+            retired.mkdir(parents=True, exist_ok=False)
+            _fsync_directory(self.generations_root)
+            for suffix in sidecars:
+                sidecar = pointer.with_name(pointer.name + suffix)
+                os.replace(sidecar, retired / sidecar.name)
+            if pointer.exists() or pointer.is_symlink():
+                os.link(pointer, retired / "index.db", follow_symlinks=False)
+            _fsync_directory(retired)
+            _fsync_directory(pointer.parent)
             temporary.symlink_to(target)
             os.replace(temporary, pointer)
         except Exception as exc:
@@ -847,15 +859,19 @@ class IndexGenerationStore:
             current_pointer = pointer.lstat() if pointer.exists() or pointer.is_symlink() else None
             current_identity = (current_pointer.st_dev, current_pointer.st_ino) if current_pointer is not None else None
             if current_identity == prior_identity:
-                if self.load(current.generation_id).state == "promoting":
-                    try:
+                try:
+                    self._restore_pre_swap_predecessor(retired, prior_identity, tuple(sidecars))
+                    if self.load(current.generation_id).state == "promoting":
                         os.replace(rollback, self._metadata_path(current.generation_id))
                         _fsync_directory(rollback.parent)
-                    except OSError:
-                        self._unpublished_rollbacks[current.generation_id] = (current, rollback, prior_identity)
-                    else:
-                        with suppress(OSError):
-                            pointer_proof.unlink(missing_ok=True)
+                except (OSError, UnpublishedPromotionRecoveryError):
+                    self._unpublished_rollbacks[current.generation_id] = (
+                        current,
+                        rollback,
+                        retired,
+                        prior_identity,
+                        tuple(sidecars),
+                    )
                 else:
                     with suppress(OSError):
                         rollback.unlink(missing_ok=True)
@@ -901,6 +917,70 @@ class IndexGenerationStore:
     def unpublished_rollback_pending(self, generation_id: str) -> bool:
         return generation_id in self._unpublished_rollbacks
 
+    def _restore_pre_swap_predecessor(
+        self, retired: Path, prior_identity: tuple[int, int] | None, sidecars: tuple[str, ...]
+    ) -> None:
+        """Restore the prior pointer's sidecars before releasing an unpublished candidate."""
+        pointer = self.active_pointer
+        if retired.parent != self.generations_root or not re.fullmatch(r"retired-\d+-[0-9a-f]{8}", retired.name):
+            raise UnpublishedPromotionRecoveryError("retired predecessor marker identity is invalid")
+        try:
+            marker_metadata = retired.lstat()
+        except FileNotFoundError:
+            marker_metadata = None
+        if marker_metadata is not None and not stat.S_ISDIR(marker_metadata.st_mode):
+            raise UnpublishedPromotionRecoveryError("retired predecessor marker is not a directory")
+        if marker_metadata is not None:
+            try:
+                pointer_backup = (retired / "index.db").lstat()
+            except FileNotFoundError:
+                pointer_backup = None
+            if (
+                pointer_backup is not None
+                and (
+                    pointer_backup.st_dev,
+                    pointer_backup.st_ino,
+                )
+                != prior_identity
+            ):
+                raise UnpublishedPromotionRecoveryError("retired predecessor pointer identity changed")
+        for suffix in ("-wal", "-shm"):
+            original = pointer.with_name(pointer.name + suffix)
+            backup = retired / original.name
+            try:
+                backup_metadata = backup.lstat() if marker_metadata is not None else None
+            except FileNotFoundError:
+                backup_metadata = None
+            if backup_metadata is not None and suffix not in sidecars:
+                raise UnpublishedPromotionRecoveryError("retired predecessor has an unexpected sidecar")
+            if backup_metadata is not None and not stat.S_ISREG(backup_metadata.st_mode):
+                raise UnpublishedPromotionRecoveryError("retired predecessor sidecar is not a regular file")
+            if suffix not in sidecars:
+                continue
+            try:
+                original_metadata = original.lstat()
+            except FileNotFoundError:
+                original_metadata = None
+            if backup_metadata is None and original_metadata is None:
+                raise UnpublishedPromotionRecoveryError("predecessor sidecar is missing from both locations")
+            if backup_metadata is not None:
+                if original_metadata is None:
+                    os.link(backup, original, follow_symlinks=False)
+                elif (original_metadata.st_dev, original_metadata.st_ino) != (
+                    backup_metadata.st_dev,
+                    backup_metadata.st_ino,
+                ):
+                    raise UnpublishedPromotionRecoveryError("predecessor sidecar was replaced during rollback")
+        _fsync_directory(pointer.parent)
+        if marker_metadata is not None:
+            for suffix in sidecars:
+                (retired / f"{pointer.name}{suffix}").unlink(missing_ok=True)
+            _fsync_directory(retired)
+            if any(path.name != "index.db" for path in retired.iterdir()):
+                raise UnpublishedPromotionRecoveryError("retired predecessor marker has unexpected contents")
+            shutil.rmtree(retired)
+            _fsync_directory(self.generations_root)
+
     def restore_unpublished_promotion(self, generation_id: str) -> None:
         """Finish a same-process pre-swap rollback after storage returns."""
         pending = self._unpublished_rollbacks.get(generation_id)
@@ -908,7 +988,7 @@ class IndexGenerationStore:
             return
         self._require_write_lease(f"IndexGenerationStore.restore_unpublished_promotion(generation={generation_id})")
         with self._lifecycle_lock():
-            original, rollback, prior_identity = pending
+            original, rollback, retired, prior_identity, sidecars = pending
             current = self.load(generation_id)
             if current.owner_id != original.owner_id or current.state not in {"promoting", "inactive"}:
                 raise RuntimeError("unpublished promotion owner or state changed")
@@ -917,6 +997,7 @@ class IndexGenerationStore:
             identity = (metadata.st_dev, metadata.st_ino) if metadata is not None else None
             if identity != prior_identity:
                 raise RuntimeError("active pointer changed during unpublished promotion rollback")
+            self._restore_pre_swap_predecessor(retired, prior_identity, sidecars)
             if current.state == "promoting":
                 if _read_json_nofollow(rollback, label="generation rollback") != asdict(original):
                     raise RuntimeError("generation rollback record changed")
@@ -959,13 +1040,28 @@ class IndexGenerationStore:
                     "predecessor_generation_id": current.predecessor_generation_id,
                 }
             )
+            raw_sidecars = proof.get("sidecars")
+            retired_name = proof.get("retired_marker")
+            if not isinstance(raw_sidecars, list) or not isinstance(retired_name, str):
+                raise UnpublishedPromotionRecoveryError("cold promotion rollback proof has invalid custody")
+            sidecars = tuple(cast(list[object], raw_sidecars))
+            if sidecars != tuple(suffix for suffix in ("-wal", "-shm") if suffix in sidecars):
+                raise UnpublishedPromotionRecoveryError("cold promotion rollback sidecars are invalid")
+            if not re.fullmatch(r"retired-\d+-[0-9a-f]{8}", retired_name):
+                raise UnpublishedPromotionRecoveryError("cold promotion rollback marker is invalid")
             if (
                 original.state != "inactive"
                 or original.owner_id != current.owner_id
                 or asdict(expected) != asdict(current)
-                or proof != self._rollback_pointer_proof(original, identity)
+                or proof
+                != self._rollback_pointer_proof(original, identity, cast(tuple[str, ...], sidecars), retired_name)
             ):
                 raise UnpublishedPromotionRecoveryError("cold promotion rollback proof does not match active pointer")
+            self._restore_pre_swap_predecessor(
+                self.generations_root / retired_name,
+                identity,
+                cast(tuple[str, ...], sidecars),
+            )
             shutil.rmtree(self._metadata_path(current.generation_id).parent)
             _fsync_directory(self.generations_root)
             return True
@@ -1313,15 +1409,21 @@ class IndexGenerationStore:
         return self._metadata_path(generation_id).with_name("generation.rollback-pointer.json")
 
     def _rollback_pointer_proof(
-        self, generation: IndexGeneration, pointer_identity: tuple[int, int] | None
+        self,
+        generation: IndexGeneration,
+        pointer_identity: tuple[int, int] | None,
+        sidecars: tuple[str, ...],
+        retired_marker: str,
     ) -> dict[str, object]:
         return {
-            "schema": "polylogue.generation-rollback-pointer.v1",
+            "schema": "polylogue.generation-rollback-pointer.v2",
             "generation_id": generation.generation_id,
             "owner_id": generation.owner_id,
             "active_pointer": str(self.active_pointer.absolute()),
             "pointer_device": pointer_identity[0] if pointer_identity is not None else None,
             "pointer_inode": pointer_identity[1] if pointer_identity is not None else None,
+            "sidecars": list(sidecars),
+            "retired_marker": retired_marker,
         }
 
     def _retention_receipt_path(self, promoted_generation_id: str) -> Path:

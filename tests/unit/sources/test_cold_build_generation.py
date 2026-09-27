@@ -196,7 +196,11 @@ def test_pointer_parent_fsync_must_succeed_before_promotion_tail(
 
     def fail_pointer_parent_twice(path: Path) -> None:
         nonlocal failures
-        if path == tmp_path and failures < 2:
+        if (
+            path == tmp_path
+            and (tmp_path / "index.db").resolve() == Path(cold_build.generation.index_path).resolve()
+            and failures < 2
+        ):
             failures += 1
             raise OSError(errno.ENOSPC, "pointer directory fsync unavailable")
         original_fsync(path)
@@ -307,6 +311,145 @@ def test_pre_swap_storage_fault_restores_same_inactive_candidate(
     assert IndexGenerationStore.for_archive_root(tmp_path).load(cold_build.generation_id).state == "inactive"
     assert not cold_build.settled
     assert cold_build.promote().generation_id == cold_build.generation_id
+
+
+def test_repeated_pre_swap_fault_restores_predecessor_sidecars_and_marker(
+    tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage import index_generation
+
+    pointer = tmp_path / "index.db"
+    prior_identity = (pointer.lstat().st_dev, pointer.lstat().st_ino)
+    sidecars = tuple(pointer.with_name(pointer.name + suffix) for suffix in ("-wal", "-shm"))
+    for sidecar in sidecars:
+        sidecar.touch()
+    sidecar_identities = tuple((path.stat().st_dev, path.stat().st_ino) for path in sidecars)
+    original_replace = os.replace
+    original_checkpoint = index_generation._checkpoint_truncate
+    failures = 0
+
+    def keep_zero_sidecars(path: Path, *, label: str, archive_root: Path) -> None:
+        if label != "active index":
+            original_checkpoint(path, label=label, archive_root=archive_root)
+
+    def fail_pre_swap(source: os.PathLike[str] | str, target: os.PathLike[str] | str) -> None:
+        nonlocal failures
+        partial_sidecar_move = (
+            Path(source).name == "index.db-shm" and Path(target).parent.name.startswith("retired-") and failures == 0
+        )
+        pointer_swap = Path(source).name.startswith(".index.db.promote-") and Path(target) == pointer
+        if partial_sidecar_move or pointer_swap:
+            failures += 1
+            raise OSError(errno.EAGAIN, "pre-swap filesystem temporarily busy")
+        original_replace(source, target)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(os, "replace", fail_pre_swap)
+        patcher.setattr(index_generation, "_checkpoint_truncate", keep_zero_sidecars)
+        for _ in range(3):
+            with pytest.raises(OSError) as failure:
+                cold_build.promote()
+            assert failure.value.errno == errno.EAGAIN
+            assert (pointer.lstat().st_dev, pointer.lstat().st_ino) == prior_identity
+            assert tuple((path.stat().st_dev, path.stat().st_ino) for path in sidecars) == sidecar_identities
+            assert cold_build._store.load(cold_build.generation_id).state == "inactive"
+            assert not tuple(cold_build._store.generations_root.glob("retired-*"))
+    assert failures == 3
+    assert cold_build.promote().state == "active"
+
+
+def test_interrupted_pre_swap_with_moved_sidecars_restores_them_on_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage import index_generation
+
+    archive = _fresh_archive_root(tmp_path)
+    sources = (WatchSource("fixture", tmp_path / "absent-source"),)
+    abandoned = ColdBuildGeneration.begin(archive, reason="first", sources=sources)
+    pointer = archive / "index.db"
+    prior_identity = (pointer.lstat().st_dev, pointer.lstat().st_ino)
+    sidecars = tuple(pointer.with_name(pointer.name + suffix) for suffix in ("-wal", "-shm"))
+    for sidecar in sidecars:
+        sidecar.touch()
+    sidecar_identities = tuple((path.stat().st_dev, path.stat().st_ino) for path in sidecars)
+    original_symlink_to = Path.symlink_to
+    original_checkpoint = index_generation._checkpoint_truncate
+
+    def keep_zero_sidecars(path: Path, *, label: str, archive_root: Path) -> None:
+        if label != "active index":
+            original_checkpoint(path, label=label, archive_root=archive_root)
+
+    def interrupt_before_swap(path: Path, target: os.PathLike[str] | str, target_is_directory: bool = False) -> None:
+        if path.name.startswith(".index.db.promote-"):
+            raise KeyboardInterrupt("process stopped before pointer swap")
+        original_symlink_to(path, target, target_is_directory=target_is_directory)
+
+    try:
+        with monkeypatch.context() as patcher:
+            patcher.setattr(Path, "symlink_to", interrupt_before_swap)
+            patcher.setattr(index_generation, "_checkpoint_truncate", keep_zero_sidecars)
+            with pytest.raises(KeyboardInterrupt):
+                abandoned.promote()
+        assert abandoned._store.load(abandoned.generation_id).state == "promoting"
+        assert (pointer.lstat().st_dev, pointer.lstat().st_ino) == prior_identity
+        assert all(not sidecar.exists() for sidecar in sidecars)
+        assert len(tuple(abandoned._store.generations_root.glob("retired-*"))) == 1
+    finally:
+        abandoned._release_ops_checkpoint_holder()
+
+    replacement = ColdBuildGeneration.begin(archive, reason="restart", sources=sources)
+    try:
+        assert not abandoned.generation_root.exists()
+        assert tuple((path.stat().st_dev, path.stat().st_ino) for path in sidecars) == sidecar_identities
+        assert not tuple(replacement._store.generations_root.glob("retired-*"))
+    finally:
+        replacement.discard()
+
+
+def test_pre_swap_sidecar_restore_fault_blocks_candidate_until_retry(
+    tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage import index_generation
+
+    pointer = tmp_path / "index.db"
+    sidecar = tmp_path / "index.db-wal"
+    sidecar.touch()
+    original_inode = sidecar.stat().st_ino
+    original_checkpoint = index_generation._checkpoint_truncate
+    original_replace = os.replace
+    original_link = os.link
+
+    def keep_zero_sidecar(path: Path, *, label: str, archive_root: Path) -> None:
+        if label != "active index":
+            original_checkpoint(path, label=label, archive_root=archive_root)
+
+    def fail_pointer_swap(source: os.PathLike[str] | str, target: os.PathLike[str] | str) -> None:
+        if Path(source).name.startswith(".index.db.promote-") and Path(target) == pointer:
+            raise OSError(errno.EAGAIN, "pointer swap busy")
+        original_replace(source, target)
+
+    def fail_sidecar_restore(
+        source: os.PathLike[str] | str, target: os.PathLike[str] | str, *, follow_symlinks: bool = True
+    ) -> None:
+        if Path(source).parent.name.startswith("retired-") and Path(target) == sidecar:
+            raise OSError(errno.EACCES, "sidecar restore unavailable")
+        original_link(source, target, follow_symlinks=follow_symlinks)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(index_generation, "_checkpoint_truncate", keep_zero_sidecar)
+        patcher.setattr(os, "replace", fail_pointer_swap)
+        patcher.setattr(os, "link", fail_sidecar_restore)
+        with pytest.raises(OSError) as failure:
+            cold_build.promote()
+    assert failure.value.errno == errno.EAGAIN
+    assert cold_build._store.load(cold_build.generation_id).state == "promoting"
+    assert cold_build._store.unpublished_rollback_pending(cold_build.generation_id)
+    assert not sidecar.exists()
+    with cold_build.open_writer():
+        pass
+    assert cold_build._store.load(cold_build.generation_id).state == "inactive"
+    assert sidecar.stat().st_ino == original_inode
+    assert not tuple(cold_build._store.generations_root.glob("retired-*"))
 
 
 def test_pre_swap_fault_survives_exhausted_rollback_and_retries_same_candidate(
@@ -422,7 +565,17 @@ def test_blocked_settlement_revision_tracks_receipt_and_source_evidence(
     source_db = tmp_path / "source.db"
     old_mtime = source_db.stat().st_mtime_ns
     os.utime(source_db, ns=(old_mtime, old_mtime + 1_000_000))
-    assert cold_build.settlement_evidence_revision() != changed
+    source_changed = cold_build.settlement_evidence_revision()
+    assert source_changed != changed
+    binding = cold_build.generation_root / "source-baseline.json"
+    mode = stat.S_IMODE(binding.stat().st_mode)
+    external_before = cold_build.settlement_external_revision()
+    try:
+        binding.chmod(mode ^ stat.S_IRUSR)
+        assert cold_build.settlement_evidence_revision() != source_changed
+        assert cold_build.settlement_external_revision() != external_before
+    finally:
+        binding.chmod(mode)
     repaired_root = tmp_path / "repaired-source"
     source = WatchSource("repaired", repaired_root, required=True)
     missing = cold_build.settlement_evidence_revision((source,))
