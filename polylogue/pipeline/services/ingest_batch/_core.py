@@ -44,7 +44,7 @@ from polylogue.core.metrics import (
 )
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
-from polylogue.core.storage_faults import raise_if_storage_fault
+from polylogue.core.storage_faults import raise_if_storage_fault, storage_fault_kind
 from polylogue.core.timestamp_authority import session_evidence_timestamps
 from polylogue.logging import emit, get_logger
 from polylogue.markers.preparation import marker_candidates_for_prepared_write, marker_recipe_fingerprint
@@ -1869,15 +1869,23 @@ def _write_session_entry(
             summary.marker_sessions_by_raw_id.setdefault(raw_id, []).append(marker_session)
         return True
     except Exception as exc:
+        # A storage fault fails every session alike; recording it as this
+        # raw's parse failure would persist a durable ``parse_error`` on input
+        # that has nothing wrong with it. Let the batch boundary classify it.
+        # Classify first: SQLite can roll the whole transaction back on
+        # SQLITE_FULL, and the savepoint cleanup then raises "no such
+        # savepoint", which must not replace the fault.
+        if storage_fault_kind(exc) is not None:
+            if batch_owns_transaction:
+                with contextlib.suppress(sqlite3.Error):
+                    conn.execute(f"ROLLBACK TO {_SESSION_WRITE_SAVEPOINT}")
+                    conn.execute(f"RELEASE {_SESSION_WRITE_SAVEPOINT}")
+            raise_if_storage_fault(exc)
         if batch_owns_transaction:
             # Discard only this session's rows; the batch transaction (and its
             # suspended FTS triggers) survives so the drain can continue.
             conn.execute(f"ROLLBACK TO {_SESSION_WRITE_SAVEPOINT}")
             conn.execute(f"RELEASE {_SESSION_WRITE_SAVEPOINT}")
-        # A storage fault fails every session alike; recording it as this
-        # raw's parse failure would persist a durable ``parse_error`` on input
-        # that has nothing wrong with it. Let the batch boundary classify it.
-        raise_if_storage_fault(exc)
         logger.error("Error writing session: %s", exc)
         summary.parse_failures += 1
         summary.failed_raw_ids[raw_id] = str(exc)[:500]

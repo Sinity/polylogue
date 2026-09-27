@@ -6,7 +6,7 @@ from polylogue.core.protocols import RawPersistenceStore
 from polylogue.logging import get_logger
 from polylogue.pipeline.services.acquisition_records import pending_pre_parse_raw_admission_request
 from polylogue.pipeline.stage_models import AcquireResult
-from polylogue.security.excision_policy import ExcisionPolicySnapshot
+from polylogue.security.excision_policy import ExcisionPolicyError, ExcisionPolicySnapshot
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.cursor_state import CursorFailurePayload
 from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
@@ -57,7 +57,9 @@ async def persist_raw_record(
             exc_info=True,
         )
         result.errors += 1
-        if failures is not None:
+        if failures is not None and not isinstance(exc, ExcisionPolicyError):
+            # Durably excised content is a permanent refusal: withholding the
+            # cursor would retry forbidden bytes on every pass.
             failures.append(CursorFailurePayload(path=record.source_path, error=f"{type(exc).__name__}: {exc}"))
 
 

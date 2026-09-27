@@ -123,12 +123,15 @@ class AcquisitionService:
                     # are other files that did not fail.
                     failed_paths.add(raw_path)
                     continue
-                # A member coordinate: its container is the longest prefix,
-                # ending before a ``:``, that is a real source file.
-                containers = [raw_path[:index] for index, char in enumerate(raw_path) if char == ":"]
-                container = next((prefix for prefix in reversed(containers) if prefix in source_keys), None)
-                if container is not None:
-                    failed_paths.add(container)
+                # A member coordinate. Its container is a real source file
+                # named by a prefix ending before a ``:``; when several real
+                # files qualify (``a.zip`` and a file named ``a.zip:m.json``)
+                # the coordinate cannot say which, so all of them are
+                # withheld -- a needless re-read is safe, a skipped member
+                # is not.
+                containers = {raw_path[:index] for index, char in enumerate(raw_path) if char == ":"} & source_keys
+                if containers:
+                    failed_paths.update(containers)
                 else:
                     # A failure naming no file this walk resolved (a provenance
                     # path, such as a staged SQLite snapshot's original) cannot

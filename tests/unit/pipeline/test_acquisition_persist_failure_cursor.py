@@ -135,3 +135,31 @@ def test_a_failure_naming_no_resolved_file_withholds_every_cursor(tmp_path: Path
         )
     )
     assert saved == []
+
+
+def test_an_excision_refusal_is_not_a_retryable_persistence_failure() -> None:
+    """Durably excised content is refused on purpose; recording it as a
+    failure would withhold the cursor and retry forbidden bytes every pass.
+    Anti-vacuity: appending every exception makes ``failures`` non-empty."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from polylogue.pipeline.services.acquisition_persistence import persist_raw_record
+    from polylogue.pipeline.stage_models import AcquireResult
+    from polylogue.security.excision_policy import ExcisionPolicyError
+
+    class _Repository:
+        async def admit_raw(self, _request: object) -> object:
+            raise ExcisionPolicyError("content is excluded by excision policy")
+
+    failures: list[Any] = []
+    result = AcquireResult()
+    record = SimpleNamespace(source_name="claude-code", source_path="/src/excised.jsonl")
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(
+            "polylogue.pipeline.services.acquisition_persistence.pending_pre_parse_raw_admission_request",
+            lambda record, policy_snapshot=None: object(),
+        )
+        asyncio.run(persist_raw_record(_Repository(), record, result=result, failures=failures))  # type: ignore[arg-type]
+    assert result.errors == 1
+    assert failures == []

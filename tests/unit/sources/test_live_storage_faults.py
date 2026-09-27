@@ -347,6 +347,7 @@ async def test_a_spent_writer_hold_closes_the_attempt_as_retryable(
             "attempt_start", self._cursor.begin_ingest_attempt, paths=paths, input_bytes=0, queued_file_count=1
         )
         attempt.opened(attempt_id)
+        attempt.started = True
         raise WriteHoldBudgetError(actor="test", checkpoint="full_acquisition_complete", hold_seconds=2.0, budget_s=1.0)
 
     monkeypatch.setattr(LiveBatchProcessor, "_ingest_files", spend_hold)
@@ -419,6 +420,7 @@ async def test_an_attempt_close_skipped_under_lock_is_reported(
             "attempt_start", self._cursor.begin_ingest_attempt, paths=paths, input_bytes=0, queued_file_count=1
         )
         kwargs["open_attempt"].opened(attempt_id)
+        kwargs["open_attempt"].started = True
         raise WriteHoldBudgetError(actor="test", checkpoint="full_acquisition_complete", hold_seconds=2.0, budget_s=1.0)
 
     monkeypatch.setattr(LiveBatchProcessor, "_ingest_files", spend_hold)

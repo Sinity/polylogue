@@ -1080,7 +1080,9 @@ class LiveBatchProcessor:
         disk), the refusal is reported and the original exception still
         propagates unchanged.
         """
-        if attempt.attempt_id is None or attempt.finished:
+        if attempt.attempt_id is None or attempt.finished or not attempt.started:
+            # No row is known to exist (the start write itself failed), so
+            # there is nothing to close and no attempt to name.
             return
         # A spent writer hold is a property of the pass, not of these inputs
         # (the adapter reports the page retryable); record it that way rather
@@ -3669,7 +3671,14 @@ class LiveBatchProcessor:
         time_budget_exceeded = acquisition_time_budget_exceeded
         write_hold_exhausted = False
         if raw_records:
-            blob_store.flush()
+            try:
+                blob_store.flush()
+            except Exception as exc:
+                if storage_fault_kind(exc) is not None:
+                    # Reservation may have committed before publication
+                    # failed; nothing references these receipts yet.
+                    _release_unwritten_publication_receipts(source_db, raw_records)
+                raise
             # These counters describe the in-memory payload handoff. A
             # blob-backed JSONL file is absent here by design and remains
             # available through its durable BlobStore reference.
