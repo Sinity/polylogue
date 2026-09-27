@@ -34,19 +34,48 @@ def test_same_seed_is_byte_identical_and_seeds_differ() -> None:
     assert first != other
 
 
+_CONVERSATIONAL_KINDS = frozenset(
+    {
+        "user_text",
+        "user_tool_result",
+        "assistant_text",
+        "assistant_thinking",
+        "assistant_tool_use",
+        "user_message",
+        "assistant_message",
+        "function_call",
+        "function_call_output",
+        "custom_tool_call",
+        "custom_tool_call_output",
+    }
+)
+
+
 @pytest.mark.parametrize("origin", ["claude-code", "codex"])
 def test_every_generated_stream_parses_through_production_dispatch(tmp_path: Path, origin: str) -> None:
-    """Anti-vacuity: a renderer emitting a shape the parser rejects or reads as empty fails here."""
+    """Anti-vacuity: a renderer emitting a conversational shape the parser rejects or reads as empty fails here.
+
+    Real sources contain metadata-only transcripts (a lone turn-duration or
+    snapshot record), which the parser rightly refuses; the generator
+    reproduces them, so only streams carrying conversational records must be
+    admitted.
+    """
+    classify = classify_claude_code_record if origin == "claude-code" else classify_codex_record
     corpus = generate_workload_corpus(seed=11, target_sessions=10, origins={origin: 1.0})
     stats = corpus.write(tmp_path)
     streams = sorted(path for path in tmp_path.rglob("*.jsonl"))
     assert stats.sessions == 10
-    assert streams
+    admitted_streams = 0
     for path in streams:
-        sessions = parse_payload(origin, _records(path.read_bytes()), str(path), source_path=str(path))
+        records = _records(path.read_bytes())
+        conversational = any(classify(record) in _CONVERSATIONAL_KINDS for record in records)
+        sessions = parse_payload(origin, records, str(path), source_path=str(path))
         admitted = require_positive_conversational_evidence(sessions, provider=origin, source_path=str(path))
-        assert admitted, path.name
-        assert sum(len(session.messages) for session in admitted) > 0
+        assert bool(admitted) == conversational, path.name
+        if admitted:
+            admitted_streams += 1
+            assert sum(len(session.messages) for session in admitted) > 0
+    assert admitted_streams >= len(streams) * 0.8
 
 
 @pytest.mark.parametrize("origin", ["claude-code", "codex"])
