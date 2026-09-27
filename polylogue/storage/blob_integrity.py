@@ -703,7 +703,7 @@ def _referenced_blob_hashes(
     source_db = (configured_root / "source.db") if configured_root is not None else db_path.with_name("source.db")
     if source_db != db_path and source_db.exists():
         try:
-            source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+            source_conn = open_readonly_connection(source_db, timeout_class="background-read", validate_schema=False)
             try:
                 projection = project_live_blob_hashes(source_conn, index_conn=conn, require_index=True)
                 if projection.blockers:
@@ -752,7 +752,7 @@ def _reference_source_counts(
     source_db = (configured_root / "source.db") if configured_root is not None else db_path.with_name("source.db")
     if source_db != db_path and source_db.exists():
         try:
-            source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+            source_conn = open_readonly_connection(source_db, timeout_class="background-read", validate_schema=False)
             try:
                 projection = project_live_blob_hashes(source_conn, index_conn=conn, require_index=True)
                 if not projection.blockers:
@@ -773,7 +773,9 @@ def _reference_source_counts(
 
         index_db = ArchiveLocation.resolve(db_path.parent).active_index_path
     if db_path.name == "source.db" and index_db.exists():
-        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as index_conn:
+        with closing(
+            open_readonly_connection(index_db, timeout_class="background-read", validate_schema=False)
+        ) as index_conn:
             projection = project_live_blob_hashes(conn, index_conn=index_conn, require_index=True)
             if projection.blockers:
                 historical = _historical_projection(conn, projection, index_conn=index_conn)
@@ -1023,7 +1025,7 @@ def _group_reference_rows(rows: Iterable[dict[str, Any]]) -> dict[str, list[dict
 
 
 def _reference_rows_for_blob_debt(source_db: Path) -> list[dict[str, Any]]:
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+    with closing(open_readonly_connection(source_db, timeout_class="background-read", validate_schema=False)) as conn:
         raw_refs = _raw_session_reference_rows(conn)
         raw_by_id = {str(row["ref_id"]): row for row in raw_refs if row.get("ref_id")}
         return [*raw_refs, *_blob_ref_reference_rows(conn, raw_by_id=raw_by_id)]
@@ -1758,7 +1760,9 @@ def prune_orphan_blob_reference_debt(
 
     source_db = _source_db_for_blob_reference_report(db_path)
     blob_store = store if store is not None else BlobStore(source_db.parent / "blob")
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as read_conn:
+    with closing(
+        open_readonly_connection(source_db, timeout_class="background-read", validate_schema=False)
+    ) as read_conn:
         rows = _blob_ref_rows_for_orphan_prune(read_conn)
 
     skipped_existing_blob = 0
@@ -1830,7 +1834,7 @@ def plan_raw_backed_blob_reference_recovery(
 
     source_db = _source_db_for_blob_reference_report(db_path)
     blob_store = store if store is not None else BlobStore(source_db.parent / "blob")
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+    with closing(open_readonly_connection(source_db, timeout_class="background-read", validate_schema=False)) as conn:
         rows = _missing_raw_backed_blob_rows(conn)
 
     plan_rows: list[BlobReferenceRecoveryPlanRow] = []
@@ -1901,7 +1905,7 @@ def replace_raw_backed_blob_reference_debt_from_source(
 
     source_db = _source_db_for_blob_reference_report(db_path)
     blob_store = store if store is not None else BlobStore(source_db.parent / "blob")
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+    with closing(open_readonly_connection(source_db, timeout_class="background-read", validate_schema=False)) as conn:
         rows = _missing_raw_backed_blob_rows(conn)
 
     samples: list[BlobReferenceSourceReplaceSample] = []
@@ -2562,7 +2566,9 @@ def scan_attachment_coverage(
 
     resolved_db_path = Path(db_path)
     blob_store = store if store is not None else BlobStore(resolved_db_path.parent / "blob")
-    with closing(sqlite3.connect(f"file:{resolved_db_path}?mode=ro", uri=True)) as conn:
+    with closing(
+        open_readonly_connection(resolved_db_path, timeout_class="background-read", validate_schema=False)
+    ) as conn:
         conn.row_factory = sqlite3.Row
         status_counts: dict[str, int] = dict(
             conn.execute("SELECT acquisition_status, COUNT(*) FROM attachments GROUP BY acquisition_status").fetchall()
@@ -2677,7 +2683,9 @@ def scan_blob_integrity(
     # This is an evidence scan, not a read of the active archive API. It must
     # remain usable while a candidate generation or an older active generation
     # is being inspected, so do not impose the current canonical schema gate.
-    with closing(sqlite3.connect(f"file:{resolved_db_path}?mode=ro", uri=True)) as conn:
+    with closing(
+        open_readonly_connection(resolved_db_path, timeout_class="background-read", validate_schema=False)
+    ) as conn:
         referenced = _referenced_blob_hashes(
             resolved_db_path,
             conn,
