@@ -291,3 +291,5 @@ def test_decimals_beyond_float_precision_keep_distinct_identities() -> None:
     high = _normalize_nested_for_hash({"k": Decimal("9007199254740993")})
     assert low != high
     assert hash_payload(low) != hash_payload(high)
+    # Nor may the exact decimal hash like the equal string.
+    assert hash_payload(high) != hash_payload(_normalize_nested_for_hash({"k": "9007199254740993"}))

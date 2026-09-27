@@ -155,7 +155,7 @@ def parsed_blocks_from_meta(blocks: object) -> list[ParsedContentBlock]:
 # messages separately emit) -- are DELIBERATELY DROPPED here: no field in
 # them is not already available in typed form elsewhere. Re-audit if a
 # future corpus pass finds a divergent value in one of those wrapper dicts.
-_GEMINI_THINKING_EVIDENCE_KEYS = frozenset({"thinkingBudget", "thoughtSignatures"})
+_GEMINI_THINKING_EVIDENCE_KEYS = frozenset({"thinkingBudget", "thoughtSignatures", "thoughtSignature"})
 _THOUGHT_SIGNATURE_KEYS = frozenset({"thoughtSignatures", "thoughtSignature"})
 
 

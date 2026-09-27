@@ -1066,3 +1066,20 @@ def test_thought_signatures_stay_out_of_hashed_block_metadata() -> None:
     metadata = blocks[0].metadata or {}
     assert "thoughtSignatures" not in metadata
     assert metadata.get("thinkingBudget") == 64
+
+
+def test_a_singular_thought_signature_survives_as_session_evidence() -> None:
+    """The singular Gemini ``thoughtSignature`` leaves the hashed block but is kept.
+
+    Anti-vacuity: drop ``thoughtSignature`` from the evidence keys and the
+    parsed session keeps no copy of the attestation.
+    """
+    from polylogue.sources.parsers.drive_support_blocks import session_events_from_meta_blocks
+
+    events = session_events_from_meta_blocks(
+        [{"type": "thinking", "text": "why", "metadata": {"thoughtSignature": "sig"}}],
+        source_message_provider_id="m1",
+        timestamp=None,
+    )
+
+    assert any("sig" in str(event.payload) for event in events)
