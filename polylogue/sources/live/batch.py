@@ -158,8 +158,13 @@ from polylogue.sources.live.convergence_debt import (
     convergence_debt_from_states,
     debt_by_path,
 )
-from polylogue.sources.live.convergence_outcome import record_convergence_outcome
-from polylogue.sources.live.cursor import CursorRecord, CursorStore
+from polylogue.sources.live.convergence_outcome import record_convergence_outcomes
+from polylogue.sources.live.cursor import (
+    ConvergenceDebtBatchEntry,
+    ConvergenceDebtWrite,
+    CursorRecord,
+    CursorStore,
+)
 from polylogue.sources.live.dedup import handle_schema_version_mismatch, handle_structural_database_error
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import (
@@ -1108,21 +1113,23 @@ class LiveBatchProcessor:
                 release_process_memory()
                 _accumulate_stage_timings(stage_timings, timings)
             debt_by_source_path = debt_by_path(convergence_debt)
+            outcome_items: list[tuple[Path, Iterable[ConvergenceDebt]]] = []
             for plan in append_result.succeeded:
                 succeeded_paths.add(plan.path)
                 if not await self._run_ops_write("cursor_append", self._record_append_cursor, plan):
                     stale_cursor_write_count += 1
                 cursor_fingerprint_read_bytes += self._last_append_cursor_proof_bytes
                 if not defer_convergence:
-                    await self._run_ops_write(
-                        "convergence_outcome",
-                        self._record_convergence_outcome,
-                        plan.path,
-                        debt_by_source_path.get(plan.path, ()),
-                    )
+                    outcome_items.append((plan.path, debt_by_source_path.get(plan.path, ())))
                 session_id = append_result.session_ids_by_path.get(plan.path)
                 if session_id:
                     updated_session_touches.append((plan.source_name, session_id))
+            if outcome_items:
+                await self._run_ops_write(
+                    "convergence_outcomes",
+                    self._record_convergence_outcomes,
+                    outcome_items,
+                )
             for plan in append_result.failed:
                 failed_paths.append(str(plan.path))
                 cursor_fingerprint_read_bytes += await self._run_ops_write(
@@ -1403,6 +1410,7 @@ class LiveBatchProcessor:
                 # once instead of opening two read-only connections per path
                 # inside the loop below.
                 with self._pinned_source_tier_evidence(full_result.succeeded):
+                    outcome_items = []
                     for path in full_result.succeeded:
                         succeeded_paths.add(path)
                         cursor_fingerprint_read_bytes += await self._run_ops_write(
@@ -1421,12 +1429,13 @@ class LiveBatchProcessor:
                         if self._last_cursor_write_stale:
                             stale_cursor_write_count += 1
                         if convergence_ran and not _source_tier_acquisition_required():
-                            await self._run_ops_write(
-                                "convergence_outcome",
-                                self._record_convergence_outcome,
-                                path,
-                                debt_by_source_path.get(path, ()),
-                            )
+                            outcome_items.append((path, debt_by_source_path.get(path, ())))
+                    if outcome_items:
+                        await self._run_ops_write(
+                            "convergence_outcomes",
+                            self._record_convergence_outcomes,
+                            outcome_items,
+                        )
                 for path in full_result.failed:
                     failed_paths.append(str(path))
                     cursor_fingerprint_read_bytes += await self._run_ops_write(
@@ -1520,16 +1529,8 @@ class LiveBatchProcessor:
             raw_compaction_runs = 1
             stage_timings["raw_compaction"] = time.perf_counter() - compaction_started
 
-        for deferred_path in deferred_paths:
-            # The attempt receipt folds these into ``failed_file_count`` and
-            # ``LiveBatchMetrics`` does not count them at all, so a deferral
-            # was readable neither as a failure nor as a success
-            # (polylogue-3r36h). Record it as what it is: deliberate
-            # bounded-backpressure debt, which lands as
-            # ``convergence_debt.status = 'deferred'``.
-            await self._run_ops_write(
-                "convergence_debt",
-                self._cursor.record_convergence_debt,
+        deferred_debt_writes = tuple(
+            ConvergenceDebtWrite(
                 stage="live_ingest_deferred",
                 subject_type="source_path",
                 subject_id=str(deferred_path),
@@ -1539,6 +1540,20 @@ class LiveBatchProcessor:
                     else "ingest deferred: no new authority-relevant append this pass"
                 ),
                 deferred=True,
+            )
+            for deferred_path in deferred_paths
+        )
+        if deferred_debt_writes:
+            # The attempt receipt folds these into ``failed_file_count`` and
+            # ``LiveBatchMetrics`` does not count them at all, so a deferral
+            # was readable neither as a failure nor as a success
+            # (polylogue-3r36h). Record it as what it is: deliberate
+            # bounded-backpressure debt, which lands as
+            # ``convergence_debt.status = 'deferred'``.
+            await self._run_ops_write(
+                "convergence_debt_batch",
+                self._cursor.apply_convergence_debt_batch,
+                (ConvergenceDebtBatchEntry(writes=deferred_debt_writes),),
             )
         retry_paths = failed_paths + [str(path) for path in deferred_paths]
         excluded_reasons: dict[str, int] = {}
@@ -2205,9 +2220,12 @@ class LiveBatchProcessor:
         if not updated:
             raise sqlite3.OperationalError(f"failed to persist cursor invalidation for {path}")
 
-    def _record_convergence_outcome(self, path: Path, debts: Iterable[ConvergenceDebt]) -> None:
+    def _record_convergence_outcomes(
+        self,
+        outcomes: Iterable[tuple[Path, Iterable[ConvergenceDebt]]],
+    ) -> None:
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
-        record_convergence_outcome(self._cursor, path, debts, archive_root=archive_root)
+        record_convergence_outcomes(self._cursor, outcomes, archive_root=archive_root)
 
     def _converge_paths(
         self,

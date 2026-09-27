@@ -8691,7 +8691,7 @@ async def test_live_append_plans_flush_in_bounded_groups(
         lambda paths, **kwargs: (paths, 0.0, {}, []),
     )
     monkeypatch.setattr(processor, "_record_append_cursor", lambda plan: True)
-    monkeypatch.setattr(processor, "_record_convergence_outcome", lambda path, debts: None)
+    monkeypatch.setattr(processor, "_record_convergence_outcomes", lambda outcomes: None)
     monkeypatch.setattr("polylogue.sources.live.batch._append_plan_group_ready", lambda plans: len(plans) >= 2)
 
     metrics = await processor.ingest_files(paths, emit_event=False)

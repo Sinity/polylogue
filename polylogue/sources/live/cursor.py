@@ -162,6 +162,35 @@ class LiveConvergenceDebt:
 
 
 @dataclass(frozen=True, slots=True)
+class ConvergenceDebtClear:
+    """Clear stale debt for one subject while preserving named stages."""
+
+    subject_type: str
+    subject_id: str
+    preserved_stages: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ConvergenceDebtWrite:
+    """Write one classified debt row as part of an admitted cursor batch."""
+
+    stage: str
+    subject_type: str
+    subject_id: str
+    error: str | None
+    deferred: bool = False
+    materializer_version: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ConvergenceDebtBatchEntry:
+    """Ordered clear/write operations that previously formed one path outcome."""
+
+    clears: tuple[ConvergenceDebtClear, ...] = ()
+    writes: tuple[ConvergenceDebtWrite, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class WholeArchiveConvergencePledge:
     """An owed archive-wide convergence flush from a chunked catch-up cycle."""
 
@@ -743,76 +772,148 @@ class CursorStore:
         that a second in-flight writer is about to invalidate -- the sibling
         race to polylogue-qug2's cursor lost-update, same root cause.
         """
-        now_ms = _required_epoch_ms(now)
 
         def write() -> None:
             with self._connect_ops() as conn:
                 conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
-                    """
-                    SELECT attempts, next_retry_at, last_error, status
-                    FROM convergence_debt
-                    WHERE stage = ? AND target_type = ? AND target_id = ?
-                    """,
-                    (stage, subject_type, subject_id),
-                ).fetchone()
-                existing_attempts = int(row[0]) if row is not None else 0
-                retry_at = convergence_debt_retry_at(
-                    conn,
-                    failure_count=max(existing_attempts, 1),
-                    error=error,
-                    subject_type=subject_type,
-                    subject_id=subject_id,
-                    archive_root=self._db_path.parent,
-                )
-                if row is not None and same_pending_convergence_debt(
-                    row[1],
-                    row[2],
-                    status=row[3],
-                    error=error,
-                    deferred=deferred,
-                    now=now,
-                    retry_at=retry_at,
-                ):
-                    return
-                expected_status = "deferred" if deferred else "failed"
-                status_only_transition = row is not None and row[2] == error and row[3] != expected_status
-                attempts_delta = (
-                    0
-                    if status_only_transition
-                    or (row is not None and retry_is_future(row[1], now=now) and row[2] == error)
-                    else 1
-                )
-                failure_count = existing_attempts + attempts_delta
-                if not status_only_transition:
-                    retry_at = convergence_debt_retry_at(
-                        conn,
-                        failure_count=max(failure_count, 1),
-                        error=error,
-                        subject_type=subject_type,
-                        subject_id=subject_id,
-                        archive_root=self._db_path.parent,
-                    )
-                add_archive_convergence_debt(
+                self._sync_convergence_debt_on_conn(
                     conn,
                     stage=stage,
-                    target_type=subject_type,
-                    target_id=subject_id,
-                    status="deferred" if deferred else "failed",
-                    priority=_convergence_debt_priority(
-                        stage=stage,
-                        subject_type=subject_type,
-                        subject_id=subject_id,
-                    ),
-                    attempts=attempts_delta,
-                    last_error=error,
-                    next_retry_at=row[1] if status_only_transition else retry_at.isoformat(),
+                    subject_type=subject_type,
+                    subject_id=subject_id,
+                    error=error,
                     materializer_version=materializer_version,
-                    created_at_ms=now_ms,
-                    updated_at_ms=now_ms,
+                    now=now,
+                    deferred=deferred,
                 )
 
         best_effort_cursor_write("archive ops convergence debt sync", write)
+
+    def _sync_convergence_debt_on_conn(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        stage: str,
+        subject_type: str,
+        subject_id: str,
+        error: str | None,
+        materializer_version: str | None,
+        now: str,
+        deferred: bool,
+    ) -> None:
+        """Apply one debt transition inside the caller's locked transaction."""
+        now_ms = _required_epoch_ms(now)
+        row = conn.execute(
+            """
+            SELECT attempts, next_retry_at, last_error, status
+            FROM convergence_debt
+            WHERE stage = ? AND target_type = ? AND target_id = ?
+            """,
+            (stage, subject_type, subject_id),
+        ).fetchone()
+        existing_attempts = int(row[0]) if row is not None else 0
+        retry_at = convergence_debt_retry_at(
+            conn,
+            failure_count=max(existing_attempts, 1),
+            error=error,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            archive_root=self._db_path.parent,
+        )
+        if row is not None and same_pending_convergence_debt(
+            row[1],
+            row[2],
+            status=row[3],
+            error=error,
+            deferred=deferred,
+            now=now,
+            retry_at=retry_at,
+        ):
+            return
+        expected_status = "deferred" if deferred else "failed"
+        status_only_transition = row is not None and row[2] == error and row[3] != expected_status
+        attempts_delta = (
+            0
+            if status_only_transition or (row is not None and retry_is_future(row[1], now=now) and row[2] == error)
+            else 1
+        )
+        failure_count = existing_attempts + attempts_delta
+        if not status_only_transition:
+            retry_at = convergence_debt_retry_at(
+                conn,
+                failure_count=max(failure_count, 1),
+                error=error,
+                subject_type=subject_type,
+                subject_id=subject_id,
+                archive_root=self._db_path.parent,
+            )
+        add_archive_convergence_debt(
+            conn,
+            stage=stage,
+            target_type=subject_type,
+            target_id=subject_id,
+            status=expected_status,
+            priority=_convergence_debt_priority(
+                stage=stage,
+                subject_type=subject_type,
+                subject_id=subject_id,
+            ),
+            attempts=attempts_delta,
+            last_error=error,
+            next_retry_at=row[1] if status_only_transition else retry_at.isoformat(),
+            materializer_version=materializer_version,
+            created_at_ms=now_ms,
+            updated_at_ms=now_ms,
+            manage_transaction=False,
+        )
+
+    def apply_convergence_debt_batch(
+        self,
+        entries: Iterable[ConvergenceDebtBatchEntry],
+    ) -> None:
+        """Apply ordered path outcomes in one ops transaction.
+
+        The per-entry clear-before-write order matches the former one-call-per-
+        path sequence, including paths that touch the same session subject.
+        """
+        batch = tuple(entries)
+        if not batch:
+            return
+        now = datetime.now(UTC).isoformat()
+
+        def write() -> None:
+            with self._connect_ops() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                for entry in batch:
+                    for clear in entry.clears:
+                        if clear.preserved_stages:
+                            placeholders = ",".join("?" for _ in clear.preserved_stages)
+                            conn.execute(
+                                f"""
+                                DELETE FROM convergence_debt
+                                WHERE target_type = ? AND target_id = ?
+                                  AND stage NOT IN ({placeholders})
+                                """,
+                                (clear.subject_type, clear.subject_id, *clear.preserved_stages),
+                            )
+                        else:
+                            conn.execute(
+                                "DELETE FROM convergence_debt WHERE target_type = ? AND target_id = ?",
+                                (clear.subject_type, clear.subject_id),
+                            )
+                    for debt_write in entry.writes:
+                        self._sync_convergence_debt_on_conn(
+                            conn,
+                            stage=debt_write.stage,
+                            subject_type=debt_write.subject_type,
+                            subject_id=debt_write.subject_id,
+                            error=debt_write.error,
+                            materializer_version=debt_write.materializer_version,
+                            now=now,
+                            deferred=debt_write.deferred,
+                        )
+
+        best_effort_cursor_write("archive ops convergence debt batch", write)
 
     def _clear_convergence_debt_from_ops(
         self,
