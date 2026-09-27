@@ -24,6 +24,7 @@ signed token and the stored binding still tie each handle to its scope.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -40,10 +41,7 @@ from polylogue.core.durable_fs import atomic_replace
 SNAPSHOT_TTL_MS = 60 * 60 * 1000
 MAX_GLOBAL_SNAPSHOTS = 64
 _SUFFIX = ".snapshot"
-# Handles this young are never eviction victims: a concurrent creator may have
-# published one and not yet returned its token. The global bound can then be
-# exceeded briefly by the number of simultaneous creations.
-IN_FLIGHT_GRACE_MS = 60_000
+_LOCK_NAME = ".create.lock"
 
 
 @dataclass(frozen=True)
@@ -142,15 +140,10 @@ class SnapshotStore:
             if modified_ms + SNAPSHOT_TTL_MS <= now_ms:
                 self._unlink(path)
 
-    def _prune(self, now_ms: int, *, reserve: int = 0, keep: str | None = None) -> None:
+    def _prune(self, now_ms: int, *, reserve: int = 0) -> None:
         """Expire idle handles and keep at most ``MAX_GLOBAL_SNAPSHOTS - reserve``.
 
-        ``keep`` names a handle that is never the eviction victim: names that
-        tie on the millisecond sort by random handle, so a prune after a write
-        could otherwise evict the snapshot just created. Creation prunes before
-        its write (reserving a slot) and again after it (keeping its own
-        handle), so concurrent creators converge back to the bound instead of
-        each trusting the same pre-write listing.
+        Called only under the creation lock, least recently used first.
         """
         self._sweep_orphaned_temporaries(now_ms)
         live = []
@@ -160,8 +153,7 @@ class SnapshotStore:
             else:
                 live.append(entry)
         # Least recently used first, so the survivors are the handles in use.
-        victims = [entry for entry in live if entry[2] != keep and entry[0] + IN_FLIGHT_GRACE_MS <= now_ms]
-        for entry in victims[: max(0, len(live) - (MAX_GLOBAL_SNAPSHOTS - reserve))]:
+        for entry in live[: max(0, len(live) - (MAX_GLOBAL_SNAPSHOTS - reserve))]:
             self._unlink(entry[3])
 
     def create(
@@ -188,10 +180,19 @@ class SnapshotStore:
         # keeps retained bytes proportional to distinct path content.
         encoded = zlib.compress(json.dumps(body, separators=(",", ":")).encode(), level=6)
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        # See _prune: reserve a slot before the write, then enforce the bound keeping this handle.
-        self._prune(now_ms, reserve=1)
-        atomic_replace(self.directory / f"{now_ms:013d}-{principal_key}-{handle}{_SUFFIX}", encoded, mode=0o600)
-        self._prune(now_ms, keep=handle)
+        # Creators serialize on one advisory lock, so the prune-and-publish
+        # pair sees every other creator's result and the bound holds without
+        # exempting anyone. The new name is stamped strictly after every
+        # existing one: a millisecond tie can never make it the LRU victim.
+        lock_fd = os.open(self.directory / _LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            existing = self._entries()
+            stamp = max(now_ms, existing[-1][0] + 1 if existing else now_ms)
+            self._prune(now_ms, reserve=1)
+            atomic_replace(self.directory / f"{stamp:013d}-{principal_key}-{handle}{_SUFFIX}", encoded, mode=0o600)
+        finally:
+            os.close(lock_fd)
         return SearchSnapshot(handle, self._decode_rows(binding.root, rows))
 
     @staticmethod

@@ -273,7 +273,6 @@ def test_production_callers_share_one_global_lru_capacity(
         assert [item.reference for item in _search(sources, continuation=token).items] == ["codex:b.jsonl"]
 
     monkeypatch.setattr(snapshot_store, "MAX_GLOBAL_SNAPSHOTS", 2)
-    monkeypatch.setattr(snapshot_store, "IN_FLIGHT_GRACE_MS", 0)
     frozen_clock.advance(1)
     # Using the oldest handle makes it the most recently used survivor.
     assert _search(sources, continuation=tokens[0]).outcome == "ok"
@@ -402,7 +401,6 @@ def test_snapshots_created_in_one_millisecond_never_evict_the_new_handle(
 ) -> None:
     """Anti-vacuity: pruning after the write lets a random-handle tie evict the snapshot just created."""
     monkeypatch.setattr(snapshot_store, "MAX_GLOBAL_SNAPSHOTS", 2)
-    monkeypatch.setattr(snapshot_store, "IN_FLIGHT_GRACE_MS", 0)
     root = tmp_path / "codex"
     first_file = _write(root / "a.jsonl", "needle a\n", 2)
     _write(root / "b.jsonl", "needle b\n", 1)
@@ -465,33 +463,6 @@ def test_concurrent_touch_of_one_handle_is_not_an_eviction(tmp_path: Path, monke
     assert [item.reference for item in resumed.items] == ["codex:b.jsonl"]
 
 
-def test_concurrent_creator_cannot_push_the_store_past_its_bound(
-    tmp_path: Path, frozen_clock: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Anti-vacuity: pruning only before the write leaves MAX + 1 files when another creator publishes meanwhile."""
-    monkeypatch.setattr(snapshot_store, "MAX_GLOBAL_SNAPSHOTS", 2)
-    monkeypatch.setattr(snapshot_store, "IN_FLIGHT_GRACE_MS", 0)
-    root = tmp_path / "codex"
-    first_file = _write(root / "a.jsonl", "needle a\n", 2)
-    _write(root / "b.jsonl", "needle b\n", 1)
-    sources = _sources(root)
-    _search(sources, scan_bytes=first_file.stat().st_size)
-    frozen_clock.advance(1)
-    from polylogue.core.durable_fs import atomic_replace as original
-
-    def publish_with_a_concurrent_creator(path: Path, payload: bytes, *, mode: int | None = None) -> None:
-        foreign = path.with_name(f"{path.name.split('-')[0]}-{'f' * 16}-{'e' * 32}.snapshot")
-        original(foreign, payload, mode=mode)
-        original(path, payload, mode=mode)
-
-    monkeypatch.setattr(
-        "polylogue.operations.raw_sessions.snapshot_store.atomic_replace", publish_with_a_concurrent_creator
-    )
-    token = _search(sources, scan_bytes=first_file.stat().st_size).continuation
-    assert len(_snapshot_files()) == 2
-    assert _search(sources, continuation=token).outcome == "ok"
-
-
 def test_raced_reads_are_charged_to_the_scan_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Anti-vacuity: an uncharged raced block lets scan_bytes=1 read every selected file."""
     root = tmp_path / "codex"
@@ -535,22 +506,42 @@ def test_long_reference_filter_fits_the_token_through_its_digest(tmp_path: Path)
         _search(sources, continuation=first.continuation)
 
 
-def test_a_fresh_handle_of_a_concurrent_creator_is_not_an_eviction_victim(
+def test_creation_bursts_hold_the_bound_and_keep_the_newest_handle(
     tmp_path: Path, frozen_clock: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Anti-vacuity: without the in-flight grace, a same-millisecond prune may delete another creator's new file."""
-    monkeypatch.setattr(snapshot_store, "MAX_GLOBAL_SNAPSHOTS", 1)
+    """Anti-vacuity: exempting young handles from pruning lets a same-millisecond burst exceed the bound."""
+    monkeypatch.setattr(snapshot_store, "MAX_GLOBAL_SNAPSHOTS", 2)
     root = tmp_path / "codex"
     first_file = _write(root / "a.jsonl", "needle a\n", 2)
     _write(root / "b.jsonl", "needle b\n", 1)
     sources = _sources(root)
-    tokens = [_search(sources, scan_bytes=first_file.stat().st_size).continuation for _ in range(8)]
-    for token in tokens:
+    for _ in range(5):
+        token = _search(sources, scan_bytes=first_file.stat().st_size).continuation
+        assert len(_snapshot_files()) <= 2
         assert _search(sources, continuation=token).outcome == "ok"
-    frozen_clock.advance(snapshot_store.IN_FLIGHT_GRACE_MS / 1000 + 1)
-    newest = _search(sources, scan_bytes=first_file.stat().st_size).continuation
-    assert len(_snapshot_files()) == 1
-    assert _search(sources, continuation=newest).outcome == "ok"
+
+
+def test_threaded_creators_serialize_and_respect_the_bound(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: without the creation lock, creators pruning from one stale listing leave more than the cap."""
+    import threading
+
+    monkeypatch.setattr(snapshot_store, "MAX_GLOBAL_SNAPSHOTS", 3)
+    store = snapshot_store.SnapshotStore(tmp_path / "store")
+    binding = snapshot_store.SnapshotBinding("p", "codex", "0" * 64, None, tmp_path)
+    handles: list[str] = []
+    barrier = threading.Barrier(8)
+
+    def create() -> None:
+        barrier.wait()
+        handles.append(store.create(binding, ()).handle)
+
+    threads = [threading.Thread(target=create) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(handles) == 8
+    assert len(list((tmp_path / "store").glob("*.snapshot"))) == 3
 
 
 def test_selected_path_replaced_by_a_fifo_is_a_gap_not_a_hang(tmp_path: Path) -> None:
@@ -582,3 +573,78 @@ def test_deep_shared_prefix_roster_is_retained_compactly(tmp_path: Path) -> None
     (snapshot,) = _snapshot_files()
     # ~3 KB of shared prefix on 2,000 rows is ~6 MB uncompressed.
     assert snapshot.stat().st_size < 200_000
+
+
+def test_memory_fanout_reports_a_finished_providers_skips_on_its_terminal_page(tmp_path: Path) -> None:
+    """Anti-vacuity: a ``None`` slot for the finished provider forgets its skipped file."""
+    claude = tmp_path / "claude"
+    locked = _write(claude / "a.jsonl", "needle locked\n", 2)
+    _write(claude / "b.jsonl", "needle claude\n", 1)
+    codex = tmp_path / "codex"
+    _write(codex / "c.jsonl", "needle codex\n", 1)
+    sources = (SessionSource("claude-code", claude), SessionSource("codex", codex))
+    locked.chmod(0)
+    try:
+        first = raw_operation(RawMemorySearch(query="needle", limit=1), sources=sources)
+        assert [item.reference for item in first.items] == ["claude-code:b.jsonl"]
+        assert first.source_cursors is not None
+        final = raw_operation(
+            RawMemorySearch(query="needle", limit=1, source_cursors=first.source_cursors), sources=sources
+        )
+    finally:
+        locked.chmod(0o600)
+    assert [item.reference for item in final.items] == ["codex:c.jsonl"]
+    assert final.outcome == "degraded"
+    assert not any((final.source_cursors or {}).values())
+    assert any("1 selected files were skipped on earlier pages" in gap for gap in final.coverage.gaps)
+
+
+def test_timeline_continuation_reports_earlier_skips_on_its_terminal_page(tmp_path: Path) -> None:
+    root = tmp_path / "codex"
+    locked = _write(root / "s3.jsonl", "needle 3\n", 3)
+    _write(root / "s2.jsonl", "needle 2\n", 2)
+    _write(root / "s1.jsonl", "needle 1\n", 1)
+    sources = _sources(root)
+    locked.chmod(0)
+    try:
+        page = raw_operation(RawTimeline(origins=["codex-session"], query="needle", limit=1), sources=sources)
+        pages = [page]
+        while page.continuation is not None:
+            page = raw_operation(
+                RawTimeline(origins=["codex-session"], query="needle", limit=1, continuation=page.continuation),
+                sources=sources,
+            )
+            pages.append(page)
+    finally:
+        locked.chmod(0o600)
+    assert [item.reference for p in pages for item in p.items] == ["codex:s2.jsonl", "codex:s1.jsonl"]
+    assert pages[-1].outcome == "degraded"
+    assert any("1 selected files were skipped on earlier pages" in gap for gap in pages[-1].coverage.gaps)
+
+
+def test_systemic_open_failure_pauses_the_scan_without_skipping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: treating EMFILE as file-specific marks the file skipped and can end the continuation."""
+    import errno
+
+    root = tmp_path / "codex"
+    _write(root / "a.jsonl", "needle a\n", 2)
+    _write(root / "b.jsonl", "needle b\n", 1)
+    sources = _sources(root)
+    real_open = os.open
+    failures = {"left": 1}
+
+    def open_with_descriptor_exhaustion(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        if str(path).endswith(".jsonl") and failures["left"]:
+            failures["left"] -= 1
+            raise OSError(errno.EMFILE, "Too many open files")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", open_with_descriptor_exhaustion)
+    paused = _search(sources)
+    assert paused.items == [] and paused.continuation is not None
+    assert any("transient system error" in gap and "EMFILE" in gap for gap in paused.coverage.gaps)
+    resumed = _search(sources, continuation=paused.continuation)
+    assert [item.reference for item in resumed.items] == ["codex:a.jsonl", "codex:b.jsonl"]
+    assert resumed.outcome == "ok" and resumed.coverage.gaps == []

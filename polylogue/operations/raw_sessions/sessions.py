@@ -4,6 +4,7 @@ import base64
 import binascii
 import builtins
 import codecs
+import errno
 import hashlib
 import hmac
 import json
@@ -38,6 +39,11 @@ MAX_GAP_ENTRIES = 16
 # v1 bound its scope to a digest of the whole enumerated population, so any
 # unrelated append invalidated it. v2 names a retained population snapshot.
 SNAPSHOT_CURSOR_VERSION = 2
+# Open failures that describe the selected path itself. Anything else (for
+# example EMFILE, ENFILE, ENOMEM, EIO) is systemic and must stay retryable.
+_FILE_SPECIFIC_OPEN_ERRORS = frozenset(
+    {errno.ENOENT, errno.ENOTDIR, errno.ELOOP, errno.EACCES, errno.EPERM, errno.ENXIO, errno.ENODEV, errno.EISDIR}
+)
 _SEARCH_STATE_KEYS = frozenset({"file", "offset", "line", "line_start", "after", "skipped"})
 
 
@@ -138,6 +144,10 @@ class _Gaps:
             self.entries.append(f"{reference}: {reason}")
         else:
             self.overflow += 1
+
+    @property
+    def count(self) -> int:
+        return len(self.entries) + self.overflow
 
     def as_list(self) -> builtins.list[str]:
         if self.overflow:
@@ -353,6 +363,7 @@ class SessionLogService:
         gaps = _Gaps()
         rows: builtins.list[dict[str, Any]] = []
         page_full_state: dict[str, int] | None = None
+        systemic_error: str | None = None
 
         def next_file(current: dict[str, int], *, skipped: bool = False) -> dict[str, int]:
             moved = {**current, "file": current["file"] + 1, "offset": 0, "line": 1, "line_start": 0}
@@ -374,7 +385,14 @@ class SessionLogService:
                 # Non-blocking and no-follow: a path replaced by a FIFO or a
                 # symlink after selection must become a gap, not a hang.
                 descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
-            except OSError:
+            except OSError as exc:
+                if exc.errno not in _FILE_SPECIFIC_OPEN_ERRORS:
+                    # Process- or system-wide (descriptor exhaustion, memory,
+                    # I/O): not this file's fault. Stop here without skipping
+                    # it, so the same continuation retries this file.
+                    systemic_error = f"{errno.errorcode.get(exc.errno or 0, 'OSError')}: {exc.strerror}"
+                    page_full_state = dict(state)
+                    break
                 gaps.add(reference, "selected file disappeared or became unreadable before it was searched")
                 state = next_file(state, skipped=True)
                 continue
@@ -465,7 +483,15 @@ class SessionLogService:
             "scanned_bytes": scanned,
             "truncated": truncated,
             "next_cursor": make_cursor(final_state) if truncated else None,
-            "gaps": gaps.as_list(),
+            "gaps": [
+                *gaps.as_list(),
+                *(
+                    [f"search paused by a transient system error ({systemic_error}); resume to retry"]
+                    if systemic_error
+                    else []
+                ),
+            ],
+            "skipped_now": gaps.count,
             "state": final_state,
         }
 
@@ -479,7 +505,10 @@ class SessionLogService:
         cursor_key: bytes | None = None,
         scan_bytes: int = DEFAULT_SCAN_BYTES,
         reference: str | None = None,
+        summarize_skipped: bool = True,
     ) -> dict[str, Any]:
+        """``summarize_skipped=False`` leaves the earlier-pages summary to a fan-out
+        caller, which reports it once on its own terminal page."""
         source = self._source(provider)
         if not query or len(query) > 1_000:
             raise SessionError("query must contain 1-1000 characters")
@@ -552,7 +581,7 @@ class SessionLogService:
 
         result = self._scan_literal(source, files, query, max_results, budget, state, make_cursor, False)
         gaps = [*result["gaps"], *issue_gaps]
-        if not result["truncated"] and prior_skipped:
+        if summarize_skipped and not result["truncated"] and prior_skipped:
             gaps.append(f"{prior_skipped} selected files were skipped on earlier pages of this continuation")
         return {
             "provider": provider,
@@ -561,7 +590,35 @@ class SessionLogService:
             "truncated": result["truncated"],
             "next_cursor": result["next_cursor"],
             "gaps": gaps,
+            "skipped_earlier": prior_skipped,
+            "skipped_now": result["skipped_now"],
         }
+
+    def completed_skips_token(self, provider: str, query: str, skipped: int, *, cursor_key: bytes) -> str | None:
+        """A continuation for a finished provider that still owes a skipped count.
+
+        A fan-out continuation outlives one provider's scan; its terminal page
+        must still report files that provider skipped. The token resumes an
+        empty retained population whose only state is that count.
+        """
+        source = self._source(provider)
+        query_sha256 = hashlib.sha256(query.encode("utf-8")).hexdigest()
+        binding = SnapshotBinding(self.scope, provider, query_sha256, None, source.root)
+        try:
+            handle = self._snapshots.create(binding, ()).handle
+        except OSError:
+            return None
+        scope = {
+            "principal": self.scope,
+            "provider": provider,
+            "query_sha256": query_sha256,
+            "reference_sha256": None,
+            "snapshot": handle,
+        }
+        state = {"file": 0, "offset": 0, "line": 1, "line_start": 0, "after": 0, "skipped": skipped}
+        return OpaqueSessionCursor(self.scope, cursor_key, "session-search").encode(
+            scope, state, version=SNAPSHOT_CURSOR_VERSION
+        )
 
     def timeline(
         self,
@@ -690,6 +747,7 @@ class _ObservedTimeline:
                 "truncated": result["truncated"],
                 "next_cursor": result["next_cursor"],
                 "gaps": result["gaps"],
+                "skipped_now": result["skipped_now"],
             }
 
         revision = self.revision

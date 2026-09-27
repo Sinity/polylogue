@@ -52,6 +52,10 @@ class MemoryService:
         matches: list[dict[str, Any]] = []
         next_cursors: dict[str, str | None] = {}
         gaps: list[str] = []
+        # Files each provider skipped on earlier pages (plus this page for a
+        # provider that finished here). Reported once, on the terminal page.
+        owed_skips: dict[str, int] = {}
+        earlier_skips = 0
         page_full = False
         for provider in requested:
             if provider in UNAVAILABLE_SOURCES:
@@ -118,6 +122,7 @@ class MemoryService:
                     cursor=source_cursors.get(provider),
                     cursor_key=cursor_key,
                     scan_bytes=scan_bytes,
+                    summarize_skipped=False,
                 )
             except StaleContinuationError:
                 # Typed: the caller must restart, which a generic memory error hides.
@@ -148,12 +153,27 @@ class MemoryService:
             )
             gaps.extend(f"{provider}: {gap}" for gap in result.get("gaps", ()))
             next_cursors[provider] = result["next_cursor"]
+            earlier_skips += result["skipped_earlier"]
+            if result["next_cursor"] is None and result["skipped_earlier"] + result["skipped_now"]:
+                owed_skips[provider] = result["skipped_earlier"] + result["skipped_now"]
             page_full = result["next_cursor"] is not None or len(matches) >= limit
+        # More pages exist only while some provider has a live cursor or has not
+        # started; reaching ``limit`` exactly on a provider's last match is not truncation.
+        truncated = any(source.get("coverage", {}).get("truncated") is True for source in sources)
+        if truncated and cursor_key is not None:
+            # A finished provider's skips must survive to the fan-out's terminal
+            # page, which a ``None`` slot would forget.
+            for provider, owed in owed_skips.items():
+                next_cursors[provider] = self.sessions.completed_skips_token(
+                    provider, query, owed, cursor_key=cursor_key
+                )
+        elif not truncated and earlier_skips:
+            gaps.append(f"{earlier_skips} selected files were skipped on earlier pages of this continuation")
         return {
             "query": query,
             "sources": sources,
             "matches": matches,
-            "truncated": page_full or any(source.get("coverage", {}).get("truncated") is True for source in sources),
+            "truncated": truncated,
             "next_cursors": next_cursors or None,
             "gaps": gaps,
         }
