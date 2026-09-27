@@ -301,7 +301,7 @@ def _process_tree_rss(
     max_processes: int = RSS_TREE_MAX_PROCESSES,
     max_task_ids: int = RSS_TREE_MAX_TASK_IDS,
     children_file_limit_bytes: int = RSS_PROC_READ_LIMIT_BYTES,
-) -> dict[str, int | bool] | None:
+) -> dict[str, Any] | None:
     """Sum RSS while following children reported by every scanned task ID.
 
     Procfs is a live view: thread and child sets can change during a sample.
@@ -315,6 +315,7 @@ def _process_tree_rss(
     measured = 0
     task_count = 0
     truncated = False
+    process_identities: list[dict[str, int]] = []
     while pending:
         if len(seen) >= max_processes:
             truncated = True
@@ -325,6 +326,16 @@ def _process_tree_rss(
             continue
         seen.add(pid)
         process_path = proc_root / str(pid)
+        try:
+            stat_text = (process_path / "stat").read_text(encoding="ascii")
+            stat_fields = stat_text[stat_text.rfind(")") + 2 :].split()
+            if len(stat_fields) > 19:
+                process_identities.append({"pid": pid, "start_time_ticks": int(stat_fields[19])})
+        except (FileNotFoundError, ProcessLookupError, PermissionError, ValueError, OSError):
+            # The PID can exit between discovery and identity capture. It is
+            # still safe to report the RSS sample; the survivor check remains
+            # bounded by identities actually captured while the tree lived.
+            pass
         status_path = process_path / "status"
         found_rss = False
         try:
@@ -411,10 +422,37 @@ def _process_tree_rss(
                 pending.append(child_pid)
                 queued.add(child_pid)
     return (
-        {"rss_bytes": rss_total, "process_count": measured, "task_count": task_count, "truncated": truncated}
+        {
+            "rss_bytes": rss_total,
+            "process_count": measured,
+            "task_count": task_count,
+            "truncated": truncated,
+            "process_identities": process_identities,
+        }
         if measured
         else None
     )
+
+
+def _owned_process_identity_state(pid: int, start_time_ticks: int, *, proc_root: Path = Path("/proc")) -> str | None:
+    """Return a matching process state, or ``None`` when that identity exited."""
+    try:
+        stat_text = (proc_root / str(pid) / "stat").read_text(encoding="ascii")
+    except FileNotFoundError:
+        return None
+    except (PermissionError, OSError):
+        return "unreadable"
+    stat_fields = stat_text[stat_text.rfind(")") + 2 :].split()
+    if len(stat_fields) <= 19:
+        return "unreadable"
+    try:
+        current_start_time = int(stat_fields[19])
+    except ValueError:
+        return "unreadable"
+    if current_start_time != start_time_ticks:
+        # PID reuse is a different process and is not owned by this daemon.
+        return None
+    return stat_fields[0] if stat_fields[0] != "Z" else None
 
 
 def _read_discovery_trace(path: Path, process_start: float, milestones: dict[str, object]) -> dict[str, object]:
@@ -507,6 +545,9 @@ def qualify(
             "POLYLOGUE_SITE_CONFIG": "",
             "POLYLOGUE_LOG_FORMAT": "json",
             "POLYLOGUE_LOG_FILE": str(event_log),
+            # workspace_env disables validation for unrelated pipeline tests.
+            # A cold daemon qualification must exercise the ordinary default.
+            "POLYLOGUE_SCHEMA_VALIDATION": "advisory",
             "PYTHONPATH": str(candidate_root),
         }
     )
@@ -546,6 +587,7 @@ def qualify(
             "python": sys.executable,
             "version": platform.python_version(),
         },
+        "schema_validation_mode": env["POLYLOGUE_SCHEMA_VALIDATION"],
         "fixture": {
             "rejected": rejected,
             "accepted": 3,
@@ -578,6 +620,9 @@ def qualify(
         "process_tree_rss_truncated_sample_count": 0,
         "process_tree_rss_peak_sample_truncated": None,
         "process_tree_rss_sampling_interval_target_ms": 250,
+        "process_tree_survivor_check": "pending" if rss_available else "unavailable",
+        "process_tree_survivors": [],
+        "process_tree_survivor_check_missing_reason": None if rss_available else "proc_children_unavailable",
         "process_tree_rss_limits": {
             "processes_per_sample": RSS_TREE_MAX_PROCESSES,
             "task_ids_per_sample": RSS_TREE_MAX_TASK_IDS,
@@ -610,8 +655,23 @@ def qualify(
     peak_tree_truncated = False
     rss_samples = 0
     rss_truncated_samples = 0
+    observed_process_identities: dict[int, int] = {}
     rss_stop = threading.Event()
     rss_thread: threading.Thread | None = None
+
+    def retain_tree_identities(tree_sample: dict[str, Any] | None) -> None:
+        if tree_sample is None:
+            return
+        identities = tree_sample.get("process_identities")
+        if not isinstance(identities, list):
+            return
+        for identity in identities:
+            if (
+                isinstance(identity, dict)
+                and isinstance(identity.get("pid"), int)
+                and isinstance(identity.get("start_time_ticks"), int)
+            ):
+                observed_process_identities.setdefault(identity["pid"], identity["start_time_ticks"])
 
     def sample_owned_tree(root_pid: int) -> None:
         nonlocal peak_tree_rss_bytes, peak_tree_process_count, peak_tree_task_count
@@ -619,6 +679,7 @@ def qualify(
         while not rss_stop.is_set():
             tree_rss = _process_tree_rss(root_pid)
             if tree_rss is not None:
+                retain_tree_identities(tree_rss)
                 rss_samples += 1
                 if tree_rss["truncated"]:
                     rss_truncated_samples += 1
@@ -823,6 +884,8 @@ def qualify(
         release.touch()
         if proc is not None:
             shutdown_start = time.monotonic()
+            if proc.poll() is None and receipt["process_tree_rss_available"]:
+                retain_tree_identities(_process_tree_rss(proc.pid))
             if proc.poll() is None:
                 proc.send_signal(signal.SIGINT)
             try:
@@ -837,6 +900,26 @@ def qualify(
                 # Each pass has strict process, task and file-size caps. Wait
                 # for the final bounded pass before publishing its counters.
                 rss_thread.join()
+            if receipt["process_tree_rss_available"]:
+                survivor_deadline = time.monotonic() + 5.0
+                survivors: dict[int, str] = {}
+                while True:
+                    survivors = {}
+                    for owned_pid, start_time_ticks in observed_process_identities.items():
+                        state = _owned_process_identity_state(owned_pid, start_time_ticks)
+                        if state is not None:
+                            survivors[owned_pid] = state
+                    if not survivors or time.monotonic() >= survivor_deadline:
+                        break
+                    time.sleep(0.05)
+                receipt["process_tree_survivor_check"] = "clear" if not survivors else "survivors"
+                receipt["process_tree_survivors"] = [
+                    {"pid": owned_pid, "state": state} for owned_pid, state in sorted(survivors.items())
+                ]
+                receipt["process_tree_survivor_check_missing_reason"] = None
+                if survivors:
+                    receipt["outcome"] = "shutdown_failure"
+                    error = f"owned daemon descendants remained after shutdown: {sorted(survivors)}"
             if rss_samples:
                 receipt["process_tree_rss_bytes"] = peak_tree_rss_bytes
                 receipt["process_tree_rss_process_count_at_peak"] = peak_tree_process_count
@@ -906,6 +989,7 @@ _INSTRUMENTED_BOOTSTRAP = """
 import json, os, threading, time
 from pathlib import Path
 import polylogue.sources.live.discovery as discovery
+import polylogue.operations.intake_adapters as intake_adapters
 
 trace_path = Path(os.environ['COLD_DISCOVERY_TRACE'])
 hold_discovery = os.environ.get('COLD_HOLD_DISCOVERY') == '1'
@@ -915,13 +999,18 @@ def record(name, **fields):
         stream.write(json.dumps(row, sort_keys=True) + '\\n')
 
 original_ordered = discovery._ordered_children
-original_steps = discovery._source_path_steps
+original_steps = intake_adapters._source_path_steps
+walk_state = threading.local()
 root_listing_recorded = False
 hold_released = threading.Event()
 
 def ordered_wrapper(source, directory, after, scandir=discovery.os.scandir, **kwargs):
     global root_listing_recorded
-    is_first_root = directory == source.root and not root_listing_recorded
+    is_first_root = (
+        getattr(walk_state, 'active', False)
+        and directory == source.root
+        and not root_listing_recorded
+    )
     if is_first_root:
         root_listing_recorded = True
         record('root_listing_start')
@@ -958,14 +1047,19 @@ def ordered_wrapper(source, directory, after, scandir=discovery.os.scandir, **kw
 
 def steps_wrapper(*args, **kwargs):
     first = True
-    for item in original_steps(*args, **kwargs):
-        if first:
-            first = False
-            record('first_yielded_entry', kind='accepted_path' if item is not None else 'step_without_accepted_path')
-        yield item
+    was_active = getattr(walk_state, 'active', False)
+    walk_state.active = True
+    try:
+        for item in original_steps(*args, **kwargs):
+            if first:
+                first = False
+                record('first_yielded_entry', kind='accepted_path' if item is not None else 'step_without_accepted_path')
+            yield item
+    finally:
+        walk_state.active = was_active
 
 discovery._ordered_children = ordered_wrapper
-discovery._source_path_steps = steps_wrapper
+intake_adapters._source_path_steps = steps_wrapper
 from polylogue.daemon.cli import main
 main()
 """

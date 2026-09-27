@@ -9,6 +9,13 @@ import pytest
 
 from tests.infra.daemon_cold_start import qualify, write_fixture, write_retained_measurement_receipt
 
+
+def _assert_owned_process_tree_stopped(receipt: dict[str, object]) -> None:
+    assert receipt["process_tree_survivors"] == []
+    expected = "clear" if receipt["process_tree_rss_available"] else "unavailable"
+    assert receipt["process_tree_survivor_check"] == expected
+
+
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.slow,
@@ -36,6 +43,8 @@ def test_empty_archive_discovers_rejected_prefix_and_publishes_exact_sessions(
         digest=digest,
         measure_discovery=rejected == 4096,
     )
+    assert receipt["schema_validation_mode"] == "advisory"
+    _assert_owned_process_tree_stopped(receipt)
     if rejected == 4096:
         report_file = request.config.getoption("polylogue_report_file", default=None)
         retained_path = write_retained_measurement_receipt(
@@ -89,6 +98,8 @@ def test_held_first_directory_walk_keeps_status_and_metrics_responsive(
     receipt = qualify(
         archive=archive, source=source, artifacts=workspace / "held-artifacts", rejected=600, digest=digest, held=True
     )
+    assert receipt["schema_validation_mode"] == "advisory"
+    _assert_owned_process_tree_stopped(receipt)
     assert receipt["outcome"] == "success"
     assert "discovering" in receipt["phase_coverage"]
     assert "discovery_first" in receipt["milestones_upper_bound_s"]
@@ -109,6 +120,8 @@ def test_malformed_last_session_cannot_produce_success_receipt(
         digest=digest,
         malformed_last=True,
     )
+    assert receipt["schema_validation_mode"] == "advisory"
+    _assert_owned_process_tree_stopped(receipt)
     assert receipt["outcome"] == "incomplete_population"
     assert receipt["verified_sessions"] == []
     assert receipt["candidate_sessions_unpublished"] == 2
