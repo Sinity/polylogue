@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.storage.sqlite.connection_profile import DB_TIMEOUT
+from polylogue.storage.sqlite.connection_profile import DB_TIMEOUT, open_readonly_connection
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
@@ -449,7 +449,9 @@ def open_verified_sqlite_read_connection(path: Path) -> Iterator[sqlite3.Connect
     """Open a read-only SQLite leaf through a no-follow directory descriptor."""
 
     with VerifiedAuditLeaf(path.parent, filename=path.name) as leaf:
-        connection = sqlite3.connect(leaf.sqlite_uri(readonly=True), uri=True)
+        # The verified child path preserves live WAL visibility. The declared
+        # profile also forbids write authority through ATTACH and PRAGMAs.
+        connection = open_readonly_connection(leaf.anchored_path, validate_schema=False)
         try:
             leaf.assert_unchanged()
             yield connection
