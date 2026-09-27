@@ -383,3 +383,26 @@ def test_a_published_cache_carries_no_staging_marker(monkeypatch: pytest.MonkeyP
     assert (shared / "3.11" / "module.db").is_file()
     assert not (shared / mypy_gate._STAGED).exists()
     assert not list(shared.parent.glob("cache.publish-*"))
+
+
+def test_a_cache_disabled_configuration_never_stamps_stale_modules(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Old module files from an incremental run do not make a cache-disabled check complete.
+
+    Anti-vacuity: decide completeness from the files present and the stale
+    ``3.11/old.db`` is stamped and published under the new configuration.
+    """
+    common = tmp_path / ".git"
+    common.mkdir()
+    monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
+    (tmp_path / "pyproject.toml").write_text("[tool.mypy]\nincremental = false\n", encoding="utf-8")
+    stale = tmp_path / ".cache" / "mypy" / "3.11"
+    stale.mkdir(parents=True)
+    (stale / "old.db").write_text("stale", encoding="utf-8")
+    _stub_checker(tmp_path, "exit 0\n")
+
+    assert mypy_gate.main(["--root", str(tmp_path)]) == 0
+
+    assert not mypy_gate._is_complete(tmp_path / ".cache" / "mypy", mypy_gate._input_key(tmp_path))
+    assert not (common / "polylogue-mypy" / "cache").exists()

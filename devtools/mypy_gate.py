@@ -35,6 +35,7 @@ waited up to 107 s for the lock.
 from __future__ import annotations
 
 import argparse
+import configparser
 import contextlib
 import fcntl
 import hashlib
@@ -112,6 +113,26 @@ def _config_contents(path: Path | None) -> object:
         except (tomllib.TOMLDecodeError, UnicodeDecodeError):
             pass
     return hashlib.sha256(raw).hexdigest()
+
+
+def _incremental_disabled(root: Path) -> bool:
+    """Whether the configuration mypy reads turns its module cache off.
+
+    Stale files from an earlier incremental run would still look like a
+    populated cache, so this is read from the configuration itself.
+    """
+    path = _config_file(root)
+    if path is None:
+        return False
+    if path.name == "pyproject.toml":
+        config = _config_contents(path)
+        return isinstance(config, dict) and config.get("incremental") is False
+    parser = configparser.ConfigParser()
+    try:
+        parser.read(path, encoding="utf-8")
+        return parser.has_option("mypy", "incremental") and not parser.getboolean("mypy", "incremental")
+    except (configparser.Error, ValueError, OSError):
+        return False
 
 
 def _input_key(root: Path) -> str:
@@ -227,7 +248,7 @@ def _check(mypy: Path, cache: Path, root: Path, key: str) -> int:
     returncode = subprocess.run([str(mypy), "--cache-dir", str(cache)], cwd=root, check=False).returncode
     # A configuration with ``incremental = false`` exits 0 without writing a
     # module cache; only a cache mypy actually populated is complete.
-    if returncode in _CACHE_COMPLETE_EXITS and _has_module_cache(cache):
+    if returncode in _CACHE_COMPLETE_EXITS and not _incremental_disabled(root) and _has_module_cache(cache):
         (cache / _STAMP).write_text(key, encoding="utf-8")
     return returncode
 
