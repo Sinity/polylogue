@@ -349,8 +349,10 @@ def read_thread_titles(
 ) -> dict[str, str]:
     """Return ``{thread_id: title}`` from the claimed titles in the graph.
 
-    Any failure (missing table, locked file) degrades to an empty mapping,
-    matching every other sidecar source in the title ladder.
+    Only a genuinely absent evidence table means "no titles". Any other read
+    failure (an interrupted or expired frame, a locked or unreadable file)
+    propagates: reporting it as absence would let ingest persist sessions
+    without their retained titles instead of retrying.
     """
     predicate, parameters = _scope_predicate(source_scope)
     base = f"""
@@ -387,12 +389,14 @@ def read_thread_titles(
                         [*parameters, *chunk_parameters],
                     ).fetchall()
                 )
-    except sqlite3.Error as exc:
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc):
+            raise
         emit(
-            "storage.agent_thread_state.titles_unreadable",
+            "storage.agent_thread_state.titles_absent",
             level=DEBUG,
-            outcome="unmeasured",
-            reason="the index tier is unreadable, so the title lane degrades to empty",
+            outcome="empty",
+            reason="the index tier has no work-evidence graph tables, so there are no retained titles",
             error_type=type(exc).__name__,
             error_detail=str(exc),
         )

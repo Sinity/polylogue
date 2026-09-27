@@ -1846,7 +1846,18 @@ function withProviderTransportOperation(provider, operation, { checkThrottle = t
   const result = prior.catch(() => undefined).then(async () => {
     if (checkThrottle) await requireProviderThrottleAvailability(provider);
     try {
-      return await operation();
+      const value = await operation();
+      // Some operations report a provider refusal as a resolved failure
+      // result rather than a throw; a rate limit there must still set the
+      // shared cooldown, or the next request contacts the provider during
+      // its advertised Retry-After.
+      if (value && value.ok === false && value.retry_after_seconds != null) {
+        const refusal = new Error(value.detail || "provider_rate_limited");
+        refusal.retryAfterSeconds = Number(value.retry_after_seconds) || null;
+        const classified = classifyBrowserActionFailure(refusal, refusal.retryAfterSeconds);
+        if (classified.outcome === "rate_limited") await recordProviderThrottle(provider, refusal, classified);
+      }
+      return value;
     } catch (error) {
       const classified = classifyBrowserActionFailure(error, error?.retryAfterSeconds || null);
       if (classified.outcome === "rate_limited" && !error?.providerThrottleApplied) {

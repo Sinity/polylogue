@@ -120,6 +120,9 @@ class ParseResult:
         # Tracks session IDs whose content changed so downstream
         # materialization can refresh derived session-insight rows explicitly.
         self._changed_session_ids: list[str] = []
+        # Unchanged sessions whose message FTS rows were found missing; the
+        # bulk repair after a batched run must cover them too.
+        self._fts_repair_session_ids: list[str] = []
         self.batch_observations: list[ParseBatchObservation] = []
         # Per-stage wall-clock totals (seconds) summed across every session
         # written this run, keyed `<prefix>.<stage>` (e.g.
@@ -140,6 +143,11 @@ class ParseResult:
     def changed_session_ids(self) -> tuple[str, ...]:
         """Session IDs whose persisted content changed during parsing."""
         return tuple(self._changed_session_ids)
+
+    @property
+    def fts_repair_session_ids(self) -> tuple[str, ...]:
+        """Session IDs whose message FTS rows need repair: changed or found missing."""
+        return tuple(dict.fromkeys((*self._changed_session_ids, *self._fts_repair_session_ids)))
 
     async def merge_result(
         self,
