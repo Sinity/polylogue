@@ -548,38 +548,11 @@ class FtsDerivationAdapter:
             conn.execute("BEGIN IMMEDIATE")
         try:
             current = self.input_for(conn, computed.key)
-            if current != computed:
+            if current != computed or not _schema_compatible(conn):
                 if owns_transaction:
                     conn.execute("ROLLBACK")
                 return False
-            if not _schema_compatible(conn):
-                if owns_transaction:
-                    conn.execute("ROLLBACK")
-                return False
-            if computed.key == GLOBAL_PARTITION:
-                raise ValueError("the global FTS key only retires docsize-backed orphan residue")
-            else:
-                rowids = {
-                    int(row[0])
-                    for row in conn.execute("SELECT rowid FROM blocks WHERE session_id = ?", (computed.key,))
-                }
-                rowids.update(
-                    int(row[0])
-                    for row in conn.execute(
-                        """
-                        SELECT i.rowid FROM messages_fts_identity AS i
-                        LEFT JOIN blocks AS b ON b.block_id = i.block_id
-                        WHERE i.block_id >= ? AND i.block_id < ?
-                          AND (b.block_id IS NULL OR b.session_id = ?)
-                        """,
-                        (*_session_block_id_range(computed.key), computed.key),
-                    )
-                )
-                for batch in _rowid_batches(conn, sorted(rowids)):
-                    placeholders = ", ".join("?" for _ in batch)
-                    conn.execute(f"DELETE FROM messages_fts WHERE rowid IN ({placeholders})", batch)
-                    conn.execute(f"DELETE FROM messages_fts_identity WHERE rowid IN ({placeholders})", batch)
-                self._insert_rows(conn, computed.key)
+            self._replace_rows(conn, computed.key)
             if owns_transaction:
                 conn.execute("COMMIT")
             return True
@@ -587,6 +560,46 @@ class FtsDerivationAdapter:
             if owns_transaction and conn.in_transaction:
                 conn.execute("ROLLBACK")
             raise
+
+    def replace_partition_in_transaction(self, conn: sqlite3.Connection, key: str) -> bool:
+        """Replace one partition inside the caller's open transaction.
+
+        The rows are rebuilt by SQL straight from ``blocks``, so the partition
+        input is only needed to detect drift between a read taken outside a
+        transaction and the write inside it. A caller that already holds the
+        transaction reads and writes under one snapshot: there is nothing to
+        drift, and hashing every block's text twice (``input_for`` before and
+        inside ``publish_partition``) is pure cost on the rebuild route
+        (polylogue-av5j1).
+        """
+        if not conn.in_transaction:
+            raise RuntimeError("replace_partition_in_transaction requires the caller's open transaction")
+        if not _schema_compatible(conn):
+            return False
+        self._replace_rows(conn, key)
+        return True
+
+    def _replace_rows(self, conn: sqlite3.Connection, key: str) -> None:
+        if key == GLOBAL_PARTITION:
+            raise ValueError("the global FTS key only retires docsize-backed orphan residue")
+        rowids = {int(row[0]) for row in conn.execute("SELECT rowid FROM blocks WHERE session_id = ?", (key,))}
+        rowids.update(
+            int(row[0])
+            for row in conn.execute(
+                """
+                SELECT i.rowid FROM messages_fts_identity AS i
+                LEFT JOIN blocks AS b ON b.block_id = i.block_id
+                WHERE i.block_id >= ? AND i.block_id < ?
+                  AND (b.block_id IS NULL OR b.session_id = ?)
+                """,
+                (*_session_block_id_range(key), key),
+            )
+        )
+        for batch in _rowid_batches(conn, sorted(rowids)):
+            placeholders = ", ".join("?" for _ in batch)
+            conn.execute(f"DELETE FROM messages_fts WHERE rowid IN ({placeholders})", batch)
+            conn.execute(f"DELETE FROM messages_fts_identity WHERE rowid IN ({placeholders})", batch)
+        self._insert_rows(conn, key)
 
     def _insert_rows(self, conn: sqlite3.Connection, key: str) -> None:
         if key == GLOBAL_PARTITION:
@@ -913,6 +926,8 @@ def replace_fts_partition_sync(conn: sqlite3.Connection, session_id: str) -> boo
     as daemon convergence, without a second repair SQL implementation.
     """
     adapter = FtsDerivationAdapter()
+    if conn.in_transaction:
+        return adapter.replace_partition_in_transaction(conn, session_id)
     return adapter.publish_partition(conn, adapter.input_for(conn, session_id))
 
 
@@ -942,6 +957,8 @@ def converge_fts_partition_sync(conn: sqlite3.Connection, session_id: str) -> bo
     adapter = FtsDerivationAdapter()
     if adapter.inspect_partition(conn, session_id).valid:
         return False
+    if conn.in_transaction:
+        return adapter.replace_partition_in_transaction(conn, session_id)
     return adapter.publish_partition(conn, adapter.input_for(conn, session_id))
 
 
