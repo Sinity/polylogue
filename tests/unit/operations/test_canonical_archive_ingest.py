@@ -162,6 +162,65 @@ async def test_canonical_ingest_keeps_individual_antigravity_pb_ownership_exact(
 
 
 @pytest.mark.asyncio
+async def test_canonical_ingest_keeps_sibling_provider_file_ownership_exact(
+    tmp_path: Path,
+    one_shot_workspace_env: dict[str, Path],
+) -> None:
+    root = tmp_path / "capture-files"
+    root.mkdir()
+    codex_path = root / "codex.jsonl"
+    codex_path.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in (
+                {"type": "session_meta", "payload": {"id": "owned-codex", "timestamp": "2026-01-01T00:00:00Z"}},
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "id": "message-1",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "Codex input"}],
+                    },
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    claude_path = root / "claude.jsonl"
+    claude_path.write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "uuid": "claude-user",
+                "sessionId": "owned-claude",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "message": {"role": "user", "content": "Claude input"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    archive_root = one_shot_workspace_env["archive_root"]
+    result = await parse_sources_archive(
+        archive_root,
+        [Source(name="codex", path=codex_path), Source(name="claude-code", path=claude_path)],
+        parse_workers=1,
+    )
+
+    assert result.counts.get("sessions", 0) == 2
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        recorded_paths = {Path(path) for (path,) in conn.execute("SELECT source_path FROM raw_sessions")}
+    assert recorded_paths == {codex_path.resolve(), claude_path.resolve()}
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        origins = {origin for (origin,) in conn.execute("SELECT origin FROM sessions")}
+    assert origins == {"codex-session", "claude-code-session"}
+    assert _source_conservation(archive_root).term("source_missing").count == 0
+
+
+@pytest.mark.asyncio
 async def test_canonical_ingest_records_a_resolvable_path_for_relative_session_jsonl(
     tmp_path: Path,
     one_shot_workspace_env: dict[str, Path],
