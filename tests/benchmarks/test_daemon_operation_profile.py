@@ -105,6 +105,25 @@ def _unexplained_server_residual_ms(server_ms: float, queue_ms: float, frame_ms:
     return max(0.0, server_ms - queue_ms - frame_ms - compute_ms)
 
 
+class _RequestTimingHandoff:
+    """Carry benchmark samples from daemon worker threads to their caller."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._samples: dict[str, float] = {}
+
+    def record(self, request_id: str, elapsed_ms: float) -> None:
+        with self._lock:
+            self._samples[request_id] = elapsed_ms
+
+    def take(self, request_id: str) -> float:
+        with self._lock:
+            try:
+                return self._samples.pop(request_id)
+            except KeyError as exc:
+                raise AssertionError(f"missing read-frame timing for request {request_id}") from exc
+
+
 def _direct_invalidation_summary(samples_ms: list[float]) -> dict[str, object]:
     """Summarize only directly timed invalidator calls; empty means unavailable."""
     ordered = sorted(samples_ms)
@@ -192,6 +211,68 @@ def test_mixed_load_residual_is_unexplained_and_invalidation_requires_direct_sam
     assert measured["available"] is True
     assert measured["samples"] == 3
     assert measured["p50_ms"] == 2.0
+
+
+def test_read_frame_timing_handoff_attributes_worker_delay_over_real_uds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Worker-thread frame samples reach the client and are removed from residual."""
+    import polylogue.operations.daemon_execution as daemon_execution
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    socket_path = daemon_socket_path(archive_root)
+
+    def seed(root: Path) -> None:
+        seed_benchmark_archive(root / "index.db", BenchmarkWorkloadTier.SMOKE)
+
+    with running_daemon_operations(
+        archive_root,
+        seed_archive=seed,
+        compute_workers=2,
+        compute_queue_units=8,
+        socket_path=socket_path,
+    ) as stack:
+        real_open = daemon_execution.open_operation_read  # type: ignore[attr-defined]
+        samples = _RequestTimingHandoff()
+        delayed_request_id = "synthetic-frame-delay"
+
+        @contextmanager
+        def timed_open(*args: Any, **kwargs: Any) -> Iterator[object]:
+            context = kwargs.get("execution_context")
+            request_id = str(getattr(context, "call_id", ""))
+            started = perf_counter()
+            if request_id == delayed_request_id:
+                sleep(0.15)
+            with real_open(*args, **kwargs) as snapshot:
+                samples.record(request_id, (perf_counter() - started) * 1000)
+                yield snapshot
+
+        monkeypatch.setattr(daemon_execution, "open_operation_read", timed_open)
+
+        def measure(request_id: str) -> tuple[float, float]:
+            client = DaemonClient(stack.client.socket_path, timeout_s=5)
+            response = client.operation(
+                "cli.query",
+                {"params": {"limit": 5, "offset": 0}},
+                request_id=request_id,
+            )
+            assert isinstance(response, dict) and response.get("error") is None
+            assert response.get("request_id") == request_id
+            timing = response.get("timing")
+            assert isinstance(timing, dict)
+            frame_ms = samples.take(request_id)
+            residual_ms = _unexplained_server_residual_ms(
+                float(timing["elapsed_ms"]), float(timing.get("queue_ms", 0.0)), frame_ms, 0.0
+            )
+            return frame_ms, residual_ms
+
+        control_frame_ms, control_residual_ms = measure("synthetic-frame-control")
+        delayed_frame_ms, delayed_residual_ms = measure(delayed_request_id)
+
+    assert delayed_frame_ms - control_frame_ms >= 100.0
+    assert abs(delayed_residual_ms - control_residual_ms) < 80.0
 
 
 @pytest.mark.benchmark
@@ -466,7 +547,7 @@ def test_bench_daemon_mixed_load(
         "quiet": deque(),
         "writer": deque(),
     }
-    frame_started = threading.local()
+    frame_timings = _RequestTimingHandoff()
 
     real_open_operation_read = daemon_execution.open_operation_read  # type: ignore[attr-defined]
 
@@ -476,9 +557,12 @@ def test_bench_daemon_mixed_load(
         # keywords (Path, EmbeddingRecipe, QueryExecutionContext, ...) that a
         # ``**kwargs: object`` forward cannot satisfy.
         started = perf_counter()
+        execution_context = kwargs.get("execution_context")
+        request_id = getattr(execution_context, "call_id", None)
+        assert isinstance(request_id, str) and request_id, "read frame lacks its request correlation id"
         with real_open_operation_read(*args, **kwargs) as snapshot:
             elapsed_ms = (perf_counter() - started) * 1000
-            frame_started.elapsed_ms = elapsed_ms
+            frame_timings.record(request_id, elapsed_ms)
             yield snapshot
 
     real_query_payload = daemon_reads._query_payload
@@ -709,13 +793,16 @@ def test_bench_daemon_mixed_load(
         client = DaemonClient(socket_path, timeout_s=5)
         result = _operation(client, "cli.query", {"params": params})
         client_ms = float(client.last_elapsed_ms or 0)
-        frame_started.client_ms = client_ms
+        request_id = result.get("request_id")
+        assert isinstance(request_id, str) and request_id
         timing = result.get("timing")
         server_ms = float(timing.get("elapsed_ms", client_ms)) if isinstance(timing, dict) else client_ms
         admission_queue_ms = float(timing.get("queue_ms", 0.0)) if isinstance(timing, dict) else 0.0
-        frame_ms = float(getattr(frame_started, "elapsed_ms", 0.0))
+        frame_ms = frame_timings.take(request_id)
         with phase_lock:
             current_phase = phase_name
+            if current_phase == "writer":
+                elapsed.append(int(client_ms))
             compute_ms = pending_compute[current_phase].popleft() if pending_compute[current_phase] else 0.0
             phase_samples[current_phase]["admission_queue"].append(max(0.0, admission_queue_ms))
             phase_samples[current_phase]["compute"].append(compute_ms)
@@ -743,7 +830,6 @@ def test_bench_daemon_mixed_load(
             with phase_lock:
                 phase_name = "writer"
             result = phase_read(params)
-            elapsed.append(int(getattr(frame_started, "client_ms", 0.0)))
             return result
 
         with ThreadPoolExecutor(max_workers=4) as pool:
