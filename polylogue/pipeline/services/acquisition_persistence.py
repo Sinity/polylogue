@@ -8,6 +8,7 @@ from polylogue.pipeline.services.acquisition_records import pending_pre_parse_ra
 from polylogue.pipeline.stage_models import AcquireResult
 from polylogue.security.excision_policy import ExcisionPolicySnapshot
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
+from polylogue.storage.cursor_state import CursorFailurePayload
 from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
 
 logger = get_logger(__name__)
@@ -21,8 +22,14 @@ async def persist_raw_record(
     policy_snapshot: ExcisionPolicySnapshot | None = None,
     prepared_observation: ArtifactObservationRecord | None = None,
     preparation_error: Exception | None = None,
+    failures: list[CursorFailurePayload] | None = None,
 ) -> None:
-    """Persist one raw record and update acquisition counters."""
+    """Persist one raw record and update acquisition counters.
+
+    A record that could not be stored is appended to ``failures`` so the
+    caller withholds its source's stat cursor: counting the error alone let
+    the cursor advance and every later pass skip the unstored file.
+    """
     try:
         admission = await repository.admit_raw(
             pending_pre_parse_raw_admission_request(record, policy_snapshot=policy_snapshot)
@@ -50,6 +57,8 @@ async def persist_raw_record(
             exc_info=True,
         )
         result.errors += 1
+        if failures is not None:
+            failures.append(CursorFailurePayload(path=record.source_path, error=f"{type(exc).__name__}: {exc}"))
 
 
 __all__ = ["persist_raw_record"]

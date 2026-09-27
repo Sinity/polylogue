@@ -69,9 +69,14 @@ from polylogue.core.raw_failure_evidence import (
 )
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.stage_admission import admit_stage_write
+from polylogue.core.storage_faults import (
+    ARCHIVE_SIDE_FAULTS,
+    raise_if_storage_fault,
+    storage_fault_kind,
+)
 from polylogue.core.timestamp_authority import timestamp_millis
 from polylogue.core.write_hold import WriteHoldBudgetError, check_write_hold_budget
-from polylogue.logging import WARNING, emit, get_logger
+from polylogue.logging import ERROR, WARNING, bind, emit, get_logger
 from polylogue.pipeline.batch_policy import WriteDestination, select_cold_build_shape
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.ingest_outcomes import (
@@ -709,6 +714,27 @@ class _ArchiveFullWriteResult:
     write_hold_exhausted: bool = False
 
 
+@dataclass(slots=True)
+class _OpenIngestAttempt:
+    """The ``ingest_attempts`` row one ``_ingest_files`` call opened, until it is finished.
+
+    ``scope`` holds the attempt's correlation binding: once the row exists,
+    every event emitted inside the attempt -- across ``asyncio.to_thread`` and
+    the writer handoff, which copy the context -- carries its ``attempt_id``,
+    the key of ``ingest_attempts`` and ``daemon_stage_events``. The caller
+    that created the holder closes the scope when the attempt returns or
+    escapes.
+    """
+
+    attempt_id: str | None = None
+    finished: bool = False
+    scope: ExitStack = field(default_factory=ExitStack)
+
+    def opened(self, attempt_id: str) -> None:
+        self.attempt_id = attempt_id
+        self.scope.enter_context(bind(attempt_id=attempt_id))
+
+
 class LiveBatchProcessor:
     """Run the daemon live ingest batch path without filesystem watching."""
 
@@ -949,15 +975,71 @@ class LiveBatchProcessor:
         synchronous archive-publication worker, where its thread-local scope
         cannot leak over page planning, parsing, or convergence.
         """
-        return await self._ingest_files(
-            paths,
-            queued_file_count=queued_file_count,
-            skipped_file_count=skipped_file_count,
-            emit_event=emit_event,
-            max_pass_seconds=max_pass_seconds,
-            whole_archive_convergence=whole_archive_convergence,
-            defer_convergence=defer_convergence,
+        attempt = _OpenIngestAttempt()
+        with attempt.scope:
+            try:
+                return await self._ingest_files(
+                    paths,
+                    queued_file_count=queued_file_count,
+                    skipped_file_count=skipped_file_count,
+                    emit_event=emit_event,
+                    max_pass_seconds=max_pass_seconds,
+                    whole_archive_convergence=whole_archive_convergence,
+                    defer_convergence=defer_convergence,
+                    open_attempt=attempt,
+                )
+            except Exception as exc:
+                await self._finish_escaped_attempt(attempt, exc)
+                raise_if_storage_fault(exc)
+                raise
+
+    async def _finish_escaped_attempt(self, attempt: _OpenIngestAttempt, exc: Exception) -> None:
+        """Close the attempt row an escaping exception left ``running``.
+
+        Lock contention, a storage fault or an unexpected defect can leave the
+        batch before its ordinary finish. Without this the row stays
+        ``running`` -- status reports the page as still in flight -- until the
+        next daemon start relabels it ``interrupted``, which is not what
+        happened. The classification is the same one the in-batch handlers
+        use. If the ops tier itself refuses the write (it may share the full
+        disk), the refusal is reported and the original exception still
+        propagates unchanged.
+        """
+        if attempt.attempt_id is None or attempt.finished:
+            return
+        disposition = classify_archive_write_exception(exc)
+        fault = storage_fault_kind(exc)
+        emit(
+            "live.ingest.attempt_escaped",
+            level=ERROR if fault is not None else WARNING,
+            outcome="error",
+            reason=(f"storage_fault.{fault.value}" if fault is not None else disposition.outcome_code),
+            attempt_id=attempt.attempt_id,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
         )
+        try:
+            await self._run_ops_write(
+                "attempt_finish",
+                self._cursor.finish_ingest_attempt,
+                attempt.attempt_id,
+                status="failed",
+                phase="failed",
+                error=f"{type(exc).__name__}: {exc}",
+                disposition=disposition,
+            )
+        except Exception as finish_exc:
+            emit(
+                "live.ingest.attempt_finish_failed",
+                level=ERROR,
+                outcome="error",
+                reason="ops_write_refused",
+                attempt_id=attempt.attempt_id,
+                error_type=type(finish_exc).__name__,
+                error_detail=str(finish_exc),
+            )
+        else:
+            attempt.finished = True
 
     async def _ingest_files(
         self,
@@ -969,6 +1051,7 @@ class LiveBatchProcessor:
         max_pass_seconds: float | None = None,
         whole_archive_convergence: bool = True,
         defer_convergence: bool = False,
+        open_attempt: _OpenIngestAttempt | None = None,
     ) -> LiveBatchMetrics:
         """Body of :meth:`ingest_files`, with each ops write separately admitted."""
         authorization = self.require_cursor_authority(paths)
@@ -1002,6 +1085,8 @@ class LiveBatchProcessor:
             input_bytes=input_bytes,
             queued_file_count=queued_file_count if queued_file_count is not None else len(paths),
         )
+        if open_attempt is not None:
+            open_attempt.opened(attempt_id)
         await self._record_attempt_progress_admitted(
             attempt_id,
             phase="planning",
@@ -1367,6 +1452,10 @@ class LiveBatchProcessor:
                         # poison payload. Let LiveWatcher requeue the source
                         # group without advancing or excluding its cursors.
                         raise
+                    # A full disk, I/O error or corrupt page fails every file
+                    # in the group the same way; marking them failed would
+                    # back good inputs off into quarantine.
+                    raise_if_storage_fault(exc)
                     logger.warning("live.watcher: batch failed for %s: %s", source_name, exc)
                     attempt_disposition = classify_archive_write_exception(exc)
                     for path in source_paths:
@@ -1715,6 +1804,8 @@ class LiveBatchProcessor:
             error="; ".join(retry_paths[:3]) if retry_paths else None,
             disposition=final_disposition,
         )
+        if open_attempt is not None:
+            open_attempt.finished = True
         timing_items = sorted(metrics.stage_timings_s.items(), key=lambda item: (-item[1], item[0]))
         timing_map: dict[str, float] = {}
         for name, seconds in timing_items[:12]:
@@ -3179,7 +3270,11 @@ class LiveBatchProcessor:
                         ),
                     )
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
-                except OSError:
+                except OSError as exc:
+                    # A full or read-only archive refuses the copy for every
+                    # file alike; only a source-side read failure is this
+                    # file's own.
+                    raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
                     failed.append(path)
                     continue
                 source_payload_read_bytes += blob_size
@@ -3219,7 +3314,11 @@ class LiveBatchProcessor:
                         ),
                     )
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
-                except OSError:
+                except OSError as exc:
+                    # A full or read-only archive refuses the copy for every
+                    # file alike; only a source-side read failure is this
+                    # file's own.
+                    raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
                     failed.append(path)
                     continue
                 source_payload_read_bytes += blob_size
@@ -3262,7 +3361,11 @@ class LiveBatchProcessor:
                         ),
                     )
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
-                except OSError:
+                except OSError as exc:
+                    # A full or read-only archive refuses the copy for every
+                    # file alike; only a source-side read failure is this
+                    # file's own.
+                    raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
                     failed.append(path)
                     continue
                 source_payload_read_bytes += blob_size
@@ -3307,7 +3410,11 @@ class LiveBatchProcessor:
                         ),
                     )
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
-                except OSError:
+                except OSError as exc:
+                    # A full or read-only archive refuses the copy for every
+                    # file alike; only a source-side read failure is this
+                    # file's own.
+                    raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
                     failed.append(path)
                     continue
                 source_payload_read_bytes += blob_size
@@ -4535,6 +4642,26 @@ class LiveBatchProcessor:
                                 provider=provider,
                             )
                         raise
+                    if storage_fault_kind(exc) is not None:
+                        # Storage refused the write: recording a parse failure
+                        # on the raw would pin an infrastructure fault on the
+                        # input. Leave the raw pending, as for contention; if
+                        # the same storage refuses that too, the fault that
+                        # caused it is still the one reported.
+                        if provider is not None and source_raw_id is not None:
+                            try:
+                                reset_transient_raw_parse_state(archive, source_raw_id, provider=provider)
+                            except Exception as reset_exc:
+                                emit(
+                                    "live.ingest.raw_state_reset_failed",
+                                    level=ERROR,
+                                    outcome="error",
+                                    reason="storage_fault",
+                                    raw_id=source_raw_id,
+                                    error_type=type(reset_exc).__name__,
+                                    error_detail=str(reset_exc),
+                                )
+                        raise_if_storage_fault(exc)
                     if provider is not None and source_raw_id is not None:
                         preserve_existing_failure_evidence = False
                         if provider is Provider.UNKNOWN and _is_json_stream_decode_error(exc):

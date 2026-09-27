@@ -20,6 +20,7 @@ from polylogue.archive.revision_authority import (
 from polylogue.core.degraded import degraded_reason
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.storage_faults import raise_if_storage_fault
 from polylogue.logging import get_logger
 from polylogue.sources.artifact_observations import record_session_artifact_observation
 from polylogue.sources.live.archive_open import _open_archive_for_live_write, _source_tier_acquisition_required
@@ -464,6 +465,10 @@ def _ingest_append_plans_archive(
                         if provider is not None and raw_id is not None:
                             reset_transient_raw_parse_state(archive, raw_id, provider=provider)
                         raise
+                    # A full disk, I/O error or corrupt page is not this
+                    # append's defect: marking the raw failed would pin it on
+                    # the input (and write to the storage that just failed).
+                    raise_if_storage_fault(exc)
                     if provider is not None and raw_id is not None:
                         archive.mark_raw_parse_failed(
                             raw_id,
@@ -475,6 +480,7 @@ def _ingest_append_plans_archive(
     except Exception as exc:
         if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
             raise
+        raise_if_storage_fault(exc)
         logger.warning("live.watcher: archive append ingest failed: %s", exc)
         return _AppendResult(succeeded=[], failed=plans, worker_count=0, stage_timings_s=timings)
     return _AppendResult(
