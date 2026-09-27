@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from polylogue.daemon.convergence import (
@@ -33,9 +34,26 @@ class ComposedSessionProfiles:
     callback: SessionProfileCallback
     promoted_callback: Callable[[], Awaitable[DerivationReport]]
     maintenance: SessionInsightMaintenance
+    #: Whether the archive-wide audit sweep still has domains to finish.
+    audit_pending: Callable[[], bool] = field(default=lambda: False)
 
     async def __call__(self, scope: Sequence[str] | None) -> DerivationReport:
         return await self.callback(scope)
+
+    async def converge_backlog(self, budget_s: float) -> DerivationReport:
+        """Run bounded passes back to back until the audit sweep finishes.
+
+        Each pass keeps its page and publication bounds, so no writer hold
+        grows; what changes is that a promoted generation's sweep no longer
+        advances one bounded pass per periodic tick. At 64 keys per pass and
+        three domains that was one minute of wall time per 64 sessions per
+        domain, whatever the writer and compute had free.
+        """
+        deadline = time.monotonic() + budget_s
+        report = await self.callback(None)
+        while self.audit_pending() and time.monotonic() < deadline:
+            report = await self.callback(None)
+        return report
 
     async def converge_promoted(self) -> DerivationReport:
         return await self.promoted_callback()
@@ -141,4 +159,5 @@ def compose_session_profile_callback(
         converge,
         converge_promoted,
         make_session_insight_maintenance(owner, index_db_path=index_path, archive_root=archive_root),
+        audit_pending=lambda: audit_index < len(audit_domains),
     )
