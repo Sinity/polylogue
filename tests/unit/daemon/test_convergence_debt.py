@@ -13,6 +13,7 @@ real writer, the real ``_drain_convergence_debt_once``.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,13 +22,14 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
+from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
-from tests.infra.replay_lineage import LineageGraph, LineageNode, seed_lineage_graph
+from tests.infra.replay_lineage import LineageGraph, LineageNode, codex_lineage_payload, seed_lineage_graph
 
 CHILD = "codex-session:s01"
 PARENT = "codex-session:s00"
@@ -164,6 +166,66 @@ def test_lineage_prefix_debt_survives_live_contradiction(truncated_child: Path) 
     assert "identity contradiction" in error
     assert "'s00'" in error
     assert "returned False" not in error
+
+
+def _composed_texts(root: Path, session_id: str) -> list[str | None]:
+    from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
+
+    with _index(root) as conn:
+        envelope = read_archive_session_envelope(conn, session_id)
+        return [message.blocks[0].text if message.blocks else None for message in envelope.messages]
+
+
+def test_stranded_branch_point_debt_recomposes_the_child_from_its_raw(tmp_path: Path) -> None:
+    """polylogue-gy2yu end to end: a shortened parent re-acquisition strands a
+    child, and the drain restores the child's complete composed transcript.
+
+    The child's own raw physically replays the parent's prefix, so the message
+    the parent dropped is still retained evidence. Replaying the child aligns it
+    against the parent's *current* transcript and keeps the dropped message as
+    child-owned content.
+
+    Anti-vacuity: drop ``anchored_stranded_ids`` from the writer's residual (no
+    debt is recorded, so the drain does nothing and the child stays truncated),
+    or skip the replay in ``recompose_session_prefix`` (the row survives and the
+    composed read stays short). Either reds the final assertions.
+    """
+    from polylogue.daemon import cli as daemon_cli
+
+    root = tmp_path / "archive"
+    seed_lineage_graph(
+        root,
+        LineageGraph(
+            nodes=(
+                LineageNode(native_id="s00", parent_native_id=None, tail_length=3),
+                LineageNode(native_id="s01", parent_native_id="s00", tail_length=2),
+            ),
+            write_order=(0, 1),
+        ),
+    )
+    backfill_historical_revision_evidence(root)
+    complete = ["s00-tail-0", "s00-tail-1", "s00-tail-2", "s01-tail-0", "s01-tail-1"]
+    assert _composed_texts(root, CHILD) == complete
+    assert _debt(root) == []
+
+    # The parent is re-acquired with the message the child branched after
+    # rewritten under a new native id, so the child's branch point names a row
+    # the replacement transcript no longer has.
+    rewritten = codex_lineage_payload("s00", ["s00-tail-0", "s00-tail-1", "s00-tail-2-rewritten"])
+    rewritten = rewritten.replace(b'"id":"m2"', b'"id":"m2-rewritten"')
+    (parent_session,) = parse_payload(
+        Provider.CODEX, [json.loads(line) for line in rewritten.splitlines()], "s00", source_path="s00.jsonl"
+    )
+    _write(root, parent_session)
+    assert _composed_texts(root, PARENT) == ["s00-tail-0", "s00-tail-1", "s00-tail-2-rewritten"]
+    assert _composed_texts(root, CHILD) != complete, "the fixture must strand the child"
+    assert [(row["stage"], row["target_id"]) for row in _debt(root)] == [("lineage_prefix_recompose", CHILD)]
+
+    _make_retry_due(root)
+    assert daemon_cli._drain_convergence_debt_once(root / "index.db") == 1
+
+    assert _composed_texts(root, CHILD) == complete
+    assert _debt(root) == []
 
 
 def test_hook_paste_debt_is_retried_for_its_session_and_cleared(tmp_path: Path) -> None:

@@ -358,6 +358,53 @@ def test_matched_session_mutation_runs_under_the_daemon_authority(
     assert _operation_runs(archive_root) == [(operation_name, "cli", "completed", 2)]
 
 
+def test_matched_session_tag_removal_runs_under_the_daemon_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``mark --tag-remove`` retracts through the daemon under the CLI surface.
+
+    The add payload lowers onto ``mutate-bulk-tag-sessions``; the remove
+    payload lowers onto the per-target ``mutate-remove-tag`` actuator, whose
+    surface boundary is declared separately.
+
+    Anti-vacuity: drop ``allowed_surfaces`` from the ``mutate-remove-tag``
+    spec and the API-only back-fill refuses the ``cli`` principal with
+    ``SurfaceDeniedError``, so the removal never completes (polylogue-7jxps).
+    """
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    session_ids = _seed_delete_authority_archive(archive_root, 2)
+    server_errors: queue.SimpleQueue[str] = queue.SimpleQueue()
+
+    with _delete_authority_daemon(monkeypatch, archive_root, server_error_sink=server_errors) as client:
+        try:
+            added = client.operation_to_completion(
+                "mutation.session.tag",
+                {"session_ids": list(session_ids), "tags": ["triage"]},
+                archive_root=str(archive_root),
+            )
+            removed = client.operation_to_completion(
+                "mutation.session.tag",
+                {"session_ids": list(session_ids), "remove_tags": ["triage"]},
+                archive_root=str(archive_root),
+            )
+        except DaemonMutationIndeterminateError as exc:
+            try:
+                server_error = server_errors.get(timeout=1)
+            except queue.Empty:
+                raise exc from None
+            pytest.fail(f"machine operation handler failed:\n{server_error}")
+
+    assert added is not None and added["outcome"] == "completed", added
+    assert removed is not None
+    assert removed.get("error") is None, removed
+    assert removed["outcome"] == "completed"
+    assert removed["result"]["affected_count"] == 2
+    runs = _operation_runs(archive_root)
+    assert ("mutate-remove-tag", "cli", "completed", 1) in runs, runs
+    assert sum(1 for run in runs if run[0] == "mutate-remove-tag") == 2
+
+
 def test_matched_session_mutation_refuses_a_malformed_selection(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
