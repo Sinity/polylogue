@@ -249,12 +249,10 @@ def _produced_topology_dimensions(sessions: list[ParsedSession]) -> set[str]:
         for message in session.messages:
             if message.parent_message_provider_id or message.parent_message_position is not None:
                 produced.add("message_parent")
-            if (
-                message.branch_index
-                or message.variant_index is not None
-                or message.is_active_path is not None
-                or message.is_active_leaf is not None
-            ):
+            # A linear transcript is normalized to variant 0 on the active
+            # path; only an off-path message or a non-zero branch or variant
+            # is branch evidence.
+            if message.branch_index or message.variant_index or message.is_active_path is False:
                 produced.add("message_branch_state")
     return produced
 

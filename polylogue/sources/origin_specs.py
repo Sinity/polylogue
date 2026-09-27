@@ -3094,7 +3094,20 @@ def _otel_genai_spec() -> OriginSpec:
         tool_outcome_unknown_reasons=frozenset(
             {ToolResultUnknownReason.NOT_REPORTED, ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT}
         ),
-        topology_capabilities=_no_topology_capabilities(Origin.OTEL_GENAI),
+        topology_capabilities=TopologyCapabilities(
+            message_parent=TopologyCapability(
+                "positive-derived",
+                (
+                    "otel_genai._messages_for_span: span.parentSpanId -> parent span output:0",
+                    "otel_genai._messages_for_span: tool-result -> its tool-use message",
+                ),
+                "message parents are derived from the OTLP span tree, not asserted per message",
+            ),
+            message_branch_state=_absent_topology("OTLP GenAI spans carry no branch-state field"),
+            session_parent_target=_absent_topology("OTLP GenAI spans carry no session-parent target"),
+            inheritance_branch_point=_absent_topology("OTLP GenAI spans carry no inheritance boundary"),
+            parent_dispatch=_absent_topology("OTLP GenAI spans carry no parent-dispatch identity"),
+        ),
     )
 
 
