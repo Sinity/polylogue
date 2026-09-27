@@ -14,6 +14,7 @@ from pathlib import Path
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_FORMAT_FLOOR_VERSION, ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 ARCHIVE_FORMAT_MARKER_NAME = ".polylogue-format.json"
 ARCHIVE_FORMAT_LINEAGE = "polylogue.archive-format.v2"
@@ -219,7 +220,7 @@ def _archive_tier_versions() -> dict[str, int]:
 
 def _tier_schema_fingerprint(path: Path) -> str:
     try:
-        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        connection = open_readonly_connection(path, validate_schema=False)
     except sqlite3.Error as exc:
         raise RuntimeError(f"cannot inspect archive format tier: {path}") from exc
     try:
@@ -318,7 +319,7 @@ def _plan_tier(
 
 def _read_user_version(path: Path) -> int | None:
     try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn = open_readonly_connection(path, validate_schema=False)
     except sqlite3.Error:
         return None
     try:

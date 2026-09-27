@@ -43,6 +43,7 @@ from polylogue.storage.archive_readiness import (
 )
 from polylogue.storage.raw_retention import RawFrontierIntegrityProjection, raw_frontier_integrity_projection
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 # Re-export canonical types for downstream consumers.
 ReadinessCheck = OutcomeCheck
@@ -187,9 +188,7 @@ def _config_sources(config: Config) -> list[Any]:
 @contextmanager
 def _open_readiness_probe_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
     """Open a read-only probe connection over the archive."""
-    from polylogue.storage.sqlite.connection import READ_DB_TIMEOUT
-
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=READ_DB_TIMEOUT)
+    conn = open_readonly_connection(db_path, validate_schema=False)
     conn.row_factory = sqlite3.Row
     try:
         yield conn

@@ -265,7 +265,7 @@ def _check_tier_schema(archive_root: Path, _sample_limit: int) -> ArchiveVerific
         else:
             entry["exists"] = True
             try:
-                conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+                conn = open_readonly_connection(path, validate_schema=False)
                 try:
                     row = conn.execute("PRAGMA user_version").fetchone()
                 finally:
