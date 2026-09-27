@@ -915,8 +915,10 @@ def _compaction_summary_events(chat_messages: list[object], kept_message_ids: se
     # One event per surviving message: normalize_chat_messages collapses
     # duplicate records of one native id to the richest revision, so a summary
     # on a superseded duplicate must not produce a second event.
-    by_message: dict[str | None, tuple[Mapping[str, object], tuple[str, str | None, str | None]]] = {}
-    for item in chat_messages:
+    # An ID-less record is its own message (the normalizer keeps it under a
+    # content-derived identity), so it is keyed by its list index instead.
+    by_message: dict[str | int, tuple[str | None, Mapping[str, object], tuple[str, str | None, str | None]]] = {}
+    for index, item in enumerate(chat_messages):
         if not isinstance(item, Mapping):
             continue
         found = _compaction_summary_text(item)
@@ -925,11 +927,12 @@ def _compaction_summary_events(chat_messages: list[object], kept_message_ids: se
         message_id = _first_identity_field(item, "uuid", "id", "message_id", "messageId", "provider_message_id")
         if message_id is not None and message_id not in kept_message_ids:
             continue
-        current = by_message.get(message_id)
-        if current is None or len(found[0]) > len(current[1][0]):
-            by_message[message_id] = (item, found)
+        key: str | int = message_id if message_id is not None else index
+        current = by_message.get(key)
+        if current is None or len(found[0]) > len(current[2][0]):
+            by_message[key] = (message_id, item, found)
     events: list[ParsedSessionEvent] = []
-    for message_id, (item, found) in by_message.items():
+    for message_id, item, found in by_message.values():
         summary_text, start_timestamp, stop_timestamp = found
         payload: dict[str, object] = {"summary": summary_text}
         if start_timestamp is not None:

@@ -1012,3 +1012,22 @@ def test_claude_ai_compaction_summary_persists_as_event() -> None:
     assert summaries[0].payload["summary"] == "Earlier we planned the parser work."
     assert summaries[0].payload["stop_timestamp"] == "2026-01-01T00:04:30Z"
     assert any(message.model_effort == "high" for message in session.messages)
+
+
+def test_claude_ai_id_less_compaction_summaries_stay_distinct() -> None:
+    """Two ID-less carriers are two messages, so both summaries survive.
+
+    Anti-vacuity: key ID-less records under one shared key and one summary is lost.
+    """
+    payload = {
+        "uuid": "claude-id-less",
+        "chat_messages": [
+            {"sender": "assistant", "text": "a", "compaction_summary": [{"type": "text", "text": "first"}]},
+            {"sender": "assistant", "text": "b", "compaction_summary": [{"type": "text", "text": "second"}]},
+        ],
+    }
+
+    session = parse_ai(payload, "fallback")
+
+    summaries = [event for event in session.session_events if event.event_type == "claude_ai_compaction_summary"]
+    assert sorted(event.payload["summary"] for event in summaries) == ["first", "second"]
