@@ -73,7 +73,6 @@ from polylogue.core.stage_admission import admit_stage_write
 from polylogue.core.storage_faults import (
     ARCHIVE_SIDE_FAULTS,
     CAPACITY_FAULTS,
-    ArchiveStorageFaultError,
     raise_if_storage_fault,
     storage_fault_kind,
 )
@@ -731,6 +730,8 @@ class _OpenIngestAttempt:
     """
 
     attempt_id: str | None = None
+    #: Whether the start write returned, so the row is known to exist.
+    started: bool = False
     finished: bool = False
     scope: ExitStack = field(default_factory=ExitStack)
 
@@ -1003,7 +1004,11 @@ class LiveBatchProcessor:
                         "live.ingest.attempt_cancelled",
                         level=WARNING,
                         outcome="refused",
-                        reason="cancelled",
+                        # Cancelled before the start write returned: the row
+                        # exists only if that write was already admitted (the
+                        # coordinator then finishes it detached); a queued
+                        # start never commits. Say which case was observed.
+                        reason="cancelled" if attempt.started else "cancelled_before_start_confirmed",
                         attempt_id=attempt.attempt_id,
                     )
                 raise
@@ -1129,6 +1134,8 @@ class LiveBatchProcessor:
             queued_file_count=queued_file_count if queued_file_count is not None else len(paths),
             attempt_id=attempt_id,
         )
+        if open_attempt is not None:
+            open_attempt.started = True
         await self._record_attempt_progress_admitted(
             attempt_id,
             phase="planning",
@@ -2840,11 +2847,14 @@ class LiveBatchProcessor:
                 pass_started=pass_started,
                 prepared_json_paths=prepared_json_paths,
             )
-        except ArchiveStorageFaultError:
-            for publisher in publishers:
-                discard_pending = getattr(publisher, "discard_pending", None)
-                if callable(discard_pending):
-                    discard_pending()
+        except Exception as exc:
+            # Classify here, not by type: the publication flush raises a raw
+            # SQLITE_FULL/ENOSPC that only a later handler converts.
+            if storage_fault_kind(exc) is not None:
+                for publisher in publishers:
+                    discard_pending = getattr(publisher, "discard_pending", None)
+                    if callable(discard_pending):
+                        discard_pending()
             raise
 
     def _ingest_full_paths_sync_staged(

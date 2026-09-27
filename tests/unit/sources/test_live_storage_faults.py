@@ -494,6 +494,32 @@ async def test_a_cancelled_start_still_names_its_attempt(
         cancelled = [event for event in events if event.get("event") == "live.ingest.attempt_cancelled"]
         assert len(cancelled) == 1
         assert cancelled[0].get("attempt_id")
+        # The start never returned, so the event must not claim the row exists.
+        assert cancelled[0].get("reason") == "cancelled_before_start_confirmed"
+    finally:
+        watcher.stop()
+        await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_a_raw_fault_from_the_publication_flush_discards_staged_blobs(
+    storage_env: tuple[Polylogue, LiveWatcher, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The flush raises a raw ``SQLITE_FULL`` that is converted only later;
+    staged temporaries must still be discarded. Anti-vacuity: cleaning up
+    only on ``ArchiveStorageFaultError`` leaves the staged copy behind."""
+    archive, watcher, source_path = storage_env
+
+    def full_flush(self: ArchiveBlobPublisher, *args: Any, **kwargs: Any) -> Any:
+        raise _full_disk()
+
+    monkeypatch.setattr(ArchiveBlobPublisher, "flush", full_flush)
+    try:
+        outcomes = await _admit(watcher)
+        assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.RETRYABLE}
+        staging = archive.archive_root / "blob" / ".staging"
+        assert not staging.exists() or not [path for path in staging.rglob("*") if path.is_file()]
     finally:
         watcher.stop()
         await archive.close()
