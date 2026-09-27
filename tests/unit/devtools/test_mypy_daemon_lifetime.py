@@ -53,14 +53,14 @@ def test_gate_checks_on_its_checkout_cache_and_publishes_it(monkeypatch: pytest.
     shared = common / "polylogue-mypy" / "cache"
     _stamped_seed(shared, tmp_path)
     # mypy exits 1 on type errors with a complete cache; that cache is published.
-    _stub_checker(tmp_path, 'echo "$2" > "$2/checked-by"\nexit 1\n')
+    _stub_checker(tmp_path, 'mkdir -p "$2/3.11" && echo "$2" > "$2/3.11/checked-by"\nexit 1\n')
 
     assert mypy_gate.main(["--root", str(tmp_path)]) == 1
 
     local = tmp_path / ".cache" / "mypy"
     assert (local / "seed.db").read_text(encoding="utf-8") == "seed"
-    assert (local / "checked-by").read_text(encoding="utf-8").strip() == str(local)
-    assert (shared / "checked-by").is_file()
+    assert (local / "3.11" / "checked-by").read_text(encoding="utf-8").strip() == str(local)
+    assert (shared / "3.11" / "checked-by").is_file()
     assert mypy_gate._is_complete(local, mypy_gate._input_key(tmp_path))
 
 
@@ -225,8 +225,8 @@ def test_cold_siblings_run_one_cold_scan_and_seed_from_it(tmp_path: Path) -> Non
     for lane in lanes:
         _stub_checker(
             lane,
-            f'if [ ! -f "$2/scanned.db" ]; then echo cold >> "{observed}/cold"; sleep 0.5; fi\n'
-            'echo done > "$2/scanned.db"\n'
+            f'if [ ! -f "$2/3.11/scanned.db" ]; then echo cold >> "{observed}/cold"; sleep 0.5; fi\n'
+            'mkdir -p "$2/3.11" && echo done > "$2/3.11/scanned.db"\n'
             "exit 0\n",
         )
 
@@ -234,7 +234,7 @@ def test_cold_siblings_run_one_cold_scan_and_seed_from_it(tmp_path: Path) -> Non
 
     assert (observed / "cold").read_text(encoding="utf-8").split() == ["cold"]
     for lane in lanes:
-        assert (lane / ".cache" / "mypy" / "scanned.db").is_file()
+        assert (lane / ".cache" / "mypy" / "3.11" / "scanned.db").is_file()
 
 
 def test_publishing_reclaims_abandoned_staging_copies(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -251,7 +251,7 @@ def test_publishing_reclaims_abandoned_staging_copies(monkeypatch: pytest.Monkey
     abandoned = common / "polylogue-mypy" / "cache.publish-1"
     abandoned.mkdir()
     (abandoned / "partial.db").write_text("partial", encoding="utf-8")
-    _stub_checker(tmp_path, "exit 0\n")
+    _stub_checker(tmp_path, 'mkdir -p "$2/3.11" && echo data > "$2/3.11/module.db"\nexit 0\n')
 
     assert mypy_gate.main(["--root", str(tmp_path)]) == 0
 
@@ -334,3 +334,52 @@ def test_a_swap_interrupted_between_renames_restores_the_shared_cache(
     assert mypy_gate.main(["--root", str(tmp_path)]) == 0
 
     assert (tmp_path / ".cache" / "mypy" / "seed.db").read_text(encoding="utf-8") == "seed"
+
+
+def test_a_check_that_wrote_no_module_cache_is_not_published(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """``incremental = false`` exits 0 without a cache; it must not become the seed.
+
+    Anti-vacuity: stamp every exit-0 run and this empty cache is published
+    over the useful shared seed.
+    """
+    common = tmp_path / ".git"
+    common.mkdir()
+    monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
+    shared = common / "polylogue-mypy" / "cache"
+    _stamped_seed(shared, tmp_path)
+    (shared / mypy_gate._STAMP).write_text("stamp-of-another-configuration", encoding="utf-8")
+    _stub_checker(tmp_path, "exit 0\n")
+
+    assert mypy_gate.main(["--root", str(tmp_path)]) == 0
+
+    assert not mypy_gate._is_complete(tmp_path / ".cache" / "mypy", mypy_gate._input_key(tmp_path))
+    assert (shared / mypy_gate._STAMP).read_text(encoding="utf-8") == "stamp-of-another-configuration"
+
+
+def test_the_locked_environment_is_part_of_the_cache_key(tmp_path: Path) -> None:
+    """Checkouts on different ``uv.lock`` revisions do not share a warm seed.
+
+    Anti-vacuity: leave ``uv.lock`` out of the key and the two keys are equal.
+    """
+    old = tmp_path / "old"
+    new = tmp_path / "new"
+    for root, pin in ((old, "2.10"), (new, "2.11")):
+        root.mkdir()
+        (root / "uv.lock").write_text(f'[[package]]\nname = "pydantic"\nversion = "{pin}"\n', encoding="utf-8")
+
+    assert mypy_gate._input_key(old) != mypy_gate._input_key(new)
+
+
+def test_a_published_cache_carries_no_staging_marker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The marker survives the rename, so a kill between them leaves it recoverable, and is then removed."""
+    common = tmp_path / ".git"
+    common.mkdir()
+    monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
+    _stub_checker(tmp_path, 'mkdir -p "$2/3.11" && echo data > "$2/3.11/module.db"\nexit 0\n')
+
+    assert mypy_gate.main(["--root", str(tmp_path)]) == 0
+
+    shared = common / "polylogue-mypy" / "cache"
+    assert (shared / "3.11" / "module.db").is_file()
+    assert not (shared / mypy_gate._STAGED).exists()
+    assert not list(shared.parent.glob("cache.publish-*"))

@@ -126,7 +126,12 @@ def _input_key(root: Path) -> str:
     except importlib.metadata.PackageNotFoundError:
         version = "unknown"
     config = _config_contents(_config_file(root))
-    payload = json.dumps([version, config], sort_keys=True, default=str)
+    # Installed packages are mypy inputs too (PEP 561 stubs and inline types).
+    try:
+        environment: str | None = hashlib.sha256((root / "uv.lock").read_bytes()).hexdigest()
+    except OSError:
+        environment = None
+    payload = json.dumps([version, config, environment], sort_keys=True, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -191,8 +196,8 @@ def _recover_shared(shared: Path) -> None:
         reverse=True,
     )
     if staged:
-        (staged[0] / _STAGED).unlink()
         os.replace(staged[0], shared)
+        (shared / _STAGED).unlink(missing_ok=True)
 
 
 def _publish(local: Path, shared: Path) -> None:
@@ -205,9 +210,14 @@ def _publish(local: Path, shared: Path) -> None:
     (staging / _STAGED).touch()
     if shared.exists():
         os.replace(shared, retired)
-    (staging / _STAGED).unlink()
     os.replace(staging, shared)
+    (shared / _STAGED).unlink(missing_ok=True)
     shutil.rmtree(retired, ignore_errors=True)
+
+
+def _has_module_cache(cache: Path) -> bool:
+    """Whether mypy wrote module cache data (it keeps it under a per-version directory)."""
+    return any(path.is_file() for child in cache.iterdir() if child.is_dir() for path in child.rglob("*"))
 
 
 def _check(mypy: Path, cache: Path, root: Path, key: str) -> int:
@@ -215,7 +225,9 @@ def _check(mypy: Path, cache: Path, root: Path, key: str) -> int:
     cache.mkdir(parents=True, exist_ok=True)
     (cache / _STAMP).unlink(missing_ok=True)
     returncode = subprocess.run([str(mypy), "--cache-dir", str(cache)], cwd=root, check=False).returncode
-    if returncode in _CACHE_COMPLETE_EXITS:
+    # A configuration with ``incremental = false`` exits 0 without writing a
+    # module cache; only a cache mypy actually populated is complete.
+    if returncode in _CACHE_COMPLETE_EXITS and _has_module_cache(cache):
         (cache / _STAMP).write_text(key, encoding="utf-8")
     return returncode
 
@@ -259,12 +271,12 @@ def main(argv: list[str] | None = None) -> int:
                     # siblings wait and seed from its result instead of
                     # scanning cold beside it.
                     returncode = _check(mypy, local, root, key)
-                    if returncode in _CACHE_COMPLETE_EXITS:
+                    if _is_complete(local, key):
                         _publish(local, shared)
                     return returncode
 
         returncode = _check(mypy, local, root, key)
-        if returncode in _CACHE_COMPLETE_EXITS:
+        if _is_complete(local, key):
             with _locked(lock_path):
                 _publish(local, shared)
         return returncode
