@@ -2455,7 +2455,10 @@ async def _run_daemon_services_under_active_writer_lease(
             )
             from polylogue.daemon.judgment_automation import periodic_judgment_automation_sweep
             from polylogue.daemon.secret_scan_sweep import periodic_secret_scan_sweep
-            from polylogue.daemon.session_profile_composition import compose_session_profile_callback
+            from polylogue.daemon.session_profile_composition import (
+                ComposedSessionProfiles,
+                compose_session_profile_callback,
+            )
 
             if api_server is not None:
                 daemon_compute = api_server.execution_kernel
@@ -2858,6 +2861,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         generation = cold_build
                         if generation is None or generation.settled:
                             return
+                        promoted = False
                         try:
                             session_count = await write_coordinator.run_sync(
                                 "daemon.cold_build.session_count",
@@ -2868,6 +2872,7 @@ async def _run_daemon_services_under_active_writer_lease(
                                     "daemon.cold_build.promote",
                                     generation.promote,
                                 )
+                                promoted = True
                             else:
                                 # Nothing was built. Promoting an empty
                                 # candidate over a working index would be a
@@ -2879,6 +2884,19 @@ async def _run_daemon_services_under_active_writer_lease(
                         finally:
                             clear_cold_build_generation()
                             set_cold_build_progress_provider(None)
+                        if promoted and isinstance(session_profile_callback, ComposedSessionProfiles):
+                            try:
+                                await session_profile_callback.converge_promoted()
+                            except Exception as exc:
+                                # The periodic owner retries from the promoted
+                                # output relations; intake publication is done.
+                                emit(
+                                    "daemon.cold_build.profile_convergence_failed",
+                                    level=WARNING,
+                                    outcome="degraded",
+                                    error_type=type(exc).__name__,
+                                    error_detail=str(exc),
+                                )
 
                     async def refresh_cold_build_progress(_result: object) -> None:
                         generation = cold_build

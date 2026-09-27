@@ -227,6 +227,7 @@ def make_session_profile_frame(
     archive_root: Path,
     scope: Sequence[str] | None,
     profile_demand_only: bool = False,
+    profile_full_scan: bool = False,
 ) -> DerivationFrame:
     """Describe one bounded pass against the active index generation."""
     del index_db_path
@@ -241,4 +242,5 @@ def make_session_profile_frame(
         },
         scope=None if scope is None else tuple(dict.fromkeys(str(session_id) for session_id in scope)),
         profile_demand_only=profile_demand_only,
+        profile_full_scan=profile_full_scan,
     )

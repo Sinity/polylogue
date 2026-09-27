@@ -24,7 +24,7 @@ from polylogue.storage.derived.session.usage_rollup import (
     SESSION_USAGE_ROLLUP_DOMAIN,
     session_usage_rollup_recipe_version,
 )
-from tests.infra.convergence_harness import seed_partial_convergence_archive
+from tests.infra.convergence_harness import _seed_raw_source_session, seed_partial_convergence_archive
 
 
 @pytest.mark.asyncio
@@ -176,13 +176,11 @@ async def test_composed_callback_repairs_summary_before_counter_dependent_profil
         assert scoped_unchanged.made_no_publication_attempts
         assert scoped_unchanged.work.inspected == 0
 
-        # The periodic pass still owns another seed obligation. It may settle
-        # that session once, then its next unchanged pass has no index work.
-        periodic = await composed.callback(None)
-        assert any(item.key.key == recovered.unrelated_session_id for item in periodic.outcomes)
+        # The periodic archive sweep advances through prerequisite domains.
+        periodic = [await composed.callback(None) for _ in range(3)]
+        assert any(item.key.key == recovered.unrelated_session_id for report in periodic for item in report.outcomes)
         periodic_unchanged = await composed.callback(None)
         assert periodic_unchanged.made_no_publication_attempts
-        assert periodic_unchanged.work.inspected == 0
 
         with sqlite3.connect(recovered.index_db) as conn:
             conn.execute(
@@ -204,6 +202,148 @@ async def test_composed_callback_repairs_summary_before_counter_dependent_profil
                 is None
             )
         assert (await composed.callback(None)).work.inspected == 0
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_promoted_generation_starts_a_bounded_profile_pass_from_new_demand(tmp_path: Path) -> None:
+    recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    try:
+        composed = compose_session_profile_callback(
+            recovered.root,
+            compute_adapter=compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            now=lambda: 0.0,
+        )
+        await composed.callback(None)
+        with sqlite3.connect(recovered.index_db) as conn:
+            conn.execute("UPDATE sessions SET word_count = 0 WHERE session_id = ?", (recovered.target_session_id,))
+            conn.commit()
+            assert conn.execute(
+                "SELECT 1 FROM session_profile_demand WHERE session_id = ?", (recovered.target_session_id,)
+            ).fetchone()
+
+        report = await composed.converge_promoted()
+        assert any(
+            item.key.domain == SESSION_PROFILE_DOMAIN
+            and item.key.key == recovered.target_session_id
+            and item.outcome is Outcome.DONE
+            for item in report.outcomes
+        )
+        assert report.work.discovered <= 128
+        assert report.work.published <= 64
+        with sqlite3.connect(recovered.index_db) as conn:
+            assert conn.execute(
+                "SELECT 1 FROM session_profiles WHERE session_id = ?", (recovered.target_session_id,)
+            ).fetchone()
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_periodic_sweep_reaches_more_than_one_budget_of_profiles_without_demand(tmp_path: Path) -> None:
+    """A quiet archive tail must survive bounded prerequisite passes."""
+    recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
+    source_path = tmp_path / "source.jsonl"
+    source_path.write_text("{}\n")
+    with sqlite3.connect(recovered.index_db) as conn:
+        for number in range(129):
+            _seed_raw_source_session(conn, session_id=f"sweep-{number:03d}", source_path=source_path)
+        conn.execute("DELETE FROM session_profile_demand")
+        conn.commit()
+        expected = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        assert expected > 128
+        assert conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] == 0
+
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    try:
+        composed = compose_session_profile_callback(
+            recovered.root,
+            compute_adapter=compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            now=lambda: 0.0,
+        )
+        prerequisite_ticks = 0
+        for _ in range(16):
+            report = await composed.callback(None)
+            prerequisite_ticks += 1
+            assert report.work.discovered <= 128
+            assert report.work.published <= 64
+            if report.cursor.position(SESSION_USAGE_ROLLUP_DOMAIN).swept:
+                break
+        else:
+            pytest.fail("bounded prerequisite sweep did not finish")
+        with sqlite3.connect(recovered.index_db) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] == 0
+            # Prerequisite publication can create transaction-owned hints.
+            # Remove them here so the profile phase must discover the tail.
+            conn.execute("DELETE FROM session_profile_demand")
+            conn.commit()
+
+        profile_ticks = 0
+        for _ in range(16):
+            report = await composed.callback(None)
+            profile_ticks += 1
+            assert report.work.discovered <= 128
+            assert report.work.published <= 64
+            with sqlite3.connect(recovered.index_db) as conn:
+                if conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] == expected:
+                    break
+        assert prerequisite_ticks > 1
+        assert profile_ticks > 1
+        with sqlite3.connect(recovered.index_db) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] == expected
+            assert conn.execute("SELECT COUNT(*) FROM session_profile_demand").fetchone()[0] == 0
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_fresh_owner_resweeps_missing_profile_without_demand(tmp_path: Path) -> None:
+    recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
+    with sqlite3.connect(recovered.index_db) as conn:
+        conn.execute("DELETE FROM session_profile_demand")
+        conn.commit()
+        assert conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] == 0
+
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    try:
+        composed = compose_session_profile_callback(
+            recovered.root,
+            compute_adapter=compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            now=lambda: 0.0,
+        )
+        for _ in range(3):
+            await composed.callback(None)
+        with sqlite3.connect(recovered.index_db) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] == 2
+            conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (recovered.target_session_id,))
+            conn.execute("DELETE FROM session_profile_demand")
+            conn.commit()
+
+        # A daemon restart loses the process cursor and every demand hint.
+        restarted = compose_session_profile_callback(
+            recovered.root,
+            compute_adapter=compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            now=lambda: 0.0,
+        )
+        for _ in range(3):
+            await restarted.callback(None)
+        with sqlite3.connect(recovered.index_db) as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM session_profiles WHERE session_id = ?", (recovered.target_session_id,)
+            ).fetchone() == (1,)
+            assert conn.execute("SELECT COUNT(*) FROM session_profile_demand").fetchone() == (0,)
     finally:
         compute.shutdown(wait=True)
         await coordinator.shutdown(timeout=1.0)

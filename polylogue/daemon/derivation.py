@@ -140,6 +140,9 @@ class DerivationFrame:
     # The composed session pass discovers its index work from the transaction-
     # owned profile demand table. Other domain passes retain full discovery.
     profile_demand_only: bool = False
+    # A bounded archive sweep pages every session, including profiles whose
+    # demand hint was lost. The pager, not a sparse anti-join, bounds the read.
+    profile_full_scan: bool = False
 
     def recipe_version(self, domain: str) -> str:
         return self.recipe_versions.get(domain, "")
