@@ -7,6 +7,7 @@ import os
 import sqlite3
 import zipfile
 from collections.abc import Iterable
+from contextlib import ExitStack
 from io import BytesIO
 from pathlib import Path
 from typing import cast
@@ -37,6 +38,8 @@ from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_acquisition_components import sniff_zip_provider
 from polylogue.sources.source_walk import _resolve_source_paths
 from polylogue.storage.sqlite.archive_tiers.source_write import read_capture_mode_resolution
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import read_frame
 from polylogue.surfaces.payloads import (
     ImportDetectorEvidencePayload,
     ImportExplainEntryPayload,
@@ -109,7 +112,12 @@ def explain_import_archive(
         return _envelope(Path(query_label), entries=entries, skipped=skipped, caveats=caveats)
 
     raw_id = _normalize_raw_ref(raw_ref) if raw_ref is not None else None
-    with _readonly_sqlite(source_db) as source_conn:
+    with ExitStack() as stack:
+        source_frame = stack.enter_context(
+            read_frame(source_db, timeout_class="background-read", tier=ArchiveTier.SOURCE)
+        )
+        source_conn = source_frame.connection
+        source_conn.row_factory = sqlite3.Row
         raw_rows = _select_raw_session_rows(source_conn, raw_id=raw_id, source_path=source_path, limit=limit)
         if not raw_rows:
             skipped.append(
@@ -123,24 +131,24 @@ def explain_import_archive(
 
         index_conn: sqlite3.Connection | None = None
         if index_db.exists():
-            index_conn = _readonly_sqlite(index_db)
+            index_frame = stack.enter_context(
+                read_frame(index_db, timeout_class="background-read", tier=ArchiveTier.INDEX)
+            )
+            index_conn = index_frame.connection
+            index_conn.row_factory = sqlite3.Row
         else:
             caveats.append("index tier is unavailable; produced archive row counts are incomplete")
-        try:
-            for row in raw_rows:
-                artifact_rows = _select_artifact_rows(source_conn, raw_id=str(row["raw_id"]))
-                entry = _archive_entry_from_rows(
-                    row,
-                    artifact_rows=artifact_rows,
-                    source_conn=source_conn,
-                    index_conn=index_conn,
-                    redact_paths=redact_paths,
-                )
-                entries.append(entry)
-                skipped.extend(entry.skipped)
-        finally:
-            if index_conn is not None:
-                index_conn.close()
+        for row in raw_rows:
+            artifact_rows = _select_artifact_rows(source_conn, raw_id=str(row["raw_id"]))
+            entry = _archive_entry_from_rows(
+                row,
+                artifact_rows=artifact_rows,
+                source_conn=source_conn,
+                index_conn=index_conn,
+                redact_paths=redact_paths,
+            )
+            entries.append(entry)
+            skipped.extend(entry.skipped)
 
     if len(raw_rows) >= limit:
         caveats.append(f"entry limit {limit} reached; remaining archived raw rows omitted")
@@ -266,12 +274,6 @@ def _archive_entry_from_rows(
         + tuple(f"raw-artifact:{artifact['artifact_id']}" for artifact in artifact_rows),
         normalization_warnings=detection_warnings,
     )
-
-
-def _readonly_sqlite(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 def _select_raw_session_rows(

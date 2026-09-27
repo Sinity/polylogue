@@ -50,6 +50,8 @@ from polylogue.archive.artifact_taxonomy import ArtifactKind
 from polylogue.core.enums import Origin, Provider
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import read_frame
 
 from .assembly import (
     ClaudeCodeHistoryPasteIndex,
@@ -458,17 +460,14 @@ def resolve_retained_assembly_evidence(
     source_db = archive_root / "source.db"
     if not source_db.exists():
         return sidecar_data
-    conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=5.0)
-    try:
+    with read_frame(source_db, timeout_class="background-read", tier=ArchiveTier.SOURCE) as frame:
         return with_retained_assembly_evidence(
             sidecar_data,
             provider=provider,
-            source_conn=conn,
+            source_conn=frame.connection,
             blob_store=BlobStore(archive_root / "blob"),
             source_path=source_path,
         )
-    finally:
-        conn.close()
 
 
 __all__ = [

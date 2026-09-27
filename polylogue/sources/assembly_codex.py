@@ -11,6 +11,8 @@ from polylogue.core.enums import MaterialOrigin, TitleSource
 from polylogue.core.json import json_document
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import read_frame
 
 from .assembly import CodexHistoryTitles, CodexThreadNames, SidecarData
 from .parsers.base import ParsedSession
@@ -221,16 +223,14 @@ def resolve_retained_codex_state_titles(
     if not index_db.exists():
         return {}
     try:
-        conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=5.0)
+        frame = read_frame(index_db, timeout_class="background-read", tier=ArchiveTier.INDEX)
     except sqlite3.Error as exc:
         logger.debug("Failed to open index.db for Codex thread titles: %s", exc)
         return {}
-    try:
+    with frame:
         from polylogue.sources.codex_state_projection import read_thread_titles
 
-        return read_thread_titles(conn, thread_ids=thread_ids, source_path=source_path)
-    finally:
-        conn.close()
+        return read_thread_titles(frame.connection, thread_ids=thread_ids, source_path=source_path)
 
 
 def _title_preview(text: str) -> str | None:
