@@ -389,6 +389,11 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead", "DbWrite"),
         safety_guards=("write_role_required",),
         executor_status="executor-routed",
+        # ``mark --tag-remove`` lowers onto this per-target actuator through
+        # the daemon under a ``cli`` principal, the same surfaces its add
+        # counterpart (``mutate-bulk-tag-sessions``) admits. Without it the
+        # API-only back-fill refuses every CLI tag removal (polylogue-7jxps).
+        allowed_surfaces=("api", "cli"),
     ),
     OperationSpec(
         name="mutate-bulk-tag-sessions",
