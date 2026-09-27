@@ -192,7 +192,12 @@ async def ingest_sources_archive(
         # to the caller while relative paths gain a durable resolution base.
         resolved_source_path = source.path.expanduser().resolve()
         refuse_non_capture_source_root(resolved_source_path, destination=root)
-        if Provider.from_string(source.name) is Provider.ANTIGRAVITY and resolved_source_path.suffix.lower() == ".pb":
+        is_antigravity_pb_file = (
+            Provider.from_string(source.name) is Provider.ANTIGRAVITY
+            and resolved_source_path.suffix.lower() == ".pb"
+            and resolved_source_path.is_file()
+        )
+        if is_antigravity_pb_file:
             from polylogue.sources.source_parsing import _antigravity_source_root
 
             watch_root = _antigravity_source_root(resolved_source_path)
@@ -202,6 +207,7 @@ async def ingest_sources_archive(
             WatchSource(
                 name=source.name,
                 root=watch_root,
+                exact_paths=frozenset({resolved_source_path}) if is_antigravity_pb_file else None,
             )
         )
         paths.extend(_resolve_source_paths(Source(name=source.name, path=resolved_source_path)))

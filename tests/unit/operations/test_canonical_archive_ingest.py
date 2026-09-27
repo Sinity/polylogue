@@ -85,6 +85,83 @@ async def test_canonical_ingest_resolves_relative_antigravity_conversation_path(
 
 
 @pytest.mark.asyncio
+async def test_canonical_ingest_traverses_directory_named_pb_as_antigravity_root(
+    tmp_path: Path,
+    one_shot_workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "export.pb"
+    conversations = root / "conversations"
+    conversations.mkdir(parents=True)
+    (conversations / "cascade.pb").write_bytes(b"synthetic trajectory")
+    parser_roots: list[Path] = []
+    _install_antigravity_export_stub(monkeypatch, parser_roots)
+
+    archive_root = one_shot_workspace_env["archive_root"]
+    result = await parse_sources_archive(
+        archive_root,
+        [Source(name="antigravity", path=root)],
+        parse_workers=1,
+    )
+
+    assert result.counts.get("sessions", 0) == 1
+    assert parser_roots == [root.resolve()]
+    assert _source_conservation(archive_root).term("source_missing").count == 0
+
+
+@pytest.mark.asyncio
+async def test_canonical_ingest_keeps_individual_antigravity_pb_ownership_exact(
+    tmp_path: Path,
+    one_shot_workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "captures"
+    conversations = root / "conversations"
+    conversations.mkdir(parents=True)
+    pb_path = conversations / "cascade.pb"
+    pb_path.write_bytes(b"synthetic trajectory")
+    codex_path = root / "session.jsonl"
+    codex_path.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in (
+                {"type": "session_meta", "payload": {"id": "sibling-codex", "timestamp": "2026-01-01T00:00:00Z"}},
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "id": "message-1",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "hello"}],
+                    },
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    parser_roots: list[Path] = []
+    _install_antigravity_export_stub(monkeypatch, parser_roots)
+
+    archive_root = one_shot_workspace_env["archive_root"]
+    result = await parse_sources_archive(
+        archive_root,
+        [
+            Source(name="antigravity", path=pb_path),
+            Source(name="codex", path=codex_path),
+        ],
+        parse_workers=1,
+    )
+
+    assert result.counts.get("sessions", 0) == 2
+    assert parser_roots == [root.resolve()]
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        recorded_paths = {Path(path) for (path,) in conn.execute("SELECT source_path FROM raw_sessions")}
+    assert recorded_paths == {pb_path.resolve(), codex_path.resolve()}
+    assert _source_conservation(archive_root).term("source_missing").count == 0
+
+
+@pytest.mark.asyncio
 async def test_canonical_ingest_records_a_resolvable_path_for_relative_session_jsonl(
     tmp_path: Path,
     one_shot_workspace_env: dict[str, Path],
