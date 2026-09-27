@@ -13,7 +13,7 @@ import sqlite3
 import threading
 import uuid
 from collections.abc import Callable, Iterable, Iterator
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -49,7 +49,12 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
     upsert_ingest_cursor as upsert_archive_ingest_cursor,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import (
+    ReadFrameExpiredError,
+    open_connection,
+    open_readonly_connection,
+    read_frame,
+)
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
 _MAX_CURSOR_FAILURES_BEFORE_EXCLUDE = 5
@@ -58,6 +63,8 @@ _MAX_CURSOR_FAILURES_BEFORE_EXCLUDE = 5
 # bounded no matter how long its batch runs.
 _MAX_BUFFERED_OPS_STAGE_EVENTS = 128
 _FULL_CURSOR_RECONCILIATION_RETRY_DELAY_S = 60
+_INTERRUPTED_SOURCE_PATH_PAGE_SIZE = 500
+_INTERRUPTED_SOURCE_PAGE_RETRIES = 1
 logger = get_logger(__name__)
 
 # Per-source-family cursor-lag sample history (#1349). Daemon-runtime state,
@@ -532,26 +539,40 @@ class CursorStore:
         if not source_db.exists():
             return
         try:
-            with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
-                placeholders = ",".join("?" for _ in paths)
-                rows = conn.execute(
-                    f"""
-                    SELECT DISTINCT r.source_path
-                    FROM raw_sessions AS r
-                    WHERE r.source_path IN ({placeholders})
-                      AND r.parsed_at_ms IS NULL
-                      AND r.parse_error IS NULL
-                      AND NOT ({decided_unresolved_membership_sql("r")})
-                    """,
-                    paths,
-                ).fetchall()
+            unparsed: set[str] = set()
+            with read_frame(source_db, tier=ArchiveTier.SOURCE, timeout_class="background-read") as frame:
+                for offset in range(0, len(paths), _INTERRUPTED_SOURCE_PATH_PAGE_SIZE):
+                    page = tuple(paths[offset : offset + _INTERRUPTED_SOURCE_PATH_PAGE_SIZE])
+                    placeholders = ",".join("?" for _ in page)
+                    sql = f"""
+                        SELECT DISTINCT r.source_path
+                        FROM raw_sessions AS r
+                        WHERE r.source_path IN ({placeholders})
+                          AND r.parsed_at_ms IS NULL
+                          AND r.parse_error IS NULL
+                          AND NOT ({decided_unresolved_membership_sql("r")})
+                        ORDER BY r.source_path
+                    """
+                    for attempt in range(_INTERRUPTED_SOURCE_PAGE_RETRIES + 1):
+                        try:
+                            # Buffer the complete page before changing the result
+                            # set. If expiry interrupts the stream, replaying this
+                            # fixed caller-supplied page cannot skip a row.
+                            rows = tuple(frame.stream(sql, page))
+                            break
+                        except ReadFrameExpiredError:
+                            if attempt >= _INTERRUPTED_SOURCE_PAGE_RETRIES:
+                                raise
+                            frame.rebind()
+                    else:
+                        raise AssertionError("bounded interrupted-source page retry loop fell through")
+                    unparsed.update(str(row[0]) for row in rows)
         except sqlite3.Error:
             logger.warning(
                 "archive ops interrupted recovery: could not inspect source parse state",
                 exc_info=True,
             )
             return
-        unparsed = {str(row[0]) for row in rows}
         if not unparsed:
             return
 
