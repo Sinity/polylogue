@@ -604,10 +604,6 @@
     },
     {
       "file": "polylogue/pipeline/services/indexing.py",
-      "digest": "34b399e79d3a99e8391311b940a64b203604fa15"
-    },
-    {
-      "file": "polylogue/pipeline/services/indexing.py",
       "digest": "383e3ad114d03f8acc81883ef575935cd3052f7d"
     },
     {
