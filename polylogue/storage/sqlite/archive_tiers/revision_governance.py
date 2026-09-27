@@ -3113,7 +3113,21 @@ def raw_revision_replay_adoptable(store: RawRevisionGovernanceHost, sessions: Se
         return True
     existing_hash = row[0]
     existing_hex = existing_hash.hex() if isinstance(existing_hash, bytes) else str(existing_hash or "")
-    return existing_hex == session_content_hash(session)
+    return existing_hex == _carried_session_content_hash(session)
+
+
+def _carried_session_content_hash(session: ParsedSession) -> str:
+    """The session's identity digest: the parse-bound one when carried.
+
+    A prepared session's sink is lowered in place after parsing (active-path
+    normalization, derived tool outcomes), the lowering a resident session
+    receives only when its rows are built. Its bound digest names the parsed
+    content, which is what every other route hashes; re-hashing the lowered
+    sink gives a different digest for the same source bytes, and the writer
+    then declines the worker's prepared rows as ``content_hash_mismatch``.
+    """
+    bound = bound_session_content_hash(session)
+    return bound if bound is not None else session_content_hash(session)
 
 
 def defer_raw_revision_adoption(
@@ -3341,7 +3355,7 @@ def apply_raw_revision_replay(
     aggregate_content_hash = (
         prepared_aggregate_content_hash
         if prepared_aggregate_content_hash is not None
-        else bytes.fromhex(session_content_hash(aggregate_sessions[0]))
+        else bytes.fromhex(_carried_session_content_hash(aggregate_sessions[0]))
     )
     if prepared_aggregate_content_hash is not None and len(prepared_aggregate_content_hash) != 32:
         raise PreparedSessionWriteRefusedError("prepared aggregate content hash is invalid")
