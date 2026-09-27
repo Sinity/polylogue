@@ -108,6 +108,9 @@ class EmbeddingMessageReplacement:
 
 _REQUIRED_KEY_PREFIX = "message:"
 _EXCESS_KEY_PREFIX = "orphan:"
+#: Bound parameters per session lookup; SQLite's host-parameter limit is the
+#: physical ceiling, so a larger key page is read in several statements.
+_MESSAGE_LOOKUP_CHUNK = 900
 
 
 def _message_id(key: str) -> tuple[str, bool]:
@@ -336,6 +339,32 @@ class EmbeddingDerivationAdapter:
             ).fetchall()
         keys = tuple(f"{_EXCESS_KEY_PREFIX}{row[0]}" for row in rows[:limit])
         return keys, (str(rows[limit - 1][0]) if len(rows) > limit and keys else None)
+
+    def barrier_sessions(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
+        """Map each required message key to its session for the publication barrier.
+
+        Orphan keys only retire a ref whose message left the membership, which
+        derives nothing from new content, so they are never held.
+        """
+        index_path = self._assert_frame(frame)
+        message_keys: dict[str, str] = {}
+        for key in dict.fromkeys(keys):
+            message_id, excess = _message_id(key)
+            if not excess:
+                message_keys[message_id] = key
+        if not message_keys:
+            return {}
+        sessions: dict[str, str] = {}
+        ids = tuple(message_keys)
+        with open_readonly_connection(index_path, timeout_class="background-read", validate_schema=False) as conn:
+            for start in range(0, len(ids), _MESSAGE_LOOKUP_CHUNK):
+                chunk = ids[start : start + _MESSAGE_LOOKUP_CHUNK]
+                for message_id, session_id in conn.execute(
+                    f"SELECT message_id, session_id FROM messages WHERE message_id IN ({', '.join('?' for _ in chunk)})",
+                    chunk,
+                ):
+                    sessions[message_keys[str(message_id)]] = str(session_id)
+        return sessions
 
     def inspect(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
         """Classify current refs/meta from their authoritative membership relation."""

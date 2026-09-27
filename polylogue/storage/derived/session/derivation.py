@@ -666,6 +666,11 @@ class SessionProfileDerivation:
         page = keys[start : start + limit]
         return page, (page[-1] if start + len(page) < len(keys) and page else None)
 
+    def barrier_sessions(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
+        """Each key is a session id, so the publication barrier holds it by itself."""
+        del frame
+        return {str(key): str(key) for key in keys}
+
     def inspect(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
         """Classify each session from the index relations this domain owns.
 

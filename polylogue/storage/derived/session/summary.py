@@ -471,6 +471,11 @@ class SessionSummaryDerivation:
         del frame, key
         return ()
 
+    def barrier_sessions(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
+        """Each key is a session id, so the publication barrier holds it by itself."""
+        del frame
+        return {str(key): str(key) for key in keys}
+
     def inspect(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
         generation = self._generation_binding() if self._generation_binding is not None else None
         if generation is not None and getattr(frame, "source_revision", None) != f"index-generation:{generation}":

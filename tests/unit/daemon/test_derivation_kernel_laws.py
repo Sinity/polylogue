@@ -947,3 +947,64 @@ def test_the_publication_budget_bounds_attempts_not_certified_publications() -> 
 
     assert domain.published == ["a", "b"]
     assert report.failed == 2
+
+
+# ── publication barrier ────────────────────────────────────────────
+
+
+class SessionKeyedDerivation(RecordingDerivation):
+    """A session-derived domain: each key is its own session."""
+
+    def barrier_sessions(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, str]:
+        return {key: key for key in keys}
+
+
+def test_a_barrier_held_session_stays_pending_and_its_siblings_publish() -> None:
+    """A session whose newest revision awaits primary publication is not derived.
+
+    Anti-vacuity (polylogue-wtfyv): drop the ``barrier`` argument from the pass
+    (as every derivation owner did before) and ``held`` is computed and
+    published ahead of its primary revision.
+    """
+    adapter = SessionKeyedDerivation("d", required=("free", "held"))
+    registry = DerivationRegistry([adapter])
+
+    report = converge(registry, FRAME, barrier=lambda sessions: {"held"} & set(sessions))
+
+    assert adapter.published == ["free"]
+    assert "held" not in adapter.computed
+    held = [outcome for outcome in report.outcomes if outcome.key == DerivationKey("d", "held")]
+    assert len(held) == 1
+    assert held[0].outcome is Outcome.PENDING
+    assert held[0].reason is PendingReason.BLOCKED
+
+    released = converge(registry, FRAME, barrier=lambda sessions: set())
+    assert adapter.published == ["free", "held"]
+    assert released.done == 1
+
+
+def test_an_unreadable_barrier_holds_every_session_derived_key() -> None:
+    """Deriving past a barrier that cannot be read is the violation it prevents.
+
+    Anti-vacuity: treat a raising barrier as "nothing blocked" and both keys
+    publish.
+    """
+    adapter = SessionKeyedDerivation("d", required=("a", "b"))
+
+    def unreadable(sessions: Sequence[str]) -> set[str]:
+        raise RuntimeError("source tier locked")
+
+    report = converge(DerivationRegistry([adapter]), FRAME, barrier=unreadable)
+
+    assert adapter.published == []
+    assert report.done == 0
+    assert all(outcome.reason is PendingReason.BLOCKED for outcome in report.outcomes)
+
+
+def test_a_domain_that_is_not_session_derived_ignores_the_barrier() -> None:
+    """Only a domain that maps keys to sessions can be held."""
+    adapter = RecordingDerivation("d", required=("a",))
+
+    converge(DerivationRegistry([adapter]), FRAME, barrier=lambda sessions: set(sessions) | {"a"})
+
+    assert adapter.published == ["a"]

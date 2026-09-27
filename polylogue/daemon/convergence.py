@@ -32,6 +32,7 @@ from polylogue.daemon.derivation import (
     DerivationRegistry,
     DerivationReport,
     PassCursor,
+    PublicationBarrier,
     ReplacementLike,
     converge,
 )
@@ -816,8 +817,13 @@ class DaemonConverger:
         stages: Iterable[ConvergenceStage],
         *,
         derivations: Iterable[object] = (),
+        derivation_barrier: PublicationBarrier | None = None,
     ) -> None:
+        """``derivation_barrier`` is the primary-publication barrier the staged
+        routes honor through ``blocks_following_stages``; derivation owners run
+        their own convergers without those stages, so they receive it here."""
         self._stages: dict[str, ConvergenceStage] = {s.name: s for s in stages}
+        self._derivation_barrier = derivation_barrier
         self._file_states: dict[Path, FileState] = {}
         self._session_states: dict[str, SessionState] = {}
         self._derivations = DerivationRegistry(cast("Iterable[DerivationAdapter]", derivations))
@@ -864,6 +870,7 @@ class DaemonConverger:
             domains=domains,
             cursor=self._derivation_cursor if resume else None,
             publisher=publisher,
+            barrier=self._derivation_barrier,
         )
         # A targeted ingest frame always starts fresh so an archive keyset
         # position cannot skip an earlier changed key.  It must likewise leave
