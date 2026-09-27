@@ -615,7 +615,7 @@ def test_prune_stage_deletes_only_consumed_journal_rows(tmp_path: Path) -> None:
     unconsumed row below is deleted too, so the next admission re-proves
     from scratch and the final count assertion fails.
     """
-    from polylogue.daemon.convergence_stages import make_raw_existence_journal_prune_stage
+    from polylogue.operations.raw_existence_journal import make_raw_existence_journal_prune_stage
 
     initialize_active_archive_root(tmp_path)
     _raw(tmp_path, "present")

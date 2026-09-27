@@ -284,3 +284,66 @@ def consumed_watermarks(archive_root: Path) -> tuple[int, int] | None:
     if certificate is None:
         return None
     return certificate.source_watermark, certificate.index_watermark
+
+
+def _journal_tiers(root: Path) -> tuple[tuple[Path, int], tuple[Path, int]] | None:
+    marks = consumed_watermarks(root)
+    if marks is None:
+        return None
+    return (root / "source.db", marks[0]), (resolve_active_index_path(root), marks[1])
+
+
+def has_consumed_journal_rows(archive_root: Path) -> bool:
+    """Whether a journal still holds rows this process's certificate consumed."""
+    tiers = _journal_tiers(archive_root.resolve())
+    if tiers is None:
+        return False
+    for tier_path, watermark in tiers:
+        if not tier_path.is_file():
+            continue
+        with closing(open_readonly_connection(tier_path, validate_schema=False)) as conn:
+            if (
+                conn.execute(
+                    "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'raw_existence_changes'"
+                ).fetchone()
+                and conn.execute(
+                    "SELECT 1 FROM raw_existence_changes WHERE sequence <= ? LIMIT 1", (watermark,)
+                ).fetchone()
+            ):
+                return True
+    return False
+
+
+def prune_consumed_journal_rows(archive_root: Path) -> int:
+    """Delete the journal rows this process's healthy certificate has consumed.
+
+    The prune trigger advances each tier's ``retained_floor``, so another
+    process whose certificate still needed a deleted row re-proves from
+    scratch instead of trusting a truncated journal.
+    """
+    from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+
+    root = archive_root.resolve()
+    tiers = _journal_tiers(root)
+    if tiers is None:
+        return 0
+    pruned = 0
+    for tier_path, watermark in tiers:
+        if not tier_path.is_file():
+            continue
+        conn = open_daemon_connection(tier_path, archive_root=root, validate_schema=False)
+        try:
+            if not conn.execute(
+                "SELECT 1 FROM main.sqlite_schema WHERE type = 'table' AND name = 'raw_existence_changes'"
+            ).fetchone():
+                continue
+            conn.execute("BEGIN IMMEDIATE")
+            pruned += conn.execute("DELETE FROM main.raw_existence_changes WHERE sequence <= ?", (watermark,)).rowcount
+            conn.execute("COMMIT")
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+    return pruned
