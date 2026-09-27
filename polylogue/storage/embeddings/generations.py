@@ -35,6 +35,10 @@ class EmbeddingGenerationError(RuntimeError):
     """Raised when embedding generation state is unsafe to mutate."""
 
 
+class EmbeddingGenerationBusyError(EmbeddingGenerationError):
+    """A live SQLite reader prevented a safe lifecycle checkpoint."""
+
+
 class EmbeddingGenerationState(StrEnum):
     IN_PROGRESS = "in_progress"
     ACCEPTED = "accepted"
@@ -234,7 +238,12 @@ class EmbeddingGenerationStore:
             raise EmbeddingGenerationError(f"embedding database is not an archive-owned regular file: {path}")
         if path.with_name(path.name + "-wal").exists() or path.with_name(path.name + "-shm").exists():
             raise EmbeddingGenerationError(f"embedding database has an uncheckpointed WAL: {path}")
-        uri = f"file:{path}?mode=ro"
+        if path.with_name(path.name + "-journal").exists():
+            raise EmbeddingGenerationError(f"embedding database has an unrecovered rollback journal: {path}")
+        # This sealed file has no WAL sidecars. A normal read-only open of a
+        # WAL-mode database creates them and makes the next validation refuse
+        # the generation that this very validation just inspected.
+        uri = f"file:{path}?mode=ro&immutable=1"
         try:
             with sqlite_connection(uri, uri=True, timeout=1.0) as conn:
                 ok, error = try_load_sqlite_vec(conn)
@@ -269,7 +278,7 @@ class EmbeddingGenerationStore:
         """
         self._validate_database(path)
         try:
-            with sqlite_connection(f"file:{path}?mode=ro", uri=True) as conn:
+            with sqlite_connection(f"file:{path}?mode=ro&immutable=1", uri=True) as conn:
                 rows = conn.execute(
                     """
                     SELECT vector_derivation_hash, model, dimension, recipe_hash, output_contract_hash
@@ -342,23 +351,47 @@ class EmbeddingGenerationStore:
             return
         if not _regular_file(self.active_path):
             raise EmbeddingGenerationError("embedding active path is not a regular file")
+        self._checkpoint_database(self.active_path, label="legacy embedding database")
+
+    def prepare_active_database_for_writer(self) -> None:
+        """Settle the active generation before validating it for a lifecycle write."""
+        if not self.active_path.is_symlink():
+            self.prepare_legacy_active_database()
+            return
+        pointer_identity = self._link_identity(self.active_path, label="embedding active pointer")
         try:
-            with sqlite_connection(self.active_path, timeout=30.0) as conn:
+            target = self.active_path.resolve(strict=True)
+        except OSError as exc:
+            raise EmbeddingGenerationError("embedding active pointer cannot be resolved") from exc
+        if (
+            target.parent.parent != self.root
+            or not _ID.fullmatch(target.parent.name)
+            or target.name != "embeddings.db"
+            or not _regular_file(target)
+        ):
+            raise EmbeddingGenerationError("embedding active pointer is not an owned generation")
+        if target.with_name(target.name + "-journal").exists():
+            raise EmbeddingGenerationError("embedding active generation has an unrecovered rollback journal")
+        self._checkpoint_database(target, label="active embedding generation")
+        if self._link_identity(self.active_path, label="embedding active pointer") != pointer_identity:
+            raise EmbeddingGenerationError("embedding active pointer changed during checkpoint")
+
+    @staticmethod
+    def _checkpoint_database(path: Path, *, label: str) -> None:
+        try:
+            with sqlite_connection(path, timeout=30.0) as conn:
                 row = checkpoint_connection(conn, "TRUNCATE", boundary="exclusive")
         except (OSError, sqlite3.Error) as exc:
-            raise EmbeddingGenerationError("could not checkpoint legacy embedding database") from exc
+            raise EmbeddingGenerationError(f"could not checkpoint {label}") from exc
         if int(row[0] or 0) != 0:
-            raise EmbeddingGenerationError("legacy embedding database checkpoint is blocked")
+            raise EmbeddingGenerationBusyError(f"{label} checkpoint is blocked")
         sidecars = tuple(
-            path
-            for path in (
-                self.active_path.with_name(self.active_path.name + "-wal"),
-                self.active_path.with_name(self.active_path.name + "-shm"),
-            )
-            if path.exists()
+            sidecar
+            for sidecar in (path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm"))
+            if sidecar.exists()
         )
         if sidecars:
-            raise EmbeddingGenerationError("legacy embedding database retains SQLite sidecars after checkpoint")
+            raise EmbeddingGenerationBusyError(f"{label} retains SQLite sidecars after checkpoint")
 
     def _read_generation(self, path: Path) -> EmbeddingGeneration:
         try:
@@ -663,9 +696,11 @@ class EmbeddingGenerationStore:
             _fsync_dir(self.root)
 
     @contextmanager
-    def writer_lock(self) -> Iterator[EmbeddingGenerationBinding]:
+    def writer_lock(self, *, prepare_active: bool = False) -> Iterator[EmbeddingGenerationBinding]:
         """Admit one embedding SQLite writer for its complete write lifetime."""
         with self._lock():
+            if prepare_active:
+                self.prepare_active_database_for_writer()
             generations = self._generations()
             self._validate_receipts(generations)
             active = self._active_generation(generations)
@@ -941,6 +976,7 @@ __all__ = [
     "EmbeddingGeneration",
     "EmbeddingGenerationBinding",
     "EmbeddingGenerationError",
+    "EmbeddingGenerationBusyError",
     "EmbeddingGenerationState",
     "EmbeddingGenerationStore",
     "EmbeddingPromotionReceipt",

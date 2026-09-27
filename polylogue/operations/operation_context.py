@@ -145,6 +145,36 @@ def observe_control_authority(root: Path) -> OperationControlRead:
         return OperationControlRead(identity, {}, (gap,))
 
 
+def observe_embedding_mutation_authority(root: Path) -> OperationControlRead:
+    """Observe every available tier without retaining a reader across the write."""
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.connection_profile import assert_tier_schema_supported, open_readonly_connection
+    from polylogue.storage.sqlite.schema import assert_readable_archive_layout
+
+    snapshot = observe_control_authority(root)
+    location = ArchiveLocation.resolve(root)
+    versions = dict(snapshot.schema_versions)
+    degraded = list(snapshot.degraded_components)
+    for tier in ("index", "source", "embeddings", "user", "ops", "audit"):
+        path = location.active_index_path if tier == "index" else root / f"{tier}.db"
+        if not path.is_file():
+            degraded.append(tier)
+            continue
+        with closing(open_readonly_connection(path, validate_schema=False)) as connection:
+            if tier == "index":
+                resolved_index = path.resolve()
+                generation_id = (
+                    resolved_index.parent.name if resolved_index.parent.parent.name == ".index-generations" else None
+                )
+                assert_readable_archive_layout(connection, generation_id=generation_id)
+            elif tier == "embeddings":
+                assert_tier_schema_supported(connection, path, ArchiveTier.EMBEDDINGS)
+            versions[tier] = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    if ArchiveIdentity.resolve_location(ArchiveLocation.resolve(root)) != snapshot.identity:
+        raise ValueError("archive changed while observing embedding mutation authority")
+    return replace(snapshot, schema_versions=versions, degraded_components=tuple(degraded))
+
+
 @contextmanager
 def open_operation_read(
     root: Path,

@@ -27,7 +27,7 @@ from polylogue.operations.mutation_transaction import (
     OperationExecutor,
     compute_parameter_digest,
 )
-from polylogue.operations.operation_context import OperationContext, PinnedOperationRead
+from polylogue.operations.operation_context import OperationContext, OperationControlRead, PinnedOperationRead
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
@@ -458,7 +458,7 @@ def maintenance_embedding_failure_resolve(
     request: DaemonOperationRequest,
     context: OperationContext,
     audit: AuditRepository,
-    snapshot: PinnedOperationRead,
+    snapshot: OperationControlRead,
 ) -> dict[str, object]:
     """Resolve an active embedding failure under the daemon writer."""
     del audit, snapshot

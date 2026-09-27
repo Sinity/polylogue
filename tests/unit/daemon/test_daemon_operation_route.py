@@ -8,6 +8,7 @@ import queue
 import socket
 import sqlite3
 import threading
+from contextlib import closing
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
@@ -56,6 +57,154 @@ def test_failed_backup_operation_retains_rejected_result_details(
         "retryable": False,
         "data": {"backup_result": partial.model_dump(mode="json")},
     }
+
+
+def _seed_terminal_embedding_failure(root: Path) -> None:
+    with closing(sqlite3.connect(root / "embeddings.db")) as connection:
+        with connection:
+            connection.execute(
+                """INSERT INTO embedding_failures (
+                    failure_id, session_id, origin, message_refs_json, provider, model,
+                    error_class, error_message, retryable, lifecycle_state,
+                    created_at_ms, updated_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "embedding-failure:route",
+                    "codex-session:pending",
+                    "codex-session",
+                    "[]",
+                    "voyage",
+                    "voyage-4",
+                    "provider_http_400",
+                    "synthetic terminal failure",
+                    0,
+                    "terminal",
+                    1800000000000,
+                    1800000000000,
+                ),
+            )
+
+
+def test_embedding_failure_resolution_reports_settled_identity_and_all_tier_versions(tmp_path: Path) -> None:
+    """Adoption must not return a stale binding or an incomplete ready snapshot.
+
+    Anti-vacuity: retaining the pre-write identity or skipping embedding tier
+    version observation makes this fail even though the failure row resolves.
+    """
+    from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
+
+    with running_daemon_operations(tmp_path / "archive", seed_archive=_seed_terminal_embedding_failure) as stack:
+        before = ArchiveIdentity.resolve_location(ArchiveLocation.resolve(stack.archive_root))
+        envelope = stack.client.operation(
+            "maintenance.embeddings.failure.resolve",
+            {"failure_id": "embedding-failure:route", "resolution": "requeue"},
+            archive_root=str(stack.archive_root),
+            expected_archive_identity=before.authority_identity_digest,
+        )
+        after = ArchiveIdentity.resolve_location(ArchiveLocation.resolve(stack.archive_root))
+
+    assert envelope is not None
+    assert envelope["outcome"] == "completed", envelope
+    assert before != after
+    assert envelope["authority"]["admitted_archive_identity"] == before.authority_identity_digest
+    assert envelope["archive"]["archive_identity"] == after.authority_identity_digest
+    assert envelope["readiness"]["ready"] is True
+    assert set(envelope["schema_versions"]) == {"source", "index", "embeddings", "user", "audit", "ops"}
+
+
+def test_embedding_failure_resolution_defers_while_reader_pins_wal(tmp_path: Path) -> None:
+    """A live reader blocks checkpoint, so resolution stays pending and retryable.
+
+    Anti-vacuity: treating the busy checkpoint as corrupt marks the response
+    non-retryable, while bypassing the lifecycle mutates the failure ledger.
+    """
+    with running_daemon_operations(tmp_path / "archive", seed_archive=_seed_terminal_embedding_failure) as stack:
+        embeddings_db = stack.archive_root / "embeddings.db"
+        with closing(sqlite3.connect(embeddings_db)) as reader:
+            reader.execute("BEGIN")
+            reader.execute("SELECT COUNT(*) FROM embedding_failures").fetchone()
+            with closing(sqlite3.connect(embeddings_db)) as writer:
+                with writer:
+                    writer.execute(
+                        "UPDATE embedding_failures SET updated_at_ms = updated_at_ms + 1 WHERE failure_id = ?",
+                        ("embedding-failure:route",),
+                    )
+            envelope = stack.client.operation(
+                "maintenance.embeddings.failure.resolve",
+                {"failure_id": "embedding-failure:route", "resolution": "requeue"},
+                archive_root=str(stack.archive_root),
+            )
+        with closing(sqlite3.connect(embeddings_db)) as settled:
+            assert settled.execute(
+                "SELECT lifecycle_state FROM embedding_failures WHERE failure_id = 'embedding-failure:route'"
+            ).fetchone() == ("terminal",)
+
+    assert envelope is not None
+    assert envelope["outcome"] == "rejected", envelope
+    assert envelope["error"]["code"] == "embedding_generation_busy"
+    assert envelope["error"]["retryable"] is True
+
+
+def test_embedding_resolution_delivers_index_schema_degradation_before_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A schema refusal before admission remains a typed degraded response.
+
+    Anti-vacuity: requiring the resolution-only admission fields for degraded
+    responses makes the client report an indeterminate mutation instead.
+    """
+    from polylogue.core.errors import SchemaSkew
+    from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
+
+    def stale_index(*_args: object, **_kwargs: object) -> None:
+        raise SchemaSkew("index", "current", "stale")
+
+    with running_daemon_operations(tmp_path / "archive", seed_archive=_seed_terminal_embedding_failure) as stack:
+        identity = ArchiveIdentity.resolve_location(ArchiveLocation.resolve(stack.archive_root))
+        monkeypatch.setattr("polylogue.storage.sqlite.schema.assert_readable_archive_layout", stale_index)
+        envelope = stack.client.operation(
+            "maintenance.embeddings.failure.resolve",
+            {"failure_id": "embedding-failure:route", "resolution": "requeue"},
+            archive_root=str(stack.archive_root),
+            expected_archive_identity=identity.authority_identity_digest,
+        )
+
+    assert envelope is not None
+    assert envelope["outcome"] == "degraded", envelope
+    assert envelope["error"]["code"] == "schema_skew"
+    assert envelope["progress"]["tier"] == "index"
+    assert "admitted_archive_identity" not in envelope["authority"]
+
+
+def test_embedding_resolution_refuses_stale_embedding_schema_before_lifecycle(tmp_path: Path) -> None:
+    """A stale embedding tier gets typed reconvergence guidance, not a failed write.
+
+    Anti-vacuity: reading only the tier version lets lifecycle validation raise
+    a generic error after admission and returns a non-retryable failure.
+    """
+
+    def stale_version(root: Path) -> None:
+        with closing(sqlite3.connect(root / "embeddings.db")) as connection:
+            connection.execute("PRAGMA user_version = 99")
+
+    with running_daemon_operations(tmp_path / "archive", seed_archive=_seed_terminal_embedding_failure) as stack:
+        stack.write_bridge.run_sync("test.stale_embeddings", stale_version, stack.archive_root)
+        envelope = stack.client.operation(
+            "maintenance.embeddings.failure.resolve",
+            {"failure_id": "embedding-failure:route", "resolution": "requeue"},
+            archive_root=str(stack.archive_root),
+        )
+        with closing(sqlite3.connect(stack.archive_root / "embeddings.db")) as connection:
+            row = connection.execute(
+                "SELECT lifecycle_state FROM embedding_failures WHERE failure_id = 'embedding-failure:route'"
+            ).fetchone()
+
+    assert envelope is not None
+    assert envelope["outcome"] == "degraded", envelope
+    assert envelope["error"]["code"] == "schema_skew"
+    assert envelope["progress"]["tier"] == "embeddings"
+    assert envelope["error"]["retryable"] is True
+    assert row == ("terminal",)
 
 
 def _seed_sessions(root: Path, *, count: int, title: str = "Operation route session") -> tuple[str, ...]:

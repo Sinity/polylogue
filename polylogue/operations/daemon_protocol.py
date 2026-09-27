@@ -47,6 +47,7 @@ class DaemonFallback(StrEnum):
 DAEMON_OPERATION_OUTCOMES = frozenset(
     {
         *(status.value for status in OperationStatus),
+        "degraded",
         "cancelled",
         "timed-out",
         "disconnected-before-acceptance",

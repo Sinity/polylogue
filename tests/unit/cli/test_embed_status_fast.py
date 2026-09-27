@@ -452,10 +452,12 @@ def test_resolve_failure_cli_requeues_terminal_failure(tmp_path: Path, monkeypat
     """The operator command must mutate the failure ledger and retry status.
 
     Anti-vacuity: replacing the Click command with output-only formatting, or
-    removing its call to ``resolve_embedding_failure``, leaves the terminal row
+    keeping the daemon's embeddings read snapshot pinned while the lifecycle
+    adopts the active database, refuses the requeue and leaves the terminal row
     active and the session excluded from a future embedding pass.
     """
     from polylogue.cli.click_app import cli
+    from polylogue.storage.sqlite.managed_connection import sqlite_connection
     from tests.infra.daemon_operations import cli_daemon_archive
 
     archive_root = tmp_path / "archive"
@@ -481,6 +483,10 @@ def test_resolve_failure_cli_requeues_terminal_failure(tmp_path: Path, monkeypat
             )
 
     with cli_daemon_archive(archive_root, monkeypatch, seed_archive=seed):
+        embeddings_db = archive_root / "embeddings.db"
+        with sqlite_connection(f"file:{embeddings_db}?mode=ro", uri=True) as reader:
+            assert reader.execute("SELECT COUNT(*) FROM embedding_failures").fetchone()[0] == 1
+        assert embeddings_db.with_name("embeddings.db-wal").exists()
         result = CliRunner(env={"POLYLOGUE_FORCE_PLAIN": "1"}).invoke(
             cli,
             [
@@ -496,8 +502,23 @@ def test_resolve_failure_cli_requeues_terminal_failure(tmp_path: Path, monkeypat
             ],
             catch_exceptions=False,
         )
+        refused = CliRunner(env={"POLYLOGUE_FORCE_PLAIN": "1"}).invoke(
+            cli,
+            [
+                "ops",
+                "embed",
+                "resolve-failure",
+                "embedding-failure:terminal",
+                "--action",
+                "requeue",
+                "--yes",
+            ],
+            catch_exceptions=False,
+        )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
+    assert refused.exit_code != 0
+    assert "embedding-failure:terminal" in refused.output
     assert _payload(result.output) == {
         "failure_id": "embedding-failure:terminal",
         "lifecycle_state": "resolved",

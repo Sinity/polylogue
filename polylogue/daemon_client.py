@@ -353,12 +353,24 @@ class DaemonClient:
             raise DaemonOperationProtocolError("daemon omitted archive or generation identity")
         # A typed refusal may explain a stale precondition using current
         # authority. Successful execution must actually satisfy that binding.
-        if response["outcome"] not in {"rejected", "failed", "cancelled", "timed-out"}:
-            if request.expected_archive_identity not in (None, snapshot["archive_identity"]):
+        if response["outcome"] not in {"rejected", "failed", "cancelled", "timed-out", "degraded"}:
+            # Embedding lifecycle adoption can change its inode during this
+            # committed operation. The daemon reports the settled authority
+            # above and the independently checked admission binding here.
+            admission = response["authority"]
+            if request.operation == "maintenance.embeddings.failure.resolve" and response["outcome"] == "completed":
+                admitted_identity = admission.get("admitted_archive_identity")
+                admitted_generation = admission.get("admitted_generation")
+                if not isinstance(admitted_identity, str) or not isinstance(admitted_generation, str):
+                    raise DaemonOperationProtocolError("daemon omitted embedding mutation admission identity")
+            else:
+                admitted_identity = snapshot["archive_identity"]
+                admitted_generation = snapshot["generation"]
+            if request.expected_archive_identity not in (None, admitted_identity):
                 raise DaemonOperationProtocolError("daemon served a stale archive identity")
             if response.get("accepted_reference") is None and request.expected_generation_id not in (
                 None,
-                snapshot["generation"],
+                admitted_generation,
             ):
                 raise DaemonOperationProtocolError("daemon served a stale generation")
         reference = response.get("accepted_reference")
