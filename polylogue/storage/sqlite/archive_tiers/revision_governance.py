@@ -2751,6 +2751,32 @@ def convertible_full_revision_raw_ids(store: RawRevisionGovernanceHost, logical_
     return tuple(str(row[0]) for row in rows)
 
 
+def pending_raw_envelope_has_membership_authority(conn: sqlite3.Connection, logical_source_key: str) -> bool:
+    """Whether ``logical_source_key`` is a pending-raw envelope governed per session.
+
+    A ``pending-raw:`` key names bytes, not a session. The parser census
+    rebinds it to the session's own key when the raw parses to exactly one
+    session; a raw that parses to several keeps the envelope and records one
+    ``raw_session_memberships`` row per session instead. Such an envelope is
+    not a revision chain of one session, so byte-chain replay must skip it and
+    let membership governance settle each session under its own key.
+    """
+    if not logical_source_key.startswith(PENDING_RAW_LOGICAL_SOURCE_PREFIX):
+        return False
+    return (
+        conn.execute(
+            """
+            SELECT 1 FROM raw_sessions AS r
+            JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
+            WHERE r.logical_source_key = ?
+            LIMIT 1
+            """,
+            (logical_source_key,),
+        ).fetchone()
+        is not None
+    )
+
+
 def expand_raw_membership_selection(
     store: RawRevisionGovernanceHost, raw_ids: list[str] | None
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:

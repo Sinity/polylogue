@@ -42,6 +42,7 @@ from polylogue.storage.raw_authority import (
     raw_replay_application_receipt_from_connection,
     validate_raw_replay_application_receipt,
 )
+from polylogue.storage.sqlite.archive_tiers.source_write import PENDING_RAW_LOGICAL_SOURCE_PREFIX
 from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
 
@@ -105,7 +106,7 @@ class RawObservationReplacement:
     raw_ids: tuple[str, ...]
     prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None
     prepared_aggregates: Mapping[str, PreparedRetainedAggregate] | None = None
-    prepared_writes: Mapping[str, PreparedSessionWrite] | None = None
+    prepared_writes: Mapping[tuple[str, str], PreparedSessionWrite] | None = None
     classification_proofs: Mapping[str, PreparedRawRevisionClassification] | None = None
     verified_blob_stats: Mapping[str, tuple[int, int, int, int, int]] | None = None
     planned_accepted_raw_ids: Mapping[str, tuple[str, ...]] | None = None
@@ -115,6 +116,19 @@ class RawObservationReplacement:
     scratch_owner: tempfile.TemporaryDirectory[str] | None = None
     empty: bool = False
     already_valid: bool = False
+
+
+def _session_id(session: ParsedSession) -> str:
+    from polylogue.core.sources import origin_from_provider
+
+    return f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
+
+
+def _holds_several_sessions(artifact: PreparedJsonl | None) -> bool:
+    if artifact is None:
+        return False
+    with closing(artifact.iter_sessions()) as sessions:
+        return next(sessions, None) is not None and next(sessions, None) is not None
 
 
 class RawObservationDerivation:
@@ -475,9 +489,19 @@ class RawObservationDerivation:
 
     @staticmethod
     def _source_replay_plans(archive: ArchiveStore, logical_keys: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
-        """Capture only source-backed byte plans; census may establish others later."""
+        """Capture only source-backed byte plans; census may establish others later.
+
+        A multi-session raw's pending envelope is governed per session through
+        its memberships, so it has no one-session byte plan to capture.
+        """
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+            pending_raw_envelope_has_membership_authority,
+        )
+
         plans: dict[str, tuple[str, ...]] = {}
         for logical_key in logical_keys:
+            if pending_raw_envelope_has_membership_authority(archive.source_connection, logical_key):
+                continue
             candidate = archive.source_connection.execute(
                 "SELECT 1 FROM raw_sessions WHERE logical_source_key = ? AND source_revision IS NOT NULL LIMIT 1",
                 (logical_key,),
@@ -529,6 +553,7 @@ class RawObservationDerivation:
                     selected_prepared_membership_head,
                 )
                 from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+                    pending_raw_envelope_has_membership_authority,
                     prepare_raw_revision_rebuild_classification,
                     prepared_raw_revision_classification_current,
                 )
@@ -555,7 +580,9 @@ class RawObservationDerivation:
                             "AND source_revision IS NOT NULL LIMIT 1",
                             (logical_key,),
                         ).fetchone()
-                        if has_byte_candidate is None:
+                        if has_byte_candidate is None or pending_raw_envelope_has_membership_authority(
+                            archive.source_connection, logical_key
+                        ):
                             continue
                         classification_proofs[logical_key] = prepare_raw_revision_rebuild_classification(
                             archive, logical_key
@@ -581,7 +608,7 @@ class RawObservationDerivation:
                 scratch = Path(scratch_owner.name)
                 prepared: dict[str, PreparedRetainedInput] = {}
                 aggregates: dict[str, PreparedRetainedAggregate] = {}
-                prepared_writes: dict[str, PreparedSessionWrite] = {}
+                prepared_writes: dict[tuple[str, str], PreparedSessionWrite] = {}
                 verified_blob_stats: dict[str, tuple[int, int, int, int, int]] = {}
                 prepared_artifacts: dict[tuple[object, ...], PreparedJsonl] = {}
                 try:
@@ -748,8 +775,20 @@ class RawObservationDerivation:
                                     f"retained cohort preparation seal changed for {logical_key}"
                                 ) from exc
                             aggregates[logical_key] = PreparedRetainedAggregate(accepted_raw_ids, aggregate)
+                    if not needs_source_census:
+                        # A pending-raw envelope whose bytes hold several
+                        # sessions has not yet been censused into per-session
+                        # memberships; the census, not a one-session write,
+                        # settles it.
+                        needs_source_census = any(
+                            logical_key.startswith(PENDING_RAW_LOGICAL_SOURCE_PREFIX)
+                            and _holds_several_sessions(prepared[accepted_raw_ids[-1]].prepared_artifact)
+                            for logical_key, accepted_raw_ids in planned_accepted_raw_ids.items()
+                            if accepted_raw_ids
+                        )
                     if not needs_source_census and archive.index_connection is not None:
-                        selected_writes: dict[str, tuple[ParsedSession, PreparedJsonl]] = {}
+                        # Keyed by (raw, session): one raw may carry several sessions.
+                        selected_writes: dict[tuple[str, str], tuple[ParsedSession, PreparedJsonl]] = {}
                         for logical_key, accepted_raw_ids in planned_accepted_raw_ids.items():
                             if not accepted_raw_ids:
                                 continue
@@ -772,7 +811,10 @@ class RawObservationDerivation:
                                 raise RetainedPreparationRetryableError(
                                     f"retained replay plan has no single prepared session for {logical_key}"
                                 )
-                            selected_writes[tip_raw_id] = (selected_session, selected_artifact)
+                            selected_writes[(tip_raw_id, _session_id(selected_session))] = (
+                                selected_session,
+                                selected_artifact,
+                            )
                         for logical_key in logical_keys:
                             if planned_accepted_raw_ids.get(logical_key):
                                 continue
@@ -782,11 +824,11 @@ class RawObservationDerivation:
                             accepted_raw_id, accepted_session = selected
                             membership_artifact = prepared[accepted_raw_id].prepared_artifact
                             if membership_artifact is not None:
-                                selected_writes[accepted_raw_id] = (accepted_session, membership_artifact)
-                        for tip_raw_id, (session, artifact) in selected_writes.items():
-                            session_id = (
-                                f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
-                            )
+                                selected_writes[(accepted_raw_id, _session_id(accepted_session))] = (
+                                    accepted_session,
+                                    membership_artifact,
+                                )
+                        for (tip_raw_id, session_id), (session, artifact) in selected_writes.items():
                             existing = archive.index_connection.execute(
                                 "SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)
                             ).fetchone()
@@ -806,7 +848,7 @@ class RawObservationDerivation:
                                 raise RetainedPreparationRetryableError(
                                     f"retained replay shard is absent for raw {tip_raw_id}"
                                 )
-                            prepared_writes[tip_raw_id] = prepare_session_write(
+                            prepared_writes[(tip_raw_id, session_id)] = prepare_session_write(
                                 archive.index_connection,
                                 session,
                                 merge_append=False,

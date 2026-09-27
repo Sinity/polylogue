@@ -24,6 +24,7 @@ from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.archive.session_revision_membership import MembershipDecision
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
+from polylogue.storage.sqlite.archive_tiers.source_write import PENDING_RAW_LOGICAL_SOURCE_PREFIX
 from polylogue.storage.sqlite.connection_profile import (
     attach_readonly_database,
     open_isolated_write_connection,
@@ -182,12 +183,20 @@ def build_raw_replay_plan(conn: sqlite3.Connection, input_raw_ids: Sequence[str]
         """,
         raw_ids,
     )
+    # A multi-session raw keeps its pending-raw byte envelope while each of its
+    # sessions is governed by its own membership key. The envelope names no
+    # session, so it has no accepted head to prove; only its members do.
+    membership_raw_ids = {str(row["raw_id"]) for row in membership_rows}
     logical_keys = tuple(
         sorted(
             {
                 str(value)
                 for row in (*source_rows, *membership_rows)
                 if (value := row.get("logical_source_key")) is not None
+                and not (
+                    str(value).startswith(PENDING_RAW_LOGICAL_SOURCE_PREFIX)
+                    and str(row["raw_id"]) in membership_raw_ids
+                )
             }
         )
     )
@@ -519,7 +528,11 @@ def validate_raw_replay_application_receipt(
         frontier = application.get("accepted_frontier")
         if frontier_kind not in {"byte", "semantic"} or type(frontier) is not int or frontier < 0:
             problems.append(f"application accepted frontier is malformed for {raw_id}/{key}")
-        for field in ("baseline_raw_id", "predecessor_raw_id"):
+        # A semantic membership application is evidenced by its membership
+        # row, not by the raw's byte-chain columns: a multi-session raw keeps a
+        # pending-raw byte envelope whose chain fields describe no member.
+        membership_evidenced = frontier_kind == "semantic" and (raw_id, key) in membership_revisions_by_raw_and_key
+        for field in () if membership_evidenced else ("baseline_raw_id", "predecessor_raw_id"):
             if application.get(field) != source.get(field):
                 problems.append(f"application {field} does not match source evidence for {raw_id}")
         try:
