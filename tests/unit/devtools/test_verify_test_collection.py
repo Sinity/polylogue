@@ -1,14 +1,8 @@
-"""The quick gate must be able to see a test module that cannot be collected.
+"""The explicit collection gate reports import failures without running tests.
 
-``devtools verify --quick`` is the hosted merge gate and runs no test bodies,
-so a module that raises on import used to merge green: the author's focused
-selection described a pre-rebase tree, and CI never collected anything.
-
-Anti-vacuity: drop ``test-collection`` from ``devtools.gate.GATES`` (or mark it
-``in_quick=False``) and ``test_the_collection_gate_is_in_the_quick_path`` goes
-red. Make ``main`` ignore pytest's exit code -- return 0 unconditionally -- and
-both failure cases go red. The gate's reach is asserted as narrowly as it is
-real: collection, not execution.
+Anti-vacuity: remove the registered gate and the registration check goes red.
+Make ``main`` ignore pytest's exit code and both failure cases go red. The
+gate's reach is collection, not execution.
 """
 
 from __future__ import annotations
@@ -42,9 +36,8 @@ def _drive(monkeypatch: pytest.MonkeyPatch, completed: _Completed) -> list[dict[
     return calls
 
 
-def test_the_collection_gate_is_in_the_quick_path() -> None:
-    """The merge gate is `verify --quick`; a gate outside it catches nothing."""
-    assert "test-collection" in {gate.name for gate in quick_gates()}
+def test_the_collection_gate_is_explicit_and_outside_the_quick_path() -> None:
+    assert "test-collection" not in {gate.name for gate in quick_gates()}
     gate = GATES_BY_NAME["test-collection"]
     assert gate.blocking is True
 

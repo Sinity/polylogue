@@ -152,7 +152,7 @@ change, reusing its receipt across related Beads. `devtools verify --quick`
 runs static gates only. `devtools verify` makes a bounded affected selection
 from a usable testmon graph and refuses when it cannot; it never silently
 becomes a corpus run. Broad or complete-corpus verification requires an
-explicit request or schedule. `devtools why` and the run receipt show exactly
+explicit request. `devtools why` and the run receipt show exactly
 what ran; a zero-test or quick-gate green does not prove behavior. Read
 `.agentctl/project.toml` on the candidate for hosted checks and review policy.
 Tests exercise the production route and name what would make them fail.

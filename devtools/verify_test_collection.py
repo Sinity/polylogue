@@ -2,13 +2,10 @@
 
 Gate classification: **blocking collectability check**.
 
-``devtools verify --quick`` is the hosted merge gate and deliberately runs no
-pytest: the suite's pre-merge evidence is the author's explicitly selected
-local or hosted run. That policy has one blind spot it cannot see past -- the
-author's selection describes *the tree they ran it on*, and a rebase can leave
-behind a test module that no longer imports. Such a module raises on
-collection, so the selection that "passed" selected zero tests, and nothing
-downstream notices.
+This is an explicit diagnostic gate. ``devtools verify --quick`` does not
+collect the corpus; the complete-corpus run collects it while executing tests.
+Focused tests remain the author's pre-merge test evidence. Use this gate when
+collectability itself needs checking without executing the full corpus.
 
 This gate collects the whole declared corpus and executes none of it. It is
 honest about its reach:
@@ -64,8 +61,8 @@ _EXIT_NO_TESTS_COLLECTED = 5
 #: This step is a declared devtools gate, not a bare pytest session, so it
 #: names itself to ``devtools.agent_env.refuse_bare_pytest``. That refusal
 #: protects the host's pytest slot from unmetered *execution*; ``--collect-only``
-#: runs no test body and holds no slot, and refusing it would make the gate red
-#: inside every agent job -- exactly where ``verify --quick`` is run.
+#: runs no test body and holds no slot, so an explicit gate invocation may run
+#: inside an agent job without an execution slot.
 COLLECTION_RUN_ID = "gate-test-collection"
 
 __all__ = ["COLLECTION_RUN_ID", "collection_command", "collection_env", "count_collected", "main"]

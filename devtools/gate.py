@@ -240,11 +240,11 @@ GATES: tuple[Gate, ...] = (
     ),
     Gate(
         "test-collection",
-        "Collect the declared test corpus without running it, so an unimportable module cannot merge.",
+        "Collect the declared test corpus without running test bodies.",
         "module",
         ("devtools.verify_test_collection", "--json"),
         label="gate test-collection",
-        in_quick=True,
+        in_quick=False,
     ),
     Gate(
         "schema-audit",
