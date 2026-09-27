@@ -82,6 +82,18 @@ def _reset_semantic_generator(
     self._semantic_gen = SemanticValueGenerator(rng, theme=theme, base_ts=base_ts, role_cycle=list(roles))
 
 
+def _declares_number(schema: SchemaValue | object) -> bool:
+    node = _coerce_schema(schema)
+    declared: list[object] = []
+    raw_type = node.get("type")
+    declared.extend(raw_type if isinstance(raw_type, list) else [raw_type])
+    for key in ("anyOf", "oneOf"):
+        variants = node.get(key)
+        if isinstance(variants, list):
+            declared.extend(_coerce_schema(variant).get("type") for variant in variants)
+    return any(kind in {"number", "integer"} for kind in declared)
+
+
 def _has_messages_path(parts: Sequence[str], schema: SchemaRecord) -> tuple[bool, SchemaRecord]:
     cursor = schema
     for part in parts:
@@ -159,8 +171,14 @@ def _generate_tree_json(
         top_record["current_node"] = nodes[-1][tree_cfg.key_field]
     if self.provider == "chatgpt":
         top_record["id"] = str(uuid.UUID(int=rng.getrandbits(128), version=4))
-        top_record.setdefault("create_time", base_ts)
-        top_record.setdefault("update_time", base_ts + max(0, n_messages - 1) * 60)
+        # Conversation timestamps are epoch floats, but only where the selected
+        # element declares a numeric field; other ChatGPT elements (the export
+        # asset index) type these fields differently, and a default must not
+        # contradict the element's own schema.
+        defaults = {"create_time": base_ts, "update_time": base_ts + max(0, n_messages - 1) * 60}
+        for field_name, value in defaults.items():
+            if field_name not in top_record and _declares_number(properties.get(field_name)):
+                top_record[field_name] = value
     if theme is not None and "title" in _coerce_schema(self.schema.get("properties")):
         top_record["title"] = theme.title
     return top_record
