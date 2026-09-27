@@ -3,16 +3,11 @@
 from __future__ import annotations
 
 import json
-from typing import TypeAlias
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
-import click
 import pytest
 
-from polylogue.cli.shared.embed_runtime import embed_batch, embed_single
 from polylogue.cli.shared.embed_stats import show_embedding_stats
-
-MessageRow: TypeAlias = dict[str, str]
 
 
 @pytest.fixture
@@ -28,35 +23,6 @@ def mock_env() -> MagicMock:
     env.config = MagicMock(db_path=None)
     env.repository = MagicMock()
     return env
-
-
-@pytest.fixture
-def mock_env_rich() -> MagicMock:
-    from rich.console import Console
-
-    env = MagicMock()
-    env.ui = MagicMock()
-    env.ui.plain = False
-    env.ui.console = Console()
-    env.ui.confirm.return_value = True
-    env.ui.summary = MagicMock()
-    env.config = MagicMock(db_path=None)
-    env.repository = MagicMock()
-    return env
-
-
-@pytest.fixture
-def mock_session() -> MagicMock:
-    conv = MagicMock()
-    conv.id = "conv-123"
-    conv.title = "Test Session"
-    return conv
-
-
-_MOCK_MESSAGES: list[MessageRow] = [
-    {"message_id": "m1", "text": "Hello"},
-    {"message_id": "m2", "text": "World"},
-]
 
 
 def _embedding_status_payload(
@@ -113,23 +79,6 @@ def _embedding_status_payload(
             else "Semantic retrieval needs a Voyage API key before embedding can run.",
         },
     }
-
-
-@pytest.fixture
-def mock_repository() -> MagicMock:
-    repo = MagicMock()
-    repo.backend = MagicMock()
-    repo.backend.queries = MagicMock()
-    repo.backend.queries.get_messages = AsyncMock(return_value=_MOCK_MESSAGES)
-    return repo
-
-
-@pytest.fixture
-def mock_repository_async(mock_session: MagicMock) -> MagicMock:
-    repo = MagicMock()
-    repo.view = AsyncMock(return_value=mock_session)
-    repo.get_messages = AsyncMock(return_value=_MOCK_MESSAGES)
-    return repo
 
 
 class TestShowEmbeddingStats:
@@ -198,147 +147,3 @@ class TestShowEmbeddingStats:
         assert payload["pending_sessions"] == 60
         assert payload["retrieval_ready"] is True
         assert payload["retrieval_bands"]["evidence_retrieval"]["ready"] is True
-
-
-class TestEmbedSingle:
-    def testembed_single_success(
-        self, mock_env: MagicMock, mock_repository_async: MagicMock, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        mock_vec_provider = MagicMock()
-        embed_single(mock_env, mock_repository_async, mock_vec_provider, "conv-123")
-        mock_vec_provider.upsert.assert_called_once_with("conv-123", mock_repository_async.get_messages.return_value)
-        captured = capsys.readouterr()
-        assert "Embedding 2 messages" in captured.out
-        assert "✓ Embedded" in captured.out
-
-    def testembed_single_session_not_found(self, mock_env: MagicMock, mock_repository_async: MagicMock) -> None:
-        mock_repository_async.view = AsyncMock(return_value=None)
-        with pytest.raises(click.Abort):
-            embed_single(mock_env, mock_repository_async, MagicMock(), "nonexistent")
-
-    def testembed_single_no_messages(
-        self, mock_env: MagicMock, mock_repository_async: MagicMock, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        mock_repository_async.get_messages = AsyncMock(return_value=[])
-        mock_vec_provider = MagicMock()
-        embed_single(mock_env, mock_repository_async, mock_vec_provider, "conv-123")
-        mock_vec_provider.upsert.assert_not_called()
-        assert "No messages to embed" in capsys.readouterr().out
-
-    def testembed_single_upsert_exception(self, mock_env: MagicMock, mock_repository_async: MagicMock) -> None:
-        mock_vec_provider = MagicMock()
-        mock_vec_provider.upsert.side_effect = ValueError("API error")
-        with pytest.raises(click.Abort):
-            embed_single(mock_env, mock_repository_async, mock_vec_provider, "conv-123")
-
-
-class TestEmbedBatch:
-    @pytest.mark.parametrize(
-        ("num_convs", "limit", "rebuild", "expected_output"),
-        [
-            (0, None, False, "All sessions are already embedded"),
-            (2, None, False, "Embedding 2 sessions"),
-            (3, 2, False, "Embedding 2 sessions"),
-            (3, None, True, "Embedding 3 sessions"),
-        ],
-    )
-    def testembed_batch_variants(
-        self,
-        mock_env: MagicMock,
-        mock_repository: MagicMock,
-        capsys: pytest.CaptureFixture[str],
-        num_convs: int,
-        limit: int | None,
-        rebuild: bool,
-        expected_output: str,
-    ) -> None:
-        mock_env.ui.console = MagicMock()
-        mock_vec_provider = MagicMock()
-        convs = [{"session_id": f"conv-{i}", "title": f"Test {i}"} for i in range(1, num_convs + 1)]
-
-        with patch("polylogue.storage.sqlite.connection.open_connection") as mock_open:
-            mock_conn = MagicMock()
-            mock_conn.execute.return_value.fetchmany.side_effect = [convs, []]
-            mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
-            mock_open.return_value.__exit__ = MagicMock(return_value=False)
-            if limit is None:
-                embed_batch(mock_env, mock_repository, mock_vec_provider, rebuild=rebuild)
-            else:
-                embed_batch(mock_env, mock_repository, mock_vec_provider, max_sessions=limit, rebuild=rebuild)
-
-        assert expected_output in capsys.readouterr().out
-
-    def testembed_batch_rebuild_flag(self, mock_env: MagicMock, mock_repository: MagicMock) -> None:
-        mock_vec_provider = MagicMock()
-        with patch("polylogue.storage.sqlite.connection.open_connection") as mock_open:
-            mock_conn = MagicMock()
-            mock_conn.execute.return_value.fetchmany.side_effect = [[], []]
-            mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
-            mock_open.return_value.__exit__ = MagicMock(return_value=False)
-            embed_batch(mock_env, mock_repository, mock_vec_provider, rebuild=True)
-        assert any("ORDER BY COALESCE(c.updated_at_ms, 0)" in str(call) for call in mock_conn.execute.call_args_list)
-
-    def testembed_batch_error_handling(
-        self, mock_env: MagicMock, mock_repository: MagicMock, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        mock_vec_provider = MagicMock()
-        mock_repository.backend.queries.get_messages = AsyncMock(
-            side_effect=[[{"message_id": "m1"}], ValueError("Embed failed"), [{"message_id": "m3"}]]
-        )
-        convs = [
-            {"session_id": "conv-1", "title": "Test 1"},
-            {"session_id": "conv-2", "title": "Test 2"},
-            {"session_id": "conv-3", "title": "Test 3"},
-        ]
-        with patch("polylogue.storage.sqlite.connection.open_connection") as mock_open:
-            mock_conn = MagicMock()
-            mock_conn.execute.return_value.fetchmany.side_effect = [convs, []]
-            mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
-            mock_open.return_value.__exit__ = MagicMock(return_value=False)
-            embed_batch(mock_env, mock_repository, mock_vec_provider)
-        assert "error" in capsys.readouterr().out.lower()
-
-
-class TestEmbedBatchRichMode:
-    @pytest.mark.parametrize(
-        ("num_convs", "messages_side_effect", "exception_type"),
-        [
-            (2, [{"message_id": "m1"}] * 2, None),
-            (2, [[{"message_id": "m1"}], []], None),
-            (1, [{"message_id": "m1"}], RuntimeError),
-        ],
-    )
-    def testembed_batch_rich_mode_variants(
-        self,
-        mock_env_rich: MagicMock,
-        mock_repository: MagicMock,
-        capsys: pytest.CaptureFixture[str],
-        num_convs: int,
-        messages_side_effect: object,
-        exception_type: type[Exception] | None,
-    ) -> None:
-        mock_vec_provider = MagicMock()
-        if exception_type:
-            mock_vec_provider.upsert.side_effect = exception_type("API timeout")
-        elif (
-            isinstance(messages_side_effect, list)
-            and messages_side_effect
-            and not isinstance(messages_side_effect[0], dict)
-        ):
-            mock_repository.backend.queries.get_messages = AsyncMock(side_effect=messages_side_effect)
-        else:
-            mock_repository.backend.queries.get_messages = AsyncMock(return_value=messages_side_effect)
-
-        convs = [{"session_id": f"conv-{i}", "title": f"Test {i}"} for i in range(1, num_convs + 1)]
-        with patch("polylogue.storage.sqlite.connection.open_connection") as mock_open:
-            mock_conn = MagicMock()
-            mock_conn.execute.return_value.fetchmany.side_effect = [convs, []]
-            mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
-            mock_open.return_value.__exit__ = MagicMock(return_value=False)
-            embed_batch(mock_env_rich, mock_repository, mock_vec_provider)
-
-        captured = capsys.readouterr()
-        if exception_type is None:
-            assert "Embedding" in captured.out or "Embedded" in captured.out
-        else:
-            assert "error" in captured.out.lower()

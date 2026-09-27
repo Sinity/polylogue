@@ -381,11 +381,6 @@
   },
   {
     "target": "polylogue/cli",
-    "file": "polylogue/cli/shared/embed_runtime.py",
-    "import": "polylogue.storage.embeddings.materialization"
-  },
-  {
-    "target": "polylogue/cli",
     "file": "polylogue/cli/shared/embed_stats.py",
     "import": "polylogue.storage.embeddings.status_payload"
   },
