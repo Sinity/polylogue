@@ -1115,21 +1115,24 @@ class LiveBatchProcessor:
             debt_by_source_path = debt_by_path(convergence_debt)
             outcome_items: list[tuple[Path, Iterable[ConvergenceDebt]]] = []
             for plan in append_result.succeeded:
-                succeeded_paths.add(plan.path)
-                if not await self._run_ops_write("cursor_append", self._record_append_cursor, plan):
-                    stale_cursor_write_count += 1
-                cursor_fingerprint_read_bytes += self._last_append_cursor_proof_bytes
-                if not defer_convergence:
-                    outcome_items.append((plan.path, debt_by_source_path.get(plan.path, ())))
-                session_id = append_result.session_ids_by_path.get(plan.path)
-                if session_id:
-                    updated_session_touches.append((plan.source_name, session_id))
-            if outcome_items:
+                outcome_items.append((plan.path, debt_by_source_path.get(plan.path, ())))
+            if outcome_items and not defer_convergence:
+                # Publish the retry obligation before advancing any cursor in
+                # this group. If ops.db remains locked, the batch raises and
+                # the unchanged source frontier will be offered again.
                 await self._run_ops_write(
                     "convergence_outcomes",
                     self._record_convergence_outcomes,
                     outcome_items,
                 )
+            for plan in append_result.succeeded:
+                succeeded_paths.add(plan.path)
+                if not await self._run_ops_write("cursor_append", self._record_append_cursor, plan):
+                    stale_cursor_write_count += 1
+                cursor_fingerprint_read_bytes += self._last_append_cursor_proof_bytes
+                session_id = append_result.session_ids_by_path.get(plan.path)
+                if session_id:
+                    updated_session_touches.append((plan.source_name, session_id))
             for plan in append_result.failed:
                 failed_paths.append(str(plan.path))
                 cursor_fingerprint_read_bytes += await self._run_ops_write(
@@ -1410,7 +1413,19 @@ class LiveBatchProcessor:
                 # once instead of opening two read-only connections per path
                 # inside the loop below.
                 with self._pinned_source_tier_evidence(full_result.succeeded):
-                    outcome_items = []
+                    outcome_items = (
+                        [(path, debt_by_source_path.get(path, ())) for path in full_result.succeeded]
+                        if convergence_ran and not _source_tier_acquisition_required()
+                        else []
+                    )
+                    if outcome_items:
+                        # Keep each source's cursor behind its failed/deferred
+                        # convergence obligation until that obligation commits.
+                        await self._run_ops_write(
+                            "convergence_outcomes",
+                            self._record_convergence_outcomes,
+                            outcome_items,
+                        )
                     for path in full_result.succeeded:
                         succeeded_paths.add(path)
                         cursor_fingerprint_read_bytes += await self._run_ops_write(
@@ -1428,14 +1443,6 @@ class LiveBatchProcessor:
                         )
                         if self._last_cursor_write_stale:
                             stale_cursor_write_count += 1
-                        if convergence_ran and not _source_tier_acquisition_required():
-                            outcome_items.append((path, debt_by_source_path.get(path, ())))
-                    if outcome_items:
-                        await self._run_ops_write(
-                            "convergence_outcomes",
-                            self._record_convergence_outcomes,
-                            outcome_items,
-                        )
                 for path in full_result.failed:
                     failed_paths.append(str(path))
                     cursor_fingerprint_read_bytes += await self._run_ops_write(
