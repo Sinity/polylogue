@@ -180,6 +180,32 @@ def test_pointer_swapped_before_metadata_failure_recovers_once(
     assert promotions == 1
 
 
+def test_pre_swap_storage_fault_restores_same_inactive_candidate(
+    tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.index_generation import IndexGenerationStore
+
+    pointer = tmp_path / "index.db"
+    prior_pointer = pointer.lstat()
+    original_symlink_to = Path.symlink_to
+
+    def fail_candidate_pointer(path: Path, target: os.PathLike[str] | str, target_is_directory: bool = False) -> None:
+        if path.name.startswith(".index.db.promote-"):
+            raise OSError(errno.ENOSPC, "pointer filesystem full")
+        original_symlink_to(path, target, target_is_directory=target_is_directory)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(Path, "symlink_to", fail_candidate_pointer)
+        with pytest.raises(OSError) as failure:
+            cold_build.promote()
+    assert failure.value.errno == errno.ENOSPC
+    current_pointer = pointer.lstat()
+    assert (current_pointer.st_dev, current_pointer.st_ino) == (prior_pointer.st_dev, prior_pointer.st_ino)
+    assert IndexGenerationStore.for_archive_root(tmp_path).load(cold_build.generation_id).state == "inactive"
+    assert not cold_build.settled
+    assert cold_build.promote().generation_id == cold_build.generation_id
+
+
 def test_blocked_settlement_revision_tracks_receipt_and_source_evidence(
     tmp_path: Path, cold_build: ColdBuildGeneration
 ) -> None:
@@ -711,6 +737,65 @@ def test_faulted_baseline_refresh_retains_prior_accepted_revisions(tmp_path: Pat
         assert bound["baseline"]["digest"] == pending.digest
         assert generation.promote().state == "active"
         assert _active_session_count(archive) == 2
+    finally:
+        clear_cold_build_generation()
+        if not generation.settled:
+            generation.discard()
+
+
+def test_faulted_baseline_refresh_reuses_populated_candidate_capacity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.maintenance.candidate_capacity import (
+        CandidateCapacityProjection,
+        evidence_allocation_block_bytes,
+        project_candidate_capacity,
+    )
+    from polylogue.sources.live.production_baseline import (
+        capture_production_source_baseline,
+        merge_pending_production_baseline,
+    )
+
+    archive = _fresh_archive_root(tmp_path)
+    source_root = tmp_path / "later-source"
+    sources = (WatchSource("codex", source_root, suffixes=(".jsonl",), required=True),)
+    generation = ColdBuildGeneration.begin(archive, reason="test", sources=sources)
+    register_cold_build_generation(generation)
+    try:
+        source_root.mkdir()
+        source = source_root / "one.jsonl"
+        source.write_bytes(_codex_session("one", "one"))
+        assert (
+            asyncio.run(_processor(archive, source_root).ingest_files([source], emit_event=False)).succeeded_file_count
+            == 1
+        )
+        assert generation.session_count() == 1
+        observed = capture_production_source_baseline(sources, operation_id=generation.operation_id)
+        merged = merge_pending_production_baseline(observed, generation.source_baseline)
+        blob_block_bytes, source_db_block_bytes = evidence_allocation_block_bytes(archive)
+        material_bytes = merged.prospective_material_bytes
+        retained_bytes = merged.prospective_retained_allocation_bytes(blob_block_bytes)
+        assert material_bytes is not None and retained_bytes is not None
+
+        def projection(existing_candidate_generation_id: str | None = None) -> CandidateCapacityProjection:
+            return project_candidate_capacity(
+                archive,
+                existing_candidate_generation_id=existing_candidate_generation_id,
+                prospective_material_bytes=material_bytes,
+                prospective_retained_allocation_bytes=retained_bytes,
+                prospective_source_db_allocation_bytes=merged.prospective_source_db_allocation_bytes(
+                    source_db_block_bytes
+                ),
+            )
+
+        full = projection()
+        reused = projection(generation.generation_id)
+        assert reused.existing_candidate_index_allocated_bytes > 0
+        assert reused.required_free_bytes < full.required_free_bytes
+        _free_space(monkeypatch, (full.required_free_bytes + reused.required_free_bytes) // 2)
+        assert not projection().sufficient
+        assert generation.refresh_faulted_baseline(sources)
+        assert generation.generation_id == reused.inventory.generations[-1].generation_id
     finally:
         clear_cold_build_generation()
         if not generation.settled:

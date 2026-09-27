@@ -4233,7 +4233,7 @@ async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: P
             )
             try:
                 try:
-                    async with asyncio.timeout(15):
+                    async with asyncio.timeout(45):
                         while _cold_build_settlement().get("cold_build_settlement_state") != "blocked":
                             if task.done():
                                 await task

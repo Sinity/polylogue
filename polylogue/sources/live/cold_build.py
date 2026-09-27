@@ -686,6 +686,7 @@ class ColdBuildGeneration:
         require_candidate_capacity(
             self.archive_root,
             operation_id=self.operation_id,
+            existing_candidate_generation_id=self.generation_id,
             prospective_material_bytes=prospective_material_bytes,
             prospective_retained_allocation_bytes=prospective_retained_allocation_bytes,
             prospective_source_db_allocation_bytes=merged.prospective_source_db_allocation_bytes(source_db_block_bytes),

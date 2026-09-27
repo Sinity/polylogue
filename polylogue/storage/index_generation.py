@@ -808,10 +808,29 @@ class IndexGenerationStore:
                 "predecessor_generation_id": predecessor_generation_id,
             }
         )
-        self._write(promoting)
         temporary = pointer.parent / f".index.db.promote-{uuid.uuid4().hex}"
-        temporary.symlink_to(target)
-        os.replace(temporary, pointer)
+        # A storage failure before the swap must leave this same candidate
+        # retryable. Keep the prior pointer identity as the rollback proof;
+        # a failed replace is not permission to overwrite a pointer that moved.
+        prior_pointer = pointer.lstat() if pointer.exists() or pointer.is_symlink() else None
+        try:
+            self._write(promoting)
+            temporary.symlink_to(target)
+            os.replace(temporary, pointer)
+        except OSError:
+            with suppress(OSError):
+                temporary.unlink()
+            current_pointer = pointer.lstat() if pointer.exists() or pointer.is_symlink() else None
+            if self.load(current.generation_id).state == "promoting" and (
+                (prior_pointer is None and current_pointer is None)
+                or (
+                    prior_pointer is not None
+                    and current_pointer is not None
+                    and (prior_pointer.st_dev, prior_pointer.st_ino) == (current_pointer.st_dev, current_pointer.st_ino)
+                )
+            ):
+                self._write(current)
+            raise
         _fsync_directory(pointer.parent)
         promoted = IndexGeneration(
             **{
