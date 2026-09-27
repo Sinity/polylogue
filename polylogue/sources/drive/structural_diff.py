@@ -1,18 +1,16 @@
 """JSON-structural growth classifier for Drive re-acquisition bytes.
 
-polylogue-1fijp AC (b): ``iter_drive_raw_data``'s live-attachment backfill
-(``_inject_live_drive_attachment_bytes``) re-serializes the WHOLE Gemini/
-AI-Studio JSON document on every re-acquisition pass that resolves a new
-Drive-hosted attachment reference, rather than byte-appending at the
-document's end (see ``_bind_drive_revision_lineage`` in
-``pipeline/services/ingest_batch/_core.py`` and its citing PR #3656,
-polylogue-sp72). The archive's existing revision classifier
-(``archive/revision_authority.py``'s ``classify_historical_full_revision_streams``
-and the byte-relation arms in ``storage/sqlite/archive_tiers/raw_admission.py``)
-is strictly ``bytes.startswith()``-based, so this realistic growth shape is
-*never* a byte-prefix superset of its predecessor even when the underlying
-conversation genuinely only grew -- it lands ``ambiguous``/``quarantined``
-with the byte classifier alone.
+A Drive-hosted Gemini/AI-Studio document is re-serialized whole by the
+provider every time the conversation is saved, so a document that genuinely
+only grew (new ``chunkedPrompt.chunks`` entries) is rewritten rather than
+byte-appended (see ``_bind_drive_revision_lineage`` in
+``pipeline/services/ingest_batch/_core.py``). The archive's revision
+classifier (``archive/revision_authority.py``'s
+``classify_historical_full_revision_streams`` and the byte-relation arms in
+``storage/sqlite/archive_tiers/raw_admission.py``) is strictly
+``bytes.startswith()``-based, so this growth shape is *never* a byte-prefix
+superset of its predecessor -- it lands ``ambiguous``/``quarantined`` with
+the byte classifier alone.
 
 This module proves growth at the JSON-structural level instead of the byte
 level: one JSON document is a *structural extension* of another when every

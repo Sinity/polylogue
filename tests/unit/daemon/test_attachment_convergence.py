@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
+from typing import IO
 
 from polylogue.core.enums import Provider, Role
 from polylogue.core.types import AttachmentUploadOrigin
@@ -16,6 +18,15 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+
+
+def _into(fetch: Callable[[str], bytes]) -> Callable[[str, IO[bytes]], None]:
+    """Adapt a bytes-returning fake to the streaming download contract."""
+
+    def download_into(file_id: str, handle: IO[bytes]) -> None:
+        handle.write(fetch(file_id))
+
+    return download_into
 
 
 def _session(
@@ -81,7 +92,7 @@ def test_polylogue_ck5v_legacy_route_attachment_is_backfilled_and_bounded(tmp_pa
         index,
         source,
         archive_root=tmp_path,
-        download_bytes=fetch,
+        download_into=_into(fetch),
         limit=1,
     )
 
@@ -166,7 +177,7 @@ def test_attachment_convergence_keeps_retryable_provider_failure_as_debt(tmp_pat
         index,
         source,
         archive_root=tmp_path,
-        download_bytes=fetch,
+        download_into=_into(fetch),
     )
 
     row = index.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
@@ -181,6 +192,44 @@ def test_attachment_convergence_keeps_retryable_provider_failure_as_debt(tmp_pat
     assert row["acquisition_status"] == "unfetched"
     assert row["blob_hash"] is None
     assert row["byte_count"] == 0
+    index.close()
+    source.close()
+
+
+def test_attachment_download_streams_to_disk_and_has_no_size_cap(tmp_path: Path) -> None:
+    """An attachment of any size is acquired through a real file, never a buffer.
+
+    Anti-vacuity: stage the download through an in-memory buffer and
+    ``fileno()`` raises; reinstate a size cap below the payload and the row
+    becomes ``unavailable`` instead of ``acquired``.
+    """
+    initialize_active_archive_root(tmp_path)
+    index = _open_index(tmp_path / "index.db")
+    write_parsed_session_to_archive(index, _session("large", file_id="large-file"), raw_id="large-raw")
+    index.commit()
+    source = sqlite3.connect(tmp_path / "source.db")
+    initialize_archive_tier(source, ArchiveTier.SOURCE)
+
+    chunk = bytes(range(256)) * 4096  # 1 MiB
+    chunk_count = 3
+    digest = hashlib.sha256()
+
+    def stream(file_id: str, handle: IO[bytes]) -> None:
+        assert file_id == "large-file"
+        handle.fileno()
+        for _ in range(chunk_count):
+            handle.write(chunk)
+            digest.update(chunk)
+
+    result = converge_drive_attachments(index, source, archive_root=tmp_path, download_into=stream)
+
+    row = index.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
+    assert result.acquired == 1
+    assert row["acquisition_status"] == "acquired"
+    assert row["byte_count"] == len(chunk) * chunk_count
+    assert bytes(row["blob_hash"]) == digest.digest()
+    assert BlobStore(tmp_path / "blob").read_all(digest.hexdigest()) == chunk * chunk_count
+    assert not any((tmp_path / "blob" / ".staging").iterdir())
     index.close()
     source.close()
 
@@ -204,7 +253,7 @@ def test_attachment_convergence_records_debt_for_the_next_bounded_window(tmp_pat
         index,
         source,
         archive_root=tmp_path,
-        download_bytes=fetch,
+        download_into=_into(fetch),
         limit=1,
     )
 
@@ -240,7 +289,7 @@ def test_shared_attachment_fetches_once_but_records_each_raw_ref(tmp_path: Path)
         index,
         source,
         archive_root=tmp_path,
-        download_bytes=fetch,
+        download_into=_into(fetch),
         limit=10,
     )
 
@@ -271,7 +320,7 @@ def test_attachment_convergence_terminal_failure_does_not_fabricate_bytes(tmp_pa
         index,
         source,
         archive_root=tmp_path,
-        download_bytes=fetch,
+        download_into=_into(fetch),
     )
 
     row = index.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
@@ -284,37 +333,10 @@ def test_attachment_convergence_terminal_failure_does_not_fabricate_bytes(tmp_pa
         index,
         source,
         archive_root=tmp_path,
-        download_bytes=fetch,
+        download_into=_into(fetch),
     )
     assert retry.inspected == 0
     assert calls == ["deleted-file"]
-    index.close()
-    source.close()
-
-
-def test_large_attachment_is_acquired_not_refused_for_size(tmp_path: Path) -> None:
-    """Bytes the provider served are kept whatever their size.
-
-    Anti-vacuity: reinstate any byte ceiling on the downloaded payload in
-    ``converge_drive_attachments`` (the removed 50 MiB cap) and this attachment
-    becomes a terminal ``unavailable`` row with no blob.
-    """
-    initialize_active_archive_root(tmp_path)
-    index = _open_index(tmp_path / "index.db")
-    write_parsed_session_to_archive(index, _session("large", file_id="large-file"), raw_id="large-raw")
-    index.commit()
-    source = sqlite3.connect(tmp_path / "source.db")
-    initialize_archive_tier(source, ArchiveTier.SOURCE)
-    payload = b"x" * (51 * 1024 * 1024)
-
-    result = converge_drive_attachments(index, source, archive_root=tmp_path, download_bytes=lambda _f: payload)
-
-    row = index.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
-    assert result.acquired == 1
-    assert result.terminal == 0
-    assert row["acquisition_status"] == "acquired"
-    assert bytes(row["blob_hash"]) == hashlib.sha256(payload).digest()
-    assert row["byte_count"] == len(payload)
     index.close()
     source.close()
 
@@ -339,7 +361,7 @@ def test_surviving_blob_is_rebound_without_a_provider_request(tmp_path: Path) ->
         index,
         source,
         archive_root=tmp_path,
-        download_bytes=lambda file_id: payload,
+        download_into=_into(lambda file_id: payload),
     )
     assert first.acquired == 1
     blob_hash = hashlib.sha256(payload).digest()
@@ -364,7 +386,7 @@ def test_surviving_blob_is_rebound_without_a_provider_request(tmp_path: Path) ->
         index,
         source,
         archive_root=tmp_path,
-        download_bytes=refuse,
+        download_into=_into(refuse),
     )
 
     row = index.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
@@ -412,7 +434,7 @@ def test_contradicted_survivor_is_not_rebound(tmp_path: Path) -> None:
         index,
         source,
         archive_root=tmp_path,
-        download_bytes=lambda file_id: payload,
+        download_into=_into(lambda file_id: payload),
     )
     assert first.acquired == 1
     store = BlobStore(tmp_path / "blob")
@@ -437,7 +459,7 @@ def test_contradicted_survivor_is_not_rebound(tmp_path: Path) -> None:
         index,
         source,
         archive_root=tmp_path,
-        download_bytes=gone,
+        download_into=_into(gone),
     )
 
     row = index.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
@@ -481,7 +503,9 @@ def test_a_contradicted_destination_blocks_the_acquired_outcome(tmp_path: Path) 
 
     payload = b"bytes the archive published once"
     assert (
-        converge_drive_attachments(index, source, archive_root=tmp_path, download_bytes=lambda _f: payload).acquired
+        converge_drive_attachments(
+            index, source, archive_root=tmp_path, download_into=_into(lambda _f: payload)
+        ).acquired
         == 1
     )
 
@@ -495,7 +519,7 @@ def test_a_contradicted_destination_blocks_the_acquired_outcome(tmp_path: Path) 
     # Drive still serves the original payload: the republished bytes hash to
     # the contradicted destination, which is the collision that made the
     # dedupe silently discard them.
-    result = converge_drive_attachments(index, source, archive_root=tmp_path, download_bytes=lambda _f: payload)
+    result = converge_drive_attachments(index, source, archive_root=tmp_path, download_into=_into(lambda _f: payload))
 
     row = index.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
     assert result.acquired == 0
@@ -566,7 +590,7 @@ def test_polylogue_ck5v_every_retained_attachment_of_one_raw_is_rebound(tmp_path
         index,
         source,
         archive_root=tmp_path,
-        download_bytes=lambda file_id: payloads[file_id],
+        download_into=_into(lambda file_id: payloads[file_id]),
     )
     assert first.acquired == 2
     assert source.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'attachment'").fetchone()[0] == 2
@@ -585,7 +609,7 @@ def test_polylogue_ck5v_every_retained_attachment_of_one_raw_is_rebound(tmp_path
         index,
         source,
         archive_root=tmp_path,
-        download_bytes=gone,
+        download_into=_into(gone),
     )
 
     rows = {
@@ -656,7 +680,7 @@ def test_contested_provider_identity_is_refused_not_downloaded_under_a_lexical_w
         calls.append(file_id)
         return b"bytes for %s" % file_id.encode()
 
-    result = converge_drive_attachments(index, source, archive_root=tmp_path, download_bytes=fetch)
+    result = converge_drive_attachments(index, source, archive_root=tmp_path, download_into=_into(fetch))
 
     assert calls == ["drive-file-resolvable"]
     assert result.unresolved_identity == 1

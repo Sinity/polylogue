@@ -51,6 +51,17 @@ class MemoryService:
         sources: list[dict[str, Any]] = []
         matches: list[dict[str, Any]] = []
         next_cursors: dict[str, str | None] = {}
+        gaps: list[str] = []
+        # Files each provider skipped on earlier pages (plus this page for a
+        # provider that finished here). Reported once, on the terminal page.
+        owed_skips: dict[str, int] = {}
+        # Completion tokens resumed this page; reissuing them keeps one
+        # retained snapshot per finished provider instead of one per page.
+        reusable: dict[str, str] = {}
+        # A provider that stopped early without a cursor (its population could
+        # not be retained) would read as finished in the returned map.
+        continuation_lost = False
+        earlier_skips = 0
         page_full = False
         for provider in requested:
             if provider in UNAVAILABLE_SOURCES:
@@ -117,8 +128,13 @@ class MemoryService:
                     cursor=source_cursors.get(provider),
                     cursor_key=cursor_key,
                     scan_bytes=scan_bytes,
+                    summarize_skipped=False,
                 )
             except SessionError as exc:
+                if type(exc) is not SessionError:
+                    # Typed outcomes (stale, retryable) must reach the caller
+                    # with their code; a generic wrapper would hide them.
+                    raise
                 raise MemoryError(str(exc)) from exc
             sources.append(
                 {
@@ -142,14 +158,47 @@ class MemoryService:
                 }
                 for row in result["matches"]
             )
+            gaps.extend(f"{provider}: {gap}" for gap in result.get("gaps", ()))
             next_cursors[provider] = result["next_cursor"]
+            if result.get("continuation_lost") or (result["truncated"] and result["next_cursor"] is None):
+                continuation_lost = True
+            earlier_skips += result["skipped_earlier"]
+            if result["next_cursor"] is None and result["skipped_earlier"] + result["skipped_now"]:
+                owed_skips[provider] = result["skipped_earlier"] + result["skipped_now"]
+                if result.get("completion_cursor"):
+                    reusable[provider] = result["completion_cursor"]
             page_full = result["next_cursor"] is not None or len(matches) >= limit
+        # More pages exist only while some provider has a live cursor or has not
+        # started; reaching ``limit`` exactly on a provider's last match is not truncation.
+        truncated = any(source.get("coverage", {}).get("truncated") is True for source in sources)
+        if continuation_lost:
+            next_cursors = {}  # no replayable map: every slot would read as finished
+        elif truncated and cursor_key is not None:
+            # A finished provider's skips must survive to the fan-out's terminal
+            # page, which a ``None`` slot would forget.
+            for provider, owed in owed_skips.items():
+                token = reusable.get(provider) or self.sessions.completed_skips_token(
+                    provider, query, owed, cursor_key=cursor_key
+                )
+                if token is None:
+                    # The count cannot be retained (for example ENOSPC). A
+                    # continuation that would forget it is worse than none.
+                    gaps.append(
+                        f"{provider}: continuation unavailable: its {owed} skipped files could not be retained; "
+                        "restart the search"
+                    )
+                    next_cursors = {}  # no replayable map: every slot would read as finished
+                    break
+                next_cursors[provider] = token
+        elif not truncated and earlier_skips:
+            gaps.append(f"{earlier_skips} selected files were skipped on earlier pages of this continuation")
         return {
             "query": query,
             "sources": sources,
             "matches": matches,
-            "truncated": page_full or any(source.get("coverage", {}).get("truncated") is True for source in sources),
+            "truncated": truncated,
             "next_cursors": next_cursors or None,
+            "gaps": gaps,
         }
 
     def get(self, reference: Any, offset: int = 0, max_bytes: int = 64_000) -> dict[str, Any]:

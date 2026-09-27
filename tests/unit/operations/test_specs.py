@@ -68,8 +68,6 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "mutate-session-lifecycle-request",
         "mutate-identity-reset",
         "mutate-abandon-blob-publication-receipts",
-        "mutate-replace-blob-refs-from-source",
-        "mutate-prune-orphan-blob-refs",
         "mutate-maintenance-target-run",
         "mutate-filesystem-reset",
     }

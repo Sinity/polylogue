@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from polylogue.archive.viewport.viewports import TokenUsage
 from polylogue.core.json import json_document
 from polylogue.core.sources import source_name_to_origin
 
@@ -581,23 +580,6 @@ def resolve_model_identity(
         model_line=semantic_model_line(model_name),
         pricing_source=pricing_catalog_source(model_name),
         confidence="exact" if normalized in PRICING else ("normalized" if vendor is not None else "unknown"),
-    )
-
-
-def _token_usage_payload(tokens: TokenUsage | None) -> CostUsagePayload:
-    if tokens is None:
-        return CostUsagePayload()
-    input_tokens = tokens.input_tokens or 0
-    output_tokens = tokens.output_tokens or 0
-    cache_read_tokens = tokens.cache_read_tokens or 0
-    cache_write_tokens = tokens.cache_write_tokens or 0
-    total = tokens.total_tokens or input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
-    return CostUsagePayload(
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cache_read_tokens=cache_read_tokens,
-        cache_write_tokens=cache_write_tokens,
-        total_tokens=total,
     )
 
 

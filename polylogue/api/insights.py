@@ -140,38 +140,6 @@ def _archive_query_date_ms(field: str, value: str | None) -> int | None:
 _DAY_MS = 86_400_000
 
 
-def _session_date_lower_ms(value: str | None) -> int | None:
-    """Map a ``--session-date-since`` date to the start-of-day epoch ms."""
-    return _archive_query_date_ms("session_date_since", value)
-
-
-def _session_date_upper_ms(value: str | None) -> int | None:
-    """Map a ``--session-date-until`` date to an inclusive end-of-day bound.
-
-    ``parse_query_date`` resolves a bare ``YYYY-MM-DD`` to midnight; a native
-    ``<= until_ms`` test on that would exclude every session whose timestamp
-    falls later in the same day. Widen the bound to the last millisecond of
-    the named day so a one-day window (``since == until``) selects the whole
-    day, matching the legacy canonical-session-date contract.
-    """
-    start = _archive_query_date_ms("session_date_until", value)
-    if start is None:
-        return None
-    return start + _DAY_MS - 1
-
-
-def _combine_lower_ms(*candidates: int | None) -> int | None:
-    """Tightest (largest) lower bound across the provided candidates."""
-    present = [value for value in candidates if value is not None]
-    return max(present) if present else None
-
-
-def _combine_upper_ms(*candidates: int | None) -> int | None:
-    """Tightest (smallest) upper bound across the provided candidates."""
-    present = [value for value in candidates if value is not None]
-    return min(present) if present else None
-
-
 class PolylogueInsightsMixin:
     if TYPE_CHECKING:
 

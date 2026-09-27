@@ -39,7 +39,7 @@ def test_maintenance_route_family_names_only_the_operation_it_executes() -> None
     assert {path: route.domain_operation for path, route in routes.items()} == {
         "/api/reset": None,
         "/api/ingest": "ingest",
-        "/api/demo/augment": None,
+        "/api/demo/augment": "maintenance.demo.augment",
     }
     assert {path: (route.kind, route.stability) for path, route in routes.items()} == {
         "/api/reset": ("maintenance", "stable"),
@@ -49,7 +49,8 @@ def test_maintenance_route_family_names_only_the_operation_it_executes() -> None
     assert all(route.auth_policy == "bearer_if_configured_and_same_origin" for route in routes.values())
     assert routes["/api/reset"].write_gate
     assert not routes["/api/ingest"].write_gate and not routes["/api/demo/augment"].write_gate
-    assert all(route.migration_reason for route in (routes["/api/reset"], routes["/api/demo/augment"]))
+    assert routes["/api/reset"].migration_reason
+    assert not routes["/api/demo/augment"].migration_reason
 
 
 def test_workspace_and_maintenance_declarations_have_complete_consumer_edges() -> None:

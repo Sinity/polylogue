@@ -154,18 +154,6 @@ class SessionFilter(SessionFilterBuilderMixin):
             with_unit_windows=self._with_unit_windows,
         )
 
-    async def list_all(self) -> builtins.list[Session]:
-        """Resolve every matching session (unbounded); see :meth:`list_all_summaries`."""
-        return await list_archive(
-            self._plan.with_limit(None),
-            archive_root=self._archive_root,
-            config=self._config,
-            default_limit=1_000_000,
-            with_units=self._with_units,
-            with_unit_fields=self._with_unit_fields,
-            with_unit_windows=self._with_unit_windows,
-        )
-
     async def first(self) -> Session | None:
         return await first_archive(self._plan, archive_root=self._archive_root, config=self._config)
 

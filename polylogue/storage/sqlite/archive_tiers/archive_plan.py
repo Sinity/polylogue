@@ -15,7 +15,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 ARCHIVE_FORMAT_MARKER_NAME = ".polylogue-format.json"
-ARCHIVE_FORMAT_LINEAGE = "polylogue.archive-format.v3"
+ARCHIVE_FORMAT_LINEAGE = "polylogue.archive-format.v4"
 _DURABLE_FORMAT_TIERS = frozenset({ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT})
 
 

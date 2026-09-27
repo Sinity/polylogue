@@ -6,7 +6,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, cast
 
 from polylogue.archive.query.retrieval import search_limit
-from polylogue.archive.query.retrieval_search import search_query_text as plan_search_query_text
+from polylogue.archive.query.retrieval import search_query_text as plan_search_query_text
 from polylogue.archive.query.search_contract import SearchExecution, resolve_vector_provider
 from polylogue.archive.query.support import session_to_summary
 from polylogue.storage.archive_identity import archive_file_set_root

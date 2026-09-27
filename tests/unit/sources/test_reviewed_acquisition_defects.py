@@ -265,7 +265,8 @@ def test_blocked_source_paths_match_through_a_symlinked_watch_root(tmp_path: Pat
     from polylogue.sources.live import WatchSource
     from polylogue.sources.live.batch import LiveBatchProcessor
     from polylogue.sources.live.cursor import CursorStore
-    from polylogue.storage.raw_retention import RawFrontierBlockedPaths
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.archive_tiers.ops_write import upsert_ingest_cursor
 
     real_root = tmp_path / "real"
     real_root.mkdir()
@@ -273,6 +274,26 @@ def test_blocked_source_paths_match_through_a_symlinked_watch_root(tmp_path: Pat
     violating.write_text('{"a":1}\n', encoding="utf-8")
     linked_root = tmp_path / "linked"
     linked_root.symlink_to(real_root, target_is_directory=True)
+    initialize_active_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "INSERT INTO raw_sessions(raw_id, origin, source_path, canonical_source_path, "
+            "blob_hash, blob_size, acquired_at_ms, logical_source_key, revision_kind, "
+            "source_revision, acquisition_generation, revision_authority) "
+            "VALUES ('alias-raw', 'codex-session', ?, ?, ?, 1, 1, 'alias-key', 'full', "
+            "'revision-0', 0, 'byte_proven')",
+            (str(linked_root / "session.jsonl"), str(violating), bytes(32)),
+        )
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute(
+            "INSERT INTO raw_revision_heads(logical_source_key, session_id, accepted_raw_id, "
+            "accepted_source_revision, accepted_content_hash, accepted_frontier_kind, "
+            "accepted_frontier, acquisition_generation, decided_at_ms) "
+            "VALUES ('alias-key', 'codex-session:alias', 'alias-raw', 'revision-0', ?, 'byte', 1, 0, 1)",
+            (bytes(32),),
+        )
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        upsert_ingest_cursor(conn, source_path=str(linked_root / "session.jsonl"), updated_at_ms=1, byte_offset=2)
 
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
@@ -282,12 +303,6 @@ def test_blocked_source_paths_match_through_a_symlinked_watch_root(tmp_path: Pat
     )
     healthy = real_root / "healthy.jsonl"
     healthy.write_text('{"b":2}\n', encoding="utf-8")
-
-    processor.cursor_authority_block_reason = lambda: "cursor ahead of accepted raw material"  # type: ignore[method-assign]
-    processor._blocked_source_paths = lambda: RawFrontierBlockedPaths(  # type: ignore[method-assign]
-        source_paths=frozenset({str(linked_root / "session.jsonl")}),
-        unattributed_reason=None,
-    )
 
     admitted = processor.admit_paths([violating, healthy])
 

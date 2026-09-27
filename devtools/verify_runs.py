@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from devtools.agent_env import runtime_env
+from devtools.checkout_identity import checkout_identity
 from devtools.pytest_evidence import evaluate_pytest_evidence
 from devtools.pytest_suite_cost_plugin import (
     RUN_RECEIPT_NAME as SUITE_COST_RUN_RECEIPT_NAME,
@@ -304,6 +305,9 @@ class VerifyRun:
             "tier": tier,
             "argv": list(argv),
             "git_head": git_head,
+            # A cited receipt names what it tested: a run on the default
+            # branch tested the base, not a change (devtools/checkout_identity.py).
+            "git_branch": checkout_identity(self.root).branch,
             "git_dirty": git_dirty(self.root),
             "started_at": utc_now(),
             "status": "running",
@@ -343,7 +347,7 @@ class VerifyRun:
         self._payload["execution_environment_key"] = key
 
     def record_execution_worktree(self, provenance: Mapping[str, Any]) -> None:
-        for key in ("git_head", "git_dirty", "git_worktree_content_sha256"):
+        for key in ("git_head", "git_branch", "git_dirty", "git_worktree_content_sha256"):
             self._payload[key] = provenance.get(key)
         self._payload["worktree_capture_source"] = provenance.get("capture_source")
 

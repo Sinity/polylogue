@@ -37,7 +37,7 @@ The exact durable evidence left without a terminal generation disposition is the
 * `source_item_raw_members(record:0)`, whose `raw_blob_hash` is a second durable content reference (`polylogue/storage/sqlite/archive_tiers/source.py:181-191`), plus the joined `raw_sessions(raw-1)` row and its `blob_refs(raw_payload, raw-1)` receipt.
 * `machine_requests(req-1)` and `machine_request_parts`, fenced with `stop_reason=deadline`, `operation_previews(preview-1)`, `operation_authorizations(auth-1)` revoked by the fence, and `operation_runs(op-1)` finalized as unknown. Those audit rows correctly prove an indeterminate attempt; they do not own source-byte release.
 
-The liveness owners observed by the canonical descriptor are `source.db.source_items`, `source.db.raw_sessions`, and `source.db.blob_refs` (`polylogue/storage/blob_liveness.py:53-67`). `project_live_blob_hashes(..., source_generation_id=...)` scopes raw rows through source membership and scopes source items directly (`polylogue/storage/blob_liveness.py:334-378`). Thus the generation is not an SQL orphan. It is a retained, nonterminal owner with no bounded disposition, and every retry or restart continues to see those bytes as live.
+The liveness owners observed by the canonical descriptor are `source.db.source_items`, `source.db.raw_sessions`, and `source.db.blob_refs` (`polylogue/storage/blob_liveness.py:53-67`). `project_live_blob_hashes` projects every generation's raw rows and source items, with no generation filter (`polylogue/storage/blob_liveness.py`). Thus the generation is not an SQL orphan. It is a retained, nonterminal owner with no bounded disposition, and every retry or restart continues to see those bytes as live.
 
 ## Decision: explicit abandonment, then release through the existing GC owner
 
@@ -75,7 +75,7 @@ The successor must not silently delete source rows, clear `blob_hash` values, re
 The decision was verified with read-only source inspection and the in-memory synthetic reproduction above. The successor's focused tests are named here for implementation:
 
 * `tests/unit/operations/test_abandon_retained_source_generation.py`: accepted generation interrupted after partial enumeration produces one immutable abandonment receipt; a duplicate request is a no-op and a changed manifest conflicts.
-* `tests/unit/storage/test_blob_liveness.py`: generation-scoped liveness includes the interrupted source item and joined raw/blob-ref owners, excludes only a released generation-owned member, and retains a hash shared by another generation or index attachment.
+* `tests/unit/storage/test_blob_liveness.py`: liveness includes the interrupted source item and joined raw/blob-ref owners, excludes only a released generation-owned member, and retains a hash shared by another generation or index attachment.
 * `tests/unit/storage/test_blob_gc_durable_intent.py`: a release handoff creates exact pending members, survives interruption, and delegates physical deletion to the existing GC member-intent protocol.
 * `tests/unit/operations/test_machine_receipts.py`: restart reads the original unknown ingest receipt plus the separate abandonment receipt and never returns a completed ingest or replays source bytes.
 

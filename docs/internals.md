@@ -15,7 +15,7 @@ debugging landmarks. For a task-to-owner map, start with
 | Async SQLite is the primary runtime; sync SQLite exists for CLI, schema tooling, and batch-ingest write paths | `storage/sqlite/async_sqlite.py`, `storage/sqlite/connection.py`, `pipeline/services/ingest_batch/_core.py` |
 | SQLite read/write tuning is profile-driven, not backend-local | `storage/sqlite/connection_profile.py` |
 | FTS tokenizer is `unicode61` (no porter stemmer) | `storage/sqlite/archive_tiers/index.py` |
-| A session's transcript order is `(position, variant_index)` for every read -- lineage-composed or not, storage query or markdown export; observed timestamps are metadata and are non-monotonic against position on every origin | `core/identity_law.py:transcript_order_sql()`, read by `storage/sqlite/queries/message_query_reads.py` and `cli/read_views/streaming_markdown.py` |
+| A session's transcript order is `(position, variant_index)` for every read -- lineage-composed or not, storage query or markdown export; observed timestamps are metadata and are non-monotonic against position on every origin | `core/identity_law.py:transcript_order_sql()`, read by `storage/sqlite/queries/message_query_reads.py` |
 | `raw_sessions.source_index` is a reacquisition hint, never an address; a container member is addressed by `raw_container_coordinates.addressing_mode` plus content identity | `operations/zip_acquisition_replay.py:resolve_member_candidate()`, `core/content_identity.py:structural_content_identity()` |
 | Schema bootstrap branching is shared across sync and async backends | `storage/sqlite/schema_bootstrap.py:decide_schema_bootstrap()` |
 | A tier file's existence/size/`PRAGMA user_version` status is computed exactly once, in the substrate, and consumed by every status surface -- reimplementing this probe per-surface previously let a bare CLI status and a daemon-backed status disagree in production (polylogue-703) | `storage/archive_readiness.py:probe_archive_tier()`, consumed by `daemon/status.py:_archive_tier_status()`, `operations/daemon_workload_probe.py` and `storage/tier_access.py` |
@@ -1264,12 +1264,6 @@ The report has a stable top-level shape carrying its `report_version`,
   `polylogue ops maintenance blob-reference-debt --output-format json`; that
   read-only classifier groups missing blob refs by table, ref type, origin,
   raw-row joinability, validation/parse state, and source-path availability.
-  During daemon convergence, direct source files whose current bytes still hash
-  to a missing blob address are restored automatically before raw
-  materialization replay. Container/member paths such as
-  `export.zip:conversations.json` remain source re-acquisition work because the
-  referenced blob may be an extracted record inside the member, not the member
-  file itself.
 - `topology_quarantine_state` — `session_links` census: unresolved/resolved
   counts, cycle-quarantined and authority-contradicted counts, and
   `dangling_branch_point_count` /

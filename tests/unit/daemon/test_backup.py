@@ -1565,41 +1565,32 @@ def test_backup_missing_blob_warnings_are_bounded(tmp_path: Path) -> None:
     assert debt_payload["sample"] == list(hashes[:10])
 
 
-def test_full_evidence_backup_scopes_blob_attestation_to_latest_sealed_generation(
-    workspace_env: dict[str, Path],
-    tmp_path: Path,
-) -> None:
-    """Frozen-generation references are declared expected, not backup debt.
+def _seed_two_source_generations(archive_root: Path, *, earlier_payload: bytes | None) -> tuple[bytes, bytes]:
+    """Seed an earlier and a newer sealed generation, each owning one raw blob.
 
-    Anti-vacuity: removing the generation predicate makes the old missing blob
-    participate in the copied inventory and causes verification to fail.
+    ``earlier_payload=None`` records the earlier generation's reference without
+    its bytes, i.e. a row whose blob is missing from the store.
     """
-    archive_root = workspace_env["archive_root"]
-    initialize_active_archive_root(archive_root)
     source_db = archive_root / "source.db"
-    clean_payload = b"reacquired source generation"
-    clean_hash = hashlib.sha256(clean_payload).digest()
-    frozen_hash = hashlib.sha256(b"deliberately pruned frozen source").digest()
+    newer_payload = b"newer source generation"
+    newer_hash = hashlib.sha256(newer_payload).digest()
+    earlier_hash = hashlib.sha256(earlier_payload or b"earlier source generation, bytes missing").digest()
     store = BlobStore(archive_root / "blob")
-    store.write_from_bytes(clean_payload)
+    store.write_from_bytes(newer_payload)
+    if earlier_payload is not None:
+        store.write_from_bytes(earlier_payload)
     with sqlite3.connect(source_db) as conn:
-        conn.execute(
-            "INSERT INTO source_generations VALUES ('frozen', ?, 'path', 1, 10, 1)",
-            ("a" * 64,),
-        )
-        conn.execute(
-            "INSERT INTO source_generations VALUES ('reacquired', ?, 'path', 1, 20, 2)",
-            ("b" * 64,),
-        )
+        conn.execute("INSERT INTO source_generations VALUES ('earlier', ?, 'path', 1, 10, 1)", ("a" * 64,))
+        conn.execute("INSERT INTO source_generations VALUES ('newer', ?, 'path', 1, 20, 2)", ("b" * 64,))
         for generation, raw_id, blob_hash in (
-            ("frozen", "old-raw", frozen_hash),
-            ("reacquired", "clean-raw", clean_hash),
+            ("earlier", "earlier-raw", earlier_hash),
+            ("newer", "newer-raw", newer_hash),
         ):
             conn.execute(
                 """INSERT INTO raw_sessions
                    (raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms)
                    VALUES (?, 'codex-session', ?, 0, ?, ?, 1)""",
-                (raw_id, f"/{raw_id}.jsonl", blob_hash, len(clean_payload)),
+                (raw_id, f"/{raw_id}.jsonl", blob_hash, len(newer_payload)),
             )
             conn.execute(
                 """INSERT INTO source_items
@@ -1612,8 +1603,24 @@ def test_full_evidence_backup_scopes_blob_attestation_to_latest_sealed_generatio
                 """INSERT INTO blob_refs
                    (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
                    VALUES (?, ?, 'raw_payload', ?, ?, 1)""",
-                (blob_hash, raw_id, f"/{raw_id}.jsonl", len(clean_payload)),
+                (blob_hash, raw_id, f"/{raw_id}.jsonl", len(newer_payload)),
             )
+    return earlier_hash, newer_hash
+
+
+def test_full_evidence_backup_copies_every_source_generation_blob(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """The backup's blob set matches the rows it copies: every generation's.
+
+    Anti-vacuity (polylogue-mdtrf): scoping the copied set to the newest sealed
+    generation leaves the earlier generation's blob out of the backup, although
+    its raw row is restored with the whole ``source.db``.
+    """
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    earlier_hash, newer_hash = _seed_two_source_generations(archive_root, earlier_payload=b"earlier generation bytes")
 
     result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
 
@@ -1622,10 +1629,34 @@ def test_full_evidence_backup_scopes_blob_attestation_to_latest_sealed_generatio
     assert result.output_path is not None
     backup_root = Path(result.output_path)
     manifest = json.loads((backup_root / "manifest.json").read_text())
-    assert manifest["source_generation_id"] == "reacquired"
     assert manifest["blob_reference_debt"]["missing_referenced_blobs"] == 0
-    assert (backup_root / "blob" / clean_hash.hex()[:2] / clean_hash.hex()[2:]).exists()
-    assert not (backup_root / "blob" / frozen_hash.hex()[:2] / frozen_hash.hex()[2:]).exists()
+    for blob_hash in (earlier_hash, newer_hash):
+        assert (backup_root / "blob" / blob_hash.hex()[:2] / blob_hash.hex()[2:]).exists()
+
+
+def test_backup_counts_an_earlier_generation_blob_missing_from_the_store(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """A referenced blob missing from any generation is counted debt and fails verification.
+
+    Anti-vacuity: computing the debt report from a newest-generation projection
+    reports zero missing blobs and verifies an archive whose restored rows
+    reference bytes the backup does not hold.
+    """
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    earlier_hash, _newer_hash = _seed_two_source_generations(archive_root, earlier_payload=None)
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+
+    assert result.output_path is not None
+    backup_root = Path(result.output_path)
+    manifest = json.loads((backup_root / "manifest.json").read_text())
+    assert manifest["blob_reference_debt"]["missing_referenced_blobs"] == 1
+    debt = json.loads((backup_root / "blob-reference-debt.json").read_text())
+    assert debt["sample"] == [earlier_hash.hex()]
+    assert not result.verified
 
 
 def test_backup_includes_reserved_blob_and_verifies_exact_hash_inventory(

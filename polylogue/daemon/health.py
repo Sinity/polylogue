@@ -1609,19 +1609,14 @@ def _check_blob_reference_debt_expensive() -> list[HealthAlert]:
     """Fail loud if any referenced blob is ever missing from the blob store.
 
     This class of debt (a ``blob_refs``/``raw_sessions`` row pointing at a
-    blob hash the store no longer has) has occurred exactly once on the
-    production archive: a 2026-06-26 incident (39,586 missing refs),
-    diagnosed and fully repaired the same day by
-    ``polylogue.storage.blob_integrity.classify_blob_reference_debt`` +
-    ``replace_raw_backed_blob_reference_debt_from_source`` (the CLI's
-    ``ops maintenance blob-reference-debt`` / ``blob-reference-replace-from-source``
-    commands). It has stayed at zero since (verified live, polylogue-rn5jh).
-    Rather than wiring the deterministic repair logic into always-on daemon
-    convergence for a problem with no recurring live instance, this check
-    exists so a *future* recurrence surfaces immediately as a health alert
-    instead of silently accumulating until someone happens to run a manual
-    backup or the maintenance CLI. It never mutates the archive; repair
-    stays a deliberate, operator-invoked step via the CLI commands above.
+    blob hash the store no longer has) occurred once on a pre-fresh-start
+    archive (the 2026-06-26 incident), and no current write path produces it:
+    every raw-deleting route removes the ``blob_refs`` row with its raw row,
+    publication reserves bytes before the referencing row commits, and GC
+    reclaims only unreferenced hashes. The one-off repair commands are
+    therefore gone; this check exists so a recurrence -- a producer defect to
+    fix at its source -- surfaces immediately as a health alert. It never
+    mutates the archive; ``ops maintenance blob-reference-debt`` classifies.
     """
     from polylogue.storage.blob_integrity import scan_blob_reference_debt
 

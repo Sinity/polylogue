@@ -98,7 +98,12 @@ def test_run_tests_main_refuses_on_checkout_mismatch(
     monkeypatch.setattr(run_tests, "assert_polylogue_matches_checkout", _boom)
 
     assert run_tests.main(["tests/unit/devtools/test_checkout_guard.py"]) == 125
-    assert "mismatch against" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "mismatch against" in err
+    # The detail precedes a verdict naming the attempted checkout.
+    final = err.strip().splitlines()[-1]
+    assert final.startswith("devtools test: FAILED exit=125 diagnosis=checkout_import_mismatch")
+    assert "branch=test/feature" in final
 
 
 def test_verify_main_refuses_before_creating_receipt_or_cache(
@@ -118,4 +123,9 @@ def test_verify_main_refuses_before_creating_receipt_or_cache(
 
     assert verify.main(["--quick"]) == 125
     assert not cache.exists()
-    assert "simulated checkout mismatch" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "simulated checkout mismatch" in err
+    # The verdict naming the attempted checkout stays the last line.
+    final = err.strip().splitlines()[-1]
+    assert final.startswith("verify: FAILED exit=125 diagnosis=checkout_import_mismatch")
+    assert "branch=test/feature" in final

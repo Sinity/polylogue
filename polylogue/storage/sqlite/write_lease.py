@@ -140,10 +140,6 @@ class WriteLeaseDelegation:
         """Whether no execution is currently running under this authorization."""
         return self._settled.is_set()
 
-    def wait_for_settlement(self, timeout: float | None = None) -> bool:
-        """Block until the adopted execution leaves, or ``timeout`` elapses."""
-        return self._settled.wait(timeout)
-
     def revoke(self) -> None:
         """Retire this delegation; further adoptions are refused."""
         with self._guard:

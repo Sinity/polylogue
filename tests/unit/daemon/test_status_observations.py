@@ -376,6 +376,6 @@ def test_daemon_status_with_no_halt_reports_an_empty_list(tmp_path: Path) -> Non
 
 def test_service_states_are_absent_outside_a_composed_daemon() -> None:
     """Mutation: default to ``{}`` and a one-shot CLI looks like a live daemon."""
-    from polylogue.daemon.status import supervised_service_states
+    from polylogue.daemon.status import supervised_service_snapshot
 
-    assert supervised_service_states() is None
+    assert supervised_service_snapshot() is None

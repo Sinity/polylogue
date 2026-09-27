@@ -323,9 +323,13 @@ def project_live_blob_hashes(
     *,
     index_conn: sqlite3.Connection | None = None,
     require_index: bool = False,
-    source_generation_id: str | None = None,
 ) -> BlobLivenessProjection:
-    """Project live hashes, optionally scoped to one source generation."""
+    """Project every live hash across all source generations.
+
+    A source tier keeps every generation's rows, so the projection keeps every
+    generation's blobs: a caller that narrowed it to one generation would treat
+    an earlier generation's still-referenced bytes as dead.
+    """
     blockers = _source_global_blockers(source_conn)
     if index_conn is None:
         if require_index:
@@ -345,17 +349,7 @@ def project_live_blob_hashes(
                 if not _table_exists(conn, owner.table) or not _column_exists(conn, owner.table, owner.blob_column):
                     continue
                 owner_name = f"{tier}.db.{owner.table}"
-                generation_filter = ""
-                params: tuple[object, ...] = ()
-                if source_generation_id is not None and owner.table == "raw_sessions":
-                    predicate, params = _generation_raw_predicate(source_conn, "raw_sessions", source_generation_id)
-                    generation_filter = " WHERE " + predicate
-                elif source_generation_id is not None and owner.table == "source_items":
-                    generation_filter = " WHERE source_generation_id = ?"
-                    params = (source_generation_id,)
-                for row in conn.execute(
-                    f"SELECT DISTINCT {owner.blob_column} FROM {owner.table}{generation_filter}", params
-                ):
+                for row in conn.execute(f"SELECT DISTINCT {owner.blob_column} FROM {owner.table}"):
                     if isinstance(row[0], bytes) and len(row[0]) == 32:
                         blob_hash = row[0].hex()
                         hashes.add(blob_hash)
@@ -367,16 +361,10 @@ def project_live_blob_hashes(
                     source_conn, owner.table, owner.referent_column
                 ):
                     continue
-                generation_filter = ""
-                params = (owner.ref_type,)
-                if source_generation_id is not None and owner.table == "raw_sessions":
-                    predicate, generation_params = _generation_raw_predicate(source_conn, "owner", source_generation_id)
-                    generation_filter = " AND " + predicate
-                    params += generation_params
                 for row in source_conn.execute(
                     f"""SELECT DISTINCT ref.blob_hash FROM blob_refs AS ref WHERE ref.ref_type = ? AND EXISTS (
-                    SELECT 1 FROM {owner.table} AS owner WHERE owner.{owner.referent_column} = ref.ref_id{generation_filter})""",
-                    params,
+                    SELECT 1 FROM {owner.table} AS owner WHERE owner.{owner.referent_column} = ref.ref_id)""",
+                    (owner.ref_type,),
                 ):
                     if isinstance(row[0], bytes) and len(row[0]) == 32:
                         blob_hash = row[0].hex()
@@ -387,19 +375,6 @@ def project_live_blob_hashes(
     return BlobLivenessProjection(
         frozenset(hashes),
         owner_hashes=tuple((owner, frozenset(values)) for owner, values in sorted(owner_hashes.items())),
-    )
-
-
-def _generation_raw_predicate(conn: sqlite3.Connection, alias: str, generation: str) -> tuple[str, tuple[object, ...]]:
-    if not _table_exists(conn, "source_items"):
-        return "0", ()
-    legacy = f"EXISTS (SELECT 1 FROM source_items si WHERE si.source_generation_id = ? AND si.raw_id = {alias}.raw_id)"
-    if not _table_exists(conn, "source_item_raw_members"):
-        return legacy, (generation,)
-    return (
-        f"({legacy} OR EXISTS (SELECT 1 FROM source_item_raw_members sm "
-        f"WHERE sm.source_generation_id = ? AND sm.raw_id = {alias}.raw_id))",
-        (generation, generation),
     )
 
 

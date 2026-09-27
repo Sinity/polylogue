@@ -123,7 +123,7 @@ These four were listed for deletion as "telemetry samples". None is one.
 | --- | --- | --- |
 | `convergence_debt` | 22 modules | Amendment 2 above |
 | `secret_scan_status` | `security/secret_scan.py` | an **incremental coverage cursor**, not a sample: the sweep selects sessions not yet covered at the current `SECRET_SCAN_VERSION`, and commits coverage rows in the same transaction as the findings they cover. A per-process rollup makes every restart rescan the whole archive, and breaks the version-bump rescan design outright. |
-| `whole_archive_convergence_pledge` | `sources/live/cursor.py` | **live lease state**: inserted, listed while OPEN, and released by id. An in-memory rollup cannot return open pledges after a restart, so pledges leak permanently. |
+| `whole_archive_convergence_pledge` | none (retired) | Later retired outright: its only writer left with the watcher chunk route (#5233), and a narrowed batch pass now records its skipped whole-archive stages as `NOT_RUN` convergence debt. |
 | `context_injection_ledger` | `context/scheduler.py`, and the public `list_context_injection_ledger` through `api/archive.py` / `api/parity.py` | **not superseded by `user.db context_deliveries`.** The ledger is per-item admission evidence — decision, token cost, source-local rank, budget before/after, disclosure and authority verdicts. `context_deliveries` is one row per delivered snapshot image. Different grain, different facts, and the public surface serves the former. |
 
 ### Stay as rows — folds that do not fit

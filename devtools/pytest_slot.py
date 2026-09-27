@@ -942,18 +942,36 @@ def _slot_receipt(
     return receipt
 
 
+#: Asks the slot to identify, at the moment pytest starts, the worktree content
+#: and branch it is about to run.
+WORKTREE_PROVENANCE_ENV = "POLYLOGUE_FOCUSED_WORKTREE_PROVENANCE"
+
+
 def _focused_worktree_provenance(cwd: str, environment: Mapping[str, str]) -> dict[str, Any] | None:
-    if environment.get("POLYLOGUE_FOCUSED_WORKTREE_PROVENANCE") != "1":
+    if environment.get(WORKTREE_PROVENANCE_ENV) != "1":
         return None
-    from devtools.verify_runs import git_dirty, git_head, git_worktree_content_sha256
+    from devtools.checkout_identity import ALLOW_DEFAULT_BRANCH_ENV, checkout_identity, default_branch_refusal
+    from devtools.verify_runs import git_dirty, git_worktree_content_sha256
 
     root = Path(cwd)
-    head = git_head(root)
+    # Identity, content, identity again: the three describe one checkout state
+    # only if nothing moved between them.
+    identity = checkout_identity(root)
     digest = git_worktree_content_sha256(root)
-    if head is None or digest is None:
+    if identity.head is None or digest is None:
         raise PytestSlotUnavailableError("focused worktree content could not be identified")
+    if checkout_identity(root) != identity or git_worktree_content_sha256(root) != digest:
+        raise PytestSlotUnavailableError("the checkout changed while its content was being identified")
+    head = identity.head
+    # The branch admitted at submission may have changed while the run queued.
+    refusal = default_branch_refusal(
+        identity, command="devtools test", allowed=environment.get(ALLOW_DEFAULT_BRANCH_ENV) == "1"
+    )
+    if refusal is not None:
+        raise PytestSlotUnavailableError(f"the checkout is on the default branch at slot start: {refusal}")
     return {
         "git_head": head,
+        "git_branch": identity.branch,
         "git_dirty": git_dirty(root),
         "git_worktree_content_sha256": digest,
         "capture_source": "pytest_slot_start",
@@ -1259,6 +1277,11 @@ def _rerun_failures_in_slot(
     if plan is None:
         return
     failed, command, _rerun_report = plan
+    # Taken as the rerun starts, like the first run's: the client compares
+    # the two and refuses to clear a failure of content the rerun never ran.
+    provenance = None
+    with contextlib.suppress(Exception):
+        provenance = _focused_worktree_provenance(cwd, environment)
     log.write(f"\n  rerun {len(failed)} failed test(s) alone, in this slot ...\n".encode())
     log.flush()
     try:
@@ -1280,7 +1303,8 @@ def _rerun_failures_in_slot(
     rerun_exit = process.wait()
     with contextlib.suppress(OSError):
         (step_dir / RERUN_IN_SLOT_RESULT).write_text(
-            json.dumps({"attempted": failed, "rerun_exit": rerun_exit}), encoding="utf-8"
+            json.dumps({"attempted": failed, "rerun_exit": rerun_exit, "worktree_provenance": provenance}),
+            encoding="utf-8",
         )
 
 

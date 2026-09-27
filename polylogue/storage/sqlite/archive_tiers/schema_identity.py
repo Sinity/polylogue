@@ -115,11 +115,6 @@ def _canonical_digest(parts: dict[str, object]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _identity_ddl(ddl: str) -> str:
-    """Exclude the identity stamp table from the identity it stores."""
-    return ddl.removesuffix(DERIVED_SCHEMA_META_DDL)
-
-
 def _semantic_manifest_fingerprint(tier: DerivedTier) -> str:
     """Return the canonical SQLite-object manifest for one derived tier.
 

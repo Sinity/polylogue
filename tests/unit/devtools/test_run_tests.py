@@ -331,6 +331,7 @@ def test_queued_focused_receipt_identifies_execution_content(monkeypatch: pytest
     assert receipt["git_dirty"] is True
     assert receipt["git_worktree_content_sha256"] == executed["digest"]
     assert receipt["worktree_capture_source"] == "pytest_slot_start"
+    assert receipt["git_branch"] == "test/feature"
     assert json.loads((tmp_path / receipt["artifact_dir"] / "run.json").read_text(encoding="utf-8")) == receipt
 
     source.write_text("value = 1\n", encoding="utf-8")
@@ -844,7 +845,9 @@ def test_every_run_names_the_receipt_it_wrote(
 
     final = capsys.readouterr().err.strip().splitlines()[-1]
     assert final.startswith("devtools test: PASSED exit=0 diagnosis=pytest_passed receipt=")
-    receipt = tmp_path / final.split("receipt=", 1)[1].strip()
+    receipt = tmp_path / final.split("receipt=", 1)[1].split()[0]
+    # The line names the checkout it tested, so a cited receipt is self-identifying.
+    assert " checkout=" in final and " branch=" in final and " head=" in final
     assert receipt.is_file()
     recorded = json.loads(receipt.read_text(encoding="utf-8"))
     assert recorded["exit_code"] == 0
@@ -875,8 +878,12 @@ def test_a_run_that_never_acquired_the_slot_keeps_its_reason(
     assert history["diagnosis"] == "pytest_slot_unavailable"
     assert history["steps"][0]["diagnosis"] == "pytest_slot_unavailable"
 
-    final = capsys.readouterr().err.strip().splitlines()[-1]
-    assert final.startswith("devtools test: artifacts=")
+    lines = capsys.readouterr().err.strip().splitlines()
+    # The artifact pointer precedes the verdict, which stays the last line and
+    # names the checkout it tested.
+    assert lines[-2].startswith("devtools test: artifacts=")
+    assert lines[-1].startswith("devtools test: FAILED exit=125 diagnosis=pytest_slot_unavailable receipt=")
+    assert " branch=" in lines[-1]
     receipt = tmp_path / run_tests.PYTEST_REPORT_DIR / "runs" / history["run_id"] / "run.json"
     recorded = json.loads(receipt.read_text(encoding="utf-8"))
     assert recorded["exit_code"] == 125

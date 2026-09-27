@@ -197,15 +197,6 @@ class ConvergenceDebtBatchEntry:
     writes: tuple[ConvergenceDebtWrite, ...] = ()
 
 
-@dataclass(frozen=True, slots=True)
-class WholeArchiveConvergencePledge:
-    """An owed archive-wide convergence flush from a chunked catch-up cycle."""
-
-    pledge_id: str
-    anchor_path: Path
-    created_at: str
-
-
 def _required_int(value: object) -> int:
     if isinstance(value, int):
         return value
@@ -344,6 +335,17 @@ def _insert_stage_events(conn: sqlite3.Connection, events: list[_BufferedStageEv
         )
 
 
+def _begin_ops_write(conn: sqlite3.Connection) -> None:
+    """Take the ops write lock before a read-modify-write.
+
+    Inside an ``ops_batch`` the batch's transaction is already open (and holds
+    the write lock once it has written), so a second ``BEGIN`` would fail; the
+    read-modify-write then runs inside the batch's transaction instead.
+    """
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+
+
 class CursorStore:
     """SQLite-backed live cursor store keyed by source path."""
 
@@ -432,6 +434,7 @@ class CursorStore:
         state.conn = conn
         state.depth = 1
         state.pending = []
+        state.batched = False
         try:
             yield
         finally:
@@ -450,6 +453,39 @@ class CursorStore:
                 conn.close()
 
     @contextmanager
+    def ops_batch(self) -> Iterator[None]:
+        """Commit every ops write inside this block once, at its end.
+
+        Only valid inside :meth:`ops_write_scope`. A batch of cursor advances
+        for one published group is one unit: the index and source commits it
+        follows are already durable, and a crash before the batch commits
+        leaves every cursor behind, so those files are re-ingested, which is
+        idempotent by content hash. A failure inside the batch rolls the whole
+        batch back and propagates, exactly as the first failing write would.
+        """
+        state = self._ops_scope
+        conn = cast(sqlite3.Connection | None, getattr(state, "conn", None))
+        if conn is None:
+            raise RuntimeError("ops_batch requires an enclosing ops_write_scope")
+        if getattr(state, "batched", False):
+            yield
+            return
+        state.batched = True
+        try:
+            yield
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            state.batched = False
+        if conn.in_transaction:
+            pending = state.pending
+            if pending:
+                state.pending = []
+                _insert_stage_events(conn, pending)
+            conn.commit()
+
+    @contextmanager
     def _connect_ops(self) -> Iterator[sqlite3.Connection]:
         held = cast(sqlite3.Connection | None, getattr(self._ops_scope, "conn", None))
         if held is None:
@@ -466,6 +502,9 @@ class CursorStore:
             held.rollback()
             raise
         else:
+            if getattr(self._ops_scope, "batched", False):
+                # The enclosing ``ops_batch`` owns the one commit.
+                return
             # Buffered telemetry rides this operation's commit rather than
             # taking one of its own, and is written before it so a reader never
             # sees a finished attempt whose events are still buffered. A block
@@ -607,7 +646,7 @@ class CursorStore:
 
         def write() -> None:
             with self._connect_ops() as conn:
-                conn.execute("BEGIN IMMEDIATE")
+                _begin_ops_write(conn)
                 for source_path in unparsed:
                     current = self._get_record_on_conn(conn, Path(source_path))
                     if current is None or current.excluded or current.byte_offset == 0:
@@ -633,7 +672,7 @@ class CursorStore:
 
         def write() -> None:
             with self._connect_ops() as conn:
-                conn.execute("BEGIN IMMEDIATE")
+                _begin_ops_write(conn)
                 for old_stage, old_type, new_stage, new_type in (
                     ("insights", None, "derived", None),
                     ("hook_paste_enrichment", "session", "hook_paste_enrichment", "session_id"),
@@ -730,8 +769,11 @@ class CursorStore:
         )
 
     def _write_cursor_record_to_ops(self, record: CursorRecord) -> None:
+        # ``_connect_ops`` owns the commit (and defers it to an enclosing
+        # ``ops_batch``); a commit inside the upsert would publish each
+        # cursor of a batch on its own.
         with self._connect_ops() as conn:
-            self._write_cursor_record_on_conn(conn, record)
+            self._write_cursor_record_on_conn(conn, record, manage_transaction=False)
 
     def _sync_cursor_record_to_ops(self, record: CursorRecord) -> bool:
         def write() -> None:
@@ -766,12 +808,12 @@ class CursorStore:
 
         def write() -> None:
             with self._connect_ops() as conn:
-                conn.execute("BEGIN IMMEDIATE")
+                _begin_ops_write(conn)
                 current = self._get_record_on_conn(conn, path)
                 updated = mutate(current)
                 validate_cursor_lifecycle_transition(actuator=actuator, before=current, after=updated)
                 if updated is not None:
-                    self._write_cursor_record_on_conn(conn, updated)
+                    self._write_cursor_record_on_conn(conn, updated, manage_transaction=False)
 
         best_effort_cursor_write("archive ops cursor read-modify-write", write)
 
@@ -796,7 +838,7 @@ class CursorStore:
 
         def write() -> None:
             with self._connect_ops() as conn:
-                conn.execute("BEGIN IMMEDIATE")
+                _begin_ops_write(conn)
                 self._sync_convergence_debt_on_conn(
                     conn,
                     stage=stage,
@@ -904,7 +946,7 @@ class CursorStore:
 
         def write() -> None:
             with self._connect_ops() as conn:
-                conn.execute("BEGIN IMMEDIATE")
+                _begin_ops_write(conn)
                 for entry in batch:
                     for clear in entry.clears:
                         if clear.preserved_stages:
@@ -1632,7 +1674,7 @@ class CursorStore:
         def write() -> None:
             nonlocal updated
             with self._connect_ops() as conn:
-                conn.execute("BEGIN IMMEDIATE")
+                _begin_ops_write(conn)
                 for rebase in unique.values():
                     current = self._get_record_on_conn(conn, rebase.path)
                     if current != rebase.expected:
@@ -2101,62 +2143,6 @@ class CursorStore:
             for row in rows
         ]
 
-    def pledge_whole_archive_convergence(self, *, pledge_id: str, anchor_path: Path) -> None:
-        """Record that a catch-up cycle owes one archive-wide convergence flush.
-
-        Written before the cycle ingests its first chunk and deleted only
-        after the flush completes, so every interrupt inside that window --
-        SIGKILL, OOM, reboot, or a graceful stop that returns early -- leaves
-        the obligation behind instead of an archive that reports converged
-        with the archive-wide projections never built.
-        """
-        now_ms = _required_epoch_ms(datetime.now(UTC).isoformat())
-        with self._connect_ops() as conn:
-            conn.execute(
-                """
-                INSERT INTO whole_archive_convergence_pledge
-                    (pledge_id, anchor_path, created_at_ms, updated_at_ms)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(pledge_id) DO UPDATE SET
-                    anchor_path = excluded.anchor_path,
-                    updated_at_ms = excluded.updated_at_ms
-                """,
-                (pledge_id, str(anchor_path), now_ms, now_ms),
-            )
-            conn.commit()
-
-    def open_whole_archive_convergence_pledges(self) -> tuple[WholeArchiveConvergencePledge, ...]:
-        """Return every catch-up pledge whose archive-wide flush never ran."""
-        with self._connect_ops_read() as conn:
-            rows = conn.execute(
-                """
-                SELECT pledge_id, anchor_path, created_at_ms
-                FROM whole_archive_convergence_pledge
-                ORDER BY created_at_ms ASC, pledge_id ASC
-                """
-            ).fetchall()
-        return tuple(
-            WholeArchiveConvergencePledge(
-                pledge_id=str(row[0]),
-                anchor_path=Path(str(row[1])),
-                created_at=_required_iso_text(row[2]),
-            )
-            for row in rows
-        )
-
-    def release_whole_archive_convergence_pledges(self, pledge_ids: Iterable[str]) -> None:
-        """Delete pledges whose archive-wide flush has now completed."""
-        targets = tuple(dict.fromkeys(pledge_ids))
-        if not targets:
-            return
-        placeholders = ",".join("?" for _ in targets)
-        with self._connect_ops() as conn:
-            conn.execute(
-                f"DELETE FROM whole_archive_convergence_pledge WHERE pledge_id IN ({placeholders})",
-                targets,
-            )
-            conn.commit()
-
 
 __all__ = [
     "CursorObservationRebase",
@@ -2164,5 +2150,4 @@ __all__ = [
     "CursorStore",
     "LiveConvergenceDebt",
     "LiveIngestAttempt",
-    "WholeArchiveConvergencePledge",
 ]

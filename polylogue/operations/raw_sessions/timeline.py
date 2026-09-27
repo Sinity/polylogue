@@ -78,13 +78,16 @@ class TimelineService:
             "providers": requested,
         }
         if cursor is None:
-            state: dict[str, Any] = {"current": {}, "pending": {}, "done": []}
+            state: dict[str, Any] = {"current": {}, "pending": {}, "done": [], "skipped": 0}
         else:
             state = OpaqueSessionCursor(self.sessions.scope, effective_cursor_key, "timeline-query").decode(
                 cursor, scope
             )
             if (
-                set(state) != {"current", "pending", "done"}
+                set(state) != {"current", "pending", "done", "skipped"}
+                or not isinstance(state["skipped"], int)
+                or isinstance(state["skipped"], bool)
+                or state["skipped"] < 0
                 or not isinstance(state["current"], dict)
                 or not isinstance(state["pending"], dict)
                 or not isinstance(state["done"], list)
@@ -143,6 +146,10 @@ class TimelineService:
         # Every refill in this request shares the same metadata observation.
         # New external requests create new observations; this is not a cache.
         readers: dict[str, _ObservedTimeline] = {}
+        gaps: list[str] = []
+        # Files skipped on earlier pages ride in the outer continuation so the
+        # terminal page reports them even after their provider has finished.
+        earlier_skipped = state["skipped"]
 
         def load_head(provider: str, after: str | None) -> dict[str, Any]:
             try:
@@ -152,7 +159,13 @@ class TimelineService:
                     readers[provider] = reader
                 result = reader.page(1, cursor=after, cursor_key=effective_cursor_key, scan_bytes=scan_bytes)
             except SessionError as exc:
+                if type(exc) is not SessionError:
+                    # Typed outcomes (stale, retryable) must reach the caller
+                    # with their code; a generic wrapper would hide them.
+                    raise
                 raise TimelineError(str(exc)) from exc
+            gaps.extend(f"{provider}: {gap}" for gap in result.get("gaps", ()))
+            state["skipped"] += result.get("skipped_now", 0)
             if result["entries"]:
                 state["pending"][provider] = {"entry": result["entries"][0], "after": result["next_cursor"]}
             elif result["next_cursor"] is None:
@@ -200,6 +213,8 @@ class TimelineService:
                     load_head(provider, pending["after"])
 
         more = bool(state["pending"]) or any(provider not in state["done"] for provider in raw)
+        if not more and earlier_skipped:
+            gaps.append(f"{earlier_skipped} selected files were skipped on earlier pages of this continuation")
         next_cursor = None
         if more:
             next_cursor = OpaqueSessionCursor(self.sessions.scope, effective_cursor_key, "timeline-query").encode(
@@ -214,6 +229,7 @@ class TimelineService:
             "entries": entries,
             "truncated": more,
             "next_cursor": next_cursor,
+            "gaps": gaps,
         }
         if len(json.dumps(response, sort_keys=True, separators=(",", ":")).encode()) > self.sessions.max_result_bytes:
             # A tiny direct-service response bound may not even accommodate a

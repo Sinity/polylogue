@@ -49,11 +49,12 @@ class Gate:
 
 
 def mypy_command(*, root: Path = ROOT) -> list[str]:
-    """Run the checker through the shared, serialized incremental gate.
+    """Run the checker on the checkout's cache, seeded from its siblings.
 
-    Batch lanes have independent trees but type-check the same repository.  The
-    wrapper serializes cold checks and shares mypy's content-addressed cache,
-    so one lane does the expensive scan and siblings reuse its module results.
+    Batch lanes have independent trees but type-check the same repository. The
+    wrapper gives each checkout its own incremental cache, seeded from the one
+    its siblings last published, so warm lanes check side by side; only a cold
+    repository's first scan is serialized (``devtools/mypy_gate.py``).
     """
     return [venv_python(root=root), "-m", "devtools.mypy_gate"]
 

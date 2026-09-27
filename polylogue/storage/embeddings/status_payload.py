@@ -240,12 +240,6 @@ def _payload_int(value: object) -> int:
     return 0
 
 
-def _total_sessions(conn: sqlite3.Connection) -> int:
-    from polylogue.storage.embeddings.support import optional_count_sync
-
-    return optional_count_sync(conn, "SELECT COUNT(*) FROM sessions")
-
-
 def _attached_table_exists(conn: sqlite3.Connection, schema_name: str, table_name: str) -> bool:
     quoted_schema = '"' + schema_name.replace('"', '""') + '"'
     return _table_exists(conn, table_name, schema=quoted_schema)

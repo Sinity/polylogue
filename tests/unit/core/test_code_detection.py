@@ -1,4 +1,4 @@
-"""Direct tests for polylogue.schemas.code_detection.detection module.
+"""Direct tests for the polylogue.schemas.code_detection modules.
 
 Covers detect_language(), regex patterns, alias resolution,
 extract_code_block_from_dict(), and extract_code_block().
@@ -11,13 +11,10 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from polylogue.core.json import JSONDocument
-from polylogue.schemas.code_detection.detection import (
-    LANGUAGE_PATTERNS,
-    _regex_scores,
-    detect_language,
-    extract_code_block,
-    extract_code_block_from_dict,
-)
+from polylogue.schemas.code_detection.extractors import extract_code_block, extract_code_block_from_dict
+from polylogue.schemas.code_detection.regex import LANGUAGE_PATTERNS
+from polylogue.schemas.code_detection.regex import regex_scores as _regex_scores
+from polylogue.schemas.code_detection.runtime import detect_language
 
 
 class TestDetectLanguage:

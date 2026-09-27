@@ -947,3 +947,121 @@ def test_the_publication_budget_bounds_attempts_not_certified_publications() -> 
 
     assert domain.published == ["a", "b"]
     assert report.failed == 2
+
+
+# ── publication barrier ────────────────────────────────────────────
+
+
+class SessionKeyedDerivation(RecordingDerivation):
+    """A session-derived domain: each key is its own session."""
+
+    def barrier_sessions(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, str]:
+        return {key: key for key in keys}
+
+
+def test_a_barrier_held_session_stays_pending_and_its_siblings_publish() -> None:
+    """A session whose newest revision awaits primary publication is not derived.
+
+    Anti-vacuity (polylogue-wtfyv): drop the ``barrier`` argument from the pass
+    (as every derivation owner did before) and ``held`` is computed and
+    published ahead of its primary revision.
+    """
+    adapter = SessionKeyedDerivation("d", required=("free", "held"))
+    registry = DerivationRegistry([adapter])
+
+    report = converge(registry, FRAME, barrier=lambda sessions: {"held"} & set(sessions))
+
+    assert adapter.published == ["free"]
+    assert "held" not in adapter.computed
+    held = [outcome for outcome in report.outcomes if outcome.key == DerivationKey("d", "held")]
+    assert len(held) == 1
+    assert held[0].outcome is Outcome.PENDING
+    assert held[0].reason is PendingReason.BLOCKED
+
+    released = converge(registry, FRAME, barrier=lambda sessions: set())
+    assert adapter.published == ["free", "held"]
+    assert released.done == 1
+
+
+def test_an_unreadable_barrier_holds_every_session_derived_key() -> None:
+    """Deriving past a barrier that cannot be read is the violation it prevents.
+
+    Anti-vacuity: treat a raising barrier as "nothing blocked" and both keys
+    publish.
+    """
+    adapter = SessionKeyedDerivation("d", required=("a", "b"))
+
+    def unreadable(sessions: Sequence[str]) -> set[str]:
+        raise RuntimeError("source tier locked")
+
+    report = converge(DerivationRegistry([adapter]), FRAME, barrier=unreadable)
+
+    assert adapter.published == []
+    assert report.done == 0
+    assert all(outcome.reason is PendingReason.BLOCKED for outcome in report.outcomes)
+
+
+def test_a_domain_that_is_not_session_derived_ignores_the_barrier() -> None:
+    """Only a domain that maps keys to sessions can be held."""
+    adapter = RecordingDerivation("d", required=("a",))
+
+    converge(DerivationRegistry([adapter]), FRAME, barrier=lambda sessions: set(sessions) | {"a"})
+
+    assert adapter.published == ["a"]
+
+
+class CarrierKeyedDerivation(RecordingDerivation):
+    """One key per carrier, each naming several sessions."""
+
+    def barrier_sessions(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, tuple[str, ...]]:
+        return {"batch": ("s1", "s2")}
+
+
+def test_a_key_naming_several_sessions_is_held_when_any_one_waits() -> None:
+    """Anti-vacuity: holding only single-session keys lets the batch lower s2's markers."""
+    adapter = CarrierKeyedDerivation("markers", required=("batch",))
+
+    report = converge(DerivationRegistry([adapter]), FRAME, barrier=lambda sessions: {"s2"} & set(sessions))
+
+    assert adapter.published == []
+    assert report.outcomes[0].reason is PendingReason.BLOCKED
+
+
+def test_retiring_excess_output_is_never_held_by_the_barrier() -> None:
+    """Retirement derives nothing from new content.
+
+    Anti-vacuity (polylogue-wtfyv review): applying the barrier in the excess
+    phase leaves a deleted session's orphaned output behind an obligation that
+    may never publish.
+    """
+    adapter = SessionKeyedDerivation("d", required=())
+    adapter.output["orphan"] = "b0"
+
+    converge(DerivationRegistry([adapter]), FRAME, barrier=lambda sessions: set(sessions))
+
+    assert adapter.published == ["orphan"]
+    assert "orphan" not in adapter.output
+
+
+def test_a_revision_staged_during_compute_is_refused_at_publication() -> None:
+    """The barrier is re-decided inside the writer admission.
+
+    Anti-vacuity (polylogue-wtfyv review): checking only before compute lets a
+    session whose newer revision was staged while computing publish anyway.
+    """
+    adapter = SessionKeyedDerivation("d", required=("s",))
+    staged: set[str] = set()
+    original_compute = adapter.compute
+
+    def compute_then_stage(frame: DerivationFrame, key: str) -> Replacement:
+        replacement = original_compute(frame, key)
+        staged.add(key)  # a concurrent ingest stages an unpublished revision
+        return replacement
+
+    adapter.compute = compute_then_stage  # type: ignore[method-assign]
+
+    report = converge(DerivationRegistry([adapter]), FRAME, barrier=lambda sessions: staged & set(sessions))
+
+    assert adapter.computed == ["s"]
+    assert adapter.published == []
+    assert [(item.outcome, item.reason) for item in report.outcomes] == [(Outcome.PENDING, PendingReason.BLOCKED)]

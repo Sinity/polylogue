@@ -30,7 +30,7 @@ from polylogue.storage.derived.session.input_binding import (
     session_input_bindings,
     session_input_bindings_async,
 )
-from polylogue.storage.derived.session.summary import SESSION_SUMMARY_DOMAIN
+from polylogue.storage.derived.session.summary import SESSION_SUMMARY_DOMAIN, present_session_keys
 from polylogue.storage.derived.session.usage_rollup import (
     SESSION_USAGE_ROLLUP_DOMAIN,
     inspect_session_usage_rollups,
@@ -665,6 +665,15 @@ class SessionProfileDerivation:
         start = bisect.bisect(keys, cursor) if cursor is not None else 0
         page = keys[start : start + limit]
         return page, (page[-1] if start + len(page) < len(keys) and page else None)
+
+    def barrier_sessions(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
+        """Each key is a session id; only an archived session can be held."""
+        del frame
+        conn = self._read_connection()
+        try:
+            return present_session_keys(conn, keys)
+        finally:
+            conn.close()
 
     def inspect(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
         """Classify each session from the index relations this domain owns.

@@ -27,7 +27,6 @@ from polylogue.mcp.declarations import (
     MCPCapabilityFlag,
     MCPResultSemantics,
     MCPToolDeclaration,
-    MCPTransactionDeclaration,
 )
 from polylogue.sources.origin_specs import public_origin_meanings
 
@@ -264,10 +263,6 @@ def _declared_filter_arguments(*names: str) -> tuple[ToolArgument, ...]:
             ToolArgument(parameter.name, kind, False, parameter.description, vocabularies.get(parameter.name, ()))
         )
     return tuple(arguments)
-
-
-def _target_declaration_index() -> dict[str, MCPTransactionDeclaration]:
-    return {item.name: item for item in (*TARGET_DEFAULT_READ_ALGEBRA, *PRIVILEGED_ALGEBRA)}
 
 
 def _declaration_index() -> dict[str, MCPToolDeclaration]:

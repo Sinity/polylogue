@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import replace
+from pathlib import Path
 
 import aiosqlite
 
@@ -144,11 +145,11 @@ async def execute_raw_admission_plan_async(
         cursor = await conn.execute(
             """
             INSERT INTO raw_sessions (
-                raw_id, origin, capture_mode, native_id, source_path, source_index, blob_hash,
+                raw_id, origin, capture_mode, native_id, source_path, canonical_source_path, source_index, blob_hash,
                 blob_size, acquired_at_ms, file_mtime_ms, logical_source_key, revision_kind,
                 source_revision, predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
                 append_start_offset, append_end_offset, acquisition_generation, revision_authority
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(raw_id) DO NOTHING
             """,
             (
@@ -157,6 +158,7 @@ async def execute_raw_admission_plan_async(
                 capture_mode_value,
                 request.native_id,
                 request.source_path,
+                str(Path(request.source_path).resolve()),
                 request.source_index,
                 request.blob_hash,
                 request.blob_size,
@@ -313,13 +315,13 @@ async def save_raw_session(
     cursor = await conn.execute(
         """
         INSERT OR IGNORE INTO raw_sessions (
-            raw_id, origin, detected_provider, capture_mode, native_id, source_path, source_index, blob_hash,
+            raw_id, origin, detected_provider, capture_mode, native_id, source_path, canonical_source_path, source_index, blob_hash,
             blob_size, acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error,
             validated_at_ms, validation_status, validation_error, validation_drift_count,
             validation_mode, detection_warnings_json, logical_source_key, revision_kind,
             source_revision, predecessor_source_revision, predecessor_raw_id, baseline_raw_id, append_start_offset,
             append_end_offset, acquisition_generation, revision_authority, revision_authority_evidence
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.raw_id,
@@ -330,6 +332,7 @@ async def save_raw_session(
             require_vocabulary(capture_mode, Provider, field="capture_mode") if capture_mode is not None else None,
             None,
             record.source_path,
+            str(Path(record.source_path).resolve()),
             int(record.source_index or 0),
             blob_hash,
             int(record.blob_size),

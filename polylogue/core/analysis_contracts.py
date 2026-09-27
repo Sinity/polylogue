@@ -350,9 +350,6 @@ class EvaluationWorld:
     def world_id(self) -> str:
         return f"evaluation-world:{hash_payload(self.canonical_payload)}"
 
-    def differs_from(self, other: EvaluationWorld) -> bool:
-        return self.canonical_payload != other.canonical_payload
-
     def to_dict(self) -> dict[str, object]:
         return {**self.canonical_payload, "world_id": self.world_id}
 

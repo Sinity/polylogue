@@ -9,6 +9,7 @@ in-process writer; ``annotations join`` (a read) is untouched and stays direct.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from pathlib import Path
@@ -115,6 +116,79 @@ def test_annotations_import_writes_through_the_resident_daemon(
             "WHERE run.operation_name = ?",
             ("mutate-import-annotation-batch",),
         ).fetchone() == (1,)
+
+
+def _message_ref(archive_root: Path, session_id: str) -> str:
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        row = conn.execute("SELECT message_id FROM messages WHERE session_id = ? LIMIT 1", (session_id,)).fetchone()
+    assert row is not None
+    return f"message:{row[0]}"
+
+
+def test_daemon_import_and_facade_resolve_evidence_refs_through_one_plan(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The daemon's admission decision and the facade's answer are one code path.
+
+    ``annotations import`` admits a ``user.db`` row on whether each evidence
+    ref resolves. A resolver copied into the daemon handler could answer a ref
+    differently from ``Polylogue.resolve_ref`` with no failure at the point of
+    divergence (polylogue-j5u2b).
+
+    Anti-vacuity: give the daemon handler its own resolver instead of
+    ``resolve_ref_against_archive`` and the daemon import stops recording its
+    evidence refs through ``plan_ref_resolution``, so the first assertion goes
+    red; answer the missing message differently on either side and the
+    admission/facade comparison goes red.
+    """
+    from polylogue import Polylogue
+    from polylogue.operations import ref_resolution
+
+    archive_root = cli_workspace["archive_root"]
+    session_id = _seed_session(archive_root)
+    good_anchor = _message_ref(archive_root, session_id)
+    bad_anchor = f"message:{session_id}:n:no-such-message"
+    source = cli_workspace["inbox_dir"] / "labels.jsonl"
+    source.write_text(
+        "".join(
+            json.dumps({"row_key": key, "value": {"activity": "debugging", "confidence": 0.9}, "evidence_refs": [ref]})
+            + "\n"
+            for key, ref in (("good", good_anchor), ("bad", bad_anchor))
+        ),
+        encoding="utf-8",
+    )
+
+    planned: list[str] = []
+    original_plan = ref_resolution.plan_ref_resolution
+
+    def recording_plan(ref: str, *, archive_root: Path) -> ref_resolution.RefResolutionPlan:
+        planned.append(ref)
+        return original_plan(ref, archive_root=archive_root)
+
+    monkeypatch.setattr(ref_resolution, "plan_ref_resolution", recording_plan)
+
+    with cli_daemon_archive(archive_root, monkeypatch):
+        result = cli_runner.invoke(
+            cli,
+            _import_args(source, target_ref=f"session:{session_id}"),
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0, result.output
+    assert {good_anchor, bad_anchor} <= set(planned)
+    payload = json.loads(result.output)
+    assert (payload["valid_count"], payload["invalid_count"]) == (1, 1)
+
+    async def facade_answers() -> tuple[bool, bool]:
+        async with Polylogue(archive_root=archive_root) as archive:
+            return (
+                (await archive.resolve_ref(good_anchor)).resolved,
+                (await archive.resolve_ref(bad_anchor)).resolved,
+            )
+
+    assert asyncio.run(facade_answers()) == (True, False)
 
 
 def test_annotations_import_refuses_without_a_daemon(

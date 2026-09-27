@@ -399,22 +399,21 @@ def raw_operation(
                 "coverage": {"scanned_bytes": result["scanned_bytes"], "truncated": result["truncated"]},
             }
         ]
+    # Each row carries the stat identity its text was read under; the scanner
+    # verified the descriptor before and after that read. Emission reports
+    # that observation instead of re-stating the file, so a later change can
+    # neither mix a newer observation with an older snippet nor withhold a
+    # match the continuation has already moved past.
     observations = []
     for row in rows:
         reference = row.get("reference") or row["object_reference"]
-        source, path = service._path_from_reference(reference)
-        info = path.stat()
-        expected = row["source_observation"]
-        if tuple(expected) != (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns):
-            from polylogue.operations.raw_sessions.sessions import SessionError
-
-            raise SessionError("session source changed between scan and emission")
+        _dev, _ino, size, mtime_ns = row["source_observation"]
         observations.append(
             RawObservation(
                 reference=reference,
-                origin=_raw_origin(source.provider),
-                mtime_ns=info.st_mtime_ns,
-                bytes=info.st_size,
+                origin=_raw_origin(reference.partition(":")[0]),
+                mtime_ns=mtime_ns,
+                bytes=size,
                 line=row.get("line"),
                 offset=row.get("offset"),
                 text=row.get("text", row.get("snippet")),
@@ -433,6 +432,7 @@ def raw_operation(
     gaps = [source.reason or "source unavailable" for source in sources_out if source.availability == "unavailable"]
     if result.get("available") is False:
         gaps.append(result["reason"])
+    gaps.extend(result.get("gaps", ()))
     return RawPage(
         items=observations,
         sources=sources_out,

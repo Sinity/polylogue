@@ -378,6 +378,14 @@ Enabled by default on `127.0.0.1:8765`. Disable with `--no-browser-capture`.
 `polylogued health` runs tiered health checks (fast by default,
 `--expensive` to include full integrity checks).
 
+`polylogued status` asks the running daemon first, for its `status`
+operation over the machine socket every CLI verb uses; the client checks the
+listener's uid with `SO_PEERCRED` before it sends any credential. With no
+socket it recomputes status in its own process. If the daemon answers but
+fails the request, stderr says so first, because that recomputation cannot
+see the daemon's in-process state such as cold-build progress, the writer
+holder or the ETA.
+
 ### Status Fields
 
 | Field | Description |
@@ -397,6 +405,9 @@ Enabled by default on `127.0.0.1:8765`. Disable with `--no-browser-capture`.
 | `blob_dir_size_bytes` | Blob store size |
 | `disk_free_bytes` | Free disk space |
 | `ingestion_throughput` | Messages and files per second |
+| `services` | Each declared service's lifecycle state in this daemon process |
+| `service_failures` | Failed or orphaned services with their reason; any entry makes `ok` false, and the text output lists them |
+| `periodic_loops` | Per-loop cadence evidence; the text output lists loops whose most recent run raised |
 
 ### Health Check Tiers
 
@@ -918,12 +929,8 @@ For a richer recovery map, run
 `polylogue ops maintenance blob-reference-debt --output-format json`; it does
 not mutate the archive and classifies missing refs by origin, reference table,
 ref type, raw-row joinability, and whether the recorded source path still
-exists.
-During daemon convergence, direct source files whose current bytes still hash
-to a missing blob address are restored automatically before raw materialization
-replay. Container/member paths such as `export.zip:conversations.json` are
-deliberately left for source re-acquisition because the referenced blob may be
-an extracted record inside the member, not the member file itself.
+exists. No current write path produces this debt, so a non-zero count is a
+producer defect to fix at its source, not state to repair in place.
 
 ### Vacuum Guidance
 

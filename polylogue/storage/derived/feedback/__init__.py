@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.analysis.feedback import (
@@ -27,7 +26,6 @@ from polylogue.analysis.feedback import (
     now_utc,
     parse_correction_kind,
 )
-from polylogue.core.sqlite_introspection import table_exists_async
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     ASSERTION_DEFAULT_AUTHOR_KIND,
     ASSERTION_DEFAULT_AUTHOR_REF,
@@ -41,36 +39,6 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
 
 if TYPE_CHECKING:
     import aiosqlite
-
-
-async def _attached_table_exists(conn: aiosqlite.Connection, schema_name: str, table_name: str) -> bool:
-    return await table_exists_async(conn, table_name, schema=schema_name)
-
-
-async def _attach_user_tier_if_present(conn: aiosqlite.Connection) -> bool:
-    cursor = await conn.execute("PRAGMA database_list")
-    rows = await cursor.fetchall()
-    main_path: Path | None = None
-    attached = False
-    for row in rows:
-        name = str(row[1])
-        if name == "main":
-            main_path = Path(str(row[2]))
-        elif name == "user_tier":
-            attached = True
-    if attached:
-        return True
-    if main_path is None:
-        return False
-    user_db = main_path.parent / "user.db"
-    if not user_db.exists():
-        return False
-    await conn.execute("ATTACH DATABASE ? AS user_tier", (str(user_db),))
-    return True
-
-
-async def _uses_archive_user_tier(conn: aiosqlite.Connection) -> bool:
-    return await _attach_user_tier_if_present(conn) and await _attached_table_exists(conn, "user_tier", "assertions")
 
 
 async def upsert_correction(
