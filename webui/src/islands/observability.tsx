@@ -151,7 +151,10 @@ export function ObservabilityIsland({
     let inFlight = false;
 
     const requestStatus = (): void => {
-      if (stopped || document.hidden || inFlight) return;
+      if (stopped || document.hidden) return;
+      if (timer !== null) window.clearTimeout(timer);
+      timer = null;
+      if (inFlight) return;
       const requestGeneration = ++generation;
       const requestController = new AbortController();
       controller = requestController;

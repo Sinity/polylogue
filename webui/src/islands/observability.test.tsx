@@ -57,7 +57,9 @@ describe('ObservabilityIsland', () => {
         const response = _request.path === '/api/status'
           ? {
               status_snapshot: { state: 'fresh', age_s: 0.2, captured_at: '2026-09-27T10:00:00Z', frame: 'frame-a', current_frame: 'frame-a', frame_changed: false },
-              status_components: [],
+              status_components: [
+                { component: 'archive_storage', state: 'fresh', age_s: 0.4, error: null },
+              ],
               catchup: {
                 mode: 'discovering', current_phase: 'discovering', current_source: 'codex',
                 discovery_inspected_count: 18, discovery_accepted_count: 4, discovery_rejected_count: 14,
@@ -81,6 +83,7 @@ describe('ObservabilityIsland', () => {
     render(<ObservabilityIsland initial={{ ...payload, insights: [], insights_loaded: false }} client={new PolylogueClient(transport)} ensureCredential={ensureCredential} />);
 
     expect(await screen.findByText('Phase: discovering · source: codex')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'archive_storage' })).toBeInTheDocument();
     expect(screen.getByText('18')).toBeInTheDocument();
     expect(screen.getByText('Unknown / Unknown')).toBeInTheDocument();
     expect(screen.getByText(/completion is not inferred/)).toBeInTheDocument();
@@ -181,6 +184,45 @@ describe('ObservabilityIsland', () => {
     expect(screen.getByText('7')).toBeInTheDocument();
     expect(screen.getByText('daemon disconnected')).toBeInTheDocument();
     view.unmount();
+    vi.useRealTimers();
+  });
+
+  it('keeps only one polling timer chain after manual refresh', async () => {
+    vi.useFakeTimers();
+    const pending: Array<{ resolve: (value: unknown) => void; signal: AbortSignal | undefined }> = [];
+    const transport: ClientTransport = {
+      request: <TResponse,>(_request: ClientRequest, options?: RequestOptions): Promise<TResponse> => new Promise((resolve) => {
+        pending.push({ resolve: (value) => resolve(value as TResponse), signal: options?.signal });
+      }),
+    };
+    const view = render(<ObservabilityIsland initial={{ ...payload, insights: [], insights_loaded: false }} client={new PolylogueClient(transport)} ensureCredential={async () => undefined} />);
+    const resolveFreshStatus = async (index: number): Promise<void> => {
+      await act(async () => {
+        pending[index]?.resolve({
+          status_snapshot: { state: 'fresh', age_s: 0, captured_at: 'now', frame: 'frame-a', current_frame: 'frame-a', frame_changed: false },
+          status_components: [],
+          catchup: { mode: 'catching_up', current_phase: 'parse', planned_raw_revision_count: 10, completed_raw_revision_count: index },
+        });
+        await Promise.resolve();
+      });
+    };
+
+    await act(async () => { await Promise.resolve(); });
+    expect(pending).toHaveLength(1);
+    await resolveFreshStatus(0);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
+    await act(async () => { await Promise.resolve(); });
+    expect(pending).toHaveLength(2);
+    await resolveFreshStatus(1);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(pending).toHaveLength(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(pending).toHaveLength(3);
+
+    view.unmount();
+    expect(pending[2]?.signal?.aborted).toBe(true);
     vi.useRealTimers();
   });
 });

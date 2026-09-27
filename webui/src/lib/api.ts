@@ -8,21 +8,31 @@ import {
   type SessionMessageWindow,
 } from '../contracts/session-read';
 
-let credentialBootstrap: Promise<void> | null = null;
+let credentialRenewal: Promise<void> | null = null;
+let credentialExpiresAtMs = 0;
 const credentialClient = new PolylogueClient();
+const WEB_CREDENTIAL_RENEWAL_SKEW_MS = 30_000;
 
 export async function ensureWebCredential(): Promise<void> {
-  if (credentialBootstrap !== null) {
-    return credentialBootstrap;
+  if (Date.now() + WEB_CREDENTIAL_RENEWAL_SKEW_MS < credentialExpiresAtMs) return;
+  if (credentialRenewal === null) {
+    credentialRenewal = (async () => {
+      const response = await credentialClient.bootstrapWebCredential();
+      const expiresAt = Date.parse(response.credential.expires_at);
+      if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+        throw new TypeError('web credential bootstrap returned an invalid expiry');
+      }
+      credentialExpiresAtMs = expiresAt;
+    })();
   }
-  credentialBootstrap = (async () => {
-    await credentialClient.bootstrapWebCredential();
-  })();
+  const renewal = credentialRenewal;
   try {
-    await credentialBootstrap;
+    await renewal;
   } catch (error) {
-    credentialBootstrap = null;
+    credentialExpiresAtMs = 0;
     throw error;
+  } finally {
+    if (credentialRenewal === renewal) credentialRenewal = null;
   }
 }
 

@@ -51,7 +51,7 @@ function parseComponent(value: unknown, index: number): StatusComponentSnapshot 
   const state = requiredString(value, 'state') as StatusComponentState;
   if (!COMPONENT_STATES.has(state)) throw new TypeError(`status component ${index} has unsupported state ${state}`);
   return {
-    name: requiredString(value, 'name'),
+    name: typeof value.name === 'string' ? value.name : requiredString(value, 'component'),
     state,
     detail: nullableString({ ...value, detail: value.detail ?? value.error ?? value.reason ?? null }, 'detail'),
     age_s: nullableNumber(value, 'age_s'),
