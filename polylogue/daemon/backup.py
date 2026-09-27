@@ -55,6 +55,7 @@ from polylogue.storage.blob_store import BlobStore
 
 if TYPE_CHECKING:
     from polylogue.operations.daemon_protocol import DaemonOperationEnvelope, DaemonOperationRequest
+    from polylogue.operations.durable_change_train import OwnedArchiveLocation
     from polylogue.operations.operation_context import OperationContext
 
 BackupProfile = Literal["full_evidence", "user_overlays", "rebuildable_cache_exclude", "diagnostics_bundle"]
@@ -1340,6 +1341,7 @@ def backup_archive(
     verify: bool = False,
     profile: BackupProfile = "rebuildable_cache_exclude",
     archive_root_path: Path | None = None,
+    archive_owner: OwnedArchiveLocation | None = None,
 ) -> BackupResult:
     """Backup the Polylogue archive.
 
@@ -1354,6 +1356,9 @@ def backup_archive(
         verify: Restore the finished backup into a scratch directory and run
             integrity/smoke checks before returning.
         profile: Named backup profile controlling which archive tiers are copied.
+        archive_owner: Exclusive archive ownership the caller already holds --
+            the daemon at open, before it serves anything. The backup copies
+            under that ownership instead of acquiring its own.
     """
     started = time.monotonic()
 
@@ -1376,13 +1381,18 @@ def backup_archive(
     # The daemon's coordinator already owns a durable writer hold. A direct
     # Python caller pins both the daemon pidfile and durable anchor until its
     # checkpointing copies finish, so a later daemon cannot race this check.
+    if archive_owner is not None:
+        from polylogue.operations.durable_change_train import assert_holds_archive_ownership
+
+        assert_holds_archive_ownership(archive_owner, root)
     owner_scope = (
         nullcontext()
-        if daemon_write_lease_active()
+        if daemon_write_lease_active() or archive_owner is not None
         else scoped_offline_archive_writer(root, owner_id="maintenance.backup")
     )
     with owner_scope:
-        _require_exclusive_archive_ownership(root)
+        if archive_owner is None:
+            _require_exclusive_archive_ownership(root)
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         with write_lease("maintenance.backup", archive_root=root):

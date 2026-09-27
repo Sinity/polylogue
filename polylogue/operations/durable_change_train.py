@@ -1733,6 +1733,62 @@ def restore_adopted_audit_tier(
                 os.fsync(directory_fd)
 
 
+@dataclass(frozen=True, slots=True)
+class PendingDurableMigration:
+    """One durable tier this runtime declares a newer schema version for."""
+
+    tier: ArchiveTier
+    current_version: int
+    target_version: int
+    requires_backup: bool
+
+
+def assert_holds_archive_ownership(owner: OwnedArchiveLocation, archive_root: Path) -> None:
+    """Refuse unless ``owner`` is the live exclusive ownership of ``archive_root``."""
+
+    from polylogue.storage.archive_identity import assert_owns_archive_location
+
+    assert_owns_archive_location(owner, ArchiveLocation.resolve(archive_root))
+
+
+def pending_durable_migrations(archive_root: Path) -> tuple[PendingDurableMigration, ...]:
+    """Name the next numbered step for every durable tier below this runtime's version."""
+
+    from polylogue.storage.sqlite import migration_runner
+
+    pending: list[PendingDurableMigration] = []
+    for tier in sorted(migration_runner.DURABLE_MIGRATION_TIERS, key=lambda item: item.value):
+        path = archive_root / f"{tier.value}.db"
+        if not path.is_file():
+            continue
+        with closing(open_readonly_connection(path, validate_schema=False)) as conn:
+            current = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+        target = ARCHIVE_VERSION_BY_TIER[tier]
+        if current >= target:
+            continue
+        steps = tuple(
+            claim
+            for claim in migration_runner.durable_migration_claims(tier)
+            if current < claim.target_version <= target
+        )
+        if {step.target_version for step in steps} != set(range(current + 1, target + 1)):
+            # No declared route from this version: schema preflight reports
+            # the skew; there is nothing to apply.
+            continue
+        # One numbered step at a time: each train advances exactly one slot,
+        # and each data-changing step needs a backup of the bytes it changes.
+        step = next(step for step in steps if step.target_version == current + 1)
+        pending.append(
+            PendingDurableMigration(
+                tier=tier,
+                current_version=current,
+                target_version=current + 1,
+                requires_backup=step.requires_backup,
+            )
+        )
+    return tuple(pending)
+
+
 def execute_durable_change_train(
     archive_root: Path,
     tier: ArchiveTier,
@@ -1886,7 +1942,11 @@ __all__ = [
     "AuditContinuityError",
     "ArchiveOwnershipError",
     "DurableChangeTrainError",
+    "OwnedArchiveLocation",
+    "PendingDurableMigration",
+    "assert_holds_archive_ownership",
     "execute_durable_change_train",
+    "pending_durable_migrations",
     "initialize_missing_durable_tier",
     "reconcile_durable_change_trains_on_startup",
     "audit_adoption_sealed_authority_digest",
