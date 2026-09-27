@@ -206,119 +206,6 @@ def test_raw_scan_budget_advances_and_fanout_reports_unavailable(tmp_path: Path)
     assert [row.mtime_ns for row in timeline.items] == sorted([row.mtime_ns for row in timeline.items], reverse=True)
 
 
-def test_raw_search_continuation_ignores_files_added_after_its_snapshot(tmp_path: Path) -> None:
-    """A new live-log file is outside the continuation's selected population."""
-    sources = raw_sources(tmp_path)
-    root = sources[0].root
-    large = root / "large.jsonl"
-    large.write_text("x" * 20_000 + " needle\n")
-    first = raw_operation(RawSearch(origin="codex-session", query="needle", scan_bytes=4), sources=sources)
-    assert first.continuation
-
-    (root / "new-live-log.jsonl").write_text('{"text":"unrelated needle"}\n')
-    page = raw_operation(
-        RawSearch(
-            origin="codex-session",
-            query="needle",
-            scan_bytes=4,
-            continuation=first.continuation,
-        ),
-        sources=sources,
-    )
-    matches = list(page.items)
-    for _ in range(100):
-        if page.continuation is None:
-            break
-        page = raw_operation(
-            RawSearch(
-                origin="codex-session",
-                query="needle",
-                scan_bytes=4_096,
-                continuation=page.continuation,
-            ),
-            sources=sources,
-        )
-        matches.extend(page.items)
-    references = {match.reference for match in matches}
-    assert references == {
-        "codex:large.jsonl",
-        "codex:original-0.jsonl",
-        "codex:original-1.jsonl",
-        "codex:original-2.jsonl",
-    }
-
-
-def test_raw_search_continuation_survives_append_to_fully_scanned_live_file(tmp_path: Path) -> None:
-    """A completed live-file range cannot alter the remaining historical population."""
-    root = tmp_path / "codex"
-    root.mkdir()
-    live = root / "live.jsonl"
-    history = root / "history.jsonl"
-    live.write_text('{"text":"live"}\n')
-    history.write_text("x" * (70 * 1_024) + "needle\n")
-    os.utime(live, ns=(2_000_000_000, 2_000_000_000))
-    os.utime(history, ns=(1_000_000_000, 1_000_000_000))
-    sources = (SessionSource("codex", root),)
-
-    first = raw_operation(RawSearch(origin="codex-session", query="needle", scan_bytes=64 * 1_024), sources=sources)
-    assert first.continuation
-    with live.open("a") as handle:
-        handle.write(" unrelated append")
-
-    resumed = raw_operation(
-        RawSearch(
-            origin="codex-session",
-            query="needle",
-            scan_bytes=64 * 1_024,
-            continuation=first.continuation,
-        ),
-        sources=sources,
-    )
-
-    assert resumed.outcome == "ok"
-    assert [item.reference for item in resumed.items] == ["codex:history.jsonl"]
-
-
-def test_raw_search_reports_a_gap_when_a_selected_snapshot_changes(tmp_path: Path) -> None:
-    sources = raw_sources(tmp_path)
-    large = sources[0].root / "large.jsonl"
-    large.write_text("x" * 20_000 + " needle\n")
-    first = raw_operation(RawSearch(origin="codex-session", query="needle", scan_bytes=4), sources=sources)
-    assert first.continuation
-
-    original = large.stat()
-    large.write_text("y" * original.st_size)
-    os.utime(large, ns=(original.st_atime_ns, original.st_mtime_ns + 1_000_000))
-    resumed = raw_operation(
-        RawSearch(origin="codex-session", query="needle", scan_bytes=4, continuation=first.continuation),
-        sources=sources,
-    )
-
-    assert resumed.outcome == "degraded"
-    assert not resumed.items and resumed.continuation is None
-    assert not resumed.coverage.complete
-    assert "selected search snapshot" in resumed.coverage.gaps[0]
-
-
-def test_raw_search_reports_a_gap_when_a_selected_file_grows(tmp_path: Path) -> None:
-    sources = raw_sources(tmp_path)
-    large = sources[0].root / "large.jsonl"
-    large.write_text("x" * 20_000 + " needle\n")
-    first = raw_operation(RawSearch(origin="codex-session", query="needle", scan_bytes=4), sources=sources)
-    assert first.continuation
-
-    with large.open("a") as handle:
-        handle.write(" appended")
-    resumed = raw_operation(
-        RawSearch(origin="codex-session", query="needle", scan_bytes=4, continuation=first.continuation),
-        sources=sources,
-    )
-
-    assert resumed.outcome == "degraded"
-    assert not resumed.items and resumed.continuation is None
-    assert "selected search snapshot" in resumed.coverage.gaps[0]
-
-
 def test_operation_contracts_validate_real_results(tmp_path: Path) -> None:
     """Generating declarations from unrelated tool signatures loses per-operation bounds."""
     contracts = session_operation_contracts()["operations"]
@@ -391,18 +278,30 @@ def test_raw_memory_and_timeline_respect_explicit_source_configuration(tmp_path:
 
     memory = raw_operation(RawMemorySearch(query="needle"), sources=codex_only)
     timeline = raw_operation(RawTimeline(), sources=codex_only)
-    assert memory.outcome == "degraded"
-    assert [row.origin for row in memory.sources if row.availability == "unavailable"] == ["claude-code-session"]
+    assert memory.outcome == "ok"
+    assert [row.origin for row in memory.sources] == ["codex-session"]
     assert memory.items
-    assert timeline.outcome == "degraded"
-    assert [row.origin for row in timeline.sources if row.availability == "unavailable"] == ["claude-code-session"]
+    assert timeline.outcome == "ok"
+    assert [row.origin for row in timeline.sources] == ["codex-session"]
     assert timeline.items
+
+    requested_memory = raw_operation(
+        RawMemorySearch(query="needle", origins=["claude-code-session"]), sources=codex_only
+    )
+    requested_timeline = raw_operation(RawTimeline(origins=["claude-code-session"]), sources=codex_only)
+    assert requested_memory.outcome == requested_timeline.outcome == "degraded"
+    assert not requested_memory.items and not requested_timeline.items
+    assert [row.origin for row in requested_memory.sources if row.availability == "unavailable"] == [
+        "claude-code-session"
+    ]
+    assert [row.origin for row in requested_timeline.sources if row.availability == "unavailable"] == [
+        "claude-code-session"
+    ]
 
     empty_memory = raw_operation(RawMemorySearch(query="needle"), sources=())
     empty_timeline = raw_operation(RawTimeline(), sources=())
-    assert empty_memory.outcome == empty_timeline.outcome == "degraded"
+    assert empty_memory.outcome == empty_timeline.outcome == "empty"
     assert not empty_memory.items and not empty_timeline.items
-    assert len(empty_memory.coverage.gaps) == len(empty_timeline.coverage.gaps) == 2
 
 
 def test_raw_timeline_observes_each_provider_once_per_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

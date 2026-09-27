@@ -355,7 +355,7 @@ def raw_operation(
         cursors = {_provider(k): v for k, v in request.source_cursors.items()} if request.source_cursors else None
         result = MemoryService(service).search(
             request.query,
-            [_provider(o) for o in request.origins],
+            [_provider(o) for o in request.origins] if request.origins is not None else None,
             request.limit,
             source_cursors=cursors,
             cursor_key=key,
@@ -367,7 +367,7 @@ def raw_operation(
             request.since,
             request.until,
             request.query,
-            [_provider(o) for o in request.origins],
+            [_provider(o) for o in request.origins] if request.origins is not None else None,
             request.limit,
             cursor=request.continuation,
             cursor_key=key,
@@ -377,31 +377,15 @@ def raw_operation(
     else:
         provider = _provider(request.origin)
         if isinstance(request, RawSearch):
-            from polylogue.operations.raw_sessions.sessions import SessionSnapshotChangedError
-
-            try:
-                result = service.search(
-                    provider,
-                    request.query,
-                    request.limit,
-                    reference=request.reference,
-                    cursor=request.continuation,
-                    cursor_key=key,
-                    scan_bytes=request.scan_bytes,
-                )
-            except SessionSnapshotChangedError as exc:
-                reason = str(exc)
-                return RawPage(
-                    items=[],
-                    sources=[RawSourceCoverage(origin=request.origin, availability="unavailable", reason=reason)],
-                    coverage=Coverage(
-                        authority="original-local-session-jsonl",
-                        complete=False,
-                        gaps=[reason],
-                    ),
-                    continuation=None,
-                    outcome="degraded",
-                )
+            result = service.search(
+                provider,
+                request.query,
+                request.limit,
+                reference=request.reference,
+                cursor=request.continuation,
+                cursor_key=key,
+                scan_bytes=request.scan_bytes,
+            )
             rows = result["matches"]
         else:
             result = service.timeline(

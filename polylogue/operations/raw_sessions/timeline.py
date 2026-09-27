@@ -60,7 +60,10 @@ class TimelineService:
             raise TimelineError("query must contain 1-1000 characters")
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
             raise TimelineError("limit must be positive")
-        requested = resolve_providers(providers, error=TimelineError, noun="timeline")
+        configured = [source.provider for source in self.sessions.sources]
+        requested = resolve_providers(
+            providers if providers is not None else configured, error=TimelineError, noun="timeline"
+        )
         if cursor_key is None and cursor is not None:
             raise TimelineError("timeline continuation cursor is unavailable")
         # Direct service users do not own the gateway result key.  Keep a

@@ -117,9 +117,7 @@ class RawRead(Request):
 
 class RawTimeline(Request):
     operation: Literal["sessions.raw.timeline"] = "sessions.raw.timeline"
-    origins: list[RawOrigin] = Field(
-        default_factory=lambda: list[RawOrigin](["claude-code-session", "codex-session"]), min_length=1, max_length=2
-    )
+    origins: list[RawOrigin] | None = Field(default=None, min_length=1, max_length=2)
     since: str | None = None
     until: str | None = None
     query: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
@@ -131,9 +129,7 @@ class RawTimeline(Request):
 class RawMemorySearch(Request):
     operation: Literal["memory.raw.search"] = "memory.raw.search"
     query: Annotated[str, Field(min_length=1, max_length=1000)]
-    origins: list[RawOrigin] = Field(
-        default_factory=lambda: list[RawOrigin](["claude-code-session", "codex-session"]), min_length=1, max_length=2
-    )
+    origins: list[RawOrigin] | None = Field(default=None, min_length=1, max_length=2)
     limit: Bound = 100
     scan_bytes: Annotated[int, Field(ge=1, le=8_388_608)] = 8_388_608
     source_cursors: dict[RawOrigin, str | None] | None = None
