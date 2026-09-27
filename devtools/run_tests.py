@@ -637,6 +637,9 @@ def main(argv: list[str] | None = None) -> int:
         # body SETS this variable. The call below must stay this module's.
         pytest_env.pop("POLYLOGUE_BROAD_PREWARM", None)
         _normalize_managed_pytest_environment(pytest_env)
+        # Only this invocation's flag authorizes the default branch; an
+        # inherited value must not reach the slot's start-time re-check.
+        pytest_env.pop(ALLOW_DEFAULT_BRANCH_ENV, None)
         if on_default_branch:
             pytest_env[ALLOW_DEFAULT_BRANCH_ENV] = "1"
         hypothesis_profile, hypothesis_profile_source = effective_hypothesis_profile(

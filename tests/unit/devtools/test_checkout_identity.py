@@ -349,3 +349,62 @@ def test_a_focused_run_whose_content_moves_during_pytest_is_void(
     assert run_tests.main(["seed_test.py"]) == 1
     final = capsys.readouterr().err.strip().splitlines()[-1]
     assert "diagnosis=checkout_moved_during_run" in final
+
+
+def test_an_inherited_default_branch_opt_in_does_not_reach_the_slot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Anti-vacuity: keep an ambient ``POLYLOGUE_ALLOW_DEFAULT_BRANCH=1`` and the
+    slot would accept a run the invocation never authorized."""
+    from devtools.checkout_identity import ALLOW_DEFAULT_BRANCH_ENV
+    from devtools.pytest_slot import SlotOutcome
+
+    root = _repository(tmp_path / "feature", "claude/change")
+    seen: dict[str, str] = {}
+
+    def capture(_cmd: list[str], **kwargs: object) -> SlotOutcome:
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        seen.update(env)
+        return SlotOutcome(returncode=2, slot="held")
+
+    monkeypatch.setenv(ALLOW_DEFAULT_BRANCH_ENV, "1")
+    monkeypatch.setattr(run_tests, "ROOT", root)
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(run_tests, "assert_polylogue_matches_checkout", lambda *_a, **_k: None)
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _path: None)
+    monkeypatch.setattr(run_tests, "run_pytest", capture)
+
+    run_tests.main(["seed_test.py"])
+
+    assert ALLOW_DEFAULT_BRANCH_ENV not in seen
+
+
+def test_pytest_on_another_head_with_identical_content_voids_verification(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Anti-vacuity: compare only content digests and an empty commit's pytest
+    provenance passes against the admitted HEAD."""
+    from devtools import verify as verify_module
+    from devtools.verify_runs import git_worktree_content_sha256
+
+    root = _repository(tmp_path / "feature", "claude/change")
+    history: dict[str, object] = {}
+    digest = git_worktree_content_sha256(root)
+    elsewhere = {"git_branch": "claude/change", "git_head": "b" * 40, "git_worktree_content_sha256": digest}
+
+    def pytest_step(
+        label: str, command: list[str], *, run: object, runner: str
+    ) -> tuple[int, float, dict[str, object]]:
+        del label, command, run, runner
+        return 0, 0.0, {"diagnosis": "gate_passed", "pytest_slot_receipt": {"worktree_provenance": elsewhere}}
+
+    monkeypatch.setattr(verify_module, "ROOT", root)
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(verify_module, "assert_polylogue_matches_checkout", lambda *_a, **_k: None)
+    monkeypatch.setattr(verify_module, "build_verify_steps", lambda **_kwargs: [("gate only", ["true"])])
+    monkeypatch.setattr(verify_module, "_run", pytest_step)
+    monkeypatch.setattr(verify_module, "append_verify_history", lambda payload: history.update(payload))
+
+    assert verify_module._main(["--quick"]) == 1
+    assert history["diagnosis"] == "checkout_moved_during_run"

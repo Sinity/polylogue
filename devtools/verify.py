@@ -1016,8 +1016,10 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         else:
             sys.stderr.write(branch_refusal + "\n")
         return REFUSAL_EXIT
+    # Carried to the pytest slot, which re-checks the branch at start; only
+    # this invocation's flag may authorize it, never an inherited value.
+    os.environ.pop(ALLOW_DEFAULT_BRANCH_ENV, None)
     if args.on_default_branch:
-        # Carried to the pytest slot, which re-checks the branch at start.
         os.environ[ALLOW_DEFAULT_BRANCH_ENV] = "1"
     sys.stderr.write(f"verify: {identity.describe()}\n")
     # Every step must see one tree: its Git-visible content is compared at the end.
@@ -1140,14 +1142,20 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             exit_code=130,
             termination_reason="operator_interrupt",
         )
-    executed_contents: set[object] = set()
+    executed: set[tuple[object, object, object]] = set()
     for result in results:
         slot_receipt = result.get("pytest_slot_receipt")
         provenance = slot_receipt.get("worktree_provenance") if isinstance(slot_receipt, Mapping) else None
         if isinstance(provenance, Mapping):
             # The receipt and verdict name what pytest executed, not what was admitted.
             run.record_execution_worktree(provenance)
-            executed_contents.add(provenance.get("git_worktree_content_sha256"))
+            executed.add(
+                (
+                    provenance.get("git_branch"),
+                    provenance.get("git_head"),
+                    provenance.get("git_worktree_content_sha256"),
+                )
+            )
     # The static gates read the checkout directly, with no slot to re-check it:
     # a run whose branch, HEAD or Git-visible content changed while it ran, or
     # whose pytest step executed other content, verified no single tree.
@@ -1156,7 +1164,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     checkout_moved = (
         (finished_identity.branch, finished_identity.head) != (identity.branch, identity.head)
         or finished_content != started_content
-        or (started_content is not None and bool(executed_contents - {started_content}))
+        or bool(executed - {(identity.branch, identity.head, started_content)})
     )
     if checkout_moved:
         sys.stderr.write(
