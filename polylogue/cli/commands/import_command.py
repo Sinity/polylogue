@@ -52,9 +52,29 @@ def _default_daemon_url() -> str:
     return load_polylogue_config().daemon_url or "http://127.0.0.1:8766"
 
 
+def _clone_file(source: str | Path, destination: str | Path) -> Path:
+    """Stage one file by reflink where the filesystem supports it, else copy.
+
+    Account exports run to tens of gigabytes; on a copy-on-write filesystem a
+    reflink stages them without duplicating the bytes. Re-staging replaces the
+    previous copy, so importing the same export twice leaves one inbox entry.
+    """
+    from polylogue.sources.source_snapshot import try_reflink
+
+    source_path = Path(source)
+    destination_path = Path(destination)
+    destination_path.unlink(missing_ok=True)
+    if try_reflink(source_path, destination_path):
+        shutil.copystat(source_path, destination_path)
+    else:
+        shutil.copy2(source_path, destination_path)
+    return destination_path
+
+
 def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:
-    """Copy a local import target into the archive inbox for daemon pickup."""
+    """Stage a local import target into the archive inbox for daemon pickup."""
     from polylogue.sources.parsers import antigravity, hermes_state
+    from polylogue.sources.source_snapshot import SourceSnapshotError
     from polylogue.sources.sqlite_snapshot import sqlite_staging_metadata_path, stage_sqlite_snapshot
 
     resolved = path.expanduser().resolve()
@@ -79,10 +99,10 @@ def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:
             return dest
         sqlite_staging_metadata_path(dest).unlink(missing_ok=True)
         if resolved.is_dir():
-            shutil.copytree(resolved, dest, dirs_exist_ok=True)
+            shutil.copytree(resolved, dest, dirs_exist_ok=True, copy_function=_clone_file)
         else:
-            shutil.copy2(resolved, dest)
-    except OSError as exc:
+            _clone_file(resolved, dest)
+    except (OSError, SourceSnapshotError) as exc:
         fail("import", f"Could not stage {resolved} in daemon inbox: {exc}")
 
     return dest

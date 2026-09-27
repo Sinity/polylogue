@@ -446,7 +446,8 @@ def observe_source_members(declaration: SourceDeclaration) -> tuple[CutItem, ...
     )
 
 
-def _try_reflink(source: Path, destination: Path) -> bool:
+def try_reflink(source: Path, destination: Path) -> bool:
+    """Clone ``source`` to a new ``destination`` by reflink; ``False`` when unsupported."""
     try:
         with source.open("rb") as source_stream:
             destination_fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -465,7 +466,7 @@ def _try_reflink(source: Path, destination: Path) -> bool:
 
 def _copy_file(source: Path, destination: Path, policy: SourceCutPolicy) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if policy.prefer_reflink and _try_reflink(source, destination):
+    if policy.prefer_reflink and try_reflink(source, destination):
         return
     if not policy.allow_full_copy_fallback:
         raise SourceSnapshotError(f"reflink unavailable and full copy is disabled: {source}")
