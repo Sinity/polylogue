@@ -20,6 +20,7 @@ from polylogue.paths import state_home
 from .page import CompactJSONPage
 from .snapshot_store import (
     SnapshotBinding,
+    SnapshotBindingMismatchError,
     SnapshotStore,
     SnapshotTemporarilyUnavailableError,
     SnapshotUnavailableError,
@@ -552,6 +553,8 @@ class SessionLogService:
                 raise SessionError("session continuation cursor is malformed")
             try:
                 files = self._snapshots.load(snapshot_handle, binding).files
+            except SnapshotBindingMismatchError as exc:
+                raise StaleContinuationError(str(exc)) from exc
             except SnapshotTemporarilyUnavailableError as exc:
                 raise RetryableSessionError(
                     f"session continuation snapshot is temporarily unreadable ({exc}); retry the same continuation"

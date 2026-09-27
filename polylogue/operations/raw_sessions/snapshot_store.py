@@ -94,6 +94,10 @@ class SnapshotUnavailableError(LookupError):
     """The handle expired, was evicted, or never belonged to this scope."""
 
 
+class SnapshotBindingMismatchError(SnapshotUnavailableError):
+    """The handle exists but was retained for a different scope (for example another source root)."""
+
+
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -254,7 +258,7 @@ class SnapshotStore:
                         raise SnapshotTemporarilyUnavailableError(str(exc)) from exc
                     if body is not None:
                         if not isinstance(body, dict) or body.get("v") != 1 or body.get("binding") != binding.as_json():
-                            raise SnapshotUnavailableError(
+                            raise SnapshotBindingMismatchError(
                                 "session continuation does not match its original search scope"
                             )
                         # The TTL slides from last use; the name carries the stamp.

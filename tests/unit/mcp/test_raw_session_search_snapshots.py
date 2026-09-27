@@ -883,3 +883,18 @@ def test_non_utf8_filename_reference_is_searchable_and_resumable(tmp_path: Path)
     assert first["next_cursor"] is not None
     resumed = service.search("codex", "needle", reference=row["reference"], cursor=first["next_cursor"], cursor_key=key)
     assert [match["reference"] for match in resumed["matches"]] == [row["reference"]]
+
+
+def test_continuation_resumed_under_a_different_source_root_is_stale(tmp_path: Path) -> None:
+    """Anti-vacuity: mapping a binding mismatch to 'unavailable' reports a stale scope as an expired snapshot."""
+    first_root = tmp_path / "first"
+    first_file = _write(first_root / "a.jsonl", "needle a\n", 2)
+    _write(first_root / "b.jsonl", "needle b\n", 1)
+    second_root = tmp_path / "second"
+    _write(second_root / "a.jsonl", "needle a\n", 1)
+    key = b"k" * 32
+    before = SessionLogService(sources=_sources(first_root))
+    token = before.search("codex", "needle", scan_bytes=first_file.stat().st_size, cursor_key=key)["next_cursor"]
+    after = SessionLogService(sources=_sources(second_root))
+    with pytest.raises(StaleContinuationError, match="original search scope"):
+        after.search("codex", "needle", cursor=token, cursor_key=key)
