@@ -632,11 +632,11 @@ def prepare_jsonl_blob(
                             {"conversation": {}, "responses": []}, session.provider_session_id
                         )
                         session = session.model_copy(update={"unit_accounting": admitted.unit_accounting})
-                        if not require_positive_conversational_evidence(
-                            [session], provider=provider, source_path=source_path
-                        ):
-                            continue
                         if prepare_session is not None:
+                            if not require_positive_conversational_evidence(
+                                [session], provider=provider, source_path=source_path
+                            ):
+                                continue
                             session = prepare_session(session)
                         session.content_hash = session_content_hash(session)
                         append_session_to_shard(shard_builder, session)
@@ -766,7 +766,6 @@ def prepare_jsonl_blob(
             resolved_provider=provider,
             positive_evidence_filtered=stream_prefix is not None
             or generic_envelope is not None
-            or grok_count is not None
             or (prepare_sessions is None and prepare_session is not None),
         )
         sealed = True

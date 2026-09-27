@@ -438,6 +438,30 @@ def test_grok_single_object_corrupt_suffix_leaves_no_artifact(tmp_path: Path) ->
     assert list(directory.glob("*.db")) == []
 
 
+def test_grok_empty_conversation_keeps_direct_parse_session(tmp_path: Path) -> None:
+    record = {"conversations": [{"conversation": {"title": "Empty"}, "responses": []}]}
+    source = tmp_path / "empty-grok.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.GROK.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert artifact.error is None
+    assert artifact.positive_evidence_filtered is False
+    [actual] = artifact.iter_sessions()
+    [expected] = parse_payload(Provider.GROK, record, "fallback")
+    assert (actual.provider_session_id, actual.title, list(actual.messages)) == (
+        expected.provider_session_id,
+        expected.title,
+        expected.messages,
+    )
+    artifact.discard()
+
+
 def test_grok_single_object_changed_during_stream_defers_and_discards(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
