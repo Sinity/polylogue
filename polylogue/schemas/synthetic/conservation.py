@@ -46,6 +46,11 @@ ConservationVerdict: TypeAlias = Literal["loss", "duplication", "mutation"]
 
 _MAX_WALK_DEPTH = 12
 
+#: Key the coverage-witness generator invents to exercise a schema's
+#: ``additionalProperties``. It names no provider field, so no parser can be
+#: expected to carry a value planted beneath it.
+COVERAGE_EXTRA_KEY = "__polylogue_coverage_extra__"
+
 
 @dataclass(frozen=True, slots=True)
 class PlantedValue:
@@ -382,6 +387,22 @@ def _mutation_detail(value: str, observed: Counter[str]) -> str | None:
     return None
 
 
+def _wire_string_occurrences(payloads: Sequence[object]) -> Counter[str]:
+    """Count every non-empty string in the wire payloads, at any position."""
+    counter: Counter[str] = Counter()
+    stack: list[tuple[object, int]] = [(payload, 0) for payload in payloads]
+    while stack:
+        value, depth = stack.pop()
+        if isinstance(value, str):
+            if _normalise(value):
+                counter[_normalise(value)] += 1
+        elif depth < _MAX_WALK_DEPTH and isinstance(value, Mapping):
+            stack.extend((item, depth + 1) for item in value.values())
+        elif depth < _MAX_WALK_DEPTH and isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+            stack.extend((item, depth + 1) for item in value)
+    return counter
+
+
 def check_conservation(
     schema: Mapping[str, object],
     payloads: Sequence[object],
@@ -398,13 +419,14 @@ def check_conservation(
     excluded: list[str] = []
     for payload in payloads:
         for item in collect_planted_values(schema, payload):
-            if _is_excluded(item.path, excluded_paths):
+            if COVERAGE_EXTRA_KEY in item.path or _is_excluded(item.path, excluded_paths):
                 excluded.append(item.path)
                 continue
             planted.append(item)
 
     block_texts = parsed_block_texts(sessions)
     titles = parsed_titles(sessions)
+    wire_strings = _wire_string_occurrences(payloads)
 
     findings: list[ConservationFinding] = []
     for role in sorted({item.role for item in planted}):
@@ -415,7 +437,11 @@ def check_conservation(
             if observed_count == expected_count:
                 continue
             path = next(item.path for item in planted if item.role == role and item.value == value)
-            if observed_count > expected_count:
+            # A value may also sit at wire positions outside the conserved
+            # roles (a tool result echoing a message, say). Emitting it once
+            # per wire occurrence is not duplication; exceeding every wire
+            # occurrence is.
+            if observed_count > max(expected_count, wire_strings.get(value, 0)):
                 findings.append(
                     ConservationFinding(
                         path=path,
@@ -424,6 +450,8 @@ def check_conservation(
                         detail=f"appears {observed_count} times in parsed output, expected {expected_count}",
                     )
                 )
+                continue
+            if observed_count > expected_count:
                 continue
             mutation = _mutation_detail(value, observed) if observed_count == 0 else None
             if mutation is not None:
@@ -448,6 +476,7 @@ def check_conservation(
 __all__ = [
     "BODY_ROLE",
     "CONTENT_BEARING_ROLES",
+    "COVERAGE_EXTRA_KEY",
     "SEMANTIC_ROLE_KEY",
     "TITLE_ROLE",
     "ConservationFinding",
