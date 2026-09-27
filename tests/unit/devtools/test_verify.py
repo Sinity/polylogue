@@ -1833,3 +1833,29 @@ def test_interruption_cleanup_defers_a_second_signal() -> None:
         assert signal.getsignal(signal.SIGTERM) is raising
     finally:
         signal.signal(signal.SIGTERM, previous)
+
+
+def test_stopping_gates_shares_one_grace_period(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every stuck gate gets the same deadline, not ten seconds each in turn.
+
+    Anti-vacuity: wait ``timeout=10`` per process and the second wait is
+    asked for the full ten seconds again.
+    """
+    clock = [0.0]
+    waits: list[float] = []
+
+    class _Stuck:
+        pid = 0
+
+        def wait(self, timeout: float) -> int:
+            waits.append(timeout)
+            clock[0] += timeout
+            raise subprocess.TimeoutExpired("gate", timeout)
+
+    monkeypatch.setattr(verify.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(verify.os, "killpg", lambda *_args: None)
+    monkeypatch.setattr(verify, "_LIVE_GATE_PROCESSES", {_Stuck(), _Stuck()})
+
+    verify._stop_gate_processes()
+
+    assert waits == [10.0, 0.0]

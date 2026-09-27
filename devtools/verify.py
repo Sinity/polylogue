@@ -641,12 +641,15 @@ def _stop_gate_processes() -> None:
     for process in live:
         with contextlib.suppress(OSError):
             os.killpg(process.pid, signal.SIGTERM)
+    # One grace period for all of them, not one per gate.
+    deadline = time.monotonic() + 10
     for process in live:
         with contextlib.suppress(subprocess.TimeoutExpired):
-            process.wait(timeout=10)
-        # The leader exiting does not mean its group did: a child that delays
-        # or ignores SIGTERM still holds the gate's output pipes. Whatever of
-        # the group survived the grace period is killed.
+            process.wait(timeout=max(0.0, deadline - time.monotonic()))
+    # The leader exiting does not mean its group did: a child that delays or
+    # ignores SIGTERM still holds the gate's output pipes. Whatever of each
+    # group survived the grace period is killed.
+    for process in live:
         with contextlib.suppress(OSError):
             os.killpg(process.pid, signal.SIGKILL)
 
