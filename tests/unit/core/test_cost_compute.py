@@ -129,6 +129,59 @@ def test_compute_session_cost_falls_back_to_word_count_estimate_for_zero_token_u
     assert any(b.confidence == "estimated" for b in summary.per_model)
 
 
+def test_zero_token_fallback_keeps_the_declared_model_identity_and_price() -> None:
+    """Messages without a per-message model take the session's one declared model.
+
+    Anti-vacuity (polylogue-jgngs): replacing the canonical map with the
+    message-only estimate files every token under ``unknown``, so the
+    breakdown loses ``gpt-4o`` and its catalog price.
+    """
+
+    session = make_conv(
+        id="identity-only-session",
+        provider="chatgpt",
+        messages=[
+            make_msg(id="m1", role="user", text="a reasonably long user message with several words in it"),
+            make_msg(id="m2", role="assistant", text="a reasonably long assistant reply with several words too"),
+        ],
+    )
+    model_usage = [ModelUsageTotals(model_name="gpt-4o", input_tokens=0, output_tokens=0)]
+
+    summary = compute_session_cost(session, estimate_if_missing=False, model_usage=model_usage)
+
+    assert [breakdown.normalized_model for breakdown in summary.per_model] == ["gpt-4o"]
+    assert summary.per_model[0].provider_model_name == "gpt-4o"
+    assert summary.per_model[0].confidence == "estimated"
+    assert summary.total_api_cost_usd > 0
+    assert summary.cost_provenance == "catalog_priced"
+
+
+def test_zero_token_fallback_keeps_declared_identities_it_cannot_attribute() -> None:
+    """With two declared models and no per-message model, neither is guessed.
+
+    The estimate stays under ``unknown`` and both declared identities remain
+    as identity-only rows, so the aggregate is honestly ``partial``.
+    Anti-vacuity: replacing the map drops both declared identities.
+    """
+
+    session = make_conv(
+        id="two-model-session",
+        provider="chatgpt",
+        messages=[make_msg(id="m1", role="user", text="several words of user text for the estimate")],
+    )
+    model_usage = [
+        ModelUsageTotals(model_name="gpt-4o", input_tokens=0, output_tokens=0),
+        ModelUsageTotals(model_name="o3", input_tokens=0, output_tokens=0),
+    ]
+
+    summary = compute_session_cost(session, estimate_if_missing=False, model_usage=model_usage)
+
+    models = {breakdown.normalized_model for breakdown in summary.per_model}
+    assert {"gpt-4o", "o3"} <= models
+    assert None in models
+    assert summary.cost_confidence == "partial"
+
+
 def test_compute_session_cost_is_unknown_when_no_real_evidence_exists() -> None:
     """When session_model_usage carries only zero-token rows AND the
     session's messages carry no text/word-count evidence either, the honest

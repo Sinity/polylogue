@@ -20,7 +20,9 @@ from polylogue.sources.dispatch import (
     parse_payload,
     require_positive_conversational_evidence,
 )
+from polylogue.sources.origin_specs import ORIGIN_SPECS
 from polylogue.sources.parsers.antigravity import AntigravitySessionSummary
+from polylogue.sources.parsers.base_models import ParsedSession
 from tests.infra.origin_capability_matrix import (
     MANIFEST_PATH,
     load_manifest,
@@ -230,3 +232,57 @@ def test_parser_claim_cannot_cross_origin_spec_boundary() -> None:
 
     with pytest.raises(ValueError, match="not declared by OriginSpec|different public origin"):
         load_manifest_payload(payload)
+
+
+def _produced_topology_dimensions(sessions: list[ParsedSession]) -> set[str]:
+    """Name each topology dimension the parser actually emitted evidence for."""
+    produced: set[str] = set()
+    for session in sessions:
+        if session.parent_session_provider_id:
+            produced.add("session_parent_target")
+        if session.branch_point_provider_message_id:
+            produced.add("inheritance_branch_point")
+        if session.branch_type is not None:
+            produced.add("message_branch_state")
+        if any(event.payload.get("observation_kind") == "parent_dispatch" for event in session.session_events):
+            produced.add("parent_dispatch")
+        for message in session.messages:
+            if message.parent_message_provider_id or message.parent_message_position is not None:
+                produced.add("message_parent")
+            # A linear transcript is normalized to variant 0 on the active
+            # path; only an off-path message or a non-zero branch or variant
+            # is branch evidence.
+            if message.branch_index or message.variant_index or message.is_active_path is False:
+                produced.add("message_branch_state")
+    return produced
+
+
+def test_no_origin_emits_topology_evidence_its_declaration_calls_structurally_absent() -> None:
+    """Declarations are checked against what the parser produces, not against themselves.
+
+    Anti-vacuity (polylogue-b5l6n): set claude-code-session's ``message_parent``
+    back to ``structurally-absent`` while its parser still emits ``parentUuid``
+    and this goes red; the census completeness test cannot see that direction.
+    """
+    manifest = load_manifest()
+    declarations = {spec.origin: spec.topology_capabilities.as_dict() for spec in ORIGIN_SPECS}
+    contradictions: list[str] = []
+    checked = 0
+    for entry in manifest.entries:
+        declared = declarations[entry.origin]
+        for witness in entry.witnesses:
+            if witness.route == "vendor":
+                continue
+            claim = witness.parser_claims[0]
+            sessions = parse_payload(
+                claim.provider,
+                cast(JSONDocument, load_witness_fixture(witness)),
+                witness.fallback_id,
+                source_path=witness.fixture_path,
+            )
+            checked += 1
+            for dimension in sorted(_produced_topology_dimensions(sessions)):
+                if declared[dimension].state == "structurally-absent":
+                    contradictions.append(f"{entry.origin.value}.{dimension} ({witness.fixture_path})")
+    assert checked
+    assert contradictions == []
