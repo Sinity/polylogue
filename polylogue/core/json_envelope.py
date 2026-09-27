@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import sys
 from collections.abc import Iterator
 from functools import cache
 from typing import IO, Protocol
@@ -38,6 +39,13 @@ _SKIPPED_TOKEN = re.compile(rb'\\(?:u[0-9a-fA-F]{4}|["\\/bfnrt])|\\|[\x00-\x1f]'
 #: Injected into the tokenizer's view of a string whose skipped suffix is not
 #: valid JSON, so the tokenizer rejects the document as the full decoder does.
 _INVALID_ESCAPE = b"\\q"
+
+#: A run of bytes that can belong to a JSON number token outside strings.
+_NUMBER_RUN = re.compile(rb"[-+0-9.eE]+")
+
+#: Appended to an over-long integer token so the tokenizer rejects it as
+#: malformed instead of converting it.
+_INVALID_NUMBER_END = b"x"
 
 
 class EnvelopeValueTooLargeError(ValueError):
@@ -130,6 +138,12 @@ class _PrefixStringReader:
         self._skipped_bytes = 0
         self._skip_carry = b""
         self._skip_invalid = False
+        #: State of the number token being passed outside strings, which may
+        #: span chunks.
+        self._number_open = False
+        self._number_poisoned = False
+        self._number_in_integer_part = True
+        self._number_digits = 0
 
     def read(self, size: int = -1) -> bytes:
         if size == 0:
@@ -146,6 +160,50 @@ class _PrefixStringReader:
             self._consume(chunk, out)
         return bytes(out)
 
+    def _pass_structure(self, segment: bytes, out: bytearray) -> None:
+        """Pass bytes outside any string through, refusing over-long integer parts.
+
+        The JSON decoder refuses an integer longer than Python's conversion
+        limit with ``ValueError``, and converting one inside the C tokenizer
+        is not safe. A number whose integer part exceeds the limit is
+        therefore cut at the limit and made malformed there, so the tokenizer
+        rejects the record before any over-long value is converted. A float
+        with that many integer digits is refused the same way: failing closed
+        on a pathological number rather than guessing its value.
+        """
+        if not segment:
+            return
+        limit = sys.get_int_max_str_digits()
+        position = 0
+        ends_open = False
+        for run in _NUMBER_RUN.finditer(segment):
+            if not (run.start() == 0 and self._number_open):
+                self._number_digits = 0
+                self._number_poisoned = False
+                self._number_in_integer_part = True
+            if self._number_poisoned:
+                # The rest of a refused token never reaches the tokenizer.
+                out += segment[position : run.start()]
+                position = run.end()
+            elif limit and self._number_in_integer_part:
+                token = run.group()
+                for offset, byte in enumerate(token):
+                    if byte in b".eE":
+                        self._number_in_integer_part = False
+                        break
+                    if 0x30 <= byte <= 0x39:
+                        self._number_digits += 1
+                        if self._number_digits > limit:
+                            out += segment[position : run.start() + offset]
+                            out += _INVALID_NUMBER_END
+                            position = run.end()
+                            self._number_poisoned = True
+                            break
+            ends_open = run.end() == len(segment)
+        # A token continues into the next chunk only if this one ends inside it.
+        self._number_open = ends_open
+        out += segment[position:]
+
     def readinto(self, buffer: bytearray | memoryview) -> int:
         data = self.read(len(buffer))
         buffer[: len(data)] = data
@@ -157,9 +215,9 @@ class _PrefixStringReader:
             if not self._in_string:
                 quote = data.find(b'"', position)
                 if quote < 0:
-                    out += data[position:]
+                    self._pass_structure(data[position:], out)
                     return
-                out += data[position : quote + 1]
+                self._pass_structure(data[position : quote + 1], out)
                 self._in_string = True
                 self._backslashes = 0
                 self._string = bytearray()

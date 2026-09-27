@@ -1461,15 +1461,27 @@ def test_declared_identity_field_is_read_whole_or_refused() -> None:
 
 
 def test_an_oversized_integer_skips_only_its_own_jsonl_record() -> None:
-    """Anti-vacuity: let ValueError escape the record scope and no envelope is yielded."""
+    """Anti-vacuity: drop the integer-part guard and the tokenizer converts the
+    over-long value (a crash in the C backend); let ValueError escape the record
+    scope and no envelope is yielded."""
     import io
 
-    from polylogue.core.json_envelope import jsonl_record_envelopes
+    import ijson
+    import pytest
 
+    from polylogue.core.json_envelope import jsonl_record_envelopes, top_level_envelopes
+
+    fields = frozenset({"n", "atof_version"})
     lines = b'{"n": ' + b"9" * 4301 + b'}\n{"atof_version": "0.1"}'
-    assert list(jsonl_record_envelopes(io.BytesIO(lines), fields=frozenset({"n", "atof_version"}))) == [
-        {"atof_version": "0.1"}
-    ]
+    assert list(jsonl_record_envelopes(io.BytesIO(lines), fields=fields)) == [{"atof_version": "0.1"}]
+    # At the limit the integer is still read exactly; beyond it a whole
+    # document is refused as malformed, as the decoder refuses it, and the
+    # tokenizer never converts the over-long value.
+    at_limit = b'{"n": ' + b"9" * 4300 + b"}"
+    (envelope,) = top_level_envelopes(io.BytesIO(at_limit), expand_arrays=False, fields=fields)
+    assert isinstance(envelope, dict) and len(str(envelope["n"])) == 4300
+    with pytest.raises(ijson.JSONError):
+        list(top_level_envelopes(io.BytesIO(b"9" * 5000), expand_arrays=False, fields=fields))
 
 
 def test_envelope_keeps_a_prefix_of_a_huge_string_without_holding_it() -> None:
