@@ -685,6 +685,43 @@ class TestLiveBatchEventFanOut:
             if event["kind"] in ("session.appended", "message.appended"):
                 assert cast("dict[str, object]", event["payload"])["session_id"] is None
 
+    def test_batch_and_its_session_events_land_in_one_ledger_transaction(
+        self, empty_events_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Anti-vacuity: emitting each fanned-out event on its own opens the
+        ledger once per event (five here) instead of once for the batch."""
+        from polylogue.daemon import events as events_module
+        from polylogue.daemon.cli import _emit_live_batch_event
+
+        opened: list[object] = []
+        real_ensure = events_module._ensure_events_db
+
+        def counting_ensure(*args: object) -> sqlite3.Connection:
+            opened.append(args)
+            return real_ensure(*args)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(events_module, "_ensure_events_db", counting_ensure)
+        _emit_live_batch_event(
+            "ingestion_batch",
+            {
+                "succeeded_file_count": 2,
+                "failed_file_count": 0,
+                "new_sessions": [
+                    {"source_name": "codex", "session_id": "codex:a"},
+                    {"source_name": "codex", "session_id": "codex:b"},
+                ],
+            },
+        )
+        assert len(opened) == 1
+        kinds = [cast("str", event["kind"]) for event in reversed(events_module.query_daemon_events(limit=10))]
+        assert kinds == [
+            "ingestion_batch",
+            "session.appended",
+            "message.appended",
+            "session.appended",
+            "message.appended",
+        ]
+
     def test_zero_succeeded_batch_emits_no_granular_events(self, empty_events_db: Path) -> None:
         from polylogue.daemon.cli import _emit_live_batch_event
         from polylogue.daemon.events import query_daemon_events
