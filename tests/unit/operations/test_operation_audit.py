@@ -28,7 +28,6 @@ from polylogue.operations.bindings import OperationBinding
 from polylogue.operations.ingest_acceptance import INGEST_OPERATION
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.machine_receipts import (
-    IngestHistoricalReceipt,
     IngestHistoricalReceiptV2,
     IngestInputHistoricalReceipt,
     IngestInputPageHistoricalReceipt,
@@ -2798,23 +2797,27 @@ def test_ingest_insight_pages_replay_and_reject_missing_evidence(
     restarted = AuditRepository.for_archive_root(tmp_path)
     restarted.reconcile_continuity()
     monkeypatch.setattr(machine_receipts, "MAX_MACHINE_RECEIPT_PAGES", 1)
-    receipt = IngestHistoricalReceipt(
+    receipt = IngestHistoricalReceiptV2(
         source_generation_id="generation:fixture",
         final_sequence=1,
         input_count=1,
-        input_pages=[
-            IngestInputPageHistoricalReceipt.from_items(
-                0,
-                [
-                    IngestInputHistoricalReceipt(
-                        source_item_id="source-item:fixture",
-                        logical_coordinate="fixture.json",
-                        denominator=1,
-                        raw_ids=["raw:fixture"],
-                    )
-                ],
-            )
-        ],
+        input_pages_ref="operation:fixture",
+        input_page_count=1,
+        input_pages_digest=ingest_input_pages_digest(
+            [
+                IngestInputPageHistoricalReceipt.from_items(
+                    0,
+                    [
+                        IngestInputHistoricalReceipt(
+                            source_item_id="source-item:fixture",
+                            logical_coordinate="fixture.json",
+                            denominator=1,
+                            raw_ids=["raw:fixture"],
+                        )
+                    ],
+                )
+            ]
+        ),
         insight_pages_ref=started.operation_id,
         insight_page_count=2,
         insight_pages_digest=ingest_insight_pages_digest(pages),
@@ -3026,3 +3029,76 @@ def test_pending_command_of_an_undeclared_kind_is_a_typed_refusal(tmp_path: Path
 
     assert refusal.value.kind == "retired_kind"
     assert coordinator._pending() is not None
+
+
+def test_ingest_refusal_pages_resolve_every_named_refusal(tmp_path: Path) -> None:
+    """More refusals than one page are all retained and resolved, none dropped.
+
+    Anti-vacuity: truncate the refusal enumeration (the removed 256 cap) and
+    ``resolve_ingest_refusals`` returns fewer refusals than the receipt counts,
+    which it refuses as differing from the terminal receipt.
+    """
+    from polylogue.operations.machine_receipts import (
+        MAX_PAGE_ITEMS,
+        IngestRefusalPageHistoricalReceipt,
+        IngestRefusedMembershipHistorical,
+        ingest_refusal_pages_digest,
+    )
+
+    audit = _audit(tmp_path)
+    actuator = _IngestPageActuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "refusal-page-token")
+    binding = _binding(actuator, operation_name=INGEST_OPERATION)
+    preview = executor.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:refusal-page",
+        archive_identity_digest="identity:refusal-page",
+        parameter_digest="params:refusal-page",
+    )
+    authorization = executor.authorize_bound(binding, preview, _principal())
+    started = executor.begin_bound(binding, preview, authorization, object())
+    assert started.operation_id is not None
+    refusals = [
+        IngestRefusedMembershipHistorical(
+            logical_source_key=f"codex-session:{index:05d}", raw_id=f"raw:{index:05d}", reason="did not parse"
+        )
+        for index in range(MAX_PAGE_ITEMS + 1)
+    ]
+    pages = [
+        IngestRefusalPageHistoricalReceipt(ordinal=0, refusals=refusals[:MAX_PAGE_ITEMS]),
+        IngestRefusalPageHistoricalReceipt(ordinal=1, refusals=refusals[MAX_PAGE_ITEMS:]),
+    ]
+    for page in pages:
+        audit.append_ingest_refusal_page(started.operation_id, page)
+    audit.append_ingest_refusal_page(started.operation_id, pages[1])
+
+    def receipt(digest: str) -> IngestHistoricalReceiptV2:
+        return IngestHistoricalReceiptV2(
+            source_generation_id="generation:fixture",
+            final_sequence=1,
+            input_count=1,
+            input_pages_ref=started.operation_id,
+            input_page_count=1,
+            input_pages_digest="0" * 64,
+            summary=IngestTerminalSummaryHistorical(
+                enumeration_complete=True,
+                source_complete=False,
+                confirmed_raw_count=0,
+                unresolved_raw_count=0,
+                profile_targets_observed=0,
+                refused_membership_count=len(refusals),
+                refused_membership_pages_ref=started.operation_id,
+                refused_membership_page_count=len(pages),
+                refused_memberships_digest=digest,
+            ),
+        )
+
+    assert audit.resolve_ingest_refusals(receipt(ingest_refusal_pages_digest(pages))) == refusals
+    with pytest.raises(ValueError, match="differ from terminal receipt"):
+        audit.resolve_ingest_refusals(receipt("a" * 64))
+    with pytest.raises(ValueError, match="conflicts with durable page"):
+        audit.append_ingest_refusal_page(
+            started.operation_id, IngestRefusalPageHistoricalReceipt(ordinal=1, refusals=refusals[:1])
+        )

@@ -8,7 +8,6 @@ import math
 from polylogue.operations.audit import AuditRepository, MachineRequestBinding
 from polylogue.operations.daemon_protocol import AcceptedOperationReference
 from polylogue.operations.machine_receipts import (
-    IngestHistoricalReceipt,
     IngestHistoricalReceiptV2,
     decode_machine_receipt,
     encode_machine_receipt,
@@ -176,9 +175,9 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
     error: dict[str, object] | None = None
     if kind == "source-generation" and len(attempted) == 1 and attempted[0]["outcome"] == "completed":
         receipt = attempted[0]["receipt"]
-        if isinstance(receipt, dict) and receipt.get("kind") in {"ingest/v1", "ingest/v2"}:
+        if isinstance(receipt, dict) and receipt.get("kind") == "ingest/v2":
             history = decode_machine_receipt(receipt)
-            if not isinstance(history, (IngestHistoricalReceipt, IngestHistoricalReceiptV2)):
+            if not isinstance(history, IngestHistoricalReceiptV2):
                 raise ValueError("source-generation run carries a non-ingest historical receipt")
             # The run committed; whether it also converged is the receipt's
             # own recorded fact, so an awaited ingest reads the same terminal

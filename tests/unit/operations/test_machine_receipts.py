@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from polylogue.operations.machine_receipts import (
-    IngestHistoricalReceipt,
+    IngestHistoricalReceiptV2,
     IngestInputHistoricalReceipt,
     IngestInputPageHistoricalReceipt,
     IngestInputRawMemberHistorical,
@@ -16,6 +16,7 @@ from polylogue.operations.machine_receipts import (
     InsightCertifiedCountsHistorical,
     InsightTargetHistoricalReceipt,
     decode_machine_receipt,
+    ingest_input_pages_digest,
     ingest_input_raw_pages_digest,
     ingest_insight_pages_digest,
 )
@@ -32,11 +33,13 @@ def test_ingest_history_keeps_known_unresolved_ids_in_bounded_input_page() -> No
         unresolved_raw_ids=["raw:unresolved"],
     )
     page = IngestInputPageHistoricalReceipt.from_items(0, [item])
-    history = IngestHistoricalReceipt(
+    history = IngestHistoricalReceiptV2(
         source_generation_id="generation:fixture",
         final_sequence=1,
         input_count=1,
-        input_pages=[page],
+        input_pages_ref="operation:fixture",
+        input_page_count=1,
+        input_pages_digest=ingest_input_pages_digest([page]),
         summary=IngestTerminalSummaryHistorical(
             enumeration_complete=True,
             source_complete=False,
@@ -48,8 +51,9 @@ def test_ingest_history_keeps_known_unresolved_ids_in_bounded_input_page() -> No
 
     replayed = decode_machine_receipt(history.model_dump(mode="json"))
 
-    assert isinstance(replayed, IngestHistoricalReceipt)
-    assert replayed.input_pages[0].items[0].unresolved_raw_ids == ["raw:unresolved"]
+    assert isinstance(replayed, IngestHistoricalReceiptV2)
+    assert replayed.input_pages_digest == ingest_input_pages_digest([page])
+    assert page.items[0].unresolved_raw_ids == ["raw:unresolved"]
 
 
 def test_ingest_history_refuses_unexplained_missing_attribution() -> None:
@@ -86,7 +90,7 @@ def _one_input_page() -> IngestInputPageHistoricalReceipt:
     )
 
 
-def _history(**summary: object) -> IngestHistoricalReceipt:
+def _history(**summary: object) -> IngestHistoricalReceiptV2:
     base: dict[str, object] = {
         "enumeration_complete": True,
         "source_complete": False,
@@ -95,11 +99,13 @@ def _history(**summary: object) -> IngestHistoricalReceipt:
         "profile_targets_observed": 0,
     }
     base.update(summary)
-    return IngestHistoricalReceipt(
+    return IngestHistoricalReceiptV2(
         source_generation_id="generation:fixture",
         final_sequence=1,
         input_count=1,
-        input_pages=[_one_input_page()],
+        input_pages_ref="operation:fixture",
+        input_page_count=1,
+        input_pages_digest=ingest_input_pages_digest([_one_input_page()]),
         summary=IngestTerminalSummaryHistorical(**base),  # type: ignore[arg-type]
     )
 
@@ -129,7 +135,7 @@ def test_refused_memberships_are_counted_and_named_in_the_terminal_receipt() -> 
 
     replayed = decode_machine_receipt(history.model_dump(mode="json"))
 
-    assert isinstance(replayed, IngestHistoricalReceipt)
+    assert isinstance(replayed, IngestHistoricalReceiptV2)
     assert replayed.summary.refused_membership_count == 1
     refused = replayed.summary.refused_memberships[0]
     assert refused.logical_source_key == "codex-session:unparseable"
@@ -149,23 +155,53 @@ def test_refused_memberships_cannot_coexist_with_a_source_complete_claim() -> No
         _history(source_complete=True, refused_membership_count=1)
 
 
-def test_refusal_count_may_not_understate_its_own_enumeration() -> None:
-    """The count is a denominator, never smaller than the names it carries.
+def _refusal(index: int) -> IngestRefusedMembershipHistorical:
+    return IngestRefusedMembershipHistorical(
+        logical_source_key=f"codex-session:{index:05d}",
+        raw_id=f"raw:{index:05d}",
+        reason="selector member did not parse",
+    )
 
-    Anti-vacuity: the enumerated list is capped at 256 entries, so the count may
-    legitimately exceed it -- but a count *below* it would let a reader under-report
-    dropped keys. Remove the check and this ``pytest.raises`` stops raising.
+
+def test_refusal_count_must_equal_the_refusals_it_names() -> None:
+    """Every counted refusal is named, inline or in pages.
+
+    Anti-vacuity: allow the count to exceed the inline names (the removed
+    256-entry cap) and a receipt claiming 2 refusals while naming 1 decodes.
     """
-    with pytest.raises(ValueError, match="refusal count is smaller"):
+    with pytest.raises(ValueError, match="refusal count does not match"):
+        _history(refused_membership_count=2, refused_memberships=[_refusal(0)])
+
+
+def test_more_refusals_than_one_page_are_named_in_referenced_pages() -> None:
+    from polylogue.operations.machine_receipts import (
+        MAX_PAGE_ITEMS,
+        IngestRefusalPageHistoricalReceipt,
+        ingest_refusal_pages_digest,
+    )
+
+    refusals = [_refusal(index) for index in range(MAX_PAGE_ITEMS * 2 + 1)]
+    pages = [
+        IngestRefusalPageHistoricalReceipt(ordinal=ordinal, refusals=refusals[offset : offset + MAX_PAGE_ITEMS])
+        for ordinal, offset in enumerate(range(0, len(refusals), MAX_PAGE_ITEMS))
+    ]
+    history = _history(
+        refused_membership_count=len(refusals),
+        refused_membership_pages_ref="operation:fixture",
+        refused_membership_page_count=len(pages),
+        refused_memberships_digest=ingest_refusal_pages_digest(pages),
+    )
+
+    replayed = decode_machine_receipt(history.model_dump(mode="json"))
+    assert isinstance(replayed, IngestHistoricalReceiptV2)
+    assert replayed.summary.refused_membership_count == len(refusals)
+    assert replayed.summary.refused_membership_page_count == 3
+    with pytest.raises(ValueError, match="page count does not match"):
         _history(
-            refused_membership_count=0,
-            refused_memberships=[
-                IngestRefusedMembershipHistorical(
-                    logical_source_key="codex-session:unparseable",
-                    raw_id="raw:head",
-                    reason="selector member did not parse",
-                )
-            ],
+            refused_membership_count=len(refusals),
+            refused_membership_pages_ref="operation:fixture",
+            refused_membership_page_count=2,
+            refused_memberships_digest=ingest_refusal_pages_digest(pages),
         )
 
 
@@ -182,7 +218,7 @@ def test_large_ingest_projection_uses_a_page_reference_without_truncating_its_co
     )
 
     replayed = decode_machine_receipt(history.model_dump(mode="json"))
-    assert isinstance(replayed, IngestHistoricalReceipt)
+    assert isinstance(replayed, IngestHistoricalReceiptV2)
     assert replayed.summary.changed_session_count == 10_001
     assert replayed.summary.processed_session_ids == []
     assert replayed.summary.processed_session_id_page_count == 40
@@ -214,11 +250,13 @@ def test_ingest_insight_evidence_over_40_pages_uses_an_exact_audit_reference() -
         )
         for ordinal in range(41)
     ]
-    history = IngestHistoricalReceipt(
+    history = IngestHistoricalReceiptV2(
         source_generation_id="generation:fixture",
         final_sequence=1,
         input_count=1,
-        input_pages=[_one_input_page()],
+        input_pages_ref="operation:fixture",
+        input_page_count=1,
+        input_pages_digest=ingest_input_pages_digest([_one_input_page()]),
         insight_pages_ref="operation:fixture",
         insight_page_count=len(pages),
         insight_pages_digest=ingest_insight_pages_digest(pages),
@@ -231,7 +269,7 @@ def test_ingest_insight_evidence_over_40_pages_uses_an_exact_audit_reference() -
         ),
     )
     replayed = decode_machine_receipt(history.model_dump(mode="json"))
-    assert isinstance(replayed, IngestHistoricalReceipt)
+    assert isinstance(replayed, IngestHistoricalReceiptV2)
     assert replayed.insight_page_count == 41
     assert replayed.insight_pages == []
 
@@ -257,11 +295,13 @@ def test_zip_like_input_raw_attribution_crosses_inline_threshold_without_loss(
         unresolved_raw_count=1,
         raw_ids_digest=ingest_input_raw_pages_digest([raw_page]),
     )
-    history = IngestHistoricalReceipt(
+    history = IngestHistoricalReceiptV2(
         source_generation_id="generation:fixture",
         final_sequence=1,
         input_count=1,
-        input_pages=[IngestInputPageHistoricalReceipt.from_items(0, [item])],
+        input_pages_ref="operation:fixture",
+        input_page_count=1,
+        input_pages_digest=ingest_input_pages_digest([IngestInputPageHistoricalReceipt.from_items(0, [item])]),
         summary=IngestTerminalSummaryHistorical(
             enumeration_complete=True,
             source_complete=False,
@@ -271,8 +311,8 @@ def test_zip_like_input_raw_attribution_crosses_inline_threshold_without_loss(
         ),
     )
     replayed = decode_machine_receipt(history.model_dump(mode="json"))
-    assert isinstance(replayed, IngestHistoricalReceipt)
-    assert replayed.input_pages[0].items[0].raw_id_count == 4
+    assert isinstance(replayed, IngestHistoricalReceiptV2)
+    assert item.raw_id_count == 4
     with pytest.raises(ValueError, match="pages disagree"):
         IngestInputHistoricalReceipt.model_validate({**item.model_dump(mode="json"), "raw_id_count": 5})
 
@@ -308,11 +348,13 @@ def test_ingest_terminal_outcome_is_completed_only_when_converged(
         denominator=1,
         raw_ids=["raw:complete"],
     )
-    history = IngestHistoricalReceipt(
+    history = IngestHistoricalReceiptV2(
         source_generation_id="generation:fixture",
         final_sequence=1,
         input_count=1,
-        input_pages=[IngestInputPageHistoricalReceipt.from_items(0, [item])],
+        input_pages_ref="operation:fixture",
+        input_page_count=1,
+        input_pages_digest=ingest_input_pages_digest([IngestInputPageHistoricalReceipt.from_items(0, [item])]),
         summary=IngestTerminalSummaryHistorical(
             enumeration_complete=True,
             source_complete=source_complete,
@@ -342,11 +384,13 @@ def test_ingest_result_contract_binds_its_outcome_to_the_receipt(profile_converg
         denominator=1,
         raw_ids=["raw:complete"],
     )
-    history = IngestHistoricalReceipt(
+    history = IngestHistoricalReceiptV2(
         source_generation_id="generation:fixture",
         final_sequence=1,
         input_count=1,
-        input_pages=[IngestInputPageHistoricalReceipt.from_items(0, [item])],
+        input_pages_ref="operation:fixture",
+        input_page_count=1,
+        input_pages_digest=ingest_input_pages_digest([IngestInputPageHistoricalReceipt.from_items(0, [item])]),
         summary=IngestTerminalSummaryHistorical(
             enumeration_complete=True,
             source_complete=True,
@@ -376,18 +420,20 @@ def test_unconverged_ingest_error_is_permanent_for_source_refusals_and_retryable
     """
     from polylogue.operations.machine_receipts import ingest_unconverged_error
 
-    def history(source_complete: bool) -> IngestHistoricalReceipt:
+    def history(source_complete: bool) -> IngestHistoricalReceiptV2:
         item = IngestInputHistoricalReceipt(
             source_item_id="source-item:fixture",
             logical_coordinate="fixture.json",
             denominator=1,
             raw_ids=["raw:complete"],
         )
-        return IngestHistoricalReceipt(
+        return IngestHistoricalReceiptV2(
             source_generation_id="generation:fixture",
             final_sequence=1,
             input_count=1,
-            input_pages=[IngestInputPageHistoricalReceipt.from_items(0, [item])],
+            input_pages_ref="operation:fixture",
+            input_page_count=1,
+            input_pages_digest=ingest_input_pages_digest([IngestInputPageHistoricalReceipt.from_items(0, [item])]),
             summary=IngestTerminalSummaryHistorical(
                 enumeration_complete=True,
                 source_complete=source_complete,
