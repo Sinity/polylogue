@@ -973,10 +973,16 @@ def test_gemini_cli_object_preserves_future_wire_admission(tmp_path: Path) -> No
 
 def test_gemini_cli_turnless_stub_accepts_sidecar_resolver(tmp_path: Path) -> None:
     stub: dict[str, JSONValue] = {"sessionId": "process-1", "projectHash": "project-1", "kind": "chat"}
+    chats = tmp_path / "project" / "chats"
+    chats.mkdir(parents=True)
+    outputs = tmp_path / "project" / "tool-outputs" / "session-process-1"
+    outputs.mkdir(parents=True)
+    (outputs / "other-checkpoint.txt").write_text("Neutral tool output", encoding="utf-8")
     session = local_agent.parse_gemini_cli(
-        stub, "fallback", source_path=tmp_path / "session.jsonl", sidecar_resolver=FilesystemSidecarResolver()
+        stub, "fallback", source_path=chats / "session.jsonl", sidecar_resolver=FilesystemSidecarResolver()
     )
     assert session.messages == []
+    assert not any(event.event_type == "gemini_cli_tool_output_sidecar" for event in session.session_events)
     assert session.unit_accounting is not None
     session.unit_accounting.assert_conserved()
 
