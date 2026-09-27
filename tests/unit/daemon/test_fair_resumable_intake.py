@@ -49,6 +49,7 @@ from polylogue.operations.intake_adapters import (
     discover_pending_raw_ids,
 )
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.live.discovery import _source_path_steps as real_source_path_steps
 from polylogue.sources.live.metrics import REFUSED_UNATTEMPTED, REFUSED_UNATTEMPTED_TIME_BUDGET
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
@@ -488,6 +489,105 @@ async def test_live_retryable_pending_file_yields_to_queued_rescan(tmp_path: Pat
     assert inserted in emitted
     retry_page = await adapter.discover(limit=1)
     assert [item.payload for item in retry_page] == [poison]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("durable_retry", [False, True])
+async def test_retry_cooldown_does_not_restart_large_file_walk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, durable_retry: bool
+) -> None:
+    """A stable poison retries when due without a 50 ms full-walk loop."""
+    root = tmp_path / "source"
+    root.mkdir()
+    for index in range(300):
+        (root / f"{index:04d}.json").write_text("{}")
+    poison = root / "z.json"
+    poison.write_text("{}")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+    now = [0.0]
+    walk_starts: list[str | None] = []
+
+    def counted_steps(*args: Any, **kwargs: Any) -> Iterator[Path | None]:
+        walk_starts.append(kwargs.get("after"))
+        return real_source_path_steps(*args, **kwargs)
+
+    monkeypatch.setattr("polylogue.operations.intake_adapters._source_path_steps", counted_steps)
+
+    class RetryCursor:
+        due = False
+
+        def get_records(self, paths: Sequence[Path]) -> dict[Path, SimpleNamespace]:
+            return {path: SimpleNamespace(failure_count=1, next_retry_at="later") for path in paths if path == poison}
+
+        def due_retry_high_water(self, _root: Path) -> str:
+            return str(poison)
+
+        def list_due_retry_paths(self, _root: Path, **_kwargs: object) -> tuple[Path, ...]:
+            return (poison,) if self.due else ()
+
+    class RetryWatcher:
+        revision = 0
+        poison_attempts = 0
+        admitted: list[Path] = []
+
+        def intake_revision(self, _source: WatchSource) -> int:
+            return self.revision
+
+        def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
+            return tuple(path for path in paths if path == poison or path.name == "0.json")
+
+        async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+            if paths == [poison]:
+                self.poison_attempts += 1
+                return SimpleNamespace(succeeded_paths=(), failed_paths=(str(poison),), source_payload_read_bytes=0)
+            self.admitted.extend(paths)
+            return SimpleNamespace(
+                succeeded_paths=tuple(str(path) for path in paths),
+                failed_paths=(),
+                source_payload_read_bytes=sum(path.stat().st_size for path in paths),
+            )
+
+    watcher = RetryWatcher()
+    cursor = RetryCursor()
+    if durable_retry:
+        watcher._cursor = cursor  # type: ignore[attr-defined]
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+        clock=lambda: now[0],
+    )
+    dispatcher = FairIntakeDispatcher(
+        [IntakeClassSpec(name="capture", adapter=adapter, page_size=32, max_attempts=1, retry_cooldown_s=5.0)],
+        clock=lambda: now[0],
+    )
+
+    for _ in range(16):
+        await dispatcher.run_once()
+        if watcher.poison_attempts:
+            break
+    assert watcher.poison_attempts == 1
+    assert len(walk_starts) == 1
+    for _ in range(20):
+        await dispatcher.run_once()
+    assert len(walk_starts) == 1
+    assert watcher.poison_attempts == 1
+    assert not adapter.discovery_pending
+
+    now[0] = 5.1
+    await dispatcher.run_once()
+    if durable_retry:
+        assert watcher.poison_attempts == 1
+        cursor.due = True
+        await dispatcher.run_once()
+    assert watcher.poison_attempts == 2
+    assert len(walk_starts) == 1
+
+    inserted = root / "0.json"
+    inserted.write_text("{}")
+    watcher.revision += 1
+    await dispatcher.run_once()
+    assert inserted in watcher.admitted
+    assert len(walk_starts) == 2
 
 
 @pytest.mark.asyncio

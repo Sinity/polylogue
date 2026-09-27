@@ -70,6 +70,7 @@ __all__ = [
 _RAW_DISCOVERY_INSPECTION_LIMIT = 32
 _FILE_DISCOVERY_STEP_LIMIT = 256
 _FILE_DISCOVERY_RESCAN_S = 600.0
+_FILE_RETRY_DELAY_S = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,10 +89,18 @@ class DaemonIntakeContext:
 class FileIntakeAdapter(IntakeAdapter):
     """Browser/configured-local adapter; durable cursors are its ack state."""
 
-    def __init__(self, context: DaemonIntakeContext, source: WatchSource, *, class_name: str | None = None) -> None:
+    def __init__(
+        self,
+        context: DaemonIntakeContext,
+        source: WatchSource,
+        *,
+        class_name: str | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self.context = context
         self.source = source
         self.class_name = class_name or source.name
+        self._clock = clock
         self._after: str | None = None
         self._retry_after: str | None = None
         self._retry_skip_after: str | None = None
@@ -108,6 +117,9 @@ class FileIntakeAdapter(IntakeAdapter):
         self._fresh_pending: list[Path] = []
         self._fresh_page_paths: tuple[Path, ...] = ()
         self._fresh_page_pending = False
+        self._fresh_retry_debt: dict[Path, float] = {}
+        self._local_retry_page = False
+        self._prefer_local_retry = True
         self._fresh_exhausted = False
         self._fresh_exhausted_at: float | None = None
         self._rescan_after_walk = False
@@ -192,10 +204,29 @@ class FileIntakeAdapter(IntakeAdapter):
             )
         if self._fresh_page_pending:
             # Nothing from this page reached acknowledgement. Advance the
-            # current walk, then revisit the live retry debt in its next sweep.
+            # current walk; retry these paths without rewalking the source.
             offered = set(self._fresh_page_paths)
+            due_at = self._clock() + _FILE_RETRY_DELAY_S
+            cursor = getattr(self.context.watcher, "_cursor", None)
+            get_records = getattr(cursor, "get_records", None)
+            records = get_records(self._fresh_page_paths) if callable(get_records) else {}
+            for retry_path in self._fresh_page_paths:
+                if not self._pending_path_is_live(retry_path):
+                    continue
+                record = records.get(retry_path)
+                if record is not None and (record.failure_count > 0 or record.next_retry_at is not None):
+                    # The durable cursor owns this retry and its backoff.
+                    self._fresh_retry_debt.pop(retry_path, None)
+                    continue
+                if (
+                    retry_path not in self._fresh_retry_debt
+                    and len(self._fresh_retry_debt) >= _FILE_DISCOVERY_STEP_LIMIT
+                ):
+                    # The source itself retains older debt for the periodic
+                    # full scan; this scheduling cache stays bounded.
+                    self._fresh_retry_debt.pop(next(iter(self._fresh_retry_debt)))
+                self._fresh_retry_debt[retry_path] = due_at
             self._fresh_pending = [path for path in self._fresh_pending if path not in offered]
-            self._rescan_after_walk = True
         self._fresh_page_pending = False
         self._fresh_page_paths = ()
         if self._after is not None:
@@ -211,8 +242,7 @@ class FileIntakeAdapter(IntakeAdapter):
                 self._after = None
                 self._reset_fresh_walk()
             elif (
-                self._fresh_exhausted_at is None
-                or time.monotonic() - self._fresh_exhausted_at < _FILE_DISCOVERY_RESCAN_S
+                self._fresh_exhausted_at is None or self._clock() - self._fresh_exhausted_at < _FILE_DISCOVERY_RESCAN_S
             ):
                 return []
             else:
@@ -243,7 +273,7 @@ class FileIntakeAdapter(IntakeAdapter):
             except StopIteration:
                 self._fresh_walk = None
                 self._fresh_exhausted = True
-                self._fresh_exhausted_at = time.monotonic()
+                self._fresh_exhausted_at = self._clock()
                 break
             except Exception:
                 # The continuation is gone. If a hint arrived during this
@@ -267,13 +297,14 @@ class FileIntakeAdapter(IntakeAdapter):
             self._retry_through = None
             self._ops_ledger_generation = generation
             self._reset_fresh_walk()
-        if self._retry_page_pending and self._retry_page_paths:
+        if self._retry_page_pending and self._retry_page_paths and not self._local_retry_page:
             # No item from the previous page reached admission or ack (for
             # example every item was in the dispatcher's cooldown). Rotate
             # past it within a finite sweep; the next sweep revisits it.
             self._retry_skip_after = str(self._retry_page_paths[-1])
         self._retry_page_pending = False
         self._retry_page_paths = ()
+        self._local_retry_page = False
         hint_revision = self.context.watcher.intake_revision(self.source)
         if hint_revision != self._last_hint_revision:
             self._last_hint_revision = hint_revision
@@ -374,36 +405,69 @@ class FileIntakeAdapter(IntakeAdapter):
         )
 
     def _due_retry_paths(self, limit: int) -> list[Path]:
+        now = self._clock()
+        due_local: list[Path] = []
+        for path, due_at in tuple(self._fresh_retry_debt.items()):
+            if len(due_local) >= limit:
+                break
+            if due_at > now:
+                continue
+            if not self.source.root.is_dir():
+                break
+            if not self._owns_retry_path(path):
+                self._fresh_retry_debt.pop(path, None)
+                continue
+            due_local.append(path)
+        if due_local and self._prefer_local_retry:
+            for path in due_local:
+                self._fresh_retry_debt[path] = now + _FILE_RETRY_DELAY_S
+            self._local_retry_page = True
+            self._prefer_local_retry = False
+            return due_local
         cursor = getattr(self.context.watcher, "_cursor", None)
         due_retries = getattr(cursor, "list_due_retry_paths", None)
         if not callable(due_retries):
-            return []
-        # Acknowledged deferrals can sit before the filesystem walk's
-        # position forever. Retry and fresh discovery alternate so a growing
-        # source cannot starve either side; both walks stay bounded.
-        if self._retry_through is None:
-            high_water = getattr(cursor, "due_retry_high_water", None)
-            self._retry_through = high_water(self.source.root) if callable(high_water) else None
-        resume_positions = tuple(value for value in (self._retry_after, self._retry_skip_after) if value is not None)
-        candidates = due_retries(
-            self.source.root,
-            after=max(resume_positions) if resume_positions else None,
-            limit=limit,
-            through=self._retry_through,
-            owns=self._owns_retry_path,
-        )
-        if not candidates:
-            self._retry_after = None
-            self._retry_skip_after = None
-            self._retry_through = None
-            return []
-        return list(candidates)
+            candidates = ()
+        else:
+            # Acknowledged deferrals can sit before the filesystem walk's
+            # position forever. Retry and fresh discovery alternate so a growing
+            # source cannot starve either side; both walks stay bounded.
+            if self._retry_through is None:
+                high_water = getattr(cursor, "due_retry_high_water", None)
+                self._retry_through = high_water(self.source.root) if callable(high_water) else None
+            resume_positions = tuple(
+                value for value in (self._retry_after, self._retry_skip_after) if value is not None
+            )
+            candidates = due_retries(
+                self.source.root,
+                after=max(resume_positions) if resume_positions else None,
+                limit=limit,
+                through=self._retry_through,
+                owns=self._owns_retry_path,
+            )
+        if candidates:
+            self._prefer_local_retry = True
+            return list(candidates)
+        self._retry_after = None
+        self._retry_skip_after = None
+        self._retry_through = None
+        if due_local:
+            for path in due_local:
+                self._fresh_retry_debt[path] = now + _FILE_RETRY_DELAY_S
+            self._local_retry_page = True
+            self._prefer_local_retry = False
+            return due_local
+        return []
 
     def _consume_retry_item(self, item: IntakeItem) -> None:
         if not self._retry_page or not isinstance(item.payload, (str, Path)):
             return
         path = Path(item.payload)
         if path not in self._retry_page_paths:
+            return
+        if self._local_retry_page:
+            self._fresh_retry_debt.pop(path, None)
+            self._retry_page_pending = False
             return
         position = str(path)
         if self._retry_after is None or position > self._retry_after:
