@@ -29,6 +29,7 @@ import json
 import sqlite3
 import time
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, NoReturn
@@ -315,10 +316,16 @@ async def test_path_worker_publishes_prepared_rows_from_captured_blob(
 ) -> None:
     import polylogue.sources.live.batch as batch
     import polylogue.storage.sqlite.archive_tiers.write as archive_tier_write
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
 
     paths = _write_fixture_corpus(tmp_path / "sessions", count=1)
     await _ingest(tmp_path / "baseline", paths, parse_stage=None)
     monkeypatch.setattr(batch, "_STREAMING_FULL_INGEST_BYTES", 1)
+    monkeypatch.setattr(
+        PreparedJsonl,
+        "load_sessions",
+        lambda _self: pytest.fail("the writer reconstructed a complete prepared JSONL cohort"),
+    )
     copied = 0
     original_copy = archive_tier_write.copy_shard_session_rows
 
@@ -344,6 +351,7 @@ async def test_json_document_uses_prepared_rows_and_preserves_detected_origin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import polylogue.storage.sqlite.archive_tiers.write as archive_tier_write
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
 
     source = tmp_path / "inbox" / "session.json"
     source.parent.mkdir()
@@ -391,6 +399,11 @@ async def test_json_document_uses_prepared_rows_and_preserves_detected_origin(
         assert result.ingested_session_count == 1
 
     await ingest(tmp_path / "baseline", None)
+    monkeypatch.setattr(
+        PreparedJsonl,
+        "load_sessions",
+        lambda _self: pytest.fail("the writer reconstructed a complete prepared JSON cohort"),
+    )
     monkeypatch.setattr(archive_tier_write, "copy_shard_session_rows", count_copy)
     stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "shards")
     try:
@@ -1007,10 +1020,8 @@ def test_path_worker_death_is_retryable_and_shutdown_cleans_only_owned_files(tmp
     try:
         future = stage._executor.submit(_dead_process_worker)
         stage._path_futures["dead"] = future  # type: ignore[assignment]
-        try:
-            future.result(timeout=5)
-        except Exception:
-            pass
+        with pytest.raises(BrokenProcessPool):
+            future.result(timeout=15)
         stage.warm_paths([])
         failed = stage.pop_path("dead", blob_hash="0" * 64)
         assert failed is not None and failed.deferred
@@ -1025,6 +1036,50 @@ def test_path_worker_death_is_retryable_and_shutdown_cleans_only_owned_files(tmp
         stage.shutdown()
     assert unrelated.read_text() == "keep"
     assert sorted(item.name for item in directory.iterdir()) == ["operator-note.txt"]
+
+
+@pytest.mark.asyncio
+async def test_killed_path_worker_retains_one_raw_and_retries_through_intake(tmp_path: Path) -> None:
+    path = _write_fixture_corpus(tmp_path / "sessions", count=1)[0]
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards", use_processes=True)
+    processor = LiveBatchProcessor(
+        Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
+        (WatchSource(name="codex", root=path.parent),),
+        cursor=CursorStore(archive_root / "index.db"),
+        parser_fingerprint=_PARSER_FINGERPRINT,
+        parse_stage=stage,
+        read_snapshot=open_operation_read,
+    )
+    try:
+        future = stage._executor.submit(_dead_process_worker)
+        stage._path_futures[str(path)] = future  # type: ignore[assignment]
+        stage._path_sizes[str(path)] = path.stat().st_size
+        stage._path_inflight_bytes = path.stat().st_size
+        with pytest.raises(BrokenProcessPool):
+            future.result(timeout=15)
+
+        first = await processor.ingest_files([path], emit_event=False)
+        assert first.deferred_file_count == 1
+        assert first.failed_file_count == 0
+        assert stage._path_inflight_bytes == 0
+        assert not stage._path_futures
+        with _connect(archive_root / "source.db") as conn:
+            raw = conn.execute("SELECT raw_id, parse_error FROM raw_sessions").fetchall()
+            assert len(raw) == 1 and raw[0]["parse_error"] is None
+            retained_raw_id = str(raw[0]["raw_id"])
+        with _connect(archive_root / "index.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+        second = await processor.ingest_files([path], emit_event=False)
+        assert second.succeeded_file_count == 1
+        with _connect(archive_root / "source.db") as conn:
+            assert [str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions")] == [retained_raw_id]
+        with _connect(archive_root / "index.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+    finally:
+        stage.shutdown()
 
 
 def test_path_preparation_refuses_source_changed_after_worker_seal(tmp_path: Path) -> None:

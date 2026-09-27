@@ -3618,6 +3618,22 @@ def apply_raw_revision_replay(
         }
     }
     if not _is_frozen_candidate(store):
+        source_conn = store._ensure_source_conn()
+        censused_raw_ids: set[str] = set()
+        for batch_start in range(0, len(plan.accepted_raw_ids), 512):
+            raw_ids = plan.accepted_raw_ids[batch_start : batch_start + 512]
+            placeholders = ", ".join("?" for _ in raw_ids)
+            censused_raw_ids.update(
+                str(row[0])
+                for row in source_conn.execute(
+                    "SELECT raw_id FROM raw_authority_parser_census "
+                    f"WHERE raw_id IN ({placeholders}) AND parser_fingerprint = ? AND status = 'complete'",
+                    (*raw_ids, RAW_AUTHORITY_PARSER_FINGERPRINT),
+                )
+            )
+        for raw_id in plan.accepted_raw_ids:
+            if raw_id not in censused_raw_ids:
+                record_current_parser_source_census(source_conn, raw_id, parser_sessions=[parsed_by_raw_id[raw_id]])
         for raw_id in terminal_raw_ids:
             provider, _blob_hash, _source_path, _kind, _blob_size = raw_revision_descriptor(store, raw_id)
             if manage_transaction:

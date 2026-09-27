@@ -4613,6 +4613,15 @@ def test_append_ingest_proves_byte_authority_at_capture_without_reconciler(tmp_p
         assert append_row[1] == "byte_proven"
         assert append_row[2] is not None
         assert append_row[3] is None
+        census_rows = conn.execute(
+            "SELECT revision_kind, parser_fingerprint, status, logical_keys_json "
+            "FROM raw_sessions JOIN raw_authority_parser_census USING (raw_id) "
+            "WHERE revision_kind IN ('full', 'append') ORDER BY revision_kind"
+        ).fetchall()
+        assert census_rows == [
+            ("append", RAW_AUTHORITY_PARSER_FINGERPRINT, "complete", '["codex-session:capture-proof"]'),
+            ("full", RAW_AUTHORITY_PARSER_FINGERPRINT, "complete", '["codex-session:capture-proof"]'),
+        ]
         # The durable frontier blocker ledger belongs to the separate, async
         # RawAuthorityReconciler (daemon convergence / offline backfill). A
         # normal single-predecessor append must never touch it.

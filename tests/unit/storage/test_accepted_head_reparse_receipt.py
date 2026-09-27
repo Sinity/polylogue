@@ -27,6 +27,7 @@ import pytest
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider, Role
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -55,6 +56,40 @@ def _hashes(root: Path) -> tuple[bytes | None, bytes | None]:
             (SESSION_ID,),
         ).fetchone()
     return (bytes(head[0]) if head and head[0] is not None else None, bytes(session[0]) if session else None)
+
+
+def test_revision_replay_receipts_the_parser_identity_of_a_retained_raw(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=PAYLOAD,
+            source_path=SOURCE_PATH,
+            acquired_at_ms=1,
+        )
+        archive.bind_raw_revision(
+            raw_id,
+            RawRevisionEnvelope(
+                LOGICAL_KEY,
+                RawRevisionKind.FULL,
+                hashlib.sha256(PAYLOAD).hexdigest(),
+                0,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        plan = archive.classify_raw_revision_cohort_for_live_watch(LOGICAL_KEY)
+        archive.apply_raw_revision_replay(plan, {raw_id: _session("retained parse")}, acquired_at_ms=1)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        receipt = conn.execute(
+            "SELECT parser_fingerprint, status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone()
+    assert receipt == (
+        RAW_AUTHORITY_PARSER_FINGERPRINT,
+        "complete",
+        '["codex-session:reparse-session"]',
+    )
 
 
 def test_reparse_of_accepted_head_keeps_head_and_session_content_hash_in_sync(tmp_path: Path) -> None:

@@ -203,6 +203,7 @@ def live_parse_path_worker(
         if boundary is not None and 0 < boundary.prefix_size < source_size and not boundary.malformed_record
         else None
     )
+    # Apply evidence filtering before sealing so publication can use the indexed sequence.
     return prepare_jsonl_blob(
         source_path,
         source_path,
@@ -211,6 +212,7 @@ def live_parse_path_worker(
         is_stream=is_stream,
         shard_directory=shard_directory,
         parse_prefix_size=parse_prefix_size,
+        prepare_session=lambda session: session,
     )
 
 

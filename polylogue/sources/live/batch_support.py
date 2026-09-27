@@ -32,9 +32,8 @@ from polylogue.sources.dispatch import _detect_provider_from_raw_bytes, detect_p
 from polylogue.sources.parsers import antigravity, hermes_state, hermes_verification
 from polylogue.storage.runtime import RawSessionRecord
 
-_LARGE_FULL_PARSE_PROGRESS_BYTES = 64 * 1024 * 1024
-_SMALL_FULL_PARSE_PROGRESS_MAX_BYTES = 64 * 1024 * 1024
-_SMALL_FULL_PARSE_PROGRESS_MAX_FILES = 64
+_FULL_PARSE_PROGRESS_MAX_BYTES = 64 * 1024 * 1024
+_FULL_PARSE_PROGRESS_MAX_FILES = 64
 # Retained for callers that synthesize former-threshold fixtures. Production
 # JSON/JSONL admission and preparation no longer consult this value.
 _STREAMING_FULL_INGEST_BYTES = 8 * 1024 * 1024
@@ -715,28 +714,20 @@ def _ingest_pass_exhausted(
 
 
 def _full_parse_progress_groups(paths: list[Path]) -> Iterable[list[Path]]:
-    small_paths: list[Path] = []
-    small_bytes = 0
+    group: list[Path] = []
+    group_bytes = 0
     for path in paths:
         byte_size = _path_size(path)
-        if byte_size < _LARGE_FULL_PARSE_PROGRESS_BYTES:
-            if small_paths and (
-                len(small_paths) >= _SMALL_FULL_PARSE_PROGRESS_MAX_FILES
-                or small_bytes + byte_size > _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES
-            ):
-                yield small_paths
-                small_paths = []
-                small_bytes = 0
-            small_paths.append(path)
-            small_bytes += byte_size
-            continue
-        if small_paths:
-            yield small_paths
-            small_paths = []
-            small_bytes = 0
-        yield [path]
-    if small_paths:
-        yield small_paths
+        if group and (
+            len(group) >= _FULL_PARSE_PROGRESS_MAX_FILES or group_bytes + byte_size > _FULL_PARSE_PROGRESS_MAX_BYTES
+        ):
+            yield group
+            group = []
+            group_bytes = 0
+        group.append(path)
+        group_bytes += byte_size
+    if group:
+        yield group
 
 
 def _append_plan_group_ready(plans: list[_AppendPlan]) -> bool:
