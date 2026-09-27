@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import json
 import sqlite3
 import subprocess
 import sys
@@ -13,7 +15,9 @@ from pathlib import Path
 
 import pytest
 
+from polylogue import logging as plog
 from polylogue.core.write_lease import arm_write_lease_enforcement, install_archive_write_guard
+from polylogue.daemon import write_coordinator as write_coordinator_module
 from polylogue.daemon.write_coordinator import (
     _DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR,
     _MAX_DETACHED_WRITER_FAILURE_ACTOR_LENGTH,
@@ -1344,7 +1348,9 @@ async def test_priority_gate_never_grants_twice_when_a_waiter_cancels_during_han
     await second
 
 
-def test_gate_release_waits_for_a_delegated_body_that_outlived_its_caller() -> None:
+def test_gate_release_waits_for_a_delegated_body_that_outlived_its_caller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A caller that stops waiting must not hand SQLite to a second writer.
 
     polylogue-8r4zq AC2. The mutating HTTP route holds the gate around
@@ -1362,6 +1368,11 @@ def test_gate_release_waits_for_a_delegated_body_that_outlived_its_caller() -> N
     turning ``successor_entered.is_set()`` red before ``allow_body`` is set.
     """
     from polylogue.core.write_lease import adopt_write_lease
+
+    monkeypatch.setattr(write_coordinator_module, "_DELEGATION_SETTLEMENT_WARN_S", 0.0)
+    log_stream = io.StringIO()
+    plog.reset_events()
+    plog.configure_events(stream=log_stream, fmt="json", level="debug", bridge_stdlib=False)
 
     loop = asyncio.new_event_loop()
     loop_ready = threading.Event()
@@ -1425,9 +1436,17 @@ def test_gate_release_waits_for_a_delegated_body_that_outlived_its_caller() -> N
         allow_body.set()
         assert successor_future.result(timeout=5.0) == "entered"
         assert body_left.is_set()
+        records = [json.loads(line) for line in log_stream.getvalue().splitlines()]
+        unsettled = [record for record in records if record.get("event") == "daemon.writer.delegation_unsettled"]
+        assert len(unsettled) == 1
+        assert isinstance(unsettled[0].get("wait_ms"), (int, float))
+        assert not any(
+            record.get("event") == "log.field_rejected" and record.get("field") == "waited_ms" for record in records
+        )
     finally:
         loop.call_soon_threadsafe(loop.stop)
         loop_thread.join(timeout=5.0)
+        plog.reset_events()
 
 
 def test_unbounded_bridge_wait_ends_when_its_owner_loop_stops() -> None:
