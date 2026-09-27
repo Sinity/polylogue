@@ -910,7 +910,7 @@ class DaemonWriteThreadBridge:
                     outcome="degraded",
                     reason="delegated_body_still_running",
                     actor=actor,
-                    waited_ms=round(waited * 1000, 3),
+                    wait_ms=round(waited * 1000, 3),
                 )
 
     @property
