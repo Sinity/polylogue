@@ -2631,21 +2631,21 @@ def test_runtime_bootstrap_refuses_an_established_archive_missing_audit(
 
     monkeypatch.setattr(bootstrap, "reconcile_durable_change_trains_on_startup", observe_reconciliation)
 
-    with pytest.raises(RuntimeError, match="adopt-established-audit"):
+    with pytest.raises(RuntimeError, match="established archive is missing audit.db"):
         bootstrap.initialize_active_archive_root(archive_root)
 
     assert not reconciled
     assert not (archive_root / "audit.db").exists()
 
 
-def test_pre_slot_source_missing_audit_names_adoption(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A lineage member one slot behind, without audit.db, names its recovery route.
+def test_pre_slot_source_missing_audit_is_refused_as_lost(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A lineage member one slot behind, without audit.db, is refused as a lost tier.
 
     A source tier standing below the runtime target is ordinary: the archive
     was born before that tier's numbered slot shipped. Losing ``audit.db`` on
-    top of that must still produce the adoption instruction an operator can
-    act on -- not a schema complaint, and never a silently recreated audit
-    tier over durable evidence nobody has.
+    top of that must still produce the lost-tier refusal -- not a schema
+    complaint, and never a silently recreated audit tier over durable
+    evidence nobody has.
 
     The pre-reset version stamped ``user_version = 31`` and reconstructed a
     v31 schema. Neither exists now, and 31 is above every version this lineage
@@ -2672,7 +2672,7 @@ def test_pre_slot_source_missing_audit_names_adoption(tmp_path: Path, monkeypatc
     refresh_archive_format_marker(tmp_path)
     (tmp_path / "audit.db").unlink()
 
-    with pytest.raises(RuntimeError, match="adopt-established-audit"):
+    with pytest.raises(RuntimeError, match="established archive is missing audit.db"):
         initialize_active_archive_root(tmp_path)
 
     assert not (tmp_path / "audit.db").exists()

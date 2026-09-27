@@ -53,7 +53,7 @@ Every declared tool is listed. A tool requiring a capability is registered only 
 | `emit_decision` | Record a typed decision with its evidence references, using the shared work-event vocabulary. | `write` | `mutation` |
 | `judge` | Accept, reject, defer, or supersede an assertion candidate while preserving candidate and judgment provenance. | `judge` | `mutation` |
 | `run` | Execute a saved query or governed recipe ref; any nested mutation inherits its own capability and confirmation policy. | `write` | `exhaustive_page`, `mutation` |
-| `maintenance` | Rebuild session insights and inspect or adjudicate operation recovery; there is no generic maintenance or repair umbrella. | `maintenance` | `maintenance` |
+| `maintenance` | Rebuild session insights; there is no generic maintenance or repair umbrella. | `maintenance` | `maintenance` |
 
 ## Normal invocations
 
@@ -270,7 +270,7 @@ The server's configured capabilities are a hard upper bound. A prompt, resource,
 
 Reversible writes require the declared capability and a receipt. Full-effect `maintenance` execution requires the confirmation its declaration states; changing a bound target or authority must return an explicit stale/rejected result before mutation.
 
-Canonical maintenance flow: `maintenance` accepts exactly these declared operations: `rebuild_insights`, `recovery_status`, `recovery_adjudicate`. Inspect state with `recovery_status`, which mutates nothing; then execute `rebuild_insights`, `recovery_adjudicate` by passing `confirm=true`, which is the gate itself and the only one — they fail closed without it. There is no preview or dry-run operation to call first.
+Canonical maintenance flow: `maintenance` accepts exactly these declared operations: `rebuild_insights`. Execute `rebuild_insights` by passing `confirm=true`, which is the gate itself and the only one — they fail closed without it. There is no preview or dry-run operation to call first.
 
 ## Continuity recipes
 

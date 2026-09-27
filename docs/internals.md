@@ -732,13 +732,13 @@ The archive file set is split by durability class:
 The operator flow is explicit:
 
 ```bash
-polylogue ops maintenance archive-plan
-polylogue ops maintenance archive-init --yes
 polylogued run
 polylogue ops maintenance archive-read --limit 20
 ```
 
-`archive-init` bootstraps the archive file set. The daemon and explicit
+The daemon's first open of an archive root bootstraps the archive file set:
+every tier is created together under one pending intent, and a lost durable
+tier in an established archive is refused rather than recreated. The daemon and explicit
 ingest paths populate `source.db` and `index.db` directly from source
 artifacts. Root query commands use the active `index.db`.
 

@@ -2470,7 +2470,9 @@ def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentR
         caveats += ("materialization_pending",)
     repair_hint = None
     if state is not CapabilityReadinessState.READY:
-        repair_hint = "polylogue ops maintenance archive-init --yes" if storage.missing_tiers else "polylogued run"
+        # Opening the archive creates a fresh root and any missing derived tier;
+        # a lost durable tier is refused there, never recreated.
+        repair_hint = "polylogued run"
     return ComponentReadiness(
         component="archive_storage",
         scope="archive",

@@ -208,7 +208,7 @@ class TestWantsJsonDetection:
         (["read", "--all", "--format", "json"], True),
         (["--format=json", "read", "--all"], True),
         (["-f", "json", "read", "--all"], True),
-        (["ops", "maintenance", "archive-init", "--yes", "--output-format", "json"], True),
+        (["ops", "maintenance", "backup-plan", "--output-format", "json"], True),
         (["ops", "maintenance", "blob-gc", "--output-format=json"], True),
         (["read", "--all", "--format", "text"], False),
         (["ops", "maintenance", "blob-gc", "--output-format", "plain"], False),

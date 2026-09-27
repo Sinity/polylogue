@@ -215,14 +215,14 @@ def test_schema_skew_write_profiles_refuse_stale_archive_tier_before_returning_c
     assert excinfo.value.found == skewed_version
     assert "durable state" in excinfo.value.remedy
     assert "do not rebuild" in excinfo.value.remedy
-    assert "migrate-tier user" in excinfo.value.remedy
+    assert "runtime that wrote it" in excinfo.value.remedy
 
 
 @pytest.mark.parametrize(
     ("tier", "expected_terms"),
     [
-        (ArchiveTier.SOURCE, ("durable state", "do not rebuild", "migrate-tier source")),
-        (ArchiveTier.AUDIT, ("durable state", "do not rebuild", "migrate-tier audit")),
+        (ArchiveTier.SOURCE, ("durable state", "do not rebuild", "runtime that wrote it")),
+        (ArchiveTier.AUDIT, ("durable state", "do not rebuild", "runtime that wrote it")),
         (ArchiveTier.INDEX, ("rebuildable derived state", "rebuild or recreate")),
         (ArchiveTier.EMBEDDINGS, ("expensive_rebuild derived state", "rebuild or recreate")),
         (ArchiveTier.OPS, ("disposable derived state", "rebuild or recreate")),

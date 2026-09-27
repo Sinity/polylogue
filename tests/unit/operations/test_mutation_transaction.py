@@ -108,13 +108,7 @@ def test_plan_hash_changes_when_target_set_changes() -> None:
 
 
 def test_build_plan_refuses_over_256_targets() -> None:
-    """A mutation plan over the recovery-adjudication target budget must never be constructed.
-
-    ``AuditRepository.adjudicate_recovery`` refuses any target list over 256
-    as a bounded-command budget; a mutation plan with more targets than that
-    has no valid adjudication request if it is ever interrupted, wedging it
-    forever. Enforcing the same cap at plan-construction time keeps that
-    from ever happening.
+    """A mutation plan over the 256-target plan budget must never be constructed.
 
     Anti-vacuity: removing the ``len(target_refs) > MAX_MUTATION_PLAN_TARGETS``
     guard in ``build_plan`` makes this test fail -- 257 targets would build a
@@ -143,7 +137,7 @@ def test_build_plan_refuses_over_256_targets() -> None:
 
 
 def test_build_typed_plan_refuses_over_256_targets() -> None:
-    """Typed plans cannot bypass the bounded recovery-adjudication budget."""
+    """Typed plans cannot bypass the bounded mutation plan budget."""
 
     targets = tuple(
         MutationTarget(

@@ -940,8 +940,8 @@ def _schema_skew_remedy(tier: ArchiveTier) -> str:
             "from durable evidence with the current runtime before retrying"
         )
     return (
-        f"{tier.value}.db is durable state; do not rebuild it. Run `polylogue ops maintenance migrate-tier "
-        f"{tier.value}` with a verified backup manifest before retrying"
+        f"{tier.value}.db is durable state; do not rebuild it. This runtime declares no migration from its "
+        "schema version; open it with the runtime that wrote it"
     )
 
 

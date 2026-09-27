@@ -1001,8 +1001,8 @@ def _latest_audit_adoption_continuity(
             if allow_incomplete_restore and prepared is not None and committed is None:
                 return continuity
             raise MigrationError(
-                "adopted audit restore is prepared but incomplete; rerun maintenance migrate-tier audit "
-                "--restore-adopted-audit with the same verified full_evidence backup"
+                "adopted audit restore is prepared but incomplete; this runtime no longer restores "
+                "adopted audit tiers. Restore the archive root from a verified backup"
             )
         if (
             prepared.get("previous_continuity_sha256") != current_digest
@@ -1194,8 +1194,8 @@ def recover_pending_audit_adoption(archive_root: Path) -> bool:
         return False
     if _latest_audit_adoption_continuity(archive_root) is not None:
         raise MigrationError(
-            "adopted audit tier is missing after continuity was recorded; run maintenance migrate-tier audit "
-            "--restore-adopted-audit --backup-manifest <verified-full-evidence>/manifest.json"
+            "adopted audit tier is missing after continuity was recorded; restore the archive root "
+            "from a verified backup"
         )
     receipt_path, payload = receipt
     _recover_pending_audit_adoption(archive_root, receipt_path, payload)
@@ -1218,8 +1218,8 @@ def validate_audit_adoption_receipt(archive_root: Path, *, require_initial_image
     if not audit_path.is_file():
         if continuity is not None:
             raise MigrationError(
-                "adopted audit tier is missing after continuity was recorded; run maintenance migrate-tier audit "
-                "--restore-adopted-audit --backup-manifest <verified-full-evidence>/manifest.json"
+                "adopted audit tier is missing after continuity was recorded; restore the archive root "
+                "from a verified backup"
             )
         _recover_pending_audit_adoption(archive_root, receipt_path, payload)
         require_initial_image = True
@@ -1848,37 +1848,6 @@ def _publish_audit_adoption_rebind(
     return path
 
 
-def rebind_audit_adoption_archive_identity(
-    archive_root: Path,
-    *,
-    stopped_daemon_evidence_ref: str,
-    single_writer_evidence_ref: str,
-) -> Path | None:
-    """Re-seal an adoption stranded by a durable tier rewrite already applied.
-
-    ``_rebind_audit_adoption_after_durable_rewrite`` keeps an adoption sealed
-    across every rewrite this build performs, because it observes the sealed
-    identity while the archive still carries it.  A receipt stranded before
-    that route existed has no such observation left to make -- the identity it
-    was sealed against was destroyed by the rewrite -- so this route is
-    operator-attested under the evidence adoption itself requires: a stopped
-    daemon and sole-writer ownership of this archive.  It is never reached
-    automatically, and it re-seals only an adoption whose audit tier still
-    authenticates against its immutable receipt.
-    """
-    if not stopped_daemon_evidence_ref or not single_writer_evidence_ref:
-        raise MigrationError("audit adoption rebind requires stopped-daemon and single-writer evidence")
-    return _publish_audit_adoption_rebind(
-        archive_root,
-        expected_previous_digest=None,
-        rebind_kind="attested",
-        evidence={
-            "stopped_daemon_evidence_ref": stopped_daemon_evidence_ref,
-            "single_writer_evidence_ref": single_writer_evidence_ref,
-        },
-    )
-
-
 def _rebind_audit_adoption_after_durable_rewrite(
     archive_root: Path,
     *,
@@ -1926,7 +1895,6 @@ __all__ = [
     "initialize_missing_durable_tier",
     "reconcile_durable_change_trains_on_startup",
     "audit_adoption_sealed_authority_digest",
-    "rebind_audit_adoption_archive_identity",
     "recover_pending_audit_adoption",
     "restore_adopted_audit_tier",
     "validate_audit_adoption_receipt",

@@ -161,9 +161,10 @@ def _maintenance_gate_sentence() -> str:
     operations = ", ".join(f"`{name}`" for name in _operation_vocabulary(contract))
     inspect_ops = ", ".join(f"`{name}`" for name in gate.inspection_operations)
     gated = ", ".join(f"`{name}`" for name in gate.operations)
+    inspection = f"Inspect state with {inspect_ops}, which mutates nothing; then execute" if inspect_ops else "Execute"
     return (
         f"Canonical maintenance flow: `maintenance` accepts exactly these declared operations: {operations}. "
-        f"Inspect state with {inspect_ops}, which mutates nothing; then execute {gated} by passing "
+        f"{inspection} {gated} by passing "
         f"`{gate.argument}=true`, which is the gate itself and the only one — they fail closed without it. "
         "There is no preview or dry-run operation to call first."
     )

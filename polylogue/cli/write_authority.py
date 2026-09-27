@@ -8,11 +8,10 @@ run`` (:mod:`polylogue.daemon.cli`) and the MCP stdio bridge holding a write
 or maintenance capability (:mod:`polylogue.mcp.server`). The console scripts
 ``polylogue``/``plg``/``plog`` armed neither, so ``write_lease_enforced()``
 was ``False`` for the whole invocation and every ``require_write_lease`` call
-reached on that route returned ``None``. An ordinary
-``polylogue ops maintenance archive-init --yes`` therefore created and wrote
-the six durable tier files beside a live daemon with no ownership check at
-all -- the same unserialized-writer shape that locked the daemon out of its
-own catch-up chunk (polylogue-8qm4k).
+reached on that route returned ``None``. An ordinary offline writer
+therefore created and wrote tier files beside a live daemon with no ownership
+check at all -- the same unserialized-writer shape that locked the daemon out
+of its own catch-up chunk (polylogue-8qm4k).
 
 The boundary is armed on the fact that decides whether this process may own
 the archive at all: **is a resident ``polylogued`` running for this root?**
@@ -26,10 +25,9 @@ the archive at all: **is a resident ``polylogued`` running for this root?**
 * No resident daemon at entry. The CLI *is* the archive's single writer, which
   is the standing rationale in :mod:`~polylogue.storage.sqlite.write_lease`
   for leaving one-shot writers unarmed, and the ownership the declared offline
-  authorities (archive initialization, durable tier migration, embedding
-  backfill and preservation) already rely on. Nothing is armed -- but the
-  question is **re-asked at every writable archive-tier open**, because it is
-  a claim about volatile state that entry cannot settle for the whole command.
+  authorities already rely on. Nothing is armed -- but the question is
+  **re-asked at every writable archive-tier open**, because it is a claim
+  about volatile state that entry cannot settle for the whole command.
 * The platform cannot answer. The boundary **refuses loudly**. An unguarded
   durable write beside a live daemon is the outcome this module exists to
   prevent, so an unprovable owner is never treated as an absent one.

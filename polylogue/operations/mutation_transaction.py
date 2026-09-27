@@ -400,7 +400,7 @@ def build_typed_plan(
     if len(targets) > MAX_MUTATION_PLAN_TARGETS:
         raise ValueError(
             f"{operation!r} plan has {len(targets)} target(s), exceeding the "
-            f"{MAX_MUTATION_PLAN_TARGETS}-target recovery-adjudication budget"
+            f"{MAX_MUTATION_PLAN_TARGETS}-target mutation plan budget"
         )
     target_digest = compute_target_digest(targets)
     plan_hash = compute_typed_plan_hash(
@@ -460,11 +460,10 @@ def validate_mutation_plan_integrity(plan: MutationPlan) -> None:
         raise AuthorizationMismatchError("preview plan payload does not match its authority hash")
 
 
-#: Recovery adjudication (``AuditRepository.adjudicate_recovery``) refuses any
-#: target list over this size as a bounded-command budget. A mutation plan
-#: with more targets than that has no valid adjudication request if it is
-#: ever interrupted, so it must never be constructed in the first place --
-#: enforce the same cap at plan-construction time (polylogue-39pdi).
+#: Mutation plans carry at most this many targets. The cap began as the
+#: operator-adjudication command budget (polylogue-39pdi); adjudication is
+#: deleted, and whether recovery still needs the cap is polylogue-aw070's
+#: decision.
 MAX_MUTATION_PLAN_TARGETS = 256
 
 
@@ -482,7 +481,7 @@ def build_plan(
     if len(target_refs) > MAX_MUTATION_PLAN_TARGETS:
         raise ValueError(
             f"{operation!r} plan has {len(target_refs)} target(s), exceeding the "
-            f"{MAX_MUTATION_PLAN_TARGETS}-target recovery-adjudication budget"
+            f"{MAX_MUTATION_PLAN_TARGETS}-target mutation plan budget"
         )
     resolved_context = dict(context or {})
     plan_hash = compute_plan_hash(
@@ -1123,7 +1122,9 @@ class OperationExecutor:
                 self._audit.record_recovery_disposition(
                     operation.operation_id,
                     RecoveryDisposition(
-                        "unknown", "operator-blocking", "operation family/version drift requires adjudication"
+                        "unknown",
+                        "operator-blocking",
+                        "operation family/version drift is not decidable from durable evidence",
                     ),
                 )
                 raise RecoveryBlockedError(
@@ -1357,8 +1358,8 @@ def recover_interrupted_operations(archive_root: Path) -> None:
     Only ``mutate-delete-session`` can be classified from committed target
     state -- a session either exists or does not.  Every other family, and any
     version this build no longer recognizes, is durably terminalized as an
-    operator-blocking unknown for bounded adjudication, never guessed or
-    silently retried.
+    operator-blocking unknown, never guessed or silently retried; deciding
+    those from durable evidence is polylogue-aw070.
     """
 
     if not (archive_root / "audit.db").is_file():
@@ -1401,7 +1402,7 @@ def recover_interrupted_operations(archive_root: Path) -> None:
     delete = SessionDeleteActuator()
     inspectable = (delete.operation, runtime_operation_binding(delete).spec.operation_version)
     blocked = RecoveryDisposition(
-        "unknown", "operator-blocking", "operation family/version requires bounded operator adjudication"
+        "unknown", "operator-blocking", "operation family/version is not decidable from durable evidence"
     )
     if not any((operation.operation, operation.operation_version) == inspectable for operation in orphans):
         for operation in orphans:

@@ -349,11 +349,11 @@ _MAINTENANCE_SOURCES = _sources("maintenance")
 #: The live ``maintenance`` operation vocabulary and its one confirmation gate.
 #: ``test_manual_contract`` resolves both against the registered MCP handler, so
 #: an operation the handler does not declare cannot reach the manual's prose.
-_MAINTENANCE_OPERATIONS: tuple[str, ...] = ("rebuild_insights", "recovery_status", "recovery_adjudicate")
+_MAINTENANCE_OPERATIONS: tuple[str, ...] = ("rebuild_insights",)
 _MAINTENANCE_CONFIRMATION = ConfirmationGate(
     argument="confirm",
-    operations=("rebuild_insights", "recovery_adjudicate"),
-    inspection_operations=("recovery_status",),
+    operations=("rebuild_insights",),
+    inspection_operations=(),
 )
 
 TOOL_CONTRACTS: tuple[ToolContract, ...] = (
@@ -682,7 +682,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     _contract(
         name="maintenance",
         source_names=_MAINTENANCE_SOURCES,
-        purpose="Rebuild session insights and inspect or adjudicate operation recovery; there is no generic maintenance or repair umbrella.",
+        purpose="Rebuild session insights; there is no generic maintenance or repair umbrella.",
         arguments=(
             _arg(
                 "operation",
@@ -691,9 +691,6 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
                 "The declared maintenance operation.",
                 _MAINTENANCE_OPERATIONS,
             ),
-            _arg("operation_id", "string", False, "Exact operation identity to adjudicate."),
-            _arg("target_outcomes", "object", False, "Observed target outcomes for adjudication."),
-            _arg("reason", "string", False, "Operator reason."),
             _arg(
                 "confirm",
                 "boolean",
@@ -703,10 +700,11 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         ),
         examples=(
             _example(
-                "maintenance-recovery-status",
-                "Inspect unreconciled operation recovery",
-                "A read-only operation_result describing operations whose applied/not-applied outcome is still unknown.",
-                operation="recovery_status",
+                "maintenance-rebuild-insights",
+                "Rebuild session insights",
+                "The daemon's operation_result for the accepted insights rebuild.",
+                operation="rebuild_insights",
+                confirm=True,
             ),
         ),
         supports_continuation=False,

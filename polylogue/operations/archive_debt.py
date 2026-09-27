@@ -126,8 +126,8 @@ def _tier_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]:
                     evidence_refs=(f"file:{path}",),
                     actions=(
                         ArchiveDebtActionPayload(
-                            label="Initialize archive tiers",
-                            command=("polylogue", "ops", "maintenance", "archive-init"),
+                            label="Open the archive; bootstrap creates missing tiers and refuses a lost durable tier",
+                            command=("polylogued", "run"),
                         ),
                     ),
                 )

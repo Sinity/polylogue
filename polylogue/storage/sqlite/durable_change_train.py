@@ -2769,8 +2769,8 @@ def execute_durable_change_train(
         raise DurableChangeTrainError(
             f"legacy migrations advanced {tier.value} to v{current_version}; the supplied backup manifest "
             f"covers the pre-migration tier and cannot authorize train v{sidecar.slot} "
-            f"({sidecar.train.train_id}). Take a fresh verified backup of the migrated tier and rerun "
-            "maintenance migrate-tier."
+            f"({sidecar.train.train_id}). Take a fresh verified backup of the migrated tier and run the "
+            "train again."
         )
     if sidecar is None:
         if current_version != runtime_target_version:

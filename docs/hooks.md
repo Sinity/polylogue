@@ -111,9 +111,9 @@ terminal and raw-only, and the fair-intake dispatcher's ordinary file adapter
 admits it — so an event reaches `source.db` only by way of a carrier whose
 bytes the archive retained. An `acknowledged/` file is a record of what
 `polylogue-hook --compact` already folded into a carrier: a rebuilt archive
-re-ingests nothing from that directory, and an envelope that exists only there
-needs restoring into a carrier before the rebuild
-(`polylogue maintenance blob-disposition restore`).
+re-ingests nothing from that directory. Compaction folds an envelope into a
+carrier before acknowledging it, so no acknowledged envelope exists only
+there.
 
 One file per producer process per day is what makes a bare `O_APPEND` write
 safe. The earlier objection to an append-only journal was real — a concurrent

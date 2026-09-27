@@ -91,9 +91,9 @@ def test_a_deleted_command_function_is_an_actionable_diagnostic() -> None:
         handlers=(
             HandlerBinding(
                 surface="cli",
-                owner_path="polylogue/cli/commands/maintenance/_archive_plan.py",
-                symbol="archive_plan_command_deleted",
-                binding_key="ops maintenance archive-plan",
+                owner_path="polylogue/cli/commands/maintenance/_backup_plan.py",
+                symbol="backup_plan_command_deleted",
+                binding_key="ops maintenance backup-plan",
             ),
         ),
     )
@@ -101,7 +101,7 @@ def test_a_deleted_command_function_is_an_actionable_diagnostic() -> None:
     registry.register(broken)
     diagnostics = diagnose_registry(registry, root=ROOT)
     assert [item.code for item in diagnostics] == ["unresolved_handler_symbol"]
-    assert "archive_plan_command_deleted" in diagnostics[0].message
+    assert "backup_plan_command_deleted" in diagnostics[0].message
     assert diagnostics[0].repair_command
 
 

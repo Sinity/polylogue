@@ -2632,68 +2632,7 @@ async def _dispatch_run(hooks: ServerCallbacks, *, ref: str, limit: int | None) 
 
 
 async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwargs: dict[str, Any]) -> str:
-    """Dispatch session-insight and recovery maintenance operations."""
-    config = hooks.get_config()
-
-    if operation in {"recovery_status", "recovery_adjudicate"}:
-        from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
-        from polylogue.operations.audit import AuditRepository
-
-        operation_id = kwargs.get("operation_id")
-        if not isinstance(operation_id, str) or not operation_id:
-            return hooks.error_json("recovery maintenance requires operation_id", code="invalid_argument")
-        audit = AuditRepository.for_archive_root(config.archive_root)
-        if operation == "recovery_adjudicate":
-            confirm_error = _require_confirm(hooks, bool(kwargs.get("confirm") or False), verb="adjudicate recovery")
-            if confirm_error is not None:
-                return confirm_error
-            outcomes = kwargs.get("target_outcomes")
-            reason = kwargs.get("reason")
-            if not isinstance(outcomes, dict) or not isinstance(reason, str) or not reason:
-                return hooks.error_json(
-                    "recovery_adjudicate requires target_outcomes and reason", code="invalid_argument"
-                )
-            if any(not isinstance(target_ref, str) or not target_ref for target_ref in outcomes):
-                return hooks.error_json(
-                    "recovery_adjudicate target_outcomes keys must be target refs", code="invalid_argument"
-                )
-            if any(outcome not in {"applied", "not-applied", "unknown"} for outcome in outcomes.values()):
-                return hooks.error_json(
-                    "recovery_adjudicate outcomes must be applied, not-applied, or unknown", code="invalid_argument"
-                )
-            if block_reason := offline_maintenance_block_reason(config, active=True, dry_run=False):
-                return hooks.error_json(block_reason, code="offline_required")
-            adjudicator = kwargs.get("adjudicator")
-            if not isinstance(adjudicator, str) or not adjudicator:
-                adjudicator = "user:mcp"
-            # Same reconciliation the CLI recovery route performs: the crash
-            # being recovered can have left a prepared audit continuity
-            # command, and adjudication is itself an audit mutation, so
-            # without this it refuses with "another audit continuity mutation
-            # is already pending" instead of recovering the operation.
-            try:
-                audit.reconcile_continuity()
-            except Exception as exc:
-                return hooks.error_json(f"audit continuity reconciliation failed: {exc}", code="unavailable")
-            try:
-                audit.adjudicate_recovery(
-                    operation_id, target_outcomes=outcomes, reason=reason, adjudicator=adjudicator
-                )
-            except ValueError as exc:
-                return hooks.error_json(str(exc), code="invalid_argument")
-        recovery_record = audit.get_operation(operation_id)
-        if recovery_record is None:
-            return hooks.error_json(f"operation not found: {operation_id}", code="not_found")
-        return hooks.json_payload(
-            MCPRootPayload(
-                root={
-                    "operation": recovery_record,
-                    "events": audit.list_events(operation_id),
-                    "targets": audit.list_targets(operation_id),
-                }
-            )
-        )
-
+    """Dispatch session-insight maintenance operations."""
     if operation == "rebuild_insights":
         confirm_error = _require_confirm(hooks, bool(kwargs.get("confirm") or False), verb="rebuild session insights")
         if confirm_error is not None:
@@ -2969,28 +2908,19 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
     if capabilities.maintenance:
 
         async def maintenance(
-            operation: Literal["rebuild_insights", "recovery_status", "recovery_adjudicate"],
-            operation_id: str | None = None,
-            target_outcomes: dict[str, Literal["applied", "not-applied", "unknown"]] | None = None,
-            reason: str | None = None,
+            operation: Literal["rebuild_insights"],
             confirm: bool = False,
         ) -> str:
-            """Rebuild session insights and inspect or adjudicate operation recovery.
+            """Rebuild session insights.
 
-            Full-effect operations require ``confirm=True``: ``rebuild_insights``
-            and ``recovery_adjudicate`` fail closed without it.
+            ``rebuild_insights`` requires ``confirm=True`` and fails closed without it.
             """
 
             async def run() -> str:
                 return await _dispatch_maintenance(
                     hooks,
                     operation=operation,
-                    kwargs={
-                        "operation_id": operation_id,
-                        "target_outcomes": target_outcomes,
-                        "reason": reason,
-                        "confirm": confirm,
-                    },
+                    kwargs={"confirm": confirm},
                 )
 
             return await hooks.async_safe_call("maintenance", run)
