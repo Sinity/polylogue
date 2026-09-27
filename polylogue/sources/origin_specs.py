@@ -2369,10 +2369,8 @@ def _codex_spec() -> OriginSpec:
             "the parsed session retains and becomes its own "
             "codex_replacement_context session_event only when it is retained "
             "nowhere else; per-entry phase/ghost_commit/image annotation "
-            "stays a bounded aggregate on the compaction event. A replacement "
-            "text value over 256 KiB is not copied into the derived index: a "
-            "codex_replacement_context_omitted event records its size, SHA-256, "
-            "and source_blob reconstruction route instead.",
+            "stays a bounded aggregate on the compaction event. Each distinct "
+            "replacement-only value is stored once whatever its size or count.",
             "event_msg.task_complete.last_agent_message (acquired, "
             "polylogue-6ev92): the turn's final assistant text repeated on "
             "the completion marker. Measured over 270 real rollout files, all "

@@ -163,11 +163,9 @@ _CODE_MODE_ITEM_COUNT = 200_000
 # Head with ``_CodexExecItemRecord`` retaining the whole ``payload.item``:
 # 794.9 MB traced peak for this shape. With the append-time reduction: 367.2 MB.
 _CODE_MODE_ITEM_PEAK_BYTES_MAX = 600 * 1024 * 1024
-_REPLACEMENT_CONTEXT_COUNT = 200_000
+_REPLACEMENT_CONTEXT_COUNT = 20_000
 # Head with no aggregate ceiling: 461.7 MB traced peak and 200_002 session
 # events. With the ceiling: 219.3 MB and 515 events.
-_REPLACEMENT_CONTEXT_PEAK_BYTES_MAX = 330 * 1024 * 1024
-_REPLACEMENT_CONTEXT_EVENT_MAX = 1_000
 
 
 def _code_mode_item_stream() -> Iterator[dict[str, object]]:
@@ -258,49 +256,27 @@ def _replacement_history_stream() -> Iterator[dict[str, object]]:
     }
 
 
-def test_replacement_context_ceiling_degrades_excess_into_the_digest_only_event() -> None:
-    """Anti-vacuity: raising the session ceiling constants blows the traced-peak and event-count bounds.
+def test_every_distinct_replacement_only_value_is_stored_exactly_once() -> None:
+    """Replacement-only text is content the session holds nowhere else.
 
-    The per-value cap bounds one context, not their number; without the
-    aggregate ceiling every distinct small replacement text becomes its own
-    durable session event. The excess must reuse the existing omission
-    channel, never disappear.
+    Anti-vacuity: reinstate a count or size ceiling on replacement contexts and
+    fewer than ``_REPLACEMENT_CONTEXT_COUNT`` distinct values survive.
     """
-    import tracemalloc
-
     from polylogue.sources.dispatch import parse_stream_payload
     from polylogue.sources.parsers import codex
 
-    tracemalloc.start()
-    try:
-        sessions = parse_stream_payload(
-            "codex",
-            _replacement_history_stream(),
-            "replacement-flood",
-            source_path="replacement-flood.jsonl",
-        )
-        peak = tracemalloc.get_traced_memory()[1]
-    finally:
-        tracemalloc.stop()
+    sessions = parse_stream_payload(
+        "codex",
+        _replacement_history_stream(),
+        "replacement-flood",
+        source_path="replacement-flood.jsonl",
+    )
 
     assert len(sessions) == 1
     events = sessions[0].session_events
-    assert peak < _REPLACEMENT_CONTEXT_PEAK_BYTES_MAX, (
-        f"replacement-context traced peak {peak} exceeds {_REPLACEMENT_CONTEXT_PEAK_BYTES_MAX}"
-    )
-    assert len(events) < _REPLACEMENT_CONTEXT_EVENT_MAX
-
     contexts = [event for event in events if event.event_type == codex._CODEX_REPLACEMENT_CONTEXT_EVENT_TYPE]
-    omissions = [event for event in events if event.event_type == codex._CODEX_REPLACEMENT_CONTEXT_OMITTED_EVENT_TYPE]
-    assert len(contexts) == codex._CODEX_REPLACEMENT_CONTEXT_MAX_DISTINCT
-    # One digest-only aggregate on the existing channel, not a second channel
-    # and not a silent drop: every excess value is counted and hashed.
-    assert len(omissions) == 1
-    payload = omissions[0].payload
-    assert payload["content_policy"] == codex._CODEX_REPLACEMENT_CEILING_POLICY
-    assert payload["occurrences"] == _REPLACEMENT_CONTEXT_COUNT - codex._CODEX_REPLACEMENT_CONTEXT_MAX_DISTINCT
-    assert payload["reconstruction"] == "source_blob"
-    assert "content" not in payload
-    assert len(str(payload["content_sha256"])) == 64
+    stored = [str(event.payload["content"]) for event in contexts]
+    assert len(stored) == len(set(stored)) == _REPLACEMENT_CONTEXT_COUNT
+    assert "retained" not in stored
     compaction = next(event for event in events if event.event_type == "compaction")
     assert compaction.payload["replacement_history_text_count"] == _REPLACEMENT_CONTEXT_COUNT

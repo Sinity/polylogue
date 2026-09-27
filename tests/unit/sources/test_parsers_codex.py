@@ -6,7 +6,6 @@ branch tracking, git context, and edge cases.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -3187,42 +3186,35 @@ class TestReplacementHistoryConservation:
         assert [item["content"] for item in contexts] == [ENVIRONMENT_CONTEXT]
         assert contexts[0]["occurrences"] == 2
 
-    def test_oversized_replacement_text_is_digest_only_and_source_reconstructible(
+    def test_large_replacement_text_is_stored_once_through_the_archive_write(
         self, workspace_env: Mapping[str, Path]
     ) -> None:
-        """A compaction whale must not become a second durable transcript copy.
+        """Size never demotes replacement-only text to a digest.
 
-        Anti-vacuity: removing the size guard makes the parsed session retain
-        the 256 KiB+ value and this assertion fails.  The omission event is
-        typed and points back to the retained source blob, so skipping the
-        derived copy is not silent data loss.
+        Anti-vacuity: reinstate a per-value size ceiling and the stored event
+        lacks the text, so the archive row does not contain it.
         """
-        oversized = "repeated context " + ("x" * (256 * 1024 + 1))
+        large = "repeated context " + ("x" * (256 * 1024 + 1))
         result = parse(
             [
                 {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2026-01-01T00:00:00Z"}},
-                _compaction(_history_entry(oversized), message="summarized"),
+                _compaction(_history_entry(large), message="summarized"),
+                _compaction(_history_entry(large), message="summarized again"),
             ],
             "fallback",
         )
 
-        omitted = [event for event in result.session_events if event.event_type == "codex_replacement_context_omitted"]
-        assert len(omitted) == 1
-        payload = omitted[0].payload
-        assert payload["content_policy"] == "omitted_oversized_reembedded_text"
-        assert payload["content_chars"] == len(oversized)
-        assert payload["content_sha256"] == hashlib.sha256(oversized.encode()).hexdigest()
-        assert payload["reconstruction"] == "source_blob"
-        assert "content" not in payload
-        assert all(oversized not in repr(event.payload) for event in result.session_events)
+        contexts = _replacement_contexts(result)
+        assert [item["content"] for item in contexts] == [large]
+        assert contexts[0]["occurrences"] == 2
 
         with open_connection(db_setup(workspace_env)) as conn:
             write_parsed_session_to_archive(conn, result, content_hash=session_content_hash(result))
-            row = conn.execute(
-                "SELECT payload_json FROM session_events WHERE event_type = 'codex_replacement_context_omitted'"
-            ).fetchone()
-        assert row is not None
-        assert oversized not in str(row["payload_json"])
+            rows = conn.execute(
+                "SELECT payload_json FROM session_events WHERE event_type = 'codex_replacement_context'"
+            ).fetchall()
+        assert len(rows) == 1
+        assert large in str(rows[0]["payload_json"])
 
     def test_replacement_only_content_survives_the_archive_write(self, workspace_env: Mapping[str, Path]) -> None:
         """The production write route, not just the parse, must keep it."""

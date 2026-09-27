@@ -1384,13 +1384,6 @@ def _codex_instructions_changed_event(
 # event. The payload key is ``content`` because the writer copies ``text`` and
 # ``summary`` into the event's ``summary`` column.
 _CODEX_REPLACEMENT_CONTEXT_EVENT_TYPE = "codex_replacement_context"
-# Compaction snapshots are raw-source evidence, not a second transcript store.
-# A provider can re-embed a multi-megabyte prior turn in every snapshot.  Keep
-# small replacement-only context (it is not available anywhere else), but do
-# not copy a whale into the derived index.  The source blob remains the
-# reconstruction authority; the omission event below carries enough typed
-# evidence to make the decision visible to readers.
-_CODEX_REPLACEMENT_CONTEXT_MAX_CHARS = 256 * 1024
 
 
 class _CodexInstructionRevisions:
@@ -1450,20 +1443,6 @@ class _CodexInstructionRevisions:
                 )
             )
         return tuple(self._order)
-
-
-# polylogue-ro922: the per-value cap above bounds one context, not their
-# number. One compacted session is untrusted input and may declare an
-# unbounded count of distinct small replacement texts, each of which would
-# become its own retained candidate and its own durable session event. These
-# are the aggregate ceilings per session; everything past them degrades into
-# the same digest-only omission event the per-value cap already uses, so the
-# omission stays one observable channel and nothing is silently dropped.
-_CODEX_REPLACEMENT_CONTEXT_MAX_DISTINCT = 512
-_CODEX_REPLACEMENT_CONTEXT_MAX_TOTAL_CHARS = 4 * 1024 * 1024
-_CODEX_REPLACEMENT_CONTEXT_OMITTED_EVENT_TYPE = "codex_replacement_context_omitted"
-_CODEX_REPLACEMENT_CEILING_OMISSION_KEY = "session_context_ceiling"
-_CODEX_REPLACEMENT_CEILING_POLICY = "omitted_over_session_context_ceiling"
 
 
 @dataclass
@@ -1635,8 +1614,6 @@ class _CodexTextConservation:
             if not (self._unresolved or self._task_unresolved):
                 return
         for event in events:
-            if event.event_type == _CODEX_REPLACEMENT_CONTEXT_OMITTED_EVENT_TYPE:
-                continue
             self._mark_nested(event.payload)
             if not (self._unresolved or self._task_unresolved):
                 return
@@ -1656,27 +1633,6 @@ class _CodexReplacementContext:
     candidate: _CodexTextCandidate
 
 
-@dataclass
-class _CodexReplacementContextOmission:
-    """Bounded evidence for replacement-only text too large to duplicate."""
-
-    insert_at: int
-    timestamp: str | None
-    source_index: int
-    entry_type: str | None
-    role: str | None
-    phase: str | None
-    content_chars: int
-    content_sha256: str
-    occurrences: int = 1
-    # ``omitted_oversized_reembedded_text`` for one value past the per-value
-    # cap; ``_CODEX_REPLACEMENT_CEILING_POLICY`` for the aggregate record that
-    # absorbs everything past the session ceiling.
-    content_policy: str = "omitted_oversized_reembedded_text"
-    # Incremental hasher backing an aggregate record's running digest.
-    running_digest: hashlib._Hash | None = None
-
-
 def _codex_replacement_context_event(context: _CodexReplacementContext) -> ParsedSessionEvent:
     payload: dict[str, object] = {
         "source_index": context.source_index,
@@ -1693,32 +1649,6 @@ def _codex_replacement_context_event(context: _CodexReplacementContext) -> Parse
         payload["phase"] = context.phase
     return ParsedSessionEvent(
         event_type=_CODEX_REPLACEMENT_CONTEXT_EVENT_TYPE,
-        timestamp=context.timestamp,
-        payload=payload,
-    )
-
-
-def _codex_replacement_context_omission_event(
-    context: _CodexReplacementContextOmission,
-) -> ParsedSessionEvent:
-    """Describe a raw-backed replacement value without copying its content."""
-    payload: dict[str, object] = {
-        "source_index": context.source_index,
-        "context_kind": "replacement_history",
-        "content_policy": context.content_policy,
-        "content_chars": context.content_chars,
-        "content_sha256": context.content_sha256,
-        "occurrences": context.occurrences,
-        "reconstruction": "source_blob",
-    }
-    if context.entry_type:
-        payload["entry_type"] = context.entry_type
-    if context.role:
-        payload["role"] = context.role
-    if context.phase:
-        payload["phase"] = context.phase
-    return ParsedSessionEvent(
-        event_type=_CODEX_REPLACEMENT_CONTEXT_OMITTED_EVENT_TYPE,
         timestamp=context.timestamp,
         payload=payload,
     )
@@ -4050,10 +3980,6 @@ def _parse_records(
     # only a value the session retains nowhere else is stored again.
     conservation = _CodexTextConservation(_index)
     pending_replacement_context: list[_CodexReplacementContext] = []
-    # Session-wide ceiling on distinct replacement-context candidates; see
-    # _CODEX_REPLACEMENT_CONTEXT_MAX_DISTINCT.
-    replacement_context_count = 0
-    replacement_context_chars = 0
     admission = AdmissionLedger()
 
     for idx, item in enumerate(records, start=1):
@@ -4064,7 +3990,6 @@ def _parse_records(
 
         # Handle compaction events (before message check so they don't fall through)
         if _record_type(record) == "compacted":
-            pending_replacement_omissions: dict[tuple[int, str], _CodexReplacementContextOmission] = {}
             timestamp = _iso_or_none(_record_timestamp(record))
             payload = _payload_record(record) or {}
             history = payload.get("replacement_history")
@@ -4101,7 +4026,7 @@ def _parse_records(
                 boundary_end_position=boundary_end,
                 boundary_message_position=summary_position,
             )
-            # The compaction is appended below; context/omission events must
+            # The compaction is appended below; context events must
             # splice immediately after it, matching the historical ordering.
             insert_at = len(session_events) + 1
             history_contexts: list[tuple[_CodexTextCandidate, str | None, str | None, str | None]] = []
@@ -4127,69 +4052,8 @@ def _parse_records(
                         if not isinstance(content_text, str) or not content_text:
                             continue
                         history_text_count += 1
-                        over_ceiling = (
-                            replacement_context_count >= _CODEX_REPLACEMENT_CONTEXT_MAX_DISTINCT
-                            or replacement_context_chars + len(content_text)
-                            > _CODEX_REPLACEMENT_CONTEXT_MAX_TOTAL_CHARS
-                        ) and not conservation.contains(content_text)
-                        if len(content_text) > _CODEX_REPLACEMENT_CONTEXT_MAX_CHARS:
-                            # The raw source remains durable and can reproduce
-                            # this value.  Keep a digest-only event instead of
-                            # allowing one repeated compaction snapshot to
-                            # turn the derived index into a transcript copy.
-                            digest = hashlib.sha256(content_text.encode("utf-8", errors="surrogatepass")).hexdigest()
-                            omission_key = (id(compaction_event), digest)
-                            omission = pending_replacement_omissions.get(omission_key)
-                            if omission is None:
-                                pending_replacement_omissions[omission_key] = _CodexReplacementContextOmission(
-                                    insert_at=insert_at,
-                                    timestamp=timestamp,
-                                    source_index=idx,
-                                    entry_type=entry_type,
-                                    role=entry_role,
-                                    phase=entry_phase,
-                                    content_chars=len(content_text),
-                                    content_sha256=digest,
-                                )
-                            else:
-                                omission.occurrences += 1
-                            continue
-                        if over_ceiling:
-                            # Past the session ceiling the excess degrades into
-                            # the same digest-only channel, folded into one
-                            # record per compaction: a per-value record here
-                            # would just move the unbounded retention from the
-                            # candidate table into ``session_event_rows``.
-                            # ``content_sha256`` is the running digest of the
-                            # omitted values in source order, so the set that
-                            # was dropped stays provable against the raw blob.
-                            ceiling_key = (id(compaction_event), _CODEX_REPLACEMENT_CEILING_OMISSION_KEY)
-                            omission = pending_replacement_omissions.get(ceiling_key)
-                            if omission is None:
-                                hasher = hashlib.sha256()
-                                hasher.update(content_text.encode("utf-8", errors="surrogatepass"))
-                                pending_replacement_omissions[ceiling_key] = _CodexReplacementContextOmission(
-                                    insert_at=insert_at,
-                                    timestamp=timestamp,
-                                    source_index=idx,
-                                    entry_type=None,
-                                    role=None,
-                                    phase=None,
-                                    content_chars=len(content_text),
-                                    content_sha256=hasher.hexdigest(),
-                                    content_policy=_CODEX_REPLACEMENT_CEILING_POLICY,
-                                    running_digest=hasher,
-                                )
-                            elif omission.running_digest is not None:
-                                omission.running_digest.update(content_text.encode("utf-8", errors="surrogatepass"))
-                                omission.occurrences += 1
-                                omission.content_chars += len(content_text)
-                                omission.content_sha256 = omission.running_digest.hexdigest()
-                            continue
                         candidate, is_new = conservation.add(content_text)
                         if is_new:
-                            replacement_context_count += 1
-                            replacement_context_chars += len(content_text)
                             history_contexts.append((candidate, entry_type, entry_role, entry_phase))
             if history_text_count:
                 compaction_event.payload["replacement_history_text_count"] = history_text_count
@@ -4200,8 +4064,6 @@ def _parse_records(
             if image_count:
                 compaction_event.payload["replacement_history_image_count"] = image_count
             session_events.append(compaction_event)
-            for omission in pending_replacement_omissions.values():
-                session_events.append(_codex_replacement_context_omission_event(omission))
             # Context events are spliced in directly after their own compaction
             # event, so a reader meets the text where the compaction dropped it.
             for candidate, entry_type, entry_role, entry_phase in history_contexts:
