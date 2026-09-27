@@ -184,6 +184,10 @@ class Observation:
     cursor_failing: int = 0
     cursor_deferred: int = 0
     raw_rows: int = 0
+    #: Raw rows with neither a parse time nor a parse error. Reported, not
+    #: gating: a retained non-session artifact (a workflow journal, a
+    #: sidecar) is never parsed as a session, and the ``raw_artifacts``
+    #: readiness domain is the daemon's own verdict on raw completeness.
     raw_pending: int = 0
     raw_failed: int = 0
     memberships_pending: int = 0
@@ -200,7 +204,6 @@ class Observation:
             and self.cursor_complete + self.cursor_excluded == self.cursor_rows
             and self.cursor_failing == 0
             and self.cursor_deferred == 0
-            and self.raw_pending == 0
             and self.memberships_pending == 0
         )
 

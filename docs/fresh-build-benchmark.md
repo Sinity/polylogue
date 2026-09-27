@@ -41,9 +41,11 @@ terminal, stops making progress (`--stall-timeout`), or exceeds
 writes `receipt.json`.
 
 A build is **terminal** when the candidate is promoted, every cursor is
-complete or excluded, no raw parse is pending, every raw membership is
-settled, no convergence debt is open, and every required readiness domain is
-ready. A receipt is **qualified** when the build is terminal, every check in
+complete or excluded, every raw membership is settled, no convergence debt is
+open, and every required readiness domain is ready. Raw rows that were never
+parsed are reported but do not gate: a retained non-session artifact is never
+parsed as a session, and the `raw_artifacts` readiness domain is the daemon's
+own verdict on raw completeness. A receipt is **qualified** when the build is terminal, every check in
 `checks` holds (including zero raw parse failures and exact FTS), and every
 asserted budget passes; the command exits non-zero otherwise. A large single
 source (the former 419 MB and 1.6 GB qualifications) is a `files` corpus run
