@@ -51,6 +51,8 @@ from .parsers.base import (
     extract_messages_from_list,
     mark_last_occurrence_as_active_leaf,
 )
+from .parsers.base_models import upgrade_chat_export_user_authorship
+from .parsers.base_support import iter_messages_from_list
 from .parsers.claude import code_parser as claude_code_parser
 from .parsers.claude.code_parser import apply_tool_result_sidecars
 from .parsers.claude.stream_scratch import ClaudeStreamScratch, SqliteStringSet
@@ -1690,7 +1692,20 @@ def _generic_messages_session(
     messages_payload = _record_messages(payload)
     if messages_payload is None:
         return None
+    asserted_id = optional_string(payload.get("id"))
+    if asserted_id is None or not asserted_id.strip():
+        return None
 
+    messages = extract_messages_from_list(messages_payload)
+    return _generic_messages_session_from_messages(provider, payload, fallback_id, messages)
+
+
+def _generic_messages_session_from_messages(
+    provider: Provider,
+    payload: PayloadRecord,
+    fallback_id: str,
+    messages: MutableSequence[ParsedMessage],
+) -> ParsedSession | None:
     # A blank id is not an assertion. ``optional_string`` returns ``""`` for an
     # empty value rather than ``None``, so an ``"id": ""`` or whitespace-only
     # field would otherwise satisfy "the provider asserted an identity" and
@@ -1701,7 +1716,6 @@ def _generic_messages_session(
     if not session_id:
         return None
 
-    messages = extract_messages_from_list(messages_payload)
     title = optional_string(payload.get("title")) or optional_string(payload.get("name")) or fallback_id
     created_at = optional_string(
         payload.get("created_at") or payload.get("create_time") or payload.get("created") or payload.get("createdAt")
@@ -1713,14 +1727,33 @@ def _generic_messages_session(
         or payload.get("updatedAt")
         or payload.get("modified")
     )
-    return ParsedSession(
+    session = ParsedSession(
         source_name=provider,
         provider_session_id=session_id,
         title=title,
         created_at=created_at,
         updated_at=updated_at,
-        messages=messages,
+        messages=messages if isinstance(messages, list) else [],
     )
+    return session if isinstance(messages, list) else session.model_copy(update={"messages": messages})
+
+
+def parse_generic_messages_stream(
+    provider: Provider,
+    envelope: PayloadRecord,
+    records: Iterable[object],
+    fallback_id: str,
+    *,
+    message_sink: MutableSequence[ParsedMessage],
+) -> ParsedSession | None:
+    """Use the generic object parser's field and message rules with disk-backed rows."""
+    asserted_id = envelope.get("id")
+    if not isinstance(asserted_id, str) or not asserted_id.strip():
+        return None
+    message_sink.extend(
+        upgrade_chat_export_user_authorship(provider, message) for message in iter_messages_from_list(records)
+    )
+    return _generic_messages_session_from_messages(provider, envelope, fallback_id, message_sink)
 
 
 def _parse_lowered_spec(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> list[ParsedSession]:

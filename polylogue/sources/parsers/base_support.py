@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import inspect
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from functools import wraps
 from typing import Any, TypeVar
 
@@ -789,8 +789,8 @@ def attachment_from_meta(
     )
 
 
-def extract_messages_from_list(items: Sequence[object]) -> list[ParsedMessage]:
-    messages: list[ParsedMessage] = []
+def iter_messages_from_list(items: Iterable[object]) -> Iterator[ParsedMessage]:
+    """Normalize independent generic message records without retaining the cohort."""
     for _idx, item in enumerate(items, start=1):
         if not isinstance(item, dict):
             continue
@@ -862,16 +862,17 @@ def extract_messages_from_list(items: Sequence[object]) -> list[ParsedMessage]:
             # instead of a position-derived string that would change identity
             # when array order shifts across re-acquisitions.
             msg_id = str(payload.get("id") or payload.get("uuid") or item.get("uuid") or item.get("id") or "")
-            messages.append(
-                ParsedMessage(
-                    provider_message_id=msg_id,
-                    role=role,
-                    text=text,
-                    timestamp=str(timestamp) if timestamp is not None else None,
-                    blocks=content_blocks,
-                )
+            yield ParsedMessage(
+                provider_message_id=msg_id,
+                role=role,
+                text=text,
+                timestamp=str(timestamp) if timestamp is not None else None,
+                blocks=content_blocks,
             )
-    return messages
+
+
+def extract_messages_from_list(items: Sequence[object]) -> list[ParsedMessage]:
+    return list(iter_messages_from_list(items))
 
 
 def mark_last_occurrence_as_active_leaf(messages: list[ParsedMessage]) -> list[ParsedMessage]:

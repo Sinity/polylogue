@@ -410,6 +410,46 @@ def json_record_container(handle: JsonReadable) -> str | None:
     return None
 
 
+def generic_message_object_envelope(handle: JsonReadable) -> dict[str, JsonValue] | None:
+    """Read a simple object envelope while leaving its message array on disk.
+
+    Other nested root fields may carry provider semantics, so those documents
+    stay on their provider parser route. The event pass also validates the
+    complete JSON before a scratch artifact can be published.
+    """
+    envelope: dict[str, JsonValue] = {}
+    current_key: str | None = None
+    message_arrays = 0
+    try:
+        events = ijson.parse(handle)
+        if next(events, None) != ("", "start_map", None):
+            return None
+        for prefix, event, value in events:
+            if prefix == "" and event == "map_key":
+                current_key = str(value)
+                if current_key == "messages":
+                    message_arrays += 1
+                continue
+            if prefix == "" and event == "end_map":
+                current_key = None
+                continue
+            if current_key is None or prefix != current_key:
+                continue
+            if current_key == "messages" and event == "start_array":
+                continue
+            if event in {"start_array", "start_map"}:
+                return None
+            if event in {"string", "number", "boolean", "null"}:
+                if current_key == "messages":
+                    return None
+                envelope[current_key] = cast(JsonValue, value)
+    except ijson.common.JSONError:
+        return None
+    finally:
+        handle.seek(0)
+    return envelope if message_arrays == 1 else None
+
+
 def iter_json_container_records(handle: JsonReadable, prefix: str) -> Iterable[JsonValue]:
     """Yield complete array members; a corrupt suffix raises after its prefix."""
     yield from ijson.items(handle, prefix)

@@ -617,6 +617,20 @@ class ParsedDispatchObservation(BaseModel):
     ) = None
 
 
+def upgrade_chat_export_user_authorship(provider: Provider, message: ParsedMessage) -> ParsedMessage:
+    """Apply the session-level user-channel guarantee to one parsed message."""
+    from polylogue.core.sources import provider_to_source
+
+    if (
+        provider_to_source(provider).runtime_root is None
+        and message.role is Role.USER
+        and message.message_type is MessageType.MESSAGE
+        and message.material_origin is MaterialOrigin.UNKNOWN
+    ):
+        message.material_origin = MaterialOrigin.HUMAN_AUTHORED
+    return message
+
+
 class ParsedSession(BaseModel):
     source_name: Provider
     provider_session_id: str
@@ -753,18 +767,8 @@ class ParsedSession(BaseModel):
         level, so the positive upgrade is applied here, not in the per-message
         classifier.
         """
-        from polylogue.core.sources import provider_to_source
-
-        source = provider_to_source(self.source_name)
-        if source.runtime_root is not None:
-            return self  # agent runtime — keep UNKNOWN default
         for message in self.messages:
-            if (
-                message.role is Role.USER
-                and message.message_type is MessageType.MESSAGE
-                and message.material_origin is MaterialOrigin.UNKNOWN
-            ):
-                message.material_origin = MaterialOrigin.HUMAN_AUTHORED
+            upgrade_chat_export_user_authorship(self.source_name, message)
         return self
 
 
