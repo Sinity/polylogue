@@ -696,6 +696,7 @@ async def test_a_fresh_root_admits_every_page_with_a_codex_state_snapshot_among_
     """
     from polylogue.daemon.intake import FairIntakeDispatcher, IntakeClassSpec
     from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
+    from polylogue.operations.operation_context import open_operation_read
     from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
 
     archive, codex_root, codex_state_root = _make_processor(workspace_env, "codex-home-catchup", "codex-catchup.db")
@@ -714,22 +715,28 @@ async def test_a_fresh_root_admits_every_page_with_a_codex_state_snapshot_among_
         WatchSource(name="codex", root=codex_root),
         WatchSource(name="codex-state", root=codex_state_root, suffixes=(".sqlite", ".db")),
     )
-    watcher = live_watcher.LiveWatcher(archive, sources, cursor=CursorStore(archive_root / "ops.db"))
+    watcher = live_watcher.LiveWatcher(
+        archive,
+        sources,
+        cursor=CursorStore(archive_root / "ops.db"),
+        read_snapshot=open_operation_read,
+    )
     try:
         context = DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=sources)
         # Four rows per page over eighteen files: the deadlock only showed
         # after the third page.
+        adapters = tuple(FileIntakeAdapter(context, source) for source in sources)
         dispatcher = FairIntakeDispatcher(
             tuple(
-                IntakeClassSpec(name=source.name, adapter=FileIntakeAdapter(context, source), page_size=4)
-                for source in sources
+                IntakeClassSpec(name=source.name, adapter=adapter, page_size=4)
+                for source, adapter in zip(sources, adapters, strict=True)
             )
         )
         pages = 0
         for _ in range(12):
             result = await dispatcher.run_once()
             pages += 1
-            if not result.progressed:
+            if result.quiescent and not any(adapter.discovery_pending for adapter in adapters):
                 break
         assert pages >= 5
 
