@@ -13,6 +13,9 @@ def _fake_process(proc_root: Path, pid: int, rss_kib: int, task_children: dict[i
     process = proc_root / str(pid)
     process.mkdir(parents=True)
     (process / "status").write_text(f"Name:\ttest\nVmRSS:\t{rss_kib} kB\n", encoding="ascii")
+    # /proc/<pid>/stat field 22 (starttime) binds process identity against PID reuse.
+    stat_fields = ["S", *("0" for _ in range(18)), str(pid + 1000)]
+    (process / "stat").write_text(f"{pid} (test) {' '.join(stat_fields)}\n", encoding="ascii")
     for task_id, child_pids in task_children.items():
         children = process / "task" / str(task_id) / "children"
         children.parent.mkdir(parents=True)
@@ -31,6 +34,10 @@ def test_process_tree_rss_follows_children_from_secondary_task(tmp_path: Path) -
         "process_count": 2,
         "task_count": 3,
         "truncated": False,
+        "process_identities": [
+            {"pid": 100, "start_time_ticks": 1100},
+            {"pid": 200, "start_time_ticks": 1200},
+        ],
     }
 
 
