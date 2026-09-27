@@ -526,13 +526,13 @@ def seed_reader_archive(
         if not message_fts:
             _degrade_message_fts(workspace)
     else:
-        # An empty archive still needs the index.db to exist (with its
-        # full schema, including messages_fts) so the daemon routes through the
-        # archive reader.
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+        # An empty archive is a bootstrapped one: every tier exists with its
+        # full schema. The reader's query frame reads the user tier's epoch
+        # alongside the index's, so an index-only root is a state production
+        # never produces, and the reader refuses it.
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-        initialize_archive_database(index_db_path(workspace), ArchiveTier.INDEX)
+        initialize_active_archive_root(workspace.archive_root)
 
 
 def _rebuild_reader_insights(workspace: ReaderWorkspace) -> None:

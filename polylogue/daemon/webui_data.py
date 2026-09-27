@@ -23,9 +23,13 @@ UNSUPPORTED_MIME_EXACT = frozenset(
 
 
 def _attachment_name(attachment: Any) -> str:
-    name = getattr(attachment, "name", None)
-    if isinstance(name, str) and name.strip():
-        return name
+    # The parsed/domain attachment calls it ``name``; the stored record the
+    # library page reads calls it ``display_name``. Falling straight to the id
+    # for the record showed every library row as its hash.
+    for field_name in ("name", "display_name"):
+        name = getattr(attachment, field_name, None)
+        if isinstance(name, str) and name.strip():
+            return name
     return str(getattr(attachment, "id", None) or getattr(attachment, "attachment_id", None) or "")
 
 

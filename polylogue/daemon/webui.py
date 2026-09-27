@@ -1877,11 +1877,18 @@ def render_typed_data_page(
     )
     rows: list[str] = []
     scalar_rows: list[str] = []
-    empty_items = False
+    # Decided before the walk: ``total`` may precede its item list in the
+    # payload, and an empty list must still render the empty statement even
+    # when the envelope also carries scalar metadata (exactness, bounds).
+    item_lists = [
+        value
+        for key, value in (payload or {}).items()
+        if key in {"items", "entries", "results"} and isinstance(value, list)
+    ]
+    empty_items = bool(item_lists) and not any(item_lists)
     if payload:
         for key, value in payload.items():
             if key in {"items", "entries", "results"} and isinstance(value, list):
-                empty_items = empty_items or not value
                 for item in value:
                     if isinstance(item, Mapping):
                         label = (
@@ -1923,12 +1930,12 @@ def render_typed_data_page(
                     f"<dd>{html.escape(_scalar_projection(value))}</dd></div>"
                 )
     content = ""
+    if empty_items or not (rows or scalar_rows):
+        content += f'<p class="lede">{html.escape(empty)}</p>'
     if scalar_rows:
         content += f'<dl class="pl-reader-meta">{"".join(scalar_rows)}</dl>'
     if rows:
         content += f'<ul class="activity-list">{"".join(rows)}</ul>'
-    if not content:
-        content = f'<p class="lede">{html.escape(empty)}</p>'
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark"><title>{html.escape(title)} · Polylogue</title>{styles}</head>
