@@ -298,7 +298,6 @@
     "polylogue/sources/artifact_observations.py",
     "polylogue/sources/assembly.py",
     "polylogue/sources/assembly_chatgpt.py",
-    "polylogue/sources/assembly_claude_ai.py",
     "polylogue/sources/assembly_claude_code.py",
     "polylogue/sources/assembly_codex.py",
     "polylogue/sources/assembly_gemini.py",
