@@ -1,25 +1,17 @@
 """Contracts for the JSON-structural-diff classifier (polylogue-1fijp AC (b)).
 
-``classify_drive_structural_relation`` is the fix for the exact gap PR #3656
-(polylogue-sp72) documented and deferred: Drive's live-attachment backfill
-re-serializes the WHOLE JSON document on every re-acquisition pass that
-resolves a Drive-hosted attachment reference, so a genuinely-grown
-conversation is never a byte-prefix superset of its predecessor -- the
-existing byte-prefix classifier (``archive/revision_authority.py``) can only
-ever see it as ambiguous. These tests prove the structural classifier's
-semantics directly (no SQLite/archive machinery involved -- pure JSON-in,
-enum-out), including one fixture built through the REAL production
-attachment-injection code path
-(``polylogue.sources.drive.attachment_fetch.fetch_live_drive_attachment_bytes``),
-not a hand-rolled approximation of it.
+``classify_drive_structural_relation`` proves growth for Drive documents that
+the provider re-serializes whole on every save (AI Studio rewrites the entire
+JSON when a conversation grows), so a genuinely grown conversation is never a
+byte-prefix superset of its predecessor and the byte-prefix classifier
+(``archive/revision_authority.py``) can only see it as ambiguous. These tests
+prove the classifier's semantics directly: pure JSON in, enum out.
 """
 
 from __future__ import annotations
 
 import json
 
-from polylogue.core.json import JSONValue
-from polylogue.sources.drive.attachment_fetch import fetch_live_drive_attachment_bytes
 from polylogue.sources.drive.structural_diff import (
     DriveStructuralRelation,
     classify_drive_structural_relation,
@@ -173,62 +165,3 @@ def test_unrelated_documents_are_ambiguous() -> None:
 def test_non_json_bytes_are_ambiguous_not_a_crash() -> None:
     assert classify_drive_structural_relation(b"not json", b"also not json {") is DriveStructuralRelation.AMBIGUOUS
     assert classify_drive_structural_relation(b"", _bytes({"a": 1})) is DriveStructuralRelation.AMBIGUOUS
-
-
-def test_real_attachment_injection_fixture_is_structural_growth() -> None:
-    """Build the before/after bytes through the REAL production injector
-    (``fetch_live_drive_attachment_bytes``), not a hand-rolled dict edit --
-    proves the classifier against the actual mutation shape Drive produces,
-    matching PR #3656's finding that this shape is not byte-prefix provable."""
-    payload: JSONValue = {
-        "chunkedPrompt": {
-            "chunks": [
-                {"role": "user", "text": "Hi"},
-                {
-                    "role": "model",
-                    "text": "Here is the file",
-                    "driveDocument": {"id": "att-1", "name": "doc.txt", "mimeType": "text/plain"},
-                },
-            ]
-        }
-    }
-    old_bytes = _bytes(payload)
-    resolved, stats = fetch_live_drive_attachment_bytes(payload, lambda file_id: b"the actual attachment bytes")
-    assert stats.fetched_count == 1
-    new_bytes = json.dumps(resolved).encode("utf-8")
-
-    assert new_bytes != old_bytes
-    assert not new_bytes.startswith(old_bytes)  # confirms the real non-byte-prefix shape
-    assert classify_drive_structural_relation(old_bytes, new_bytes) is DriveStructuralRelation.STRUCTURAL_GROWTH
-
-
-def test_two_independent_attachment_fetches_in_sequence_stay_growth() -> None:
-    """A document with two Drive-hosted attachments, resolved one at a time
-    across two re-acquisition passes (a realistic multi-attachment Drive
-    session), stays structural growth at every step."""
-    payload: JSONValue = {
-        "chunkedPrompt": {
-            "chunks": [
-                {"role": "model", "driveDocument": {"id": "att-1"}},
-                {"role": "model", "driveDocument": {"id": "att-2"}},
-            ]
-        }
-    }
-    gen0 = _bytes(payload)
-
-    def fetch_att1_only(file_id: str) -> bytes:
-        if file_id == "att-1":
-            return b"first attachment bytes"
-        raise RuntimeError("not yet fetchable")
-
-    resolved1, stats1 = fetch_live_drive_attachment_bytes(payload, fetch_att1_only)
-    assert stats1.fetched_count == 1
-    gen1 = json.dumps(resolved1).encode("utf-8")
-    assert classify_drive_structural_relation(gen0, gen1) is DriveStructuralRelation.STRUCTURAL_GROWTH
-
-    resolved2, stats2 = fetch_live_drive_attachment_bytes(resolved1, lambda file_id: b"second attachment bytes")
-    assert stats2.fetched_count == 1
-    gen2 = json.dumps(resolved2).encode("utf-8")
-    assert classify_drive_structural_relation(gen1, gen2) is DriveStructuralRelation.STRUCTURAL_GROWTH
-    # And transitively across both generations at once.
-    assert classify_drive_structural_relation(gen0, gen2) is DriveStructuralRelation.STRUCTURAL_GROWTH

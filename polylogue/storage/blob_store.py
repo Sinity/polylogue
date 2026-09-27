@@ -291,6 +291,15 @@ class BlobStore:
                 self.discard_staging_path(temporary_path)
             raise
 
+    def spool_file(self) -> IO[bytes]:
+        """Return an anonymous read/write file in the private staging area.
+
+        For a producer that can only write (a streaming download) ahead of
+        :meth:`prepare_from_fileobj`: the bytes stay on the archive's
+        filesystem, owner-only, and vanish when the file is closed.
+        """
+        return tempfile.TemporaryFile(dir=self._ensure_private_staging_root())
+
     def prepare_from_bytes(self, data: bytes) -> PreparedBlob:
         """Stage in-memory bytes without exposing their final hash path."""
         staging_root = self._ensure_private_staging_root()

@@ -8,17 +8,18 @@ eligible for the same live Drive fetch.
 
 from __future__ import annotations
 
-import hashlib
 import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO
 
 from polylogue.core.stage_admission import admit_stage_write
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.logging import WARNING, emit, get_logger
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.blob_store import PreparedBlob
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceBlobRef,
     is_blob_hash_excised,
@@ -227,12 +228,29 @@ def _surviving_blob_ref(
     return blob_hash, size_bytes
 
 
+def _download_prepared(
+    publisher: ArchiveBlobPublisher,
+    provider_file_id: str,
+    download_into: Callable[[str, IO[bytes]], None],
+) -> PreparedBlob:
+    """Stream one provider file into this archive's blob staging area.
+
+    The download lands in an anonymous spool file beside the staging root and
+    is then prepared (hashed and staged) from it, so neither step holds the
+    attachment in memory whatever its size.
+    """
+    with publisher.spool_file() as spool:
+        download_into(provider_file_id, spool)
+        spool.seek(0)
+        return publisher.prepare_from_fileobj(spool)
+
+
 def converge_drive_attachments(
     index_conn: sqlite3.Connection,
     source_conn: sqlite3.Connection,
     *,
     archive_root: Path,
-    download_bytes: Callable[[str], bytes],
+    download_into: Callable[[str, IO[bytes]], None],
     limit: int = DEFAULT_ATTACHMENT_CONVERGENCE_LIMIT,
     now_ms: Callable[[], int] | None = None,
     open_write_connections: Callable[[], tuple[sqlite3.Connection, sqlite3.Connection]] | None = None,
@@ -240,12 +258,11 @@ def converge_drive_attachments(
     """Fetch one bounded window and publish durable attachment state.
 
     The query is intentionally route-neutral: it starts at indexed attachment
-    references, not at ``iter_drive_raw_data`` or a source path.  Successful
-    bytes are hashed from the bytes actually read and published before the
+    references, not at ``iter_drive_raw_data`` or a source path.  Each
+    download streams into a staging file, so an attachment of any size costs
+    bounded memory; its bytes are hashed as staged and published before the
     index row is marked acquired.  Explicit not-found results are terminal
-    ``unavailable`` rows; all other failures remain retryable.  Size is never
-    a refusal reason: the bytes are already read, and dropping them would
-    lose an attachment the provider still serves.
+    ``unavailable`` rows; all other failures remain retryable.
 
     ``open_write_connections`` separates the scan from the publication: the
     passed connections then serve the candidate scan and survival probe, and
@@ -348,9 +365,10 @@ def converge_drive_attachments(
                     )
                 )
                 continue
+            prepared: PreparedBlob | None = None
             try:
-                payload = download_bytes(provider_file_id)
-                candidate_hash = hashlib.sha256(payload).digest()
+                prepared = _download_prepared(publisher, provider_file_id, download_into)
+                candidate_hash = bytes.fromhex(prepared.hash_hex)
                 if is_blob_hash_excised(source_conn, candidate_hash):
                     # Refuse BEFORE publishing. write_from_bytes would stage
                     # the payload and queue a receipt that publisher.flush()
@@ -397,7 +415,8 @@ def converge_drive_attachments(
                         reason="canonical blob destination does not hash to its own name",
                     )
                     continue
-                blob_hash_hex, byte_count = publisher.write_from_bytes(payload)
+                blob_hash_hex, byte_count = publisher.queue_prepared(prepared)
+                prepared = None
             except Exception as exc:
                 if _permanent_failure(exc):
                     fetch_outcomes[provider_file_id] = ("terminal", None, 0)
@@ -407,9 +426,13 @@ def converge_drive_attachments(
                     deferred += 1
                     logger.info("attachment convergence deferred %s: %s", attachment_id, exc)
                 continue
+            finally:
+                # A download refused before publication (excised, contradicted,
+                # failed) leaves its staged file behind; it is never queued.
+                if prepared is not None:
+                    publisher.discard_prepared(prepared)
 
             blob_hash = bytes.fromhex(blob_hash_hex)
-            assert hashlib.sha256(payload).digest() == blob_hash
             fetch_outcomes[provider_file_id] = ("acquired", blob_hash, byte_count)
             acquired_rows.append((attachment_id, blob_hash, byte_count))
             acquired_refs.append(
@@ -545,7 +568,7 @@ def make_attachment_convergence_stage(
                 index,
                 source,
                 archive_root=archive_root,
-                download_bytes=client.download_bytes,  # type: ignore[attr-defined]
+                download_into=client.download_into,  # type: ignore[attr-defined]
                 limit=limit,
                 open_write_connections=_open_write,
             )

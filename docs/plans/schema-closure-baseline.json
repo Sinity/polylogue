@@ -312,7 +312,6 @@
     "polylogue/sources/detection.py",
     "polylogue/sources/dispatch.py",
     "polylogue/sources/drive/__init__.py",
-    "polylogue/sources/drive/attachment_fetch.py",
     "polylogue/sources/drive/auth.py",
     "polylogue/sources/drive/auth_support.py",
     "polylogue/sources/drive/gateway.py",
