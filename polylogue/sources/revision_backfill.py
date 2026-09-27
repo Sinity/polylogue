@@ -968,6 +968,77 @@ def _retained_dependency_digest(assembly_digest: str | None, parser_sidecars_dig
     return hashlib.sha256(f"{assembly_digest or ''}:{parser_sidecars_digest}".encode("ascii")).hexdigest()
 
 
+def enrichment_dependency_digest(
+    *,
+    provider: Provider,
+    source_path: str,
+    provider_session_ids: Sequence[str],
+    index_conn: sqlite3.Connection | None,
+    source_conn: sqlite3.Connection | None,
+    blob_root: Path | None,
+    parser_sidecars: bool,
+) -> str:
+    """Digest every archive input a prepared session's enrichment depends on.
+
+    The preparing worker and the writer compute this from their own read
+    views; a mismatch means the evidence moved between preparation and
+    publication and the prepared interpretation is stale. ``parser_sidecars``
+    also binds retained tool-result siblings, which only a retained parse
+    reads; a live parse reads them from the source tree.
+    """
+    from polylogue.sources.assembly import get_assembly_spec
+
+    assembly_digest: str | None = None
+    if get_assembly_spec(provider) is not None:
+        assembly_digest = _enrichment_evidence_digest(
+            _retained_enrichment_sidecar_data(
+                provider=provider,
+                sessions=(),
+                provider_session_ids=provider_session_ids,
+                index_conn=index_conn,
+                source_conn=source_conn,
+                blob_root=blob_root,
+                source_path=source_path,
+            )
+        )
+    parser_digest = (
+        _retained_parser_sidecar_digest(source_conn, provider=provider, source_path=source_path)
+        if parser_sidecars and source_conn is not None
+        else ""
+    )
+    return _retained_dependency_digest(assembly_digest, parser_digest)
+
+
+def prepared_enrichment_dependency_state(
+    archive: Any,
+    artifact: PreparedJsonl,
+    *,
+    provider: Provider,
+    source_path: str,
+    sessions: Iterable[ParsedSession],
+    parser_sidecars: bool,
+) -> str | None:
+    """Return why a prepared artifact's enrichment is stale, or ``None``.
+
+    The writer publishes into ``archive``; the artifact is current only when
+    it was enriched against that same index and the same evidence.
+    """
+    if artifact.enrichment_index_path != str(Path(archive.index_db_path).resolve()):
+        return "index dependency changed"
+    if artifact.enrichment_digest is None:
+        return None
+    current = enrichment_dependency_digest(
+        provider=provider,
+        source_path=source_path,
+        provider_session_ids=[session.provider_session_id for session in sessions if session.provider_session_id],
+        index_conn=archive.index_connection,
+        source_conn=archive._ensure_source_conn(),
+        blob_root=Path(archive.archive_root) / "blob",
+        parser_sidecars=parser_sidecars,
+    )
+    return None if current == artifact.enrichment_digest else "enrichment evidence changed"
+
+
 def prepare_retained_jsonl_artifact(
     raw_id: str,
     provider_token: str,
@@ -1362,25 +1433,11 @@ def _prepared_retained_outcome(
             sessions = list(artifact.iter_sessions())
         except Exception as exc:
             raise RetainedPreparationRetryableError(f"prepared retained artifact unavailable for raw {raw_id}") from exc
-        if artifact.enrichment_digest is not None:
-            evidence = _retained_enrichment_sidecar_data(
-                provider=provider,
-                sessions=sessions,
-                index_conn=archive.index_connection,
-                source_conn=archive._ensure_source_conn(),
-                blob_root=Path(archive.archive_root) / "blob",
-                source_path=source_path,
-            )
-            current_dependency = _retained_dependency_digest(
-                _enrichment_evidence_digest(evidence),
-                _retained_parser_sidecar_digest(
-                    archive._ensure_source_conn(), provider=provider, source_path=source_path
-                ),
-            )
-            if current_dependency != artifact.enrichment_digest:
-                raise RetainedPreparationRetryableError(
-                    f"prepared retained enrichment evidence changed for raw {raw_id}"
-                )
+        stale = prepared_enrichment_dependency_state(
+            archive, artifact, provider=provider, source_path=source_path, sessions=sessions, parser_sidecars=True
+        )
+        if stale is not None:
+            raise RetainedPreparationRetryableError(f"prepared retained {stale} for raw {raw_id}")
         return sessions, size, kind
     if prepared.sessions_path is None:
         raise RetainedPreparationRetryableError(f"prepared retained carrier is missing for raw {raw_id}")
@@ -5104,7 +5161,16 @@ class RetainedSessionEnricher:
     session being enriched.
     """
 
-    __slots__ = ("_blob_root", "_bundle", "_cached", "_index_conn", "_provider", "_source_conn", "_source_path")
+    __slots__ = (
+        "_blob_root",
+        "_bundle",
+        "_cached",
+        "_index_conn",
+        "_provider",
+        "_session_ids",
+        "_source_conn",
+        "_source_path",
+    )
 
     def __init__(
         self,
@@ -5122,10 +5188,29 @@ class RetainedSessionEnricher:
         self._blob_root = blob_root
         self._bundle = provider in BUNDLE_PROVIDERS and Path(source_path).name.lower().endswith(".json")
         self._cached: SidecarData | None = None
+        self._session_ids: list[str] = []
+
+    def dependency_digest(self) -> str:
+        """The evidence every session enriched so far depends on.
+
+        Sealed into a prepared artifact, then recomputed by the writer
+        (``prepared_enrichment_dependency_state``) before it publishes.
+        """
+        return enrichment_dependency_digest(
+            provider=self._provider,
+            source_path=self._source_path,
+            provider_session_ids=self._session_ids,
+            index_conn=self._index_conn,
+            source_conn=self._source_conn,
+            blob_root=self._blob_root,
+            parser_sidecars=False,
+        )
 
     def __call__(self, session: ParsedSession) -> ParsedSession:
         from polylogue.sources.assembly import get_assembly_spec
 
+        if session.provider_session_id:
+            self._session_ids.append(session.provider_session_id)
         spec = get_assembly_spec(self._provider)
         if spec is None:
             return session
@@ -5189,7 +5274,13 @@ def open_retained_session_enricher(
 def enrich_sessions_from_archive(
     archive: Any, provider: Provider, source_path: str, sessions: Sequence[ParsedSession]
 ) -> list[ParsedSession]:
-    """Enrich a writer-side parse from the archive's own retained evidence."""
+    """Enrich a writer-side parse from the archive's own retained evidence.
+
+    An ``UNKNOWN`` acquisition provider resolves to the parser's, as retained
+    replay does before it enriches, so both routes find the same assembly.
+    """
+    if provider is Provider.UNKNOWN and sessions:
+        provider = sessions[0].source_name
     return RetainedSessionEnricher(
         provider,
         source_path=source_path,
@@ -5251,8 +5342,13 @@ def _retained_enrichment_sidecar_data(
     source_conn: sqlite3.Connection | None,
     blob_root: Path | None,
     source_path: str | None,
+    provider_session_ids: Sequence[str] | None = None,
 ) -> SidecarData:
-    """Read the exact retained assembly evidence used by enrichment."""
+    """Read the exact retained assembly evidence used by enrichment.
+
+    ``provider_session_ids`` replaces ``sessions`` when the caller holds only
+    the identities (the evidence depends on nothing else of a session).
+    """
 
     sidecar_data = cast("SidecarData", {})
     reads_index = _replay_enrichment_reads_index(provider)
@@ -5261,7 +5357,11 @@ def _retained_enrichment_sidecar_data(
     if reads_index and index_conn is not None:
         from polylogue.sources.codex_state_projection import read_thread_titles
 
-        thread_ids = [session.provider_session_id for session in sessions if session.provider_session_id]
+        thread_ids = (
+            list(provider_session_ids)
+            if provider_session_ids is not None
+            else [session.provider_session_id for session in sessions if session.provider_session_id]
+        )
         titles = read_thread_titles(index_conn, thread_ids=thread_ids, source_path=source_path)
         if titles:
             sidecar_data = cast("SidecarData", {"retained_state_titles": titles})

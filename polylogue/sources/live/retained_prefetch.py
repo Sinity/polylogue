@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
-from concurrent.futures import Executor
+from concurrent.futures import Executor, Future
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,7 +14,11 @@ from polylogue.archive.revision_authority import RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.sources.dispatch import is_jsonl_source_path
 from polylogue.sources.prepared_jsonl import PreparedJsonl
-from polylogue.sources.revision_backfill import RetainedPreparationRetryableError, prepare_retained_jsonl_artifact
+from polylogue.sources.revision_backfill import (
+    RetainedPreparationRetryableError,
+    prepare_retained_jsonl_artifact,
+    prepared_enrichment_dependency_state,
+)
 from polylogue.sources.sqlite_export import looks_like_logical_source_path
 from polylogue.storage.blob_store import BlobStore
 
@@ -30,16 +35,40 @@ class PreparedLiveRetainedRaw:
         self.artifact.discard()
 
     def current(self, archive: Any) -> bool:
+        """Whether the writer may publish this carrier as the member's replay.
+
+        The raw owner's own checks: the same descriptor, and enrichment bound
+        to the index and evidence the writer publishes against.
+        """
         try:
             descriptor = archive.raw_revision_descriptor(self.raw_id)
             native_id = archive.raw_native_id(self.raw_id) if descriptor[3] is RawRevisionKind.APPEND else None
-            return (
-                descriptor == self.descriptor
-                and native_id == self.native_id
-                and archive.raw_revision_file_mtime(self.raw_id) == self.fallback_timestamp
-            )
+            if (
+                descriptor != self.descriptor
+                or native_id != self.native_id
+                or archive.raw_revision_file_mtime(self.raw_id) != self.fallback_timestamp
+            ):
+                return False
         except (KeyError, ValueError):
             return False
+        provider, _blob_hash, source_path, _kind, _size = self.descriptor
+        return (
+            prepared_enrichment_dependency_state(
+                archive,
+                self.artifact,
+                provider=self.artifact.resolved_provider or provider,
+                source_path=source_path,
+                sessions=self.artifact.session_sequence(),
+                parser_sidecars=True,
+            )
+            is None
+        )
+
+
+def _discard_late_artifact(future: Future[PreparedJsonl]) -> None:
+    if future.cancelled() or future.exception() is not None:
+        return
+    future.result().discard()
 
 
 def retained_member_prepares_as_json(archive: Any, source_path: str, blob_hash: str) -> bool:
@@ -57,12 +86,19 @@ def prepare_live_retained_raws(
     current_raw_id: str,
     directory: Path,
     worker_executor: Executor,
+    member_timeout_s: float | None = None,
 ) -> dict[str, PreparedLiveRetainedRaw]:
     """Over-approximate existing members needed by a pending live path.
 
     The writer may select a narrower subset after admitting the current raw.
     Every consumed member is checked against this exact descriptor again.
+    ``member_timeout_s`` bounds the wait for any one member (the stage's warm
+    timeout when omitted).
     """
+    if member_timeout_s is None:
+        from polylogue.sources.live.parse_prefetch import live_watcher_parse_stage_warm_timeout_seconds
+
+        member_timeout_s = live_watcher_parse_stage_warm_timeout_seconds()
     raw_ids: set[str] = set()
     for key in logical_keys:
         raw_ids.update(archive.raw_membership_raw_ids(key))
@@ -85,21 +121,27 @@ def prepare_live_retained_raws(
             native_id = archive.raw_native_id(raw_id) if kind is RawRevisionKind.APPEND else None
             fallback_timestamp = archive.raw_revision_file_mtime(raw_id)
             directory.mkdir(parents=True, exist_ok=True)
+            future = worker_executor.submit(
+                prepare_retained_jsonl_artifact,
+                raw_id,
+                provider.value,
+                blob_hash,
+                source_path,
+                kind.value,
+                native_id,
+                str(archive.archive_root / "blob"),
+                str(archive.source_db_path),
+                str(archive.index_db_path),
+                str(directory),
+                fallback_timestamp,
+            )
             try:
-                artifact = worker_executor.submit(
-                    prepare_retained_jsonl_artifact,
-                    raw_id,
-                    provider.value,
-                    blob_hash,
-                    source_path,
-                    kind.value,
-                    native_id,
-                    str(archive.archive_root / "blob"),
-                    str(archive.source_db_path),
-                    str(archive.index_db_path),
-                    str(directory),
-                    fallback_timestamp,
-                ).result()
+                artifact = future.result(timeout=member_timeout_s)
+            except FutureTimeoutError:
+                # One slow member must not hold the pass. The writer owns the
+                # member's replay; the late carrier is discarded on arrival.
+                future.add_done_callback(_discard_late_artifact)
+                continue
             except (RetainedPreparationRetryableError, OSError, ValueError, sqlite3.Error):
                 # The writer still owns this member's replay. A prewarm miss
                 # must not defer the live path that merely overlaps it.

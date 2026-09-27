@@ -247,6 +247,9 @@ def live_parse_path_worker(
         index_db_path=evidence.index_db_path,
         blob_root=evidence.blob_root,
     ) as enrich:
+        # The evidence read here predates the writer's admission of this
+        # pass. The sealed digest lets the writer detect evidence that moved
+        # in between (a sidecar admitted in the same pass) and re-enrich.
         return prepare_jsonl_blob(
             source_path,
             source_path,
@@ -257,7 +260,21 @@ def live_parse_path_worker(
             attempt_directory=None if attempt_directory is None else Path(attempt_directory),
             parse_prefix_size=parse_prefix_size,
             prepare_session=enrich,
+            preparation_dependency=lambda: (
+                enrich.dependency_digest(),
+                str(Path(evidence.index_db_path).resolve()),
+            ),
         )
+
+
+def _publication_index_path(archive_root: Path) -> Path:
+    from polylogue.sources.live.cold_build import active_cold_build_generation
+    from polylogue.storage.archive_identity import resolve_active_index_path
+
+    generation = active_cold_build_generation(archive_root)
+    if generation is not None:
+        return Path(generation.generation.index_path)
+    return resolve_active_index_path(archive_root)
 
 
 def _discard_orphaned_shard(
@@ -515,13 +532,12 @@ class LiveParseStage:
             return len(candidates)
         evidence: LiveEnrichmentEvidence | None = None
         if archive_root is not None:
-            from polylogue.storage.archive_identity import resolve_active_index_path
-
-            # The same coordinates the pinned read snapshot opens: workers
-            # read retained evidence from them, never from ambient sources.
+            # Workers read retained evidence from the index the writer will
+            # publish into: a cold build's candidate, otherwise the active
+            # generation. The writer rejects a carrier enriched elsewhere.
             evidence = LiveEnrichmentEvidence(
                 source_db_path=str(archive_root / "source.db"),
-                index_db_path=str(resolve_active_index_path(archive_root)),
+                index_db_path=str(_publication_index_path(archive_root)),
                 blob_root=str(archive_root / "blob"),
             )
         deadline = time.monotonic() + self._warm_timeout_seconds
@@ -708,6 +724,7 @@ class LiveParseStage:
                             current_raw_id=expected_raw_id,
                             directory=result.attempt_directory / "retained",
                             worker_executor=self._executor,
+                            member_timeout_s=self._warm_timeout_seconds,
                         )
                 return replace(result, prepared_writes=tuple(writes)), retained
             except Exception as exc:
@@ -882,7 +899,9 @@ class LiveParseStage:
             self._path_results[pending_path] = LivePathPreparation(None, None, None, reason, deferred=True)
             if attempt_directory is not None:
                 self._remove_attempt_directory(attempt_directory)
-        if self._cleanup_blocked:
+        if self._cleanup_blocked or self._closing:
+            # Shutdown owns the executor once it starts; a pool created now
+            # would outlive the stage and could seal carriers after cleanup.
             return
         self._executor = process_pool_executor(max_workers=self._worker_count)
 

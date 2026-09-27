@@ -79,7 +79,7 @@ from polylogue.core.storage_faults import (
 )
 from polylogue.core.timestamp_authority import timestamp_millis
 from polylogue.core.write_hold import WriteHoldBudgetError, check_write_hold_budget
-from polylogue.logging import ERROR, WARNING, bind, emit, get_logger
+from polylogue.logging import ERROR, INFO, WARNING, bind, emit, get_logger
 from polylogue.pipeline.batch_policy import WriteDestination, select_cold_build_shape
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.ingest_outcomes import (
@@ -204,6 +204,7 @@ from polylogue.sources.revision_backfill import (
     enrich_sessions_from_archive,
     parse_retained_raw_sessions,
     prepare_retained_jsonl_artifact,
+    prepared_enrichment_dependency_state,
 )
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
@@ -4408,9 +4409,32 @@ class LiveBatchProcessor:
                             raise RuntimeError(f"off-writer preparation failed: {path_preparation.error}")
                         if not path_preparation.positive_evidence_filtered:
                             raise RuntimeError("off-writer preparation did not filter conversational evidence")
-                        cached_sessions = path_preparation.session_sequence()
-                        if path_preparation.shard_path is not None and shard_paths_by_raw_id is not None:
-                            shard_paths_by_raw_id[source_raw_id] = path_preparation.shard_path
+                        prepared_sessions = path_preparation.session_sequence()
+                        stale_enrichment = prepared_enrichment_dependency_state(
+                            archive,
+                            path_preparation,
+                            provider=path_preparation.resolved_provider or provider,
+                            source_path=record.source_path,
+                            sessions=prepared_sessions,
+                            parser_sidecars=False,
+                        )
+                        if stale_enrichment is not None:
+                            # The worker enriched against evidence this pass
+                            # has since changed (a sidecar admitted ahead of
+                            # this record). Parse and enrich here instead.
+                            emit(
+                                "live.ingest.prepared_carrier_stale",
+                                level=INFO,
+                                outcome="degraded",
+                                source_path=record.source_path,
+                                reason=f"{stale_enrichment}; parsing in the writer",
+                            )
+                            path_preparation = None
+                            cached_sessions = None
+                        else:
+                            cached_sessions = prepared_sessions
+                            if path_preparation.shard_path is not None and shard_paths_by_raw_id is not None:
+                                shard_paths_by_raw_id[source_raw_id] = path_preparation.shard_path
                     prepared_writes = (
                         {prepared.session_id: prepared for prepared in path_preparation.prepared_writes}
                         if path_preparation is not None

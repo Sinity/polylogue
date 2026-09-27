@@ -163,6 +163,20 @@ sites:
     scope: "writing_module"
     classification: producer_scoped_transaction
     reason: "the replay writer composing the tail it is about to merge: the chain's title winner comes from the aggregate this same call merged from parsed chunks (the value a full replace would store and that aggregate_content_hash covers), copied onto the pending tail before write. Nothing stored is read back and substituted"
+  - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
+    function: "apply_raw_revision_replay"
+    subject: "title_source"
+    kind: "read_path_substitution"
+    scope: "writing_module"
+    classification: producer_scoped_transaction
+    reason: "moves with the title: the chain winner's provenance comes from the aggregate this same call merged from parsed chunks, so title text, source and ref describe one piece of evidence. Nothing stored is read back and substituted"
+  - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
+    function: "apply_raw_revision_replay"
+    subject: "title_ref"
+    kind: "read_path_substitution"
+    scope: "writing_module"
+    classification: producer_scoped_transaction
+    reason: "moves with the title: the chain winner's provenance comes from the aggregate this same call merged from parsed chunks, so title text, source and ref describe one piece of evidence. Nothing stored is read back and substituted"
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
     function: "_prepared_message_context"
     subject: "branch_type"

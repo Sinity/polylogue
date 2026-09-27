@@ -197,3 +197,219 @@ def test_live_claude_code_intake_uses_retained_index_titles_parsed_once(
 
     assert sorted(_titles(archive_root)) == [("Curated 0", "origin"), ("Curated 1", "origin")]
     assert parses == 1
+
+
+def _claude_project(root: Path) -> tuple[Path, Path, Path]:
+    project = root / ".claude" / "projects" / "-synthetic-project"
+    project.mkdir(parents=True)
+    session_id = "bbbbbbbb-1111-2222-3333-444444444440"
+    transcript = project / f"{session_id}.jsonl"
+    transcript.write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "uuid": "u0",
+                "sessionId": session_id,
+                "timestamp": "2026-07-20T10:00:00.000Z",
+                "message": {"role": "user", "content": "prompt 0"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    index_path = project / "sessions-index.json"
+    index_path.write_text(
+        json.dumps({"entries": [{"sessionId": session_id, "fullPath": str(transcript), "summary": "Curated 0"}]}),
+        encoding="utf-8",
+    )
+    return project, transcript, index_path
+
+
+def _claude_ingest(
+    archive_root: Path, project: Path, paths: list[Path], *, parse_stage: LiveParseStage | None = None
+) -> None:
+    from polylogue.sources.origin_specs import artifact_suffixes_for_provider
+
+    archive_root.mkdir(parents=True, exist_ok=True)
+    processor = LiveBatchProcessor(
+        Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
+        (
+            WatchSource(
+                name="claude-code",
+                root=project.parent,
+                suffixes=artifact_suffixes_for_provider(Provider.CLAUDE_CODE, defaults=(".jsonl",)),
+            ),
+        ),
+        cursor=CursorStore(archive_root / "index.db"),
+        parser_fingerprint=_PARSER_FINGERPRINT,
+        parse_stage=parse_stage,
+        read_snapshot=open_operation_read,
+    )
+    metrics = asyncio.run(processor.ingest_files(paths, emit_event=False))
+    assert metrics.failed_file_count == 0
+
+
+def _session_rows(archive_root: Path) -> list[tuple[object, ...]]:
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        return [tuple(row) for row in conn.execute("SELECT session_id, title, content_hash FROM sessions")]
+
+
+def test_parse_stage_reenriches_when_a_sidecar_lands_in_the_same_pass(tmp_path: Path) -> None:
+    """A carrier enriched before the pass admitted its sidecar is not published.
+
+    The worker enriches during warm-up, before the writer admits the
+    ``sessions-index.json`` arriving in the same pass. The writer recomputes
+    the evidence digest against what it has admitted and re-enriches.
+
+    Anti-vacuity: drop the write-time ``prepared_enrichment_dependency_state``
+    check and the parse-stage route stores the heuristic ``"prompt 0"`` title
+    with a different content hash than the route without the stage.
+    """
+    project, transcript, index_path = _claude_project(tmp_path / "live")
+
+    plain_root = tmp_path / "plain"
+    _claude_ingest(plain_root, project, [index_path, transcript])
+    plain = _session_rows(plain_root)
+    assert [row[1] for row in plain] == ["Curated 0"]
+
+    staged_root = tmp_path / "staged"
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    try:
+        _claude_ingest(staged_root, project, [index_path, transcript], parse_stage=stage)
+    finally:
+        stage.shutdown()
+    assert _session_rows(staged_root) == plain
+
+
+def test_live_append_takes_the_latest_rename(tmp_path: Path) -> None:
+    """A later rename in an appended tail wins, as the whole-file parse does.
+
+    Anti-vacuity: break title-evidence ties toward the earlier chunk in
+    ``merge_parsed_session_chunks`` and the stored title stays ``"Name A"``,
+    disagreeing with a whole-file ingest of the same bytes.
+    """
+    session_id = "cccccccc-1111-2222-3333-444444444440"
+
+    def record(kind: str, **fields: object) -> bytes:
+        return json.dumps({"type": kind, "sessionId": session_id, **fields}).encode() + b"\n"
+
+    first = record(
+        "user",
+        uuid="u0",
+        timestamp="2026-07-20T10:00:00.000Z",
+        message={"role": "user", "content": "opening prompt"},
+    ) + record("custom-title", customTitle="Name A")
+    tail = record(
+        "user",
+        uuid="u1",
+        parentUuid="u0",
+        timestamp="2026-07-20T10:05:00.000Z",
+        message={"role": "user", "content": "later prompt"},
+    ) + record("custom-title", customTitle="Name B")
+
+    project = tmp_path / "live" / ".claude" / "projects" / "-rename-project"
+    project.mkdir(parents=True)
+    transcript = project / f"{session_id}.jsonl"
+    transcript.write_bytes(first)
+    appended_root = tmp_path / "appended"
+    _claude_ingest(appended_root, project, [transcript])
+    transcript.write_bytes(first + tail)
+    _claude_ingest(appended_root, project, [transcript])
+
+    whole_root = tmp_path / "whole"
+    _claude_ingest(whole_root, project, [transcript])
+
+    assert [row[1] for row in _session_rows(appended_root)] == ["Name B"]
+    assert _session_rows(appended_root) == _session_rows(whole_root)
+
+
+def test_broken_pool_restart_after_shutdown_creates_no_new_pool(tmp_path: Path) -> None:
+    """A pool broken during shutdown is not replaced by a fresh one.
+
+    Anti-vacuity: drop the ``_closing`` guard in
+    ``_restart_broken_process_pool`` and a new executor replaces the stopped
+    one, able to seal carriers after cleanup.
+    """
+    from concurrent.futures import ProcessPoolExecutor
+
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards", use_processes=True)
+    try:
+        executor = stage._executor
+        assert isinstance(executor, ProcessPoolExecutor)
+        stage._closing = True
+        stage._restart_broken_process_pool()
+        assert stage._executor is executor
+    finally:
+        stage.shutdown()
+
+
+def test_live_append_keeps_origin_provenance_for_an_equal_heuristic_title(tmp_path: Path) -> None:
+    """Equal title text from weaker evidence does not replace provenance.
+
+    The prefix names the session by rename; the appended tail's first prompt
+    happens to read the same. Anti-vacuity: compare only the title text in
+    the tail-merge carry (``apply_raw_revision_replay``) and the stored row
+    takes the tail's heuristic ``title_source`` under the prefix's hash.
+    """
+    session_id = "dddddddd-1111-2222-3333-444444444440"
+
+    def record(kind: str, **fields: object) -> bytes:
+        return json.dumps({"type": kind, "sessionId": session_id, **fields}).encode() + b"\n"
+
+    first = record(
+        "user",
+        uuid="u0",
+        timestamp="2026-07-20T10:00:00.000Z",
+        message={"role": "user", "content": "opening prompt"},
+    ) + record("custom-title", customTitle="Shared name")
+    tail = record(
+        "user",
+        uuid="u1",
+        parentUuid="u0",
+        timestamp="2026-07-20T10:05:00.000Z",
+        message={"role": "user", "content": "Shared name"},
+    )
+    project = tmp_path / "live" / ".claude" / "projects" / "-provenance-project"
+    project.mkdir(parents=True)
+    transcript = project / f"{session_id}.jsonl"
+    transcript.write_bytes(first)
+    appended_root = tmp_path / "appended"
+    _claude_ingest(appended_root, project, [transcript])
+    transcript.write_bytes(first + tail)
+    _claude_ingest(appended_root, project, [transcript])
+    whole_root = tmp_path / "whole"
+    _claude_ingest(whole_root, project, [transcript])
+
+    def provenance(root: Path) -> list[tuple[object, ...]]:
+        with sqlite3.connect(root / "index.db") as conn:
+            return [tuple(row) for row in conn.execute("SELECT title, title_source, content_hash FROM sessions")]
+
+    assert [row[:2] for row in provenance(appended_root)] == [("Shared name", "origin")]
+    assert provenance(appended_root) == provenance(whole_root)
+
+
+def test_writer_enrichment_resolves_an_unknown_acquisition_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An ``UNKNOWN`` raw enriches with its parsed provider's assembly.
+
+    Anti-vacuity: drop the resolution in ``enrich_sessions_from_archive`` and
+    the enricher is built for ``UNKNOWN``, which has no assembly spec.
+    """
+    from types import SimpleNamespace
+
+    import polylogue.sources.revision_backfill as revision_backfill
+    from polylogue.sources.parsers.base import ParsedSession
+
+    seen: list[Provider] = []
+
+    class RecordingEnricher:
+        def __init__(self, provider: Provider, **_kwargs: object) -> None:
+            seen.append(provider)
+
+        def enrich_all(self, sessions: list[ParsedSession]) -> list[ParsedSession]:
+            return sessions
+
+    monkeypatch.setattr(revision_backfill, "RetainedSessionEnricher", RecordingEnricher)
+    session = ParsedSession(source_name=Provider.CLAUDE_CODE, provider_session_id="resolved", messages=[])
+    archive = SimpleNamespace(archive_root=Path("/nonexistent"), index_connection=None, source_connection=None)
+    revision_backfill.enrich_sessions_from_archive(archive, Provider.UNKNOWN, "/nonexistent/x.jsonl", [session])
+    assert seen == [Provider.CLAUDE_CODE]
