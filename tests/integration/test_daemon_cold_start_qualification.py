@@ -48,6 +48,7 @@ def test_empty_archive_discovers_rejected_prefix_and_publishes_exact_sessions(
             assert retained["candidate_sha"] == receipt["candidate"]["sha"]
             assert retained["discovery"] == receipt["discovery_measurement"]
             assert retained["process_tree_rss"]["sampled_peak_bytes"] == receipt["process_tree_rss_bytes"]
+            assert retained["process_tree_rss"]["limits"]["task_ids_per_sample"] > 0
     assert receipt["outcome"] == "success"
     assert len(receipt["verified_sessions"]) == 3
     assert "public_search_all" in receipt["milestones_upper_bound_s"]
@@ -70,6 +71,8 @@ def test_empty_archive_discovers_rejected_prefix_and_publishes_exact_sessions(
         assert measurement["intervals_s"]["first_yield_to_first_publication_upper_bound"] > 0
         assert receipt["process_tree_rss_bytes"] > 0
         assert receipt["process_tree_rss_sample_count"] > 0
+        assert receipt["process_tree_rss_task_count_at_peak"] >= receipt["process_tree_rss_process_count_at_peak"]
+        assert receipt["process_tree_rss_peak_sample_truncated"] is False
 
 
 def test_held_first_directory_walk_keeps_status_and_metrics_responsive(
