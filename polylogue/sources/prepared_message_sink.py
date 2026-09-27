@@ -997,7 +997,20 @@ def _simple_chatgpt_node(key: str, node: object) -> bool:
         return False
     if not isinstance(author.get("name"), (str, type(None))):
         return False
-    if message.get("metadata", {}) != {}:
+    metadata = message.get("metadata", {})
+    if metadata != {} and (
+        not isinstance(metadata, dict)
+        or set(metadata)
+        - {
+            "attachments",
+            "targeted_reply",
+            "targeted_reply_label",
+            "is_visually_hidden_from_conversation",
+            "jit_plugin_data",
+        }
+        or "attachments" in metadata
+        and not isinstance(metadata["attachments"], list)
+    ):
         return False
     if not isinstance(message.get("create_time"), (int, float, type(None))):
         return False
@@ -1117,6 +1130,8 @@ def prepare_simple_chatgpt_mapping(
     ledger.expect(AdmissionUnit.OUTER_RECORD, 1)
     ledger.materialized(AdmissionUnit.OUTER_RECORD, 0, "conversation")
     default_model = chatgpt._string_value(envelope, "default_model_slug")
+    attachment_sink = store.new_attachment_sink()
+    event_sink = store.new_event_sink()
     for key in mapping:
         node = mapping.shallow_node(key)
         assert isinstance(node, dict)
@@ -1124,8 +1139,10 @@ def prepare_simple_chatgpt_mapping(
             _SingleChatGPTNode(key, node),
             default_model_slug=default_model,
         )
-        if len(normalized) != 1 or attachments:
+        if len(normalized) != 1:
             return None
+        attachment_sink.extend(attachments)
+        event_sink.extend(chatgpt._message_metadata_evidence_events(_SingleChatGPTNode(key, node)))
         message = normalized[0]
         row = conn.execute(
             "SELECT ordinal, parent_key, sibling, timestamp FROM chatgpt_simple_node WHERE node_key = ?", (key,)
@@ -1186,9 +1203,12 @@ def prepare_simple_chatgpt_mapping(
             message = message.model_copy(update={"parent_message_provider_id": owner[0] if owner else None})
         sink.append(message)
     shell = chatgpt.parse({**envelope, "mapping": {}}, fallback_id)
+    event_sink.extend(shell.session_events)
     return shell.model_copy(
         update={
             "messages": sink,
+            "attachments": attachment_sink,
+            "session_events": event_sink,
             "active_leaf_message_provider_id": (
                 conn.execute(
                     "SELECT provider_id FROM chatgpt_simple_message WHERE node_key = ?", (active_leaf_node,)

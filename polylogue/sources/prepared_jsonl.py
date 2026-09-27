@@ -854,10 +854,18 @@ def prepare_jsonl_blob(
                 next_attachment = store._next_attachment_ordinal
                 next_event = store._next_event_ordinal
                 try:
-                    attachments = store.new_attachment_sink()
-                    attachments.extend(session.attachments)
-                    events = store.new_event_sink()
-                    events.extend(session.session_events)
+                    source_attachments: object = session.attachments
+                    if isinstance(source_attachments, SqliteAttachmentSink):
+                        attachments = source_attachments
+                    else:
+                        attachments = store.new_attachment_sink()
+                        attachments.extend(session.attachments)
+                    source_events: object = session.session_events
+                    if isinstance(source_events, SqliteSessionEventSink):
+                        events = source_events
+                    else:
+                        events = store.new_event_sink()
+                        events.extend(session.session_events)
                     session = session.model_copy(update={"attachments": attachments, "session_events": events})
                     if prepare_sessions is not None:
                         selected = prepare_sessions([session])

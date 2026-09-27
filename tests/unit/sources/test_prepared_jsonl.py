@@ -2151,7 +2151,7 @@ def test_chatgpt_mapping_object_spills_before_eof_with_bounded_reader(
 
 def test_chatgpt_mapping_children_spill_preserves_duplicate_and_member_order(tmp_path: Path) -> None:
     first = '{"id":"node","children":["old"]}'
-    second = '{"id":"node","children":["later", "first", "later"]}'
+    second = '{"id":"node","children":["discarded"],"children":["later", "first", "later"]}'
     source = (
         '{"conversation_id":"conversation", "current_node":"node", "create_time":1, '
         f'"mapping":{{"node":{first},"node":{second}}}}}'
@@ -2319,6 +2319,62 @@ def test_chatgpt_simple_mapping_normalizes_one_node_at_a_time_with_parser_parity
     ]
     assert actual.unit_accounting == expected.unit_accounting
     assert actual.active_leaf_message_provider_id == expected.active_leaf_message_provider_id
+    assert actual.content_hash == session_content_hash(expected)
+    artifact.discard()
+
+
+def test_chatgpt_text_nodes_spill_attachment_metadata_with_parser_parity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    builder = ChatGPTExportBuilder("attachment-spill")
+    for index in range(120):
+        builder.add_node("user", f"Neutral prompt {index}")
+    record = builder.build()
+    mapping = record["mapping"]
+    assert isinstance(mapping, dict)
+    for index, node in enumerate(mapping.values()):
+        assert isinstance(node, dict)
+        message = node["message"]
+        assert isinstance(message, dict)
+        message["metadata"] = {
+            "attachments": [{"id": f"file-{index}", "name": f"document-{index}.txt"}],
+            "targeted_reply": f"Quoted turn {index}",
+            "is_visually_hidden_from_conversation": index % 2 == 0,
+        }
+    expected = parse_payload(Provider.CHATGPT, [record], "fallback")[0]
+    source = tmp_path / "chatgpt.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+
+    original = chatgpt.extract_messages_from_mapping
+    normalized_sizes: list[int] = []
+
+    def observe(nodes: Mapping[str, object], *args: object, **kwargs: object) -> object:
+        normalized_sizes.append(len(nodes))
+        assert len(nodes) <= 1
+        return original(nodes, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(chatgpt, "extract_messages_from_mapping", observe)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "scratch"),
+    )
+    assert artifact.error is None
+    assert len(normalized_sizes) == len(mapping) + 1
+    actual = artifact.load_sessions()[0]
+    assert [message.model_dump(mode="json") for message in actual.messages] == [
+        message.model_dump(mode="json") for message in expected.messages
+    ]
+    assert [attachment.model_dump(mode="json") for attachment in actual.attachments] == [
+        attachment.model_dump(mode="json") for attachment in expected.attachments
+    ]
+    assert [event.model_dump(mode="json") for event in actual.session_events] == [
+        event.model_dump(mode="json") for event in expected.session_events
+    ]
+    assert actual.unit_accounting == expected.unit_accounting
     assert actual.content_hash == session_content_hash(expected)
     artifact.discard()
 
