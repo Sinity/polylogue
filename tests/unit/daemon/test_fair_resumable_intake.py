@@ -406,7 +406,6 @@ async def test_vanished_pending_file_does_not_block_walk_or_queued_rescan(tmp_pa
     await adapter.acknowledge(first_page[0])
     vanished_page = await adapter.discover(limit=1)
     assert [item.payload for item in vanished_page] == [vanished]
-    assert [item.payload for item in await adapter.discover(limit=1)] == [vanished]
 
     vanished.unlink()
     inserted = root / "0.json"
@@ -421,6 +420,103 @@ async def test_vanished_pending_file_does_not_block_walk_or_queued_rescan(tmp_pa
     assert await adapter.discover(limit=1) == ()
     rescan_page = await adapter.discover(limit=1)
     assert [item.payload for item in rescan_page] == [inserted]
+
+
+@pytest.mark.asyncio
+async def test_unavailable_source_root_keeps_pending_file_retryable(tmp_path: Path) -> None:
+    """A missing mount must refuse discovery instead of draining its pending page."""
+    root = tmp_path / "source"
+    root.mkdir()
+    carrier = root / "a.json"
+    carrier.write_text("{}")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+    watcher = SimpleNamespace(intake_revision=lambda _source: 0)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    page = await adapter.discover(limit=1)
+    assert [item.payload for item in page] == [carrier]
+
+    parked = tmp_path / "parked"
+    root.rename(parked)
+    with pytest.raises(WalkRefusedError, match="source root"):
+        await adapter.discover(limit=1)
+    assert adapter.discovery_pending
+
+    parked.rename(root)
+    recovered = await adapter.discover(limit=1)
+    assert [item.payload for item in recovered] == [carrier]
+
+
+@pytest.mark.asyncio
+async def test_live_retryable_pending_file_yields_to_queued_rescan(tmp_path: Path) -> None:
+    """An unacknowledged live page must not pin a newer file before its cursor."""
+    root = tmp_path / "source"
+    root.mkdir()
+    poison = root / "z.json"
+    poison.write_text("{}")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+
+    class RetryWatcher:
+        revision = 0
+
+        def intake_revision(self, _source: WatchSource) -> int:
+            return self.revision
+
+        async def _ingest_files(self, _paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(succeeded_paths=(), failed_paths=(), source_payload_read_bytes=0)
+
+    watcher = RetryWatcher()
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    poison_page = await adapter.discover(limit=1)
+    assert [item.payload for item in poison_page] == [poison]
+    result = await adapter.admit_page(poison_page)
+    assert result[poison_page[0].item_id].outcome is AdmissionOutcome.RETRYABLE
+
+    inserted = root / "0.json"
+    inserted.write_text("{}")
+    watcher.revision += 1
+    emitted: list[Path] = []
+    for _ in range(4):
+        emitted.extend(cast(Path, item.payload) for item in await adapter.discover(limit=1))
+        if inserted in emitted:
+            break
+    assert inserted in emitted
+    retry_page = await adapter.discover(limit=1)
+    assert [item.payload for item in retry_page] == [poison]
+
+
+@pytest.mark.asyncio
+async def test_pending_path_replaced_by_escaping_symlink_is_not_admitted(tmp_path: Path) -> None:
+    """A changed pending carrier must pass the source boundary again."""
+    root = tmp_path / "source"
+    root.mkdir()
+    carrier = root / "a.json"
+    carrier.write_text("{}")
+    outside = tmp_path / "outside.json"
+    outside.write_text("outside")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+
+    class GuardedWatcher:
+        def intake_revision(self, _source: WatchSource) -> int:
+            return 0
+
+        async def _ingest_files(self, _paths: Sequence[Path], **_kwargs: object) -> None:
+            raise AssertionError("escaping symlink reached ingest")
+
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=GuardedWatcher(), sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    page = await adapter.discover(limit=1)
+    carrier.unlink()
+    carrier.symlink_to(outside)
+    result = await adapter.admit_page(page)
+    assert result[page[0].item_id].outcome is AdmissionOutcome.RETRYABLE
 
 
 @pytest.mark.asyncio

@@ -45,6 +45,7 @@ from polylogue.sources.live.metrics import (
 )
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource, _log_ingest_metrics
+from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
 
 _T = TypeVar("_T")
 
@@ -105,6 +106,8 @@ class FileIntakeAdapter(IntakeAdapter):
         self._last_hint_revision = context.watcher.intake_revision(source)
         self._fresh_walk: Iterator[Path | None] | None = None
         self._fresh_pending: list[Path] = []
+        self._fresh_page_paths: tuple[Path, ...] = ()
+        self._fresh_page_pending = False
         self._fresh_exhausted = False
         self._fresh_exhausted_at: float | None = None
         self._rescan_after_walk = False
@@ -141,6 +144,8 @@ class FileIntakeAdapter(IntakeAdapter):
     def _reset_fresh_walk(self) -> None:
         self._fresh_walk = None
         self._fresh_pending.clear()
+        self._fresh_page_paths = ()
+        self._fresh_page_pending = False
         self._fresh_exhausted = False
         self._fresh_exhausted_at = None
         self._rescan_after_walk = False
@@ -161,16 +166,38 @@ class FileIntakeAdapter(IntakeAdapter):
     @staticmethod
     def _pending_path_is_live(path: Path) -> bool:
         try:
-            return stat.S_ISREG(path.stat().st_mode)
+            return stat.S_ISREG(path.lstat().st_mode)
         except (FileNotFoundError, NotADirectoryError):
             return False
         except OSError:
             # An inaccessible live file still needs its retryable admission.
             return True
 
+    def _offer_fresh_page(self, limit: int) -> list[Path]:
+        page = self._fresh_pending[:limit]
+        self._fresh_page_paths = tuple(page)
+        self._fresh_page_pending = bool(page)
+        return page
+
     def _discover_fresh_paths(self, limit: int) -> list[Path]:
         if limit <= 0:
             return []
+        if not self.source.root.is_dir():
+            # A missing mount is a refusal, not the disappearance of every
+            # pending carrier. Keep the page for a later retry.
+            self._fresh_page_pending = False
+            raise WalkRefusedError(
+                "intake discovery could not read a source root",
+                [WalkFault(self.source.root, "source root is unavailable")],
+            )
+        if self._fresh_page_pending:
+            # Nothing from this page reached acknowledgement. Advance the
+            # current walk, then revisit the live retry debt in its next sweep.
+            offered = set(self._fresh_page_paths)
+            self._fresh_pending = [path for path in self._fresh_pending if path not in offered]
+            self._rescan_after_walk = True
+        self._fresh_page_pending = False
+        self._fresh_page_paths = ()
         if self._after is not None:
             self._fresh_pending = [path for path in self._fresh_pending if str(path) > self._after]
         # A vanished file is retryable when it disappears after discovery, but
@@ -178,7 +205,7 @@ class FileIntakeAdapter(IntakeAdapter):
         # queued rescan from running. Recreated files return in a later scan.
         self._fresh_pending = [path for path in self._fresh_pending if self._pending_path_is_live(path)]
         if self._fresh_pending:
-            return self._fresh_pending[:limit]
+            return self._offer_fresh_page(limit)
         if self._fresh_exhausted:
             if self._rescan_after_walk:
                 self._after = None
@@ -227,7 +254,7 @@ class FileIntakeAdapter(IntakeAdapter):
                 raise
             if path is not None:
                 self._fresh_pending.append(path)
-        return self._fresh_pending[:limit]
+        return self._offer_fresh_page(limit)
 
     def _discover_sync(self, limit: int) -> Sequence[IntakeItem]:
         generation = self._ledger_generation()
@@ -413,9 +440,17 @@ class FileIntakeAdapter(IntakeAdapter):
                     AdmissionOutcome.TERMINAL, reason="file intake item has no path"
                 )
                 continue
-            if not path.is_file():
+            try:
+                regular_file = stat.S_ISREG(path.lstat().st_mode)
+            except OSError:
+                regular_file = False
+            if (
+                not regular_file
+                or deepest_source_for_path(path, self.context.sources) is not self.source
+                or not self.source.accepts(path)
+            ):
                 outcomes[item.item_id] = AdmissionResult(
-                    AdmissionOutcome.RETRYABLE, reason=f"source carrier vanished: {path}"
+                    AdmissionOutcome.RETRYABLE, reason=f"source carrier unavailable or no longer owned: {path}"
                 )
                 continue
             batch.append(item)
@@ -608,6 +643,8 @@ class FileIntakeAdapter(IntakeAdapter):
             return
         payload = item.payload
         if isinstance(payload, (str, Path)):
+            if Path(payload) in self._fresh_page_paths:
+                self._fresh_page_pending = False
             position = str(payload)
             if self._after is None or position > self._after:
                 self._after = position
