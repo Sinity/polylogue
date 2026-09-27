@@ -69,10 +69,14 @@ def test_empty_archive_discovers_rejected_prefix_and_publishes_exact_sessions(
         )
         assert "first_publication_upper_bound" in measurement["timestamps_elapsed_s"]
         assert measurement["intervals_s"]["first_yield_to_first_publication_upper_bound"] > 0
-        assert receipt["process_tree_rss_bytes"] > 0
-        assert receipt["process_tree_rss_sample_count"] > 0
-        assert receipt["process_tree_rss_task_count_at_peak"] >= receipt["process_tree_rss_process_count_at_peak"]
-        assert receipt["process_tree_rss_peak_sample_truncated"] is False
+        if receipt["process_tree_rss_available"]:
+            assert receipt["process_tree_rss_bytes"] > 0
+            assert receipt["process_tree_rss_sample_count"] > 0
+            assert receipt["process_tree_rss_task_count_at_peak"] >= receipt["process_tree_rss_process_count_at_peak"]
+            assert receipt["process_tree_rss_peak_sample_truncated"] is False
+        else:
+            assert receipt["process_tree_rss_bytes"] is None
+            assert receipt["process_tree_rss_missing_reason"] == "proc_children_unavailable"
 
 
 def test_held_first_directory_walk_keeps_status_and_metrics_responsive(
