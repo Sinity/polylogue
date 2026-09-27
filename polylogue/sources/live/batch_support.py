@@ -20,6 +20,7 @@ from polylogue.archive.artifact_taxonomy import (
 )
 from polylogue.archive.raw_payload.decode import (
     JSONL_RECORD_INSPECTION_BYTES,
+    EmptyJsonlStreamError,
     _sample_jsonl_payload_with_detail,
     jsonl_session_artifact,
 )
@@ -898,6 +899,9 @@ def _jsonl_sample_with_failure(path: Path, *, max_records: int = 32) -> tuple[li
             scan_full=False,
             max_record_bytes=JSONL_RECORD_INSPECTION_BYTES,
         )
+    except EmptyJsonlStreamError:
+        # An empty capture is a shape fallback, not a detection crash.
+        return [], None
     except ValueError as exc:
         return [], _crash(exc)
     return records, None

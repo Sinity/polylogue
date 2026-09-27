@@ -45,3 +45,19 @@ def test_undecodable_jsonl_reports_the_crash(tmp_path: Path) -> None:
 
     assert provider is Provider.CODEX
     assert crash is not None
+
+
+def test_empty_jsonl_is_a_shape_fallback(tmp_path: Path) -> None:
+    """An empty or whitespace-only capture holds no record to fail on.
+
+    Anti-vacuity: report ``EmptyJsonlStreamError`` as a crash in
+    ``_jsonl_sample_with_failure`` and ``crash`` is no longer ``None``.
+    """
+    for name, content in (("empty.jsonl", b""), ("blank.jsonl", b"\n  \n\t\n")):
+        stream = tmp_path / name
+        stream.write_bytes(content)
+
+        provider, crash = detect_provider_from_path_sample_evidence(stream, Provider.CODEX)
+
+        assert provider is Provider.CODEX
+        assert crash is None
