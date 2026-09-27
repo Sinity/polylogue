@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 import weakref
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from polylogue.logging import ERROR, INFO, emit
 
+if TYPE_CHECKING:
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+
+_T = TypeVar("_T")
 _LOG_INTERVAL_S = 15.0
 
 
@@ -217,6 +224,55 @@ def end_cold_build_preparation(*, failed: bool = False, cancelled: bool = False)
         _emit_preparation(*snapshot, outcome="skipped", reason="cancelled")
     else:
         _emit_preparation(*snapshot, outcome="error" if failed else "ok")
+
+
+def settle_cold_build_preparation(done: asyncio.Task[object]) -> None:
+    """End preparation from the writer execution's own completion."""
+    if done.cancelled():
+        end_cold_build_preparation(cancelled=True)
+        return
+    exception = done.exception()
+    if exception is None:
+        end_cold_build_preparation()
+    elif isinstance(exception, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+        end_cold_build_preparation(cancelled=True)
+    else:
+        end_cold_build_preparation(failed=True)
+
+
+async def run_cold_build_preparation(
+    coordinator: DaemonWriteCoordinator, actor: str, function: Callable[..., _T], /, *args: Any, **kwargs: Any
+) -> _T:
+    """Run ``function`` as the cold build's preparation writer call.
+
+    ``function`` receives ``progress=``. The coordinator shields an admitted
+    execution from caller cancellation, so a shutdown that cancels this caller
+    does not stop the hashing thread; preparation then ends from the
+    execution's completion, not here. Only a request cancelled before
+    admission, which never ran, ends as cancelled at the caller.
+    """
+    begin_cold_build_preparation()
+    admitted: list[bool] = []
+    try:
+        result = await coordinator.run_sync_with_completion(
+            actor,
+            function,
+            settle_cold_build_preparation,
+            lambda: admitted.append(True),
+            *args,
+            progress=advance_cold_build_preparation,
+            **kwargs,
+        )
+    except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+        if not admitted:
+            end_cold_build_preparation(cancelled=True)
+        raise
+    except BaseException:
+        end_cold_build_preparation(failed=True)
+        raise
+    # The completion callback may not have run yet; ending is idempotent.
+    end_cold_build_preparation()
+    return result
 
 
 def _emit_preparation(

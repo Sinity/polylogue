@@ -366,3 +366,75 @@ def test_cancelled_cold_build_preparation_is_not_reported_as_an_error() -> None:
     assert final["reason"] == "cancelled"
     assert final["phase"] == "baseline_hash"
     assert active_discovery_payload() is None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_caller_keeps_preparation_until_admitted_writer_stops() -> None:
+    """Ending preparation in the caller's cancellation path makes this red.
+
+    The write coordinator shields an admitted execution from caller
+    cancellation; the hashing thread keeps running, so status must keep the
+    phase until that execution completes.
+    """
+    from polylogue.daemon.discovery_progress import run_cold_build_preparation
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+
+    coordinator = DaemonWriteCoordinator()
+    started = threading.Event()
+    release = threading.Event()
+
+    def preparing(*, progress: Any) -> str:
+        progress("baseline_hash", revisions=1, hashed_bytes=3)
+        started.set()
+        assert release.wait(5), "writer was not released"
+        progress("generation_create")
+        return "generation"
+
+    caller = asyncio.create_task(run_cold_build_preparation(coordinator, "daemon.cold_build.begin", preparing))
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        during = active_discovery_payload()
+        assert during is not None
+        assert during["current_phase"] == "baseline_hash"
+        assert during["preparation_revision_count"] == 1
+        release.set()
+        assert await coordinator.shutdown(timeout=5)
+        await asyncio.sleep(0)
+        assert active_discovery_payload() is None
+    finally:
+        release.set()
+        reset_discovery_progress()
+
+
+@pytest.mark.asyncio
+async def test_unadmitted_cancelled_preparation_ends_at_the_caller() -> None:
+    from polylogue.daemon.discovery_progress import run_cold_build_preparation
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+
+    coordinator = DaemonWriteCoordinator()
+    holder_started = asyncio.Event()
+    holder_release = asyncio.Event()
+
+    async def hold() -> None:
+        holder_started.set()
+        await holder_release.wait()
+
+    holder = asyncio.create_task(coordinator.run("daemon.test.hold", hold))
+    try:
+        await holder_started.wait()
+        caller = asyncio.create_task(
+            run_cold_build_preparation(coordinator, "daemon.cold_build.begin", lambda *, progress: None)
+        )
+        await asyncio.sleep(0.01)
+        assert active_discovery_payload() is not None
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert active_discovery_payload() is None
+    finally:
+        holder_release.set()
+        await holder
+        reset_discovery_progress()
