@@ -24,6 +24,7 @@ from polylogue.storage.derived.timeline.records import (
     SessionRunRecord,
 )
 from polylogue.storage.runtime.archive.records import (
+    LINEAGE_TRUNCATION_CYCLE,
     LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT,
     LINEAGE_TRUNCATION_DEPTH_LIMIT,
     AttachmentRecord,
@@ -73,6 +74,7 @@ def _make_ref_id(attachment_id: AttachmentId, session_id: SessionId, message_id:
 
 
 __all__ = [
+    "LINEAGE_TRUNCATION_CYCLE",
     "AttachmentRecord",
     "ArtifactObservationRecord",
     "BlockRecord",
