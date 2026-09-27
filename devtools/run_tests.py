@@ -240,25 +240,40 @@ def _parse_rerun(selection: list[str]) -> tuple[bool, list[str]]:
 _EXECUTION_ENV_PREFIXES = ("HYPOTHESIS_", "PYTEST_", "POLYLOGUE_")
 
 
-#: Selectors whose meaning depends on pytest's mutable cache (last-failed,
-#: failed-first, stepwise, new-first): the same argv selects different tests
-#: from run to run, so no earlier receipt can answer for it.
-_STATEFUL_SELECTORS = frozenset(
-    {
-        "--lf",
-        "--last-failed",
-        "--ff",
-        "--failed-first",
-        "--nf",
-        "--new-first",
-        "--sw",
-        "--stepwise",
-        "--sw-skip",
-        "--stepwise-skip",
-        "--lfnf",
-        "--last-failed-no-failures",
-    }
-)
+#: The only options a reusable selection may carry: ones that change neither
+#: which tests run nor what the run leaves behind. Anything else -- report
+#: files, cache-dependent selection (``--lf``), cache clearing, external
+#: configuration -- has an effect a receipt cannot supply, so it always runs.
+_REUSABLE_FLAGS = frozenset({"-x", "--exitfirst", "-q", "--quiet", "-v", "--verbose", "-vv", "-s", "--no-header"})
+_REUSABLE_VALUE_OPTIONS = frozenset({"-k", "-m"})
+_REUSABLE_PREFIXES = ("--tb=", "--maxfail=", "-k=", "-m=")
+
+
+def _reuse_eligible(selection: list[str], *, root: Path) -> bool:
+    """Whether every argument is a checkout-local selection or an inert option.
+
+    The digest a receipt is keyed on covers the checkout's Git-visible tree,
+    so a path outside it (``/tmp/test_x.py``) could change without changing
+    the key; it is never reused.
+    """
+    resolved_root = root.resolve()
+    index = 0
+    while index < len(selection):
+        argument = selection[index]
+        if argument in _REUSABLE_VALUE_OPTIONS:
+            index += 2
+            continue
+        if argument in _REUSABLE_FLAGS or argument.startswith(_REUSABLE_PREFIXES):
+            index += 1
+            continue
+        if argument.startswith("-"):
+            return False
+        target = Path(argument.split("::", 1)[0])
+        target = (target if target.is_absolute() else root / target).resolve()
+        if not target.is_relative_to(resolved_root):
+            return False
+        index += 1
+    return True
 
 
 def execution_environment_key(environ: Mapping[str, str]) -> str:
@@ -280,10 +295,7 @@ def reusable_green_receipt(
     tests over the same bytes with the same interpreter, so its receipt
     answers the question and the pool admission is skipped.
     """
-    if content_sha256 is None or any(
-        argument in _STATEFUL_SELECTORS or argument.startswith(tuple(f"{flag}=" for flag in _STATEFUL_SELECTORS))
-        for argument in selection
-    ):
+    if content_sha256 is None or not _reuse_eligible(selection, root=root):
         return None
     runs_root = root / ".cache" / "verify" / "runs"
     try:

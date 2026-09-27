@@ -107,3 +107,21 @@ def test_a_rerun_that_fails_again_stays_red(tmp_path: Path) -> None:
 
     assert verdict is not None
     assert verdict["still_failed"] == ["tests/test_x.py::test_real"]
+
+
+@pytest.mark.parametrize(("rerun_exit", "cleared"), [(0, True), (1, False)])
+def test_scratch_follows_the_adjudicated_outcome(tmp_path: Path, rerun_exit: int, cleared: bool) -> None:
+    """A queued run whose in-slot rerun cleared every failure disposes of its scratch.
+
+    Anti-vacuity: ignore the rerun record in ``run_pytest`` and a cleared run
+    keeps its scratch tree, which only a later sweep would remove.
+    """
+    step = tmp_path / "step"
+    step.mkdir()
+    (step / RERUN_IN_SLOT_RESULT).write_text(
+        json.dumps({"attempted": ["t"], "rerun_exit": rerun_exit}), encoding="utf-8"
+    )
+    env = {RERUN_IN_SLOT_ENV: json.dumps({"report_path": "r", "step_dir": str(step), "root": str(tmp_path)})}
+
+    assert pytest_slot._in_slot_rerun_cleared(env) is cleared
+    assert pytest_slot._in_slot_rerun_cleared({}) is False

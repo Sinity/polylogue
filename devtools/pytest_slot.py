@@ -1099,6 +1099,21 @@ def _run_held(
     )
 
 
+def _in_slot_rerun_cleared(env: Mapping[str, str]) -> bool:
+    """Whether this launch's in-slot rerun passed every failure it reran."""
+    from devtools.pytest_rerun import RERUN_IN_SLOT_ENV, RERUN_IN_SLOT_RESULT
+
+    raw = env.get(RERUN_IN_SLOT_ENV)
+    if not raw:
+        return False
+    try:
+        spec = json.loads(raw)
+        record = json.loads((Path(spec["step_dir"]) / RERUN_IN_SLOT_RESULT).read_text(encoding="utf-8"))
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return isinstance(record, dict) and record.get("rerun_exit") == 0
+
+
 def run_pytest(
     command: Sequence[str],
     *,
@@ -1149,7 +1164,10 @@ def run_pytest(
             outcome = SlotOutcome(returncode=returncode, slot=SLOT_HELD, receipt=receipt)
         else:
             outcome = _submit(argv, cwd=cwd, env=contained, root=root, on_exit=dispose)
-        keep = outcome.returncode != 0
+        # A queued job keeps its first attempt's exit code even when its
+        # in-slot rerun cleared every failure; that run is green, so its
+        # scratch goes like any green run's.
+        keep = outcome.returncode != 0 and not _in_slot_rerun_cleared(env)
         return outcome
     finally:
         dispose()
@@ -1355,6 +1373,8 @@ def _run_launch(launch_path: Path) -> int:
                 def register(process: subprocess.Popen[Any]) -> None:
                     nonlocal child
                     child = process
+                    if sampler is not None:
+                        sampler.follow(process.pid)
 
                 _rerun_failures_in_slot(environment, cwd=launch["working_directory"], log=log, on_start=register)
         except OSError as exc:

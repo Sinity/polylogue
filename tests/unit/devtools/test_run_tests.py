@@ -1201,3 +1201,24 @@ def test_stateful_selectors_are_never_answered_from_a_receipt(tmp_path: Path, fl
     _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
 
     assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
+
+
+@pytest.mark.parametrize(
+    ("selection", "eligible"),
+    [
+        (["tests/unit/test_a.py", "-k", "fast", "-x", "--tb=short"], True),
+        (["tests/unit/test_a.py", "--junitxml=/tmp/report.xml"], False),
+        (["tests/unit/test_a.py", "--cache-clear"], False),
+        (["/tmp/test_external.py"], False),
+        (["tests/unit/test_a.py", "-c", "/tmp/pytest.ini"], False),
+    ],
+)
+def test_only_checkout_local_selections_with_inert_options_are_reused(
+    tmp_path: Path, selection: list[str], eligible: bool
+) -> None:
+    """A receipt answers only for what its tree digest covers and what a rerun would redo.
+
+    Anti-vacuity: accept any option, or any path, in ``_reuse_eligible`` and
+    one of the refused selections is answered from a receipt without running.
+    """
+    assert run_tests._reuse_eligible(selection, root=tmp_path) is eligible
