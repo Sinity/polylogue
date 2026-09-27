@@ -24,6 +24,7 @@ from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import claude_design_object_envelope, iter_grok_export_events
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+from polylogue.sources.live.sidecar_resolution import FilesystemSidecarResolver
 from polylogue.sources.parsers import chatgpt
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.sources.prepared_jsonl import PreparedJsonl, _write_artifact, prepare_jsonl_blob
@@ -773,6 +774,169 @@ def test_hermes_snapshot_shortcut_preserves_higher_priority_dispatch(tmp_path: P
     else:
         assert artifact.error is not None
         assert artifact.sessions_path is None
+    artifact.discard()
+
+
+def test_gemini_cli_object_spills_and_matches_parser(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    record = {
+        "sessionId": "process-1",
+        "projectHash": "project-1",
+        "kind": "subagent",
+        "startTime": "2026-01-01T00:00:00Z",
+        "messages": [
+            {"id": "repeat", "type": "user", "content": "A neutral request", "timestamp": "2026-01-01T00:00:01Z"},
+            {"id": "repeat", "type": "gemini", "content": "A neutral answer", "model": "gemini-test"},
+            {"id": "repeat", "type": "gemini", "content": "Another answer", "tokens": {"input": 3}},
+        ],
+        "lastUpdated": "2026-01-01T00:00:04Z",
+        "userMessageCount": 1,
+        "hasUserOrAssistantMessage": True,
+        "memoryScratchpad": {"workflowSummary": "Neutral summary"},
+    }
+    source = tmp_path / "session.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+    [expected] = parse_payload(Provider.GEMINI_CLI, record, "fallback")
+    original_items = ijson.items
+    from polylogue.sources import prepared_jsonl
+
+    original_append = prepared_jsonl._append_gemini_raw_message
+    appended = 0
+    observed_spill = False
+
+    def tracked_append(conn: sqlite3.Connection, ordinal: int, item: object) -> None:
+        nonlocal appended
+        original_append(conn, ordinal, item)
+        appended += 1
+
+    def tracked_items(*args: object, **kwargs: object) -> object:
+        nonlocal observed_spill
+        for index, item in enumerate(original_items(*args, **kwargs)):
+            if index == 1:
+                assert appended == 1
+                observed_spill = True
+            yield item
+
+    monkeypatch.setattr(ijson, "items", tracked_items)
+    monkeypatch.setattr(prepared_jsonl, "_append_gemini_raw_message", tracked_append)
+    monkeypatch.setattr(
+        "polylogue.sources.prepared_jsonl._iter_json_stream",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("whole-object fallback")),
+    )
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.GEMINI_CLI.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert artifact.error is None
+    assert observed_spill
+    [actual] = artifact.iter_sessions()
+    assert actual.content_hash == session_content_hash(expected)
+    assert [message.model_dump(mode="json") for message in actual.messages] == [
+        message.model_dump(mode="json") for message in expected.messages
+    ]
+    assert [event.model_dump(mode="json") for event in actual.session_events] == [
+        event.model_dump(mode="json") for event in expected.session_events
+    ]
+    assert [message.is_active_leaf for message in actual.messages] == [False, False, True]
+    artifact.discard()
+
+
+def test_gemini_cli_object_corrupt_suffix_discards_scratch(tmp_path: Path) -> None:
+    source = tmp_path / "session.json"
+    source.write_text(
+        '{"sessionId":"process-1","kind":"chat","messages":[{"id":"m1","type":"user","content":"Hi"}]} trailing',
+        encoding="utf-8",
+    )
+    directory = tmp_path / "prepared"
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.GEMINI_CLI.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(directory),
+    )
+    assert artifact.error is not None
+    assert artifact.sessions_path is None
+    assert list(directory.glob("*.db")) == []
+
+
+def test_gemini_cli_object_source_change_defers_and_discards(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "session.json"
+    source.write_text(
+        json.dumps({"sessionId": "process-1", "kind": "chat", "messages": [{"type": "user", "content": "Hi"}]}),
+        encoding="utf-8",
+    )
+    from polylogue.sources import prepared_jsonl
+
+    original_envelope = prepared_jsonl._gemini_cli_envelope
+
+    def changing_envelope(handle: BinaryIO) -> dict[str, JSONValue] | None:
+        envelope = original_envelope(handle)
+        with source.open("a", encoding="utf-8") as writer:
+            writer.write(" ")
+        return envelope
+
+    monkeypatch.setattr(prepared_jsonl, "_gemini_cli_envelope", changing_envelope)
+    directory = tmp_path / "prepared"
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.GEMINI_CLI.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(directory),
+    )
+    assert artifact.deferred
+    assert artifact.error is not None
+    assert list(directory.glob("*.db")) == []
+
+
+def test_gemini_cli_object_keeps_sidecar_debt_on_existing_scope(tmp_path: Path) -> None:
+    chats = tmp_path / "project" / "chats"
+    chats.mkdir(parents=True)
+    (tmp_path / "project" / "tool-outputs" / "session-process-1").mkdir(parents=True)
+    source = chats / "session.json"
+    record = {
+        "sessionId": "process-1",
+        "kind": "chat",
+        "messages": [
+            {
+                "id": "m1",
+                "type": "gemini",
+                "toolCalls": [
+                    {
+                        "id": "tool-1",
+                        "name": "run_shell_command",
+                        "resultDisplay": "For full output see: tool-outputs/session-process-1/missing.txt",
+                    }
+                ],
+            }
+        ],
+    }
+    source.write_text(json.dumps(record), encoding="utf-8")
+    resolver = FilesystemSidecarResolver()
+    [expected] = parse_payload(
+        Provider.GEMINI_CLI, record, "fallback", source_path=str(source), sidecar_resolver=resolver
+    )
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.GEMINI_CLI.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+        sidecar_resolver=resolver,
+    )
+    assert artifact.error is None
+    [actual] = artifact.iter_sessions()
+    assert [event.model_dump(mode="json") for event in actual.session_events] == [
+        event.model_dump(mode="json") for event in expected.session_events
+    ]
+    assert any(event.event_type == "gemini_cli_tool_output_sidecar" for event in actual.session_events)
     artifact.discard()
 
 

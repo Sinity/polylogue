@@ -213,18 +213,40 @@ def parse_gemini_cli(
     source_path: str | Path | None = None,
     sidecar_resolver: SidecarResolver | None = None,
 ) -> ParsedSession:
+    return parse_gemini_cli_records(
+        payload,
+        _list(payload.get("messages")),
+        fallback_id,
+        source_path=source_path,
+        sidecar_resolver=sidecar_resolver,
+    )
+
+
+def parse_gemini_cli_records(
+    payload: JSONDocument,
+    records: Iterable[object],
+    fallback_id: str,
+    *,
+    messages: MutableSequence[ParsedMessage] | None = None,
+    session_events: MutableSequence[ParsedSessionEvent] | None = None,
+    source_path: str | Path | None = None,
+    sidecar_resolver: SidecarResolver | None = None,
+) -> ParsedSession:
+    """Normalize document turns into caller-owned message and event stores."""
     session_id = _string(payload.get("sessionId")) or fallback_id
     chat_id = gemini_cli_chat_identity(payload, session_id)
     is_subagent_session = payload.get("kind") == "subagent"
-    messages: list[ParsedMessage] = []
-    session_events: list[ParsedSessionEvent] = []
+    if messages is None:
+        messages = []
+    if session_events is None:
+        session_events = []
     models_used: set[str] = set()
-    for index, item in enumerate(_list(payload.get("messages")), start=1):
+    for index, item in enumerate(records, start=1):
         parsed = _parse_gemini_message(
             item, index=index, position=len(messages), is_subagent_session=is_subagent_session
         )
         if parsed is not None:
-            messages.append(parsed)
+            messages.append(parsed.model_copy(update={"is_active_leaf": False}))
             if parsed.model_name:
                 models_used.add(parsed.model_name)
             if usage_event := _gemini_message_usage_event(item, parsed):
@@ -238,21 +260,24 @@ def parse_gemini_cli(
     # Codex and Hermes: dropping position-derived parents left session-level
     # topology bit-identical while every one of 98,892 message parent edges
     # went to zero. So no gap-fill here.
-    messages = _mark_active_leaf(messages)
+    if messages:
+        leaf = messages[-1]
+        messages[-1] = leaf.model_copy(update={"is_active_leaf": True})
     if metadata_event := _gemini_cli_session_metadata_event(payload, message_count=len(messages)):
         session_events.append(metadata_event)
     if scratchpad_event := _gemini_cli_memory_scratchpad_event(payload):
         session_events.append(scratchpad_event)
-    session_events.extend(_block_metadata_evidence_events(messages))
+    for message in messages:
+        session_events.extend(_block_metadata_evidence_events([message]))
     session = ParsedSession(
         source_name=Provider.GEMINI_CLI,
         provider_session_id=chat_id,
         title=_string(payload.get("summary")) or chat_id,
         created_at=_string(payload.get("startTime")),
         updated_at=_string(payload.get("lastUpdated")),
-        messages=messages,
+        messages=messages if isinstance(messages, list) else [],
         branch_type=BranchType.SUBAGENT if is_subagent_session else None,
-        session_events=session_events,
+        session_events=session_events if isinstance(session_events, list) else [],
         active_leaf_message_provider_id=messages[-1].provider_message_id if messages else None,
         models_used=sorted(models_used),
         provider_project_ref=_string(payload.get("projectHash")),
@@ -260,12 +285,16 @@ def parse_gemini_cli(
             directory for directory in _list(payload.get("directories")) if isinstance(directory, str) and directory
         ],
     )
+    if not isinstance(messages, list) or not isinstance(session_events, list):
+        session = session.model_copy(update={"messages": messages, "session_events": session_events})
     # The sidecar scope is named for the wire ``sessionId``
     # (``tool-outputs/session-<sessionId>/``), which all of a process's chats
     # share -- not for the composed chat identity. ``sidecar_resolver`` decides
     # whether those bytes come from the source tree (acquisition) or from what
     # the archive retained (derivation); see ``dispatch.parse_payload``.
     if sidecar_resolver is not None:
+        if not isinstance(payload.get("messages"), list):
+            raise ValueError("Gemini CLI sidecar join requires document messages")
         scope = sidecar_resolver.gemini_cli_scope(source_path, session_id)
         if scope.available:
             session = apply_gemini_tool_output_sidecars(
