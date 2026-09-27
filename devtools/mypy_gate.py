@@ -13,10 +13,11 @@ never cold. The one cold case left is a repository with no shared cache yet.
 That run holds the lock while it checks, so concurrent siblings wait for it
 and then seed from its result, and at most one cold scan runs.
 
-A cache counts as warm only when it carries a completion stamp keyed to the
-effective inputs (mypy's version and the passthrough arguments), written after
-a run that left a complete cache; a partial, interrupted or differently
-configured cache is cold. Each checkout's own seed-check-publish lifecycle is
+A cache counts as warm only when it carries a completion stamp keyed to
+mypy's version and configuration, written after a run that left a complete
+cache; a partial, interrupted or differently configured cache is cold. Only
+the gate's own argument-free check is managed this way: any passthrough
+argument runs serialized on mypy's own cache settings. Each checkout's own seed-check-publish lifecycle is
 serialized by a checkout-local lock, so two gates in one checkout never write
 the same cache at once.
 
@@ -51,10 +52,6 @@ import tomllib
 _CACHE_COMPLETE_EXITS = frozenset({0, 1})
 #: Written inside a cache after a run that left it complete.
 _STAMP = ".polylogue-complete"
-#: Passthrough options that disable or redirect the module cache. A run using
-#: one produces no reusable cache here, so it is not managed: it runs
-#: serialized on the shared lock and neither seeds, stamps nor publishes.
-_UNMANAGED_OPTIONS = ("--no-incremental", "--cache-dir")
 
 
 def _git_common_dir(root: Path) -> Path:
@@ -88,13 +85,8 @@ def _locked(lock_path: Path) -> Iterator[None]:
 _CONFIG_DISCOVERY = ("mypy.ini", ".mypy.ini", "pyproject.toml", "setup.cfg")
 
 
-def _config_file(root: Path, mypy_args: list[str]) -> Path | None:
-    """The configuration file mypy will read, mirroring its selection."""
-    for index, arg in enumerate(mypy_args):
-        if arg == "--config-file" and index + 1 < len(mypy_args):
-            return root / mypy_args[index + 1]
-        if arg.startswith("--config-file="):
-            return root / arg.split("=", 1)[1]
+def _config_file(root: Path) -> Path | None:
+    """The configuration file mypy discovers in *root*, in mypy's order."""
     for name in _CONFIG_DISCOVERY:
         candidate = root / name
         if candidate.is_file():
@@ -118,24 +110,20 @@ def _config_contents(path: Path | None) -> object:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _input_key(root: Path, mypy_args: list[str]) -> str:
-    """Digest of what decides whether a cache can be reused.
+def _input_key(root: Path) -> str:
+    """Digest of what decides whether a managed cache can be reused.
 
-    mypy's version, the passthrough arguments and the configuration mypy will
-    read: a sibling whose configuration narrowed ``files`` publishes a partial
-    cache that a full-corpus checkout must not accept as warm.
+    mypy's version and the configuration it reads: a sibling whose
+    configuration narrowed ``files`` publishes a partial cache that a
+    full-corpus checkout must not accept as warm.
     """
     try:
         version = importlib.metadata.version("mypy")
     except importlib.metadata.PackageNotFoundError:
         version = "unknown"
-    config = _config_contents(_config_file(root, mypy_args))
-    payload = json.dumps([version, mypy_args, config], sort_keys=True, default=str)
+    config = _config_contents(_config_file(root))
+    payload = json.dumps([version, config], sort_keys=True, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _unmanaged(mypy_args: list[str]) -> bool:
-    return any(arg == option or arg.startswith(f"{option}=") for arg in mypy_args for option in _UNMANAGED_OPTIONS)
 
 
 def _remove_abandoned(directory: Path, prefix: str) -> None:
@@ -205,11 +193,11 @@ def _publish(local: Path, shared: Path) -> None:
     shutil.rmtree(retired, ignore_errors=True)
 
 
-def _check(mypy: Path, cache: Path, root: Path, mypy_args: list[str], key: str) -> int:
+def _check(mypy: Path, cache: Path, root: Path, key: str) -> int:
     """Run mypy on *cache*, stamping it complete only after a run that left it so."""
     cache.mkdir(parents=True, exist_ok=True)
     (cache / _STAMP).unlink(missing_ok=True)
-    returncode = subprocess.run([str(mypy), "--cache-dir", str(cache), *mypy_args], cwd=root, check=False).returncode
+    returncode = subprocess.run([str(mypy), "--cache-dir", str(cache)], cwd=root, check=False).returncode
     if returncode in _CACHE_COMPLETE_EXITS:
         (cache / _STAMP).write_text(key, encoding="utf-8")
     return returncode
@@ -230,14 +218,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"mypy gate: missing {mypy}", file=sys.stderr)
         return 127
 
-    if _unmanaged(mypy_args):
-        with _locked(lock_path):
+    local.parent.mkdir(parents=True, exist_ok=True)
+    checkout_lock = local.parent / "mypy.lock"
+    if mypy_args:
+        # Only the gate's own configured check is managed. Any passthrough
+        # (a response file, --no-incremental, --cache-dir, --version) may
+        # change what mypy caches or whether it caches at all, so it runs
+        # serialized on both locks, on mypy's own cache settings, and never
+        # seeds, stamps or publishes.
+        with _locked(checkout_lock), _locked(lock_path):
             return subprocess.run([str(mypy), *mypy_args], cwd=root, check=False).returncode
 
-    key = _input_key(root, mypy_args)
-    local.parent.mkdir(parents=True, exist_ok=True)
+    key = _input_key(root)
     # Lock order is always checkout, then shared, so the two cannot deadlock.
-    with _locked(local.parent / "mypy.lock"):
+    with _locked(checkout_lock):
         if not _is_complete(local, key):
             with _locked(lock_path):
                 _recover_shared(shared)
@@ -248,12 +242,12 @@ def main(argv: list[str] | None = None) -> int:
                     # scan. It runs under the shared lock so concurrent
                     # siblings wait and seed from its result instead of
                     # scanning cold beside it.
-                    returncode = _check(mypy, local, root, mypy_args, key)
+                    returncode = _check(mypy, local, root, key)
                     if returncode in _CACHE_COMPLETE_EXITS:
                         _publish(local, shared)
                     return returncode
 
-        returncode = _check(mypy, local, root, mypy_args, key)
+        returncode = _check(mypy, local, root, key)
         if returncode in _CACHE_COMPLETE_EXITS:
             with _locked(lock_path):
                 _publish(local, shared)

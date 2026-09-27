@@ -30,7 +30,7 @@ def _stamped_seed(shared: Path, root: Path) -> None:
     """A complete shared cache for *root*'s default inputs."""
     shared.mkdir(parents=True)
     (shared / "seed.db").write_text("seed", encoding="utf-8")
-    (shared / mypy_gate._STAMP).write_text(mypy_gate._input_key(root, []), encoding="utf-8")
+    (shared / mypy_gate._STAMP).write_text(mypy_gate._input_key(root), encoding="utf-8")
 
 
 def _stub_checker(lane: Path, body: str) -> None:
@@ -61,7 +61,7 @@ def test_gate_checks_on_its_checkout_cache_and_publishes_it(monkeypatch: pytest.
     assert (local / "seed.db").read_text(encoding="utf-8") == "seed"
     assert (local / "checked-by").read_text(encoding="utf-8").strip() == str(local)
     assert (shared / "checked-by").is_file()
-    assert mypy_gate._is_complete(local, mypy_gate._input_key(tmp_path, []))
+    assert mypy_gate._is_complete(local, mypy_gate._input_key(tmp_path))
 
 
 def test_a_crashed_check_does_not_publish_its_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -78,7 +78,7 @@ def test_a_crashed_check_does_not_publish_its_cache(monkeypatch: pytest.MonkeyPa
     assert not (shared / "partial").exists()
     assert (shared / "seed.db").is_file()
     # The crashed checkout's own cache is not complete either: the next run re-checks.
-    assert not mypy_gate._is_complete(tmp_path / ".cache" / "mypy", mypy_gate._input_key(tmp_path, []))
+    assert not mypy_gate._is_complete(tmp_path / ".cache" / "mypy", mypy_gate._input_key(tmp_path))
 
 
 def test_an_unstamped_shared_cache_is_not_a_seed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -93,9 +93,7 @@ def test_an_unstamped_shared_cache_is_not_a_seed(monkeypatch: pytest.MonkeyPatch
     shared = common / "polylogue-mypy" / "cache"
     shared.mkdir(parents=True)
     (shared / "partial.db").write_text("interrupted", encoding="utf-8")
-    (shared / mypy_gate._STAMP).write_text(
-        mypy_gate._input_key(tmp_path, ["--python-version", "3.12"]), encoding="utf-8"
-    )
+    (shared / mypy_gate._STAMP).write_text("stamp-of-another-configuration", encoding="utf-8")
     _stub_checker(tmp_path, "exit 0\n")
 
     assert mypy_gate.main(["--root", str(tmp_path)]) == 0
@@ -289,23 +287,30 @@ def test_the_mypy_configuration_is_part_of_the_cache_key(tmp_path: Path) -> None
         root.mkdir()
         (root / "pyproject.toml").write_text(f"[tool.mypy]\nfiles = {files}\n", encoding="utf-8")
 
-    assert mypy_gate._input_key(narrowed, []) != mypy_gate._input_key(full, [])
+    assert mypy_gate._input_key(narrowed) != mypy_gate._input_key(full)
 
 
-def test_an_explicit_config_file_is_part_of_the_cache_key(tmp_path: Path) -> None:
-    """Two checkouts passing the same ``--config-file`` name with different contents differ.
+@pytest.mark.parametrize("passthrough", [["@opts"], ["--version"], ["--cache-dir", ".cache/mypy"]])
+def test_any_passthrough_runs_unmanaged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, passthrough: list[str]
+) -> None:
+    """A response file, an early-exit flag or a cache alias never stamps or publishes.
 
-    Anti-vacuity: key only the default ``pyproject.toml`` table and the argv,
-    and the two keys are equal.
+    Anti-vacuity: manage passthrough runs and ``--version`` (exit 0, no cache)
+    is stamped complete and published over the shared seed.
     """
-    narrowed = tmp_path / "narrowed"
-    full = tmp_path / "full"
-    for root, files in ((narrowed, "polylogue/core"), (full, "polylogue")):
-        root.mkdir()
-        (root / "mypy-ci.ini").write_text(f"[mypy]\nfiles = {files}\n", encoding="utf-8")
-    args = ["--config-file", "mypy-ci.ini"]
+    common = tmp_path / ".git"
+    common.mkdir()
+    monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
+    shared = common / "polylogue-mypy" / "cache"
+    _stamped_seed(shared, tmp_path)
+    _stub_checker(tmp_path, 'echo "$@" > "$(dirname "$0")/argv"\nexit 0\n')
 
-    assert mypy_gate._input_key(narrowed, args) != mypy_gate._input_key(full, args)
+    assert mypy_gate.main(["--root", str(tmp_path), *passthrough]) == 0
+
+    assert (tmp_path / ".venv" / "bin" / "argv").read_text(encoding="utf-8").split() == passthrough
+    assert not mypy_gate._is_complete(tmp_path / ".cache" / "mypy", mypy_gate._input_key(tmp_path))
+    assert (shared / "seed.db").is_file()
 
 
 def test_a_swap_interrupted_between_renames_restores_the_shared_cache(
