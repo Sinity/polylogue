@@ -4186,6 +4186,18 @@ async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: P
     missing_root.mkdir()
     repaired = False
     real_capture = production_baseline.capture_production_source_baseline
+    real_observe = ColdBuildGeneration.observe_faulted_baseline
+    real_refresh = ColdBuildGeneration.refresh_faulted_baseline
+    observation_threads: list[int] = []
+    binding_threads: list[int] = []
+
+    def observe_off_writer(self: ColdBuildGeneration, sources: tuple[WatchSource, ...]) -> Any:
+        observation_threads.append(threading.get_ident())
+        return real_observe(self, sources)
+
+    def bind_on_writer(self: ColdBuildGeneration, observed: Any) -> bool:
+        binding_threads.append(threading.get_ident())
+        return real_refresh(self, observed)
 
     def capture_with_transient_fault(
         sources: tuple[WatchSource, ...], *, operation_id: str
@@ -4209,6 +4221,8 @@ async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: P
             stack.enter_context(
                 patch.object(production_baseline, "capture_production_source_baseline", capture_with_transient_fault)
             )
+            stack.enter_context(patch.object(ColdBuildGeneration, "observe_faulted_baseline", observe_off_writer))
+            stack.enter_context(patch.object(ColdBuildGeneration, "refresh_faulted_baseline", bind_on_writer))
             stack.enter_context(
                 patch(
                     "polylogue.daemon.intake_adapters.DaemonIntakeService",
@@ -4257,6 +4271,8 @@ async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: P
                             await task
                         await asyncio.sleep(0.05)
                 assert candidate.generation_id == candidate_id
+                assert observation_threads and binding_threads
+                assert set(observation_threads).isdisjoint(binding_threads)
                 assert _cold_build_settlement()["cold_build_settlement_state"] == "complete"
                 assert not task.done()
                 with contextlib.closing(

@@ -44,6 +44,7 @@ from polylogue.sources.live.cold_build import (
 )
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.archive_identity import GENERATIONS_DIRNAME, MAINTENANCE_STATE_DIRNAME
+from polylogue.storage.index_generation import UnpublishedPromotionRecoveryError
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
@@ -203,6 +204,105 @@ def test_pre_swap_storage_fault_restores_same_inactive_candidate(
     assert (current_pointer.st_dev, current_pointer.st_ino) == (prior_pointer.st_dev, prior_pointer.st_ino)
     assert IndexGenerationStore.for_archive_root(tmp_path).load(cold_build.generation_id).state == "inactive"
     assert not cold_build.settled
+    assert cold_build.promote().generation_id == cold_build.generation_id
+
+
+def test_pre_swap_fault_survives_exhausted_rollback_and_retries_same_candidate(
+    tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pointer = tmp_path / "index.db"
+    prior_pointer = pointer.lstat()
+    original_symlink_to = Path.symlink_to
+    original_replace = os.replace
+
+    def fail_candidate_pointer(path: Path, target: os.PathLike[str] | str, target_is_directory: bool = False) -> None:
+        if path.name.startswith(".index.db.promote-"):
+            raise OSError(errno.ENOSPC, "pointer filesystem full")
+        original_symlink_to(path, target, target_is_directory=target_is_directory)
+
+    def fail_rollback_replace(source: os.PathLike[str] | str, target: os.PathLike[str] | str) -> None:
+        if Path(source).name == "generation.rollback.json":
+            raise OSError(errno.ENOSPC, "rollback rename unavailable")
+        original_replace(source, target)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(Path, "symlink_to", fail_candidate_pointer)
+        patcher.setattr(os, "replace", fail_rollback_replace)
+        with pytest.raises(OSError) as failure:
+            cold_build.promote()
+    assert failure.value.errno == errno.ENOSPC
+    assert cold_build._store.load(cold_build.generation_id).state == "promoting"
+    assert cold_build._store.unpublished_rollback_pending(cold_build.generation_id)
+    current_pointer = pointer.lstat()
+    assert (current_pointer.st_dev, current_pointer.st_ino) == (prior_pointer.st_dev, prior_pointer.st_ino)
+    with cold_build.open_writer():
+        pass
+    assert cold_build._store.load(cold_build.generation_id).state == "inactive"
+    assert cold_build.promote().generation_id == cold_build.generation_id
+
+
+def test_interrupted_pre_swap_promotion_reclaims_only_with_prior_pointer_proof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _fresh_archive_root(tmp_path)
+    sources = (WatchSource("fixture", tmp_path / "absent-source"),)
+    abandoned = ColdBuildGeneration.begin(archive, reason="first", sources=sources)
+    prior_pointer = (archive / "index.db").lstat()
+    original_symlink_to = Path.symlink_to
+    original_replace = os.replace
+
+    def fail_candidate_pointer(path: Path, target: os.PathLike[str] | str, target_is_directory: bool = False) -> None:
+        if path.name.startswith(".index.db.promote-"):
+            raise OSError(errno.ENOSPC, "pointer filesystem full")
+        original_symlink_to(path, target, target_is_directory=target_is_directory)
+
+    def fail_rollback_replace(source: os.PathLike[str] | str, target: os.PathLike[str] | str) -> None:
+        if Path(source).name == "generation.rollback.json":
+            raise OSError(errno.ENOSPC, "rollback rename unavailable")
+        original_replace(source, target)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(Path, "symlink_to", fail_candidate_pointer)
+        patcher.setattr(os, "replace", fail_rollback_replace)
+        with pytest.raises(OSError, match="pointer filesystem full"):
+            abandoned.promote()
+    assert abandoned._store.load(abandoned.generation_id).state == "promoting"
+    pointer = (archive / "index.db").lstat()
+    assert (pointer.st_dev, pointer.st_ino) == (prior_pointer.st_dev, prior_pointer.st_ino)
+    proof = abandoned.generation_root / "generation.rollback-pointer.json"
+    proof_bytes = proof.read_bytes()
+    proof.unlink()
+    with pytest.raises(UnpublishedPromotionRecoveryError, match="proof is unavailable"):
+        ColdBuildGeneration.begin(archive, reason="restart", sources=sources)
+    assert abandoned.generation_root.exists()
+    proof.write_bytes(proof_bytes)
+
+    replacement = ColdBuildGeneration.begin(archive, reason="restart", sources=sources)
+    try:
+        assert replacement.generation_id != abandoned.generation_id
+        assert not abandoned.generation_root.exists()
+    finally:
+        replacement.discard()
+
+
+def test_rollback_preallocation_refusal_keeps_candidate_inactive(
+    tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage import index_generation
+
+    original_write = index_generation._atomic_json_write
+
+    def refuse_rollback(path: Path, payload: dict[str, object], *, label: str) -> None:
+        if path.name == "generation.rollback.json":
+            raise OSError(errno.ENOSPC, "cannot reserve rollback metadata")
+        original_write(path, payload, label=label)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(index_generation, "_atomic_json_write", refuse_rollback)
+        with pytest.raises(OSError) as failure:
+            cold_build.promote()
+    assert failure.value.errno == errno.ENOSPC
+    assert cold_build._store.load(cold_build.generation_id).state == "inactive"
     assert cold_build.promote().generation_id == cold_build.generation_id
 
 
@@ -727,8 +827,10 @@ def test_faulted_baseline_refresh_retains_prior_accepted_revisions(tmp_path: Pat
             == 1
         )
 
-        assert generation.refresh_faulted_baseline(sources)
-        assert not generation.refresh_faulted_baseline(sources)
+        observed_baseline = generation.observe_faulted_baseline(sources)
+        assert observed_baseline is not None
+        assert generation.refresh_faulted_baseline(observed_baseline)
+        assert not generation.refresh_faulted_baseline(observed_baseline)
         assert not any(row.disposition == "fault" for row in generation.source_baseline.decisions)
         assert {row.path for row in generation.source_baseline.accepted} == {str(first), str(second)}
         pending = load_pending_production_baseline(archive)
@@ -743,7 +845,7 @@ def test_faulted_baseline_refresh_retains_prior_accepted_revisions(tmp_path: Pat
             generation.discard()
 
 
-def test_faulted_baseline_refresh_reuses_populated_candidate_capacity(
+def test_faulted_baseline_refresh_reuses_candidate_and_retained_evidence_capacity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from polylogue.maintenance.candidate_capacity import (
@@ -790,11 +892,22 @@ def test_faulted_baseline_refresh_reuses_populated_candidate_capacity(
 
         full = projection()
         reused = projection(generation.generation_id)
+        retained = project_candidate_capacity(
+            archive,
+            existing_candidate_generation_id=generation.generation_id,
+            prospective_material_bytes=0,
+            prospective_retained_allocation_bytes=0,
+            prospective_source_db_allocation_bytes=0,
+        )
         assert reused.existing_candidate_index_allocated_bytes > 0
         assert reused.required_free_bytes < full.required_free_bytes
-        _free_space(monkeypatch, (full.required_free_bytes + reused.required_free_bytes) // 2)
+        assert retained.required_free_bytes < reused.required_free_bytes
+        _free_space(monkeypatch, (retained.required_free_bytes + reused.required_free_bytes) // 2)
         assert not projection().sufficient
-        assert generation.refresh_faulted_baseline(sources)
+        assert not projection(generation.generation_id).sufficient
+        observed_baseline = generation.observe_faulted_baseline(sources)
+        assert observed_baseline is not None
+        assert generation.refresh_faulted_baseline(observed_baseline)
         assert generation.generation_id == reused.inventory.generations[-1].generation_id
     finally:
         clear_cold_build_generation()

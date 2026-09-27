@@ -2903,11 +2903,15 @@ async def _run_daemon_services_under_active_writer_lease(
                                 )
                                 promoted = True
                             else:
-                                await write_coordinator.run_sync(
-                                    "daemon.cold_build.refresh_faulted_baseline",
-                                    generation.refresh_faulted_baseline,
-                                    sources,
+                                observed_baseline = await asyncio.to_thread(
+                                    generation.observe_faulted_baseline, sources
                                 )
+                                if observed_baseline is not None:
+                                    await write_coordinator.run_sync(
+                                        "daemon.cold_build.refresh_faulted_baseline",
+                                        generation.refresh_faulted_baseline,
+                                        observed_baseline,
+                                    )
                                 session_count = await write_coordinator.run_sync(
                                     "daemon.cold_build.session_count",
                                     generation.session_count,
@@ -3027,6 +3031,10 @@ async def _run_daemon_services_under_active_writer_lease(
                         settlement_revision=lambda: (
                             tuple(watcher.intake_revision(source) for source in sources)
                             + (cold_build.settlement_evidence_revision(sources) if cold_build is not None else ())
+                        ),
+                        settlement_external_revision=lambda: (
+                            tuple(watcher.intake_revision(source) for source in sources)
+                            + (cold_build.settlement_external_revision(sources) if cold_build is not None else ())
                         ),
                         # A scheduled retry can be absent from a bounded
                         # discovery pass until its deadline. The candidate

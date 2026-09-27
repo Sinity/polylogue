@@ -124,27 +124,10 @@ class ProductionSourceBaseline:
         faults = [row for row in self.decisions if row.disposition == "fault"]
         if faults:
             raise ProductionBaselineError(f"production source baseline has {len(faults)} unresolved discovery fault(s)")
-        conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
-        try:
-            retained = {
-                (
-                    str(path),
-                    int(source_index),
-                    bytes(blob_hash).hex() if isinstance(blob_hash, (bytes, memoryview)) else str(blob_hash),
-                )
-                for path, source_index, blob_hash in conn.execute(
-                    "SELECT source_path, source_index, blob_hash FROM raw_sessions"
-                )
-            }
-        finally:
-            conn.close()
-        missing: list[str] = []
-        for row in self.accepted:
-            if (row.path, row.source_index or 0, row.revision) not in retained:
-                missing.append(row.path)
+        missing = unretained_source_decisions(self, source_db)
         if missing:
             raise ProductionBaselineError(
-                f"production source baseline has {len(missing)} unretained revision(s): {missing[:3]}"
+                f"production source baseline has {len(missing)} unretained revision(s): {[row.path for row in missing[:3]]}"
             )
 
     def verify_integrity(self) -> None:
@@ -193,6 +176,51 @@ class ProductionSourceBaseline:
             raise ProductionBaselineError("invalid pending production source baseline") from exc
         result.verify_integrity()
         return result
+
+
+def unretained_source_decisions(baseline: ProductionSourceBaseline, source_db: Path) -> tuple[SourceDecision, ...]:
+    """Accepted coordinates absent from the durable raw-session ledger."""
+    conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+    try:
+        retained = {
+            (
+                str(path),
+                int(source_index),
+                bytes(blob_hash).hex() if isinstance(blob_hash, (bytes, memoryview)) else str(blob_hash),
+            )
+            for path, source_index, blob_hash in conn.execute(
+                "SELECT source_path, source_index, blob_hash FROM raw_sessions"
+            )
+        }
+    finally:
+        conn.close()
+    return tuple(row for row in baseline.accepted if (row.path, row.source_index or 0, row.revision) not in retained)
+
+
+def unretained_source_material(
+    baseline: ProductionSourceBaseline, source_db: Path, blob_block_bytes: int, source_db_block_bytes: int
+) -> tuple[int, int, int]:
+    """Headroom for accepted revisions that have not already been retained."""
+    if blob_block_bytes <= 0 or source_db_block_bytes <= 0:
+        raise ValueError("allocation block size must be positive")
+    rows = unretained_source_decisions(baseline, source_db)
+    if any(row.material_bytes is None for row in rows):
+        raise ProductionBaselineError("accepted production material has unknown retained byte size")
+    material = sum(row.material_bytes for row in rows if row.material_bytes is not None)
+    blobs = sum(
+        ((row.material_bytes + blob_block_bytes - 1) // blob_block_bytes) * blob_block_bytes
+        for row in rows
+        if row.material_bytes is not None
+    )
+    source_rows = sum(
+        (
+            (max(source_db_block_bytes, len(row.path.encode("utf-8")) + 512) + source_db_block_bytes - 1)
+            // source_db_block_bytes
+        )
+        * source_db_block_bytes
+        for row in rows
+    )
+    return material, blobs, source_rows
 
 
 def _json(value: object) -> bytes:

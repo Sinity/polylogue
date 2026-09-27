@@ -120,7 +120,18 @@ def _reclaim_abandoned_cold_generations(store: IndexGenerationStore) -> None:
         if not root.name.startswith("gen-"):
             continue
         generation = store.load(root.name)
-        if generation.state != "inactive" or not generation.owner_id.startswith("cold-build:"):
+        if not generation.owner_id.startswith("cold-build:"):
+            continue
+        if generation.state == "promoting":
+            if store.discard_unpublished_cold_promotion(generation):
+                emit(
+                    "daemon.cold_build.abandoned_reclaimed",
+                    outcome="ok",
+                    reason="interrupted_pre_swap",
+                    generation_id=generation.generation_id,
+                )
+            continue
+        if generation.state != "inactive":
             continue
         if Path(generation.index_path).resolve(strict=False) == active_target:
             raise RuntimeError("inactive cold-build generation is the active index")
@@ -606,8 +617,8 @@ class ColdBuildGeneration:
         self.settlement_last_error = last_error
         self.settlement_next_retry_at = next_retry_at
 
-    def settlement_evidence_revision(self, sources: tuple[WatchSource, ...] = ()) -> tuple[int, ...]:
-        """Cheap revision hints for retrying a blocked verdict after evidence changes."""
+    def settlement_external_revision(self, sources: tuple[WatchSource, ...] = ()) -> tuple[int, ...]:
+        """Evidence a settlement callback cannot change itself."""
 
         def unavailable(error: OSError) -> tuple[int, int, int]:
             error_type = f"{type(error).__module__}.{type(error).__qualname__}"
@@ -616,9 +627,6 @@ class ColdBuildGeneration:
         paths = (
             self.archive_root / "source.db",
             self.archive_root / "source.db-wal",
-            self.archive_root / MAINTENANCE_STATE_DIRNAME / "production-source-baseline" / "pending.json",
-            Path(self.generation.index_path),
-            self.generation_root / "generation.json",
         )
         revision: list[int] = []
         for path in paths:
@@ -648,7 +656,34 @@ class ColdBuildGeneration:
                 revision.extend((0, space.f_bavail * space.f_frsize, 0))
         return tuple(revision)
 
-    def refresh_faulted_baseline(self, sources: tuple[WatchSource, ...]) -> bool:
+    def settlement_evidence_revision(self, sources: tuple[WatchSource, ...] = ()) -> tuple[int, ...]:
+        """Cheap external and candidate hints for retrying a blocked verdict."""
+        revision = list(self.settlement_external_revision(sources))
+        for path in (
+            self.archive_root / MAINTENANCE_STATE_DIRNAME / "production-source-baseline" / "pending.json",
+            Path(self.generation.index_path),
+            self.generation_root / "generation.json",
+        ):
+            try:
+                metadata = path.stat()
+            except FileNotFoundError:
+                revision.extend((-1, -1, -1))
+            except OSError as exc:
+                error_type = f"{type(exc).__module__}.{type(exc).__qualname__}"
+                revision.extend((-2, exc.errno if exc.errno is not None else -1, zlib.crc32(error_type.encode())))
+            else:
+                revision.extend((metadata.st_ino, metadata.st_size, metadata.st_mtime_ns))
+        return tuple(revision)
+
+    def observe_faulted_baseline(self, sources: tuple[WatchSource, ...]) -> ProductionSourceBaseline | None:
+        """Recapture source bytes off the writer worker before binding them."""
+        if not any(row.disposition == "fault" for row in self.source_baseline.decisions):
+            return None
+        from polylogue.sources.live.production_baseline import capture_production_source_baseline
+
+        return capture_production_source_baseline(sources, operation_id=self.operation_id)
+
+    def refresh_faulted_baseline(self, observed: ProductionSourceBaseline) -> bool:
         """Replace a faulted observation while retaining its accepted revisions.
 
         The old observation is immutable. A new one can resolve a discovery
@@ -663,33 +698,29 @@ class ColdBuildGeneration:
         from polylogue.sources.live.production_baseline import (
             MATERIAL_BYTE_DEFINITION,
             ProductionBaselineError,
-            capture_production_source_baseline,
             load_pending_production_baseline,
             merge_pending_production_baseline,
             publish_pending_production_baseline,
+            unretained_source_material,
         )
 
-        observed = capture_production_source_baseline(sources, operation_id=self.operation_id)
         if observed.source_signature != self.source_baseline.source_signature:
             raise ProductionBaselineError("cold-build source declaration changed during settlement")
         merged = merge_pending_production_baseline(observed, self.source_baseline)
         merged = merge_pending_production_baseline(merged, load_pending_production_baseline(self.archive_root))
         if merged.digest == self.source_baseline.digest:
             return False
-        prospective_material_bytes = merged.prospective_material_bytes
-        if prospective_material_bytes is None:
-            raise ProductionBaselineError("accepted production material has unknown retained byte size")
         blob_block_bytes, source_db_block_bytes = evidence_allocation_block_bytes(self.archive_root)
-        prospective_retained_allocation_bytes = merged.prospective_retained_allocation_bytes(blob_block_bytes)
-        if prospective_retained_allocation_bytes is None:
-            raise ProductionBaselineError("accepted production material has unknown retained allocation")
+        prospective_material_bytes, prospective_retained_allocation_bytes, prospective_source_db_allocation_bytes = (
+            unretained_source_material(merged, self.archive_root / "source.db", blob_block_bytes, source_db_block_bytes)
+        )
         require_candidate_capacity(
             self.archive_root,
             operation_id=self.operation_id,
             existing_candidate_generation_id=self.generation_id,
             prospective_material_bytes=prospective_material_bytes,
             prospective_retained_allocation_bytes=prospective_retained_allocation_bytes,
-            prospective_source_db_allocation_bytes=merged.prospective_source_db_allocation_bytes(source_db_block_bytes),
+            prospective_source_db_allocation_bytes=prospective_source_db_allocation_bytes,
             baseline_digest=merged.digest,
             material_byte_definition=MATERIAL_BYTE_DEFINITION,
         )
@@ -714,6 +745,7 @@ class ColdBuildGeneration:
             raise RuntimeError(f"cold-build generation {self.generation_id} is no longer writable")
         self._retain_ops_checkpoints()
         try:
+            self._store.restore_unpublished_promotion(self.generation_id)
             archive = ArchiveStore.open_cold_build_generation(
                 self.generation_root,
                 generation_id=self.generation_id,
@@ -824,6 +856,11 @@ class ColdBuildGeneration:
                     return recovered
                 raise
             if current.state == "promoting":
+                if self._store.unpublished_rollback_pending(self.generation_id):
+                    # A full filesystem can reject even a prepared metadata
+                    # replace. Keep the typed storage fault and restore the
+                    # inactive record at the next writer pass.
+                    raise
                 recovered = self._store.recover_promotion(self.generation_id)
                 if recovered.state != "inactive":
                     raise RuntimeError("cold-build promotion could not restore inactive routing") from exc

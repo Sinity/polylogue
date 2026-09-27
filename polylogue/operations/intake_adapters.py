@@ -1415,6 +1415,7 @@ class DaemonIntakeService:
         has_pending_backlog: Callable[[], Awaitable[bool] | bool] | None = None,
         on_pass_complete: Callable[[IntakePass], Awaitable[None] | None] | None = None,
         settlement_revision: Callable[[], tuple[int, ...]] | None = None,
+        settlement_external_revision: Callable[[], tuple[int, ...]] | None = None,
     ) -> None:
         self.dispatcher = dispatcher
         # A count-scale budget (the previous literal 64) left a class's
@@ -1434,6 +1435,7 @@ class DaemonIntakeService:
         self._progressed_once = False
         self._settlement: ColdBuildSettlement | None = None
         self._settlement_revision = settlement_revision
+        self._settlement_external_revision = settlement_external_revision
         self._blocked_revision: tuple[int, ...] | None = None
         self._progress_since_blocked = False
 
@@ -1480,6 +1482,11 @@ class DaemonIntakeService:
                         )
                     )
                     if due:
+                        external_before = (
+                            self._settlement_external_revision()
+                            if self._settlement_external_revision is not None
+                            else None
+                        )
                         settlement_outcome = self._on_backlog_drained()
                         if isinstance(settlement_outcome, Awaitable):
                             settlement_outcome = await settlement_outcome
@@ -1495,7 +1502,11 @@ class DaemonIntakeService:
                                 self._blocked_revision = (
                                     self._settlement_revision() if self._settlement_revision is not None else ()
                                 )
-                                self._progress_since_blocked = False
+                                self._progress_since_blocked = (
+                                    external_before != self._settlement_external_revision()
+                                    if external_before is not None and self._settlement_external_revision is not None
+                                    else False
+                                )
             try:
                 idle_delay = 0.05 if result.progressed or discovery_pending else self.idle_delay_s
                 if retry_delays:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -240,6 +241,45 @@ def test_blocked_settlement_waits_for_new_source_revision() -> None:
                 await task
             except asyncio.CancelledError:
                 pass
+        return calls
+
+    assert asyncio.run(scenario()) == 2
+
+
+def test_blocked_settlement_preserves_external_change_during_callback() -> None:
+    async def scenario() -> int:
+        dispatcher = _ScriptedDispatcher([_Pass(True), _Pass(False)])
+        revision = 0
+        calls = 0
+
+        def drained() -> ColdBuildSettlement:
+            nonlocal revision, calls
+            calls += 1
+            if calls == 1:
+                # The source is repaired after the observation but before
+                # the callback reports its blocked verdict.
+                revision += 1
+                return ColdBuildSettlement("blocked", "source_integrity", calls)
+            return ColdBuildSettlement("complete", attempts=calls)
+
+        service = DaemonIntakeService(
+            cast(Any, dispatcher),
+            idle_delay_s=0.05,
+            on_backlog_drained=drained,
+            settlement_revision=lambda: (revision,),
+            settlement_external_revision=lambda: (revision,),
+        )
+        task = asyncio.create_task(service.run())
+        try:
+            async with asyncio.timeout(1):
+                while calls < 2:
+                    await asyncio.sleep(0.01)
+            await asyncio.sleep(0.12)
+            assert calls == 2
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         return calls
 
     assert asyncio.run(scenario()) == 2

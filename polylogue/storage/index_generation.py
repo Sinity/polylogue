@@ -267,6 +267,10 @@ class RebuildLeaseUnavailableError(RuntimeError):
     """Another process owns the archive-wide rebuild lease."""
 
 
+class UnpublishedPromotionRecoveryError(RuntimeError):
+    """A cold candidate cannot be reclaimed without prior-pointer proof."""
+
+
 def _lock_holder_pid(path: Path) -> int | None:
     """Best-effort recorded pid from an existing lock file; ``None`` if absent/unreadable."""
     try:
@@ -580,6 +584,10 @@ class IndexGenerationStore:
         _ensure_lifecycle_directory(self.generations_root, label="generation root")
         _ensure_lifecycle_directory(self.generations_root / _RETENTION_RECEIPTS_DIRNAME, label="retention receipt root")
         self._lifecycle_lock_path = self.active_pointer.parent / LIFECYCLE_LOCK_FILENAME
+        # Only this process may resume a pre-swap rollback whose metadata
+        # replace also failed. The prepared file is durable; this guard binds
+        # it to the pointer inode and owner observed before promotion.
+        self._unpublished_rollbacks: dict[str, tuple[IndexGeneration, Path, tuple[int, int] | None]] = {}
         self._active_parent_identity = _stable_directory(self.active_pointer.parent, label="active pointer parent")
         self._lifecycle_lock_fd: int | None = None
         if self._lifecycle_lock_path.is_symlink():
@@ -813,24 +821,49 @@ class IndexGenerationStore:
         # retryable. Keep the prior pointer identity as the rollback proof;
         # a failed replace is not permission to overwrite a pointer that moved.
         prior_pointer = pointer.lstat() if pointer.exists() or pointer.is_symlink() else None
+        prior_identity = (prior_pointer.st_dev, prior_pointer.st_ino) if prior_pointer is not None else None
+        rollback = self._metadata_path(current.generation_id).with_name("generation.rollback.json")
+        pointer_proof = self._rollback_pointer_proof_path(current.generation_id)
+        for path, payload, label in (
+            (pointer_proof, self._rollback_pointer_proof(current, prior_identity), "prior pointer proof"),
+            (rollback, asdict(current), "generation rollback"),
+        ):
+            try:
+                _atomic_json_write(path, payload, label=label)
+            except RuntimeError as exc:
+                if isinstance(exc.__cause__, OSError):
+                    raise exc.__cause__ from exc
+                raise
         try:
             self._write(promoting)
             temporary.symlink_to(target)
             os.replace(temporary, pointer)
-        except OSError:
+        except Exception as exc:
+            storage_error = exc if isinstance(exc, OSError) else exc.__cause__
+            if not isinstance(storage_error, OSError):
+                raise
             with suppress(OSError):
                 temporary.unlink()
             current_pointer = pointer.lstat() if pointer.exists() or pointer.is_symlink() else None
-            if self.load(current.generation_id).state == "promoting" and (
-                (prior_pointer is None and current_pointer is None)
-                or (
-                    prior_pointer is not None
-                    and current_pointer is not None
-                    and (prior_pointer.st_dev, prior_pointer.st_ino) == (current_pointer.st_dev, current_pointer.st_ino)
-                )
-            ):
-                self._write(current)
-            raise
+            current_identity = (current_pointer.st_dev, current_pointer.st_ino) if current_pointer is not None else None
+            if current_identity == prior_identity:
+                if self.load(current.generation_id).state == "promoting":
+                    try:
+                        os.replace(rollback, self._metadata_path(current.generation_id))
+                        _fsync_directory(rollback.parent)
+                    except OSError:
+                        self._unpublished_rollbacks[current.generation_id] = (current, rollback, prior_identity)
+                    else:
+                        with suppress(OSError):
+                            pointer_proof.unlink(missing_ok=True)
+                else:
+                    with suppress(OSError):
+                        rollback.unlink(missing_ok=True)
+                    with suppress(OSError):
+                        pointer_proof.unlink(missing_ok=True)
+            if storage_error is exc:
+                raise
+            raise storage_error from exc
         _fsync_directory(pointer.parent)
         promoted = IndexGeneration(
             **{
@@ -843,6 +876,10 @@ class IndexGenerationStore:
             }
         )
         self._write(promoted)
+        with suppress(OSError):
+            rollback.unlink(missing_ok=True)
+        with suppress(OSError):
+            pointer_proof.unlink(missing_ok=True)
         # Retention collection is part of promotion rather than a separate
         # cleanup surface. Its receipt is written before any eligible
         # generation is removed, so a completed pointer swap never reclaims
@@ -860,6 +897,78 @@ class IndexGenerationStore:
                 error_detail=str(exc),
             )
         return promoted
+
+    def unpublished_rollback_pending(self, generation_id: str) -> bool:
+        return generation_id in self._unpublished_rollbacks
+
+    def restore_unpublished_promotion(self, generation_id: str) -> None:
+        """Finish a same-process pre-swap rollback after storage returns."""
+        pending = self._unpublished_rollbacks.get(generation_id)
+        if pending is None:
+            return
+        self._require_write_lease(f"IndexGenerationStore.restore_unpublished_promotion(generation={generation_id})")
+        with self._lifecycle_lock():
+            original, rollback, prior_identity = pending
+            current = self.load(generation_id)
+            if current.owner_id != original.owner_id or current.state not in {"promoting", "inactive"}:
+                raise RuntimeError("unpublished promotion owner or state changed")
+            pointer = self.active_pointer
+            metadata = pointer.lstat() if pointer.exists() or pointer.is_symlink() else None
+            identity = (metadata.st_dev, metadata.st_ino) if metadata is not None else None
+            if identity != prior_identity:
+                raise RuntimeError("active pointer changed during unpublished promotion rollback")
+            if current.state == "promoting":
+                if _read_json_nofollow(rollback, label="generation rollback") != asdict(original):
+                    raise RuntimeError("generation rollback record changed")
+                os.replace(rollback, self._metadata_path(generation_id))
+            _fsync_directory(rollback.parent)
+            self._unpublished_rollbacks.pop(generation_id, None)
+            with suppress(OSError):
+                self._rollback_pointer_proof_path(generation_id).unlink(missing_ok=True)
+
+    def discard_unpublished_cold_promotion(self, generation: IndexGeneration) -> bool:
+        """Reclaim an interrupted pre-swap cold candidate, never a published one."""
+        self._require_write_lease(
+            f"IndexGenerationStore.discard_unpublished_cold_promotion(generation={generation.generation_id})"
+        )
+        with self._lifecycle_lock():
+            current = self.load(generation.generation_id)
+            if current.owner_id != generation.owner_id or not current.owner_id.startswith("cold-build:"):
+                raise UnpublishedPromotionRecoveryError("cold promotion ownership changed")
+            if current.state != "promoting":
+                return False
+            pointer = self.active_pointer
+            if pointer.resolve(strict=False) == Path(current.index_path).resolve(strict=False):
+                raise UnpublishedPromotionRecoveryError("pointer-swapped cold promotion needs activation recovery")
+            metadata = pointer.lstat() if pointer.exists() or pointer.is_symlink() else None
+            identity = (metadata.st_dev, metadata.st_ino) if metadata is not None else None
+            rollback = self._metadata_path(current.generation_id).with_name("generation.rollback.json")
+            proof_path = self._rollback_pointer_proof_path(current.generation_id)
+            try:
+                original = IndexGeneration(
+                    **cast(dict[str, Any], _read_json_nofollow(rollback, label="generation rollback"))
+                )
+                proof = _read_json_nofollow(proof_path, label="prior pointer proof")
+                self._validate_generation(original, current.generation_id)
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                raise UnpublishedPromotionRecoveryError("cold promotion rollback proof is unavailable") from exc
+            expected = IndexGeneration(
+                **{
+                    **asdict(original),
+                    "state": "promoting",
+                    "predecessor_generation_id": current.predecessor_generation_id,
+                }
+            )
+            if (
+                original.state != "inactive"
+                or original.owner_id != current.owner_id
+                or asdict(expected) != asdict(current)
+                or proof != self._rollback_pointer_proof(original, identity)
+            ):
+                raise UnpublishedPromotionRecoveryError("cold promotion rollback proof does not match active pointer")
+            shutil.rmtree(self._metadata_path(current.generation_id).parent)
+            _fsync_directory(self.generations_root)
+            return True
 
     def _validate_retention_ownership(self) -> None:
         """Require every prior promoted generation to name its build owner.
@@ -1196,6 +1305,21 @@ class IndexGenerationStore:
         self._validate_lifecycle_id(generation_id, "generation")
         return self.generations_root / generation_id / "generation.json"
 
+    def _rollback_pointer_proof_path(self, generation_id: str) -> Path:
+        return self._metadata_path(generation_id).with_name("generation.rollback-pointer.json")
+
+    def _rollback_pointer_proof(
+        self, generation: IndexGeneration, pointer_identity: tuple[int, int] | None
+    ) -> dict[str, object]:
+        return {
+            "schema": "polylogue.generation-rollback-pointer.v1",
+            "generation_id": generation.generation_id,
+            "owner_id": generation.owner_id,
+            "active_pointer": str(self.active_pointer.absolute()),
+            "pointer_device": pointer_identity[0] if pointer_identity is not None else None,
+            "pointer_inode": pointer_identity[1] if pointer_identity is not None else None,
+        }
+
     def _retention_receipt_path(self, promoted_generation_id: str) -> Path:
         self._validate_lifecycle_id(promoted_generation_id, "promoted generation")
         return self.generations_root / _RETENTION_RECEIPTS_DIRNAME / f"{promoted_generation_id}.json"
@@ -1493,6 +1617,7 @@ __all__ = [
     "ActiveWriterLease",
     "IndexGeneration",
     "IndexGenerationStore",
+    "UnpublishedPromotionRecoveryError",
     "RebuildLeaseStatus",
     "RebuildLease",
     "RebuildLeaseUnavailableError",
