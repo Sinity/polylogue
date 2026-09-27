@@ -6,6 +6,7 @@ import io
 import json
 import re
 from collections.abc import Iterable
+from decimal import Decimal
 from typing import IO, Protocol, TypeAlias, TypeGuard, cast
 
 import ijson
@@ -30,6 +31,19 @@ ENCODING_GUESSES: tuple[str, ...] = (
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = dict[str, "JsonValue"] | list["JsonValue"] | JsonScalar
 JsonReadable: TypeAlias = IO[bytes]
+
+
+def normalize_ijson_stdlib_numbers(value: object) -> object:
+    """Match ``json.load`` numbers while retaining only one decoded record."""
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            value[index] = normalize_ijson_stdlib_numbers(item)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            value[key] = normalize_ijson_stdlib_numbers(item)
+    return value
 
 
 class LoggerLike(Protocol):
@@ -458,7 +472,7 @@ def generic_message_object_envelope(handle: JsonReadable) -> dict[str, JsonValue
             if event in {"string", "number", "boolean", "null"}:
                 if current_key == "messages":
                     return None
-                envelope[current_key] = cast(JsonValue, value)
+                envelope[current_key] = cast(JsonValue, normalize_ijson_stdlib_numbers(value))
     except ijson.common.JSONError:
         return None
     finally:

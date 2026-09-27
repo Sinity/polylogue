@@ -255,7 +255,11 @@ def test_generic_single_object_stream_matches_parser_with_duplicate_ids(
         "id": "generic-session",
         "name": "Neutral session",
         "createdAt": "2025-01-01T00:00:00Z",
-        "messages": [{"id": "repeated", "role": "user", "text": f"Neutral prompt {index}"} for index in range(400)],
+        "messages": [
+            *({"id": "repeated", "role": "user", "text": f"Neutral prompt {index}"} for index in range(400)),
+            {"id": 1e20, "role": "assistant", "text": "Numeric ID answer", "timestamp": 1.25},
+            {"id": 10**30, "role": "user", "text": "Large integer ID prompt"},
+        ],
     }
     source = tmp_path / "session.json"
     source.write_text(json.dumps(record), encoding="utf-8")
@@ -305,7 +309,11 @@ def test_generic_single_object_stream_matches_parser_with_duplicate_ids(
         expected.created_at,
         expected.content_hash,
     )
-    assert [message.provider_message_id for message in actual.messages] == ["repeated"] * 400
+    assert [message.provider_message_id for message in actual.messages] == [
+        *(["repeated"] * 400),
+        "1e+20",
+        str(10**30),
+    ]
     assert artifact.shard_path is not None
     with sqlite3.connect(expected_shard.path) as baseline, sqlite3.connect(artifact.shard_path) as prepared:
         for table in ("messages", "blocks", "shard_session"):

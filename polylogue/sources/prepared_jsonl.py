@@ -27,6 +27,7 @@ from polylogue.sources.decoder_json import (
     generic_message_object_envelope,
     iter_json_container_records,
     json_record_container,
+    normalize_ijson_stdlib_numbers,
 )
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import (
@@ -560,7 +561,7 @@ def prepare_jsonl_blob(
                 session = parse_generic_messages_stream(
                     provider,
                     generic_envelope,
-                    ijson.items(handle, "messages.item"),
+                    (normalize_ijson_stdlib_numbers(item) for item in ijson.items(handle, "messages.item")),
                     fallback_id,
                     message_sink=store.new_sink(),
                 )
