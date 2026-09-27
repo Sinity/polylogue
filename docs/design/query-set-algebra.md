@@ -199,7 +199,7 @@ cost (docs, tests, every saved query, operator habit) is unjustified. Revisit
 
 1. **Parse** — `_split_pipeline_stages` yields stages; a set-op stage carries its
    raw subquery text. The subquery is parsed by the same `_QUERY_PARSER` and
-   planned via the normal path (`plan.py` / `plan_execution.py`).
+   planned via the normal path (`plan.py`).
 2. **Materialize operands to keyed, ranked sets.** Each operand runs its own
    plan and yields `[(key, rank)]`. Guard budgets per operand (each honors the
    configured row cap); the set-op does **not** multiply the budget.

@@ -513,6 +513,19 @@ class DaemonWriteCoordinator:
         """Run blocking writer work without making process exit unbounded."""
         return await self._run_sync(actor, function, None, None, *args, **kwargs)
 
+    async def run_sync_with_completion(
+        self,
+        actor: str,
+        function: Callable[P, T],
+        on_complete: Callable[[asyncio.Task[object]], None],
+        on_admit: Callable[[], None] | None = None,
+        /,
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ) -> T:
+        """Run sync work and observe its coordinator-owned completion task."""
+        return await self._run_sync(actor, function, on_complete, on_admit, *args, **kwargs)
+
     async def _run_sync(
         self,
         actor: str,
