@@ -118,4 +118,9 @@ def test_verify_main_refuses_before_creating_receipt_or_cache(
 
     assert verify.main(["--quick"]) == 125
     assert not cache.exists()
-    assert "simulated checkout mismatch" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "simulated checkout mismatch" in err
+    # The verdict naming the attempted checkout stays the last line.
+    final = err.strip().splitlines()[-1]
+    assert final.startswith("verify: FAILED exit=125 diagnosis=checkout_import_mismatch")
+    assert "branch=test/feature" in final

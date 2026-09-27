@@ -21,10 +21,14 @@ from devtools import run_tests, verify
 @pytest.fixture(autouse=True)
 def _runners_see_a_feature_branch(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     if request.node.get_closest_marker("real_checkout_identity") is None:
+        real_identity = identity_module.checkout_identity
 
         def feature_branch(root: Path) -> identity_module.CheckoutIdentity:
-            return replace(identity_module.checkout_identity(root), branch="test/feature")
+            return replace(real_identity(root), branch="test/feature")
 
+        # The runners bind the name at import; the queued slot re-reads it
+        # from the module when the run starts.
+        monkeypatch.setattr(identity_module, "checkout_identity", feature_branch)
         monkeypatch.setattr(verify, "checkout_identity", feature_branch)
         monkeypatch.setattr(run_tests, "checkout_identity", feature_branch)
     yield

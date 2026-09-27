@@ -782,9 +782,10 @@ def _write_verdict_line(payload: Mapping[str, Any], *, stream: Any) -> None:
     receipt = f" receipt={Path(str(artifact_dir)) / 'run.json'}" if artifact_dir else ""
     # The checkout this run tested, so the line that is cited says what it proves.
     head = payload.get("git_head")
+    branch = payload.get("git_branch")
     tested = (
-        f" checkout={ROOT.resolve()} branch={payload.get('git_branch') or '(detached)'} head={str(head)[:12]}"
-        if head
+        f" checkout={ROOT.resolve()} branch={branch or '(detached)'} head={str(head)[:12] if head else 'unknown'}"
+        if head or branch
         else ""
     )
     stream.write(f"\nverify: {verdict} exit={exit_code}{named}{receipt}{tested}\n")
@@ -1028,9 +1029,12 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             "diagnosis": "checkout_import_mismatch",
             "verification_scope": scope.value,
             "final_git_head": git_head(ROOT),
+            "git_head": identity.head,
+            "git_branch": identity.branch,
         }
-        _emit(payload, use_json=args.json, operation=agentctl_operation)
+        # The detail first: the verdict, naming the checkout, is the last line.
         sys.stderr.write(f"verify: {exc}\n")
+        _emit(payload, use_json=args.json, operation=agentctl_operation)
         return 125
     head = git_head(ROOT)
     tier = "quick" if args.quick else selection

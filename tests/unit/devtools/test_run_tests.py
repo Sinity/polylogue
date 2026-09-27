@@ -325,6 +325,7 @@ def test_queued_focused_receipt_identifies_execution_content(monkeypatch: pytest
     assert receipt["git_dirty"] is True
     assert receipt["git_worktree_content_sha256"] == executed["digest"]
     assert receipt["worktree_capture_source"] == "pytest_slot_start"
+    assert receipt["git_branch"] == "test/feature"
     assert json.loads((tmp_path / receipt["artifact_dir"] / "run.json").read_text(encoding="utf-8")) == receipt
 
     source.write_text("value = 1\n", encoding="utf-8")

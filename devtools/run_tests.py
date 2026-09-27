@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -35,6 +36,7 @@ from devtools.checkout_guard import (
     assert_polylogue_matches_checkout,
 )
 from devtools.checkout_identity import (
+    ALLOW_DEFAULT_BRANCH_ENV,
     ON_DEFAULT_BRANCH_FLAG,
     REFUSAL_EXIT,
     checkout_identity,
@@ -628,6 +630,8 @@ def main(argv: list[str] | None = None) -> int:
         # body SETS this variable. The call below must stay this module's.
         pytest_env.pop("POLYLOGUE_BROAD_PREWARM", None)
         _normalize_managed_pytest_environment(pytest_env)
+        if on_default_branch:
+            pytest_env[ALLOW_DEFAULT_BRANCH_ENV] = "1"
         hypothesis_profile, hypothesis_profile_source = effective_hypothesis_profile(
             selection, pytest_env, default="verify"
         )
@@ -677,6 +681,8 @@ def main(argv: list[str] | None = None) -> int:
     provenance = metadata.get("worktree_provenance")
     if isinstance(provenance, dict):
         run.record_execution_worktree(provenance)
+        # Report what actually ran, not what was admitted at submission.
+        identity = replace(identity, branch=provenance.get("git_branch"), head=provenance.get("git_head"))
     statistics: dict[str, Any] = cast(
         dict[str, Any], metadata.get("statistics") if isinstance(metadata.get("statistics"), dict) else {}
     )

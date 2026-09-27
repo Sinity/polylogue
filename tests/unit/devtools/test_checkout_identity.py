@@ -142,3 +142,22 @@ def test_the_verify_verdict_names_the_tested_checkout(capsys: pytest.CaptureFixt
 
     final = capsys.readouterr().err.strip().splitlines()[-1]
     assert final.endswith(f"checkout={verify.ROOT.resolve()} branch=claude/change head={'a' * 12}")
+
+
+def test_a_queued_run_rechecks_the_branch_when_its_slot_starts(tmp_path: Path) -> None:
+    """A checkout that switched to the default branch while queued is refused at start.
+
+    Anti-vacuity: capture execution provenance without the branch check and a
+    run admitted on a feature branch executes on the base.
+    """
+    from devtools import pytest_slot
+    from devtools.checkout_identity import ALLOW_DEFAULT_BRANCH_ENV
+
+    root = _repository(tmp_path / "base", "master")
+    environment = {"POLYLOGUE_FOCUSED_WORKTREE_PROVENANCE": "1"}
+
+    with pytest.raises(pytest_slot.PytestSlotUnavailableError, match="default branch at slot start"):
+        pytest_slot._focused_worktree_provenance(str(root), environment)
+
+    provenance = pytest_slot._focused_worktree_provenance(str(root), {**environment, ALLOW_DEFAULT_BRANCH_ENV: "1"})
+    assert provenance is not None and provenance["git_branch"] == "master"

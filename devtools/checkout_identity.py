@@ -22,6 +22,9 @@ ON_DEFAULT_BRANCH_FLAG = "--on-default-branch"
 #: Exit status of the refusal; the same status the agent-tier refusal uses.
 REFUSAL_EXIT = 2
 REFUSAL_DIAGNOSIS = "default_branch_refused"
+#: Carries the opt-in to a queued run's slot, which re-checks the branch when
+#: the run actually starts: a checkout can switch branch while its run waits.
+ALLOW_DEFAULT_BRANCH_ENV = "POLYLOGUE_ALLOW_DEFAULT_BRANCH"
 _FALLBACK_DEFAULT_BRANCH = "master"
 
 
@@ -77,6 +80,7 @@ def default_branch_refusal(identity: CheckoutIdentity, *, command: str, allowed:
 
 
 __all__ = [
+    "ALLOW_DEFAULT_BRANCH_ENV",
     "ON_DEFAULT_BRANCH_FLAG",
     "REFUSAL_DIAGNOSIS",
     "REFUSAL_EXIT",

@@ -343,7 +343,7 @@ class VerifyRun:
             _write_json(self.root / CURRENT_RUN_PATH, self._payload)
 
     def record_execution_worktree(self, provenance: Mapping[str, Any]) -> None:
-        for key in ("git_head", "git_dirty", "git_worktree_content_sha256"):
+        for key in ("git_head", "git_branch", "git_dirty", "git_worktree_content_sha256"):
             self._payload[key] = provenance.get(key)
         self._payload["worktree_capture_source"] = provenance.get("capture_source")
 

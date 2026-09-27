@@ -945,6 +945,7 @@ def _slot_receipt(
 def _focused_worktree_provenance(cwd: str, environment: Mapping[str, str]) -> dict[str, Any] | None:
     if environment.get("POLYLOGUE_FOCUSED_WORKTREE_PROVENANCE") != "1":
         return None
+    from devtools.checkout_identity import ALLOW_DEFAULT_BRANCH_ENV, checkout_identity, default_branch_refusal
     from devtools.verify_runs import git_dirty, git_head, git_worktree_content_sha256
 
     root = Path(cwd)
@@ -952,8 +953,16 @@ def _focused_worktree_provenance(cwd: str, environment: Mapping[str, str]) -> di
     digest = git_worktree_content_sha256(root)
     if head is None or digest is None:
         raise PytestSlotUnavailableError("focused worktree content could not be identified")
+    # The branch admitted at submission may have changed while the run queued.
+    identity = checkout_identity(root)
+    refusal = default_branch_refusal(
+        identity, command="devtools test", allowed=environment.get(ALLOW_DEFAULT_BRANCH_ENV) == "1"
+    )
+    if refusal is not None:
+        raise PytestSlotUnavailableError(f"the checkout is on the default branch at slot start: {refusal}")
     return {
         "git_head": head,
+        "git_branch": identity.branch,
         "git_dirty": git_dirty(root),
         "git_worktree_content_sha256": digest,
         "capture_source": "pytest_slot_start",
