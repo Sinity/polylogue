@@ -263,7 +263,17 @@ def _archive_state(root: Path) -> dict[str, object]:
                     continue
                 with contextlib.suppress(sqlite3.DatabaseError):
                     state[f"{spec.filename}:{name}:rows"] = conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
-    state["files"] = sorted(entry.name for entry in root.iterdir() if entry.name != ".archive-ownership.lock")
+    # The direct bootstrap can leave empty WAL/SHM coordination files while
+    # the sealed clone has none. They carry no persistent archive inventory;
+    # table rows above already compare any WAL-visible data.
+    sqlite_sidecars = {
+        f"{spec.filename}{suffix}" for spec in ARCHIVE_TIER_SPECS.values() for suffix in ("-wal", "-shm")
+    }
+    state["files"] = sorted(
+        entry.name
+        for entry in root.iterdir()
+        if entry.name != ".archive-ownership.lock" and entry.name not in sqlite_sidecars
+    )
     state["bootstrap_marker"] = root.joinpath(".maintenance-state/durable-change-trains/.bootstrap").is_file()
     return state
 
@@ -285,6 +295,8 @@ def test_bootstrap_clone_reproduces_the_production_bootstrap(tmp_path: Path, boo
 
     assert (bootstrap_template_root / ".bootstrap-archive-template").is_dir()
     assert _archive_state(cloned) == _archive_state(produced)
+    (cloned / "extra-durable-member").write_bytes(b"extra")
+    assert _archive_state(cloned) != _archive_state(produced)
 
 
 def test_bootstrap_falls_back_to_the_production_route_for_a_seeded_root(
