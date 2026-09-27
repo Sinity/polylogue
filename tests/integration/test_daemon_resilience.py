@@ -15,9 +15,9 @@ durability, and OS-level resource enforcement.
 - ``_wait_for_messages`` polls ``sqlite3`` directly so the test does
   not depend on the HTTP API being enabled; the SIGKILL test probes its
   daemon-owned inactive generation before promotion.
-- Subprocess cleanup: every test uses ``try/finally`` with
-  ``.terminate()`` → ``.wait(timeout=10)`` → ``.kill()`` → ``.wait()``
-  to guarantee no orphan daemons.
+- Subprocess cleanup: ordinary exits use ``.terminate()`` →
+  ``.wait(timeout=10)`` → ``.kill()`` → ``.wait()``. SIGKILL tests use an
+  isolated process group so their daemon workers die with the daemon.
 """
 
 from __future__ import annotations
@@ -718,6 +718,15 @@ def _cleanup_process(proc: subprocess.Popen[bytes] | None) -> int | None:
             return None
 
 
+def _kill_daemon_group(proc: subprocess.Popen[bytes]) -> None:
+    """Crash an isolated daemon and its spawned workers as one process tree."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    proc.wait(timeout=10)
+
+
 _HAS_SYSTEMD_SCOPE: bool | None = None
 
 
@@ -802,6 +811,7 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
             env=env,
             stdout=subprocess.DEVNULL,
             stderr=stderr_capture,
+            start_new_session=True,
         )
         _assert_daemon_alive(proc)
 
@@ -820,8 +830,7 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
             debug = _daemon_debug(proc, db=db, corpus_root=corpus_root, stderr_log=stderr_log)
             raise TimeoutError(f"{exc}\nphase=pre_kill {evidence}\n{debug}") from exc
         # 4. SIGKILL.
-        os.kill(proc.pid, signal.SIGKILL)
-        proc.wait(timeout=10)
+        _kill_daemon_group(proc)
         proc = None
         assert msg_count > 0, "No messages were ingested before SIGKILL"
         assert msg_count < total_messages, "Ingestion finished before SIGKILL"
@@ -888,7 +897,7 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
             _cleanup_process(restart)
     finally:
         if proc is not None:
-            _cleanup_process(proc)
+            _kill_daemon_group(proc)
         stderr_capture.close()
 
 
@@ -937,6 +946,7 @@ def test_wal_checkpoint_recovery(workspace_env: dict[str, Path]) -> None:
             env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
+            start_new_session=True,
         )
         _assert_daemon_alive(proc)
 
@@ -956,8 +966,7 @@ def test_wal_checkpoint_recovery(workspace_env: dict[str, Path]) -> None:
             # before it can return the pragma's busy result.
             if exc.sqlite_errorcode not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
                 raise
-        os.kill(proc.pid, signal.SIGKILL)
-        proc.wait(timeout=10)
+        _kill_daemon_group(proc)
         proc = None
 
         wal_after_kill = _wal_size(db)
@@ -1012,7 +1021,7 @@ def test_wal_checkpoint_recovery(workspace_env: dict[str, Path]) -> None:
                 _cleanup_process(restart)
     finally:
         if proc is not None:
-            _cleanup_process(proc)
+            _kill_daemon_group(proc)
 
 
 # ---------------------------------------------------------------------------
