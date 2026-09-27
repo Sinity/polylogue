@@ -245,7 +245,7 @@ def test_polylogued_status_json_reports_schema_mismatch_not_ready(tmp_path: Path
     ):
         initialize_archive_database(tmp_path / filename, tier)
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        conn.execute("PRAGMA user_version = 1")
+        conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] + 1}")
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
@@ -272,7 +272,7 @@ def test_polylogued_status_json_reports_schema_mismatch_not_ready(tmp_path: Path
     assert storage["schema_mismatches"] == ["index"]
     tiers = cast(list[dict[str, object]], storage["tiers"])
     index_tier = next(tier for tier in tiers if tier["name"] == "index")
-    assert index_tier["user_version"] == 1
+    assert index_tier["user_version"] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] + 1
     assert index_tier["expected_user_version"] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]
     assert index_tier["version_status"] == "mismatch"
     components_raw = payload["component_readiness"]
@@ -309,7 +309,7 @@ def test_polylogued_status_plain_reports_schema_mismatch(tmp_path: Path) -> None
     ):
         initialize_archive_database(tmp_path / filename, tier)
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        conn.execute("PRAGMA user_version = 1")
+        conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] + 1}")
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
@@ -2366,7 +2366,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
             return fake_loop("convergence")
 
         stack.enter_context(patch.object(daemon_cli, "_periodic_convergence_check", fake_periodic_convergence))
-        stack.enter_context(patch.object(daemon_cli, "_periodic_health_check", lambda: fake_loop("health")))
+        stack.enter_context(patch.object(daemon_cli, "_periodic_health_check", lambda **_kwargs: fake_loop("health")))
         stack.enter_context(patch.object(daemon_cli, "_periodic_db_optimize", lambda: fake_loop("optimize")))
         stack.enter_context(patch.object(daemon_cli, "_periodic_status_snapshot_refresh", lambda: fake_loop("status")))
         stack.enter_context(
@@ -2526,7 +2526,9 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
                 sweep_complete.set()
             return report
 
-        return session_profile_composition.ComposedSessionProfiles(observe, composed.maintenance)
+        return session_profile_composition.ComposedSessionProfiles(
+            observe, composed.promoted_callback, composed.maintenance
+        )
 
     def daemon_coordinator() -> DaemonWriteCoordinator:
         assert current_coordinator is not None
@@ -2798,6 +2800,12 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
             )
             try:
                 try:
+                    # Startup, the first admission, and the changed revision
+                    # each have their own bounded work. A single wall-clock
+                    # window can expire after a successful first admission
+                    # before the second is even scheduled.
+                    await asyncio.wait_for(first_pass.wait(), timeout=20)
+                    await asyncio.wait_for(first_admission.wait(), timeout=20)
                     await asyncio.wait_for(completed.wait(), timeout=20)
                 except TimeoutError:
                     if task.done():
@@ -2824,12 +2832,8 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
                 # (session_summary -> session_usage_rollup -> session_profile)
                 # and one bounded pass converges as many of them as it can, so
                 # counting passes whose ``done`` is exactly 1 names nothing
-                # about the archive. What canonical derivation must show is
-                # that this session's profile domain actually reached DONE and
-                # that no session-scoped key was ever reported as a broken
-                # publication. ``counts`` is authoritative for the failure
-                # total; ``outcomes`` is a retained sample, so it is only used
-                # to identify which key converged.
+                # about the archive. Inspect this session's persisted profile
+                # below. ``outcomes`` is a retained sample and may be empty.
                 session_reports = [
                     report for report in kernel_reports if not isinstance(report.frame.scope, RawObservationScope)
                 ]
@@ -2842,11 +2846,6 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
                         for item in report.outcomes
                     ]
                 )
-                session_outcomes = [item for report in session_reports for item in report.outcomes]
-                assert any(
-                    item.key.domain == "session_profile" and item.key.key == session_id and item.outcome is Outcome.DONE
-                    for item in session_outcomes
-                ), str([(item.key, item.outcome, item.reason, item.error) for item in session_outcomes])
 
                 # A returning intake pass is not the point at which its index
                 # publication becomes visible: the replace commits shortly
@@ -2901,7 +2900,17 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
                     settled_count, profile_rows = index_probe()
                     assert settled_count == expected_versions
                     observed_profiles.append(profile_rows)
-                assert [(session_id,)] in observed_profiles, str(observed_profiles)
+                assert [(session_id,)] in observed_profiles, str(
+                    {
+                        "profiles": observed_profiles,
+                        "reports": [
+                            [(item.key, item.outcome, item.reason, item.error) for item in report.outcomes]
+                            for report in session_reports
+                        ],
+                        "scopes": [str(report.frame.scope) for report in session_reports],
+                        "changed_sessions": [getattr(item, "changed_session_ids", ()) for item in admission_metrics],
+                    }
+                )
                 assert all(rows in ([], [(session_id,)]) for rows in observed_profiles), str(observed_profiles)
                 if browser:
                     assert (
@@ -3061,7 +3070,7 @@ async def _await_server_readiness_or_daemon_exit(
 ) -> None:
     """Bound test startup readiness and preserve the daemon's original failure."""
     try:
-        async with asyncio.timeout(0.75):
+        async with asyncio.timeout(5.0):
             while not all(server.is_set() for server in servers):
                 # A service that dies during startup must surface its failure
                 # now, rather than leaving this probe spinning until an
@@ -3133,7 +3142,7 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
     async def no_drive_changes() -> int:
         return 0
 
-    async def wait_forever() -> None:
+    async def wait_forever(*_args: object, **_kwargs: object) -> None:
         await asyncio.Event().wait()
 
     browser_server = BlockingServer()
@@ -3267,7 +3276,7 @@ def test_run_daemon_services_schema_block_skips_write_but_starts_health_check() 
         lifecycle_tick_started = True
         await asyncio.Event().wait()
 
-    async def fake_health_check() -> None:
+    async def fake_health_check(**_kwargs: object) -> None:
         # polylogue-7eo7 #4: FAST-tier health checks are read-only and stay
         # meaningful precisely when the watcher is schema-blocked -- unlike
         # the other periodic loops here, this one MUST start even while

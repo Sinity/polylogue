@@ -367,9 +367,8 @@ async def inspect_session_profiles_async(
 #: inspected, which is always all of it.
 SESSION_PARTITION_INSPECT_CHUNK = 500
 
-#: Archive-wide enumeration. Every session is a required key, so the scope is
-#: the ``sessions`` relation itself -- no cursor, no queue, no dirty list. A
-#: restart that lost every scheduling hint reconstructs this set exactly.
+#: Archive-wide enumeration for read paths that need every session, regardless
+#: of whether its profile currently needs work.
 _ARCHIVE_SESSION_IDS_SQL = "SELECT session_id FROM sessions ORDER BY session_id"
 
 
@@ -381,11 +380,13 @@ def _session_id_page(
 ) -> tuple[tuple[str, ...], str | None]:
     rows = conn.execute(
         """
-        SELECT d.session_id
-        FROM session_profile_demand AS d
-        JOIN sessions AS s ON s.session_id = d.session_id
-        WHERE d.session_id > COALESCE(?, '')
-        ORDER BY d.session_id LIMIT ?
+        SELECT s.session_id
+        FROM sessions AS s
+        LEFT JOIN session_profiles AS p ON p.session_id = s.session_id
+        LEFT JOIN session_profile_demand AS d ON d.session_id = s.session_id
+        WHERE s.session_id > COALESCE(?, '')
+          AND (p.session_id IS NULL OR d.session_id IS NOT NULL)
+        ORDER BY s.session_id LIMIT ?
         """,
         (cursor, limit + 1),
     ).fetchall()
@@ -583,10 +584,9 @@ class SessionProfileDerivation:
     the seam is the vocabulary (``required`` / ``inspect`` / ``compute`` /
     ``publish`` / ``prerequisites``) and the status strings above.
 
-    ``required`` is the frame's session scope: the batch's sessions during
-    incremental convergence, every session at an archive-wide boundary. Both
-    reach the same inspection, so a restart that lost every scheduling hint
-    reconstructs the identical pending set.
+    ``required`` is the frame's session scope during incremental convergence.
+    A no-hint pass pages queued demand and missing profiles, so a restart can
+    recover a missing output even when its scheduling hint was lost.
     """
 
     domain = SESSION_PROFILE_DOMAIN
@@ -623,6 +623,17 @@ class SessionProfileDerivation:
     def required_page(self, frame: object, *, cursor: str | None, limit: int) -> tuple[tuple[str, ...], str | None]:
         """Keyset-page archive work; bounded incremental scopes stay bounded too."""
         scope = self._session_scope(frame)
+        if getattr(frame, "profile_full_scan", False):
+            conn = self._read_connection()
+            try:
+                rows = conn.execute(
+                    "SELECT session_id FROM sessions WHERE session_id > COALESCE(?, '') ORDER BY session_id LIMIT ?",
+                    (cursor, limit + 1),
+                ).fetchall()
+                keys = tuple(str(row[0]) for row in rows[:limit])
+                return keys, (keys[-1] if len(rows) > limit and keys else None)
+            finally:
+                conn.close()
         if getattr(frame, "profile_demand_only", False):
             from polylogue.storage.derived.session.profile_demand import profile_demand_page
 
