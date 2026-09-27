@@ -480,7 +480,12 @@ def generic_message_object_envelope(handle: JsonReadable) -> dict[str, JsonValue
     return envelope if message_arrays == 1 else None
 
 
-def grok_export_item_count(handle: JsonReadable, *, on_item: Callable[[int, bool], None] | None = None) -> int | None:
+def grok_export_item_count(
+    handle: JsonReadable,
+    *,
+    on_item: Callable[[int, bool], None] | None = None,
+    on_record_marker: Callable[[bool], None] | None = None,
+) -> int | None:
     """Validate a Grok object and report each member's shape without decoding it."""
     count = 0
     keys = 0
@@ -599,10 +604,8 @@ def grok_export_item_count(handle: JsonReadable, *, on_item: Callable[[int, bool
         and any(taxonomy_values.get(key, False) for key in content_keys)
     ):
         return None
-    if (
-        taxonomy_keys.intersection(recordish_keys)
-        or ("type" in taxonomy_keys and taxonomy_keys.intersection(envelope_keys))
-        or ("role" in taxonomy_keys and taxonomy_keys.intersection({"content", "text"}))
+    if taxonomy_keys.intersection(recordish_keys) or (
+        "role" in taxonomy_keys and taxonomy_keys.intersection({"content", "text"})
     ):
         return None
     if (
@@ -610,6 +613,8 @@ def grok_export_item_count(handle: JsonReadable, *, on_item: Callable[[int, bool
         or {"source", "cascadeId", "markdown"} <= taxonomy_keys
     ):
         return None
+    if on_record_marker is not None:
+        on_record_marker("type" in taxonomy_keys and bool(taxonomy_keys.intersection(envelope_keys)))
     return count if keys == arrays == 1 and (count == 0 or valid_members > 0) else None
 
 

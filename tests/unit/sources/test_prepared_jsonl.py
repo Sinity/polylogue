@@ -555,6 +555,7 @@ def test_retained_grok_streams_responses_with_replay_parity(tmp_path: Path, monk
         "created_at": "2025-01-02T03:04:05Z",
         "issue_id": "not-an-issue",
         "extra": "not-a-Beads-map",
+        "type": "export",
         "version": "v1",
     }
     fallback_timestamp = "2025-01-02T03:04:05Z"
@@ -650,6 +651,46 @@ def test_retained_grok_streams_responses_with_replay_parity(tmp_path: Path, monk
     assert sidecar.error is None
     assert list(sidecar.iter_sessions()) == []
     sidecar.discard()
+
+    analysis_artifact = revision_backfill.prepare_retained_jsonl_artifact(
+        "synthetic-grok-analysis-path",
+        Provider.GROK.value,
+        blob_hash,
+        str(tmp_path / "analysis" / "prod-grok-backend.json"),
+        "full",
+        None,
+        str(blob_root),
+        str(source_db),
+        str(index_db),
+        str(tmp_path / "analysis-prepared"),
+        fallback_timestamp,
+    )
+    assert analysis_artifact.error is None
+    assert [(session.provider_session_id, session.content_hash) for session in analysis_artifact.iter_sessions()] == [
+        (session.provider_session_id, session.content_hash) for session in expected
+    ]
+    analysis_artifact.discard()
+
+    beads_record = {**record, "extra": {}}
+    beads_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(beads_record).encode("utf-8"))
+    beads_artifact = revision_backfill.prepare_retained_jsonl_artifact(
+        "synthetic-grok-beads-overlap",
+        Provider.GROK.value,
+        beads_hash,
+        source_path,
+        "full",
+        None,
+        str(blob_root),
+        str(source_db),
+        str(index_db),
+        str(tmp_path / "beads-prepared"),
+        fallback_timestamp,
+    )
+    assert beads_artifact.error is None
+    assert [(session.provider_session_id, session.content_hash) for session in beads_artifact.iter_sessions()] == [
+        (session.provider_session_id, session.content_hash) for session in expected
+    ]
+    beads_artifact.discard()
 
 
 def test_retained_grok_corrupt_suffix_leaves_no_publishable_artifact(tmp_path: Path) -> None:

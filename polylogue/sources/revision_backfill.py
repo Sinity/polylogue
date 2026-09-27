@@ -1073,11 +1073,14 @@ def prepare_retained_jsonl_artifact(
                     return iter(())
                 return chain(sample, source)
 
-            def classify_grok_export(count: int) -> bool:
+            def classify_grok_export(count: int, record_marker: bool) -> bool:
                 # The stream probe has already proved the complete Grok
                 # wrapper. This bounded witness gives taxonomy the same
                 # shape, while its path rules still outrank session content.
                 witness: JSONValue = {"conversations": [] if count == 0 else [{"conversation": {}, "responses": []}]}
+                if record_marker:
+                    assert isinstance(witness, dict)
+                    witness["record_type"] = "grok_export"
                 return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
 
             artifact = prepare_jsonl_blob(

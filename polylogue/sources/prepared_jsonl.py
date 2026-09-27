@@ -535,7 +535,7 @@ def prepare_jsonl_blob(
     preparation_dependency: Callable[[], tuple[str | None, str | None]] | None = None,
     parse_prefix_size: int | None = None,
     prepare_records: Callable[[Iterable[JSONValue]], Iterable[JSONValue]] | None = None,
-    classify_grok_export: Callable[[int], bool] | None = None,
+    classify_grok_export: Callable[[int, bool], bool] | None = None,
     attempt_directory: Path | None = None,
 ) -> PreparedJsonl:
     """Parse and seal one source without transferring a parsed tree over IPC."""
@@ -560,6 +560,7 @@ def prepare_jsonl_blob(
         stream_prefix: str | None = None
         generic_envelope: dict[str, JSONValue] | None = None
         grok_count: int | None = None
+        grok_record_marker = False
         # Cohort callbacks may inspect or rewrite the entire parse result.
         # The direct worker route can publish independent bundle members.
         if (
@@ -575,8 +576,16 @@ def prepare_jsonl_blob(
             def record_grok_member(index: int, valid: bool) -> None:
                 grok_probe_conn.execute("INSERT INTO grok_member_valid VALUES (?, ?)", (index, int(valid)))
 
+            def record_grok_marker(found: bool) -> None:
+                nonlocal grok_record_marker
+                grok_record_marker = found
+
             with source.open("rb") as handle:
-                grok_count = grok_export_item_count(handle, on_item=record_grok_member)
+                grok_count = grok_export_item_count(
+                    handle,
+                    on_item=record_grok_member,
+                    on_record_marker=record_grok_marker if classify_grok_export is not None else None,
+                )
             if grok_count is None:
                 store.conn.execute("DROP TABLE grok_member_valid")
         if (
@@ -633,7 +642,9 @@ def prepare_jsonl_blob(
         elif grok_count is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(directory / f"shard-{uuid.uuid4().hex}.db")
-            grok_admitted = classify_grok_export(grok_count) if classify_grok_export is not None else True
+            grok_admitted = (
+                classify_grok_export(grok_count, grok_record_marker) if classify_grok_export is not None else True
+            )
             grok_member_conn = store.conn
 
             def include_grok_member(index: int) -> bool:
