@@ -80,6 +80,8 @@ def _record_preamble_ledger(polylogue: object, assembly: ContextAssembly) -> Non
         return
     config = cast("Config", config)
     ops_db = Path(archive_root) / "ops.db"
+    from polylogue.maintenance.offline_guard import ArchiveWriterOwnershipError
+
     try:
         # This context surface is an embedded API route too.  Check archive
         # ownership before bootstrap/open so a preamble cannot create or write
@@ -97,9 +99,10 @@ def _record_preamble_ledger(polylogue: object, assembly: ContextAssembly) -> Non
             record_context_ledger(conn, assembly, observed_at_ms=int(datetime.now(timezone.utc).timestamp() * 1000))
         finally:
             conn.close()
-    except (OSError, TypeError, ValueError, sqlite3.Error, DatabaseError):
+    except (OSError, TypeError, ValueError, sqlite3.Error, DatabaseError, ArchiveWriterOwnershipError):
         # DatabaseError covers a tier this runtime cannot use, including one at
-        # a version it has moved past. A disposable receipt never fails the
+        # a version it has moved past; the ownership refusal covers a resident
+        # daemon holding the archive. A disposable receipt never fails the
         # preamble it is a receipt for.
         logger.debug("context preamble: scheduler receipt could not be persisted", exc_info=True)
 

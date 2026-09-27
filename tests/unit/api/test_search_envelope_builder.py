@@ -138,3 +138,40 @@ def _dialogue_cursor_payload() -> SessionSearchHitPayload:
         score_kind="bm25",
     )
     return SessionSearchHitPayload.from_search_hit(hit)
+
+
+@pytest.mark.asyncio
+async def test_filter_only_structured_spec_lists_sessions_with_absolute_ranks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A structured filter with no search text still returns its sessions.
+
+    Anti-vacuity: gate the fallback on ``boolean_predicate`` alone again and a
+    compact ``origin:`` filter reports no hits; rank from the display offset
+    again and the cursor page's ranks restart at 1 instead of continuing at 6.
+    """
+    import polylogue.archive.query.search_hits as search_hits
+
+    monkeypatch.setattr(SessionQuerySpec, "count", _fake_count)
+
+    def hit_from_session(session: SessionSummary, *, query_terms: tuple[str, ...], rank: int, **kwargs: object):
+        del query_terms
+        return session_search_hit_from_summary(
+            session, rank=rank, retrieval_lane="auto", match_surface="session", message_id=None, snippet=""
+        )
+
+    monkeypatch.setattr(search_hits, "session_search_hit_from_session", hit_from_session)
+    operations = AsyncMock()
+    operations.search_session_hits = AsyncMock(return_value=[])
+    operations.list_sessions_for_spec = AsyncMock(
+        return_value=[
+            SessionSummary(id=SessionId("chatgpt:a"), origin=Origin.CHATGPT_EXPORT, title="A"),
+            SessionSummary(id=SessionId("chatgpt:b"), origin=Origin.CHATGPT_EXPORT, title="B"),
+        ]
+    )
+    spec = SessionQuerySpec.from_params({"origin": "chatgpt-export", "limit": 2, "offset": 5})
+
+    envelope = await build_search_envelope_for_spec(operations, spec, limit=2, offset=5)
+
+    operations.list_sessions_for_spec.assert_awaited_once()
+    assert [hit.rank for hit in envelope.hits] == [6, 7]

@@ -63,6 +63,7 @@ __all__ = [
     "EmbeddingConvergenceResult",
     "compose_embedding_convergence",
     "execute_embedding_backfill_operation",
+    "failed_backfill_terminal",
 ]
 
 
@@ -656,17 +657,7 @@ async def execute_embedding_backfill_operation(
     except Exception as exc:
         if execution.operation_id is not None:
             await execution.stop("cancelled" if runtime.stop_reason(request) == "cancelled" else "refused")
-            await execution.finalize(
-                {
-                    "operation": request.operation,
-                    "outcome": "failed",
-                    "sequence": 1,
-                    "effect": "no-effect",
-                    "stop_reason": "refused",
-                    "error": str(exc)[:512],
-                },
-                status="failed",
-            )
+            await execution.finalize(failed_backfill_terminal(request.operation, exc), status="failed")
         raise
     state = await execution.state()
     return operation_envelope(
@@ -677,3 +668,23 @@ async def execute_embedding_backfill_operation(
         reference=execution.record,
         result=state.get("result", state),
     )
+
+
+def failed_backfill_terminal(operation: str, exc: BaseException) -> dict[str, object]:
+    """Terminal receipt for a backfill that raised after durable acceptance.
+
+    It carries the same decodable shape as a completed run, so the persisted
+    receipt reads back as ``failed`` rather than degrading the attempt to
+    ``indeterminate`` and replaying that on every retry of the request id.
+    """
+    return {
+        "operation": operation,
+        "outcome": "failed",
+        "sequence": 1,
+        "effect": "no-effect",
+        "affected_count": 0,
+        "stop_reason": "refused",
+        "progress": {"state": "stopped", "computed": 0, "failed": 0, "estimated_cost_usd": 0.0},
+        "result": {"done": 0, "pending": 0, "failed": 0},
+        "error": str(exc)[:512],
+    }

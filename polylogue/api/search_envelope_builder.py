@@ -98,7 +98,13 @@ async def build_search_envelope_for_spec(
 
     hits = await facade.search_session_hits(fetch_spec)
     execution = getattr(hits, "execution", None)
-    if not hits and fetch_spec.boolean_predicate is not None:
+    filter_only = fetch_spec.boolean_predicate is not None or (
+        not fetch_spec.query_terms
+        and not fetch_spec.contains_terms
+        and fetch_spec.similar_text is None
+        and fetch_spec.has_filters()
+    )
+    if not hits and filter_only:
         # Filter-only expressions have no ranked-search evidence, but they are
         # still valid envelope queries.  Keep this fallback in the canonical
         # builder rather than reintroducing a surface-local execution branch.
@@ -109,7 +115,9 @@ async def build_search_envelope_for_spec(
             session_search_hit_from_session(
                 session,
                 query_terms=(),
-                rank=display_offset + index,
+                # Ranks are absolute in the fetched relation, so a cursor page
+                # continues after its anchor instead of restarting at 1.
+                rank=(fetch_spec.offset or 0) + index,
                 retrieval_lane="auto",
                 match_surface="session",
             )

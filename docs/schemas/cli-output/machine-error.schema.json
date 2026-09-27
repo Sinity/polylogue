@@ -25,6 +25,19 @@
       "title": "Message",
       "type": "string"
     },
+    "outcome": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Outcome"
+    },
     "status": {
       "const": "error",
       "default": "error",

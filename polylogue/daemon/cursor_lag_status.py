@@ -137,6 +137,11 @@ def cursor_lag_summary_info(dbf: Path, *, now: datetime | None = None, ops_db: P
     ops_summary, ops_error = _archive_cursor_lag_summary_info(resolved_ops_db, now=resolved_now)
     if ops_summary is not None:
         return _decorate_with_baselines(ops_summary, dbf, now=resolved_now, ops_db=resolved_ops_db)
+    if ops_error is not None:
+        # ``ops.db`` is the authoritative cursor ledger. A legacy index
+        # projection cannot stand in for one that failed to read: publishing it
+        # as available would report a stale or quiet ledger as measured.
+        return _unavailable(ops_error)
     if not dbf.exists():
         # The index fallback cannot substitute for a ledger that raised. When
         # the fallback has nothing of its own to measure either, nothing

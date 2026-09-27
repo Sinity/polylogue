@@ -159,6 +159,17 @@ def emit_facets_response(response: FacetsResponse, *, output_format: str | None)
     and on its own line for the terminal.
     """
 
+    _render_facets_response(response, output_format=output_format)
+    # The process status follows the same outcome the envelope reports: an
+    # empty facet view exits 2 and a degraded one 1, never a silent 0.
+    from polylogue.surfaces.outcome import outcome_exit_code
+
+    code = outcome_exit_code(response.outcome)
+    if code:
+        raise SystemExit(code)
+
+
+def _render_facets_response(response: FacetsResponse, *, output_format: str | None) -> None:
     if output_format == "json":
         click.echo(json.dumps(response.model_dump(mode="json", by_alias=True), indent=2))
         return

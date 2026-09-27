@@ -29,8 +29,6 @@ import fcntl
 import json
 import os
 import sys
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
@@ -282,10 +280,13 @@ def append_event(
     resolved_id = str(normalized["event_id"])
     if not resolved_id or not _EVENT_ID_ALPHABET.issuperset(resolved_id):
         raise HookSpoolRecordError("hook carrier event_id must contain only letters, digits, '_' or '-'")
-    with _carrier_lock(Path(root), exclusive=False):
+    lock = _acquire_carrier_lock(Path(root), exclusive=False)
+    try:
         target = carrier_path(root, str(normalized["provider"]))
         target.parent.mkdir(parents=True, exist_ok=True)
         append_carrier_line(target, normalized)
+    finally:
+        _release_carrier_lock(lock)
     return str(target)
 
 
@@ -343,16 +344,27 @@ ACKNOWLEDGED_DIRNAME = "acknowledged"
 _CARRIER_DRAIN_LOCK = ".carrier-drain.lock"
 
 
-@contextmanager
-def _carrier_lock(root: Path, *, exclusive: bool) -> Iterator[None]:
-    """Block producers while the legacy carrier drain owns the spool."""
+def _acquire_carrier_lock(root: Path, *, exclusive: bool) -> int:
+    """Block producers while the legacy carrier drain owns the spool.
+
+    Plain descriptor calls rather than a ``contextlib`` manager: this module is
+    the hook hot path and imports only the cheap stdlib set.
+    """
     root.mkdir(parents=True, exist_ok=True)
-    with (root / _CARRIER_DRAIN_LOCK).open("a+b") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    descriptor = os.open(root / _CARRIER_DRAIN_LOCK, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _release_carrier_lock(descriptor: int) -> None:
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
 
 
 def _carrier_paths(root: Path) -> list[str]:
@@ -593,10 +605,13 @@ def compact_legacy_spool(
     arrival for the next acquisition pass, never an omitted in-flight item.
     """
 
-    with _carrier_lock(root, exclusive=True):
+    lock = _acquire_carrier_lock(root, exclusive=True)
+    try:
         before = _carrier_paths(root)
         summary = _compact_legacy_spool_unlocked(root, max_bytes=max_bytes, checkpoint_events=checkpoint_events)
         after = _carrier_paths(root)
+    finally:
+        _release_carrier_lock(lock)
     summary.update(
         carrier_quiesced=True,
         carrier_arrivals_during_drain=0,

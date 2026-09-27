@@ -318,3 +318,24 @@ class TestRefusalExitCodeThroughRealEntrypoint:
         _empty_root, env = self._refusable_root(tmp_path)
 
         assert run_cli(["--version"], env=env).exit_code == 0
+
+
+def test_facets_exit_status_follows_the_reported_outcome() -> None:
+    """An empty facet view exits 2 and an ``ok`` one 0, as the envelope says.
+
+    Anti-vacuity: drop the outcome exit in ``emit_facets_response`` and the
+    empty case returns normally, exiting 0 for a view it labels ``empty``.
+    """
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from polylogue.cli.query_verbs import emit_facets_response
+    from polylogue.surfaces.outcome import decide_outcome
+
+    def response(matched: int) -> Any:
+        return SimpleNamespace(model_dump=lambda **_: {"matched": matched}, outcome=decide_outcome(matched=matched))
+
+    emit_facets_response(cast(Any, response(3)), output_format="json")
+    with pytest.raises(SystemExit) as exc_info:
+        emit_facets_response(cast(Any, response(0)), output_format="json")
+    assert exc_info.value.code == 2

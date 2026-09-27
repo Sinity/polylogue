@@ -232,10 +232,15 @@ def _invalidate_insights_effect(ctx: WriteEffectContext) -> None:
     db_path = ctx.payload.get("_db_path")
     if not db_path:
         raise RuntimeError("deferred insight invalidation requires _db_path")
-    from polylogue.storage.sqlite.connection import open_connection
+    from contextlib import closing
+
+    from polylogue.storage.sqlite.connection_profile import open_connection
 
     session_ids = ctx.changed_session_ids
-    with open_connection(db_path) as conn:
+    # A one-shot connection, never the thread-local cache: this executor thread
+    # outlives index promotions, and a cached handle would keep writing to the
+    # retired generation's inode after ``index.db`` is repointed.
+    with closing(open_connection(db_path)) as conn:
         # A coalesced retry may carry more IDs than one statement may bind.
         for start in range(0, len(session_ids), 500):
             chunk = session_ids[start : start + 500]

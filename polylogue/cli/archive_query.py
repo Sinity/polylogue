@@ -1303,7 +1303,12 @@ def _emit_stats(
         "mode": "stats",
         "origin": origin,
         "query": query or None,
-        "outcome": decide_outcome(matched=stats.total_sessions).to_dict(),
+        # Totals over a partially materialized archive are an undercount, not
+        # a complete census: the warning is a named gap on the outcome.
+        "outcome": decide_outcome(
+            matched=stats.total_sessions,
+            degraded=("archive_not_converged",) if convergence_warning is not None else (),
+        ).to_dict(),
         **stats.to_dict(),
     }
     if convergence_warning is not None:

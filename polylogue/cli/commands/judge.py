@@ -14,7 +14,7 @@ from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.query.spec import QuerySpecError, parse_query_date
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import AssertionKind, AssertionStatus
-from polylogue.surfaces.outcome import decide_outcome
+from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
 from polylogue.surfaces.payloads import (
     AssertionBulkJudgmentPayload,
     AssertionCandidateQueueHealthPayload,
@@ -475,9 +475,11 @@ def judge_command(
         click.echo(f"Showing {len(filtered)} of {matched} matching candidates (degraded: result_truncated).")
     if output_format == "json":
         click.echo(serialize_surface_payload(visible_payload, exclude_none=True))
+        _exit_for_listing_outcome(visible_payload.outcome)
         return
     if review or list_only or not sys.stdin.isatty() or not sys.stdout.isatty():
         _render_rows(filtered)
+        _exit_for_listing_outcome(visible_payload.outcome)
         return
 
     rows = [JudgeCandidateRow.from_review(item) for item in filtered if item.review_status == "pending"]
@@ -548,3 +550,12 @@ def judge_command(
 
 
 __all__ = ["JudgeCandidateRow", "_edit_and_accept", "judge_command"]
+
+
+def _exit_for_listing_outcome(outcome: OutcomeEnvelope) -> None:
+    """Leave with the status the listing's outcome names (empty 2, degraded 1)."""
+    from polylogue.surfaces.outcome import outcome_exit_code
+
+    code = outcome_exit_code(outcome)
+    if code:
+        raise SystemExit(code)
