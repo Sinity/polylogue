@@ -507,3 +507,54 @@ def test_concurrent_touch_of_one_handle_is_not_an_eviction(tmp_path: Path, monke
     resumed = _search(sources, continuation=token)
     assert raced["done"] and resumed.outcome == "ok"
     assert [item.reference for item in resumed.items] == ["codex:b.jsonl"]
+
+
+def test_concurrent_creator_cannot_push_the_store_past_its_bound(
+    tmp_path: Path, frozen_clock: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: pruning only before the write leaves MAX + 1 files when another creator publishes meanwhile."""
+    monkeypatch.setattr(snapshot_store, "MAX_GLOBAL_SNAPSHOTS", 2)
+    root = tmp_path / "codex"
+    first_file = _write(root / "a.jsonl", "needle a\n", 2)
+    _write(root / "b.jsonl", "needle b\n", 1)
+    sources = _sources(root)
+    _search(sources, scan_bytes=first_file.stat().st_size)
+    frozen_clock.advance(1)
+    from polylogue.core.durable_fs import atomic_replace as original
+
+    def publish_with_a_concurrent_creator(path: Path, payload: bytes, *, mode: int | None = None) -> None:
+        foreign = path.with_name(f"{path.name.split('-')[0]}-{'f' * 16}-{'e' * 32}.json")
+        original(foreign, payload, mode=mode)
+        original(path, payload, mode=mode)
+
+    monkeypatch.setattr(
+        "polylogue.operations.raw_sessions.snapshot_store.atomic_replace", publish_with_a_concurrent_creator
+    )
+    token = _search(sources, scan_bytes=first_file.stat().st_size).continuation
+    assert len(_snapshot_files()) == 2
+    assert _search(sources, continuation=token).outcome == "ok"
+
+
+def test_raced_reads_are_charged_to_the_scan_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: an uncharged raced block lets scan_bytes=1 read every selected file."""
+    root = tmp_path / "codex"
+    paths = [_write(root / f"s{index}.jsonl", f"needle {index}\n", index + 1) for index in range(4)]
+    inodes = {path.stat().st_ino: path for path in paths}
+    real_fstat = os.fstat
+    seen: dict[int, int] = {}
+
+    def fstat(fd: int) -> os.stat_result:
+        info = real_fstat(fd)
+        path = inodes.get(info.st_ino)
+        if path is not None:
+            seen[info.st_ino] = seen.get(info.st_ino, 0) + 1
+            if seen[info.st_ino] == 2:
+                with path.open("a") as handle:
+                    handle.write("late\n")
+                return real_fstat(fd)
+        return info
+
+    monkeypatch.setattr(os, "fstat", fstat)
+    page = _search(_sources(root), scan_bytes=1)
+    assert page.coverage.scanned_bytes == 1
+    assert len(page.coverage.gaps) == 1 and page.continuation is not None

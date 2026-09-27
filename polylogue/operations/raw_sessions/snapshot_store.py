@@ -137,12 +137,15 @@ class SnapshotStore:
             if modified_ms + SNAPSHOT_TTL_MS <= now_ms:
                 self._unlink(path)
 
-    def _prune(self, now_ms: int, *, reserve: int = 0) -> None:
+    def _prune(self, now_ms: int, *, reserve: int = 0, keep: str | None = None) -> None:
         """Expire idle handles and keep at most ``MAX_GLOBAL_SNAPSHOTS - reserve``.
 
-        Creation prunes only before its write, reserving the new handle's
-        slot: names that tie on the millisecond sort by random handle, so a
-        prune after the write could evict the snapshot just created.
+        ``keep`` names a handle that is never the eviction victim: names that
+        tie on the millisecond sort by random handle, so a prune after a write
+        could otherwise evict the snapshot just created. Creation prunes before
+        its write (reserving a slot) and again after it (keeping its own
+        handle), so concurrent creators converge back to the bound instead of
+        each trusting the same pre-write listing.
         """
         self._sweep_orphaned_temporaries(now_ms)
         live = []
@@ -152,7 +155,8 @@ class SnapshotStore:
             else:
                 live.append(entry)
         # Least recently used first, so the survivors are the handles in use.
-        for entry in live[: max(0, len(live) - (MAX_GLOBAL_SNAPSHOTS - reserve))]:
+        victims = [entry for entry in live if entry[2] != keep]
+        for entry in victims[: max(0, len(live) - (MAX_GLOBAL_SNAPSHOTS - reserve))]:
             self._unlink(entry[3])
 
     def create(
@@ -177,9 +181,10 @@ class SnapshotStore:
         body = {"v": 1, "binding": binding.as_json(), "created_at_ms": now_ms, "files": rows}
         encoded = json.dumps(body, separators=(",", ":")).encode()
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        # Reserve the new handle's slot; see _prune for why no prune follows the write.
+        # See _prune: reserve a slot before the write, then enforce the bound keeping this handle.
         self._prune(now_ms, reserve=1)
         atomic_replace(self.directory / f"{now_ms:013d}-{principal_key}-{handle}{_SUFFIX}", encoded, mode=0o600)
+        self._prune(now_ms, keep=handle)
         return SearchSnapshot(handle, self._decode_rows(binding.root, rows))
 
     @staticmethod

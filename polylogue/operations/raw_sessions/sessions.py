@@ -437,6 +437,8 @@ class SessionLogService:
                     # this block is evidence of the selected observation.
                     del rows[rows_before:]
                     page_full_state = None
+                    # The read happened; it counts against this request's budget.
+                    scanned += len(data)
                     gaps.add(reference, "selected file changed while it was being searched; not searched")
                     state = next_file(block_state, skipped=True)
                     continue
