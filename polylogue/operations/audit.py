@@ -238,10 +238,9 @@ def _continuity_mutation(kind: str) -> Callable[[_F], _F]:
     def decorate(method: _F) -> _F:
         @wraps(method)
         def wrapped(self: AuditRepository, *args: object, **kwargs: object) -> object:
-            # The audit tier can be upgraded before source.db installs its
-            # matching WAL table. Keep that release window operational; the
-            # coordinator becomes mandatory as soon as both schema halves are
-            # present.
+            # Continuity is unavailable only while source.db or audit.db is
+            # absent (e.g. before audit adoption); a present tier missing its
+            # continuity half raises instead of reaching this branch.
             if not self._continuity.is_available():
                 if self._machine_binding is not None:
                     raise RuntimeError("machine acceptance requires source-WAL audit continuity")

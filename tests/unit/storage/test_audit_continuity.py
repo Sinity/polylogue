@@ -170,6 +170,14 @@ def test_pending_command_promotes_after_audit_commit(tmp_path: Path) -> None:
     ],
 )
 def test_current_schema_missing_a_continuity_table_is_damage(tmp_path: Path, dropped_table: str, error: str) -> None:
+    """A present tier without its continuity half is damage, never standby.
+
+    Fresh v1 stamps every durable tier at 1, so the old version-gated check
+    (source >= 32, audit >= 2) read this exact archive as a legitimate
+    pre-continuity window and returned False (polylogue-h6yuj).
+
+    Anti-vacuity: restore the ``user_version`` gate and this stops raising.
+    """
     initialize_active_archive_root(tmp_path)
     path = tmp_path / ("source.db" if dropped_table.endswith("control") else "audit.db")
     with sqlite3.connect(path) as connection:
@@ -178,22 +186,6 @@ def test_current_schema_missing_a_continuity_table_is_damage(tmp_path: Path, dro
 
     with pytest.raises(AuditContinuityError, match=error):
         AuditContinuityCoordinator(tmp_path).is_available()
-
-
-@pytest.mark.parametrize(
-    ("path_name", "table", "legacy_version"),
-    [("source.db", "audit_continuity_control", 31), ("audit.db", "audit_continuity_head", 1)],
-)
-def test_legitimate_one_sided_precontinuity_schema_window_stays_in_standby(
-    tmp_path: Path, path_name: str, table: str, legacy_version: int
-) -> None:
-    initialize_active_archive_root(tmp_path)
-    with sqlite3.connect(tmp_path / path_name) as connection:
-        connection.execute(f"DROP TABLE {table}")
-        connection.execute(f"PRAGMA user_version = {legacy_version}")
-        connection.commit()
-
-    assert not AuditContinuityCoordinator(tmp_path).is_available()
 
 
 @pytest.mark.parametrize(

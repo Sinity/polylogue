@@ -32,8 +32,6 @@ from polylogue.storage.sqlite.audit_leaf import (
 
 _FORMAT = "polylogue.audit-continuity-command.v1"
 AUDIT_CONTINUITY_GENESIS_HEAD_SHA256 = "3230fdd585a4fd2d71b7d720bcfe5d697ff120fdb32aecde394e89d407c7198f"
-_SOURCE_CONTINUITY_SCHEMA_VERSION = 32
-_AUDIT_CONTINUITY_SCHEMA_VERSION = 2
 _T = TypeVar("_T")
 
 _COORDINATOR_LOCK_GUARD = threading.Lock()
@@ -288,7 +286,7 @@ class AuditContinuityCoordinator:
         return True
 
     def is_available(self) -> bool:
-        """Return whether both schema halves needed for coordinated writes exist."""
+        """Return whether both continuity tiers exist; a present tier lacking its half is damage."""
 
         if _entry_is_absent(self.source_path) or _entry_is_absent(self.audit_path):
             return False
@@ -297,22 +295,20 @@ class AuditContinuityCoordinator:
                 _open_source_read_connection(self.source_path) as source,
                 open_verified_audit_read_connection(self.audit_path) as audit,
             ):
-                source_version = int(source.execute("PRAGMA user_version").fetchone()[0] or 0)
-                audit_version = int(audit.execute("PRAGMA user_version").fetchone()[0] or 0)
-                source_has_control = self._has_table(source, "audit_continuity_control")
-                audit_has_head = self._has_table(audit, "audit_continuity_head")
-                if not source_has_control and source_version >= _SOURCE_CONTINUITY_SCHEMA_VERSION:
+                # Every durable tier this runtime can open was created with its
+                # continuity half (fresh v1 has no pre-continuity schema), so a
+                # present tier without it is damage, never a standby window
+                # (polylogue-h6yuj).
+                if not self._has_table(source, "audit_continuity_control"):
                     raise AuditContinuityError("current source schema is missing audit continuity control")
-                if not audit_has_head and audit_version >= _AUDIT_CONTINUITY_SCHEMA_VERSION:
+                if not self._has_table(audit, "audit_continuity_head"):
                     raise AuditContinuityError("current audit schema is missing audit continuity head")
-                if not source_has_control or not audit_has_head:
-                    return False
                 source.execute("SELECT 1 FROM audit_continuity_control WHERE singleton = 1").fetchone()
                 audit.execute("SELECT 1 FROM audit_continuity_head WHERE singleton = 1").fetchone()
-                if self._is_unbound_populated_precontinuity_audit(source, audit):
-                    raise AuditContinuityError(
-                        "populated pre-continuity audit journal requires authenticated post-migration binding"
-                    )
+                if self._is_populated_genesis_audit(source, audit):
+                    # Every audit write advances the head, so a populated
+                    # journal still at genesis was written around continuity.
+                    raise AuditContinuityError("populated audit journal has only genesis continuity heads")
         except AuditLeafError as exc:
             raise AuditContinuityError(str(exc)) from exc
         except sqlite3.OperationalError as exc:
@@ -320,69 +316,6 @@ class AuditContinuityCoordinator:
         except sqlite3.DatabaseError as exc:
             raise AuditContinuityError("cannot inspect audit continuity compatibility state") from exc
         return True
-
-    def needs_precontinuity_binding(self) -> bool:
-        """Return whether a migrated populated audit journal still has only genesis heads."""
-
-        self._require_paths()
-        try:
-            with (
-                _open_source_read_connection(self.source_path) as source,
-                open_verified_audit_read_connection(self.audit_path) as audit,
-            ):
-                source_version = int(source.execute("PRAGMA user_version").fetchone()[0] or 0)
-                audit_version = int(audit.execute("PRAGMA user_version").fetchone()[0] or 0)
-                source_has_control = self._has_table(source, "audit_continuity_control")
-                audit_has_head = self._has_table(audit, "audit_continuity_head")
-                if not source_has_control and source_version >= _SOURCE_CONTINUITY_SCHEMA_VERSION:
-                    raise AuditContinuityError("current source schema is missing audit continuity control")
-                if not audit_has_head and audit_version >= _AUDIT_CONTINUITY_SCHEMA_VERSION:
-                    raise AuditContinuityError("current audit schema is missing audit continuity head")
-                return (
-                    source_has_control
-                    and audit_has_head
-                    and self._is_unbound_populated_precontinuity_audit(source, audit)
-                )
-        except AuditLeafError as exc:
-            raise AuditContinuityError("cannot inspect pre-continuity audit binding state") from exc
-        except sqlite3.DatabaseError as exc:
-            raise AuditContinuityError("cannot inspect pre-continuity audit binding state") from exc
-
-    def bind_precontinuity_audit(self, *, mutation_id: str, now_ms: int, audit_semantic_sha256: str) -> None:
-        """Bind a populated v1 audit journal through its first source-backed head.
-
-        Published v2/v32 migrations seeded matching genesis rows for both fresh
-        and upgraded archives.  A populated upgraded journal needs this explicit
-        command, whose head commits the authenticated pre-migration semantic
-        digest, before ordinary coordinated mutations are allowed.
-        """
-
-        with self._execution_lock:
-            if len(audit_semantic_sha256) != 64:
-                raise AuditContinuityError("pre-continuity binding requires an audit semantic sha256")
-            if self.has_committed_mutation(mutation_id):
-                return
-            prepared = self._pending()
-            if prepared is not None:
-                pending = AuditMutation.from_command(prepared["command"])
-                if pending.kind != "bind_precontinuity_audit" or pending.mutation_id != mutation_id:
-                    raise AuditContinuityError(
-                        "pending audit continuity command does not belong to this pre-continuity binding"
-                    )
-                self._apply_prepared(prepared, lambda _conn, _mutation: None)
-                self._promote(prepared)
-                return
-            if not self.needs_precontinuity_binding():
-                raise AuditContinuityError("pre-continuity audit binding no longer has matching unbound genesis heads")
-            self.execute(
-                AuditMutation(
-                    "bind_precontinuity_audit",
-                    mutation_id,
-                    now_ms,
-                    {"audit_semantic_sha256": audit_semantic_sha256},
-                ),
-                lambda _conn, _mutation: None,
-            )
 
     def runtime_probe(self) -> str:
         """Exercise the coordinator's released-schema or compatibility state."""
@@ -591,16 +524,12 @@ class AuditContinuityCoordinator:
             if current[:2] == target and current[2] == mutation.mutation_id:
                 conn.commit()
                 return cast(_T, None)
-            if mutation.kind == "bind_precontinuity_audit":
-                self._assert_precontinuity_audit_semantics(conn, mutation)
             if current[:2] != prior:
                 if allow_rebind and mutation.kind == "rebind":
                     pass
                 else:
                     raise AuditContinuityError("audit continuity head does not match the prepared source command")
-            result = (
-                cast(_T, None) if mutation.kind in {"rebind", "bind_precontinuity_audit"} else apply(conn, mutation)
-            )
+            result = cast(_T, None) if mutation.kind == "rebind" else apply(conn, mutation)
             conn.execute(
                 "UPDATE audit_continuity_head SET generation = ?, head_sha256 = ?, mutation_id = ?, advanced_at_ms = ? WHERE singleton = 1",
                 (*target, mutation.mutation_id, mutation.created_at_ms),
@@ -780,7 +709,7 @@ class AuditContinuityCoordinator:
             is not None
         )
 
-    def _is_unbound_populated_precontinuity_audit(self, source: sqlite3.Connection, audit: sqlite3.Connection) -> bool:
+    def _is_populated_genesis_audit(self, source: sqlite3.Connection, audit: sqlite3.Connection) -> bool:
         source_head = source.execute(
             "SELECT committed_generation, committed_head_sha256 FROM audit_continuity_control WHERE singleton = 1"
         ).fetchone()
@@ -804,13 +733,6 @@ class AuditContinuityCoordinator:
             if audit.execute(f'SELECT 1 FROM "{quoted_name}" LIMIT 1').fetchone() is not None:
                 return True
         return False
-
-    def _assert_precontinuity_audit_semantics(self, connection: sqlite3.Connection, mutation: AuditMutation) -> None:
-        expected = mutation.payload.get("audit_semantic_sha256")
-        if not isinstance(expected, str) or len(expected) != 64:
-            raise AuditContinuityError("pre-continuity binding lacks an audit semantic sha256")
-        if _audit_semantic_sha256_connection(connection) != expected:
-            raise AuditContinuityError("pre-continuity audit journal differs from its authenticated migration evidence")
 
     def _require_paths(self) -> None:
         for path in (self.source_path, self.audit_path):
