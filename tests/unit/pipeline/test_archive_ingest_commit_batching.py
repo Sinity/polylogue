@@ -13,6 +13,7 @@ import pytest
 
 from polylogue.config import Source
 from polylogue.maintenance.offline_guard import ArchiveWriterOwnershipError
+from polylogue.operations.canonical_archive_ingest import _wait_for_coordinator_idle
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 
 
@@ -69,6 +70,41 @@ def test_one_shot_ingest_uses_durable_raw_and_cursor_authority(tmp_path: Path) -
         assert index.execute("SELECT COUNT(*) FROM messages").fetchone() == (3,)
     with sqlite3.connect(archive_root / "ops.db") as ops:
         assert ops.execute("SELECT COUNT(*) FROM ingest_cursor").fetchone() == (1,)
+
+
+def test_one_shot_cleanup_waits_until_admitted_writer_is_idle(tmp_path: Path) -> None:
+    """A timed shutdown cannot let the caller remove a tree under its writer."""
+
+    class DelayedCoordinator:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.writer_active = True
+            self.shard = tmp_path / "parse-shards" / "prepared-live.db"
+            self.shard.parent.mkdir()
+            self.shard.write_bytes(b"active shard")
+
+        async def shutdown(self, *, timeout: float) -> bool:
+            assert timeout == 30.0
+            self.calls += 1
+            assert self.shard.exists(), "cleanup removed a prepared shard while its writer was active"
+            if self.calls == 1:
+                return False
+            self.writer_active = False
+            return True
+
+    coordinator = DelayedCoordinator()
+    cleanup_observations: list[bool] = []
+
+    async def cleanup_archive() -> None:
+        await _wait_for_coordinator_idle(coordinator)
+        cleanup_observations.append(coordinator.writer_active)
+        coordinator.shard.unlink()
+
+    asyncio.run(cleanup_archive())
+
+    assert coordinator.calls == 2
+    assert cleanup_observations == [False]
+    assert not coordinator.shard.exists()
 
 
 def test_one_shot_ingest_refuses_resident_daemon(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
