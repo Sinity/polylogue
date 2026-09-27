@@ -655,7 +655,17 @@ class FileIntakeAdapter(IntakeAdapter):
                     [*nonregular_paths, *(Path(cast(Any, item.payload)) for item in batch)]
                 )
                 refused_paths: frozenset[Path] = getattr(processor, "_refused_paths", frozenset())
+                if refused_paths:
+                    # The precheck has handled these paths. A page with no
+                    # ingest call must not leak the refusal into a later page.
+                    processor._refused_paths = frozenset()
                 nonregular_paths = [path for path in nonregular_paths if path not in refused_paths]
+                for item in batch:
+                    if Path(cast(Any, item.payload)) in refused_paths:
+                        outcomes[item.item_id] = AdmissionResult(
+                            AdmissionOutcome.RETRYABLE, reason="source carrier refused by cursor authority"
+                        )
+                batch = [item for item in batch if Path(cast(Any, item.payload)) not in refused_paths]
             if nonregular_paths and callable(mark_excluded):
 
                 def retire_nonregular() -> None:

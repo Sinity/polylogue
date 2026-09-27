@@ -1095,7 +1095,56 @@ async def test_durable_alias_retirement_skips_path_scoped_refusal(tmp_path: Path
     outcomes = await adapter.admit_page((alias_item, sibling_item))
     assert outcomes[alias_item.item_id].outcome is AdmissionOutcome.RETRYABLE
     assert outcomes[sibling_item.item_id].outcome is AdmissionOutcome.ADMITTED
+    assert watcher._batch_processor._refused_paths == frozenset()
     assert cursor.get_record(alias).excluded is False  # type: ignore[union-attr]
+    assert cursor.has_pending_retries((root,)) is True
+
+
+@pytest.mark.asyncio
+async def test_path_scoped_refusal_skips_regular_candidate_selection(tmp_path: Path) -> None:
+    root = tmp_path / "source"
+    root.mkdir()
+    blocked, allowed = (root / name for name in ("a.json", "b.json"))
+    blocked.write_text("{}")
+    allowed.write_text("{}")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+    cursor = CursorStore(tmp_path / "index.db")
+    cursor.set(blocked, 2, next_retry_at="1970-01-01T00:00:00+00:00")
+
+    class PartialRefusalProcessor:
+        _refused_paths: frozenset[Path] = frozenset()
+
+        def require_cursor_authority(self, paths: Sequence[Path]) -> None:
+            assert paths == [blocked, allowed]
+            self._refused_paths = frozenset((blocked,))
+
+    selected: list[Path] = []
+
+    def select(paths: Sequence[Path]) -> tuple[Path, ...]:
+        selected.extend(paths)
+        return tuple(paths)
+
+    async def ingest(paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+        assert paths == [allowed]
+        return SimpleNamespace(succeeded_paths=(str(allowed),), source_payload_read_bytes=2)
+
+    watcher = SimpleNamespace(
+        _cursor=cursor,
+        _batch_processor=PartialRefusalProcessor(),
+        intake_revision=lambda _source: 0,
+        select_ingest_candidates=select,
+        _ingest_files=ingest,
+    )
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    page = await adapter.discover(limit=2)
+    outcomes = await adapter.admit_page(page)
+    assert selected == [allowed]
+    assert outcomes[page[0].item_id].outcome is AdmissionOutcome.RETRYABLE
+    assert outcomes[page[1].item_id].outcome is AdmissionOutcome.ADMITTED
+    assert watcher._batch_processor._refused_paths == frozenset()
     assert cursor.has_pending_retries((root,)) is True
 
 
