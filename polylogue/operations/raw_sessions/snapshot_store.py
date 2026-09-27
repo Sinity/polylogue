@@ -31,7 +31,7 @@ import os
 import time
 import uuid
 import zlib
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -156,6 +156,22 @@ class SnapshotStore:
         for entry in live[: max(0, len(live) - (MAX_GLOBAL_SNAPSHOTS - reserve))]:
             self._unlink(entry[3])
 
+    @contextlib.contextmanager
+    def _locked(self) -> Iterator[None]:
+        """Serialize creation and last-use touches across processes."""
+        self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        lock_fd = os.open(self.directory / _LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(lock_fd)
+
+    def _stamp_after_newest(self, now_ms: int) -> int:
+        """A last-use stamp that sorts after every retained handle, so LRU order is use order."""
+        existing = self._entries()
+        return max(now_ms, existing[-1][0] + 1) if existing else now_ms
+
     def create(
         self,
         binding: SnapshotBinding,
@@ -184,15 +200,10 @@ class SnapshotStore:
         # pair sees every other creator's result and the bound holds without
         # exempting anyone. The new name is stamped strictly after every
         # existing one: a millisecond tie can never make it the LRU victim.
-        lock_fd = os.open(self.directory / _LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            existing = self._entries()
-            stamp = max(now_ms, existing[-1][0] + 1 if existing else now_ms)
+        with self._locked():
+            stamp = self._stamp_after_newest(now_ms)
             self._prune(now_ms, reserve=1)
             atomic_replace(self.directory / f"{stamp:013d}-{principal_key}-{handle}{_SUFFIX}", encoded, mode=0o600)
-        finally:
-            os.close(lock_fd)
         return SearchSnapshot(handle, self._decode_rows(binding.root, rows))
 
     @staticmethod
@@ -234,7 +245,8 @@ class SnapshotStore:
             # The TTL slides from last use: the name carries the timestamp and
             # a rename is atomic. Losing the rename to a concurrent resume
             # means that resume refreshed it; the contents are the same.
-            with contextlib.suppress(FileNotFoundError):
-                path.rename(self.directory / f"{now_ms:013d}-{key}-{entry_handle}{_SUFFIX}")
+            with self._locked(), contextlib.suppress(FileNotFoundError):
+                stamp = self._stamp_after_newest(now_ms)
+                path.rename(self.directory / f"{stamp:013d}-{key}-{entry_handle}{_SUFFIX}")
             return SearchSnapshot(handle, self._decode_rows(binding.root, body["files"]))
         raise SnapshotUnavailableError("session continuation expired or was evicted; restart the search")

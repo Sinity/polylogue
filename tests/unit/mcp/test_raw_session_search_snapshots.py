@@ -648,3 +648,35 @@ def test_systemic_open_failure_pauses_the_scan_without_skipping(
     resumed = _search(sources, continuation=paused.continuation)
     assert [item.reference for item in resumed.items] == ["codex:a.jsonl", "codex:b.jsonl"]
     assert resumed.outcome == "ok" and resumed.coverage.gaps == []
+
+
+def test_memory_resume_of_an_expired_snapshot_is_a_degraded_page(tmp_path: Path, frozen_clock: Any) -> None:
+    """Anti-vacuity: the expired-snapshot result lacked the skip counters and memory raised KeyError."""
+    root = tmp_path / "codex"
+    first_file = _write(root / "a.jsonl", "needle a\n", 2)
+    _write(root / "b.jsonl", "needle b\n", 1)
+    sources = _sources(root)
+    request = RawMemorySearch(query="needle", origins=["codex-session"], scan_bytes=first_file.stat().st_size)
+    first = raw_operation(request, sources=sources)
+    assert first.source_cursors and first.source_cursors.get("codex-session")
+    frozen_clock.advance(snapshot_store.SNAPSHOT_TTL_MS / 1000 + 1)
+    expired = raw_operation(request.model_copy(update={"source_cursors": first.source_cursors}), sources=sources)
+    assert expired.outcome == "degraded" and expired.items == []
+    assert any("expired or was evicted" in gap for gap in expired.coverage.gaps)
+
+
+def test_a_touch_in_the_creation_millisecond_still_makes_the_handle_most_recent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: touching with the wall-clock stamp sorts the just-used handle before a newer synthetic stamp."""
+    monkeypatch.setattr(snapshot_store, "MAX_GLOBAL_SNAPSHOTS", 2)
+    monkeypatch.setattr(snapshot_store, "_now_ms", lambda: 1_000_000)
+    store = snapshot_store.SnapshotStore(tmp_path / "store")
+    binding = snapshot_store.SnapshotBinding("p", "codex", "0" * 64, None, tmp_path)
+    first = store.create(binding, ()).handle
+    second = store.create(binding, ()).handle
+    store.load(first, binding)
+    store.create(binding, ())
+    store.load(first, binding)
+    with pytest.raises(snapshot_store.SnapshotUnavailableError):
+        store.load(second, binding)

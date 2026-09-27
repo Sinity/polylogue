@@ -549,6 +549,9 @@ class SessionLogService:
                     "truncated": False,
                     "next_cursor": None,
                     "gaps": [str(exc)],
+                    # The retained counts went with the snapshot; the gap says so.
+                    "skipped_earlier": 0,
+                    "skipped_now": 0,
                 }
         else:
             if reference is not None:
