@@ -81,10 +81,10 @@ print(json.dumps({
         "pool": "interactive",
         "result": "json",
     }
-    # Focused runs use the quick static gate; complete-corpus verification is a
-    # separately declared manual operation rather than part of this mapping.
+    # Focused runs require a behavioral pytest selector; complete-corpus
+    # verification remains a separately declared operation.
     assert parsed["publish"] == "pr"
-    assert parsed["verify"] == {"focused": "verify_quick", "candidate": "hosted:ci/circleci: quick-gate"}
+    assert parsed["verify"] == {"focused": "pytest_focused", "candidate": "hosted:ci/circleci: quick-gate"}
     assert all(spec.module != "devtools.deployment_browser_smoke_service" for spec in COMMAND_SPECS)
 
 

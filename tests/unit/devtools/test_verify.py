@@ -344,9 +344,10 @@ def test_declared_operation_requires_the_fixed_route(monkeypatch: pytest.MonkeyP
     assert verify._declared_agentctl_operation([]) is None
 
 
-def test_verify_quick_descriptor_accepts_the_declared_json_projection() -> None:
+def test_focused_profile_requires_a_behavioral_pytest_selection() -> None:
     descriptor = tomllib.loads((verify.ROOT / ".agentctl/project.toml").read_text(encoding="utf-8"))
 
+    focused = descriptor["operations"]["pytest_focused"]
     operation = descriptor["operations"]["verify_quick"]
     affected = descriptor["operations"]["verify_affected"]
     complete = descriptor["operations"]["verify_all"]
@@ -356,10 +357,13 @@ def test_verify_quick_descriptor_accepts_the_declared_json_projection() -> None:
     )
 
     assert descriptor["workspace"]["verify"] == {
-        "focused": "verify_quick",
+        "focused": "pytest_focused",
         "candidate": "hosted:ci/circleci: quick-gate",
     }
     assert descriptor["workspace"]["publish"] == "pr"
+    assert focused["exec"] == ["python", "-m", "devtools.pytest_slot"]
+    assert focused["arguments"] == "required"
+    assert focused["result"] == "pytest"
     assert operation["exec"] == ["devtools", "verify", "--quick"]
     assert operation["result"] == "json"
     assert affected["exec"] == ["devtools", "verify"]

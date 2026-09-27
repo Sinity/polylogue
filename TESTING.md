@@ -28,6 +28,9 @@ nix flake check
 
 AgentCTL owns scratch placement and cleanup for declared verification jobs.
 Foreground commands use pytest's ordinary temporary-directory behavior.
+The generic worker `focused` profile maps to `pytest_focused`, which requires
+an explicit selector after `--`; the static `verify_quick` operation remains
+available by name and does not count as behavioral test evidence.
 
 ### Managed pytest pools
 
