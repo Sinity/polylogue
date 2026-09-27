@@ -479,10 +479,14 @@ async def test_session_continuation_freezes_relative_date_scope(tmp_path: Path, 
 
 
 @pytest.mark.parametrize("operation", ["search", "memory", "list", "timeline"])
-def test_raw_owner_rejects_source_change_between_scan_and_emission(
+def test_raw_owner_withholds_a_match_changed_between_scan_and_emission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
-    """A first-page result cannot combine an old snippet with a newer file observation."""
+    """A first-page result cannot combine an old snippet with a newer file observation.
+
+    The stale row is withheld and named as a coverage gap (typed degraded
+    outcome) instead of aborting the whole page with an internal error.
+    """
     from polylogue.operations.raw_sessions.sessions import SessionLogService
 
     sources = raw_sources(tmp_path)
@@ -505,8 +509,10 @@ def test_raw_owner_rejects_source_change_between_scan_and_emission(
         "list": RawList(origin="codex-session"),
         "timeline": RawTimeline(origins=["codex-session"]),
     }
-    with pytest.raises(SessionError, match="changed"):
-        raw_operation(requests[operation], sources=sources)
+    page = raw_operation(requests[operation], sources=sources)
+    assert page.outcome == "degraded"
+    assert "codex:original-2.jsonl" not in [item.reference for item in page.items]
+    assert any("codex:original-2.jsonl" in gap and "between scan and emission" in gap for gap in page.coverage.gaps)
 
 
 @pytest.mark.asyncio

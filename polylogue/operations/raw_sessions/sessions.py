@@ -9,21 +9,36 @@ import hmac
 import json
 import os
 import stat
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, BinaryIO, NoReturn
+
+from polylogue.paths import state_home
 
 from .page import CompactJSONPage
+from .snapshot_store import SnapshotBinding, SnapshotStore, SnapshotUnavailableError
 
 
 class SessionError(ValueError):
-    pass
+    code = "session_read_failed"
+
+
+class StaleContinuationError(SessionError):
+    """A continuation that cannot resume its original scope; restart the search."""
+
+    code = "stale_continuation"
 
 
 _SCAN_BLOCK_BYTES = 64 * 1_024
 DEFAULT_SCAN_BYTES = 8 * 1_024 * 1_024
 MAX_CURSOR_BYTES = 8_192
+# Per-page gap entries are bounded; the remainder is summarized in one line.
+MAX_GAP_ENTRIES = 16
+# v1 bound its scope to a digest of the whole enumerated population, so any
+# unrelated append invalidated it. v2 names a retained population snapshot.
+SNAPSHOT_CURSOR_VERSION = 2
+_SEARCH_STATE_KEYS = frozenset({"file", "offset", "line", "line_start", "skipped"})
 
 
 class OpaqueSessionCursor:
@@ -42,8 +57,8 @@ class OpaqueSessionCursor:
     def _canonical(value: Any) -> bytes:
         return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
-    def encode(self, scope: dict[str, Any], state: dict[str, Any]) -> str:
-        body = {"v": 1, "scope": scope, "state": state}
+    def encode(self, scope: dict[str, Any], state: dict[str, Any], *, version: int = 1) -> str:
+        body = {"v": version, "scope": scope, "state": state}
         payload = base64.urlsafe_b64encode(self._canonical(body)).decode().rstrip("=")
         mac = hmac.new(self._key, payload.encode(), hashlib.sha256).hexdigest()
         value = f"{payload}.{mac}"
@@ -51,13 +66,13 @@ class OpaqueSessionCursor:
             raise SessionError("session continuation cursor exceeds its size bound")
         return value
 
-    def decode(self, value: Any, scope: dict[str, Any]) -> dict[str, Any]:
+    def _body(self, value: Any) -> dict[str, Any]:
         if not isinstance(value, str) or len(value.encode()) > MAX_CURSOR_BYTES or "." not in value:
             raise SessionError("session continuation cursor is malformed")
         payload, mac = value.rsplit(".", 1)
         expected = hmac.new(self._key, payload.encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(mac, expected):
-            raise SessionError("session continuation cursor is stale")
+            raise StaleContinuationError("session continuation cursor is stale")
         try:
             padded = payload + "=" * (-len(payload) % 4)
             body = json.loads(base64.urlsafe_b64decode(padded).decode())
@@ -68,8 +83,14 @@ class OpaqueSessionCursor:
             binascii.Error,
         ) as exc:
             raise SessionError("session continuation cursor is malformed") from exc
-        if not isinstance(body, dict) or body.get("v") != 1:
-            raise SessionError("session continuation cursor is stale")
+        if not isinstance(body, dict) or not isinstance(body.get("state"), dict):
+            raise SessionError("session continuation cursor is malformed")
+        return body
+
+    def decode(self, value: Any, scope: dict[str, Any]) -> dict[str, Any]:
+        body = self._body(value)
+        if body.get("v") != 1:
+            raise StaleContinuationError("session continuation cursor is stale")
         actual_scope = body.get("scope")
         if actual_scope != scope:
             if (
@@ -78,12 +99,50 @@ class OpaqueSessionCursor:
                 and {key: value for key, value in actual_scope.items() if key != "source_revision"}
                 == {key: value for key, value in scope.items() if key != "source_revision"}
             ):
-                raise SessionError("session source changed after continuation began")
-            raise SessionError("session continuation cursor is stale")
-        state = body.get("state")
-        if not isinstance(state, dict):
-            raise SessionError("session continuation cursor is malformed")
+                raise StaleContinuationError("session source changed after continuation began")
+            raise StaleContinuationError("session continuation cursor is stale")
+        state: dict[str, Any] = body["state"]
         return state
+
+    def decode_snapshot(self, value: Any, scope: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """Return (snapshot handle, state) for a v2 token bound to exactly ``scope``."""
+        body = self._body(value)
+        if body.get("v") == 1:
+            raise StaleContinuationError("session continuation predates retained search snapshots; restart the search")
+        actual_scope = body.get("scope")
+        if body.get("v") != SNAPSHOT_CURSOR_VERSION or not isinstance(actual_scope, dict):
+            raise StaleContinuationError("session continuation cursor is stale")
+        handle = actual_scope.get("snapshot")
+        if {key: value for key, value in actual_scope.items() if key != "snapshot"} != scope or not isinstance(
+            handle, str
+        ):
+            raise StaleContinuationError("session continuation does not match its original search scope")
+        state: dict[str, Any] = body["state"]
+        return handle, state
+
+
+def _identity(info: Any) -> tuple[int, int, int, int]:
+    """The observation a selected file is held to; ctime alone is not a content change."""
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+
+
+class _Gaps:
+    """Bounded, page-local coverage gaps plus a running skipped-file count."""
+
+    def __init__(self) -> None:
+        self.entries: builtins.list[str] = []
+        self.overflow = 0
+
+    def add(self, reference: str, reason: str) -> None:
+        if len(self.entries) < MAX_GAP_ENTRIES:
+            self.entries.append(f"{reference}: {reason}")
+        else:
+            self.overflow += 1
+
+    def as_list(self) -> builtins.list[str]:
+        if self.overflow:
+            return [*self.entries, f"{self.overflow} further selected files were skipped for the same reasons"]
+        return list(self.entries)
 
 
 @dataclass(frozen=True)
@@ -107,8 +166,12 @@ class SessionLogService:
         max_result_bytes: int = 256_000,
         scope: str = "polylogue-raw",
         sources: tuple[SessionSource, ...] | None = None,
+        snapshot_dir: Path | None = None,
     ):
         self.max_result_bytes = max_result_bytes
+        self._snapshots = SnapshotStore(
+            snapshot_dir if snapshot_dir is not None else state_home() / "raw-session-search"
+        )
         self.scope = scope
         # An explicitly empty source tuple is a meaningful isolated config.
         # Truthiness here silently re-enables the host's default locations.
@@ -257,162 +320,138 @@ class SessionLogService:
         return line, state["line_start"]
 
     @staticmethod
-    def _snippet(path: Path, line_start: int, match_offset: int, query_bytes: int) -> tuple[int, str]:
+    def _snippet(handle: BinaryIO, line_start: int, match_offset: int, query_bytes: int) -> tuple[int, str]:
         start = max(line_start, match_offset - 200)
         # Keep the query intact even when the caller supplied a long literal.
-        with path.open("rb") as handle:
-            handle.seek(start)
-            data = handle.read(max(2_000, match_offset - start + query_bytes))
+        handle.seek(start)
+        data = handle.read(max(2_000, match_offset - start + query_bytes))
         return start, data.decode("utf-8", errors="replace").rstrip("\r\n")[:2_000]
 
     def _scan_literal(
         self,
         source: SessionSource,
-        files: Sequence[tuple[Path, os.stat_result]],
+        files: Sequence[tuple[Path, Any]],
         query: str,
         limit: int,
         scan_bytes: int,
-        cursor: str | None,
-        cursor_key: bytes | None,
-        purpose: str,
+        state: dict[str, int],
+        make_cursor: Callable[[dict[str, int]], str | None],
         one_per_file: bool,
-        *,
-        source_revision: str | None = None,
     ) -> dict[str, Any]:
-        query_bytes = query.encode("utf-8")
-        revision = source_revision if source_revision is not None else self._source_revision(source, files)
-        scope = {
-            "principal": self.scope,
-            "provider": source.provider,
-            "query_sha256": hashlib.sha256(query_bytes).hexdigest(),
-            "source_revision": revision,
-        }
-        if cursor is not None:
-            if cursor_key is None:
-                raise SessionError("session continuation cursor is unavailable")
-            state = OpaqueSessionCursor(self.scope, cursor_key, purpose).decode(cursor, scope)
-        else:
-            state = {"file": 0, "offset": 0, "line": 1, "line_start": 0}
-        if (
-            set(state) != {"file", "offset", "line", "line_start"}
-            or any(isinstance(state[key], bool) or not isinstance(state[key], int) or state[key] < 0 for key in state)
-            or state["file"] > len(files)
-        ):
-            raise SessionError("session continuation cursor is malformed")
+        """Scan the selected population from ``state``.
 
+        A selected file that vanished, changed, or raced with this read is
+        skipped with an explicit coverage gap: one live file must not abort
+        coverage of the rest, and a changed file cannot be resumed at an
+        offset its old observation defined. Matches are read through the
+        same descriptor whose identity was checked before and after the read.
+        """
+        query_bytes = query.encode("utf-8")
+        if state["file"] > len(files):
+            raise SessionError("session continuation cursor is malformed")
         scanned = 0
+        gaps = _Gaps()
         rows: builtins.list[dict[str, Any]] = []
         resume_after_last: dict[str, int] | None = None
-        while state["file"] < len(files) and scanned < scan_bytes:
-            path, info = files[state["file"]]
-            try:
-                current = path.stat(follow_symlinks=False)
-            except OSError as exc:
-                raise SessionError("session source changed during search") from exc
-            if (
-                current.st_dev,
-                current.st_ino,
-                current.st_size,
-                current.st_mtime_ns,
-            ) != (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns):
-                raise SessionError("session source changed during search")
-            if state["offset"] >= info.st_size:
-                state = {
-                    "file": state["file"] + 1,
-                    "offset": 0,
-                    "line": 1,
-                    "line_start": 0,
-                }
+        page_full_state: dict[str, int] | None = None
+
+        def next_file(current: dict[str, int], *, skipped: bool = False) -> dict[str, int]:
+            moved = {**current, "file": current["file"] + 1, "offset": 0, "line": 1, "line_start": 0}
+            if skipped and "skipped" in moved:
+                moved["skipped"] += 1
+            return moved
+
+        while state["file"] < len(files) and scanned < scan_bytes and page_full_state is None:
+            path, observed = files[state["file"]]
+            reference = self._reference(source, path)
+            if state["offset"] >= observed.st_size:
+                state = next_file(state)
                 continue
-            remaining = min(
-                _SCAN_BLOCK_BYTES,
-                scan_bytes - scanned,
-                info.st_size - state["offset"],
-            )
-            with path.open("rb") as handle:
+            try:
+                handle = path.open("rb")
+            except OSError:
+                gaps.add(reference, "selected file disappeared or became unreadable before it was searched")
+                state = next_file(state, skipped=True)
+                continue
+            with handle:
+                if _identity(os.fstat(handle.fileno())) != _identity(observed):
+                    reason = "changed after it was partially searched" if state["offset"] else "changed after selection"
+                    gaps.add(reference, f"selected file {reason}; not searched")
+                    state = next_file(state, skipped=True)
+                    continue
+                remaining = min(_SCAN_BLOCK_BYTES, scan_bytes - scanned, observed.st_size - state["offset"])
                 handle.seek(state["offset"])
                 data = handle.read(remaining)
                 handle.seek(max(0, state["offset"] - max(0, len(query_bytes) - 1)))
                 tail = handle.read(state["offset"] - handle.tell())
-            if not data:
-                # A concurrent shrink invalidates this otherwise immutable observation.
-                raise SessionError("session source changed during search")
-            scanned += len(data)
-            combined = tail + data
-            combined_start = state["offset"] - len(tail)
-            index = 0
-            found = False
-            while True:
-                index = combined.find(query_bytes, index)
-                if index < 0:
-                    break
-                absolute = combined_start + index
-                end = absolute + len(query_bytes)
-                # Matches wholly in the replay tail were already returned.
-                if end <= state["offset"]:
-                    index += len(query_bytes)
-                    continue
-                line, line_start = self._line_for_match(state, combined, index, len(tail))
-                offset, text = self._snippet(path, line_start, absolute, len(query_bytes))
-                text = text[: min(2_000, max(128, self.max_result_bytes // 4))]
-                row = {
-                    "reference": self._reference(source, path),
-                    "line": line,
-                    "offset": offset,
-                    "text": text,
-                    "source_observation": (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns),
-                }
-                if len(rows) >= limit:
-                    # Do not consume this match: the continuation replay window
-                    # makes it the first candidate on the next page.
-                    # A file overview has already consumed the accepted file.
-                    # A match stream instead resumes after its last match.
-                    next_state = dict(state if one_per_file else (resume_after_last or state))
-                    if cursor_key is None:
-                        return {
-                            "rows": rows,
-                            "scanned_bytes": scanned,
-                            "truncated": True,
-                            "next_cursor": None,
+                rows_before = len(rows)
+                combined = tail + data
+                combined_start = state["offset"] - len(tail)
+                index = 0
+                found = False
+                block_state = state
+                block_resume = resume_after_last
+                while len(data) == remaining:
+                    index = combined.find(query_bytes, index)
+                    if index < 0:
+                        break
+                    absolute = combined_start + index
+                    end = absolute + len(query_bytes)
+                    # Matches wholly in the replay tail were already returned.
+                    if end <= state["offset"]:
+                        index += len(query_bytes)
+                        continue
+                    if len(rows) >= limit:
+                        # Do not consume this match: the continuation replay window
+                        # makes it the first candidate on the next page.
+                        # A file overview has already consumed the accepted file.
+                        # A match stream instead resumes after its last match.
+                        page_full_state = dict(state if one_per_file else (resume_after_last or state))
+                        break
+                    line, line_start = self._line_for_match(state, combined, index, len(tail))
+                    offset, text = self._snippet(handle, line_start, absolute, len(query_bytes))
+                    rows.append(
+                        {
+                            "reference": reference,
+                            "line": line,
+                            "offset": offset,
+                            "text": text[: min(2_000, max(128, self.max_result_bytes // 4))],
+                            "source_observation": _identity(observed),
                         }
-                    return {
-                        "rows": rows,
-                        "scanned_bytes": scanned,
-                        "truncated": True,
-                        "next_cursor": OpaqueSessionCursor(self.scope, cursor_key, purpose).encode(scope, next_state),
-                    }
-                rows.append(row)
-                found = True
-                resume_after_last = dict(state)
-                self._advance_line(resume_after_last, data[: max(0, end - state["offset"])])
-                if one_per_file:
-                    state = {
-                        "file": state["file"] + 1,
-                        "offset": 0,
-                        "line": 1,
-                        "line_start": 0,
-                    }
-                    break
-                index += len(query_bytes)
+                    )
+                    found = True
+                    resume_after_last = dict(state)
+                    self._advance_line(resume_after_last, data[: max(0, end - state["offset"])])
+                    if one_per_file:
+                        break
+                    index += len(query_bytes)
+                if len(data) != remaining or _identity(os.fstat(handle.fileno())) != _identity(observed):
+                    # A concurrent write or shrink raced this read; nothing from
+                    # this block is evidence of the selected observation.
+                    del rows[rows_before:]
+                    resume_after_last = block_resume
+                    page_full_state = None
+                    gaps.add(reference, "selected file changed while it was being searched; not searched")
+                    state = next_file(block_state, skipped=True)
+                    continue
+            scanned += len(data)
+            if page_full_state is not None:
+                break
             if found and one_per_file:
+                state = next_file(state)
                 continue
             self._advance_line(state, data)
-            if state["offset"] >= info.st_size:
-                state = {
-                    "file": state["file"] + 1,
-                    "offset": 0,
-                    "line": 1,
-                    "line_start": 0,
-                }
-        truncated = state["file"] < len(files)
-        next_cursor = None
-        if truncated and cursor_key is not None:
-            next_cursor = OpaqueSessionCursor(self.scope, cursor_key, purpose).encode(scope, state)
+            if state["offset"] >= observed.st_size:
+                state = next_file(state)
+        final_state = page_full_state if page_full_state is not None else state
+        truncated = page_full_state is not None or state["file"] < len(files)
         return {
             "rows": rows,
             "scanned_bytes": scanned,
             "truncated": truncated,
-            "next_cursor": next_cursor,
+            "next_cursor": make_cursor(final_state) if truncated else None,
+            "gaps": gaps.as_list(),
+            "state": final_state,
         }
 
     def search(
@@ -431,31 +470,72 @@ class SessionLogService:
             raise SessionError("query must contain 1-1000 characters")
         if isinstance(max_results, bool) or not isinstance(max_results, int) or max_results < 1:
             raise SessionError("max_results must be a positive integer")
-        if reference is not None:
-            selected_source, path = self._path_from_reference(reference)
-            if selected_source.provider != provider:
-                raise SessionError("reference provider must match search provider")
-            info = path.stat(follow_symlinks=False)
-            files = [(path, info)]
+        budget = self._scan_bytes(scan_bytes)
+        query_sha256 = hashlib.sha256(query.encode("utf-8")).hexdigest()
+        # The reference filter is part of the scope: a continuation begun on
+        # one file can never resume over another population.
+        scope = {"principal": self.scope, "provider": provider, "query_sha256": query_sha256, "reference": reference}
+        binding = SnapshotBinding(self.scope, provider, query_sha256, reference, source.root)
+        purpose = "session-search"
+        snapshot_handle: str | None = None
+        files: Sequence[tuple[Path, Any]]
+        if cursor is not None:
+            if cursor_key is None:
+                raise SessionError("session continuation cursor is unavailable")
+            snapshot_handle, state = OpaqueSessionCursor(self.scope, cursor_key, purpose).decode_snapshot(cursor, scope)
+            if set(state) != _SEARCH_STATE_KEYS or any(
+                isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in state.values()
+            ):
+                raise SessionError("session continuation cursor is malformed")
+            try:
+                files = self._snapshots.load(snapshot_handle, binding).files
+            except SnapshotUnavailableError as exc:
+                return {
+                    "provider": provider,
+                    "matches": [],
+                    "scanned_bytes": 0,
+                    "truncated": False,
+                    "next_cursor": None,
+                    "gaps": [str(exc)],
+                }
         else:
-            files = self._files(source)
-        result = self._scan_literal(
-            source,
-            files,
-            query,
-            max_results,
-            self._scan_bytes(scan_bytes),
-            cursor,
-            cursor_key,
-            "session-search",
-            False,
-        )
+            if reference is not None:
+                selected_source, path = self._path_from_reference(reference)
+                if selected_source.provider != provider:
+                    raise SessionError("reference provider must match search provider")
+                files = [(path, path.stat(follow_symlinks=False))]
+            else:
+                files = self._files(source)
+            state = {"file": 0, "offset": 0, "line": 1, "line_start": 0, "skipped": 0}
+        prior_skipped = state["skipped"]
+        issue_gaps: builtins.list[str] = []
+
+        def make_cursor(next_state: dict[str, int]) -> str | None:
+            nonlocal snapshot_handle
+            if cursor_key is None:
+                return None
+            if snapshot_handle is None:
+                # Only a search that actually continues retains its population.
+                try:
+                    snapshot_handle = self._snapshots.create(binding, files).handle
+                except (OSError, ValueError) as exc:
+                    issue_gaps.append(f"continuation unavailable: {exc}")
+                    return None
+            return OpaqueSessionCursor(self.scope, cursor_key, purpose).encode(
+                {**scope, "snapshot": snapshot_handle}, next_state, version=SNAPSHOT_CURSOR_VERSION
+            )
+
+        result = self._scan_literal(source, files, query, max_results, budget, state, make_cursor, False)
+        gaps = [*result["gaps"], *issue_gaps]
+        if not result["truncated"] and prior_skipped:
+            gaps.append(f"{prior_skipped} selected files were skipped on earlier pages of this continuation")
         return {
             "provider": provider,
             "matches": result["rows"],
             "scanned_bytes": result["scanned_bytes"],
             "truncated": result["truncated"],
             "next_cursor": result["next_cursor"],
+            "gaps": gaps,
         }
 
     def timeline(
@@ -532,17 +612,37 @@ class _ObservedTimeline:
             raise SessionError("max_results must be a positive integer")
         source, files, query = self.source, self.files, self.query
         if query is not None:
+            scope: dict[str, Any] = {
+                "principal": self.service.scope,
+                "provider": source.provider,
+                "query_sha256": hashlib.sha256(query.encode("utf-8")).hexdigest(),
+                "source_revision": self.revision,
+            }
+            if cursor is not None:
+                if cursor_key is None:
+                    raise SessionError("session continuation cursor is unavailable")
+                state = OpaqueSessionCursor(self.service.scope, cursor_key, "session-timeline").decode(cursor, scope)
+                if set(state) != {"file", "offset", "line", "line_start"} or any(
+                    isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in state.values()
+                ):
+                    raise SessionError("session continuation cursor is malformed")
+            else:
+                state = {"file": 0, "offset": 0, "line": 1, "line_start": 0}
+
+            def make_cursor(next_state: dict[str, int]) -> str | None:
+                if cursor_key is None:
+                    return None
+                return OpaqueSessionCursor(self.service.scope, cursor_key, "session-timeline").encode(scope, next_state)
+
             result = self.service._scan_literal(
                 source,
                 files,
                 query,
                 max_results,
                 self.service._scan_bytes(scan_bytes),
-                cursor,
-                cursor_key,
-                "session-timeline",
+                state,
+                make_cursor,
                 True,
-                source_revision=self.revision,
             )
             entries = []
             for row in result["rows"]:
@@ -564,6 +664,7 @@ class _ObservedTimeline:
                 "scanned_bytes": result["scanned_bytes"],
                 "truncated": result["truncated"],
                 "next_cursor": result["next_cursor"],
+                "gaps": result["gaps"],
             }
 
         revision = self.revision

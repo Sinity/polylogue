@@ -51,6 +51,7 @@ class MemoryService:
         sources: list[dict[str, Any]] = []
         matches: list[dict[str, Any]] = []
         next_cursors: dict[str, str | None] = {}
+        gaps: list[str] = []
         page_full = False
         for provider in requested:
             if provider in UNAVAILABLE_SOURCES:
@@ -142,6 +143,7 @@ class MemoryService:
                 }
                 for row in result["matches"]
             )
+            gaps.extend(f"{provider}: {gap}" for gap in result.get("gaps", ()))
             next_cursors[provider] = result["next_cursor"]
             page_full = result["next_cursor"] is not None or len(matches) >= limit
         return {
@@ -150,6 +152,7 @@ class MemoryService:
             "matches": matches,
             "truncated": page_full or any(source.get("coverage", {}).get("truncated") is True for source in sources),
             "next_cursors": next_cursors or None,
+            "gaps": gaps,
         }
 
     def get(self, reference: Any, offset: int = 0, max_bytes: int = 64_000) -> dict[str, Any]:

@@ -143,6 +143,7 @@ class TimelineService:
         # Every refill in this request shares the same metadata observation.
         # New external requests create new observations; this is not a cache.
         readers: dict[str, _ObservedTimeline] = {}
+        gaps: list[str] = []
 
         def load_head(provider: str, after: str | None) -> dict[str, Any]:
             try:
@@ -153,6 +154,7 @@ class TimelineService:
                 result = reader.page(1, cursor=after, cursor_key=effective_cursor_key, scan_bytes=scan_bytes)
             except SessionError as exc:
                 raise TimelineError(str(exc)) from exc
+            gaps.extend(f"{provider}: {gap}" for gap in result.get("gaps", ()))
             if result["entries"]:
                 state["pending"][provider] = {"entry": result["entries"][0], "after": result["next_cursor"]}
             elif result["next_cursor"] is None:
@@ -214,6 +216,7 @@ class TimelineService:
             "entries": entries,
             "truncated": more,
             "next_cursor": next_cursor,
+            "gaps": gaps,
         }
         if len(json.dumps(response, sort_keys=True, separators=(",", ":")).encode()) > self.sessions.max_result_bytes:
             # A tiny direct-service response bound may not even accommodate a

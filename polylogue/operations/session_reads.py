@@ -399,16 +399,23 @@ def raw_operation(
                 "coverage": {"scanned_bytes": result["scanned_bytes"], "truncated": result["truncated"]},
             }
         ]
+    from polylogue.operations.raw_sessions.sessions import SessionError
+
     observations = []
+    emission_gaps: list[str] = []
     for row in rows:
         reference = row.get("reference") or row["object_reference"]
-        source, path = service._path_from_reference(reference)
-        info = path.stat()
+        try:
+            source, path = service._path_from_reference(reference)
+            info = path.stat()
+        except (SessionError, OSError):
+            emission_gaps.append(f"{reference}: selected file disappeared between scan and emission; match withheld")
+            continue
         expected = row["source_observation"]
         if tuple(expected) != (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns):
-            from polylogue.operations.raw_sessions.sessions import SessionError
-
-            raise SessionError("session source changed between scan and emission")
+            # The match was read from an observation this file no longer has.
+            emission_gaps.append(f"{reference}: selected file changed between scan and emission; match withheld")
+            continue
         observations.append(
             RawObservation(
                 reference=reference,
@@ -433,6 +440,8 @@ def raw_operation(
     gaps = [source.reason or "source unavailable" for source in sources_out if source.availability == "unavailable"]
     if result.get("available") is False:
         gaps.append(result["reason"])
+    gaps.extend(result.get("gaps", ()))
+    gaps.extend(emission_gaps)
     return RawPage(
         items=observations,
         sources=sources_out,
