@@ -28,6 +28,7 @@ from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import (
     generic_message_object_envelope,
     grok_export_item_count,
+    hermes_snapshot_envelope,
     iter_grok_export_events,
     iter_json_container_records,
     json_record_container,
@@ -42,7 +43,7 @@ from polylogue.sources.dispatch import (
     parse_stream_payload,
     require_positive_conversational_evidence,
 )
-from polylogue.sources.parsers import browser_capture, chatgpt, grok
+from polylogue.sources.parsers import browser_capture, chatgpt, grok, local_agent
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.prepared_message_sink import (
     SqliteMessageSink,
@@ -538,6 +539,7 @@ def prepare_jsonl_blob(
     prepare_records: Callable[[Iterable[JSONValue]], Iterable[JSONValue]] | None = None,
     classify_grok_export: Callable[[int, bool], bool] | None = None,
     classify_generic_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
+    classify_hermes_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
     classify_chatgpt_object: Callable[[dict[str, object]], bool] | None = None,
     attempt_directory: Path | None = None,
 ) -> PreparedJsonl:
@@ -562,6 +564,7 @@ def prepare_jsonl_blob(
         before_hash = _source_digest(source)
         stream_prefix: str | None = None
         generic_envelope: dict[str, JSONValue] | None = None
+        hermes_envelope: dict[str, JSONValue] | None = None
         chatgpt_envelope: dict[str, object] | None = None
         grok_count: int | None = None
         grok_positive_marker = False
@@ -574,6 +577,15 @@ def prepare_jsonl_blob(
                 store.conn.execute("DROP TABLE chatgpt_node")
         # Cohort callbacks may inspect or rewrite the entire parse result.
         # The direct worker route can publish independent bundle members.
+        if (
+            not is_stream
+            and provider is Provider.HERMES
+            and (prepare_sessions is None or classify_hermes_object is not None)
+            and (prepare_records is None or classify_hermes_object is not None)
+            and Path(source_path).name.lower().endswith(".json")
+        ):
+            with source.open("rb") as handle:
+                hermes_envelope = hermes_snapshot_envelope(handle)
         if (
             not is_stream
             and provider is Provider.GROK
@@ -647,6 +659,61 @@ def prepare_jsonl_blob(
                 _append_artifact_session(store, session_count, session)
                 session_count += 1
             store.conn.execute("DROP TABLE chatgpt_node")
+            after_hash = _source_digest(source)
+            if before_hash != after_hash:
+                raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
+            enrichment_digest, enrichment_index_path = (
+                preparation_dependency() if preparation_dependency is not None else (None, None)
+            )
+            _seal_artifact(store.conn, after_hash, session_count, enrichment_digest, enrichment_index_path)
+            store.conn.commit()
+            shard_path = shard_builder.seal().path
+            shard_builder = None
+        elif hermes_envelope is not None:
+            _create_artifact_tables(store.conn)
+            shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
+            hermes_admitted = True
+            if classify_hermes_object is not None:
+                with source.open("rb") as handle:
+                    sample = tuple(
+                        islice(
+                            (
+                                cast(JSONValue, normalize_ijson_stdlib_numbers(item))
+                                for item in ijson.items(handle, "messages.item")
+                            ),
+                            64,
+                        )
+                    )
+                hermes_admitted = classify_hermes_object(hermes_envelope, sample)
+            session = None
+            if hermes_admitted:
+                with source.open("rb") as handle:
+                    session = local_agent.parse_hermes_snapshot_stream(
+                        hermes_envelope,
+                        (normalize_ijson_stdlib_numbers(item) for item in ijson.items(handle, "messages.item")),
+                        fallback_id,
+                        messages=store.new_sink(),
+                        session_events=store.new_event_sink(),
+                        source_path=source_path,
+                    )
+            session_count = 0
+            if session is not None and require_positive_conversational_evidence(
+                [session], provider=provider, source_path=source_path
+            ):
+                if prepare_sessions is not None:
+                    selected = prepare_sessions([session])
+                    if len(selected) > 1:
+                        raise ValueError("Hermes snapshot finalizer expanded one session")
+                    session = selected[0] if selected else None
+                elif prepare_session is not None:
+                    session = prepare_session(session)
+            else:
+                session = None
+            if session is not None:
+                session.content_hash = session_content_hash(session)
+                append_session_to_shard(shard_builder, session)
+                _append_artifact_session(store, session_count, session)
+                session_count += 1
             after_hash = _source_digest(source)
             if before_hash != after_hash:
                 raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
@@ -904,6 +971,7 @@ def prepare_jsonl_blob(
             positive_evidence_filtered=stream_prefix is not None
             or chatgpt_envelope is not None
             or generic_envelope is not None
+            or hermes_envelope is not None
             or (grok_count is not None and classify_grok_export is not None)
             or (prepare_sessions is None and prepare_session is not None),
             attempt_directory=attempt_directory,

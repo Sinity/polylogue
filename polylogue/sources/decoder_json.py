@@ -480,6 +480,86 @@ def generic_message_object_envelope(handle: JsonReadable) -> dict[str, JsonValue
     return envelope if message_arrays == 1 else None
 
 
+def hermes_snapshot_envelope(handle: JsonReadable) -> dict[str, JsonValue] | None:
+    """Validate a Hermes snapshot while leaving its messages outside the envelope.
+
+    Only fields read by the snapshot parser are retained. A second pass reads
+    the tool catalog, which is one semantic event in the existing contract.
+    """
+    scalar_fields = {
+        "session_id",
+        "model",
+        "system_prompt",
+        "session_start",
+        "last_updated",
+        "base_url",
+        "platform",
+        "message_count",
+    }
+    envelope: dict[str, JsonValue] = {}
+    current_key: str | None = None
+    map_keys: dict[str, str] = {}
+    message_arrays = 0
+    tool_fields = 0
+    first_future_type: str | None = None
+    try:
+        events = ijson.parse(handle)
+        if next(events, None) != ("", "start_map", None):
+            return None
+        for prefix, event, value in events:
+            if prefix == "" and event == "map_key":
+                current_key = str(value)
+                map_keys[""] = current_key
+                if current_key == "messages":
+                    message_arrays += 1
+                elif current_key == "tools":
+                    tool_fields += 1
+                continue
+            if event == "map_key":
+                map_keys[prefix] = str(value)
+                continue
+            if event == "string" and first_future_type is None:
+                key = map_keys.get(prefix.rpartition(".")[0])
+                if (
+                    key in {"type", "content_type", "kind", "record_type"}
+                    and isinstance(value, str)
+                    and (
+                        value.startswith(("future_", "unknown_", "unsupported_"))
+                        or value in {"future", "unknown", "unsupported"}
+                    )
+                ):
+                    first_future_type = value
+            if current_key in scalar_fields and prefix == current_key:
+                if event in {"start_array", "start_map"}:
+                    # These parser fields are scalar-only. Keep a sentinel so
+                    # a nested value cannot impersonate an asserted string.
+                    envelope.pop(current_key, None)
+                elif event in {"string", "number", "boolean", "null"}:
+                    envelope[current_key] = cast(JsonValue, normalize_ijson_stdlib_numbers(value))
+            if current_key == "messages" and prefix == "messages" and event not in {"start_array", "end_array"}:
+                return None
+            if event == "end_map":
+                map_keys.pop(prefix, None)
+    except ijson.common.JSONError:
+        return None
+    finally:
+        handle.seek(0)
+    if message_arrays != 1 or tool_fields > 1:
+        return None
+    if not isinstance(envelope.get("session_id"), str) or not any(
+        key in envelope for key in ("session_start", "last_updated", "platform")
+    ):
+        return None
+    if tool_fields:
+        tools = next(ijson.items(handle, "tools"), None)
+        if isinstance(tools, list):
+            envelope["tools"] = cast(JsonValue, normalize_ijson_stdlib_numbers(tools))
+        handle.seek(0)
+    if first_future_type is not None:
+        envelope["__admission_future_type"] = first_future_type
+    return envelope
+
+
 def grok_export_item_count(
     handle: JsonReadable,
     *,

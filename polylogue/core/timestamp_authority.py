@@ -40,15 +40,22 @@ def session_evidence_timestamps(
     """
     messages: Sequence[Any] = getattr(session, "messages", ()) or ()
     events: Sequence[Any] = getattr(session, "session_events", ()) or ()
-    message_times = [
-        int(value) for message in messages if (value := getattr(message, "occurred_at_ms", None)) is not None
-    ]
-    event_times = [
-        value for event in events if (value := timestamp_millis(getattr(event, "timestamp", None))) is not None
-    ]
-    timeline = message_times or event_times
-    derived_created = min(timeline) if timeline else None
-    derived_updated = max(timeline) if timeline else None
+    derived_created: int | None = None
+    derived_updated: int | None = None
+    for message in messages:
+        value = getattr(message, "occurred_at_ms", None)
+        if value is None:
+            continue
+        point = int(value)
+        derived_created = point if derived_created is None else min(derived_created, point)
+        derived_updated = point if derived_updated is None else max(derived_updated, point)
+    if derived_created is None:
+        for event in events:
+            event_point = timestamp_millis(getattr(event, "timestamp", None))
+            if event_point is None:
+                continue
+            derived_created = event_point if derived_created is None else min(derived_created, event_point)
+            derived_updated = event_point if derived_updated is None else max(derived_updated, event_point)
 
     raw_created = timestamp_millis(getattr(session, "created_at", None))
     raw_updated = timestamp_millis(getattr(session, "updated_at", None))

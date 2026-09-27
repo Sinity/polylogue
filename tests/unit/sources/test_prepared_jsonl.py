@@ -6,7 +6,7 @@ import json
 import os
 import shutil
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
@@ -16,6 +16,7 @@ import ijson
 import pytest
 
 from polylogue.core.enums import Provider, Role
+from polylogue.core.json import JSONValue
 from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import normalize_session_timestamps
@@ -351,6 +352,190 @@ def test_generic_single_object_stream_discards_corrupt_suffix(tmp_path: Path) ->
         shard_directory=str(directory),
     )
     assert artifact.error is not None
+    assert artifact.sessions_path is None
+    assert list(directory.glob("*.db")) == []
+
+
+def test_hermes_snapshot_stream_matches_parser_and_spills_before_eof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = {
+        "session_id": "neutral-hermes",
+        "model": "neutral-model",
+        "platform": "linux",
+        "session_start": "2025-01-01T00:00:00Z",
+        "last_updated": "2025-01-01T00:02:00Z",
+        "system_prompt": "Be concise.",
+        "message_count": 300,
+        "tools": [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}],
+        "messages": [
+            {"role": "user", "content": f"Neutral prompt {index}", "tool_call_id": "repeat"} for index in range(300)
+        ]
+        + [
+            {
+                "role": "assistant",
+                "content": "done",
+                "tool_call_id": "repeat",
+                "finish_reason": "stop",
+                "codex_reasoning_items": [{"type": "reasoning", "text": "A neutral thought"}],
+                "tool_calls": [
+                    {
+                        "id": "lookup-1",
+                        "function": {"name": "lookup", "arguments": "{}"},
+                        "extra_content": {"trace": "synthetic"},
+                    }
+                ],
+            },
+            {"role": "assistant", "content": "", "type": "future_turn"},
+        ],
+    }
+    source = tmp_path / "session_neutral.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+    [expected] = parse_payload(Provider.HERMES, record, "fallback", source_path=str(source))
+    expected.content_hash = session_content_hash(expected)
+    expected_shard = prepare_session_shard(tmp_path / "baseline", [expected])
+
+    def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("Hermes snapshot decoded as a whole document")
+
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
+    decoded = 0
+    first_written_after: int | None = None
+    original_items = ijson.items
+    original_append = SqliteMessageSink.append
+
+    def tracked_items(*args: object, **kwargs: object) -> object:
+        nonlocal decoded
+        for item in original_items(*args, **kwargs):
+            if len(args) > 1 and args[1] == "messages.item":
+                decoded += 1
+            yield item
+
+    def tracked_append(self: SqliteMessageSink, value: ParsedMessage) -> None:
+        nonlocal first_written_after
+        if first_written_after is None and decoded:
+            first_written_after = decoded
+        original_append(self, value)
+
+    monkeypatch.setattr(ijson, "items", tracked_items)
+    monkeypatch.setattr(SqliteMessageSink, "append", tracked_append)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.HERMES.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert artifact.error is None
+    assert first_written_after == 1
+    [actual] = artifact.iter_sessions()
+    assert [message.provider_message_id for message in actual.messages] == [
+        message.provider_message_id for message in expected.messages
+    ]
+    assert [event.model_dump(mode="json") for event in actual.session_events] == [
+        event.model_dump(mode="json") for event in expected.session_events
+    ]
+    assert actual.unit_accounting == expected.unit_accounting
+    assert actual.content_hash == expected.content_hash
+    assert artifact.shard_path is not None
+    with sqlite3.connect(expected_shard.path) as baseline, sqlite3.connect(artifact.shard_path) as prepared:
+        for table in ("messages", "blocks", "shard_session"):
+            assert (
+                prepared.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+                == baseline.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+            )
+    artifact.discard()
+
+
+def test_hermes_snapshot_stream_discards_corrupt_suffix(tmp_path: Path) -> None:
+    source = tmp_path / "session_damaged.json"
+    source.write_text(
+        '{"session_id":"neutral","platform":"linux","messages":[{"role":"user","content":"hello"}]} trailing',
+        encoding="utf-8",
+    )
+    directory = tmp_path / "prepared"
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.HERMES.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(directory),
+    )
+    assert artifact.error is not None
+    assert artifact.sessions_path is None
+    assert list(directory.glob("*.db")) == []
+
+
+def test_hermes_snapshot_retained_callbacks_keep_stream_route(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    record = {
+        "session_id": "retained-hermes",
+        "platform": "linux",
+        "messages": [{"role": "user", "content": "Neutral prompt"}],
+    }
+    source = tmp_path / "session_retained.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+
+    def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("retained Hermes snapshot decoded as a whole document")
+
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
+    witnesses: list[tuple[dict[str, JSONValue], list[JSONValue]]] = []
+
+    def classify(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
+        witnesses.append((envelope, list(messages)))
+        return True
+
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.HERMES.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+        prepare_sessions=lambda sessions: sessions,
+        prepare_records=lambda records: records,
+        classify_hermes_object=classify,
+    )
+    assert artifact.error is None
+    assert witnesses == [({"session_id": "retained-hermes", "platform": "linux"}, record["messages"])]
+    assert [session.title for session in artifact.iter_sessions()] == ["retained-hermes"]
+    artifact.discard()
+
+
+def test_hermes_snapshot_stream_refuses_source_mutation_after_spill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "session_mutating.json"
+    source.write_text(
+        json.dumps({"session_id": "neutral", "platform": "linux", "messages": [{"role": "user", "content": "one"}]}),
+        encoding="utf-8",
+    )
+    original_append = SqliteMessageSink.append
+    changed = False
+
+    def mutate_after_append(self: SqliteMessageSink, value: ParsedMessage) -> None:
+        nonlocal changed
+        original_append(self, value)
+        if not changed:
+            changed = True
+            source.write_text(source.read_text(encoding="utf-8") + " ", encoding="utf-8")
+
+    monkeypatch.setattr(SqliteMessageSink, "append", mutate_after_append)
+    directory = tmp_path / "prepared"
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.HERMES.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(directory),
+    )
+    assert changed
+    assert artifact.deferred
     assert artifact.sessions_path is None
     assert list(directory.glob("*.db")) == []
 
