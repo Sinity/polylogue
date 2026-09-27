@@ -201,6 +201,31 @@ REUSE_LOOKUP_LIMIT = 50
 REUSE_ENV = "POLYLOGUE_TEST_REUSE"
 
 
+#: Held for the rest of the process once taken; the kernel releases it on exit.
+_SELECTION_LOCKS: list[int] = []
+
+
+def _hold_selection_lock(selection: list[str]) -> None:
+    """Serialize identical selections within this checkout for this process's life."""
+    import fcntl
+    import hashlib
+
+    lock_dir = ROOT / ".cache" / "verify" / "inflight"
+    try:
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(json.dumps(selection).encode("utf-8")).hexdigest()[:24]
+        handle = os.open(lock_dir / f"{digest}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.stderr.write("devtools test: the same selection is already running in this checkout; waiting for it.\n")
+        sys.stderr.flush()
+        fcntl.flock(handle, fcntl.LOCK_EX)
+    _SELECTION_LOCKS.append(handle)
+
+
 def _parse_rerun(selection: list[str]) -> tuple[bool, list[str]]:
     """Consume ``--rerun`` (always run) without forwarding it to pytest."""
     return "--rerun" in selection, [argument for argument in selection if argument != "--rerun"]
@@ -673,6 +698,9 @@ def main(argv: list[str] | None = None) -> int:
         return 4
 
     if not force_rerun and os.environ.get(REUSE_ENV, "1") != "0":
+        # Two callers in one checkout asking for the same selection share one
+        # run: the second waits here, then finds the first's receipt below.
+        _hold_selection_lock(selection)
         reused = reusable_green_receipt(selection, root=ROOT, content_sha256=git_worktree_content_sha256(ROOT))
         if reused is not None:
             sys.stderr.write(

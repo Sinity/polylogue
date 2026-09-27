@@ -1108,3 +1108,45 @@ def test_main_reuses_a_green_receipt_without_queueing(
 
     assert run_tests.main(["tests/unit/devtools/test_run_tests.py"]) == 0
     assert f"receipt={receipt}" in capsys.readouterr().err
+
+
+def test_identical_selections_in_one_checkout_share_one_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A second caller with the same selection waits for the first, then reuses its receipt.
+
+    Anti-vacuity: remove ``_hold_selection_lock`` and the second process
+    finishes while the first still holds the lock, so its recorded wait is
+    missing.
+    """
+    import fcntl
+    import hashlib
+    import os
+    import time
+
+    monkeypatch.setattr(run_tests, "ROOT", tmp_path)
+    selection = ["tests/unit/test_a.py"]
+    lock_dir = tmp_path / ".cache" / "verify" / "inflight"
+    lock_dir.mkdir(parents=True)
+    digest = hashlib.sha256(json.dumps(selection).encode("utf-8")).hexdigest()[:24]
+    held = os.open(lock_dir / f"{digest}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(held, fcntl.LOCK_EX)
+    released_at: list[float] = []
+
+    import threading
+
+    def release_later() -> None:
+        time.sleep(0.3)
+        released_at.append(time.monotonic())
+        fcntl.flock(held, fcntl.LOCK_UN)
+
+    thread = threading.Thread(target=release_later)
+    thread.start()
+    run_tests._hold_selection_lock(selection)
+    acquired_at = time.monotonic()
+    thread.join()
+    os.close(held)
+    try:
+        assert released_at and acquired_at >= released_at[0]
+    finally:
+        for handle in run_tests._SELECTION_LOCKS:
+            os.close(handle)
+        run_tests._SELECTION_LOCKS.clear()
