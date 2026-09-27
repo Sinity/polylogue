@@ -1210,6 +1210,53 @@ def _read_launch(path: Path) -> dict[str, Any]:
     return document
 
 
+def _rerun_failures_in_slot(environment: Mapping[str, str], *, cwd: str, log_path: Path) -> None:
+    """Rerun a failed run's failures once, alone, while this job holds the slot.
+
+    A focused client used to adjudicate its failures by queueing a second
+    job, which on a contended pool cost another full queue wait for a
+    handful of tests. The client names its report and step directory in
+    ``RERUN_IN_SLOT_ENV``; this job runs the same one-process rerun the client
+    would have, and records its exit so the client adjudicates from it. The
+    exit code of the job stays the first run's: adjudication belongs to the
+    client, which also owns the report it patches.
+    """
+    from devtools.pytest_rerun import RERUN_IN_SLOT_ENV, RERUN_IN_SLOT_RESULT, build_rerun, rerun_environment
+
+    raw = environment.get(RERUN_IN_SLOT_ENV)
+    if not raw:
+        return
+    try:
+        spec = json.loads(raw)
+        report_path, step_dir, root = Path(spec["report_path"]), Path(spec["step_dir"]), Path(spec["root"])
+    except (ValueError, KeyError, TypeError):
+        return
+    plan = build_rerun(report_path=report_path, step_dir=step_dir, root=root)
+    if plan is None:
+        return
+    failed, command, _rerun_report = plan
+    with open(log_path, "ab") as log:
+        log.write(f"\n  rerun {len(failed)} failed test(s) alone, in this slot ...\n".encode())
+        log.flush()
+        try:
+            rerun_exit = subprocess.run(
+                command,
+                cwd=cwd,
+                env=rerun_environment(environment),
+                stdout=log,
+                stderr=log,
+                start_new_session=True,
+                check=False,
+            ).returncode
+        except OSError as exc:
+            log.write(f"devtools.pytest_slot: could not start the rerun: {exc}\n".encode())
+            return
+    with contextlib.suppress(OSError):
+        (step_dir / RERUN_IN_SLOT_RESULT).write_text(
+            json.dumps({"attempted": failed, "rerun_exit": rerun_exit}), encoding="utf-8"
+        )
+
+
 def _run_launch(launch_path: Path) -> int:
     """Run one launch file inside the job holding the pytest slot."""
     try:
@@ -1301,6 +1348,8 @@ def _run_launch(launch_path: Path) -> int:
             for number, handler in previous.items():
                 with contextlib.suppress(ValueError, OSError):
                     signal.signal(number, handler)
+    if returncode == 1:
+        _rerun_failures_in_slot(environment, cwd=launch["working_directory"], log_path=log_path)
     receipt = _slot_receipt(
         status="success" if returncode == 0 else "failed",
         exit_code=returncode,

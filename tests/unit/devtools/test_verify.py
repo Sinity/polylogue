@@ -1579,7 +1579,8 @@ def test_a_failing_run_states_its_verdict_after_the_last_gate(
 
     final = capsys.readouterr().err.strip().splitlines()[-1]
     assert final == (
-        "verify: FAILED exit=1 diagnosis=gate_failed receipt=.cache/verify/runs/verify-quick-20260922/run.json"
+        "verify: FAILED exit=1 diagnosis=gate_failed "
+        f"receipt={verify.ROOT / '.cache/verify/runs/verify-quick-20260922/run.json'}"
     )
 
 
@@ -1600,7 +1601,7 @@ def test_a_passing_run_states_its_verdict_too(capsys: pytest.CaptureFixture[str]
     verify._emit(_verify_payload(0, None), use_json=False, operation=None)
 
     final = capsys.readouterr().err.strip().splitlines()[-1]
-    assert final == "verify: PASSED exit=0 receipt=.cache/verify/runs/verify-quick-20260922/run.json"
+    assert final == f"verify: PASSED exit=0 receipt={verify.ROOT / '.cache/verify/runs/verify-quick-20260922/run.json'}"
     assert "unknown" not in final
 
 

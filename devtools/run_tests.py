@@ -42,7 +42,7 @@ from devtools.pytest_invocation import (
     effective_hypothesis_profile,
     managed_plugin_args,
 )
-from devtools.pytest_rerun import rerun_failed_once
+from devtools.pytest_rerun import RERUN_IN_SLOT_ENV, rerun_failed_once
 from devtools.pytest_slot import (
     PytestSlotObservationUnavailableError,
     PytestSlotUnavailableError,
@@ -410,6 +410,11 @@ def _run(
     try:
         executor = run_pytest if runner == "managed" else run_pytest_isolated
         env["POLYLOGUE_FOCUSED_WORKTREE_PROVENANCE"] = "1"
+        # A queued job reruns its own failures before releasing the slot, so a
+        # red run is adjudicated without a second queue wait.
+        env[RERUN_IN_SLOT_ENV] = json.dumps(
+            {"report_path": str(report_path), "step_dir": str(artifacts.step_dir), "root": str(ROOT)}
+        )
         outcome = executor(command, cwd=cwd, env=env, root=ROOT)
     except PytestSlotUnavailableError as exc:
         sys.stderr.write(f"devtools test: {exc}\n")
@@ -751,7 +756,9 @@ def main(argv: list[str] | None = None) -> int:
     # whatever the run found; carrying the outcome in the stream keeps it out of
     # reach of that mistake. The receipt is this run's own file, never a
     # `current-*` name a concurrent run in the same checkout would overwrite.
-    receipt = run.relative_run_dir / "run.json"
+    # Absolute, so the line names the checkout that ran: a run started from the
+    # main checkout instead of the intended worktree is visible at a glance.
+    receipt = ROOT / run.relative_run_dir / "run.json"
     sys.stderr.write(
         f"\ndevtools test: {'PASSED' if rc == 0 else 'FAILED'} exit={rc} "
         f"diagnosis={metadata.get('diagnosis') or 'unknown'} receipt={receipt}\n"

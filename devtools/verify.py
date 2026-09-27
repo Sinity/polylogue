@@ -772,7 +772,8 @@ def _write_verdict_line(payload: Mapping[str, Any], *, stream: Any) -> None:
     diagnosis = payload.get("diagnosis")
     named = f" diagnosis={diagnosis}" if diagnosis else ""
     artifact_dir = payload.get("artifact_dir")
-    receipt = f" receipt={Path(str(artifact_dir)) / 'run.json'}" if artifact_dir else ""
+    # Absolute, so the verdict line names the checkout that was verified.
+    receipt = f" receipt={ROOT / Path(str(artifact_dir)) / 'run.json'}" if artifact_dir else ""
     stream.write(f"\nverify: {verdict} exit={exit_code}{named}{receipt}\n")
 
 

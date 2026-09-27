@@ -33,6 +33,11 @@ from devtools.toolchain import venv_python
 
 __all__ = [
     "MAX_RERUN_NODEIDS",
+    "RERUN_IN_SLOT_ENV",
+    "RERUN_IN_SLOT_RESULT",
+    "adjudicate_rerun",
+    "build_rerun",
+    "rerun_environment",
     "read_json",
     "report_nodeid_to_selector",
     "rerun_failed_once",
@@ -76,21 +81,20 @@ def _path_for_receipt(path: Path, *, root: Path) -> Path:
         return path
 
 
-def rerun_failed_once(
-    *,
-    report_path: Path,
-    step_dir: Path,
-    env: Mapping[str, str],
-    root: Path,
-    runner: str = "managed",
-) -> dict[str, Any] | None:
-    """Rerun exactly the failed tests once, alone and unselected.
+#: Set on a queued focused run: the slot job adjudicates its own failures
+#: while it still holds the slot, instead of the client queueing a second
+#: job for the rerun. The value names the report and step directory.
+RERUN_IN_SLOT_ENV = "POLYLOGUE_PYTEST_RERUN_IN_SLOT"
+#: Written by the slot job beside the step's artifacts once its in-slot rerun
+#: has finished: ``{"attempted": [...], "rerun_exit": int}``.
+RERUN_IN_SLOT_RESULT = "pytest-rerun-in-slot.json"
 
-    ``report_path`` is the just-finished run's JSON report; it is patched in
-    place when a failure clears, so the caller's downstream statistics read
-    the adjudicated outcome. Returns ``None`` when there is nothing to
-    adjudicate (no readable report, no failures, or more failures than
-    :data:`MAX_RERUN_NODEIDS`).
+
+def build_rerun(*, report_path: Path, step_dir: Path, root: Path) -> tuple[list[str], list[str], Path] | None:
+    """Return ``(failed, command, rerun_report)`` for a failed run, or ``None``.
+
+    ``None`` means there is nothing to adjudicate: no readable report, no
+    failures, or more than :data:`MAX_RERUN_NODEIDS`.
     """
     report = read_json(report_path)
     if not isinstance(report, Mapping):
@@ -103,7 +107,7 @@ def rerun_failed_once(
     if not failed or len(failed) > MAX_RERUN_NODEIDS:
         return None
     rerun_report = step_dir / "pytest-rerun.json"
-    rerun_command = [
+    command = [
         venv_python(root=root),
         "-m",
         "pytest",
@@ -119,19 +123,27 @@ def rerun_failed_once(
         CLEAR_CONFIGURED_ADDOPTS,
         *failed,
     ]
-    sys.stderr.write(f"\n  rerun {len(failed)} failed test(s) alone ... ")
-    sys.stderr.flush()
-    rerun_env = {key: value for key, value in env.items() if not key.startswith("PYTEST_XDIST")}
-    # The rerun is pytest too, so it holds the host's pytest slot like the run
-    # it is adjudicating.
-    try:
-        executor = run_pytest if runner == "managed" else run_pytest_isolated
-        rerun_completed = executor(rerun_command, cwd=str(root), env=rerun_env, root=root, stdout=sys.stderr)
-    except PytestSlotUnavailableError as exc:
-        sys.stderr.write(f"\n  rerun could not acquire the pytest slot: {exc}\n")
-        return {"attempted": failed, "still_failed": failed, "flaky": [], "rerun_report": None, "rerun_exit": 125}
+    return failed, command, rerun_report
+
+
+def rerun_environment(env: Mapping[str, str]) -> dict[str, str]:
+    """The rerun is one process: drop the xdist worker settings."""
+    return {key: value for key, value in env.items() if not key.startswith("PYTEST_XDIST")}
+
+
+def adjudicate_rerun(
+    *,
+    report_path: Path,
+    step_dir: Path,
+    failed: list[str],
+    rerun_report: Path,
+    rerun_exit: int,
+    root: Path,
+) -> dict[str, Any]:
+    """Fold one finished rerun into the run's report and return the verdict."""
+    report = read_json(report_path) or {}
     second = read_json(rerun_report)
-    if not isinstance(second, Mapping) or rerun_completed.returncode not in (0, 1):
+    if not isinstance(second, Mapping) or rerun_exit not in (0, 1):
         # No report, or pytest itself did not finish cleanly (exit 3 is an
         # internal error): nothing here clears a failure.
         return {
@@ -139,7 +151,7 @@ def rerun_failed_once(
             "still_failed": failed,
             "flaky": [],
             "rerun_report": None,
-            "rerun_exit": rerun_completed.returncode,
+            "rerun_exit": rerun_exit,
         }
     second_outcome = {
         str(test["nodeid"]): str(test.get("outcome"))
@@ -148,7 +160,7 @@ def rerun_failed_once(
     }
     still_failed = [nodeid for nodeid in failed if second_outcome.get(nodeid) != "passed"]
     flaky = [nodeid for nodeid in failed if second_outcome.get(nodeid) == "passed"]
-    if not still_failed and rerun_completed.returncode != 0:
+    if not still_failed and rerun_exit != 0:
         # Every node passed but the process did not: the run is not green.
         still_failed, flaky = failed, []
     if flaky:
@@ -202,3 +214,56 @@ def rerun_failed_once(
         # formatting its own path.
         "rerun_report": str(_path_for_receipt(rerun_report, root=root)),
     }
+
+
+def rerun_failed_once(
+    *,
+    report_path: Path,
+    step_dir: Path,
+    env: Mapping[str, str],
+    root: Path,
+    runner: str = "managed",
+) -> dict[str, Any] | None:
+    """Rerun exactly the failed tests once, alone and unselected.
+
+    ``report_path`` is the just-finished run's JSON report; it is patched in
+    place when a failure clears, so the caller's downstream statistics read
+    the adjudicated outcome. Returns ``None`` when there is nothing to
+    adjudicate. A queued run whose slot job already reran its failures (see
+    :data:`RERUN_IN_SLOT_ENV`) is adjudicated from that record, without
+    queueing again for the slot.
+    """
+    in_slot = read_json(step_dir / RERUN_IN_SLOT_RESULT)
+    if isinstance(in_slot, Mapping) and isinstance(in_slot.get("attempted"), list):
+        return adjudicate_rerun(
+            report_path=report_path,
+            step_dir=step_dir,
+            failed=[str(nodeid) for nodeid in in_slot["attempted"]],
+            rerun_report=step_dir / "pytest-rerun.json",
+            rerun_exit=int(in_slot.get("rerun_exit", 3)),
+            root=root,
+        )
+    plan = build_rerun(report_path=report_path, step_dir=step_dir, root=root)
+    if plan is None:
+        return None
+    failed, rerun_command, rerun_report = plan
+    sys.stderr.write(f"\n  rerun {len(failed)} failed test(s) alone ... ")
+    sys.stderr.flush()
+    # The rerun is pytest too, so it holds the host's pytest slot like the run
+    # it is adjudicating.
+    try:
+        executor = run_pytest if runner == "managed" else run_pytest_isolated
+        rerun_completed = executor(
+            rerun_command, cwd=str(root), env=rerun_environment(env), root=root, stdout=sys.stderr
+        )
+    except PytestSlotUnavailableError as exc:
+        sys.stderr.write(f"\n  rerun could not acquire the pytest slot: {exc}\n")
+        return {"attempted": failed, "still_failed": failed, "flaky": [], "rerun_report": None, "rerun_exit": 125}
+    return adjudicate_rerun(
+        report_path=report_path,
+        step_dir=step_dir,
+        failed=failed,
+        rerun_report=rerun_report,
+        rerun_exit=rerun_completed.returncode,
+        root=root,
+    )
