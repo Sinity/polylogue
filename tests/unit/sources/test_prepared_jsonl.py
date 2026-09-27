@@ -292,16 +292,21 @@ def test_generic_single_object_stream_matches_parser_with_duplicate_ids(
 
     monkeypatch.setattr(ijson, "items", tracked_items)
     monkeypatch.setattr(SqliteMessageSink, "append", tracked_append)
+    scratch_root = tmp_path / "prepared"
+    attempt_directory = scratch_root / "attempt-generic"
     artifact = prepare_jsonl_blob(
         str(source),
         str(source),
         provider.value,
         "fallback",
         is_stream=False,
-        shard_directory=str(tmp_path / "prepared"),
+        shard_directory=str(scratch_root),
+        attempt_directory=attempt_directory,
     )
     assert artifact.error is None
     assert first_appended_after == 1
+    assert artifact.sessions_path is not None and artifact.sessions_path.parent == attempt_directory
+    assert artifact.shard_path is not None and artifact.shard_path.parent == attempt_directory
     [actual] = artifact.iter_sessions()
     assert (actual.provider_session_id, actual.title, actual.created_at, actual.content_hash) == (
         expected.provider_session_id,
@@ -314,13 +319,14 @@ def test_generic_single_object_stream_matches_parser_with_duplicate_ids(
         "1e+20",
         str(10**30),
     ]
-    assert artifact.shard_path is not None
     with sqlite3.connect(expected_shard.path) as baseline, sqlite3.connect(artifact.shard_path) as prepared:
         for table in ("messages", "blocks", "shard_session"):
             assert (
                 prepared.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
                 == baseline.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
             )
+    artifact.discard()
+    assert not attempt_directory.exists()
 
 
 def test_generic_single_object_stream_discards_corrupt_suffix(tmp_path: Path) -> None:
@@ -500,6 +506,38 @@ def test_bundle_worker_discards_partial_artifact_on_corrupt_suffix(tmp_path: Pat
     assert artifact.error is not None
     assert artifact.sessions_path is None
     assert list(directory.glob("*.db")) == []
+
+
+def test_assigned_attempt_discard_preserves_sibling_attempt_and_sentinel(tmp_path: Path) -> None:
+    source = tmp_path / "conversation.json"
+    source.write_text(
+        json.dumps([ChatGPTExportBuilder("attempt-carrier").add_node("user", "Neutral prompt").build()]),
+        encoding="utf-8",
+    )
+    scratch_root = tmp_path / "parse-shards"
+    attempt = scratch_root / "attempt-owned"
+    sibling = scratch_root / "attempt-sibling"
+    sibling.mkdir(parents=True)
+    sentinel = sibling / "keep.txt"
+    sentinel.write_text("unrelated carrier")
+
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(scratch_root),
+        attempt_directory=attempt,
+    )
+    assert artifact.error is None
+    assert artifact.attempt_directory == attempt
+    assert artifact.sessions_path is not None and artifact.sessions_path.parent == attempt
+    assert artifact.shard_path is not None and artifact.shard_path.parent == attempt
+    artifact.discard()
+
+    assert not attempt.exists()
+    assert sentinel.read_text() == "unrelated carrier"
 
 
 def test_singleton_chatgpt_array_keeps_existing_parse_identity(tmp_path: Path) -> None:

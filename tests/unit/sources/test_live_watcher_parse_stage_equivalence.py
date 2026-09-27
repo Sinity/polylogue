@@ -66,6 +66,36 @@ def _dead_process_worker() -> None:
     os._exit(7)
 
 
+def _attempt_death_path_worker(
+    provider_value: str,
+    source_path: str,
+    fallback_id: str,
+    *,
+    is_stream: bool,
+    shard_directory: str,
+    attempt_directory: str | None = None,
+) -> object:
+    if Path(source_path).name.startswith("killed-"):
+        import os
+
+        assert attempt_directory is not None
+        attempt = Path(attempt_directory)
+        (attempt / "prepared-partial.db").write_bytes(b"partial prepared database")
+        (attempt / "prepared-partial.db-journal").write_bytes(b"partial journal")
+        (attempt / "shard-partial.db").write_bytes(b"partial shard")
+        os._exit(7)
+    from polylogue.sources.live.parse_prefetch import live_parse_path_worker
+
+    return live_parse_path_worker(
+        provider_value,
+        source_path,
+        fallback_id,
+        is_stream=is_stream,
+        shard_directory=shard_directory,
+        attempt_directory=attempt_directory,
+    )
+
+
 def _delayed_path_worker(
     provider_value: str,
     source_path: str,
@@ -73,6 +103,7 @@ def _delayed_path_worker(
     *,
     is_stream: bool,
     shard_directory: str,
+    attempt_directory: str | None = None,
 ) -> object:
     from polylogue.sources.live.parse_prefetch import live_parse_path_worker
 
@@ -83,6 +114,7 @@ def _delayed_path_worker(
         fallback_id,
         is_stream=is_stream,
         shard_directory=shard_directory,
+        attempt_directory=attempt_directory,
     )
 
 
@@ -988,6 +1020,10 @@ def test_path_worker_timeout_preserves_late_process_result(tmp_path: Path, monke
     try:
         assert stage.warm_paths([candidate]) == 1
         future = stage._path_futures[str(path)]
+        live_attempt = stage._path_attempt_dirs[str(path)]
+        assert live_attempt.exists()
+        assert not future.done(), "the timed-out worker completed before the custody assertion"
+        assert live_attempt.exists(), "warm timeout reclaimed scratch while its worker was still live"
         future.result(timeout=10)
         inside_writer = True
         pending = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
@@ -1007,35 +1043,106 @@ def test_path_worker_timeout_preserves_late_process_result(tmp_path: Path, monke
     assert list(directory.iterdir()) == []
 
 
-def test_path_worker_death_is_retryable_and_shutdown_cleans_only_owned_files(tmp_path: Path) -> None:
+def test_path_stage_shutdown_is_idempotent(tmp_path: Path) -> None:
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+
+    stage.shutdown()
+    stage.shutdown()
+
+    assert not (tmp_path / "parse-shards" / ".live-parse-attempts").exists()
+
+
+def test_path_worker_death_reclaims_only_its_attempt_before_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import hashlib
 
-    path = _write_fixture_corpus(tmp_path / "sessions", count=1)[0]
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    sibling_path, retry_path = _write_fixture_corpus(tmp_path / "sessions", count=2)
     directory = tmp_path / "parse-shards"
+    attempt_root = directory / ".live-parse-attempts"
+    stale_attempt = attempt_root / "attempt-left-by-previous-process"
+    stale_attempt.mkdir(parents=True)
+    (stale_attempt / "prepared-partial.db").write_bytes(b"stale partial")
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", _attempt_death_path_worker)
     stage = LiveParseStage(max_workers=1, shard_directory=directory, use_processes=True)
     unrelated = directory / "operator-note.txt"
     unrelated.write_text("keep")
-    (directory / "prepared-orphan.db").write_bytes(b"partial")
-    (directory / "shard-orphan.db").write_bytes(b"partial")
+    assert not stale_attempt.exists(), "startup did not reclaim a stale parent-owned attempt directory"
     try:
-        future = stage._executor.submit(_dead_process_worker)
-        stage._path_futures["dead"] = future  # type: ignore[assignment]
-        with pytest.raises(BrokenProcessPool):
-            future.result(timeout=15)
-        stage.warm_paths([])
-        failed = stage.pop_path("dead", blob_hash="0" * 64)
-        assert failed is not None and failed.deferred
-        assert "worker process died" in str(failed.error)
+        assert stage.warm_paths([(str(sibling_path), Provider.CODEX, True)]) == 1
+        sibling = stage._path_results[str(sibling_path)]
+        assert sibling.attempt_directory is not None and sibling.attempt_directory.exists()
 
-        candidate = (str(path), Provider.CODEX, True)
-        assert stage.warm_paths([candidate]) == 1
-        retry = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+        for index in range(3):
+            killed = tmp_path / f"killed-{index}.json"
+            killed.write_text("worker exits before parsing")
+            candidate = (str(killed), Provider.CODEX, True)
+            assert stage.warm_paths([candidate]) == 1
+            failed = stage.pop_path(str(killed), blob_hash="0" * 64)
+            assert failed is not None and failed.deferred
+            assert "worker process died" in str(failed.error)
+            attempts = tuple(attempt_root.iterdir())
+            assert attempts == (sibling.attempt_directory,)
+            assert not any(any(attempt.glob("*partial*")) for attempt in attempts)
+
+        assert stage.warm_paths([(str(retry_path), Provider.CODEX, True)]) == 1
+        retry = stage.pop_path(str(retry_path), blob_hash=hashlib.sha256(retry_path.read_bytes()).hexdigest())
         assert retry is not None and retry.error is None
+        assert sibling.attempt_directory.exists(), "another attempt failure swept the pending sibling carrier"
         retry.discard()
+        published_sibling = stage.pop_path(
+            str(sibling_path), blob_hash=hashlib.sha256(sibling_path.read_bytes()).hexdigest()
+        )
+        assert published_sibling is sibling
+        published_sibling.discard()
+        assert tuple(attempt_root.iterdir()) == ()
     finally:
         stage.shutdown()
     assert unrelated.read_text() == "keep"
     assert sorted(item.name for item in directory.iterdir()) == ["operator-note.txt"]
+
+
+def test_path_worker_stop_unknown_blocks_cleanup_and_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polylogue.pipeline.services.process_pool as process_pool
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", _attempt_death_path_worker)
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards", use_processes=True)
+    attempt_root = tmp_path / "parse-shards" / ".live-parse-attempts"
+    killed = tmp_path / "killed-unknown-stop.json"
+    killed.write_text("worker exits before parsing")
+    try:
+        with monkeypatch.context() as context:
+            context.setattr(process_pool, "terminate_process_pool", lambda _executor: False)
+            assert stage.warm_paths([(str(killed), Provider.CODEX, True)]) == 1
+            assert stage._cleanup_blocked
+            assert stage.cleanup_failure_count == 1
+            failed = stage.pop_path(str(killed), blob_hash="0" * 64)
+            assert failed is not None and failed.deferred
+            residue = tuple(attempt_root.iterdir())
+            assert len(residue) == 1
+            assert sorted(path.name for path in residue[0].iterdir()) == [
+                "prepared-partial.db",
+                "prepared-partial.db-journal",
+                "shard-partial.db",
+            ]
+
+            retry = tmp_path / "killed-retry-must-not-start.json"
+            retry.write_text("must remain unsubmitted")
+            assert stage.warm_paths([(str(retry), Provider.CODEX, True)]) == 1
+            deferred = stage.pop_path(str(retry), blob_hash="0" * 64)
+            assert deferred is not None and deferred.deferred
+            assert not stage._path_futures
+            assert tuple(attempt_root.iterdir()) == residue
+
+            stage.shutdown()
+            assert tuple(attempt_root.iterdir()) == residue
+    finally:
+        stage.shutdown()
 
 
 @pytest.mark.asyncio

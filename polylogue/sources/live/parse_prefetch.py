@@ -8,8 +8,10 @@ captured blob hash before consuming a carrier.
 
 from __future__ import annotations
 
+import shutil
 import threading
 import time
+import uuid
 from collections.abc import Callable, Sequence
 from concurrent.futures import (
     FIRST_COMPLETED,
@@ -21,7 +23,7 @@ from concurrent.futures import (
     wait,
 )
 from concurrent.futures.process import BrokenProcessPool
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, suppress
 from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
@@ -190,6 +192,7 @@ def live_parse_path_worker(
     *,
     is_stream: bool,
     shard_directory: str,
+    attempt_directory: str | None = None,
 ) -> LivePathPreparation:
     from polylogue.sources.dispatch import is_jsonl_source_path
     from polylogue.sources.live.batch_support import _detect_provider_from_path_sample, jsonl_complete_prefix_path
@@ -211,6 +214,7 @@ def live_parse_path_worker(
         fallback_id,
         is_stream=is_stream,
         shard_directory=shard_directory,
+        attempt_directory=None if attempt_directory is None else Path(attempt_directory),
         parse_prefix_size=parse_prefix_size,
         prepare_session=lambda session: session,
     )
@@ -388,9 +392,9 @@ class LiveParseStage:
         use_processes: bool = False,
     ) -> None:
         # polylogue-bp12n.6. Where a worker's sealed shard goes, or ``None``
-        # to keep row binding on the writer thread. The stage owns the
-        # directory's contents: a shard lives from the worker that sealed it
-        # to the writer that copied it, and nothing outlives ``shutdown``.
+        # to keep row binding on the writer thread. Path workers receive a
+        # parent-created attempt child so their files remain attributable
+        # until publication or discard.
         self._shard_directory = shard_directory
         #: Workers that parsed successfully but handed back no shard
         #: (polylogue-3r36h). A systematic shard-build failure otherwise
@@ -400,18 +404,22 @@ class LiveParseStage:
         self._path_results: dict[str, LivePathPreparation] = {}
         self._path_futures: dict[str, Future[LivePathPreparation]] = {}
         self._path_sizes: dict[str, int] = {}
+        self._path_attempt_dirs: dict[str, Path] = {}
         self._path_inflight_bytes = 0
         self._closing = False
+        self.cleanup_failure_count = 0
+        self._cleanup_blocked = False
         if shard_directory is not None:
             shard_directory.mkdir(parents=True, exist_ok=True)
-            # Anything already here belongs to a process that died before it
-            # could copy or delete it. The archive has one writer, so there
-            # is no other owner to consult.
-            for residue in shard_directory.glob("shard-*"):
-                discard_session_shard(residue)
-            for residue in shard_directory.glob("prepared-*.db"):
-                residue.unlink(missing_ok=True)
-                residue.with_name(residue.name + "-journal").unlink(missing_ok=True)
+            self._attempt_root: Path | None = shard_directory / ".live-parse-attempts"
+            self._attempt_root.mkdir(parents=True, exist_ok=True)
+            # This private namespace contains only parent-assigned attempt
+            # directories. Never sweep filenames in the shared shard root.
+            for residue in tuple(self._attempt_root.iterdir()):
+                if residue.is_dir() and residue.name.startswith("attempt-"):
+                    self._remove_attempt_directory(residue)
+        else:
+            self._attempt_root = None
         worker_count = max_workers if max_workers is not None else live_watcher_parse_stage_worker_count()
         self._worker_count = worker_count
         self._max_path_pending = max(1, min(worker_count, 2))
@@ -457,6 +465,13 @@ class LiveParseStage:
         """
         if self._shard_directory is None:
             return 0
+        if self._cleanup_blocked:
+            for source_path, _provider, _is_stream in candidates:
+                if source_path not in self._path_results and source_path not in self._path_futures:
+                    self._path_results[source_path] = LivePathPreparation(
+                        None, None, None, "worker stop could not be verified; scratch cleanup is blocked", deferred=True
+                    )
+            return len(candidates)
         deadline = time.monotonic() + self._warm_timeout_seconds
         remaining = list(candidates)
         while remaining:
@@ -479,21 +494,27 @@ class LiveParseStage:
                 ):
                     next_wave.append((source_path, provider, is_stream))
                     continue
+                attempt_directory: Path | None = None
                 try:
+                    attempt_directory = self._new_attempt_directory()
                     future = self._executor.submit(
                         live_parse_path_worker,
                         provider.value,
                         source_path,
                         Path(source_path).stem,
                         is_stream=is_stream,
-                        shard_directory=str(self._shard_directory),
+                        shard_directory=str(self._attempt_root),
+                        attempt_directory=str(attempt_directory),
                     )
                 except Exception as exc:
+                    if attempt_directory is not None:
+                        self._remove_attempt_directory(attempt_directory)
                     self._path_results[source_path] = LivePathPreparation(
                         None, None, None, f"worker submission failed: {type(exc).__name__}"[:500], deferred=True
                     )
                     continue
                 self._path_futures[source_path] = future
+                self._path_attempt_dirs[source_path] = attempt_directory
                 self._path_sizes[source_path] = source_bytes
                 self._path_inflight_bytes += source_bytes
             remaining = next_wave
@@ -643,14 +664,34 @@ class LiveParseStage:
             return
         self._path_futures.pop(source_path, None)
         self._path_inflight_bytes -= self._path_sizes.pop(source_path, 0)
+        attempt_directory = self._path_attempt_dirs.pop(source_path, None)
         try:
             result = future.result()
         except BrokenProcessPool:
             result = LivePathPreparation(None, None, None, "worker process died during preparation", deferred=True)
             if not self._closing:
-                self._restart_broken_process_pool()
+                self._restart_broken_process_pool(failed_attempt=attempt_directory)
         except Exception as exc:
             result = LivePathPreparation(None, None, None, f"worker failed: {type(exc).__name__}"[:500], deferred=True)
+        if attempt_directory is not None:
+            if result.error is None:
+                try:
+                    self._validate_attempt_result(result, attempt_directory)
+                    result = replace(result, attempt_directory=attempt_directory)
+                except (OSError, ValueError) as exc:
+                    result = LivePathPreparation(
+                        None,
+                        None,
+                        None,
+                        f"worker artifact ownership mismatch: {type(exc).__name__}"[:500],
+                        deferred=True,
+                    )
+                    self._remove_attempt_directory(attempt_directory)
+            else:
+                # A failed pool stop keeps this attempt in parent custody;
+                # shutdown may reclaim it later after a verified reap.
+                if not self._cleanup_blocked:
+                    self._remove_attempt_directory(attempt_directory)
         if result.error is None:
             try:
                 # A full byte scan belongs at the prefetch boundary, before
@@ -671,18 +712,92 @@ class LiveParseStage:
             old.discard()
         self._path_results[source_path] = result
 
-    def _restart_broken_process_pool(self, *, reason: str = "worker process died during preparation") -> None:
+    def _new_attempt_directory(self) -> Path:
+        if self._attempt_root is None:
+            raise RuntimeError("path preparation has no owned scratch root")
+        path = self._attempt_root / f"attempt-{uuid.uuid4().hex}"
+        path.mkdir()
+        return path
+
+    def _validate_attempt_result(self, result: LivePathPreparation, attempt_directory: Path) -> None:
+        if result.attempt_directory is not None and result.attempt_directory != attempt_directory:
+            raise ValueError("worker returned another attempt directory")
+        for path in (result.sessions_path, result.shard_path):
+            if path is None or path.parent != attempt_directory:
+                raise ValueError("worker artifact escaped its parent-assigned attempt directory")
+
+    def _remove_attempt_directory(self, path: Path) -> bool:
+        if self._attempt_root is None or path.parent != self._attempt_root or not path.name.startswith("attempt-"):
+            self._cleanup_blocked = True
+            self._record_cleanup_failure("refusing to remove a path outside the owned attempt namespace")
+            return False
+        try:
+            shutil.rmtree(path)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError:
+            self._cleanup_blocked = True
+            self._record_cleanup_failure("attempt scratch removal failed")
+            return False
+
+    def _record_cleanup_failure(self, reason: str) -> None:
+        self.cleanup_failure_count += 1
+        if self.cleanup_failure_count > 1:
+            return
+        emit(
+            "live.parse_prefetch.cleanup_blocked",
+            level=WARNING,
+            outcome="degraded",
+            reason=reason,
+            cumulative_count=self.cleanup_failure_count,
+        )
+
+    def _restart_broken_process_pool(
+        self,
+        *,
+        failed_attempt: Path | None = None,
+        reason: str = "worker process died during preparation",
+    ) -> None:
         if not isinstance(self._executor, ProcessPoolExecutor):
             return
         from polylogue.pipeline.services.process_pool import process_pool_executor, terminate_process_pool
 
-        for pending_path, future in tuple(self._path_futures.items()):
+        pending = tuple(self._path_futures.items())
+        for _pending_path, future in pending:
             future.cancel()
+        stopped = terminate_process_pool(self._executor)
+        if not stopped:
+            self._cleanup_blocked = True
+            self._record_cleanup_failure("worker process stop could not be verified; retaining attempt scratch")
+            return
+        if failed_attempt is not None:
+            self._remove_attempt_directory(failed_attempt)
+        for pending_path, future in pending:
+            attempt_directory = self._path_attempt_dirs.pop(pending_path, None)
+            self._path_futures.pop(pending_path, None)
+            self._path_inflight_bytes -= self._path_sizes.pop(pending_path, 0)
+            # A sibling may have sealed successfully just before the pool
+            # broke. Its result is still useful and retains its own carrier.
+            if future.done() and not future.cancelled():
+                try:
+                    result = future.result()
+                except Exception:
+                    result = None
+                if result is not None and result.error is None and attempt_directory is not None:
+                    try:
+                        self._validate_attempt_result(result, attempt_directory)
+                        result.verify_files(full=True)
+                        result = replace(result, attempt_directory=attempt_directory)
+                        self._path_results[pending_path] = result
+                        continue
+                    except (OSError, ValueError):
+                        pass
             self._path_results[pending_path] = LivePathPreparation(None, None, None, reason, deferred=True)
-        self._path_futures.clear()
-        self._path_sizes.clear()
-        self._path_inflight_bytes = 0
-        terminate_process_pool(self._executor)
+            if attempt_directory is not None:
+                self._remove_attempt_directory(attempt_directory)
+        if self._cleanup_blocked:
+            return
         self._executor = process_pool_executor(max_workers=self._worker_count)
 
     def pop_path(self, source_path: str, *, blob_hash: str) -> LivePathPreparation | None:
@@ -696,6 +811,13 @@ class LiveParseStage:
         if result is None:
             return None
         if result.error is not None:
+            # A stable parse error carries the hash of the bytes it failed to
+            # parse, so only that error can be attributed to this capture.
+            # Retryable worker failures may have no hash and must retain their
+            # original reason.
+            if result.blob_hash is not None and result.blob_hash != blob_hash:
+                result.discard()
+                return LivePathPreparation(None, None, None, "captured source changed after preparation", deferred=True)
             return result
         if result.blob_hash != blob_hash:
             result.discard()
@@ -835,24 +957,34 @@ class LiveParseStage:
         # join it before removing scratch, so daemon stop stays bounded and
         # no worker can seal a carrier after cleanup.
         self._closing = True
+        stopped = True
         if isinstance(self._executor, ProcessPoolExecutor):
             from polylogue.pipeline.services.process_pool import terminate_process_pool
 
-            terminate_process_pool(self._executor)
+            stopped = terminate_process_pool(self._executor)
         else:
             self._executor.shutdown(wait=True, cancel_futures=True)
+        if not stopped:
+            self._cleanup_blocked = True
+            self._record_cleanup_failure("shutdown could not verify worker stop; retaining attempt scratch")
+            return
         for source_path, future in tuple(self._path_futures.items()):
             self._collect_path_future(source_path, future)
         self.cache.discard_all()
         for result in self._path_results.values():
             result.discard()
         self._path_results.clear()
-        if self._shard_directory is not None:
-            for residue in self._shard_directory.glob("shard-*"):
-                discard_session_shard(residue)
-            for residue in self._shard_directory.glob("prepared-*.db"):
-                residue.unlink(missing_ok=True)
-                residue.with_name(residue.name + "-journal").unlink(missing_ok=True)
+        if self._attempt_root is not None:
+            try:
+                residues = tuple(self._attempt_root.iterdir())
+            except FileNotFoundError:
+                residues = ()
+            for residue in residues:
+                if residue.is_dir() and residue.name.startswith("attempt-"):
+                    self._remove_attempt_directory(residue)
+            # Preserve a non-empty namespace, including unrelated files.
+            with suppress(OSError):
+                self._attempt_root.rmdir()
 
 
 __all__ = [

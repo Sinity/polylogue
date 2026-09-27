@@ -17,6 +17,7 @@ from polylogue.pipeline.services.process_pool import (
     resolve_ingest_batch_dispatch,
     resolve_revision_backfill_census_dispatch,
     resolve_validation_dispatch,
+    terminate_process_pool,
 )
 
 
@@ -46,6 +47,43 @@ def test_process_pool_context_is_spawn() -> None:
     # fresh per worker instead of forking a shared preloaded process, so no
     # inherited thread/lock state can cross into a worker.
     assert process_pool_context().get_start_method() == "spawn"
+
+
+def test_process_pool_rechecks_workers_after_shutdown_clears_process_map() -> None:
+    class Worker:
+        alive = True
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+        def terminate(self) -> None:
+            pass
+
+        def kill(self) -> None:
+            pass
+
+        def join(self, *, timeout: float) -> None:
+            del timeout
+
+    class Executor:
+        def __init__(self, worker: Worker) -> None:
+            self._processes: dict[int, Worker] | None = {1: worker}
+
+        def shutdown(self, *, wait: bool, cancel_futures: bool) -> None:
+            assert wait is False
+            assert cancel_futures is True
+            self._processes = None
+
+    worker = Worker()
+    executor = Executor(worker)
+
+    assert terminate_process_pool(executor, timeout=0) is False  # type: ignore[arg-type]
+    assert executor._processes is None
+    assert vars(executor)["_polylogue_unreaped_processes"] == (worker,)
+
+    worker.alive = False
+    assert terminate_process_pool(executor, timeout=0) is True  # type: ignore[arg-type]
+    assert not hasattr(executor, "_polylogue_unreaped_processes")
 
 
 def test_dispatch_caps_workers_to_process_cpu_budget(monkeypatch: pytest.MonkeyPatch) -> None:

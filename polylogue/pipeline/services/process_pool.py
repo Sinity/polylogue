@@ -7,11 +7,14 @@ import os
 import time
 from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
 from polylogue.runtime import available_cpus
+
+_UNREAPED_PROCESS_HANDLES_ATTR = "_polylogue_unreaped_processes"
 
 
 class _BlobSized(Protocol):
@@ -281,11 +284,13 @@ def process_pool_executor(*, max_workers: int) -> ProcessPoolExecutor:
     )
 
 
-def terminate_process_pool(executor: ProcessPoolExecutor, *, timeout: float = 1.0) -> None:
-    """Cancel pending work and bound shutdown of already-running workers."""
+def terminate_process_pool(executor: ProcessPoolExecutor, *, timeout: float = 1.0) -> bool:
+    """Cancel pending work and report whether every worker was reaped."""
     if timeout < 0:
         raise ValueError("process pool termination timeout must be non-negative")
     processes = tuple((getattr(executor, "_processes", None) or {}).values())
+    if not processes:
+        processes = tuple(getattr(executor, _UNREAPED_PROCESS_HANDLES_ATTR, ()))
     executor.shutdown(wait=False, cancel_futures=True)
     for process in processes:
         if process.is_alive():
@@ -297,6 +302,15 @@ def terminate_process_pool(executor: ProcessPoolExecutor, *, timeout: float = 1.
         if process.is_alive():
             process.kill()
             process.join(timeout=0.1)
+    unreaped = tuple(process for process in processes if process.is_alive())
+    if unreaped:
+        # ProcessPoolExecutor.shutdown(wait=False) clears its process mapping.
+        # Retain the handles we still need to verify on a later bounded stop.
+        setattr(executor, _UNREAPED_PROCESS_HANDLES_ATTR, unreaped)
+    else:
+        with suppress(AttributeError):
+            delattr(executor, _UNREAPED_PROCESS_HANDLES_ATTR)
+    return not unreaped
 
 
 __all__ = [
