@@ -117,6 +117,7 @@ class FileIntakeAdapter(IntakeAdapter):
         self._fresh_pending: list[Path] = []
         self._fresh_page_paths: tuple[Path, ...] = ()
         self._fresh_page_pending = False
+        self._fresh_attempted_paths: set[Path] = set()
         self._root_refused_pending = False
         self._retry_state_lock = threading.Lock()
         self._fresh_retry_debt: dict[Path, float] = {}
@@ -161,6 +162,7 @@ class FileIntakeAdapter(IntakeAdapter):
         self._fresh_pending.clear()
         self._fresh_page_paths = ()
         self._fresh_page_pending = False
+        self._fresh_attempted_paths.clear()
         self._root_refused_pending = False
         self._fresh_exhausted = False
         self._fresh_exhausted_at = None
@@ -232,9 +234,10 @@ class FileIntakeAdapter(IntakeAdapter):
             if self._fresh_page_pending:
                 return list(self._fresh_page_paths[:limit])
         if self._fresh_page_pending:
-            # Nothing from this page reached acknowledgement. Advance the
-            # current walk; retry these paths without rewalking the source.
-            offered = set(self._fresh_page_paths)
+            # Only attempted, unacknowledged paths owe a cooldown. A page
+            # tail left outside the dispatcher or source budget is ordinary
+            # backlog and stays in the immediate fresh continuation.
+            offered = set(self._fresh_attempted_paths)
             due_at = self._clock() + _FILE_RETRY_DELAY_S
             cursor = getattr(self.context.watcher, "_cursor", None)
             get_records = getattr(cursor, "get_records", None)
@@ -246,6 +249,8 @@ class FileIntakeAdapter(IntakeAdapter):
                     # recursive watcher hint; revisit it after the cooldown.
                     self._overflow_rescan_due_at = due_at
                 for retry_path in live_paths:
+                    if retry_path not in offered:
+                        continue
                     record = records.get(retry_path)
                     if self._has_durable_retry_record(record):
                         # The durable cursor owns this retry and its backoff.
@@ -263,6 +268,7 @@ class FileIntakeAdapter(IntakeAdapter):
             self._fresh_pending = [path for path in self._fresh_pending if path not in offered]
         self._fresh_page_pending = False
         self._fresh_page_paths = ()
+        self._fresh_attempted_paths.clear()
         if self._after is not None:
             self._fresh_pending = [path for path in self._fresh_pending if str(path) > self._after]
         # A vanished file is retryable when it disappears after discovery, but
@@ -605,6 +611,10 @@ class FileIntakeAdapter(IntakeAdapter):
         """
         for item in items:
             self._consume_retry_item(item)
+            if not self._retry_page and isinstance(item.payload, (str, Path)):
+                fresh_path = Path(item.payload)
+                if fresh_path in self._fresh_page_paths:
+                    self._fresh_attempted_paths.add(fresh_path)
         outcomes: dict[str, AdmissionResult] = {}
         batch: list[IntakeItem] = []
         nonregular_paths: list[Path] = []
@@ -644,6 +654,8 @@ class FileIntakeAdapter(IntakeAdapter):
                 processor.require_cursor_authority(
                     [*nonregular_paths, *(Path(cast(Any, item.payload)) for item in batch)]
                 )
+                refused_paths: frozenset[Path] = getattr(processor, "_refused_paths", frozenset())
+                nonregular_paths = [path for path in nonregular_paths if path not in refused_paths]
             if nonregular_paths and callable(mark_excluded):
 
                 def retire_nonregular() -> None:
@@ -766,6 +778,7 @@ class FileIntakeAdapter(IntakeAdapter):
             if key in succeeded:
                 outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.ADMITTED, actual_cost=actual_cost)
             elif excluded_by_path.get(key) in {REFUSED_UNATTEMPTED, REFUSED_UNATTEMPTED_TIME_BUDGET}:
+                self._fresh_attempted_paths.discard(Path(cast(Any, item.payload)))
                 outcomes[item.item_id] = AdmissionResult(
                     AdmissionOutcome.RETRYABLE,
                     reason=f"source admission left {key} unattempted: {excluded_by_path[key]}",
@@ -794,6 +807,7 @@ class FileIntakeAdapter(IntakeAdapter):
                 # The pass ran out of its declared time budget, or refused
                 # the whole batch while degraded: this item was never
                 # attempted, so it is ordinary backlog, not a re-seen one.
+                self._fresh_attempted_paths.discard(Path(cast(Any, item.payload)))
                 outcomes[item.item_id] = AdmissionResult(
                     AdmissionOutcome.RETRYABLE,
                     reason=f"source admission left {key} unattempted",
@@ -838,6 +852,7 @@ class FileIntakeAdapter(IntakeAdapter):
         if isinstance(payload, (str, Path)):
             with self._retry_state_lock:
                 self._fresh_retry_debt.pop(Path(payload), None)
+            self._fresh_attempted_paths.discard(Path(payload))
             if Path(payload) in self._fresh_page_paths:
                 self._fresh_page_paths = tuple(path for path in self._fresh_page_paths if path != Path(payload))
                 self._fresh_page_pending = bool(self._fresh_page_paths)

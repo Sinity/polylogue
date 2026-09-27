@@ -543,8 +543,10 @@ async def test_live_retryable_pending_file_yields_to_queued_rescan(tmp_path: Pat
     watcher.revision += 1
     emitted: list[Path] = []
     for _ in range(4):
-        emitted.extend(cast(Path, item.payload) for item in await adapter.discover(limit=1))
+        page = await adapter.discover(limit=1)
+        emitted.extend(cast(Path, item.payload) for item in page)
         if inserted in emitted:
+            await adapter.acknowledge(next(item for item in page if item.payload == inserted))
             break
     assert inserted in emitted
     retry_page = await adapter.discover(limit=1)
@@ -1052,6 +1054,48 @@ async def test_durable_alias_retirement_respects_cursor_authority(tmp_path: Path
     outcomes = await adapter.admit_page(page)
     assert outcomes[page[0].item_id].outcome is AdmissionOutcome.RETRYABLE
     assert cursor.get_record(carrier).excluded is False  # type: ignore[union-attr]
+    assert cursor.has_pending_retries((root,)) is True
+
+
+@pytest.mark.asyncio
+async def test_durable_alias_retirement_skips_path_scoped_refusal(tmp_path: Path) -> None:
+    root = tmp_path / "source"
+    root.mkdir()
+    alias = root / "a.json"
+    sibling = root / "b.json"
+    sibling.write_text("{}")
+    alias.symlink_to(sibling)
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+    cursor = CursorStore(tmp_path / "index.db")
+    cursor.set(alias, 2, next_retry_at="1970-01-01T00:00:00+00:00")
+
+    class PartialRefusalProcessor:
+        _refused_paths: frozenset[Path] = frozenset()
+
+        def require_cursor_authority(self, paths: Sequence[Path]) -> None:
+            assert paths == [alias, sibling]
+            self._refused_paths = frozenset((alias,))
+
+    async def ingest(paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+        assert paths == [sibling]
+        return SimpleNamespace(succeeded_paths=(str(sibling),), source_payload_read_bytes=2)
+
+    watcher = SimpleNamespace(
+        _cursor=cursor,
+        _batch_processor=PartialRefusalProcessor(),
+        intake_revision=lambda _source: 0,
+        _ingest_files=ingest,
+    )
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    alias_item = IntakeItem(item_id=f"file:{alias}", class_name="capture", payload=alias)
+    sibling_item = IntakeItem(item_id=f"file:{sibling}", class_name="capture", payload=sibling)
+    outcomes = await adapter.admit_page((alias_item, sibling_item))
+    assert outcomes[alias_item.item_id].outcome is AdmissionOutcome.RETRYABLE
+    assert outcomes[sibling_item.item_id].outcome is AdmissionOutcome.ADMITTED
+    assert cursor.get_record(alias).excluded is False  # type: ignore[union-attr]
     assert cursor.has_pending_retries((root,)) is True
 
 
@@ -2569,6 +2613,40 @@ async def test_acquisition_budget_retains_unattempted_file_page_tail(tmp_path: P
     assert second.require_report("capture").admitted == 2
     assert watcher.batches == [paths, paths[1:]]
     assert adapter._after == str(paths[-1])
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_byte_budget_reoffers_unplanned_fresh_page_tail(tmp_path: Path) -> None:
+    paths = [tmp_path / name for name in ("a.json", "b.json", "c.json")]
+    for path in paths:
+        path.write_text("data")
+    source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
+
+    class BudgetWatcher:
+        def __init__(self) -> None:
+            self.batches: list[list[Path]] = []
+
+        def intake_revision(self, _source: WatchSource) -> int:
+            return 0
+
+        async def _ingest_files(self, batch: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+            self.batches.append(list(batch))
+            return SimpleNamespace(
+                succeeded_paths=tuple(str(path) for path in batch),
+                source_payload_read_bytes=4 * len(batch),
+            )
+
+    watcher = BudgetWatcher()
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="capture", adapter=adapter, page_size=3)])
+    assert (await dispatcher.run_once(budget=4)).require_report("capture").admitted == 1
+    assert (await dispatcher.run_once(budget=4)).require_report("capture").admitted == 1
+    assert (await dispatcher.run_once(budget=4)).require_report("capture").admitted == 1
+    assert watcher.batches == [[path] for path in paths]
+    assert adapter.retry_due_in_s is None
 
 
 @pytest.mark.asyncio
