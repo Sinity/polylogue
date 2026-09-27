@@ -462,12 +462,15 @@ def acquire_codex_revision_chain(
             # recorded as the byte-prefix authority — which sha256-of-bytes in
             # ``plan_append`` can never match. The JSONL branch derives the
             # prefix authority from the rewound on-disk bytes themselves.
+            # The JSONL prefix authority is the SHA-256 of the file's bytes,
+            # which is the blob hash -- not the raw id: source admission mints
+            # a source-scoped raw id distinct from the content hash.
             processor._record_full_cursor(
                 source_path,
                 raw_fingerprint=raw_ids[0],
                 raw_byte_size=len(full_payloads[0]),
                 source_name="codex",
-                captured_content_hash=raw_ids[0],
+                captured_content_hash=hashlib.sha256(full_payloads[0]).hexdigest(),
             )
             owner = SimpleNamespace(
                 _cursor=SimpleNamespace(_db_path=archive_root / "source.db"),
