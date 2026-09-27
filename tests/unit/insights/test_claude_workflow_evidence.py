@@ -241,3 +241,41 @@ def test_claude_projection_uses_provider_references_not_child_topology() -> None
     assert any(
         isinstance(ref, ObjectRef) and ref.kind == "artifact" for node in graph.nodes for ref in node.evidence_refs
     )
+
+
+def test_claude_workflow_stage_reads_without_daemon_writer_lease(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The stage's freshness check and projection read outside writer admission.
+
+    Anti-vacuity: opening ``source.db`` or ``index.db`` writable in
+    ``_prepare_inputs`` raises ``UnleasedWriteError`` under the armed guard,
+    which is how the stage's debt never converged after a cold build.
+    """
+    import sqlite3
+    from collections.abc import Callable
+
+    import pytest
+
+    from polylogue.core.stage_admission import stage_write_admission
+    from polylogue.daemon.convergence_stages import make_claude_workflow_stage
+    from polylogue.storage.sqlite.write_guard import install_archive_write_guard
+    from polylogue.storage.sqlite.write_lease import (
+        UnleasedWriteError,
+        arm_write_lease_enforcement,
+        write_lease,
+    )
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    bootstrap_archive_root(tmp_path)
+    stage = make_claude_workflow_stage(tmp_path / "index.db")
+    subject = tmp_path / "project" / "session" / "subagents" / "workflows" / RUN_ID / "journal.jsonl"
+
+    def admit(actor: str, work: Callable[[], object]) -> object:
+        with write_lease(actor, archive_root=tmp_path):
+            return work()
+
+    with install_archive_write_guard(), arm_write_lease_enforcement():
+        with pytest.raises(UnleasedWriteError):
+            sqlite3.connect(tmp_path / "source.db")
+        with stage_write_admission(admit):
+            assert stage.check(subject) is False
+            assert stage.execute(subject) is True
