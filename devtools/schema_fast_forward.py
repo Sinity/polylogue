@@ -13,6 +13,7 @@ clone-safe steps without introducing another per-version route.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -121,7 +122,8 @@ def _execute_sql(conn: sqlite3.Connection, sql: str, *, label: str) -> None:
         # Refuse transaction control before executing it: a COMMIT or ROLLBACK
         # would end the engine's transaction before the escape could be noticed.
         # Trigger bodies are part of a CREATE TRIGGER statement and never lead.
-        leading = statement.lstrip().split(None, 1)[0].upper() if statement.strip() else ""
+        match = re.match(r"\s*([A-Za-z]+)", statement)
+        leading = match.group(1).upper() if match else ""
         if leading in {"BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE"}:
             raise SchemaFastForwardError(f"{label} failed: transaction control is not allowed in a schema step")
         try:

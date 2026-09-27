@@ -67,7 +67,6 @@ class ExcisionPolicySnapshot:
         return blob_hash not in self.removed_hashes
 
 
-
 def _generation(conn: sqlite3.Connection, table: str, column: str, default: int = 0) -> int:
     row = conn.execute(f"SELECT {column} FROM {table} WHERE singleton=1").fetchone()
     return int(row[0]) if row and row[0] is not None else default
