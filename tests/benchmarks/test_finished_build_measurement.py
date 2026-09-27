@@ -17,6 +17,8 @@ from __future__ import annotations
 import inspect
 import resource
 import sqlite3
+import subprocess
+import threading
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from time import perf_counter
@@ -70,6 +72,7 @@ _SEALED_INPUT_DIGEST = "b970c56fd5478c928e12eb97c92737fe351907e1e1edeafc14c71044
 # sealed frozen-replay profile; a different width or transport belongs to its
 # own measured decision.
 _SELECTED_TRANSPORT_WORKER_COUNT = 4
+_WAL_SAMPLE_INTERVAL_S = 0.05
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,10 +93,16 @@ class _ArmReceipt:
     input_digest: str
     work: FinishedBuildWorkIdentity
     route: FinishedBuildRoute
-    candidate_identity: str
+    candidate_git_sha: str
+    candidate_checkout_dirty: bool
+    index_generation_identity: str
     resources: FinishedBuildResourceMeasurement
-    writer_apply_seconds: float
+    non_decode_backfill_seconds: float
     archive_bytes: int
+    index_wal_sampled_peak_bytes: int
+    index_wal_final_bytes: int
+    index_wal_sample_interval_s: float
+    index_wal_sample_count: int
     stage_timings_s: dict[str, float]
     metrics: dict[str, object]
     fresh_build: bool
@@ -127,7 +136,7 @@ class _SourceCensusReceipt:
     input_digest: str
     wall_seconds: float
     self_cpu_seconds: float
-    peak_rss_bytes: int
+    peak_rss_self_process_lifetime_bytes: int
     scanned: int
     classified_full: int
     quarantined: int
@@ -170,15 +179,23 @@ def _receipt_payload(receipt: _ArmReceipt) -> dict[str, object]:
         "input_digest": receipt.input_digest,
         "work": asdict(receipt.work),
         "route": asdict(receipt.route),
-        "candidate_identity": receipt.candidate_identity,
+        "candidate_git_sha": receipt.candidate_git_sha,
+        "candidate_checkout_dirty": receipt.candidate_checkout_dirty,
+        "index_generation_identity": receipt.index_generation_identity,
         "resources": receipt.resources.to_payload(),
-        # The frozen-replay route holds the single SQLite writer internally;
-        # its writer-side stage ledger is the only truthful hold denominator.
-        # It is not a DaemonWriteCoordinator lease and is labelled accordingly.
-        "writer_apply_seconds": receipt.writer_apply_seconds,
+        "non_decode_backfill_seconds": receipt.non_decode_backfill_seconds,
         "archive_bytes": receipt.archive_bytes,
+        "archive_bytes_scope": "final index.db plus final index.db-wal file sizes; not allocated bytes or write I/O",
+        "index_wal_sampled_peak_bytes": receipt.index_wal_sampled_peak_bytes,
+        "index_wal_final_bytes": receipt.index_wal_final_bytes,
+        "index_wal_sample_interval_s": receipt.index_wal_sample_interval_s,
+        "index_wal_sample_count": receipt.index_wal_sample_count,
         "stage_timings_s": receipt.stage_timings_s,
+        "stage_timings_scope": "nested and concurrent observations; do not sum entries or treat non-decode time as writer hold",
+        "resource_scope": "self process CPU, RSS, and I/O; child CPU is a separate cumulative delta",
+        "route_scope": "direct retained-raw backfill and finished-output checks; excludes cold daemon intake and source preparation",
         "metrics": receipt.metrics,
+        "metrics_scope": "LiveBatchMetrics compatibility projection; convergence_time_s is non-decode backfill time, and archive_write_bytes_delta is final archive file size, not written bytes",
         "fresh_build": receipt.fresh_build,
         "deferred_secondary_indexes": receipt.deferred_secondary_indexes,
         "derived_table_census": receipt.derived_table_census,
@@ -287,7 +304,7 @@ def _prepare_censused_template(root: Path, sealed: SealedRawInput) -> _SourceCen
         input_digest=sealed.digest,
         wall_seconds=wall_seconds,
         self_cpu_seconds=(after.ru_utime + after.ru_stime) - (before.ru_utime + before.ru_stime),
-        peak_rss_bytes=int(after.ru_maxrss) * 1024,
+        peak_rss_self_process_lifetime_bytes=int(after.ru_maxrss) * 1024,
         scanned=result.scanned,
         classified_full=result.classified_full,
         quarantined=result.quarantined,
@@ -321,6 +338,67 @@ def _session_ids(index_path: Path) -> tuple[str, ...]:
 
 def _archive_bytes(index_path: Path) -> int:
     return sum(path.stat().st_size for path in (index_path, index_path.with_suffix(".db-wal")) if path.exists())
+
+
+def _wal_bytes(index_path: Path) -> int:
+    try:
+        return index_path.with_name(f"{index_path.name}-wal").stat().st_size
+    except FileNotFoundError:
+        return 0
+
+
+class _SampledWalSize:
+    """Sample one index WAL outside the measured caller at a bounded rate."""
+
+    def __init__(self, index_path: Path, *, interval_s: float = _WAL_SAMPLE_INTERVAL_S) -> None:
+        if interval_s <= 0:
+            raise ValueError("WAL sample interval must be positive")
+        self.index_path = index_path
+        self.interval_s = interval_s
+        self.peak_bytes = 0
+        self.final_bytes = 0
+        self.sample_count = 0
+        self._stop = threading.Event()
+        self._error: OSError | None = None
+        self._thread = threading.Thread(target=self._run, name="finished-build-wal-sampler", daemon=True)
+
+    def _sample(self) -> None:
+        size = _wal_bytes(self.index_path)
+        self.peak_bytes = max(self.peak_bytes, size)
+        self.sample_count += 1
+        self.final_bytes = size
+
+    def _run(self) -> None:
+        try:
+            self._sample()
+            while not self._stop.wait(self.interval_s):
+                self._sample()
+        except OSError as exc:
+            self._error = exc
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def finish(self) -> None:
+        self._stop.set()
+        self._thread.join()
+        if self._error is not None:
+            raise RuntimeError("index WAL sampling failed") from self._error
+        self._sample()
+
+
+def _candidate_checkout() -> tuple[str, bool]:
+    repository = Path(__file__).resolve().parents[2]
+    sha = subprocess.check_output(("git", "-C", str(repository), "rev-parse", "HEAD"), text=True).strip()
+    dirty = bool(subprocess.check_output(("git", "-C", str(repository), "status", "--porcelain"), text=True))
+    return sha, dirty
+
+
+def _completed_generation_index_path(root: Path, receipt: _ArmReceipt) -> Path:
+    generation_id = receipt.index_generation_identity.removeprefix("index-generation:")
+    if generation_id == receipt.index_generation_identity:
+        raise AssertionError("finished arm has no owned inactive generation")
+    return Path(IndexGenerationStore.for_archive_root(root, repair_anchor=False).load(generation_id).index_path)
 
 
 def _work_identity(sealed: SealedRawInput) -> FinishedBuildWorkIdentity:
@@ -383,29 +461,34 @@ def _run_arm(
     if arm not in (_SELECTED_ARM, _RETAINED_INDEX_CONTROL):
         raise RuntimeError("finished-build measurement runs only the declared selected arm")
     destination, owned_generation = _candidate_root(root, arm)
-    resource_probe = FinishedBuildResourceProbe.start()
-    result = backfill_historical_revision_evidence(
-        destination,
-        owned_inactive_generation=owned_generation,
-        ingest_workers=worker_count,
-        use_session_shards=arm.uses_shard_transport,
-        defer_secondary_indexes=arm.defer_secondary_indexes,
-    )
     index_path = destination / "index.db"
-    ids = _session_ids(index_path)
-    if len(ids) != sealed.raw_count:
-        raise AssertionError(f"{arm.name} lost population: sessions={len(ids)} expected={sealed.raw_count}")
-    output = capture_finished_build_output(
-        destination,
-        index_path,
-        work=_work_identity(sealed),
-        route=FinishedBuildRoute.from_production_callable(arm.name, backfill_historical_revision_evidence),
-        resource_probe=resource_probe,
-        session_ids=ids[:3],
-        search_queries=("amg1-payload",),
-    )
+    wal_sampler = _SampledWalSize(index_path)
+    resource_probe = FinishedBuildResourceProbe.start()
+    wal_sampler.start()
+    try:
+        result = backfill_historical_revision_evidence(
+            destination,
+            owned_inactive_generation=owned_generation,
+            ingest_workers=worker_count,
+            use_session_shards=arm.uses_shard_transport,
+            defer_secondary_indexes=arm.defer_secondary_indexes,
+        )
+        ids = _session_ids(index_path)
+        if len(ids) != sealed.raw_count:
+            raise AssertionError(f"{arm.name} lost population: sessions={len(ids)} expected={sealed.raw_count}")
+        output = capture_finished_build_output(
+            destination,
+            index_path,
+            work=_work_identity(sealed),
+            route=FinishedBuildRoute.from_production_callable(arm.name, backfill_historical_revision_evidence),
+            resource_probe=resource_probe,
+            session_ids=ids[:3],
+            search_queries=("amg1-payload",),
+        )
+    finally:
+        wal_sampler.finish()
     archive_bytes = _archive_bytes(index_path)
-    _parse_seconds, writer_apply_seconds = split_parse_and_apply_seconds(result.stage_timings_s)
+    _parse_seconds, non_decode_backfill_seconds = split_parse_and_apply_seconds(result.stage_timings_s)
     metrics = _live_metrics(
         result,
         sealed,
@@ -432,8 +515,9 @@ def _run_arm(
             f"{arm.name} output population differs from replay receipt: "
             f"sessions={output.output_session_count} replayed={result.replayed_logical_sources}"
         )
-    if writer_apply_seconds <= 0:
-        raise AssertionError("selected frozen replay reported no serialized writer-apply time")
+    if non_decode_backfill_seconds <= 0:
+        raise AssertionError("selected frozen replay reported no non-decode backfill time")
+    candidate_git_sha, candidate_checkout_dirty = _candidate_checkout()
     return _ArmReceipt(
         arm=arm.name,
         worker_mode=arm.worker_mode,
@@ -441,10 +525,16 @@ def _run_arm(
         input_digest=sealed.digest,
         work=output.work,
         route=output.route,
-        candidate_identity=("active" if owned_generation is None else f"index-generation:{owned_generation[0]}"),
+        candidate_git_sha=candidate_git_sha,
+        candidate_checkout_dirty=candidate_checkout_dirty,
+        index_generation_identity=("active" if owned_generation is None else f"index-generation:{owned_generation[0]}"),
         resources=output.resources,
-        writer_apply_seconds=writer_apply_seconds,
+        non_decode_backfill_seconds=non_decode_backfill_seconds,
         archive_bytes=archive_bytes,
+        index_wal_sampled_peak_bytes=wal_sampler.peak_bytes,
+        index_wal_final_bytes=wal_sampler.final_bytes,
+        index_wal_sample_interval_s=wal_sampler.interval_s,
+        index_wal_sample_count=wal_sampler.sample_count,
         stage_timings_s=dict(result.stage_timings_s),
         metrics=metrics.to_payload(),
         fresh_build=arm.uses_owned_inactive_generation,
@@ -511,10 +601,16 @@ def test_finished_build_measurement_compacts_projection_before_rendering() -> No
         input_digest="sealed",
         work=FinishedBuildWorkIdentity("source", "code", "profile"),
         route=FinishedBuildRoute("test", "polylogue.example.route"),
-        candidate_identity="candidate",
+        candidate_git_sha="a" * 40,
+        candidate_checkout_dirty=False,
+        index_generation_identity="index-generation:test",
         resources=FinishedBuildResourceMeasurement(0.0, 0.0, 0.0, 0, 0, 0, 0),
-        writer_apply_seconds=0.0,
+        non_decode_backfill_seconds=0.0,
         archive_bytes=0,
+        index_wal_sampled_peak_bytes=0,
+        index_wal_final_bytes=0,
+        index_wal_sample_interval_s=_WAL_SAMPLE_INTERVAL_S,
+        index_wal_sample_count=0,
         stage_timings_s={},
         metrics={},
         fresh_build=False,
@@ -543,7 +639,54 @@ def test_finished_build_measurement_compacts_projection_before_rendering() -> No
     compact = _compact_receipt(receipt)
 
     assert compact.snapshot is None
-    assert _receipt_payload(compact)["snapshot"] == "derived-model-equivalent-and-ready"
+    payload = _receipt_payload(compact)
+    assert payload["snapshot"] == "derived-model-equivalent-and-ready"
+    assert payload["candidate_git_sha"] == "a" * 40
+    assert payload["index_generation_identity"] == "index-generation:test"
+    assert "writer_apply_seconds" not in payload
+    assert "candidate_identity" not in payload
+
+
+def test_finished_build_wal_sampler_distinguishes_sampled_peak_from_final(tmp_path: Path) -> None:
+    index = tmp_path / "index.db"
+    wal = tmp_path / "index.db-wal"
+    sampler = _SampledWalSize(index, interval_s=0.01)
+    sampler.start()
+    try:
+        wal.write_bytes(b"x" * 32)
+        deadline = perf_counter() + 1.0
+        while sampler.peak_bytes != 32 and perf_counter() < deadline:
+            threading.Event().wait(0.01)
+        assert sampler.peak_bytes == 32
+        wal.unlink()
+    finally:
+        sampler.finish()
+    assert sampler.sample_count >= 2
+    assert sampler.peak_bytes == 32
+    assert sampler.final_bytes == 0
+
+
+def test_streamed_fingerprint_reads_completed_inactive_generation(tmp_path: Path) -> None:
+    template = tmp_path / "sealed-input"
+    bootstrap_archive_root(template)
+    build_independent_raw_corpus(template, raw_count=1, avg_payload_bytes=2_000, authoritative_source=True)
+    census = census_historical_revision_evidence(template)
+    assert census.scanned == 1 and census.quarantined == 0
+    sealed = seal_raw_input(template)
+    finalize_archive_template(template)
+    archive_root = clone_sealed_arm(template, tmp_path / "arm", sealed)
+    receipt = _run_arm(archive_root, sealed, _SELECTED_ARM, worker_count=1)
+    index_path = _completed_generation_index_path(archive_root, receipt)
+    assert index_path != archive_root / "index.db"
+    streamed = capture_streamed_finished_build_fingerprint(
+        index_path.parent,
+        index_path,
+        scratch_root=tmp_path,
+        session_ids=_session_ids(index_path)[:3],
+        search_queries=("amg1-payload",),
+        include_threads=True,
+    )
+    assert streamed.canonical_logical_digest == receipt.canonical_logical_digest
 
 
 def test_index_deferral_comparison_repeats_interleaved_finished_builds(tmp_path: Path) -> None:
@@ -605,10 +748,12 @@ def test_index_deferral_comparison_repeats_interleaved_finished_builds(tmp_path:
         assert_finished_builds_equivalent(_finished_output(reference), _finished_output(receipt))
 
     streamed_archive = tmp_path / f"comparison-0-{order[0].name}"
-    streamed_session_ids = _session_ids(streamed_archive / "index.db")[:3]
+    streamed_index_path = _completed_generation_index_path(streamed_archive, reference)
+    streamed_candidate_root = streamed_index_path.parent
+    streamed_session_ids = _session_ids(streamed_index_path)[:3]
     streamed = capture_streamed_finished_build_fingerprint(
-        streamed_archive,
-        streamed_archive / "index.db",
+        streamed_candidate_root,
+        streamed_index_path,
         scratch_root=tmp_path,
         session_ids=streamed_session_ids,
         search_queries=("amg1-payload",),
