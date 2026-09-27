@@ -2029,6 +2029,27 @@ async def _run_daemon_services_under_active_writer_lease(
                 files=len(recovered_train_paths),
                 error_detail=", ".join(str(path) for path in recovered_train_paths),
             )
+        # Declared durable migrations are ordinary lifecycle: apply them now,
+        # under the same exclusive ownership, before anything serves.
+        from polylogue.daemon.durable_migrations import apply_declared_durable_migrations
+
+        applied_migrations = apply_declared_durable_migrations(
+            archive_root_path,
+            archive_owner=archive_owner,
+            write_lease=lambda actor: write_lease(actor, archive_root=archive_root_path),
+        )
+        for migration in applied_migrations:
+            emit(
+                "daemon.durable_migration.applied",
+                level=WARNING,
+                outcome="ok",
+                reason="declared_durable_migration_applied_at_open",
+                tier=migration.tier.value,
+                error_detail=(
+                    f"v{migration.current_version} -> v{migration.target_version}"
+                    f"{' behind a verified backup' if migration.requires_backup else ''}"
+                ),
+            )
     except BaseException:
         archive_owner.release()
         raise

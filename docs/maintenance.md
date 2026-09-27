@@ -11,15 +11,23 @@ manual rebuild or repair verb.
 ## Durable schema changes
 
 Durable tiers (`source.db`, `user.db`, `audit.db`) evolve only by numbered
-additive migrations under `storage/sqlite/migrations/{source,user,audit}/`.
-None are declared: a fresh archive is created at `user_version=1` for every
-tier when the daemon first opens its root, and bootstrap creates all durable
-tiers together under one pending intent. There is no command that initializes
-an archive, applies a migration, or recreates a missing durable tier. A
-durable tier from a different runtime is refused with a typed `SchemaSkew`; a
-lost durable tier is refused by name and is never recreated. Applying the
-first declared migration at daemon open, behind a backup the daemon takes and
-verifies, is tracked as `polylogue-ywsgj`.
+migrations under `storage/sqlite/migrations/{source,user,audit}/`, each with
+its `NNN.train.json` change-train sidecar. A fresh archive is created at every
+tier's current version when the daemon first opens its root, and bootstrap
+creates all durable tiers together under one pending intent.
+
+When `polylogued run` opens an archive whose durable tier stands below the
+version this runtime declares, it applies the pending trains before it serves
+anything, under the same exclusive archive ownership
+(`polylogue/daemon/durable_migrations.py`). An additive step
+(`-- migration-safety: additive-no-backup`) runs directly. A step that changes
+existing data runs only behind a backup the daemon takes under
+`.maintenance-state/pre-migration-backups/` and scratch-verifies; the train
+binds that backup's authenticated receipt to the exact pre-apply bytes, and a
+failed backup refuses startup. There is no command that initializes an
+archive, applies a migration, or recreates a missing durable tier. A durable
+tier newer than this runtime, or one with no declared route, is refused with a
+typed `SchemaSkew`; a lost durable tier is refused by name and never recreated.
 
 Authenticated source maintenance writes a typed refresh receipt that binds its
 predecessor authority and the exact durable-train manifest hashes before and
