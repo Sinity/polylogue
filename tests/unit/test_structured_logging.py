@@ -637,9 +637,59 @@ def test_stalled_configured_sink_bounds_caller_and_reports_loss() -> None:
         snapshot = plog.diagnostic_snapshot()
         assert elapsed < 0.5
         assert snapshot["dropped"] > 0
+        assert snapshot["backpressure"] > 0
         assert snapshot["queued"] <= 256
         shutdown = plog.shutdown_events(timeout_s=0.01)
         assert shutdown["undrained"] > 0
+    finally:
+        release.set()
+        plog.reset_events()
+
+
+@pytest.mark.uses_real_clock("holds the configured stream while checking queue priority and bounded flush")
+def test_terminal_event_displaces_routine_record_and_flush_is_bounded() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    class HeldStream:
+        def __init__(self) -> None:
+            self.lines: list[str] = []
+            self.flushes = 0
+
+        def write(self, line: str) -> None:
+            entered.set()
+            release.wait(timeout=2)
+            self.lines.append(line)
+
+        def flush(self) -> None:
+            self.flushes += 1
+
+    stream = HeldStream()
+    plog.reset_events()
+    try:
+        plog.configure_events(stream=stream, fmt="json", bridge_stdlib=False)
+        plog.emit("routine.first")
+        assert entered.wait(timeout=1)
+        for _ in range(256):
+            plog.emit("routine.queued", files=1)
+        started = time.monotonic()
+        with plog.span("business.operation") as active:
+            active.ok(files=1)
+        assert plog.flush_events(timeout_s=0.01) is False
+        assert time.monotonic() - started < 0.2
+        blocked = plog.diagnostic_snapshot()
+        assert blocked["backpressure"] == 1
+        assert blocked["priority_evictions"] == 1
+        assert blocked["dropped"] == 1
+        release.set()
+        assert plog.flush_events(timeout_s=1) is True
+        assert stream.flushes >= 1
+        records = [json.loads(line) for line in stream.lines]
+        assert len(records) == 257
+        assert records[-1]["event"] == "business.operation.ok"
+        assert records[-1]["outcome"] == "ok"
+        assert records[-1]["files"] == 1
+        assert plog.diagnostic_snapshot()["delivered"] == 257
     finally:
         release.set()
         plog.reset_events()
@@ -673,12 +723,19 @@ def test_failed_configured_sink_reports_loss_without_recursive_logging() -> None
     plog.reset_events()
     try:
         plog.configure_events(stream=FailedStream(), fmt="json", bridge_stdlib=False)
-        plog.emit("one")
+        original = RuntimeError("business failure")
+        with pytest.raises(RuntimeError) as raised:
+            with plog.span("business.operation"):
+                raise original
+        assert raised.value is original
         deadline = time.monotonic() + 1
         while plog.diagnostic_snapshot()["failures"] < 1 and time.monotonic() < deadline:
             time.sleep(0.01)
         assert plog.diagnostic_snapshot()["failures"] >= 1
         assert plog.diagnostic_snapshot()["queued"] == 0
+        assert plog.diagnostic_snapshot()["backpressure"] == 0
+        assert plog.diagnostic_snapshot()["dropped"] == 0
+        assert plog.flush_events(timeout_s=0.1) is False
     finally:
         plog.reset_events()
 

@@ -26,7 +26,16 @@ def test_metrics_expose_maintained_sink_loss_without_database(monkeypatch: pytes
     monkeypatch.setattr(
         metrics,
         "diagnostic_snapshot",
-        lambda: {"queued": 3, "dropped": 7, "failures": 2, "delivered": 11, "undrained": 1, "high_water": 9},
+        lambda: {
+            "queued": 3,
+            "dropped": 7,
+            "failures": 2,
+            "delivered": 11,
+            "undrained": 1,
+            "high_water": 9,
+            "backpressure": 8,
+            "priority_evictions": 1,
+        },
     )
     body = metrics.format_metrics(tmp_path / "missing.db")
     assert 'polylogue_diagnostic_delivery_total{outcome="dropped"} 7' in body
@@ -34,6 +43,8 @@ def test_metrics_expose_maintained_sink_loss_without_database(monkeypatch: pytes
     assert 'polylogue_diagnostic_delivery_total{outcome="delivered"} 11' in body
     assert 'polylogue_diagnostic_delivery_total{outcome="undrained"} 1' in body
     assert "polylogue_diagnostic_queue_depth 3" in body
+    assert "polylogue_diagnostic_backpressure_total 8" in body
+    assert "polylogue_diagnostic_priority_evictions_total 1" in body
 
 
 def test_metrics_distinguish_measured_io_phases_from_unavailable_sqlite_internals(
