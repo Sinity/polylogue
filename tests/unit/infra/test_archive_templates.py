@@ -258,12 +258,23 @@ def _archive_state(root: Path) -> dict[str, object]:
             objects = conn.execute("SELECT type, name, sql FROM sqlite_master ORDER BY type, name").fetchall()
             state[f"{spec.filename}:objects"] = objects
             state[f"{spec.filename}:user_version"] = conn.execute("PRAGMA user_version").fetchone()[0]
+            state[f"{spec.filename}:journal_mode"] = conn.execute("PRAGMA journal_mode").fetchone()[0]
             for kind, name, _sql in objects:
                 if kind != "table" or name.startswith("sqlite_"):
                     continue
                 with contextlib.suppress(sqlite3.DatabaseError):
                     state[f"{spec.filename}:{name}:rows"] = conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
-    state["files"] = sorted(entry.name for entry in root.iterdir() if entry.name != ".archive-ownership.lock")
+    # The direct bootstrap can leave empty WAL/SHM coordination files while
+    # the sealed clone has none. They carry no persistent archive inventory;
+    # table rows above already compare any WAL-visible data.
+    sqlite_sidecars = {
+        f"{spec.filename}{suffix}" for spec in ARCHIVE_TIER_SPECS.values() for suffix in ("-wal", "-shm")
+    }
+    state["files"] = sorted(
+        entry.name
+        for entry in root.iterdir()
+        if entry.name != ".archive-ownership.lock" and entry.name not in sqlite_sidecars
+    )
     state["bootstrap_marker"] = root.joinpath(".maintenance-state/durable-change-trains/.bootstrap").is_file()
     return state
 
@@ -285,6 +296,13 @@ def test_bootstrap_clone_reproduces_the_production_bootstrap(tmp_path: Path, boo
 
     assert (bootstrap_template_root / ".bootstrap-archive-template").is_dir()
     assert _archive_state(cloned) == _archive_state(produced)
+    with sqlite3.connect(cloned / "source.db") as conn:
+        assert conn.execute("PRAGMA journal_mode=DELETE").fetchone() == ("delete",)
+    assert _archive_state(cloned) != _archive_state(produced)
+    with sqlite3.connect(cloned / "source.db") as conn:
+        assert conn.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+    (cloned / "extra-durable-member").write_bytes(b"extra")
+    assert _archive_state(cloned) != _archive_state(produced)
 
 
 def test_bootstrap_falls_back_to_the_production_route_for_a_seeded_root(
