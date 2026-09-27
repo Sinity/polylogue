@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from functools import partial
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 import click
 
@@ -120,6 +120,7 @@ def validate_api_bind_policy(*, enabled: bool, host: str, allow_remote: bool, au
 if TYPE_CHECKING:
     from polylogue.daemon.fts_convergence import FtsConvergenceOwner
     from polylogue.daemon.http import DaemonAPIHTTPServer
+    from polylogue.daemon.intake_adapters import ColdBuildGeneration
     from polylogue.daemon.lifecycle import DaemonLifecycle
     from polylogue.daemon.session_profile_composition import SessionProfileCallback
     from polylogue.maintenance.raw_authority import ArchiveWriterRebuildExclusion
@@ -1862,6 +1863,39 @@ async def run_daemon_services(
         )
 
 
+async def _observe_faulted_baseline_cancellable(
+    generation: ColdBuildGeneration, sources: tuple[WatchSource, ...]
+) -> Any:
+    """Keep a source scan off the writer without joining it at loop shutdown."""
+    loop = asyncio.get_running_loop()
+    completed: asyncio.Future[Any] = loop.create_future()
+    cancel = threading.Event()
+
+    def deliver(result: Any = None, error: BaseException | None = None) -> None:
+        if completed.done():
+            return
+        if error is not None:
+            completed.set_exception(error)
+        else:
+            completed.set_result(result)
+
+    def observe() -> None:
+        try:
+            result = generation.observe_faulted_baseline(sources, cancel=cancel)
+        except BaseException as exc:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(deliver, None, exc)
+        else:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(deliver, result)
+
+    threading.Thread(target=observe, name="cold-source-observation", daemon=True).start()
+    try:
+        return await completed
+    finally:
+        cancel.set()
+
+
 async def _run_daemon_services_under_active_writer_lease(
     *,
     rebuild_exclusion: ArchiveWriterRebuildExclusion,
@@ -2659,10 +2693,12 @@ async def _run_daemon_services_under_active_writer_lease(
                     from polylogue.archive.query.execution_control import QueryExecutionContext
                     from polylogue.daemon.intake_adapters import (
                         ColdBuildGeneration,
+                        ColdBuildSettlement,
                         DaemonIntakeContext,
                         DaemonIntakeService,
                         active_index_generation_is_empty,
                         build_intake_adapters,
+                        classify_cold_build_settlement_failure,
                         clear_cold_build_generation,
                         register_cold_build_generation,
                     )
@@ -2857,6 +2893,11 @@ async def _run_daemon_services_under_active_writer_lease(
                     # Generation bootstrap opens a writable index directly;
                     # keep its probe inside the same coordinator as every
                     # other daemon archive writer.
+                    await write_coordinator.run_sync(
+                        "daemon.cold_build.reconcile_interrupted",
+                        ColdBuildGeneration.reconcile_interrupted_promotions,
+                        archive_root_path,
+                    )
                     active_generation_empty = await write_coordinator.run_sync(
                         "daemon.cold_build.probe",
                         active_index_generation_is_empty,
@@ -2875,35 +2916,99 @@ async def _run_daemon_services_under_active_writer_lease(
                         from polylogue.daemon.catchup_status import set_cold_build_progress_provider
 
                         set_cold_build_progress_provider(lambda: cold_build.accepted_progress)
+                        from polylogue.daemon.catchup_status import set_cold_build_settlement_provider
 
-                    async def settle_cold_build() -> None:
+                        set_cold_build_settlement_provider(
+                            lambda: (
+                                cold_build.generation_id,
+                                cold_build.settlement_state,
+                                cold_build.settlement_reason,
+                                cold_build.settlement_last_error,
+                                cold_build.settlement_attempts,
+                                cold_build.settlement_next_retry_at,
+                            )
+                        )
+
+                    async def settle_cold_build() -> ColdBuildSettlement:
                         """Promote or discard the candidate once intake drains."""
                         generation = cold_build
-                        if generation is None or generation.settled:
-                            return
+                        if generation is None or generation.publication_complete or generation.discarded:
+                            return ColdBuildSettlement("complete")
                         promoted = False
                         try:
-                            session_count = await write_coordinator.run_sync(
-                                "daemon.cold_build.session_count",
-                                generation.session_count,
-                            )
-                            if session_count > 0:
+                            if generation.promoted:
                                 await write_coordinator.run_sync(
-                                    "daemon.cold_build.promote",
-                                    generation.promote,
+                                    "daemon.cold_build.reconcile_promoted", generation.reconcile_promoted
                                 )
                                 promoted = True
                             else:
-                                # Nothing was built. Promoting an empty
-                                # candidate over a working index would be a
-                                # data-losing no-op dressed as progress.
-                                await write_coordinator.run_sync(
-                                    "daemon.cold_build.discard",
-                                    generation.discard,
+                                observed_baseline = await _observe_faulted_baseline_cancellable(generation, sources)
+                                if observed_baseline is not None:
+                                    await write_coordinator.run_sync(
+                                        "daemon.cold_build.refresh_faulted_baseline",
+                                        generation.refresh_faulted_baseline,
+                                        observed_baseline,
+                                    )
+                                session_count = await write_coordinator.run_sync(
+                                    "daemon.cold_build.session_count",
+                                    generation.session_count,
                                 )
-                        finally:
+                                if session_count > 0:
+                                    await write_coordinator.run_sync(
+                                        "daemon.cold_build.promote",
+                                        generation.promote,
+                                    )
+                                    promoted = True
+                                else:
+                                    # An empty candidate cannot replace an active index.
+                                    await write_coordinator.run_sync(
+                                        "daemon.cold_build.discard",
+                                        generation.discard,
+                                    )
+                        except Exception as exc:
+                            classification = classify_cold_build_settlement_failure(exc)
+                            if classification is None:
+                                raise
+                            reason, retryable = classification
+                            previous = (generation.settlement_state, generation.settlement_reason)
+                            state: Literal["retryable", "blocked"] = "retryable" if retryable else "blocked"
+                            retry_at = (
+                                time.monotonic() + (60.0 if reason == "source_integrity" else 5.0)
+                                if retryable
+                                else None
+                            )
+                            generation.record_settlement(
+                                state,
+                                reason=reason,
+                                last_error=f"{type(exc).__name__}: {exc}"[:256],
+                                next_retry_at=retry_at,
+                            )
+                            if previous != (state, reason):
+                                emit(
+                                    "daemon.cold_build.settlement",
+                                    level=WARNING,
+                                    outcome="degraded",
+                                    state=state,
+                                    reason=reason,
+                                    generation_id=generation.generation_id,
+                                    error_type=type(exc).__name__,
+                                )
+                            return ColdBuildSettlement(
+                                state, reason=reason, attempts=generation.settlement_attempts, next_retry_at=retry_at
+                            )
+                        else:
+                            previous = (generation.settlement_state, generation.settlement_reason)
+                            generation.record_settlement("complete")
                             clear_cold_build_generation()
                             set_cold_build_progress_provider(None)
+                            if previous != ("complete", None):
+                                emit(
+                                    "daemon.cold_build.settlement",
+                                    outcome="ok",
+                                    state="complete",
+                                    reason="promoted" if promoted else "discarded",
+                                    generation_id=generation.generation_id,
+                                )
                         if promoted and isinstance(session_profile_callback, ComposedSessionProfiles):
                             try:
                                 await session_profile_callback.converge_promoted()
@@ -2917,11 +3022,30 @@ async def _run_daemon_services_under_active_writer_lease(
                                     error_type=type(exc).__name__,
                                     error_detail=str(exc),
                                 )
+                        return ColdBuildSettlement("complete", attempts=generation.settlement_attempts)
 
                     async def refresh_cold_build_progress(_result: object) -> None:
                         generation = cold_build
                         if generation is None or generation.settled:
                             return
+                        if generation.settlement_state == "building" and any(
+                            row.disposition == "fault" for row in generation.source_baseline.decisions
+                        ):
+                            generation.record_settlement(
+                                "blocked",
+                                reason="source_integrity",
+                                last_error="production source baseline has unresolved discovery faults",
+                                attempted=False,
+                            )
+                            emit(
+                                "daemon.cold_build.settlement",
+                                level=WARNING,
+                                outcome="degraded",
+                                state="blocked",
+                                reason="source_integrity",
+                                generation_id=generation.generation_id,
+                                error_type="ProductionBaselineError",
+                            )
                         try:
                             await write_coordinator.run_sync(
                                 "daemon.cold_build.accepted_progress",
@@ -2945,6 +3069,14 @@ async def _run_daemon_services_under_active_writer_lease(
                         dispatcher,
                         wakeup=raw_intake_wakeup,
                         on_backlog_drained=settle_cold_build if cold_build is not None else None,
+                        settlement_revision=lambda: (
+                            tuple(watcher.intake_revision(source) for source in sources)
+                            + (cold_build.settlement_evidence_revision(sources) if cold_build is not None else ())
+                        ),
+                        settlement_external_revision=lambda: (
+                            tuple(watcher.intake_revision(source) for source in sources)
+                            + (cold_build.settlement_external_revision(sources) if cold_build is not None else ())
+                        ),
                         # A scheduled retry can be absent from a bounded
                         # discovery pass until its deadline. The candidate
                         # cannot become active while that obligation remains.
@@ -3044,6 +3176,25 @@ async def _run_daemon_services_under_active_writer_lease(
                     error_detail=", ".join(shutdown_report.failed),
                 )
 
+            # Fair intake owns candidate writes; the watcher can still hold
+            # its live batch route. Other orphaned maintenance services do
+            # not make the inactive candidate unsafe to discard. A candidate
+            # writer orphan leaves it for the next build's reclamation.
+            candidate_writer_orphaned = any(name in {"fair_intake", "watcher"} for name in shutdown_report.orphaned)
+            if cold_build is not None and not cold_build.settled and not candidate_writer_orphaned:
+                try:
+                    async with asyncio.timeout(5.0):
+                        await write_coordinator.run_sync("daemon.cold_build.shutdown_discard", cold_build.discard)
+                except Exception as exc:
+                    emit(
+                        "daemon.cold_build.shutdown_discard_failed",
+                        level=WARNING,
+                        outcome="error",
+                        generation_id=cold_build.generation_id,
+                        error_type=type(exc).__name__,
+                        error_detail=str(exc),
+                    )
+
             if signal_termination:
                 # CursorStore initialization re-applies OPS-tier DDL before it
                 # marks running attempts interrupted.  That best-effort
@@ -3129,18 +3280,19 @@ async def _run_daemon_services_under_active_writer_lease(
                 rebuild_exclusion,
                 writer_drained=writer_drained,
             )
-            # A cold build that never drained is never promoted: shutdown is
-            # the same outcome as a crash, and the previous active generation
-            # is exactly where the readers left it.
-            if cold_build is not None and not cold_build.settled:
+            # The process-local route must end even if best-effort discard
+            # failed; leave any inactive generation on disk for recovery.
+            if cold_build is not None:
                 from polylogue.daemon.intake_adapters import clear_cold_build_generation
 
-                with contextlib.suppress(Exception):
-                    cold_build.discard()
                 clear_cold_build_generation()
-            from polylogue.daemon.catchup_status import set_cold_build_progress_provider
+            from polylogue.daemon.catchup_status import (
+                set_cold_build_progress_provider,
+                set_cold_build_settlement_provider,
+            )
 
             set_cold_build_progress_provider(None)
+            set_cold_build_settlement_provider(None)
             if server is not None:
                 with contextlib.suppress(Exception):
                     server.server_close()

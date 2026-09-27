@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import errno
 import hashlib
 import inspect
 import json
@@ -3937,6 +3938,436 @@ def _daemon_startup_stubs(
     )
     stack.enter_context(patch.object(daemon_cli, "_mark_interrupted_live_ingest_attempts_on_shutdown"))
     stack.enter_context(patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=()))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fault", "expected_reason"),
+    (("busy", "sqlite_busy"), ("cantopen", "sqlite_open_unavailable")),
+)
+async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
+    tmp_path: Path, fault: str, expected_reason: str
+) -> None:
+    from polylogue import Polylogue as RealPolylogue
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.catchup_status import _cold_build_settlement
+    from polylogue.daemon.execution import reset_daemon_compute_adapter
+    from polylogue.daemon.intake_adapters import DaemonIntakeService
+    from polylogue.daemon.services import ServiceProfile
+    from polylogue.sources.live.cold_build import ColdBuildGeneration, active_cold_build_generation
+    from polylogue.sources.live.production_baseline import ProductionSourceBaseline
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    archive_root = tmp_path / "archive"
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    source_file = source_root / "session.jsonl"
+    source_file.write_text(
+        '{"type":"session_meta","payload":{"id":"cold-retry","timestamp":"2026-06-02T00:00:00Z"}}\n'
+        '{"type":"response_item","payload":{"type":"message","id":"message-0",'
+        '"role":"user","content":[{"type":"input_text","text":"Synthetic"}]}}\n',
+        encoding="utf-8",
+    )
+    os.utime(source_file, (1.0, 1.0))
+    lock_path = tmp_path / "lock.db"
+    holder = sqlite3.connect(lock_path)
+    contender = sqlite3.connect(lock_path, timeout=0)
+    try:
+        holder.execute("CREATE TABLE lock_probe (id INTEGER)")
+        holder.commit()
+        holder.execute("BEGIN EXCLUSIVE")
+        with pytest.raises(sqlite3.OperationalError) as busy:
+            contender.execute("INSERT INTO lock_probe VALUES (1)")
+        assert busy.value.sqlite_errorcode & 0xFF == sqlite3.SQLITE_BUSY
+    finally:
+        contender.close()
+        holder.close()
+
+    missing_database = tmp_path / "temporarily-unavailable.db"
+    with pytest.raises(sqlite3.OperationalError) as cantopen:
+        sqlite3.connect(f"file:{missing_database}?mode=ro", uri=True)
+    assert cantopen.value.sqlite_errorcode & 0xFF == sqlite3.SQLITE_CANTOPEN
+
+    real_readiness = ArchiveStore.run_generation_readiness_pass
+    real_verify = ProductionSourceBaseline.verify
+    calls = 0
+
+    def busy_once(self: ArchiveStore) -> None:
+        nonlocal calls
+        calls += 1
+        if fault == "busy" and calls == 1:
+            raise busy.value
+        real_readiness(self)
+
+    verify_calls = 0
+
+    def cantopen_once(self: ProductionSourceBaseline, source_db: Path) -> None:
+        nonlocal verify_calls
+        verify_calls += 1
+        if fault == "cantopen" and verify_calls == 1:
+            raise cantopen.value
+        real_verify(self, source_db)
+
+    reset_daemon_compute_adapter()
+    try:
+        with contextlib.ExitStack() as stack:
+            _daemon_startup_stubs(stack, daemon_cli, archive_root)
+            stack.enter_context(patch.object(daemon_cli, "Polylogue", lambda: RealPolylogue(archive_root=archive_root)))
+            stack.enter_context(patch.object(ArchiveStore, "run_generation_readiness_pass", busy_once))
+            stack.enter_context(patch.object(ProductionSourceBaseline, "verify", cantopen_once))
+            stack.enter_context(
+                patch(
+                    "polylogue.daemon.intake_adapters.DaemonIntakeService",
+                    lambda dispatcher, **kwargs: DaemonIntakeService(dispatcher, idle_delay_s=0.05, **kwargs),
+                )
+            )
+            task = asyncio.create_task(
+                daemon_cli.run_daemon_services(
+                    sources=(WatchSource("codex", source_root, suffixes=(".jsonl",)),),
+                    enable_watch=False,
+                    enable_browser_capture=False,
+                    browser_capture_host="127.0.0.1",
+                    browser_capture_port=8765,
+                    browser_capture_spool_path=None,
+                    enable_api=False,
+                    enable_source_catchup=False,
+                    service_profile=ServiceProfile.INTAKE,
+                )
+            )
+            try:
+                async with asyncio.timeout(20):
+                    while _cold_build_settlement().get("cold_build_settlement_state") != "retryable":
+                        if task.done():
+                            await task
+                        await asyncio.sleep(0.05)
+                candidate = active_cold_build_generation(archive_root)
+                assert isinstance(candidate, ColdBuildGeneration)
+                candidate_id = candidate.generation_id
+                with contextlib.closing(
+                    sqlite3.connect(f"file:{candidate.generation.index_path}?mode=ro", uri=True)
+                ) as candidate_reader:
+                    assert candidate_reader.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+                assert _cold_build_settlement()["cold_build_candidate_id"] == candidate_id
+                assert _cold_build_settlement()["cold_build_settlement_reason"] == expected_reason
+                with contextlib.closing(
+                    sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True)
+                ) as active:
+                    assert active.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+                assert not task.done()
+                async with asyncio.timeout(15):
+                    while _cold_build_settlement().get("cold_build_settlement_state") != "complete":
+                        if task.done():
+                            await task
+                        await asyncio.sleep(0.05)
+                assert (calls if fault == "busy" else verify_calls) == 2
+                assert candidate.publication_complete
+                assert _cold_build_settlement()["cold_build_candidate_id"] == candidate_id
+                with contextlib.closing(
+                    sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True)
+                ) as active:
+                    assert active.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+            finally:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=10)
+    finally:
+        reset_daemon_compute_adapter()
+
+
+def test_cold_build_settlement_classifies_typed_faults(tmp_path: Path) -> None:
+    from polylogue.core.durable_fs import DurableFilesystemError
+    from polylogue.daemon.intake_adapters import classify_cold_build_settlement_failure
+    from polylogue.maintenance.candidate_capacity import ArchiveCapacityError
+    from polylogue.sources.live.production_baseline import (
+        ProductionBaselineError,
+        ProductionBaselineReadUnavailableError,
+    )
+    from polylogue.storage.archive_identity import ArchiveLocationError
+
+    assert classify_cold_build_settlement_failure(ProductionBaselineError("missing source revision")) == (
+        "source_integrity",
+        False,
+    )
+    assert classify_cold_build_settlement_failure(ProductionBaselineReadUnavailableError("read failed")) == (
+        "source_integrity",
+        True,
+    )
+    assert classify_cold_build_settlement_failure(RuntimeError("database is locked")) is None
+    assert classify_cold_build_settlement_failure(OSError(errno.EIO, "transient pointer I/O")) == (
+        "storage_io_unavailable",
+        True,
+    )
+    not_database = tmp_path / "not-a-database.db"
+    not_database.write_bytes(b"not a SQLite database")
+    with contextlib.closing(sqlite3.connect(not_database)) as conn:
+        with pytest.raises(sqlite3.DatabaseError) as corrupt:
+            conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
+    assert corrupt.value.sqlite_errorcode & 0xFF == sqlite3.SQLITE_NOTADB
+    assert classify_cold_build_settlement_failure(corrupt.value) is None
+    try:
+        raise DurableFilesystemError("receipt publication failed") from OSError(errno.ENOSPC, "full")
+    except DurableFilesystemError as wrapped:
+        assert classify_cold_build_settlement_failure(wrapped) == ("capacity_unavailable", False)
+    try:
+        raise ArchiveCapacityError("capacity inventory unavailable") from OSError(errno.EIO, "temporary scan failure")
+    except ArchiveCapacityError as wrapped:
+        assert classify_cold_build_settlement_failure(wrapped) == ("capacity_inventory_unavailable", True)
+    try:
+        try:
+            raise ArchiveLocationError("cannot inspect active index pointer") from PermissionError(
+                errno.EACCES, "pointer unavailable"
+            )
+        except ArchiveLocationError as location_error:
+            raise ArchiveCapacityError("cannot resolve archive identity") from location_error
+    except ArchiveCapacityError as wrapped:
+        assert classify_cold_build_settlement_failure(wrapped) == ("capacity_inventory_unavailable", True)
+    try:
+        raise ArchiveCapacityError("cannot resolve archive identity") from ArchiveLocationError("invalid pointer")
+    except ArchiveCapacityError as malformed:
+        assert classify_cold_build_settlement_failure(malformed) is None
+    assert classify_cold_build_settlement_failure(ArchiveCapacityError("invalid capacity topology")) is None
+
+
+@pytest.mark.asyncio
+async def test_cold_build_integrity_fault_stays_blocked_in_running_daemon(tmp_path: Path) -> None:
+    from polylogue import Polylogue as RealPolylogue
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.catchup_status import _cold_build_settlement
+    from polylogue.daemon.execution import reset_daemon_compute_adapter
+    from polylogue.daemon.intake_adapters import DaemonIntakeService
+    from polylogue.daemon.services import ServiceProfile
+    from polylogue.sources.live.cold_build import active_cold_build_generation
+    from polylogue.sources.live.production_baseline import ProductionBaselineError, ProductionSourceBaseline
+
+    archive_root = tmp_path / "archive"
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    source_file = source_root / "session.jsonl"
+    source_file.write_text(
+        '{"type":"session_meta","payload":{"id":"cold-blocked","timestamp":"2026-06-02T00:00:00Z"}}\n'
+        '{"type":"response_item","payload":{"type":"message","id":"message-0",'
+        '"role":"user","content":[{"type":"input_text","text":"Synthetic"}]}}\n',
+        encoding="utf-8",
+    )
+    os.utime(source_file, (1.0, 1.0))
+    verifications = 0
+
+    def refuse_integrity(self: ProductionSourceBaseline, _source_db: Path) -> None:
+        nonlocal verifications
+        verifications += 1
+        raise ProductionBaselineError("missing retained revision")
+
+    reset_daemon_compute_adapter()
+    try:
+        with contextlib.ExitStack() as stack:
+            _daemon_startup_stubs(stack, daemon_cli, archive_root)
+            stack.enter_context(patch.object(daemon_cli, "Polylogue", lambda: RealPolylogue(archive_root=archive_root)))
+            stack.enter_context(patch.object(ProductionSourceBaseline, "verify", refuse_integrity))
+            stack.enter_context(
+                patch(
+                    "polylogue.daemon.intake_adapters.DaemonIntakeService",
+                    lambda dispatcher, **kwargs: DaemonIntakeService(dispatcher, idle_delay_s=0.05, **kwargs),
+                )
+            )
+            task = asyncio.create_task(
+                daemon_cli.run_daemon_services(
+                    sources=(WatchSource("codex", source_root, suffixes=(".jsonl",)),),
+                    enable_watch=False,
+                    enable_browser_capture=False,
+                    browser_capture_host="127.0.0.1",
+                    browser_capture_port=8765,
+                    browser_capture_spool_path=None,
+                    enable_api=False,
+                    enable_source_catchup=False,
+                    service_profile=ServiceProfile.INTAKE,
+                )
+            )
+            try:
+                async with asyncio.timeout(20):
+                    while _cold_build_settlement().get("cold_build_settlement_state") != "blocked":
+                        if task.done():
+                            await task
+                        await asyncio.sleep(0.05)
+                status = _cold_build_settlement()
+                candidate = active_cold_build_generation(archive_root)
+                assert candidate is not None
+                assert status["cold_build_candidate_id"] == candidate.generation_id
+                assert status["cold_build_settlement_reason"] == "source_integrity"
+                assert status["cold_build_settlement_attempts"] == 1
+                assert status["cold_build_settlement_retry_due_in_s"] is None
+                assert verifications == 1
+                await asyncio.sleep(0.3)
+                assert _cold_build_settlement()["cold_build_settlement_attempts"] == 1
+                assert verifications == 1
+                assert not task.done()
+            finally:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=10)
+            assert candidate.discarded
+            assert not candidate.generation_root.exists()
+    finally:
+        reset_daemon_compute_adapter()
+
+
+@pytest.mark.asyncio
+async def test_cold_baseline_observation_cancel_stops_owned_worker() -> None:
+    """Cancelling fair intake must not join an archive-sized source scan at exit."""
+    from polylogue.daemon.cli import _observe_faulted_baseline_cancellable
+
+    started = threading.Event()
+    stopped = threading.Event()
+
+    def observe(_sources: tuple[WatchSource, ...], *, cancel: threading.Event) -> None:
+        started.set()
+        cancel.wait(timeout=2.0)
+        stopped.set()
+
+    generation = cast(Any, SimpleNamespace(observe_faulted_baseline=observe))
+    task = asyncio.create_task(_observe_faulted_baseline_cancellable(generation, ()))
+    async with asyncio.timeout(1):
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    async with asyncio.timeout(1):
+        while not stopped.is_set():
+            await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: Path) -> None:
+    from polylogue import Polylogue as RealPolylogue
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.catchup_status import _cold_build_settlement
+    from polylogue.daemon.execution import reset_daemon_compute_adapter
+    from polylogue.daemon.intake_adapters import DaemonIntakeService
+    from polylogue.daemon.services import ServiceProfile
+    from polylogue.sources.live import production_baseline
+    from polylogue.sources.live.cold_build import ColdBuildGeneration, active_cold_build_generation
+
+    def candidate_rows(candidate: ColdBuildGeneration) -> int:
+        with contextlib.closing(sqlite3.connect(f"file:{candidate.generation.index_path}?mode=ro", uri=True)) as db:
+            return int(db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+
+    archive_root = tmp_path / "archive"
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    source_file = source_root / "session.jsonl"
+    source_file.write_text(
+        '{"type":"session_meta","payload":{"id":"cold-repair","timestamp":"2026-06-02T00:00:00Z"}}\n'
+        '{"type":"response_item","payload":{"type":"message","id":"message-0",'
+        '"role":"user","content":[{"type":"input_text","text":"Synthetic"}]}}\n',
+        encoding="utf-8",
+    )
+    os.utime(source_file, (1.0, 1.0))
+    missing_root = tmp_path / "missing"
+    missing_root.mkdir()
+    repaired = False
+    real_capture = production_baseline.capture_production_source_baseline
+    real_observe = ColdBuildGeneration.observe_faulted_baseline
+    real_refresh = ColdBuildGeneration.refresh_faulted_baseline
+    observation_threads: list[str] = []
+    binding_threads: list[str] = []
+
+    def observe_off_writer(
+        self: ColdBuildGeneration, sources: tuple[WatchSource, ...], *, cancel: threading.Event | None = None
+    ) -> Any:
+        observation_threads.append(threading.current_thread().name)
+        return real_observe(self, sources, cancel=cancel)
+
+    def bind_on_writer(self: ColdBuildGeneration, observed: Any) -> bool:
+        binding_threads.append(threading.current_thread().name)
+        return real_refresh(self, observed)
+
+    def capture_with_transient_fault(
+        sources: tuple[WatchSource, ...], *, operation_id: str, cancelled: Callable[[], bool] | None = None
+    ) -> production_baseline.ProductionSourceBaseline:
+        baseline = real_capture(sources, operation_id=operation_id, cancelled=cancelled)
+        if repaired:
+            return baseline
+        rows = tuple(
+            dataclasses.replace(row, disposition="fault", reason="absent_root")
+            if row.path == str(missing_root)
+            else row
+            for row in baseline.decisions
+        )
+        return production_baseline._seal(baseline.operation_id, baseline.source_signature, rows)
+
+    reset_daemon_compute_adapter()
+    try:
+        with contextlib.ExitStack() as stack:
+            _daemon_startup_stubs(stack, daemon_cli, archive_root)
+            stack.enter_context(patch.object(daemon_cli, "Polylogue", lambda: RealPolylogue(archive_root=archive_root)))
+            stack.enter_context(
+                patch.object(production_baseline, "capture_production_source_baseline", capture_with_transient_fault)
+            )
+            stack.enter_context(patch.object(ColdBuildGeneration, "observe_faulted_baseline", observe_off_writer))
+            stack.enter_context(patch.object(ColdBuildGeneration, "refresh_faulted_baseline", bind_on_writer))
+            stack.enter_context(
+                patch(
+                    "polylogue.daemon.intake_adapters.DaemonIntakeService",
+                    lambda dispatcher, **kwargs: DaemonIntakeService(dispatcher, idle_delay_s=0.05, **kwargs),
+                )
+            )
+            task = asyncio.create_task(
+                daemon_cli.run_daemon_services(
+                    sources=(
+                        WatchSource("codex", source_root, suffixes=(".jsonl",), required=True),
+                        WatchSource("missing", missing_root, suffixes=(".jsonl",), required=True),
+                    ),
+                    enable_watch=False,
+                    enable_browser_capture=False,
+                    browser_capture_host="127.0.0.1",
+                    browser_capture_port=8765,
+                    browser_capture_spool_path=None,
+                    enable_api=False,
+                    enable_source_catchup=False,
+                    service_profile=ServiceProfile.INTAKE,
+                )
+            )
+            try:
+                try:
+                    async with asyncio.timeout(45):
+                        while _cold_build_settlement().get("cold_build_settlement_state") != "blocked":
+                            if task.done():
+                                await task
+                            await asyncio.sleep(0.05)
+                except TimeoutError as exc:
+                    candidate = active_cold_build_generation(archive_root)
+                    raise AssertionError(
+                        f"settlement={_cold_build_settlement()}, candidate_sessions="
+                        f"{candidate_rows(candidate) if candidate is not None else None}"
+                    ) from exc
+                candidate = active_cold_build_generation(archive_root)
+                assert candidate is not None
+                candidate_id = candidate.generation_id
+                assert candidate_rows(candidate) == 1
+                assert _cold_build_settlement()["cold_build_settlement_reason"] == "source_integrity"
+                repaired = True
+                os.utime(missing_root, (2.0, 2.0))
+                async with asyncio.timeout(25):
+                    while not candidate.publication_complete:
+                        if task.done():
+                            await task
+                        await asyncio.sleep(0.05)
+                assert candidate.generation_id == candidate_id
+                assert observation_threads and binding_threads
+                assert set(observation_threads) == {"cold-source-observation"}
+                assert set(observation_threads).isdisjoint(binding_threads)
+                assert _cold_build_settlement()["cold_build_settlement_state"] == "complete"
+                assert not task.done()
+                with contextlib.closing(
+                    sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True)
+                ) as active:
+                    assert active.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+            finally:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=10)
+    finally:
+        reset_daemon_compute_adapter()
 
 
 #: Task-name prefixes the daemon may create outside the supervisor, with the

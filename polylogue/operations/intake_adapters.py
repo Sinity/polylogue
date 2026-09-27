@@ -9,16 +9,19 @@ runner.
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import os
+import sqlite3
 import stat
 import threading
 import time
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeVar, cast
+from typing import Any, Literal, TypeVar, cast
 
+from polylogue.core.durable_fs import DurableFilesystemError
 from polylogue.daemon.intake import (
     DEFAULT_INTAKE_BYTE_BUDGET,
     UNMEASURABLE_INTAKE_COST_BYTES,
@@ -30,10 +33,13 @@ from polylogue.daemon.intake import (
     IntakePass,
 )
 from polylogue.logging import WARNING, emit
+from polylogue.maintenance.candidate_capacity import ArchiveCapacityError, InsufficientCapacityError
+from polylogue.maintenance.receipt_fs import MaintenanceReceiptPathError
 from polylogue.sources.live.cold_build import (
     ColdBuildGeneration,
     active_index_generation_is_empty,
     clear_cold_build_generation,
+    is_transient_cold_storage_errno,
     register_cold_build_generation,
 )
 from polylogue.sources.live.discovery import _bounded_source_paths as _bounded_source_paths
@@ -43,9 +49,11 @@ from polylogue.sources.live.metrics import (
     REFUSED_UNATTEMPTED,
     REFUSED_UNATTEMPTED_TIME_BUDGET,
 )
+from polylogue.sources.live.production_baseline import ProductionBaselineError, ProductionBaselineReadUnavailableError
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource, _log_ingest_metrics
 from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
+from polylogue.storage.archive_identity import ArchiveLocationError
 
 _T = TypeVar("_T")
 
@@ -71,6 +79,57 @@ _RAW_DISCOVERY_INSPECTION_LIMIT = 32
 _FILE_DISCOVERY_STEP_LIMIT = 256
 _FILE_DISCOVERY_RESCAN_S = 600.0
 _FILE_RETRY_DELAY_S = 5.0
+
+
+@dataclass(frozen=True, slots=True)
+class ColdBuildSettlement:
+    state: Literal["complete", "retryable", "blocked"]
+    reason: str | None = None
+    attempts: int = 0
+    next_retry_at: float | None = None
+
+
+def classify_cold_build_settlement_failure(exc: Exception) -> tuple[str, bool] | None:
+    """Classify only the named settlement faults; let other failures reach supervision."""
+    while isinstance(exc, (DurableFilesystemError, MaintenanceReceiptPathError)) and isinstance(
+        exc.__cause__, Exception
+    ):
+        exc = exc.__cause__
+    if isinstance(exc, ProductionBaselineReadUnavailableError):
+        return "source_integrity", True
+    if isinstance(exc, ProductionBaselineError):
+        return "source_integrity", False
+    if isinstance(exc, InsufficientCapacityError):
+        return "capacity_unavailable", False
+    if isinstance(exc, ArchiveCapacityError):
+        capacity_cause = exc.__cause__
+        if isinstance(capacity_cause, ArchiveLocationError):
+            capacity_cause = capacity_cause.__cause__
+        if isinstance(capacity_cause, OSError) and (
+            is_transient_cold_storage_errno(capacity_cause.errno)
+            or capacity_cause.errno in {errno.EACCES, errno.EPERM, errno.ENOENT, errno.ENOSPC, errno.EDQUOT}
+        ):
+            return "capacity_inventory_unavailable", True
+    if isinstance(exc, sqlite3.Error):
+        code = getattr(exc, "sqlite_errorcode", None)
+        primary = code & 0xFF if isinstance(code, int) else None
+        if primary in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+            return "sqlite_busy", True
+        if primary in (sqlite3.SQLITE_CANTOPEN, sqlite3.SQLITE_PERM):
+            return "sqlite_open_unavailable", True
+        if primary == sqlite3.SQLITE_FULL:
+            return "capacity_unavailable", False
+        if primary == sqlite3.SQLITE_IOERR:
+            return "candidate_storage_unavailable", False
+        return None
+    if isinstance(exc, OSError):
+        if is_transient_cold_storage_errno(exc.errno):
+            return ("storage_busy" if exc.errno in (errno.EAGAIN, errno.EBUSY) else "storage_io_unavailable"), True
+        if exc.errno in (errno.ENOSPC, errno.EDQUOT):
+            return "capacity_unavailable", False
+        if exc.errno in (errno.ENOENT, errno.EACCES):
+            return "source_evidence_unavailable", False
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1366,9 +1425,12 @@ class DaemonIntakeService:
         budget: int = DEFAULT_INTAKE_BYTE_BUDGET,
         idle_delay_s: float = 5.0,
         wakeup: asyncio.Event | None = None,
-        on_backlog_drained: Callable[[], Awaitable[None] | None] | None = None,
+        on_backlog_drained: Callable[[], Awaitable[ColdBuildSettlement | None] | ColdBuildSettlement | None]
+        | None = None,
         has_pending_backlog: Callable[[], Awaitable[bool] | bool] | None = None,
         on_pass_complete: Callable[[IntakePass], Awaitable[None] | None] | None = None,
+        settlement_revision: Callable[[], tuple[int, ...]] | None = None,
+        settlement_external_revision: Callable[[], tuple[int, ...]] | None = None,
     ) -> None:
         self.dispatcher = dispatcher
         # A count-scale budget (the previous literal 64) left a class's
@@ -1386,6 +1448,11 @@ class DaemonIntakeService:
         self._has_pending_backlog = has_pending_backlog
         self._on_pass_complete = on_pass_complete
         self._progressed_once = False
+        self._settlement: ColdBuildSettlement | None = None
+        self._settlement_revision = settlement_revision
+        self._settlement_external_revision = settlement_external_revision
+        self._blocked_revision: tuple[int, ...] | None = None
+        self._progress_since_blocked = False
 
     async def run(self) -> None:
         while True:
@@ -1398,6 +1465,7 @@ class DaemonIntakeService:
             )
             if result.progressed:
                 self._progressed_once = True
+                self._progress_since_blocked = True
                 if self._on_pass_complete is not None:
                     outcome = self._on_pass_complete(result)
                     if isinstance(outcome, Awaitable):
@@ -1413,16 +1481,53 @@ class DaemonIntakeService:
                 if isinstance(pending, Awaitable):
                     pending = await pending
                 if not pending:
-                    outcome = self._on_backlog_drained()
-                    if isinstance(outcome, Awaitable):
-                        await outcome
-                    # A failed promotion must be retried, not mistaken for a
-                    # completed one-shot callback.
-                    self._on_backlog_drained = None
+                    settlement = self._settlement
+                    now = time.monotonic()
+                    revision = self._settlement_revision() if self._settlement_revision is not None else ()
+                    due = (
+                        settlement is None
+                        or (
+                            settlement.state == "retryable"
+                            and settlement.next_retry_at is not None
+                            and now >= settlement.next_retry_at
+                        )
+                        or (
+                            settlement.state == "blocked"
+                            and (self._progress_since_blocked or revision != self._blocked_revision)
+                        )
+                    )
+                    if due:
+                        external_before = (
+                            self._settlement_external_revision()
+                            if self._settlement_external_revision is not None
+                            else None
+                        )
+                        settlement_outcome = self._on_backlog_drained()
+                        if isinstance(settlement_outcome, Awaitable):
+                            settlement_outcome = await settlement_outcome
+                        if settlement_outcome is None or settlement_outcome.state == "complete":
+                            self._on_backlog_drained = None
+                            self._settlement = None
+                        else:
+                            self._settlement = settlement_outcome
+                            if settlement_outcome.state == "blocked":
+                                # The attempt itself may update candidate
+                                # metadata or WAL files. Only a later change
+                                # to the evidence may wake a blocked verdict.
+                                self._blocked_revision = (
+                                    self._settlement_revision() if self._settlement_revision is not None else ()
+                                )
+                                self._progress_since_blocked = (
+                                    external_before != self._settlement_external_revision()
+                                    if external_before is not None and self._settlement_external_revision is not None
+                                    else False
+                                )
             try:
                 idle_delay = 0.05 if result.progressed or discovery_pending else self.idle_delay_s
                 if retry_delays:
                     idle_delay = min(idle_delay, max(0.05, min(retry_delays)))
+                if self._settlement is not None and self._settlement.next_retry_at is not None:
+                    idle_delay = min(idle_delay, max(0.05, self._settlement.next_retry_at - time.monotonic()))
                 async with asyncio.timeout(idle_delay):
                     await self._wakeup.wait()
             except TimeoutError:

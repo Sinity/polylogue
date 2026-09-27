@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
 import sqlite3
-import sys
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,7 +29,7 @@ from polylogue.sources.decoder_zip import (
     is_declared_artifact_path,
     provider_detection_path,
 )
-from polylogue.sources.live.discovery import _bounded_source_paths
+from polylogue.sources.live.discovery import _source_path_steps
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
@@ -43,10 +43,52 @@ from polylogue.storage.archive_identity import MAINTENANCE_STATE_DIRNAME
 _PENDING_DIR = "production-source-baseline"
 _PENDING_FILE = "pending.json"
 MATERIAL_BYTE_DEFINITION = "retained-canonical-payload-v1"
+_RETRYABLE_READ_ERRNOS = frozenset(
+    {
+        errno.EIO,
+        errno.EACCES,
+        errno.EPERM,
+        errno.ESTALE,
+        errno.ETIMEDOUT,
+        errno.EAGAIN,
+        errno.EBUSY,
+        errno.ENOSPC,
+        errno.EDQUOT,
+    }
+)
+
+
+def _retryable_read_fault(exc: Exception) -> bool:
+    sqlite_code = getattr(exc, "sqlite_errorcode", None)
+    return (isinstance(exc, OSError) and exc.errno in _RETRYABLE_READ_ERRNOS) or (
+        isinstance(exc, sqlite3.Error)
+        and isinstance(sqlite_code, int)
+        and sqlite_code & 0xFF
+        in {
+            sqlite3.SQLITE_IOERR,
+            sqlite3.SQLITE_BUSY,
+            sqlite3.SQLITE_LOCKED,
+            sqlite3.SQLITE_CANTOPEN,
+            sqlite3.SQLITE_PERM,
+        }
+    )
 
 
 class ProductionBaselineError(RuntimeError):
     """The build cannot prove its discovered source revisions were retained."""
+
+
+class ProductionBaselineReadUnavailableError(ProductionBaselineError):
+    """Every unresolved source fault is a read observation worth retrying."""
+
+
+class ProductionBaselineObservationCancelledError(Exception):
+    """A superseded read-only source observation stopped cooperatively."""
+
+
+def _check_observation_cancelled(cancelled: Callable[[], bool] | None) -> None:
+    if cancelled is not None and cancelled():
+        raise ProductionBaselineObservationCancelledError
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,28 +165,15 @@ class ProductionSourceBaseline:
         self.verify_integrity()
         faults = [row for row in self.decisions if row.disposition == "fault"]
         if faults:
+            if all(row.reason.startswith("revision_io_unavailable:") for row in faults):
+                raise ProductionBaselineReadUnavailableError(
+                    f"production source baseline has {len(faults)} unreadable revision(s)"
+                )
             raise ProductionBaselineError(f"production source baseline has {len(faults)} unresolved discovery fault(s)")
-        conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
-        try:
-            retained = {
-                (
-                    str(path),
-                    int(source_index),
-                    bytes(blob_hash).hex() if isinstance(blob_hash, (bytes, memoryview)) else str(blob_hash),
-                )
-                for path, source_index, blob_hash in conn.execute(
-                    "SELECT source_path, source_index, blob_hash FROM raw_sessions"
-                )
-            }
-        finally:
-            conn.close()
-        missing: list[str] = []
-        for row in self.accepted:
-            if (row.path, row.source_index or 0, row.revision) not in retained:
-                missing.append(row.path)
+        missing = unretained_source_decisions(self, source_db)
         if missing:
             raise ProductionBaselineError(
-                f"production source baseline has {len(missing)} unretained revision(s): {missing[:3]}"
+                f"production source baseline has {len(missing)} unretained revision(s): {[row.path for row in missing[:3]]}"
             )
 
     def verify_integrity(self) -> None:
@@ -195,6 +224,51 @@ class ProductionSourceBaseline:
         return result
 
 
+def unretained_source_decisions(baseline: ProductionSourceBaseline, source_db: Path) -> tuple[SourceDecision, ...]:
+    """Accepted coordinates absent from the durable raw-session ledger."""
+    conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+    try:
+        retained = {
+            (
+                str(path),
+                int(source_index),
+                bytes(blob_hash).hex() if isinstance(blob_hash, (bytes, memoryview)) else str(blob_hash),
+            )
+            for path, source_index, blob_hash in conn.execute(
+                "SELECT source_path, source_index, blob_hash FROM raw_sessions"
+            )
+        }
+    finally:
+        conn.close()
+    return tuple(row for row in baseline.accepted if (row.path, row.source_index or 0, row.revision) not in retained)
+
+
+def unretained_source_material(
+    baseline: ProductionSourceBaseline, source_db: Path, blob_block_bytes: int, source_db_block_bytes: int
+) -> tuple[int, int, int]:
+    """Headroom for accepted revisions that have not already been retained."""
+    if blob_block_bytes <= 0 or source_db_block_bytes <= 0:
+        raise ValueError("allocation block size must be positive")
+    rows = unretained_source_decisions(baseline, source_db)
+    if any(row.material_bytes is None for row in rows):
+        raise ProductionBaselineError("accepted production material has unknown retained byte size")
+    material = sum(row.material_bytes for row in rows if row.material_bytes is not None)
+    blobs = sum(
+        ((row.material_bytes + blob_block_bytes - 1) // blob_block_bytes) * blob_block_bytes
+        for row in rows
+        if row.material_bytes is not None
+    )
+    source_rows = sum(
+        (
+            (max(source_db_block_bytes, len(row.path.encode("utf-8")) + 512) + source_db_block_bytes - 1)
+            // source_db_block_bytes
+        )
+        * source_db_block_bytes
+        for row in rows
+    )
+    return material, blobs, source_rows
+
+
 def _json(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
@@ -235,11 +309,18 @@ def publish_pending_production_baseline(archive_root: Path, baseline: Production
         atomic_replace_receipt(directory_fd, _PENDING_FILE, _json(baseline.as_dict()))
 
 
-def clear_pending_production_baseline(archive_root: Path, baseline: ProductionSourceBaseline) -> None:
+def clear_pending_production_baseline(
+    archive_root: Path, baseline: ProductionSourceBaseline, *, allow_missing: bool = False
+) -> None:
     with existing_maintenance_receipt_directory(archive_root, _PENDING_DIR) as directory_fd:
         if directory_fd is None:
             raise ProductionBaselineError("pending production source baseline disappeared before promotion")
         raw = read_optional_receipt(directory_fd, _PENDING_FILE)
+        if raw is None and allow_missing:
+            # An earlier unlink may have succeeded before its directory fsync
+            # failed. Re-establish that durability boundary on reconciliation.
+            os.fsync(directory_fd)
+            return
         if raw is None or ProductionSourceBaseline.from_dict(json.loads(raw)).digest != baseline.digest:
             raise ProductionBaselineError("pending production source baseline changed before promotion")
         os.unlink(_PENDING_FILE, dir_fd=directory_fd)
@@ -264,7 +345,7 @@ def merge_pending_production_baseline(
         elif row.disposition == "fault":
             replacement = current_by_coordinate.get((row.source, row.path))
             resolved = replacement is not None and replacement.disposition in {"accepted", "alias"}
-            if row.reason == "absent_root" and replacement is not None and replacement.reason == "available_root":
+            if replacement is not None and replacement.reason in {"available_root", "expanded_to_members"}:
                 resolved = True
             if not resolved:
                 key = (row.source, row.path, row.disposition, row.source_index, row.revision)
@@ -274,19 +355,23 @@ def merge_pending_production_baseline(
     return _seal(current.operation_id, current.source_signature, tuple(rows))
 
 
-def _revision(path: Path) -> tuple[str, int]:
+def _revision(path: Path, *, cancelled: Callable[[], bool] | None = None) -> tuple[str, int]:
+    _check_observation_cancelled(cancelled)
     if is_sqlite_path(path):
         return sqlite_member_revision_and_size(path)
     digest = hashlib.sha256()
     size = 0
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            _check_observation_cancelled(cancelled)
             digest.update(chunk)
             size += len(chunk)
     return digest.hexdigest(), size
 
 
-def _archive_members(path: Path, source_name: str) -> tuple[SourceDecision, ...]:
+def _archive_members(
+    path: Path, source_name: str, *, cancelled: Callable[[], bool] | None = None
+) -> tuple[SourceDecision, ...]:
     members: list[SourceDecision] = []
     with zipfile.ZipFile(path) as archive:
         central_directory = archive.infolist()
@@ -316,6 +401,7 @@ def _archive_members(path: Path, source_name: str) -> tuple[SourceDecision, ...]
             on_unselected=excluded,
         )
         for info in entries:
+            _check_observation_cancelled(cancelled)
             if info.file_size == 0:
                 excluded(info, "empty_member")
                 continue
@@ -332,6 +418,7 @@ def _archive_members(path: Path, source_name: str) -> tuple[SourceDecision, ...]
                     None,  # type: ignore[arg-type]
                 )
                 for payload in replay_zip_entry_acquisition_payloads(archive, context):
+                    _check_observation_cancelled(cancelled)
                     split = payload.source_index or 0
                     members.append(
                         SourceDecision(
@@ -345,13 +432,14 @@ def _archive_members(path: Path, source_name: str) -> tuple[SourceDecision, ...]
                         )
                     )
             except (OSError, UnicodeError, ValueError, ZipBombError, zipfile.BadZipFile) as exc:
-                fault(info, f"archive_member_unreadable:{exc}")
+                reason = "revision_io_unavailable" if _retryable_read_fault(exc) else "archive_member_unreadable"
+                fault(info, f"{reason}:{exc}")
                 continue
     return tuple(members)
 
 
 def capture_production_source_baseline(
-    sources: tuple[WatchSource, ...], *, operation_id: str
+    sources: tuple[WatchSource, ...], *, operation_id: str, cancelled: Callable[[], bool] | None = None
 ) -> ProductionSourceBaseline:
     """Observe the exact typed sources through the same walker as file intake.
 
@@ -380,6 +468,7 @@ def capture_production_source_baseline(
     decisions: list[SourceDecision] = []
     observed: list[tuple[str, Path, str, str]] = []
     for source in sources:
+        _check_observation_cancelled(cancelled)
         if not source.root.is_dir():
             decisions.append(
                 SourceDecision(
@@ -396,9 +485,22 @@ def capture_production_source_baseline(
             observed.append((source_name, path, disposition, reason))
 
         try:
-            _bounded_source_paths(source, sources, limit=sys.maxsize, after=None, on_disposition=record, collect=False)
+            for _ in _source_path_steps(
+                source,
+                sources,
+                after=None,
+                on_disposition=record,
+                on_inspected=lambda: _check_observation_cancelled(cancelled),
+            ):
+                _check_observation_cancelled(cancelled)
         except WalkRefusedError as exc:
-            decisions.append(SourceDecision(source.name, str(source.root), "fault", str(exc)))
+            cause = exc.__cause__
+            reason = (
+                f"revision_io_unavailable:{exc}"
+                if isinstance(cause, Exception) and _retryable_read_fault(cause)
+                else str(exc)
+            )
+            decisions.append(SourceDecision(source.name, str(source.root), "fault", reason))
             continue
     accepted_real = {
         str(path.resolve())
@@ -411,6 +513,7 @@ def capture_production_source_baseline(
         if source.root.is_dir() and not source.root.is_symlink()
     }
     for source_name, path, disposition, reason in observed:
+        _check_observation_cancelled(cancelled)
         if path.is_symlink():
             target = str(path.resolve())
             independently_accepted = (
@@ -436,12 +539,14 @@ def capture_production_source_baseline(
         if disposition == "accepted":
             try:
                 if path.suffix.lower() == ".zip":
+                    members = _archive_members(path, source_name, cancelled=cancelled)
                     decisions.append(SourceDecision(source_name, str(path), "excluded", "expanded_to_members"))
-                    decisions.extend(_archive_members(path, source_name))
+                    decisions.extend(members)
                     continue
-                revision, material_bytes = _revision(path)
+                revision, material_bytes = _revision(path, cancelled=cancelled)
             except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as exc:
-                decisions.append(SourceDecision(source_name, str(path), "fault", f"revision_unreadable:{exc}"))
+                reason = "revision_io_unavailable" if _retryable_read_fault(exc) else "revision_unreadable"
+                decisions.append(SourceDecision(source_name, str(path), "fault", f"{reason}:{exc}"))
                 continue
         else:
             revision = None

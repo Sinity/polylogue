@@ -129,6 +129,7 @@ class GenerationMeasurement:
 
     generation_id: str
     allocated_bytes: int
+    index_allocated_bytes: int
     logical_bytes: int
     active: bool
 
@@ -136,6 +137,7 @@ class GenerationMeasurement:
         return {
             "generation_id": self.generation_id,
             "allocated_bytes": self.allocated_bytes,
+            "index_allocated_bytes": self.index_allocated_bytes,
             "logical_bytes": self.logical_bytes,
             "active": self.active,
         }
@@ -319,6 +321,7 @@ class CandidateCapacityProjection:
     receipt_growth_bytes: int
     reserve_bytes: int
     retained_allocated_bytes: int
+    existing_candidate_index_allocated_bytes: int = 0
     prospective_material_bytes: int = 0
     prospective_retained_allocation_bytes: int = 0
     prospective_source_db_allocation_bytes: int = 0
@@ -336,7 +339,7 @@ class CandidateCapacityProjection:
             self.retained_allocated_bytes
             + self.prospective_retained_allocation_bytes
             + self.prospective_source_db_allocation_bytes
-            + self.projected_index_bytes
+            + max(0, self.projected_index_bytes - self.existing_candidate_index_allocated_bytes)
             + self.wal_amplification_bytes
             + self.temporary_amplification_bytes
             + self.receipt_growth_bytes
@@ -366,6 +369,7 @@ class CandidateCapacityProjection:
             "receipt_growth_bytes": self.receipt_growth_bytes,
             "reserve_bytes": self.reserve_bytes,
             "retained_allocated_bytes": self.retained_allocated_bytes,
+            "existing_candidate_index_allocated_bytes": self.existing_candidate_index_allocated_bytes,
             "prospective_material_bytes": self.prospective_material_bytes,
             "prospective_retained_allocation_bytes": self.prospective_retained_allocation_bytes,
             "prospective_source_db_allocation_bytes": self.prospective_source_db_allocation_bytes,
@@ -814,10 +818,14 @@ def _measure_generations(
             # order the inventory happened to walk its siblings in.
             isolated = _Accumulator(entry.name, set())
             _measure_path(isolated, Path(entry.path), label=f"index generation {entry.name}")
+            index_metadata = _lstat(Path(entry.path) / "index.db", label=f"index generation {entry.name} index")
+            if index_metadata is not None and not stat.S_ISREG(index_metadata.st_mode):
+                raise ArchiveCapacityError(f"index generation is not a regular file: {entry.path}/index.db")
             measurements.append(
                 GenerationMeasurement(
                     generation_id=entry.name,
                     allocated_bytes=isolated.allocated,
+                    index_allocated_bytes=allocated_bytes(index_metadata) if index_metadata is not None else 0,
                     logical_bytes=isolated.logical,
                     active=entry.name == active_id,
                 )
@@ -829,6 +837,7 @@ def _measure_generations(
 def project_candidate_capacity(
     archive_root: Path,
     *,
+    existing_candidate_generation_id: str | None = None,
     prospective_material_bytes: int = 0,
     prospective_retained_allocation_bytes: int | None = None,
     prospective_source_db_allocation_bytes: int = 0,
@@ -845,6 +854,16 @@ def project_candidate_capacity(
     if prospective_source_db_allocation_bytes < 0:
         raise ArchiveCapacityError("prospective source database allocation cannot be negative")
     inventory = measure_archive_capacity(archive_root)
+    existing_candidate_index_allocated_bytes = 0
+    if existing_candidate_generation_id is not None:
+        candidates = [
+            generation
+            for generation in inventory.generations
+            if generation.generation_id == existing_candidate_generation_id and not generation.active
+        ]
+        if len(candidates) != 1:
+            raise ArchiveCapacityError("existing candidate is missing or active in capacity inventory")
+        existing_candidate_index_allocated_bytes = candidates[0].index_allocated_bytes
     evidence_bytes = (
         inventory.population("durable_tiers").allocated_bytes + inventory.population("blob").allocated_bytes
     )
@@ -869,7 +888,9 @@ def project_candidate_capacity(
     requirements, reserve_bytes = _filesystem_requirements(
         inventory.destinations,
         {
-            "candidate": projected_index_bytes + wal_amplification_bytes + temporary_amplification_bytes,
+            "candidate": max(0, projected_index_bytes - existing_candidate_index_allocated_bytes)
+            + wal_amplification_bytes
+            + temporary_amplification_bytes,
             "blob": prospective_retained_allocation_bytes,
             "source_db": prospective_source_db_allocation_bytes,
             "receipt": receipt_growth_bytes,
@@ -887,6 +908,7 @@ def project_candidate_capacity(
         receipt_growth_bytes=receipt_growth_bytes,
         reserve_bytes=reserve_bytes,
         retained_allocated_bytes=inventory.total_allocated_bytes,
+        existing_candidate_index_allocated_bytes=existing_candidate_index_allocated_bytes,
         prospective_material_bytes=prospective_material_bytes,
         prospective_retained_allocation_bytes=prospective_retained_allocation_bytes,
         prospective_source_db_allocation_bytes=prospective_source_db_allocation_bytes,
@@ -900,6 +922,7 @@ def require_candidate_capacity(
     archive_root: Path,
     *,
     operation_id: str,
+    existing_candidate_generation_id: str | None = None,
     prospective_material_bytes: int = 0,
     prospective_retained_allocation_bytes: int | None = None,
     prospective_source_db_allocation_bytes: int = 0,
@@ -909,6 +932,7 @@ def require_candidate_capacity(
     """Refuse a candidate build whose projected peak does not fit, before allocating."""
     projection = project_candidate_capacity(
         archive_root,
+        existing_candidate_generation_id=existing_candidate_generation_id,
         prospective_material_bytes=prospective_material_bytes,
         prospective_retained_allocation_bytes=prospective_retained_allocation_bytes,
         prospective_source_db_allocation_bytes=prospective_source_db_allocation_bytes,

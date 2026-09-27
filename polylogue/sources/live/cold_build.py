@@ -30,12 +30,15 @@ afterwards.
 
 from __future__ import annotations
 
+import errno
+import json
 import os
 import sqlite3
 import threading
 import time
 import types
 import uuid
+import zlib
 from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,6 +50,7 @@ from polylogue.maintenance.candidate_capacity import (
     evidence_allocation_block_bytes,
     require_candidate_capacity,
 )
+from polylogue.storage.archive_identity import MAINTENANCE_STATE_DIRNAME
 from polylogue.storage.index_generation import (
     IndexGeneration,
     IndexGenerationStore,
@@ -63,11 +67,44 @@ if TYPE_CHECKING:
 
 _ACCEPTED_PROGRESS_STALL_AFTER_S = 60.0
 
+
+def is_transient_cold_storage_errno(error_no: int | None) -> bool:
+    """I/O errors eligible for a same-process cold-settlement retry."""
+    return error_no in {errno.EAGAIN, errno.EBUSY, errno.EIO, errno.ESTALE, errno.ETIMEDOUT}
+
+
+def _typed_promotion_io_failure(exc: Exception) -> bool:
+    current: BaseException | None = exc
+    while current is not None:
+        if isinstance(current, sqlite3.Error):
+            code = getattr(current, "sqlite_errorcode", None)
+            if isinstance(code, int) and code & 0xFF in {
+                sqlite3.SQLITE_BUSY,
+                sqlite3.SQLITE_LOCKED,
+                sqlite3.SQLITE_FULL,
+                sqlite3.SQLITE_IOERR,
+                sqlite3.SQLITE_CORRUPT,
+                sqlite3.SQLITE_NOTADB,
+            }:
+                return True
+        # The pointer is already published and reconcile_promoted() succeeded:
+        # capacity and access faults can be swallowed here as well as the
+        # transient pre-swap retry errors.
+        if isinstance(current, OSError) and (
+            is_transient_cold_storage_errno(current.errno)
+            or current.errno in {errno.ENOSPC, errno.EDQUOT, errno.ENOENT, errno.EACCES}
+        ):
+            return True
+        current = current.__cause__
+    return False
+
+
 __all__ = [
     "ColdBuildGeneration",
     "active_cold_build_generation",
     "active_index_generation_is_empty",
     "clear_cold_build_generation",
+    "is_transient_cold_storage_errno",
     "register_cold_build_generation",
 ]
 
@@ -75,6 +112,43 @@ __all__ = [
 def _cold_build_owner_id() -> str:
     """One owner per daemon process: ownership is what promotion checks."""
     return f"cold-build:{os.getpid()}"
+
+
+def _reclaim_abandoned_cold_generations(store: IndexGenerationStore) -> None:
+    """Remove inactive cold builds left by a stopped daemon before capacity admission."""
+    live = active_cold_build_generation(store.archive_root)
+    if live is not None and not live.settled:
+        raise RuntimeError("cannot reclaim cold builds while a generation is registered")
+    ColdBuildGeneration.reconcile_interrupted_promotions(store.archive_root)
+    if not store.generations_root.exists():
+        return
+    active_target = store.active_pointer.resolve(strict=False)
+    for root in sorted(store.generations_root.iterdir()):
+        if not root.name.startswith("gen-"):
+            continue
+        generation = store.load(root.name)
+        if not generation.owner_id.startswith("cold-build:"):
+            continue
+        if generation.state == "promoting":
+            if store.discard_unpublished_cold_promotion(generation):
+                emit(
+                    "daemon.cold_build.abandoned_reclaimed",
+                    outcome="ok",
+                    reason="interrupted_pre_swap",
+                    generation_id=generation.generation_id,
+                )
+            continue
+        if generation.state != "inactive":
+            continue
+        if Path(generation.index_path).resolve(strict=False) == active_target:
+            raise RuntimeError("inactive cold-build generation is the active index")
+        if store.discard_if_inactive(generation):
+            emit(
+                "daemon.cold_build.abandoned_reclaimed",
+                outcome="ok",
+                reason="inactive_previous_build",
+                generation_id=generation.generation_id,
+            )
 
 
 def _hold_ops_checkpoints(archive_root: Path) -> sqlite3.Connection | None:
@@ -224,6 +298,12 @@ class ColdBuildGeneration:
     source_baseline: ProductionSourceBaseline
     _promoted: bool = False
     _discarded: bool = False
+    _receipt_cleared: bool = False
+    settlement_state: str = "building"
+    settlement_reason: str | None = None
+    settlement_last_error: str | None = None
+    settlement_attempts: int = 0
+    settlement_next_retry_at: float | None = None
     #: Open for the build's lifetime so one-shot ``ops.db`` writers stop
     #: checkpointing on every close. See :func:`_hold_ops_checkpoints`.
     _ops_checkpoint_holder: sqlite3.Connection | None = None
@@ -243,17 +323,27 @@ class ColdBuildGeneration:
     _accepted_progress_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        accepted = self.source_baseline.accepted
-        self._accepted_progress_total = len(accepted)
-        # begin() supplies an immutable, integrity-sealed discovery baseline.
-        self._accepted_progress_denominator_sealed = bool(self.source_baseline.digest)
+        self._reset_accepted_progress(self.source_baseline)
+
+    def _reset_accepted_progress(self, baseline: ProductionSourceBaseline) -> int:
+        accepted = baseline.accepted
         weights: dict[tuple[str, int, str], int] = {}
         for row in accepted:
             if row.revision is None:
                 continue
             key = (row.path, row.source_index or 0, row.revision)
             weights[key] = weights.get(key, 0) + 1
-        self._accepted_progress_weights = weights
+        with self._accepted_progress_lock:
+            previous_count = self._accepted_progress_count
+            self._accepted_progress_total = len(accepted)
+            self._accepted_progress_denominator_sealed = bool(baseline.digest)
+            self._accepted_progress_weights = weights
+            self._accepted_progress_seen.clear()
+            self._accepted_progress_count = 0
+            self._accepted_progress_rowid = 0
+            self._accepted_progress_index_identity = None
+            self._accepted_progress_valid = False
+        return previous_count
 
     @property
     def accepted_progress(self) -> tuple[int | None, int, float | None, float | None]:
@@ -404,6 +494,8 @@ class ColdBuildGeneration:
         with ArchiveStore.open_existing(archive_root, read_only=False):
             pass
         (archive_root / "blob").mkdir(mode=0o700, exist_ok=True)
+        store = IndexGenerationStore.for_archive_root(archive_root)
+        _reclaim_abandoned_cold_generations(store)
         # The whole-tree walk this costs is measured in tens of seconds on a
         # real archive (77s over ~790k inodes), against a build measured in
         # hours -- and it runs once per build, not once per pass, because
@@ -416,11 +508,11 @@ class ColdBuildGeneration:
         )
         from polylogue.sources.live.production_baseline import (
             MATERIAL_BYTE_DEFINITION,
-            ProductionBaselineError,
             capture_production_source_baseline,
             load_pending_production_baseline,
             merge_pending_production_baseline,
             publish_pending_production_baseline,
+            unretained_source_material,
         )
 
         # Existing manual receipts remain historical evidence. Validate any
@@ -433,22 +525,17 @@ class ColdBuildGeneration:
             load_pending_production_baseline(archive_root),
         )
         publish_pending_production_baseline(archive_root, baseline)
-        prospective_material_bytes = baseline.prospective_material_bytes
-        if prospective_material_bytes is None:
-            raise ProductionBaselineError("accepted production material has unknown retained byte size")
         blob_block_bytes, source_db_block_bytes = evidence_allocation_block_bytes(archive_root)
-        prospective_retained_allocation_bytes = baseline.prospective_retained_allocation_bytes(blob_block_bytes)
-        if prospective_retained_allocation_bytes is None:
-            raise ProductionBaselineError("accepted production material has unknown retained allocation")
+        prospective_material_bytes, prospective_retained_allocation_bytes, prospective_source_db_allocation_bytes = (
+            unretained_source_material(baseline, archive_root / "source.db", blob_block_bytes, source_db_block_bytes)
+        )
         try:
             require_candidate_capacity(
                 archive_root,
                 operation_id=operation_id,
                 prospective_material_bytes=prospective_material_bytes,
                 prospective_retained_allocation_bytes=prospective_retained_allocation_bytes,
-                prospective_source_db_allocation_bytes=baseline.prospective_source_db_allocation_bytes(
-                    source_db_block_bytes
-                ),
+                prospective_source_db_allocation_bytes=prospective_source_db_allocation_bytes,
                 baseline_digest=baseline.digest,
                 material_byte_definition=MATERIAL_BYTE_DEFINITION,
             )
@@ -469,7 +556,6 @@ class ColdBuildGeneration:
                 error_detail=str(refusal),
             )
             raise
-        store = IndexGenerationStore.for_archive_root(archive_root)
         snapshot = ""
         if (archive_root / "source.db").exists():
             snapshot = rebuild_source_evidence_snapshot(archive_root)
@@ -502,6 +588,63 @@ class ColdBuildGeneration:
             source_baseline=baseline,
         )
 
+    @classmethod
+    def reconcile_interrupted_promotions(cls, archive_root: Path) -> None:
+        """Finish a cold pointer swap or matching pending receipt left by process exit."""
+        from polylogue.sources.live.production_baseline import (
+            ProductionBaselineError,
+            ProductionSourceBaseline,
+            load_pending_production_baseline,
+        )
+
+        store = IndexGenerationStore.for_archive_root(archive_root)
+        if not store.generations_root.exists():
+            return
+        active_target = store.active_pointer.resolve(strict=False)
+        for root in sorted(store.generations_root.iterdir()):
+            if not root.name.startswith("gen-"):
+                continue
+            generation = store.load(root.name)
+            if generation.state not in {"promoting", "active"} or not generation.owner_id.startswith("cold-build:"):
+                continue
+            if Path(generation.index_path).resolve(strict=False) != active_target:
+                continue
+            pending = load_pending_production_baseline(Path(archive_root)) if generation.state == "active" else None
+            if generation.state == "active" and pending is None:
+                continue
+            binding = root / "source-baseline.json"
+            try:
+                fd = os.open(binding, os.O_RDONLY | os.O_NOFOLLOW)
+                with os.fdopen(fd, encoding="utf-8") as stream:
+                    payload = json.load(stream)
+                if not isinstance(payload, dict) or payload.get("generation_id") != generation.generation_id:
+                    raise ProductionBaselineError("interrupted cold-build baseline binding mismatch")
+                baseline_payload = payload.get("baseline")
+                if not isinstance(baseline_payload, dict):
+                    raise ProductionBaselineError("interrupted cold-build baseline binding is unavailable")
+                baseline = ProductionSourceBaseline.from_dict(baseline_payload)
+                if payload != {"generation_id": generation.generation_id, "baseline": baseline.as_dict()}:
+                    raise ProductionBaselineError("interrupted cold-build baseline binding changed")
+            except (OSError, ValueError, TypeError) as exc:
+                raise ProductionBaselineError("interrupted cold-build baseline binding is unavailable") from exc
+            if generation.state == "active" and pending is not None and pending.digest != baseline.digest:
+                continue  # a newer inactive build owns the pending receipt
+            candidate = cls(
+                archive_root=Path(archive_root),
+                generation=generation,
+                reason="interrupted promotion",
+                operation_id=baseline.operation_id,
+                _store=store,
+                source_baseline=baseline,
+                _promoted=True,
+            )
+            candidate.reconcile_promoted()
+            emit(
+                "daemon.cold_build.interrupted_promotion_reconciled",
+                outcome="ok",
+                generation_id=generation.generation_id,
+            )
+
     @property
     def generation_root(self) -> Path:
         return Path(self.generation.index_path).parent
@@ -515,6 +658,209 @@ class ColdBuildGeneration:
         """Whether this generation has already been promoted or discarded."""
         return self._promoted or self._discarded
 
+    @property
+    def publication_complete(self) -> bool:
+        return self._promoted and self._receipt_cleared
+
+    @property
+    def promoted(self) -> bool:
+        return self._promoted
+
+    @property
+    def discarded(self) -> bool:
+        return self._discarded
+
+    def record_settlement(
+        self,
+        state: str,
+        *,
+        reason: str | None = None,
+        last_error: str | None = None,
+        next_retry_at: float | None = None,
+        attempted: bool = True,
+    ) -> None:
+        if attempted:
+            self.settlement_attempts += 1
+        self.settlement_state = state
+        self.settlement_reason = reason
+        self.settlement_last_error = last_error
+        self.settlement_next_retry_at = next_retry_at
+
+    def settlement_external_revision(self, sources: tuple[WatchSource, ...] = ()) -> tuple[int, ...]:
+        """Evidence a settlement callback cannot change itself."""
+
+        def unavailable(error: OSError) -> tuple[int, int, int]:
+            error_type = f"{type(error).__module__}.{type(error).__qualname__}"
+            return (-2, error.errno if error.errno is not None else -1, zlib.crc32(error_type.encode()))
+
+        paths = (
+            self.archive_root / "source.db",
+            self.archive_root / "source.db-wal",
+        )
+        revision: list[int] = []
+        for path in paths:
+            try:
+                metadata = path.stat()
+            except FileNotFoundError:
+                revision.extend((-1, -1, -1))
+            except OSError as exc:
+                revision.extend(unavailable(exc))
+            else:
+                revision.extend((metadata.st_ino, metadata.st_size, metadata.st_mtime_ns))
+        for source in sources:
+            try:
+                metadata = source.root.stat()
+            except FileNotFoundError:
+                revision.extend((-1, -1, -1, -1))
+            except OSError as exc:
+                revision.extend((*unavailable(exc), -1))
+            else:
+                revision.extend((metadata.st_ino, metadata.st_size, metadata.st_mtime_ns, metadata.st_mode))
+        # Pointer publication can fail on archive-root permissions. Its ctime
+        # also changes during ordinary daemon writes, so only watch identity
+        # and mode here to avoid retrying an unchanged blocked settlement.
+        try:
+            root_metadata = self.archive_root.stat()
+        except FileNotFoundError:
+            revision.extend((-1, -1, -1))
+        except OSError as exc:
+            revision.extend(unavailable(exc))
+        else:
+            revision.extend((0, root_metadata.st_ino, root_metadata.st_mode))
+        # Receipt publication/unlink can fail on parent permissions even when
+        # the child file's own metadata does not move. Watch identity and mode;
+        # settlement's own file writes also move directory ctime and mtime.
+        for directory in (
+            self.archive_root / MAINTENANCE_STATE_DIRNAME / "production-source-baseline",
+            self.generation_root,
+        ):
+            try:
+                metadata = directory.stat()
+            except FileNotFoundError:
+                revision.extend((-1, -1, -1))
+            except OSError as exc:
+                revision.extend(unavailable(exc))
+            else:
+                revision.extend((0, metadata.st_ino, metadata.st_mode))
+        # Baseline rebinding may replace this file itself. Only its access mode
+        # is external permission evidence; watching its inode would mistake
+        # our own publication for an external repair during the callback.
+        try:
+            binding_metadata = (self.generation_root / "source-baseline.json").stat()
+        except FileNotFoundError:
+            revision.extend((-1, -1, -1))
+        except OSError as exc:
+            revision.extend(unavailable(exc))
+        else:
+            revision.extend((0, binding_metadata.st_mode, 0))
+        if self.settlement_reason == "capacity_unavailable":
+            # Capacity admission accounts for candidate, blob, source DB and
+            # receipt destinations, which can live on different filesystems.
+            for destination in (
+                self.archive_root,
+                self.generation_root,
+                self.archive_root / "blob",
+                self.archive_root / "source.db",
+                self.archive_root / MAINTENANCE_STATE_DIRNAME,
+            ):
+                try:
+                    space = os.statvfs(destination)
+                except OSError as exc:
+                    revision.extend(unavailable(exc))
+                else:
+                    revision.extend((0, space.f_bavail * space.f_frsize, 0))
+        return tuple(revision)
+
+    def settlement_evidence_revision(self, sources: tuple[WatchSource, ...] = ()) -> tuple[int, ...]:
+        """Cheap external and candidate hints for retrying a blocked verdict."""
+        revision = list(self.settlement_external_revision(sources))
+        for path in (
+            self.archive_root / MAINTENANCE_STATE_DIRNAME / "production-source-baseline" / "pending.json",
+            Path(self.generation.index_path),
+            self.generation_root / "generation.json",
+            self.generation_root / "source-baseline.json",
+        ):
+            try:
+                metadata = path.stat()
+            except FileNotFoundError:
+                revision.extend((-1, -1, -1, -1))
+            except OSError as exc:
+                error_type = f"{type(exc).__module__}.{type(exc).__qualname__}"
+                revision.extend((-2, exc.errno if exc.errno is not None else -1, zlib.crc32(error_type.encode()), -1))
+            else:
+                revision.extend((metadata.st_ino, metadata.st_size, metadata.st_mtime_ns, metadata.st_mode))
+        return tuple(revision)
+
+    def observe_faulted_baseline(
+        self, sources: tuple[WatchSource, ...], *, cancel: threading.Event | None = None
+    ) -> ProductionSourceBaseline | None:
+        """Recapture source bytes off the writer worker before binding them."""
+        if not any(row.disposition == "fault" for row in self.source_baseline.decisions):
+            return None
+        from polylogue.sources.live.production_baseline import capture_production_source_baseline
+
+        return capture_production_source_baseline(
+            sources, operation_id=self.operation_id, cancelled=cancel.is_set if cancel is not None else None
+        )
+
+    def refresh_faulted_baseline(self, observed: ProductionSourceBaseline) -> bool:
+        """Replace a faulted observation while retaining its accepted revisions.
+
+        The old observation is immutable. A new one can resolve a discovery
+        fault, but the pending receipt, capacity admission and generation
+        binding must all name the new merged denominator before promotion.
+        """
+        if not any(row.disposition == "fault" for row in self.source_baseline.decisions):
+            return False
+        import json
+
+        from polylogue.core.durable_fs import atomic_replace
+        from polylogue.sources.live.production_baseline import (
+            MATERIAL_BYTE_DEFINITION,
+            ProductionBaselineError,
+            load_pending_production_baseline,
+            merge_pending_production_baseline,
+            publish_pending_production_baseline,
+            unretained_source_material,
+        )
+
+        if observed.source_signature != self.source_baseline.source_signature:
+            raise ProductionBaselineError("cold-build source declaration changed during settlement")
+        merged = merge_pending_production_baseline(observed, self.source_baseline)
+        merged = merge_pending_production_baseline(merged, load_pending_production_baseline(self.archive_root))
+        if merged.digest == self.source_baseline.digest:
+            return False
+        blob_block_bytes, source_db_block_bytes = evidence_allocation_block_bytes(self.archive_root)
+        prospective_material_bytes, prospective_retained_allocation_bytes, prospective_source_db_allocation_bytes = (
+            unretained_source_material(merged, self.archive_root / "source.db", blob_block_bytes, source_db_block_bytes)
+        )
+        require_candidate_capacity(
+            self.archive_root,
+            operation_id=self.operation_id,
+            existing_candidate_generation_id=self.generation_id,
+            prospective_material_bytes=prospective_material_bytes,
+            prospective_retained_allocation_bytes=prospective_retained_allocation_bytes,
+            prospective_source_db_allocation_bytes=prospective_source_db_allocation_bytes,
+            baseline_digest=merged.digest,
+            material_byte_definition=MATERIAL_BYTE_DEFINITION,
+        )
+        publish_pending_production_baseline(self.archive_root, merged)
+        atomic_replace(
+            self.generation_root / "source-baseline.json",
+            json.dumps(
+                {"generation_id": self.generation_id, "baseline": merged.as_dict()}, indent=2, sort_keys=True
+            ).encode(),
+        )
+        self.source_baseline = merged
+        previous_count = self._reset_accepted_progress(merged)
+        with self._accepted_progress_lock:
+            previous_advance_at = self._accepted_progress_last_advanced_at
+        self.refresh_accepted_progress()
+        with self._accepted_progress_lock:
+            if self._accepted_progress_valid and self._accepted_progress_count <= previous_count:
+                self._accepted_progress_last_advanced_at = previous_advance_at
+        return True
+
     def open_writer(self) -> ArchiveStore:
         """Open one ingest pass against the candidate.
 
@@ -526,6 +872,7 @@ class ColdBuildGeneration:
             raise RuntimeError(f"cold-build generation {self.generation_id} is no longer writable")
         self._retain_ops_checkpoints()
         try:
+            self._store.restore_unpublished_promotion(self.generation_id)
             archive = ArchiveStore.open_cold_build_generation(
                 self.generation_root,
                 generation_id=self.generation_id,
@@ -587,9 +934,8 @@ class ColdBuildGeneration:
         connection again, so the deferred WAL is checkpointed on its close --
         the build does not hand a settled archive a WAL it never drains.
 
-        The daemon's shutdown path calls :meth:`discard` from the event-loop
-        thread while the holder was opened on a write-coordinator thread, which
-        is exactly why the handle is opened without the same-thread check.
+        A pass and settlement can use different write-coordinator worker
+        threads, so the handle is opened without the same-thread check.
         """
         holder = self._ops_checkpoint_holder
         if holder is None:
@@ -599,7 +945,9 @@ class ColdBuildGeneration:
 
     def promote(self) -> IndexGeneration:
         """Run the readiness pass and swap the active-index pointer."""
-        if self.settled:
+        if self._promoted:
+            return self.reconcile_promoted()
+        if self._discarded:
             raise RuntimeError(f"cold-build generation {self.generation_id} is already settled")
         import json
 
@@ -621,10 +969,33 @@ class ColdBuildGeneration:
         # ``final_candidate_allocated_bytes == 0`` and ``calibrated_index_ratio``
         # returns its unmeasured default forever.
         self._store.observe_candidate_capacity(operation_id=self.operation_id, generation_id=self.generation_id)
-        promoted = self._store.promote(self.generation)
+        try:
+            promoted = self._store.promote(self.generation)
+        except Exception as exc:
+            current = self._store.load(self.generation_id)
+            if self._store.active_pointer.resolve() == Path(current.index_path).resolve():
+                # The store can fail after its pointer swap but before it
+                # writes active metadata. The pointer already publishes this
+                # candidate, so stop routing cold writes and finish recovery.
+                self._promoted = True
+                recovered = self.reconcile_promoted()
+                if _typed_promotion_io_failure(exc):
+                    return recovered
+                raise
+            if current.state == "promoting":
+                if self._store.unpublished_rollback_pending(self.generation_id):
+                    # A full filesystem can reject even a prepared metadata
+                    # replace. Keep the typed storage fault and restore the
+                    # inactive record at the next writer pass.
+                    raise
+                recovered = self._store.recover_promotion(self.generation_id)
+                if recovered.state != "inactive":
+                    raise RuntimeError("cold-build promotion could not restore inactive routing") from exc
+            raise
         self._promoted = True
         try:
             clear_pending_production_baseline(self.archive_root, self.source_baseline)
+            self._receipt_cleared = True
         finally:
             self._release_ops_checkpoint_holder()
         emit(
@@ -635,6 +1006,34 @@ class ColdBuildGeneration:
             reason=self.reason,
         )
         return promoted
+
+    def reconcile_promoted(self) -> IndexGeneration:
+        """Finish a failed receipt tail only after confirming the active pointer."""
+        if not self._promoted:
+            raise RuntimeError("cold-build candidate has not been promoted")
+        try:
+            promoted = self._store.load(self.generation_id)
+            if self._store.active_pointer.resolve() != Path(promoted.index_path).resolve():
+                raise RuntimeError("promoted cold-build candidate is not the active index")
+            if promoted.state == "promoting":
+                self.source_baseline.verify(self.archive_root / "source.db")
+                with closing(
+                    open_readonly_connection(
+                        Path(promoted.index_path), tier=ArchiveTier.INDEX, timeout_class="background-read"
+                    )
+                ) as candidate:
+                    candidate.execute("SELECT COUNT(*) FROM sessions").fetchone()
+                promoted = self._store.complete_promotion_recovery(self.generation_id)
+            if promoted.state != "active":
+                raise RuntimeError("promoted cold-build candidate has incomplete metadata")
+            if not self._receipt_cleared:
+                from polylogue.sources.live.production_baseline import clear_pending_production_baseline
+
+                clear_pending_production_baseline(self.archive_root, self.source_baseline, allow_missing=True)
+                self._receipt_cleared = True
+            return promoted
+        finally:
+            self._release_ops_checkpoint_holder()
 
     def discard(self) -> bool:
         """Drop a never-promoted generation; the previous active one is untouched."""

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -113,6 +114,12 @@ class CatchupStatus(BaseModel):
     completed_raw_revision_count: int | None = None
     raw_revisions_per_second: float | None = None
     eta_s: float | None = None
+    cold_build_candidate_id: str | None = None
+    cold_build_settlement_state: str | None = None
+    cold_build_settlement_reason: str | None = None
+    cold_build_settlement_last_error: str | None = None
+    cold_build_settlement_attempts: int = 0
+    cold_build_settlement_retry_due_in_s: float | None = None
     last_advanced_age_s: float | None = None
     cumulative_available: bool = True
     cumulative_unavailable_reason: str | None = None
@@ -152,6 +159,7 @@ def catchup_status_info(
     cumulative["completed_raw_revision_count"] = completed_raw
     cumulative["raw_revisions_per_second"] = raw_rate
     cumulative["eta_s"] = raw_eta
+    cumulative.update(_cold_build_settlement())
     if latest is not None:
         total_time_s = latest.total_time_s or latest.parse_time_s + latest.convergence_time_s
         return _catchup_status(
@@ -249,6 +257,14 @@ def format_catchup_status_lines(payload: object) -> list[str]:
             f"  accepted baseline={complete if complete is not None else '?'}"
             f"/{payload['planned_raw_revision_count']} raw revisions"
         )
+    if candidate_id := payload.get("cold_build_candidate_id"):
+        lines.append(
+            f"  cold build {payload.get('cold_build_settlement_state') or 'building'} "
+            f"candidate={candidate_id} attempts={payload.get('cold_build_settlement_attempts', 0)} "
+            f"reason={payload.get('cold_build_settlement_reason') or '-'} "
+            f"retry_due_in_s={payload.get('cold_build_settlement_retry_due_in_s')} "
+            f"last_error={payload.get('cold_build_settlement_last_error') or '-'}"
+        )
     refused_by_reason = payload.get("refused_bytes_by_reason")
     if isinstance(refused_by_reason, dict) and refused_by_reason:
         lines.append(
@@ -291,6 +307,7 @@ HALT_EVENT_KIND = "source_ingest_halted"
 _attempt_aggregate_lock = threading.Lock()
 _attempt_aggregate_cache: tuple[tuple[object, ...], tuple[object, ...]] | None = None
 _cold_build_progress_provider: Callable[[], tuple[int | None, int, float | None, float | None]] | None = None
+_cold_build_settlement_provider: Callable[[], tuple[str, str, str | None, str | None, int, float | None]] | None = None
 
 
 def set_cold_build_progress_provider(
@@ -306,6 +323,29 @@ def _cold_build_progress() -> tuple[int | None, int | None, float | None, float 
     if provider is None:
         return None, None, None, None
     return provider()
+
+
+def set_cold_build_settlement_provider(
+    provider: Callable[[], tuple[str, str, str | None, str | None, int, float | None]] | None,
+) -> None:
+    """Install the cached candidate settlement projection for this daemon."""
+    global _cold_build_settlement_provider
+    _cold_build_settlement_provider = provider
+
+
+def _cold_build_settlement() -> dict[str, object]:
+    provider = _cold_build_settlement_provider
+    if provider is None:
+        return {}
+    candidate_id, state, reason, last_error, attempts, retry_at = provider()
+    return {
+        "cold_build_candidate_id": candidate_id,
+        "cold_build_settlement_state": state,
+        "cold_build_settlement_reason": reason,
+        "cold_build_settlement_last_error": last_error,
+        "cold_build_settlement_attempts": attempts,
+        "cold_build_settlement_retry_due_in_s": max(0.0, retry_at - time.monotonic()) if retry_at is not None else None,
+    }
 
 
 class CatchupProgressUnavailableError(RuntimeError):
