@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import sqlite3
@@ -16,7 +17,6 @@ from polylogue.sources.live.production_baseline import (
     ProductionBaselineReadUnavailableError,
     SourceDecision,
     _revision,
-    _seal,
     capture_production_source_baseline,
     merge_pending_production_baseline,
 )
@@ -62,14 +62,32 @@ def test_large_source_revision_stops_between_chunks_on_cancel(tmp_path: Path) ->
     assert checks == 3
 
 
-def test_unreadable_revision_is_a_typed_retryable_baseline_fault(tmp_path: Path) -> None:
-    baseline = _seal(
-        "build",
-        "sources",
-        (SourceDecision("account", str(tmp_path / "large.json"), "fault", "revision_unreadable:input/output error"),),
-    )
+def test_only_typed_io_revision_fault_is_retryable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.sources.live import production_baseline
+
+    root = tmp_path / "account"
+    root.mkdir()
+    (root / "one.json").write_bytes(b"{}")
+    source = (WatchSource("account", root, suffixes=(".json",), required=True),)
+
+    def io_fault(*_args: object, **_kwargs: object) -> tuple[str, int]:
+        raise OSError(errno.EIO, "source read failed")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(production_baseline, "_revision", io_fault)
+        unavailable = capture_production_source_baseline(source, operation_id="io")
     with pytest.raises(ProductionBaselineReadUnavailableError):
-        baseline.verify(tmp_path / "source.db")
+        unavailable.verify(tmp_path / "source.db")
+
+    def deterministic_fault(*_args: object, **_kwargs: object) -> tuple[str, int]:
+        raise ValueError("invalid logical source")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(production_baseline, "_revision", deterministic_fault)
+        invalid = capture_production_source_baseline(source, operation_id="invalid")
+    with pytest.raises(ProductionBaselineError) as failure:
+        invalid.verify(tmp_path / "source.db")
+    assert not isinstance(failure.value, ProductionBaselineReadUnavailableError)
 
 
 def test_baseline_uses_typed_acceptance_before_cursor_and_requires_retained_revision(tmp_path: Path) -> None:

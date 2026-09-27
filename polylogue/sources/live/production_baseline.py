@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -42,6 +43,19 @@ from polylogue.storage.archive_identity import MAINTENANCE_STATE_DIRNAME
 _PENDING_DIR = "production-source-baseline"
 _PENDING_FILE = "pending.json"
 MATERIAL_BYTE_DEFINITION = "retained-canonical-payload-v1"
+_RETRYABLE_READ_ERRNOS = frozenset(
+    {
+        errno.EIO,
+        errno.EACCES,
+        errno.EPERM,
+        errno.ESTALE,
+        errno.ETIMEDOUT,
+        errno.EAGAIN,
+        errno.EBUSY,
+        errno.ENOSPC,
+        errno.EDQUOT,
+    }
+)
 
 
 class ProductionBaselineError(RuntimeError):
@@ -135,7 +149,7 @@ class ProductionSourceBaseline:
         self.verify_integrity()
         faults = [row for row in self.decisions if row.disposition == "fault"]
         if faults:
-            if all(row.reason.startswith("revision_unreadable:") for row in faults):
+            if all(row.reason.startswith("revision_io_unavailable:") for row in faults):
                 raise ProductionBaselineReadUnavailableError(
                     f"production source baseline has {len(faults)} unreadable revision(s)"
                 )
@@ -507,7 +521,14 @@ def capture_production_source_baseline(
                     continue
                 revision, material_bytes = _revision(path, cancelled=cancelled)
             except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as exc:
-                decisions.append(SourceDecision(source_name, str(path), "fault", f"revision_unreadable:{exc}"))
+                sqlite_code = getattr(exc, "sqlite_errorcode", None)
+                retryable_io = (isinstance(exc, OSError) and exc.errno in _RETRYABLE_READ_ERRNOS) or (
+                    isinstance(exc, sqlite3.Error)
+                    and isinstance(sqlite_code, int)
+                    and sqlite_code & 0xFF in {sqlite3.SQLITE_IOERR, sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+                )
+                reason = "revision_io_unavailable" if retryable_io else "revision_unreadable"
+                decisions.append(SourceDecision(source_name, str(path), "fault", f"{reason}:{exc}"))
                 continue
         else:
             revision = None
