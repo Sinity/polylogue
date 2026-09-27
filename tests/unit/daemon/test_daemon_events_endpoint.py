@@ -916,19 +916,21 @@ def _advertised_topic_constants() -> dict[str, str]:
 
 
 def _production_emit_targets() -> set[str]:
-    """Names of ``EVENT_*`` constants passed to ``emit_daemon_event`` in production.
+    """Names of ``EVENT_*`` constants production emits.
 
     A second denominator, read from the call sites rather than the declarations:
     a topic constant that no production function ever emits is advertised with
     zero producers -- the regression that retired ``insight.updated`` and the
-    two ``progress.*`` topics.
+    two ``progress.*`` topics. A topic is emitted either directly through
+    ``emit_daemon_event`` or as a ``DaemonEventRecord`` that a builder hands to
+    ``emit_daemon_events`` (one ledger transaction per live batch).
     """
     emitted: set[str] = set()
     for node in ast.walk(_events_module_source()):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        if not (isinstance(func, ast.Name) and func.id == "emit_daemon_event"):
+        if not (isinstance(func, ast.Name) and func.id in {"emit_daemon_event", "DaemonEventRecord"}):
             continue
         if node.args and isinstance(node.args[0], ast.Name):
             emitted.add(node.args[0].id)
