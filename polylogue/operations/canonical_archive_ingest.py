@@ -8,7 +8,7 @@ import threading
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from polylogue.config import Source
 from polylogue.pipeline.services.parsing_models import ParseResult
@@ -16,6 +16,21 @@ from polylogue.pipeline.services.parsing_models import ParseResult
 _OWNED_ROOT: contextvars.ContextVar[tuple[Path, int, int] | None] = contextvars.ContextVar(
     "canonical_one_shot_archive_owner", default=None
 )
+
+
+class _ShutdownCoordinator(Protocol):
+    async def shutdown(self, *, timeout: float) -> bool: ...
+
+
+async def _wait_for_coordinator_idle(coordinator: _ShutdownCoordinator) -> None:
+    """Do not let an archive owner unwind while its synchronous writer runs.
+
+    A bounded shutdown returning ``False`` means the admitted writer still
+    owns the archive. Callers may remove or replace the archive as soon as
+    this function returns, so keep waiting until that writer has settled.
+    """
+    while not await coordinator.shutdown(timeout=30.0):
+        await asyncio.sleep(0)
 
 
 async def _ingest_selected_paths(
@@ -223,8 +238,8 @@ async def ingest_sources_archive(
         )
     finally:
         parse_stage.shutdown()
+        await _wait_for_coordinator_idle(coordinator)
         await archive.close()
-        await coordinator.shutdown(timeout=30.0)
 
     for metrics in metrics_by_pass:
         result.counts["sessions"] = result.counts.get("sessions", 0) + metrics.ingested_session_count
