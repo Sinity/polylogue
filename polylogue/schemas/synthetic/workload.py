@@ -87,13 +87,18 @@ def classify_claude_code_record(record: Mapping[str, object]) -> str:
     message = record.get("message")
     if record_type in {"user", "assistant"} and isinstance(message, Mapping):
         content = message.get("content")
-        first = content[0] if isinstance(content, list) and content else None
-        block_type = first.get("type") if isinstance(first, Mapping) else None
+        block_types = (
+            {block.get("type") for block in content if isinstance(block, Mapping)}
+            if isinstance(content, list)
+            else set()
+        )
         if record_type == "user":
-            return "user_tool_result" if block_type == "tool_result" else "user_text"
-        if block_type == "tool_use":
+            return "user_tool_result" if "tool_result" in block_types else "user_text"
+        # A record carrying several blocks is classified by its most
+        # consequential one: a tool call outranks thinking outranks text.
+        if "tool_use" in block_types:
             return "assistant_tool_use"
-        if block_type == "thinking":
+        if "thinking" in block_types:
             return "assistant_thinking"
         return "assistant_text"
     base = _safe_token(record_type)
@@ -156,25 +161,27 @@ _OPAQUE_KEYS = frozenset(
 )
 
 
-def record_skeleton(value: object, depth: int = 0) -> object:
+def record_skeleton(value: object, depth: int = 0, *, allowed: frozenset[str] | None = None) -> object:
     """Key/type skeleton of a record: field names and JSON types, no values.
 
     Keys that are not identifier-like (paths, hashes, free text used as keys)
-    are dropped: they are data, not structure.
+    are dropped: they are data, not structure. With ``allowed``, only field
+    names already published in the origin's committed schema package are
+    kept, so a skeleton never introduces a name the reviewed schema lacks.
     """
     if isinstance(value, Mapping):
         if depth >= _SKELETON_DEPTH:
             return "obj"
         opaque = _OPAQUE_KEYS | ({"data"} if value.get("type") == "structured_output" else set())
         return {
-            key: "obj" if key in opaque else record_skeleton(item, depth + 1)
+            key: "obj" if key in opaque else record_skeleton(item, depth + 1, allowed=allowed)
             for key, item in sorted(value.items())
-            if isinstance(key, str) and _IDENTIFIER.match(key)
+            if isinstance(key, str) and _IDENTIFIER.match(key) and (allowed is None or key in allowed)
         }
     if isinstance(value, list):
         if depth >= _SKELETON_DEPTH or not value:
             return []
-        return [record_skeleton(value[0], depth + 1)]
+        return [record_skeleton(value[0], depth + 1, allowed=allowed)]
     if isinstance(value, bool):
         return "bool"
     if isinstance(value, int):
@@ -186,6 +193,30 @@ def record_skeleton(value: object, depth: int = 0) -> object:
     return "null"
 
 
+@cache
+def published_field_names(origin: str) -> frozenset[str]:
+    """Every property name in the origin's committed schema packages."""
+    import gzip
+
+    names: set[str] = set()
+
+    def walk(node: object) -> None:
+        if isinstance(node, Mapping):
+            properties = node.get("properties")
+            if isinstance(properties, Mapping):
+                names.update(key for key in properties if isinstance(key, str))
+            for child in node.values():
+                walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    for path in sorted((_PROVIDERS_ROOT / origin / "versions").glob("*/elements/*.schema.json.gz")):
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            walk(json.load(handle))
+    return frozenset(names)
+
+
 def text_measure(origin: str, kind: str, record: Mapping[str, object]) -> int | None:
     """Length of a relational kind's dominant variable-size field, or None."""
     if kind.startswith("record:") or kind == "legacy":
@@ -195,7 +226,11 @@ def text_measure(origin: str, kind: str, record: Mapping[str, object]) -> int | 
         content = message.get("content") if isinstance(message, Mapping) else None
         if isinstance(content, str):
             return len(content)
-        first = content[0] if isinstance(content, list) and content else None
+        wanted = {"assistant_tool_use": "tool_use", "user_tool_result": "tool_result", "assistant_thinking": "thinking"}
+        blocks = [block for block in content if isinstance(block, Mapping)] if isinstance(content, list) else []
+        first = next(
+            (block for block in blocks if block.get("type") == wanted.get(kind)), blocks[0] if blocks else None
+        )
         if not isinstance(first, Mapping):
             return None
         if kind == "assistant_tool_use":
@@ -868,7 +903,11 @@ def _codex_stream(
             position = next((i for i, (_, k) in enumerate(open_calls) if k == wanted), 0)
             call_id, call_kind = open_calls.pop(position)
             output_kind = f"{call_kind}_output"
-            payload = {"type": output_kind, "call_id": call_id, "output": text(kind)}
+            payload = {
+                "type": output_kind,
+                "call_id": call_id,
+                "output": _codex_output(rng, profile, output_kind, text(kind)),
+            }
         elif kind == "event_token_count":
             record_type = "event_msg"
             last = {"input_tokens": rng.randint(100, 60_000), "cached_input_tokens": rng.randint(0, 50_000),
@@ -884,6 +923,29 @@ def _codex_stream(
             continue
         lines.append(_dumps({"timestamp": timestamp, "type": record_type, "payload": payload}))
     return b"\n".join(lines) + b"\n", len(lines), tool_calls
+
+
+def _codex_output(rng: random.Random, profile: WorkloadProfile, output_kind: str, body: str) -> str:
+    """A tool output in the producer's structural form, with its exit code.
+
+    Exec-style calls answer with the unified-exec envelope and custom tools
+    with a JSON object carrying ``metadata.exit_code``, at their measured
+    shares; the rest are bare text, which the parser records as an unknown
+    outcome, as it does for real bare outputs.
+    """
+    if output_kind == "function_call_output":
+        if rng.random() >= profile.share("codex_exec_envelope_share", 0.0):
+            return body
+        code = 1 if rng.random() < profile.share("codex_exec_error_share", 0.0) else 0
+        return (
+            f"Chunk ID: {rng.getrandbits(24):06x}\nWall time: {rng.random() * 30:.4f} seconds\n"
+            f"Process exited with code {code}\nOriginal token count: {max(1, len(body) // 4)}\nOutput:\n{body}"
+        )
+    if rng.random() >= profile.share("codex_custom_json_share", 0.0):
+        return body
+    code = 1 if rng.random() < profile.share("codex_custom_error_share", 0.0) else 0
+    metadata = {"exit_code": code, "duration_seconds": round(rng.random() * 5, 1)}
+    return json.dumps({"output": body, "metadata": metadata}, ensure_ascii=False, separators=(",", ":"))
 
 
 def _codex_template(
@@ -996,15 +1058,16 @@ class WorkloadCorpus:
                 path = root / item.relpath
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(item.data)
-            total.files += stats.files
-            total.bytes += stats.bytes
+                # Sizes are counted on the written bytes: resolving a sidecar
+                # reference changes a transcript's length with the root.
+                total.files += 1
+                total.bytes += len(item.data)
+                total.per_origin_bytes[item.origin] = total.per_origin_bytes.get(item.origin, 0) + len(item.data)
             total.sessions += stats.sessions
             total.subagent_sessions += stats.subagent_sessions
             total.records += stats.records
             total.tool_calls += stats.tool_calls
             total.sidecars += stats.sidecars
-            for origin, size in stats.per_origin_bytes.items():
-                total.per_origin_bytes[origin] = total.per_origin_bytes.get(origin, 0) + size
         return total
 
 

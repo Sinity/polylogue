@@ -18,6 +18,7 @@ import json
 import math
 import os
 import random
+import re
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping
@@ -30,6 +31,7 @@ from polylogue.schemas.synthetic.workload import (
     classify_claude_code_record,
     classify_codex_record,
     log2_bucket,
+    published_field_names,
     record_skeleton,
     string_lengths,
     text_measure,
@@ -45,13 +47,14 @@ _MIN_FILES = 3
 class _Templates:
     """Key skeletons and string-leaf lengths of template kinds, across streams."""
 
-    def __init__(self) -> None:
+    def __init__(self, allowed: frozenset[str]) -> None:
+        self.allowed = allowed
         self.skeletons: defaultdict[str, dict[str, list[float]]] = defaultdict(dict)
         self.kind_files: defaultdict[str, set[int]] = defaultdict(set)
         self.strings: defaultdict[str, Counter[int]] = defaultdict(Counter)
 
     def add(self, kind: str, record: Mapping[str, object], weight: float, file_index: int) -> None:
-        key = json.dumps(record_skeleton(record), sort_keys=True, separators=(",", ":"))
+        key = json.dumps(record_skeleton(record, allowed=self.allowed), sort_keys=True, separators=(",", ":"))
         entry = self.skeletons[kind].setdefault(key, [0.0, -1.0, 0.0])
         entry[0] += weight
         if entry[1] != file_index:
@@ -83,6 +86,7 @@ _DEFAULT_SOURCES = {
     "codex": "~/.codex/sessions",
 }
 _SIDECAR_REF = "<persisted-output>"
+_EXEC_EXIT = re.compile(r"^Process exited with code (-?\d+)$", re.MULTILINE)
 
 
 def _round2(value: float) -> float:
@@ -225,14 +229,40 @@ def _count_shares(origin: str, kind: str, record: Mapping[str, object], shares: 
                         shares["sidecar_refs"] += weight
                     elif len(body) > 30_000:
                         shares["large_inline"] += weight
+    elif kind in {"function_call_output", "custom_tool_call_output"}:
+        payload = record.get("payload")
+        output = payload.get("output") if isinstance(payload, Mapping) else None
+        if kind == "function_call_output":
+            shares["exec_outputs"] += weight
+            match = _EXEC_EXIT.search(output) if isinstance(output, str) else None
+            if match is not None:
+                shares["exec_envelopes"] += weight
+                if int(match.group(1)) != 0:
+                    shares["exec_errors"] += weight
+        else:
+            shares["custom_outputs"] += weight
+            metadata = None
+            if isinstance(output, str) and output.startswith('{"output"'):
+                try:
+                    decoded = json.loads(output)
+                except json.JSONDecodeError:
+                    decoded = None
+                metadata = decoded.get("metadata") if isinstance(decoded, dict) else None
+            if isinstance(metadata, dict) and isinstance(metadata.get("exit_code"), int):
+                shares["custom_json"] += weight
+                if metadata["exit_code"] != 0:
+                    shares["custom_errors"] += weight
 
 
 def _stream_families(origin: str, root: Path) -> dict[str, list[Path]]:
     files = sorted(root.rglob("*.jsonl"))
     if origin == "claude-code":
+        # Subagent transcripts sit directly in ``<session>/subagents/`` as
+        # ``agent-*.jsonl``; workflow journals and runs below it are
+        # orchestration facts, not sessions.
         return {
             "main": [path for path in files if path.parent.parent == root],
-            "subagent": [path for path in files if "subagents" in path.parts],
+            "subagent": [path for path in files if path.parent.name == "subagents" and path.name.startswith("agent-")],
         }
     families: dict[str, list[Path]] = {"main": [], "subagent": []}
     for path in files:
@@ -294,7 +324,7 @@ def _fanout(origin: str, root: Path, families: Mapping[str, list[Path]]) -> tupl
 def measure(origin: str, root: Path, *, sample: int, tail: int, seed: int) -> dict[str, object]:
     families = _stream_families(origin, root)
     shares: Counter[str] = Counter()
-    templates = _Templates()
+    templates = _Templates(published_field_names(origin))
     streams: dict[str, object] = {}
     source_bytes = 0
     rng = random.Random(seed)
@@ -319,6 +349,16 @@ def measure(origin: str, root: Path, *, sample: int, tail: int, seed: int) -> di
     kinds = sorted({key.split(":", 1)[1] for key in shares if key.startswith("texts:")})
     template_payload, template_strings = templates.payload()
     large = shares["sidecar_refs"] + shares["large_inline"]
+    outcome_shares = (
+        {
+            "codex_exec_envelope_share": ratio("exec_envelopes", "exec_outputs"),
+            "codex_exec_error_share": ratio("exec_errors", "exec_envelopes"),
+            "codex_custom_json_share": ratio("custom_json", "custom_outputs"),
+            "codex_custom_error_share": ratio("custom_errors", "custom_json"),
+        }
+        if origin == "codex"
+        else {}
+    )
     return {
         "kind": WORKLOAD_PROFILE_KIND,
         "version": WORKLOAD_PROFILE_VERSION,
@@ -332,6 +372,7 @@ def measure(origin: str, root: Path, *, sample: int, tail: int, seed: int) -> di
             "tool_error_share": ratio("tool_errors", "tool_results") if origin == "claude-code" else 0.03,
             "sidecar_share_of_large": round(shares["sidecar_refs"] / large, 4) if large else 0.0,
             "orphan_subagents_per_session": round(orphans_per_session, 4),
+            **outcome_shares,
         },
         "non_ascii_by_kind": {kind: ratio(f"non_ascii_texts:{kind}", f"texts:{kind}") for kind in kinds},
         "templates": template_payload,
@@ -350,6 +391,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     root = (args.source or Path(os.path.expanduser(_DEFAULT_SOURCES[args.origin]))).resolve()
     profile = measure(args.origin, root, sample=args.sample, tail=args.tail, seed=args.seed)
+    streams = profile.get("streams")
+    if not isinstance(streams, dict) or "main" not in streams:
+        print(f"no {args.origin} session streams found under {root}; nothing measured", file=sys.stderr)
+        return 1
     text = json.dumps(profile, indent=1, sort_keys=True) + "\n"
     if args.write:
         path = workload_profile_path(args.origin)

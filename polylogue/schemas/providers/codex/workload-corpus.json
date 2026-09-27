@@ -13,6 +13,10 @@
  "origin": "codex",
  "shares": {
   "assistant_usage_share": 1.0,
+  "codex_custom_error_share": 0.0014,
+  "codex_custom_json_share": 0.1543,
+  "codex_exec_envelope_share": 0.6149,
+  "codex_exec_error_share": 0.0783,
   "non_ascii_text_share": 0.1577,
   "orphan_subagents_per_session": 0.0102,
   "sidecar_share_of_large": 0.0,

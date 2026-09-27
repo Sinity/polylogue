@@ -9,14 +9,17 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.schemas.synthetic.build_records import _declares_number
 from polylogue.schemas.synthetic.workload import (
     Histogram,
     classify_claude_code_record,
     classify_codex_record,
     generate_workload_corpus,
     load_workload_profile,
+    published_field_names,
     record_skeleton,
     synthetic_text,
+    text_measure,
 )
 from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
 
@@ -176,3 +179,50 @@ def test_skeletons_keep_structure_but_no_values_or_data_keys() -> None:
     for leaked in ("secret", "private_field", "/home/someone", "src/private.py", "private_argument"):
         assert leaked not in rendered
     assert skeleton["attachment"]["files"] == [{"path": "str"}]
+
+
+def test_multi_block_assistant_record_classifies_by_its_tool_call() -> None:
+    """Anti-vacuity: classifying by the first block alone reads ``[thinking, tool_use]`` as thinking."""
+    record = {
+        "type": "assistant",
+        "message": {"content": [{"type": "thinking", "thinking": "x"}, {"type": "tool_use", "input": {"a": "bc"}}]},
+    }
+    assert classify_claude_code_record(record) == "assistant_tool_use"
+    assert text_measure("claude-code", "assistant_tool_use", record) == len('{"a":"bc"}')
+
+
+def test_written_stats_count_the_bytes_on_disk(tmp_path: Path) -> None:
+    """Anti-vacuity: counting pre-resolution sizes misreports corpora whose sidecar paths grow on write."""
+    corpus = generate_workload_corpus(seed=21, target_bytes=80_000_000, origins={"claude-code": 1.0})
+    stats = corpus.write(tmp_path)
+    on_disk = sum(path.stat().st_size for path in tmp_path.rglob("*") if path.is_file())
+    assert stats.bytes == on_disk
+    assert stats.per_origin_bytes == {"claude-code": on_disk}
+
+
+def test_codex_tool_results_carry_structural_outcomes() -> None:
+    """Anti-vacuity: bare prose outputs leave every generated Codex result without an exit code."""
+    outcomes: Counter[tuple[bool | None, int | None]] = Counter()
+    corpus = generate_workload_corpus(seed=13, target_sessions=20, origins={"codex": 1.0})
+    for item in corpus.iter_files():
+        for session in parse_payload("codex", _records(item.data), item.relpath, source_path=item.relpath):
+            for message in session.messages:
+                for block in message.blocks:
+                    if str(block.type).endswith("tool_result"):
+                        outcomes[(block.is_error, block.exit_code)] += 1
+    assert outcomes[(False, 0)] > 0
+    assert any(is_error and code for (is_error, code) in outcomes)
+
+
+def test_skeleton_keeps_only_published_field_names() -> None:
+    """Anti-vacuity: without the allowlist an unpublished source field name reaches the tracked profile."""
+    record = {"type": "attachment", "attachment": {"type": "x", "customer_codename": "y", "hookEvent": "z"}}
+    skeleton = record_skeleton(record, allowed=published_field_names("claude-code"))
+    assert "customer_codename" not in json.dumps(skeleton)
+    assert skeleton["attachment"]["hookEvent"] == "str"
+
+
+def test_numeric_detection_accepts_type_lists_inside_unions() -> None:
+    """Anti-vacuity: appending a branch's type list whole raises TypeError on this ordinary schema."""
+    assert _declares_number({"anyOf": [{"type": ["number", "null"]}]})
+    assert not _declares_number({"anyOf": [{"type": ["string", "null"]}, {"type": "object"}]})

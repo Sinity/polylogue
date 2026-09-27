@@ -90,8 +90,10 @@ def _declares_number(schema: SchemaValue | object) -> bool:
     for key in ("anyOf", "oneOf"):
         variants = node.get(key)
         if isinstance(variants, list):
-            declared.extend(_coerce_schema(variant).get("type") for variant in variants)
-    return any(kind in {"number", "integer"} for kind in declared)
+            for variant in variants:
+                variant_type = _coerce_schema(variant).get("type")
+                declared.extend(variant_type if isinstance(variant_type, list) else [variant_type])
+    return any(kind in {"number", "integer"} for kind in declared if isinstance(kind, str))
 
 
 def _has_messages_path(parts: Sequence[str], schema: SchemaRecord) -> tuple[bool, SchemaRecord]:
