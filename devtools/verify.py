@@ -15,7 +15,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
@@ -651,6 +651,20 @@ def _stop_gate_processes() -> None:
             os.killpg(process.pid, signal.SIGKILL)
 
 
+@contextlib.contextmanager
+def _signals_deferred() -> Iterator[None]:
+    """Ignore SIGINT and SIGTERM for the duration; restore the handlers after."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = {signum: signal.signal(signum, signal.SIG_IGN) for signum in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
 def _run_steps(
     steps: Sequence[tuple[str, list[str]]], *, run: VerifyRun, runner: str
 ) -> list[tuple[str, tuple[int, float, dict[str, Any]]]]:
@@ -674,11 +688,14 @@ def _run_steps(
                 future.result()
             outcomes.extend((label, future.result()) for (label, _command), future in zip(gates, futures, strict=True))
         except BaseException:
-            with _STEP_LOCK:
-                _GATES_INTERRUPTED.set()
-            pool.shutdown(wait=False, cancel_futures=True)
-            _stop_gate_processes()
-            pool.shutdown(wait=True)
+            # A second SIGINT/SIGTERM during cleanup must not abandon it: the
+            # verdict would be written while gate processes still run.
+            with _signals_deferred():
+                with _STEP_LOCK:
+                    _GATES_INTERRUPTED.set()
+                pool.shutdown(wait=False, cancel_futures=True)
+                _stop_gate_processes()
+                pool.shutdown(wait=True)
             raise
         pool.shutdown(wait=True)
     for label, command in tests:

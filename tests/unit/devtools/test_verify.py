@@ -1811,3 +1811,25 @@ def test_a_json_verdict_line_stays_off_the_machine_contract(
     captured = capsys.readouterr()
     assert json.loads(captured.out)["exit_code"] == 1
     assert captured.err.strip().splitlines()[-1].startswith("verify: FAILED exit=1")
+
+
+def test_interruption_cleanup_defers_a_second_signal() -> None:
+    """A repeated SIGTERM during gate cleanup does not escape it.
+
+    Anti-vacuity: run the cleanup without ``_signals_deferred`` and the
+    SIGTERM raised inside it reaches the installed handler, which raises.
+    """
+
+    class _RaisedError(Exception):
+        pass
+
+    def raising(_signum: int, _frame: object) -> None:
+        raise _RaisedError
+
+    previous = signal.signal(signal.SIGTERM, raising)
+    try:
+        with verify._signals_deferred():
+            os.kill(os.getpid(), signal.SIGTERM)
+        assert signal.getsignal(signal.SIGTERM) is raising
+    finally:
+        signal.signal(signal.SIGTERM, previous)
