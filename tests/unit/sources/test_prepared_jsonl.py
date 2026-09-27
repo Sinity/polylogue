@@ -549,7 +549,13 @@ def test_retained_grok_streams_responses_with_replay_parity(tmp_path: Path, monk
             {"conversation": {"title": "Retained", "create_time": 1712000000}, "responses": responses},
             {"conversation": {"title": "Empty"}, "responses": []},
             {"responses": responses},
-        ]
+        ],
+        "id": "not-a-Beads-interaction",
+        "kind": "export",
+        "created_at": "2025-01-02T03:04:05Z",
+        "issue_id": "not-an-issue",
+        "extra": "not-a-Beads-map",
+        "version": "v1",
     }
     fallback_timestamp = "2025-01-02T03:04:05Z"
     source_path = str(tmp_path / "prod-grok-backend.json")
@@ -712,6 +718,43 @@ def test_retained_grok_future_wire_keeps_parser_admission_event(tmp_path: Path) 
     assert artifact.positive_evidence_filtered is False
     [session] = artifact.iter_sessions()
     assert [event.event_type for event in session.session_events] == ["grok_unknown_input"]
+    artifact.discard()
+
+
+def test_retained_grok_hook_overlap_keeps_artifact_taxonomy(tmp_path: Path) -> None:
+    from polylogue.sources import revision_backfill
+
+    record = {
+        "conversations": [
+            {"conversation": {"title": "Ambiguous"}, "responses": [{"sender": "human", "message": "Hi"}]}
+        ],
+        "event_type": "SessionStart",
+        "session_id": "hook-session",
+        "timestamp": "2025-01-02T03:04:05Z",
+        "provider": "codex",
+    }
+    blob_root = tmp_path / "blob"
+    blob_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(record).encode("utf-8"))
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
+        with sqlite3.connect(path) as conn:
+            initialize_archive_tier(conn, tier)
+    artifact = revision_backfill.prepare_retained_jsonl_artifact(
+        "synthetic-ambiguous-grok",
+        Provider.GROK.value,
+        blob_hash,
+        str(tmp_path / "prod-grok-backend.json"),
+        "full",
+        None,
+        str(blob_root),
+        str(source_db),
+        str(index_db),
+        str(tmp_path / "prepared"),
+        None,
+    )
+    assert artifact.error is None
+    assert list(artifact.iter_sessions()) == []
     artifact.discard()
 
 

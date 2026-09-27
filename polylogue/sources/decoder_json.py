@@ -490,7 +490,34 @@ def grok_export_item_count(handle: JsonReadable, *, on_item: Callable[[int, bool
     member_conversation = False
     member_responses = False
     valid_members = 0
-    root_beads_keys: set[str] = set()
+    taxonomy_keys: set[str] = set()
+    taxonomy_values: dict[str, bool] = {}
+    recordish_keys = {"record_type", "sessionId", "parentUuid", "message", "payload", "tool_name", "tool_input"}
+    envelope_keys = {"uuid", "sessionId", "parentUuid", "message", "payload", "cwd", "version"}
+    provenance_keys = {"file", "source_file", "source_path", "transcript", "session_file"}
+    content_keys = {"content", "text", "message_text", "body"}
+    required_string_keys = {"event_type", "session_id", "timestamp"}
+    taxonomy_fields = (
+        recordish_keys
+        | envelope_keys
+        | provenance_keys
+        | content_keys
+        | {
+            "event_type",
+            "session_id",
+            "timestamp",
+            "provider",
+            "type",
+            "role",
+            "mapping",
+            "chat_messages",
+            "chunkedPrompt",
+            "chunks",
+            "source",
+            "cascadeId",
+            "markdown",
+        }
+    )
 
     def finish_member() -> None:
         nonlocal valid_members
@@ -518,12 +545,21 @@ def grok_export_item_count(handle: JsonReadable, *, on_item: Callable[[int, bool
                 return None
             if prefix == "" and event == "map_key":
                 if value in {"sessions", "polylogue_capture_kind"}:
-                    # Dispatch gives these envelopes precedence over Grok.
                     return None
-                if value in {"id", "kind", "created_at", "issue_id", "extra"}:
-                    root_beads_keys.add(value)
                 if value == "conversations":
                     keys += 1
+                elif value in taxonomy_fields:
+                    taxonomy_keys.add(value)
+                    taxonomy_values[value] = False
+            elif prefix in taxonomy_keys and event == "string":
+                if prefix == "provider":
+                    taxonomy_values[prefix] = value in {"claude-code", "codex"}
+                elif prefix in provenance_keys:
+                    taxonomy_values[prefix] = value.lower().endswith((".jsonl", ".jsonl.txt", ".ndjson", ".json"))
+                elif prefix in content_keys:
+                    taxonomy_values[prefix] = bool(value)
+                elif prefix in required_string_keys:
+                    taxonomy_values[prefix] = True
             elif prefix == "conversations" and event == "start_array":
                 arrays += 1
             elif prefix == "conversations.item" and event in {
@@ -555,9 +591,24 @@ def grok_export_item_count(handle: JsonReadable, *, on_item: Callable[[int, bool
         return None
     finally:
         handle.seek(0)
-    # The retained artifact taxonomy checks Beads interactions before Grok.
-    # Leave this ambiguous wrapper on that exact classification path.
-    if len(root_beads_keys) == 5:
+    if all(taxonomy_values.get(key, False) for key in ("event_type", "session_id", "timestamp", "provider")):
+        return None
+    if (
+        not taxonomy_keys.intersection(envelope_keys)
+        and any(taxonomy_values.get(key, False) for key in provenance_keys)
+        and any(taxonomy_values.get(key, False) for key in content_keys)
+    ):
+        return None
+    if (
+        taxonomy_keys.intersection(recordish_keys)
+        or ("type" in taxonomy_keys and taxonomy_keys.intersection(envelope_keys))
+        or ("role" in taxonomy_keys and taxonomy_keys.intersection({"content", "text"}))
+    ):
+        return None
+    if (
+        taxonomy_keys.intersection({"mapping", "chat_messages", "chunkedPrompt", "chunks"})
+        or {"source", "cascadeId", "markdown"} <= taxonomy_keys
+    ):
         return None
     return count if keys == arrays == 1 and (count == 0 or valid_members > 0) else None
 
