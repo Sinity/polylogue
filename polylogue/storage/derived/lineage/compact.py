@@ -40,16 +40,15 @@ from polylogue.analysis.lineage_graph import (
 from polylogue.archive.topology.edge import status_excludes_composition, topology_status_composes_sql
 from polylogue.core.enums import TopologyEdgeStatus
 from polylogue.core.types import MessageId, SessionId
-from polylogue.storage.runtime.store_constants import LINEAGE_ITERATIVE_DEPTH_LIMIT
 
-#: Runaway guard for the ancestry walk and the descendant sweep. A ``visited``
-#: set is the real cycle guard; this only bounds a pathological archive.
-_MAX_DEPTH = LINEAGE_ITERATIVE_DEPTH_LIMIT
+# Every walk below is bounded by its visited set: each step reaches a session
+# not seen before, and an archive holds finitely many. No depth cap truncates
+# a valid lineage.
 
 DEFAULT_PAGE_LIMIT = DEFAULT_LINEAGE_PAGE_LIMIT
 
 _ACCOUNTING_DANGLING = "branch point resolves to no stored message"
-_ACCOUNTING_DEPTH_LIMIT = "lineage chain exceeds the composition depth limit"
+_ACCOUNTING_UNCOMPOSABLE = "an ancestor's composition cycles or dangles"
 _ACCOUNTING_NOT_REQUESTED = "accounting not requested for this read"
 
 
@@ -81,7 +80,7 @@ def _ancestry(conn: sqlite3.Connection, seed_id: str) -> tuple[list[str], bool]:
     chain: list[str] = []
     seen = {seed_id}
     current = seed_id
-    for _ in range(_MAX_DEPTH):
+    while True:
         row = conn.execute(
             "SELECT parent_session_id FROM sessions WHERE session_id = ?",
             (current,),
@@ -98,7 +97,6 @@ def _ancestry(conn: sqlite3.Connection, seed_id: str) -> tuple[list[str], bool]:
         seen.add(parent)
         chain.append(parent)
         current = parent
-    return chain, False
 
 
 def _subtree(conn: sqlite3.Connection, root_id: str) -> tuple[dict[str, int], bool]:
@@ -107,7 +105,7 @@ def _subtree(conn: sqlite3.Connection, root_id: str) -> tuple[dict[str, int], bo
     frontier = [root_id]
     cycle = False
     depth = 0
-    while frontier and depth < _MAX_DEPTH:
+    while frontier:
         placeholders = ", ".join("?" for _ in frontier)
         rows = conn.execute(
             f"""
@@ -136,7 +134,7 @@ def _descendants(conn: sqlite3.Connection, seed_id: str, depths: Mapping[str, in
     out: dict[str, int] = {seed_id: 0}
     frontier = [seed_id]
     depth = 0
-    while frontier and depth < _MAX_DEPTH:
+    while frontier:
         placeholders = ", ".join("?" for _ in frontier)
         rows = conn.execute(
             f"""
@@ -269,33 +267,43 @@ class _CompositionShape:
         ).fetchone()
         return int(count[0])
 
-    def segments(self, session_id: str, _depth: int = 0) -> list[tuple[str, int]] | None:
+    def segments(self, session_id: str) -> list[tuple[str, int]] | None:
         """Composed transcript as ``(owning_session, length)`` runs, or ``None``.
 
-        ``None`` means composition is not reproducible from stored rows, which
-        is exactly when an accounting number would have to be invented.
+        ``None`` means composition is not reproducible from stored rows (a
+        cycle, or a dangling branch point up the chain), which is exactly when
+        an accounting number would have to be invented.
         """
         if session_id in self._segments:
             return self._segments[session_id]
-        if _depth >= _MAX_DEPTH:
-            self._segments[session_id] = None
-            return None
-        edge = self._prefix_edge(session_id)
-        if edge is None:
-            result: list[tuple[str, int]] | None = [(session_id, self._own_count(session_id))]
+        chain: list[tuple[str, str]] = []
+        visited = {session_id}
+        cursor = session_id
+        base: list[tuple[str, int]] | None
+        while True:
+            if cursor != session_id and cursor in self._segments:
+                base = self._segments[cursor]
+                break
+            edge = self._prefix_edge(cursor)
+            if edge is None:
+                base = [(cursor, self._own_count(cursor))]
+                self._segments[cursor] = base
+                break
+            parent_id, branch_point_message_id = edge
+            if parent_id in visited:
+                base = None
+                break
+            chain.append((cursor, branch_point_message_id))
+            visited.add(parent_id)
+            cursor = parent_id
+        result = base
+        for child_id, branch_point_message_id in reversed(chain):
+            if result is not None:
+                prefix = self._truncate_at(result, branch_point_message_id)
+                result = None if prefix is None else [*prefix, (child_id, self._own_count(child_id))]
+            self._segments[child_id] = result
+        if session_id not in self._segments:
             self._segments[session_id] = result
-            return result
-        parent_id, branch_point_message_id = edge
-        # Guard the recursion against a cyclic link before descending.
-        self._segments[session_id] = None
-        parent_segments = self.segments(parent_id, _depth + 1)
-        if parent_segments is None:
-            return None
-        prefix = self._truncate_at(parent_segments, branch_point_message_id)
-        if prefix is None:
-            return None
-        result = [*prefix, (session_id, self._own_count(session_id))]
-        self._segments[session_id] = result
         return result
 
     def _truncate_at(
@@ -320,7 +328,7 @@ class _CompositionShape:
         parent_id, branch_point_message_id = edge
         parent_segments = self.segments(parent_id)
         if parent_segments is None:
-            return LineageMessageAccounting(status=LineageAccountingStatus.UNKNOWN, reason=_ACCOUNTING_DEPTH_LIMIT)
+            return LineageMessageAccounting(status=LineageAccountingStatus.UNKNOWN, reason=_ACCOUNTING_UNCOMPOSABLE)
         prefix = self._truncate_at(parent_segments, branch_point_message_id)
         if prefix is None:
             return LineageMessageAccounting(status=LineageAccountingStatus.UNKNOWN, reason=_ACCOUNTING_DANGLING)

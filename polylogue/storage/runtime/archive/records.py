@@ -238,13 +238,12 @@ class MessageRecord(BaseModel):
         return v
 
 
-LineageTruncationReason = Literal["depth_limit", "dangling_branch_point", "cycle"]
+LineageTruncationReason = Literal["dangling_branch_point", "cycle"]
 
 # Shared between the sync (archive_tiers/write.py) and async
 # (sqlite/queries/message_query_reads.py) composition paths -- both must
 # emit identical reason strings for downstream consumers to branch on, so
 # they import these rather than each hardcoding their own literals.
-LINEAGE_TRUNCATION_DEPTH_LIMIT: LineageTruncationReason = "depth_limit"
 LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT: LineageTruncationReason = "dangling_branch_point"
 LINEAGE_TRUNCATION_CYCLE: LineageTruncationReason = "cycle"
 

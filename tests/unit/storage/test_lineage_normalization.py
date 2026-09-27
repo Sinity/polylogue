@@ -34,7 +34,6 @@ from polylogue.storage.sqlite.archive_tiers import write as _write_module
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
-    _MAX_LINEAGE_DEPTH,
     IDENTITY_INVALIDATION_DEBT_STAGE,
     _repair_stale_prefix_branch_points_db,
     _upsert_session_link,
@@ -991,8 +990,10 @@ def test_variant_prefix_lineage_converges_across_order_and_parent_replacement(
     conn.close()
 
 
-def test_missing_variant_branch_point_keeps_only_owned_child_tail(tmp_path: Path) -> None:
-    """A full parent replacement may not substitute a shorter sibling prefix."""
+def test_missing_variant_branch_point_keeps_the_child_whole(tmp_path: Path) -> None:
+    """A full parent replacement that drops the child's variant branch point
+    neither substitutes a shorter sibling prefix nor strands the child: the
+    child keeps the prefix it replayed, as its own rows (polylogue-gy2yu)."""
     db = tmp_path / "index.db"
     conn = _connect(db)
     parent = ParsedSession(
@@ -1020,6 +1021,12 @@ def test_missing_variant_branch_point_keeps_only_owned_child_tail(tmp_path: Path
         ],
     )
     child_id = write_parsed_session_to_archive(conn, child)
+    link = conn.execute(
+        "SELECT branch_point_message_id, inheritance, status FROM session_links WHERE src_session_id = ?", (child_id,)
+    ).fetchone()
+    assert tuple(link) == (archive_message_id(parent_id, "p1-alt"), "prefix-sharing", None)
+    before = [message.blocks[0].text for message in read_archive_session_envelope(conn, child_id).messages]
+    assert before[-1] == "child tail" and len(before) > 1
 
     write_parsed_session_to_archive(
         conn,
@@ -1037,11 +1044,10 @@ def test_missing_variant_branch_point_keeps_only_owned_child_tail(tmp_path: Path
     link = conn.execute(
         "SELECT branch_point_message_id, inheritance, status FROM session_links WHERE src_session_id = ?", (child_id,)
     ).fetchone()
-    assert tuple(link) == (archive_message_id(parent_id, "p1-alt"), "prefix-sharing", None)
+    assert tuple(link) == (None, "spawned-fresh", None)
     envelope = read_archive_session_envelope(conn, child_id)
-    assert [message.blocks[0].text for message in envelope.messages] == ["child tail"]
-    assert envelope.lineage_complete is False
-    assert envelope.lineage_truncation_reason == "dangling_branch_point"
+    assert [message.blocks[0].text for message in envelope.messages] == before
+    assert envelope.lineage_complete is True
     conn.close()
 
 
@@ -2505,15 +2511,21 @@ def test_sync_and_async_report_incomplete_on_dangling_branch_point(tmp_path: Pat
     assert page_completeness.truncation_reason == "dangling_branch_point"
 
 
-def test_sync_report_incomplete_at_depth_limit(tmp_path: Path) -> None:
-    """4ts.6: a lineage chain deeper than _MAX_LINEAGE_DEPTH must report
-    lineage_complete=False with reason depth_limit -- ancestors beyond the
-    cutoff are silently dropped otherwise."""
+#: Deeper than every depth cap the lineage path used to carry (the recursive
+#: sync reader stopped at 64), so a reintroduced cap truncates this chain.
+_DEEP_CHAIN_LEVELS = 70
+
+
+def test_deep_chain_composes_complete_on_every_reader(tmp_path: Path) -> None:
+    """A valid acyclic chain composes whole however deep it is.
+
+    The visited set is the only walk bound. Anti-vacuity: reinstate a depth
+    cap below ``_DEEP_CHAIN_LEVELS`` in ``_composed_transcript_plan`` or in
+    ``get_messages_with_lineage_completeness`` and the leaf reads incomplete,
+    missing the root message.
+    """
     db = tmp_path / "index.db"
     conn = _connect(db)
-
-    # Build a chain of _MAX_LINEAGE_DEPTH + 1 sessions, each forking from the
-    # previous with a one-message divergent tail. The leaf is beyond the cutoff.
     provider_session_id = "root"
     write_parsed_session_to_archive(
         conn,
@@ -2525,7 +2537,7 @@ def test_sync_report_incomplete_at_depth_limit(tmp_path: Path) -> None:
         ),
     )
     leaf_id = None
-    for level in range(_MAX_LINEAGE_DEPTH + 1):
+    for level in range(_DEEP_CHAIN_LEVELS):
         child_provider_id = f"level-{level}"
         leaf_id = write_parsed_session_to_archive(
             conn,
@@ -2545,18 +2557,101 @@ def test_sync_report_incomplete_at_depth_limit(tmp_path: Path) -> None:
     assert leaf_id is not None
 
     envelope = read_archive_session_envelope(conn, leaf_id)
-    assert envelope.lineage_complete is False
-    assert envelope.lineage_truncation_reason == "depth_limit"
-
+    assert envelope.lineage_complete is True
+    assert envelope.lineage_truncation_reason is None
+    assert envelope.messages[0].blocks[0].text == "root message"
     conn.close()
+
+    async def _run() -> LineageCompleteness:
+        reader = await aiosqlite.connect(db)
+        try:
+            reader.row_factory = aiosqlite.Row
+            _records, completeness = await get_messages_with_lineage_completeness(reader, leaf_id)
+            return completeness
+        finally:
+            await reader.close()
+
+    completeness = asyncio.run(_run())
+    assert completeness.complete is True
+    assert completeness.truncation_reason is None
+
+
+#: Deeper than the largest cap the lineage walks used to carry (1024).
+_VERY_DEEP_CHAIN_LEVELS = 1030
+
+
+def test_chain_deeper_than_every_former_cap_composes_complete(tmp_path: Path) -> None:
+    """polylogue-cpisn: cycle detection alone terminates every lineage walk.
+
+    The chain is seeded as one-message sessions linked by SQL, so its depth is
+    cheap to build and every level inherits exactly its parent's composed
+    transcript. Anti-vacuity: reinstate a depth cap below
+    ``_VERY_DEEP_CHAIN_LEVELS`` in ``_composed_transcript_plan``,
+    ``_composed_db_signatures``, ``get_messages_with_lineage_completeness`` or
+    ``_CompositionShape.segments`` and the matching assertion below fails.
+    """
+    from polylogue.storage.derived.lineage.compact import _CompositionShape
+    from polylogue.storage.sqlite.archive_tiers.write import _composed_db_signatures
+
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    # One transaction: a per-write commit costs ~15x the write itself here.
+    conn.execute("BEGIN")
+    session_ids = [
+        write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id=f"deep-{level:04d}",
+                title=f"deep-{level:04d}",
+                messages=[_msg("m", Role.USER, f"level {level}", 0)],
+            ),
+            manage_transaction=False,
+        )
+        for level in range(_VERY_DEEP_CHAIN_LEVELS)
+    ]
+    conn.executemany(
+        """
+        INSERT INTO session_links(
+            src_session_id, dst_origin, dst_native_id, link_type, resolved_dst_session_id,
+            branch_point_message_id, inheritance, status, confidence, evidence_json, observed_at_ms
+        ) VALUES (?, 'codex-session', ?, 'fork', ?, ?, 'prefix-sharing', NULL, 1.0, '[]', 0)
+        """,
+        (
+            (child, parent.split(":", 1)[1], parent, archive_message_id(parent, "m"))
+            for parent, child in zip(session_ids, session_ids[1:], strict=False)
+        ),
+    )
+    conn.commit()
+    leaf_id = session_ids[-1]
+    expected = [f"level {level}" for level in range(_VERY_DEEP_CHAIN_LEVELS)]
+
+    envelope = read_archive_session_envelope(conn, leaf_id)
+    assert envelope.lineage_complete is True
+    assert [message.blocks[0].text for message in envelope.messages] == expected
+    assert len(_composed_db_signatures(conn, leaf_id)) == _VERY_DEEP_CHAIN_LEVELS
+    assert _CompositionShape(conn).segments(leaf_id) is not None
+    conn.close()
+
+    async def _run() -> tuple[int, LineageCompleteness]:
+        reader = await aiosqlite.connect(db)
+        try:
+            reader.row_factory = aiosqlite.Row
+            records, completeness = await get_messages_with_lineage_completeness(reader, leaf_id)
+            return len(records), completeness
+        finally:
+            await reader.close()
+
+    count, completeness = asyncio.run(_run())
+    assert completeness.complete is True
+    assert count == _VERY_DEEP_CHAIN_LEVELS
 
 
 def test_writer_composes_beyond_recursive_reader_depth(tmp_path: Path) -> None:
     """A valid branch point beyond the sync reader's stack guard stays valid.
 
-    The writer and async reader are iterative and share a larger runaway limit.
-    If writer composition accidentally reuses the sync reader's 64-level guard,
-    the later descendants cannot see the root branch point and become
+    Writer composition walks the whole chain. If it stopped early, the later
+    descendants could not see the root branch point and would become
     spawned-fresh with a duplicated root message.
     """
     db = tmp_path / "index.db"
@@ -2574,7 +2669,7 @@ def test_writer_composes_beyond_recursive_reader_depth(tmp_path: Path) -> None:
 
     leaf: ParsedSession | None = None
     leaf_id: str | None = None
-    for level in range(_MAX_LINEAGE_DEPTH + 2):
+    for level in range(_DEEP_CHAIN_LEVELS):
         child_provider_id = f"deep-level-{level}"
         leaf = ParsedSession(
             source_name=Provider.CODEX,
@@ -2614,62 +2709,7 @@ def test_writer_composes_beyond_recursive_reader_depth(tmp_path: Path) -> None:
     assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (leaf_id,)).fetchone()[0] == 1
     conn.close()
 
-    assert asyncio.run(_read_texts(db, leaf_id)) == ["root message", f"level {_MAX_LINEAGE_DEPTH + 1} tail"]
-
-
-def test_async_reports_incomplete_at_its_own_depth_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """4ts.6, async twin: get_messages_with_lineage_completeness is ITERATIVE
-    (not recursive), so it has its own, much larger _MAX_LINEAGE_DEPTH (1024)
-    than the sync recursive path's 64 -- a chain that trips the sync limit
-    does NOT trip the async one. Patch the async limit down so a small,
-    fast chain exercises its own depth-limit detection directly."""
-    monkeypatch.setattr(_message_query_reads_module, "_MAX_LINEAGE_DEPTH", 3)
-
-    db = tmp_path / "index.db"
-    conn = _connect(db)
-    provider_session_id = "root"
-    write_parsed_session_to_archive(
-        conn,
-        ParsedSession(
-            source_name=Provider.CODEX,
-            provider_session_id=provider_session_id,
-            title="root",
-            messages=[_msg("root-0", Role.USER, "root message", 0)],
-        ),
-    )
-    leaf_id = None
-    for level in range(4):  # one more hop than the patched limit of 3
-        child_provider_id = f"level-{level}"
-        leaf_id = write_parsed_session_to_archive(
-            conn,
-            ParsedSession(
-                source_name=Provider.CODEX,
-                provider_session_id=child_provider_id,
-                title=child_provider_id,
-                parent_session_provider_id=provider_session_id,
-                branch_type=BranchType.FORK,
-                messages=[
-                    _msg("root-0", Role.USER, "root message", 0),
-                    _msg(f"tail-{level}", Role.ASSISTANT, f"level {level} tail", 1),
-                ],
-            ),
-        )
-        provider_session_id = child_provider_id
-    assert leaf_id is not None
-    conn.close()
-
-    async def _run() -> LineageCompleteness:
-        reader = await aiosqlite.connect(db)
-        try:
-            reader.row_factory = aiosqlite.Row
-            _records, completeness = await get_messages_with_lineage_completeness(reader, leaf_id)
-            return completeness
-        finally:
-            await reader.close()
-
-    completeness = asyncio.run(_run())
-    assert completeness.complete is False
-    assert completeness.truncation_reason == "depth_limit"
+    assert asyncio.run(_read_texts(db, leaf_id)) == ["root message", f"level {_DEEP_CHAIN_LEVELS - 1} tail"]
 
 
 def test_shallow_chain_reports_complete(tmp_path: Path) -> None:
@@ -3221,25 +3261,27 @@ def _composed_texts(conn: sqlite3.Connection, session_id: str) -> list[str | Non
     return [message.blocks[0].text for message in read_archive_session_envelope(conn, session_id).messages]
 
 
-def test_dropped_branch_point_names_the_loss(tmp_path: Path) -> None:
-    """polylogue-gy2yu: a full replace that SHORTENS the parent strands its child.
+def _edge_state(conn: sqlite3.Connection, child_id: str) -> tuple[str | None, str | None, str | None]:
+    row = conn.execute(
+        "SELECT resolved_dst_session_id, inheritance, branch_point_message_id FROM session_links WHERE src_session_id = ?",
+        (child_id,),
+    ).fetchone()
+    return (row[0], row[1], row[2])
 
-    A full replace is the ordinary route for a re-acquired source. Identity
-    resolution only ever revisits *unresolved* edges, so before this fix an
-    already-resolved child was in none of ``_resolve_session_graph``'s impacted
-    sets and the write neither repaired it nor recorded that it could not.
 
-    The branch-point message is genuinely gone from the replacement transcript,
-    so no edge rewrite can recover the child's inherited prefix -- the only
-    remedy is re-deriving it from durable source evidence. The write therefore
-    names the loss as retryable ``lineage_prefix_recompose`` convergence debt,
-    and the edge keeps its *composing* status so the composed read keeps
-    reporting ``dangling_branch_point`` instead of a bare tail claimed whole.
+def test_dropped_branch_point_keeps_the_child_whole(tmp_path: Path) -> None:
+    """polylogue-gy2yu: a full replace that SHORTENS the parent never strands a child.
 
-    Anti-vacuity: dropping ``anchored_stranded_ids`` from
-    ``_resolve_session_graph``'s ``impacted_session_ids`` (or returning
-    ``set()`` instead of the residual) leaves ``list_convergence_debt()`` empty
-    -- the archive truncates exactly as before with nothing naming it.
+    A full replace is the ordinary route for a re-acquired source. The child's
+    inherited prefix is evidence from the child's own bytes, so when the
+    replacement drops the branch-point message the same write materializes the
+    inherited rows into the child: the child stops inheriting, stays
+    topologically linked to its parent, and reads complete. No convergence debt
+    is recorded, because nothing was lost.
+
+    Anti-vacuity: skip ``_settle_inherited_prefixes`` in
+    ``write_parsed_session_to_archive`` and the child composes to ``["x2"]``
+    with ``dangling_branch_point``.
     """
     from polylogue.sources.live.cursor import CursorStore
 
@@ -3251,34 +3293,67 @@ def test_dropped_branch_point_names_the_loss(tmp_path: Path) -> None:
     child_id = write_parsed_session_to_archive(conn, _codex_session("child", ["m0", "m1", "x2"], parent="parent"))
     conn.commit()
     assert _composed_texts(conn, child_id) == ["m0", "m1", "x2"]
-    assert count_dangling_prefix_branch_points(conn) == (0, 0)
-    assert cursor.list_convergence_debt() == []
+    assert _edge_state(conn, child_id) == (parent_id, "prefix-sharing", f"{parent_id}:n:m1")
 
     # The re-acquired export no longer carries m1 -- the child's branch point.
     write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m2"]))
     conn.commit()
 
     assert _composed_texts(conn, parent_id) == ["m0", "m2"]
-    # The reader is told by name that the transcript cannot be composed.
     envelope = read_archive_session_envelope(conn, child_id)
-    assert envelope.lineage_complete is False
-    assert envelope.lineage_truncation_reason == "dangling_branch_point"
-    assert count_dangling_prefix_branch_points(conn) == (1, 1)
+    assert envelope.lineage_complete is True
+    assert [message.blocks[0].text for message in envelope.messages] == ["m0", "m1", "x2"]
+    assert _edge_state(conn, child_id) == (parent_id, "spawned-fresh", None)
+    assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (child_id,)).fetchone()[0] == 3
+    assert count_dangling_prefix_branch_points(conn) == (0, 0)
+    assert cursor.list_convergence_debt() == []
+    assert conn.execute("SELECT name FROM sqlite_temp_master").fetchall() == []
+    conn.close()
 
-    # The edge stays composing on purpose: a QUARANTINED status would drop it
-    # out of composition and the child would read as a COMPLETE bare tail.
-    link = conn.execute(
-        "SELECT status, branch_point_message_id FROM session_links WHERE src_session_id = ?",
-        (child_id,),
-    ).fetchone()
-    assert link["status"] is None
-    assert link["branch_point_message_id"] == f"{parent_id}:n:m1"
 
-    debt = cursor.list_convergence_debt()
-    assert [(row.stage, row.subject_type, row.subject_id) for row in debt] == [
-        (IDENTITY_INVALIDATION_DEBT_STAGE, "session_id", child_id)
-    ]
-    assert "stranded by a parent re-parse" in str(debt[0].last_error)
+def test_intact_parent_rewrite_leaves_the_child_inheriting(tmp_path: Path) -> None:
+    """Opposite direction: re-writing a parent whose inherited rows survive
+    unchanged copies nothing. Materializing unconditionally would fail here."""
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    parent_id = write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1", "m2"]))
+    child_id = write_parsed_session_to_archive(conn, _codex_session("child", ["m0", "m1", "x2"], parent="parent"))
+    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1", "m2", "m3"]))
+    conn.commit()
+
+    assert _composed_texts(conn, child_id) == ["m0", "m1", "x2"]
+    assert _edge_state(conn, child_id) == (parent_id, "prefix-sharing", f"{parent_id}:n:m1")
+    assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (child_id,)).fetchone()[0] == 1
+    conn.close()
+
+
+def test_grandchild_follows_rows_its_parent_materialized(tmp_path: Path) -> None:
+    """A grandchild that branched inside the child's inherited prefix keeps
+    composing after that prefix moves into the child.
+
+    Anti-vacuity: drop the descendant branch-point rewrite in
+    ``_materialize_inherited_prefix`` and the grandchild's branch point names
+    a deleted parent row, so it reads ``dangling_branch_point``.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    parent_id = write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1", "m2", "m3"]))
+    child_id = write_parsed_session_to_archive(conn, _codex_session("child", ["m0", "m1", "m2", "x3"], parent="parent"))
+    grandchild_id = write_parsed_session_to_archive(
+        conn, _codex_session("grandchild", ["m0", "m1", "g2"], parent="child")
+    )
+    conn.commit()
+    assert _composed_texts(conn, grandchild_id) == ["m0", "m1", "g2"]
+    assert _edge_state(conn, grandchild_id)[2] == f"{parent_id}:n:m1"
+
+    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m3"]))
+    conn.commit()
+
+    assert _composed_texts(conn, child_id) == ["m0", "m1", "m2", "x3"]
+    grandchild = read_archive_session_envelope(conn, grandchild_id)
+    assert grandchild.lineage_complete is True
+    assert [message.blocks[0].text for message in grandchild.messages] == ["m0", "m1", "g2"]
+    assert _edge_state(conn, grandchild_id) == (child_id, "prefix-sharing", f"{child_id}:n:m1")
     conn.close()
 
 
@@ -3321,7 +3396,7 @@ def test_relocated_branch_point_repairs_in_write(tmp_path: Path) -> None:
     conn.close()
 
 
-def test_stranded_lookup_uses_the_branch_index(tmp_path: Path) -> None:
+def test_anchored_branch_point_lookup_uses_the_branch_index(tmp_path: Path) -> None:
     """Every session write runs this lookup, so it must not scan ``session_links``.
 
     A full-corpus replay pays it once per session. Measured on the live index
