@@ -11,13 +11,14 @@ from polylogue.sources.drive.gateway import (
     DEFAULT_DRIVE_RETRIES,
     DEFAULT_DRIVE_RETRY_BASE,
     DriveServiceGateway,
+    _BinaryWritable,
     _DriveService,
     _import_module,
     _resolve_retries,
     _resolve_retry_base,
     resolve_drive_retry_policy,
 )
-from polylogue.sources.drive.types import DriveAuthError, DriveNotFoundError, DriveRetryPolicy
+from polylogue.sources.drive.types import DriveAuthError, DriveError, DriveNotFoundError, DriveRetryPolicy
 from tests.infra.drive_mocks import MockDriveService, MockMediaIoBaseDownload
 
 
@@ -246,3 +247,44 @@ def test_download_file_writes_content(monkeypatch: pytest.MonkeyPatch) -> None:
     buf = io.BytesIO()
     gw.download_file("file-1", buf)
     assert buf.getvalue() == b"hello-bytes"
+
+
+@pytest.mark.parametrize("chunk_count", [10_000, 10_001])
+def test_download_accepts_completion_at_and_beyond_old_chunk_ceiling(chunk_count: int) -> None:
+    import io
+
+    class ChunkedDownload:
+        def __init__(self, handle: _BinaryWritable, total: object) -> None:
+            if not isinstance(total, int):
+                raise TypeError("fixture chunk count must be an integer")
+            self.handle = handle
+            self.total = total
+            self.count = 0
+
+        def next_chunk(self) -> tuple[None, bool]:
+            self.handle.write(b"x")
+            self.count += 1
+            return None, self.count == self.total
+
+    output = io.BytesIO()
+    _gateway()._download_request(chunk_count, output, ChunkedDownload, file_id="fixture")
+    assert output.getvalue() == b"x" * chunk_count
+
+
+def test_download_refuses_consecutive_chunks_without_byte_progress() -> None:
+    import io
+
+    class StalledDownload:
+        calls = 0
+
+        def __init__(self, _handle: _BinaryWritable, _request: object) -> None:
+            pass
+
+        def next_chunk(self) -> tuple[None, bool]:
+            StalledDownload.calls += 1
+            return None, False
+
+    output = io.BytesIO()
+    with pytest.raises(DriveError, match="no byte progress"):
+        _gateway()._download_request(object(), output, StalledDownload, file_id="fixture")
+    assert StalledDownload.calls == 100

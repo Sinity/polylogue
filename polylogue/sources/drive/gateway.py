@@ -223,14 +223,32 @@ class DriveServiceGateway:
         file_id: str,
     ) -> None:
         downloader = downloader_cls(handle, request)
-        done = False
-        max_chunks = 10_000
-        chunks = 0
-        while not done:
+        # A chunk count bounds neither bytes nor elapsed work. A valid large
+        # download can take more than 10,000 chunks, including one that
+        # completes exactly on that boundary. Detect a stuck stream instead.
+        teller = getattr(handle, "tell", None)
+
+        def position() -> int | None:
+            if not callable(teller):
+                return None
+            try:
+                observed = teller()
+            except (OSError, TypeError, ValueError):
+                return None
+            return observed if isinstance(observed, int) and observed >= 0 else None
+
+        prior_position = position()
+        stalled_chunks = 0
+        while True:
             _, done = downloader.next_chunk()
-            chunks += 1
-            if chunks >= max_chunks:
-                raise DriveServiceError(f"Download exceeded {max_chunks} chunks for file {file_id}")
+            if done:
+                return
+            next_position = position()
+            if prior_position is not None and next_position is not None:
+                stalled_chunks = 0 if next_position > prior_position else stalled_chunks + 1
+                if stalled_chunks >= 100:
+                    raise DriveServiceError(f"Download made no byte progress for file {file_id}")
+            prior_position = next_position
 
     def download_file(self, file_id: str, handle: _BinaryWritable) -> None:
         """Download file content into a writable binary handle."""
