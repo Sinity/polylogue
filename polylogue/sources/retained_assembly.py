@@ -311,9 +311,11 @@ def chatgpt_export_scope(session_source_path: str) -> str | None:
     """
     if not session_source_path:
         return None
-    head, separator, _member = session_source_path.partition(".zip:")
-    if separator:
-        return f"{head}.zip:"
+    # The archive suffix is matched case-insensitively (``first.ZIP:``) and the
+    # scope keeps the path's own spelling, so it prefixes the stored members.
+    separator_at = session_source_path.lower().find(".zip:")
+    if separator_at >= 0:
+        return session_source_path[: separator_at + len(".zip:")]
     parent = Path(session_source_path).parent
     if str(parent) in {"", "."}:
         return None

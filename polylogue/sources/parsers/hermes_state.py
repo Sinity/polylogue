@@ -291,7 +291,25 @@ def parse_state_db(
             for row in session_rows
         ]
     segmented = _segment_compression_continuations(sessions)
-    return [session for session in segmented if session.messages or session.instructions_text]
+    return _without_unreferenced_empty_sessions(segmented)
+
+
+def _without_unreferenced_empty_sessions(sessions: list[ParsedSession]) -> list[ParsedSession]:
+    """Drop content-less sessions unless a kept session descends from them.
+
+    A compression continuation that contributed no messages is still a node
+    of the chain: a later child names it as ``parent_session_provider_id``,
+    and dropping it leaves that child's lineage edge unresolvable, so reads
+    return only the child's tail instead of recomposing the chain.
+    """
+    by_id = {session.provider_session_id: session for session in sessions}
+    kept = {session.provider_session_id for session in sessions if session.messages or session.instructions_text}
+    for session_id in list(kept):
+        parent_id = by_id[session_id].parent_session_provider_id
+        while parent_id is not None and parent_id in by_id and parent_id not in kept:
+            kept.add(parent_id)
+            parent_id = by_id[parent_id].parent_session_provider_id
+    return [session for session in sessions if session.provider_session_id in kept]
 
 
 def import_fidelity_declaration(

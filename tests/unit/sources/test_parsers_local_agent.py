@@ -905,6 +905,38 @@ def test_hermes_state_db_retains_empty_rows_and_their_state(tmp_path: Path) -> N
     assert session_content_hash(state_changed) != session_content_hash(child)
 
 
+def test_hermes_state_db_keeps_an_empty_continuation_that_a_later_child_names(tmp_path: Path) -> None:
+    """A message-less middle continuation stays, so its child's parent edge resolves.
+
+    Anti-vacuity: restore the plain ``session.messages or
+    session.instructions_text`` filter in ``parse_state_db`` and the middle
+    session disappears while ``hermes-tail`` still names it as its parent.
+    """
+    db_path = tmp_path / "state.db"
+    _write_hermes_state_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE sessions SET end_reason = 'compression' WHERE id = 'hermes-root'")
+        conn.executemany(
+            "INSERT INTO sessions (id, model, parent_session_id, started_at, ended_at, end_reason) VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                ("hermes-middle", "nous-hermes-test", "hermes-root", 1_775_000_200.0, 1_775_000_210.0, "compression"),
+                ("hermes-tail", "nous-hermes-test", "hermes-middle", 1_775_000_300.0, 1_775_000_310.0, "completed"),
+            ],
+        )
+        conn.execute(
+            "INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+            ("hermes-tail", "user", "continue after compression", 1_775_000_301.0),
+        )
+
+    sessions = {session.provider_session_id: session for session in hermes_state.parse_state_db(db_path)}
+    tail = next(session for native_id, session in sessions.items() if native_id.startswith("hermes-tail@"))
+    middle_id = tail.parent_session_provider_id
+
+    assert middle_id is not None and middle_id.startswith("hermes-middle@")
+    assert middle_id in sessions
+    assert sessions[middle_id].messages == []
+
+
 def test_hermes_state_db_later_repository_capability_is_optional(tmp_path: Path) -> None:
     db_path = tmp_path / "state.db"
     _write_hermes_state_db(db_path)

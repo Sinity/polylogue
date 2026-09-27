@@ -900,6 +900,17 @@ def test_two_exports_are_two_scopes() -> None:
     assert len({zip_scope, other_zip_scope, dir_scope}) == 3
 
 
+def test_uppercase_zip_suffix_is_its_own_export_scope() -> None:
+    """``first.ZIP`` members are scoped to that archive, not its directory.
+
+    Anti-vacuity: match only a lowercase ``.zip:`` and the scope falls back to
+    ``/archive/exports/``, which spans every sibling export.
+    """
+    from polylogue.sources.retained_assembly import chatgpt_export_scope
+
+    assert chatgpt_export_scope("/archive/exports/first.ZIP:conversations.json") == "/archive/exports/first.ZIP:"
+
+
 def test_retained_asset_member_names_still_carry_their_provider_id() -> None:
     """The retained member coordinate is what the attachment join resolves."""
     from polylogue.sources.assembly_chatgpt import _member_asset_id
