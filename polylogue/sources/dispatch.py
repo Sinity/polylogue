@@ -221,19 +221,16 @@ def _browser_capture_provider(payload: object) -> Provider | None:
     return Provider.from_string(provider if isinstance(provider, str) else None)
 
 
-def _declared_capture_provider(record: PayloadRecord, runtime_provider: Provider) -> Provider | None:
+def _declared_capture_provider(record: PayloadRecord) -> Provider | None:
     """The provider a browser-capture envelope declares; the envelope owns it.
 
-    An envelope declaring a different origin than the one its location binds
-    is foreign content, not a capture to reinterpret.
+    Location binding for captures is enforced at acquisition, where the
+    location is known; here ``runtime_provider`` is only a parser hint (a
+    mixed capture sequence's first element), so each envelope keeps its own
+    declared provider.
     """
     provider = _browser_capture_provider(record)
-    if provider in (None, Provider.UNKNOWN):
-        return None
-    bound = bound_location_provider(runtime_provider)
-    if bound is not None and not same_origin(provider, bound):
-        raise ForeignOriginContentError(expected=bound, found=provider, evidence="browser-capture envelope provider")
-    return provider
+    return None if provider in (None, Provider.UNKNOWN) else provider
 
 
 def _looks_like_browser_capture_sequence(payload: object) -> bool:
@@ -1625,7 +1622,7 @@ def _lower_payload_specs(
             )
         ]
     if record is not None and browser_capture.looks_like(record):
-        provider = _declared_capture_provider(record, runtime_provider) or runtime_provider
+        provider = _declared_capture_provider(record) or runtime_provider
         return [
             LoweredPayloadSpec(
                 provider=provider,
@@ -1653,7 +1650,7 @@ def _lower_payload_specs(
             if item_record is None or not browser_capture.looks_like(item_record):
                 browser_capture_specs = []
                 break
-            provider = _declared_capture_provider(item_record, runtime_provider) or runtime_provider
+            provider = _declared_capture_provider(item_record) or runtime_provider
             browser_capture_specs.append(
                 LoweredPayloadSpec(
                     provider=provider,

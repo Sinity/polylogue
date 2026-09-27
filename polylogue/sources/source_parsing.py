@@ -22,7 +22,7 @@ from . import decoders as _decoders
 from .cursor import _log_source_iteration_summary, _ParseContext, _record_cursor_failure
 from .decoders import _process_zip
 from .dispatch import GROUP_PROVIDERS as _GROUP_PROVIDERS
-from .dispatch import bound_location_provider, is_jsonl_source_path
+from .dispatch import ForeignOriginContentError, bound_location_provider, is_jsonl_source_path
 from .emitter import _SessionEmitter
 from .origin_specs import SourceClassRecognition, artifact_rule_for_path, recognize_source_class
 from .parsers import antigravity, hermes_identity, hermes_state, hermes_verification
@@ -530,6 +530,10 @@ def iter_source_sessions_with_raw(
                 str(path),
                 f"File not found (may have been deleted): {exc}",
             )
+        except ForeignOriginContentError as exc:
+            failed_count += 1
+            logger.warning("Refused foreign-origin content %s: %s", path, exc)
+            _record_cursor_failure(cursor_state, str(path), f"{exc.code}: {exc}")
         except (JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
             failed_count += 1
             logger.warning("Failed to parse %s: %s", path, exc)

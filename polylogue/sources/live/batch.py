@@ -103,6 +103,7 @@ from polylogue.sources.decoders import JsonlDecodeError, _iter_json_stream, _Zip
 from polylogue.sources.dispatch import (
     BUNDLE_PROVIDERS,
     ForeignOriginContentError,
+    bound_location_provider,
     is_jsonl_source_path,
     is_stream_record_provider,
     parse_payload,
@@ -3580,11 +3581,16 @@ class LiveBatchProcessor:
             else:
                 json_document = path.suffix.lower() == ".json"
                 try:
-                    provider = (
-                        fallback_provider
-                        if json_document
-                        else _detect_provider_from_path_sample(path, fallback_provider)
-                    )
+                    if json_document:
+                        # Validate before the blob is copied: a refused document
+                        # must never enter the pending publication batch.
+                        if bound_location_provider(fallback_provider) is not None and not (
+                            path_declaration_refuses_session(fallback_provider, path)
+                        ):
+                            _detect_provider_from_path_sample(path, fallback_provider, json_document=True)
+                        provider = fallback_provider
+                    else:
+                        provider = _detect_provider_from_path_sample(path, fallback_provider)
                 except ForeignOriginContentError as exc:
                     self._mark_refused_cursor(
                         path,

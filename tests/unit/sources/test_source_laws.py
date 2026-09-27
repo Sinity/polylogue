@@ -2883,11 +2883,13 @@ def test_iter_source_raw_data_refuses_foreign_members_at_a_bound_location(tmp_pa
     """
     archive_path = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:
-        zf.writestr("nested/chatgpt-export.json", json.dumps(_CHATGPT_EXPORT_MEMBER).encode("utf-8"))
+        # The foreign member comes first: refusing it must not discard the
+        # admissible sibling after it.
         zf.writestr(
             "nested/gemini-export.json",
             b'{"chunkedPrompt": {"chunks": [{"role": "user", "text": "hi"}]}}',
         )
+        zf.writestr("nested/chatgpt-export.json", json.dumps(_CHATGPT_EXPORT_MEMBER).encode("utf-8"))
 
     cursor_state: CursorStatePayload = _empty_cursor_state()
     items = list(iter_source_raw_data(Source(name="chatgpt", path=archive_path), cursor_state=cursor_state))

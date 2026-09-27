@@ -122,20 +122,27 @@ def iter_source_raw_data(
                             logger.debug("Skipping empty source entry: %s", entry_path)
                             _record_cursor_failure(cursor_state, entry_path, "empty file")
                             continue
-                        yield from iter_zip_entry_raw_data(
-                            zf,
-                            ZipEntryReadContext(
-                                source=source,
-                                zip_path=path,
-                                entry=info,
-                                file_mtime=file_mtime,
-                                provider_hint=provider_hint,
-                                blob_store=blob_store,
-                                observation_callback=observation_callback,
-                                status_callback=status_callback,
-                                bound_provider=bound_location_provider(provider_hint),
-                            ),
-                        )
+                        try:
+                            yield from iter_zip_entry_raw_data(
+                                zf,
+                                ZipEntryReadContext(
+                                    source=source,
+                                    zip_path=path,
+                                    entry=info,
+                                    file_mtime=file_mtime,
+                                    provider_hint=provider_hint,
+                                    blob_store=blob_store,
+                                    observation_callback=observation_callback,
+                                    status_callback=status_callback,
+                                    bound_provider=bound_location_provider(provider_hint),
+                                ),
+                            )
+                        except ForeignOriginContentError as exc:
+                            # One refused member must not discard its admissible
+                            # siblings; the refusal is recorded per member.
+                            failed_count += 1
+                            logger.warning("Refused foreign-origin member %s: %s", entry_path, exc)
+                            _record_cursor_failure(cursor_state, entry_path, f"{exc.code}: {exc}")
             else:
                 yield read_plain_source_file(
                     SourceReadContext(
