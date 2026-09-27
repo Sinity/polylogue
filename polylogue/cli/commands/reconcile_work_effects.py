@@ -10,6 +10,7 @@ import click
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.query.spec import QuerySpecError, parse_query_date
 from polylogue.cli.shared.types import AppEnv
+from polylogue.cli.shared.work_evidence_submit import render_replacement, submit_work_evidence_graph
 
 
 def _parse_time_bound(field: str, value: str | None) -> int | None:
@@ -43,6 +44,7 @@ def _render_plain(summary_dict: dict[str, object]) -> None:
         for failure in failures:
             if isinstance(failure, dict):
                 click.echo(f"  adapter unavailable: {failure.get('authority')}: {failure.get('reason')}")
+    render_replacement(summary_dict)
     if not summary_dict["applied"]:
         click.echo("(dry run -- pass --yes to persist the reconciled graph)")
 
@@ -82,6 +84,7 @@ def _render_plain(summary_dict: dict[str, object]) -> None:
     help="Persist the reconciled graph. Without this flag the command is a dry run.",
 )
 @click.option(
+    "--format",
     "--output-format",
     "output_format",
     type=click.Choice(["plain", "json"]),
@@ -118,7 +121,7 @@ def reconcile_work_effects_command(
         RepositoryEffectAdapter,
     )
     from polylogue.operations.work_effect_reconciliation import (
-        WorkEffectReconciliationSummary,
+        WorkEffectReconciliation,
         WorkEvidenceGraphNotFoundError,
         reconcile_graph_repository_effects,
     )
@@ -132,22 +135,30 @@ def reconcile_work_effects_command(
     if github_repo is not None:
         adapters.append(GitHubPullRequestEffectAdapter(repo=github_repo))
 
-    async def _run() -> WorkEffectReconciliationSummary:
+    async def _run() -> WorkEffectReconciliation:
         return await reconcile_graph_repository_effects(
             env.repository,
             graph_id=graph_id,
             adapters=adapters,
             since_ms=since_ms,
             until_ms=until_ms,
-            apply=apply,
         )
 
     try:
-        summary = run_coroutine_sync(_run())
+        reconciliation = run_coroutine_sync(_run())
     except WorkEvidenceGraphNotFoundError as exc:
         raise click.UsageError(str(exc)) from exc
 
-    payload = {"mode": "reconcile_work_effects", "mutates": apply, **summary.to_dict()}
+    payload: dict[str, object] = {
+        "mode": "reconcile_work_effects",
+        "mutates": apply,
+        "applied": apply,
+        **reconciliation.summary.to_dict(),
+    }
+    if apply:
+        payload["replacement"] = submit_work_evidence_graph(
+            env, reconciliation.graph, expected_base_digest=reconciliation.base_digest
+        )
     if output_format == "json":
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
         return

@@ -1,12 +1,11 @@
-"""Production read-modify-write reconciliation against a real SQLite archive.
+"""Reconciliation reads a stored graph; the checked replace persists the result.
 
 Anti-vacuity: this drives the actual repository -> ``index.db`` route
 (``SessionRepository.get_work_evidence_graph`` /
-``replace_work_evidence_graph``), the real ``GitCommitEffectAdapter``
-against a genuine temp git repository, and the real
-``BeadsIssueEffectAdapter`` against the checked-in fixture ledger. Removing
-the ``apply`` write-back, or the direct-identifier judgment restriction,
-makes the assertions below fail.
+``replace_work_evidence_graph_checked``) and the real
+``GitCommitEffectAdapter`` against a genuine temp git repository. Removing the
+direct-identifier judgment restriction, or the base-digest check in the
+replace, makes the assertions below fail.
 """
 
 from __future__ import annotations
@@ -22,6 +21,11 @@ from polylogue.core.refs import ObjectRef
 from polylogue.operations.work_effect_reconciliation import (
     WorkEvidenceGraphNotFoundError,
     reconcile_graph_repository_effects,
+)
+from polylogue.operations.work_evidence_writes import (
+    WorkEvidenceGraphConflictError,
+    replace_work_evidence_graph_checked,
+    work_evidence_graph_digest,
 )
 from polylogue.storage.repository import SessionRepository
 
@@ -75,21 +79,21 @@ async def test_dry_run_reports_summary_without_mutating_stored_graph(tmp_path: P
     async with SessionRepository(db_path=tmp_path / "index.db") as repository:
         await repository.replace_work_evidence_graph(graph)
 
-        summary = await reconcile_graph_repository_effects(
+        reconciliation = await reconcile_graph_repository_effects(
             repository,
             graph_id=graph.graph_id,
             adapters=(GitCommitEffectAdapter(repo_path=repo),),
-            apply=False,
         )
+        summary = reconciliation.summary
 
-        assert summary.applied is False
+        assert reconciliation.base_digest == work_evidence_graph_digest(graph)
         assert summary.claims_total == 2
         assert summary.claims_evaluated == 1
         assert summary.claims_unevaluated == 1
         assert summary.effect_count_by_authority == {"git": 1}
         assert summary.judgment_count_by_evaluation == {"supported": 1}
 
-        # Dry run: the stored graph is untouched -- no effect/claimed edges yet.
+        # Reconciliation only reads: no effect/claimed edges are stored yet.
         stored = await repository.get_work_evidence_graph(graph.graph_id)
         assert stored is not None
         assert {node.kind for node in stored.nodes} == {"claim"}
@@ -97,7 +101,7 @@ async def test_dry_run_reports_summary_without_mutating_stored_graph(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_apply_persists_reconciled_graph_through_the_real_repository(tmp_path: Path) -> None:
+async def test_checked_replace_persists_the_reconciled_graph(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_git_repo(repo)
@@ -106,13 +110,15 @@ async def test_apply_persists_reconciled_graph_through_the_real_repository(tmp_p
     async with SessionRepository(db_path=tmp_path / "index.db") as repository:
         await repository.replace_work_evidence_graph(graph)
 
-        summary = await reconcile_graph_repository_effects(
+        reconciliation = await reconcile_graph_repository_effects(
             repository,
             graph_id=graph.graph_id,
             adapters=(GitCommitEffectAdapter(repo_path=repo),),
-            apply=True,
         )
-        assert summary.applied is True
+        replacement = await replace_work_evidence_graph_checked(
+            repository, reconciliation.graph, expected_base_digest=reconciliation.base_digest
+        )
+        assert replacement.changed is True
 
         stored = await repository.get_work_evidence_graph(graph.graph_id)
 
@@ -130,6 +136,39 @@ async def test_apply_persists_reconciled_graph_through_the_real_repository(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_checked_replace_refuses_a_base_that_moved(tmp_path: Path) -> None:
+    """A graph replaced after reconciliation read it is not overwritten.
+
+    Anti-vacuity: skip the digest comparison in
+    ``replace_work_evidence_graph_checked`` and the stale reconciliation
+    overwrites the concurrent graph without raising.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    graph = _seed_graph()
+    concurrent = graph.model_copy(update={"nodes": graph.nodes[:1]})
+
+    async with SessionRepository(db_path=tmp_path / "index.db") as repository:
+        await repository.replace_work_evidence_graph(graph)
+        reconciliation = await reconcile_graph_repository_effects(
+            repository,
+            graph_id=graph.graph_id,
+            adapters=(GitCommitEffectAdapter(repo_path=repo),),
+        )
+        await repository.replace_work_evidence_graph(concurrent)
+
+        with pytest.raises(WorkEvidenceGraphConflictError) as refused:
+            await replace_work_evidence_graph_checked(
+                repository, reconciliation.graph, expected_base_digest=reconciliation.base_digest
+            )
+        stored = await repository.get_work_evidence_graph(graph.graph_id)
+
+    assert refused.value.code == "work_evidence_graph_conflict"
+    assert stored == concurrent
+
+
+@pytest.mark.asyncio
 async def test_unknown_graph_id_raises_typed_error(tmp_path: Path) -> None:
     async with SessionRepository(db_path=tmp_path / "index.db") as repository:
         with pytest.raises(WorkEvidenceGraphNotFoundError):
@@ -137,7 +176,6 @@ async def test_unknown_graph_id_raises_typed_error(tmp_path: Path) -> None:
                 repository,
                 graph_id="claude-workflow:does-not-exist",
                 adapters=(),
-                apply=False,
             )
 
 
@@ -149,7 +187,7 @@ async def test_adapter_failures_are_recorded_not_swallowed_or_fatal(tmp_path: Pa
     async with SessionRepository(db_path=tmp_path / "index.db") as repository:
         await repository.replace_work_evidence_graph(graph)
 
-        summary = await reconcile_graph_repository_effects(
+        reconciliation = await reconcile_graph_repository_effects(
             repository,
             graph_id=graph.graph_id,
             # A deterministically-missing `gh_path`, not the real "gh"
@@ -160,8 +198,8 @@ async def test_adapter_failures_are_recorded_not_swallowed_or_fatal(tmp_path: Pa
             adapters=(
                 GitHubPullRequestEffectAdapter(repo="Sinity/polylogue", gh_path="polylogue-test-missing-gh-binary"),
             ),
-            apply=False,
         )
+    summary = reconciliation.summary
 
     assert summary.effect_count_by_authority == {}
     assert summary.adapter_failures == ({"authority": "github", "reason": summary.adapter_failures[0]["reason"]},)

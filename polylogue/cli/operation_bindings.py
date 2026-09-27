@@ -233,6 +233,13 @@ CLI_OPERATION_BINDINGS: Mapping[str, CliOperationBinding] = {
         lowering="polylogue.cli.commands.import_command:_request_demo_augmentation",
         renderers=("polylogue.cli.commands.import_command:import_command",),
     ),
+    "mutation.work_evidence.graph.replace": CliOperationBinding(
+        lowering="polylogue.cli.shared.work_evidence_submit:submit_work_evidence_graph",
+        renderers=(
+            "polylogue.cli.commands.materialize_incident_evidence:materialize_incident_evidence_command",
+            "polylogue.cli.commands.reconcile_work_effects:reconcile_work_effects_command",
+        ),
+    ),
     "mutation.raw-authority-blocker.resolve": CliOperationBinding(
         lowering="polylogue.cli.commands.maintenance._raw_identity:_submit",
         renderers=("polylogue.cli.commands.maintenance._raw_identity:raw_authority_blocker_resolve_command",),

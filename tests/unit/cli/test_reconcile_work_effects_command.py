@@ -1,7 +1,10 @@
-"""CLI smoke tests for ``polylogue ops reconcile-work-effects``.
+"""CLI tests for ``polylogue ops reconcile-work-effects``.
 
 Exercises the real command against a real seeded archive (``workspace_env``)
-and a real temp git repository -- not a stubbed operation.
+and a real temp git repository -- not a stubbed operation. Reconciliation is a
+read the CLI does itself; ``--yes`` persists the reconciled graph through the
+resident daemon's declared ``mutation.work_evidence.graph.replace``
+operation, bound to the digest of the stored graph it was derived from.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from polylogue.core.refs import ObjectRef
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.repository import SessionRepository
+from tests.infra.daemon_operations import cli_daemon_archive
 
 _EVIDENCE = ObjectRef(kind="artifact", object_id="raw:test-evidence")
 _SNAPSHOT = ObjectRef(kind="context-snapshot", object_id="snapshot:cli-test")
@@ -99,40 +103,101 @@ def test_dry_run_reports_json_summary_without_persisting(
     assert payload["judgment_count_by_evaluation"] == {"supported": 1}
 
 
-def test_yes_flag_persists_reconciled_graph(
+def _stored(graph_id: str) -> WorkEvidenceGraph | None:
+    async def _read() -> WorkEvidenceGraph | None:
+        async with SessionRepository(db_path=resolve_active_index_path(archive_root())) as repository:
+            return await repository.get_work_evidence_graph(graph_id)
+
+    return run_coroutine_sync(_read())
+
+
+def _apply_args(graph_id: str, repo: Path) -> list[str]:
+    return ["ops", "reconcile-work-effects", "--graph-id", graph_id, "--repo", str(repo), "--yes", "--format", "json"]
+
+
+def test_yes_flag_persists_reconciled_graph_through_the_daemon(
     tmp_path: Path,
     _seeded_graph: WorkEvidenceGraph,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_git_repo(repo, message="fix: land it (Ref polylogue-1vpm.6.2)")
 
-    result = CliRunner().invoke(
-        cli,
-        [
-            "ops",
-            "reconcile-work-effects",
-            "--graph-id",
-            _seeded_graph.graph_id,
-            "--repo",
-            str(repo),
-            "--yes",
-            "--output-format",
-            "json",
-        ],
-        catch_exceptions=False,
-    )
-    assert result.exit_code == 0
-    assert json.loads(result.output)["applied"] is True
+    with cli_daemon_archive(archive_root(), monkeypatch):
+        result = CliRunner().invoke(cli, _apply_args(_seeded_graph.graph_id, repo), catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["applied"] is True
+    assert payload["replacement"]["changed"] is True
 
-    async def _read() -> WorkEvidenceGraph | None:
-        async with SessionRepository(db_path=resolve_active_index_path(archive_root())) as repository:
-            return await repository.get_work_evidence_graph(_seeded_graph.graph_id)
-
-    stored = run_coroutine_sync(_read())
+    stored = _stored(_seeded_graph.graph_id)
     assert stored is not None
     assert any(node.kind == "effect" for node in stored.nodes)
     assert any(edge.kind == "claimed" for edge in stored.edges)
+
+
+def test_yes_flag_refuses_a_graph_replaced_after_it_was_read(
+    tmp_path: Path,
+    _seeded_graph: WorkEvidenceGraph,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A graph replaced between the CLI's read and the daemon's write is not overwritten.
+
+    Anti-vacuity: drop ``expected_base_digest`` from the submitted request and
+    the reconciled graph overwrites the concurrent replacement, exiting 0.
+    """
+    from polylogue.analysis import work_effects
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo, message="fix: land it (Ref polylogue-1vpm.6.2)")
+    concurrent = _seeded_graph.model_copy(update={"nodes": (), "edges": ()})
+    real_collect = work_effects.collect_repository_effects
+
+    with cli_daemon_archive(archive_root(), monkeypatch) as stack:
+
+        def collect_then_race(*args: object, **kwargs: object) -> object:
+            # Runs after the CLI read the base graph and before it submits:
+            # another client replaces the graph through the same daemon.
+            envelope = stack.client.operation_to_completion(
+                "mutation.work_evidence.graph.replace",
+                {"graph": concurrent.model_dump(mode="json"), "expected_base_digest": None},
+                archive_root=str(stack.archive_root),
+            )
+            assert envelope is not None and envelope["outcome"] == "completed", envelope
+            return real_collect(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(
+            "polylogue.operations.work_effect_reconciliation.collect_repository_effects", collect_then_race
+        )
+        result = CliRunner().invoke(cli, _apply_args(_seeded_graph.graph_id, repo))
+
+    assert result.exit_code != 0, result.output
+    assert "work_evidence_graph_conflict" in f"{result.output}{result.exception}"
+    stored = _stored(_seeded_graph.graph_id)
+    assert stored is not None
+    assert stored.nodes == ()
+
+
+def test_yes_flag_refuses_without_a_daemon_and_writes_nothing(
+    tmp_path: Path,
+    _seeded_graph: WorkEvidenceGraph,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anti-vacuity: restore the in-process write and this exits 0 with effects stored."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo, message="fix: land it (Ref polylogue-1vpm.6.2)")
+    monkeypatch.setenv("POLYLOGUE_NO_DAEMON", "1")
+
+    result = CliRunner().invoke(cli, _apply_args(_seeded_graph.graph_id, repo))
+
+    assert result.exit_code != 0, result.output
+    assert "polylogued run" in f"{result.output}{result.exception}"
+    stored = _stored(_seeded_graph.graph_id)
+    assert stored is not None
+    assert {node.kind for node in stored.nodes} == {"claim"}
 
 
 def test_github_repo_flag_wires_in_pr_effects(

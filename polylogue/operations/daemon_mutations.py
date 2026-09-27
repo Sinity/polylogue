@@ -443,6 +443,55 @@ def maintenance_secret_scan(
     }
 
 
+def mutation_work_evidence_graph_replace(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    """Replace one stored work-evidence graph under the resident writer.
+
+    The repository route is ``async``; see
+    :func:`mutation_annotation_import_batch` for why the coroutine adopts a
+    delegated write lease instead of running as an unauthorized child task.
+    """
+    import asyncio
+
+    from polylogue.analysis.work_evidence import WorkEvidenceGraph
+    from polylogue.core.write_lease import adopt_write_lease, delegate_write_lease
+    from polylogue.operations.work_evidence_writes import (
+        WorkEvidenceGraphReplacement,
+        replace_work_evidence_graph_checked,
+    )
+    from polylogue.storage.archive_identity import resolve_active_index_path
+    from polylogue.storage.repository import SessionRepository
+
+    del audit, snapshot
+    payload = request.payload
+    graph = WorkEvidenceGraph.model_validate(payload["graph"])
+    expected_base_digest = cast(str | None, payload.get("expected_base_digest"))
+    delegation = delegate_write_lease()
+
+    async def _run() -> WorkEvidenceGraphReplacement:
+        with adopt_write_lease(delegation):
+            async with SessionRepository(
+                db_path=resolve_active_index_path(context.archive_root), archive_root=context.archive_root
+            ) as repository:
+                return await replace_work_evidence_graph_checked(
+                    repository, graph, expected_base_digest=expected_base_digest
+                )
+
+    replacement = asyncio.run(_run())
+    return {
+        "operation": request.operation,
+        "outcome": "completed",
+        "sequence": 1,
+        "effect": "committed" if replacement.changed else "no-effect",
+        "affected_count": 1 if replacement.changed else 0,
+        "result": replacement.to_dict(),
+    }
+
+
 def maintenance_backup(
     request: DaemonOperationRequest,
     context: OperationContext,

@@ -803,11 +803,15 @@ proximity never counts as a match, so a claim naming no id — or whose id has
 no matching effect — stays explicitly unevaluated rather than being inferred
 from session presence alone.
 
-The production read-modify-write entry point is
+The production read entry point is
 `polylogue/operations/work_effect_reconciliation.py`'s
 `reconcile_graph_repository_effects`, exposed as the CLI command
-`polylogue ops reconcile-work-effects` (dry-run by default; `--yes` persists
-the reconciled graph back through `SessionRepository.replace_work_evidence_graph`).
+`polylogue ops reconcile-work-effects`. It returns the reconciled graph and the
+digest of the stored graph it was derived from. Dry-run is the default; `--yes`
+submits the graph to the resident daemon's `mutation.work_evidence.graph.replace`
+operation (`polylogue/operations/work_evidence_writes.py`), which refuses the
+write with `work_evidence_graph_conflict` when the stored graph changed after
+the read.
 
 `reconcile-work-effects` reconciles an *existing* work-evidence graph against
 independent repository effects; it never builds one. `polylogue/analysis/
@@ -826,7 +830,8 @@ polylogue-dab/itvd are CTE/source-derived only and never emit subagent
 self-reports or mentioned commit/PR/issue refs) — exposed as
 `polylogue ops materialize-incident-evidence` (select sessions by
 `--session-id` and/or `--repo`/`--since`/`--until`/`--contains`; dry-run by
-default, `--yes` persists).
+default, `--yes` persists through the same daemon operation, unconditionally,
+because the graph is built from sessions rather than from a stored graph).
 
 ## Logical Session Identity (#866)
 

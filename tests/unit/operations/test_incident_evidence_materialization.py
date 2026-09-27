@@ -23,6 +23,7 @@ from polylogue.operations.incident_evidence_materialization import (
     NoIncidentSessionsFoundError,
     materialize_incident_work_evidence,
 )
+from polylogue.operations.work_evidence_writes import replace_work_evidence_graph_checked
 from polylogue.storage.repository import SessionRepository
 
 
@@ -91,10 +92,11 @@ async def test_materialize_incident_work_evidence_round_trips_real_archive_conte
             repository,
             session_ids=[session_id],
             graph_id="incident:op-demo",
-            apply=True,
         )
+        replacement = await replace_work_evidence_graph_checked(repository, result.graph, expected_base_digest=None)
 
-        assert result.applied is True
+        assert replacement.changed is True
+        assert replacement.previous_digest == "absent"
         assert result.summary.session_count == 1
         assert result.summary.run_count == 2
         assert result.summary.claim_count == 1
@@ -117,7 +119,7 @@ async def test_materialize_incident_work_evidence_round_trips_real_archive_conte
 
 
 @pytest.mark.asyncio
-async def test_materialize_incident_work_evidence_dry_run_does_not_persist(tmp_path: Path) -> None:
+async def test_materialize_incident_work_evidence_never_persists(tmp_path: Path) -> None:
     db_path = tmp_path / "index.db"
     session_id = await _seed_incident_session(db_path)
 
@@ -126,9 +128,8 @@ async def test_materialize_incident_work_evidence_dry_run_does_not_persist(tmp_p
             repository,
             session_ids=[session_id],
             graph_id="incident:dry-run-demo",
-            apply=False,
         )
-        assert result.applied is False
+        assert result.graph.graph_id == "incident:dry-run-demo"
         stored = await repository.get_work_evidence_graph("incident:dry-run-demo")
 
     assert stored is None
