@@ -119,7 +119,6 @@ from polylogue.sources.live.batch_support import (
     _archive_blob_exists,
     _blob_copy_heartbeat,
     _DeferredAppend,
-    _detect_provider_from_path_sample,
     _full_ingest_result_from_summary,
     _full_ingest_worker_count,
     _full_parse_progress_groups,
@@ -136,6 +135,7 @@ from polylogue.sources.live.batch_support import (
     cursor_prefix_hash,
     cursor_state_after_full_ingest,
     decode_claude_semantic_frontier,
+    detect_provider_from_path_sample_evidence,
     encode_claude_semantic_frontier_digests,
     encode_cursor_hash_authority,
     file_prefix_sha256,
@@ -1014,6 +1014,7 @@ class LiveBatchProcessor:
         stage_timings: dict[str, float] = {}
         failed_paths: list[str] = []
         excluded_by_path: dict[Path, str] = {}
+        detection_fallbacks_by_path: dict[Path, str] = {}
         succeeded_paths: set[Path] = set()
         # polylogue-cnu3: the most severe structural disposition this batch
         # hit, if any. Set at each terminal except-clause below by
@@ -1459,6 +1460,7 @@ class LiveBatchProcessor:
                         captured_file_observation=full_result.captured_file_observations.get(path),
                     )
                 excluded_by_path.update(full_result.excluded)
+                detection_fallbacks_by_path.update(full_result.detection_fallbacks)
                 logger.info(
                     "live.watcher: batch ingested %s — %d in %.1fs (%.1f/s)",
                     source_name,
@@ -1586,6 +1588,7 @@ class LiveBatchProcessor:
             excluded_file_count=sum(excluded_reasons.values()),
             excluded_reasons=dict(excluded_reasons),
             excluded_paths={str(path): reason for path, reason in excluded_by_path.items()},
+            detection_fallback_paths={str(path): reason for path, reason in detection_fallbacks_by_path.items()},
             deferred_paths=tuple(str(path) for path in deferred_paths),
             source_group_count=len({self._source_name_for(path) for path in paths}),
             input_bytes=input_bytes,
@@ -2800,6 +2803,7 @@ class LiveBatchProcessor:
         # that reaches neither ``ingested`` nor ``failed`` is invisible in the
         # batch counters, which reads exactly like an idle source.
         excluded_paths: dict[Path, str] = {}
+        detection_fallbacks: dict[Path, str] = {}
         # Acquisition -- read, fingerprint, publish the blob -- is charged to
         # the same writer hold as the archive write below, and on real
         # transcripts it dominates: 3 files of 15 MB spent 39.7 s here before
@@ -3245,9 +3249,12 @@ class LiveBatchProcessor:
                     )
             else:
                 json_document = path.suffix.lower() == ".json"
-                provider = (
-                    fallback_provider if json_document else _detect_provider_from_path_sample(path, fallback_provider)
-                )
+                if json_document:
+                    provider = fallback_provider
+                else:
+                    provider, detection_crash = detect_provider_from_path_sample_evidence(path, fallback_provider)
+                    if detection_crash is not None:
+                        detection_fallbacks[path] = detection_crash
                 source_name = provider.value
                 if path.suffix.lower() != ".json" and not _parse_path_as_session_artifact(path, provider=provider):
                     self._mark_excluded_cursor(
@@ -3286,13 +3293,19 @@ class LiveBatchProcessor:
                 if json_document:
                     # The captured blob, rather than the pre-copy path, owns
                     # provider identity when the source changes after prewarm.
-                    provider = (
+                    prepared_provider = (
                         preparation.resolved_provider
                         if preparation is not None and not preparation.deferred and preparation.error is None
                         else None
-                    ) or _detect_provider_from_path_sample(
-                        blob_store.blob_path(raw_id), fallback_provider, json_document=True
                     )
+                    if prepared_provider is not None:
+                        provider = prepared_provider
+                    else:
+                        provider, detection_crash = detect_provider_from_path_sample_evidence(
+                            blob_store.blob_path(raw_id), fallback_provider, json_document=True
+                        )
+                        if detection_crash is not None:
+                            detection_fallbacks[path] = detection_crash
                     source_name = provider.value
                 if heartbeat is not None:
                     heartbeat(
@@ -3509,6 +3522,9 @@ class LiveBatchProcessor:
             raw_deferred=raw_deferred_paths if raw_records and summary is not None else [],
             source_payload_read_bytes=source_payload_read_bytes,
             excluded=excluded_paths,
+            detection_fallbacks={
+                path: reason for path, reason in detection_fallbacks.items() if path in succeeded_paths
+            },
             raw_fingerprints=raw_fingerprints,
             raw_byte_sizes=raw_byte_sizes,
             raw_frontier_sizes=raw_frontier_sizes,
