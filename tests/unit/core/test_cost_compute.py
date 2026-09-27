@@ -451,4 +451,4 @@ def test_runtime_protocol_text_in_an_assistant_envelope_is_not_estimated_output(
 
     per_model = _per_model_from_messages(session)
 
-    assert all(breakdown.output_tokens == 0 for breakdown in per_model.values())
+    assert per_model == {}

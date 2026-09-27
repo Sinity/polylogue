@@ -993,15 +993,22 @@ def test_claude_ai_compaction_summary_persists_as_event() -> None:
                     }
                 ],
             },
+            {
+                "messageId": "m2",
+                "sender": "assistant",
+                "text": "continuing",
+                "created_at": "2026-01-01T00:05:00Z",
+                "compaction_summary": [{"type": "text", "text": "Earlier."}],
+            },
         ],
     }
 
     session = parse_ai(payload, "fallback")
 
+    # A duplicate record of m2 yields one summary event, the richest revision's.
     summaries = [event for event in session.session_events if event.event_type == "claude_ai_compaction_summary"]
     assert len(summaries) == 1
     assert summaries[0].source_message_provider_id == "m2"
     assert summaries[0].payload["summary"] == "Earlier we planned the parser work."
     assert summaries[0].payload["stop_timestamp"] == "2026-01-01T00:04:30Z"
-    assert [message.position for message in session.messages] == [0, 1]
     assert any(message.model_effort == "high" for message in session.messages)

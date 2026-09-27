@@ -2405,10 +2405,12 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
             api_error_payload["status"] = api_error_status
         if isinstance(item.get("apiErrorIsTransient"), bool):
             api_error_payload["transient"] = item["apiErrorIsTransient"]
-        for source_key, payload_key in (("apiError", "error"), ("errorDetails", "details")):
-            value = item.get(source_key)
-            if isinstance(value, str) and value.strip():
-                api_error_payload[payload_key] = value
+        for source_keys, payload_key in ((("error", "apiError"), "error"), (("errorDetails",), "details")):
+            for source_key in source_keys:
+                value = item.get(source_key)
+                if isinstance(value, str) and value.strip():
+                    api_error_payload[payload_key] = value
+                    break
         acc.session_events.append(
             ParsedSessionEvent(
                 event_type="claude_api_error",
@@ -2498,7 +2500,7 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
     if harness_synthetic:
         msg_model = None
     msg_effort = (
-        _message_model_effort(message_payload) or _message_model_effort(item) or _string_field(item, "perTurnEffort")
+        _message_model_effort(message_payload) or _string_field(item, "perTurnEffort") or _message_model_effort(item)
     )
     msg_duration_ms = _message_duration_ms(item)
     msg_stop_reason = _message_stop_reason(message_payload)

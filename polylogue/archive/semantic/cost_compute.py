@@ -357,6 +357,13 @@ def _per_model_from_messages(
     dominant_model_name = model_counts.most_common(1)[0][0] if model_counts else fallback_model_name
 
     for message in session.messages:
+        tokens = _get_message_token_counts(message)
+        if getattr(message, "material_origin", None) == MaterialOrigin.RUNTIME_PROTOCOL and (
+            tokens is None or getattr(tokens, "billable_tokens", 0) <= 0
+        ):
+            # Harness-written protocol text (e.g. an API-error notice in an
+            # assistant envelope) was neither sent to nor produced by a model.
+            continue
         model_name = _get_message_model_name(message) or dominant_model_name
         norm_model = _normalize_model(model_name) if model_name else None
         key = norm_model or "unknown"
@@ -367,16 +374,11 @@ def _per_model_from_messages(
                 provider_model_name=model_name,
             )
 
-        tokens = _get_message_token_counts(message)
         word_count: int = getattr(message, "word_count", 0) or 0
 
         if tokens is not None and getattr(tokens, "billable_tokens", 0) > 0:
             per_model[key] = _add_provider_reported_tokens(per_model[key], tokens, model_name)
         elif word_count > 0:
-            if getattr(message, "material_origin", None) == MaterialOrigin.RUNTIME_PROTOCOL:
-                # Harness-written protocol text (e.g. an API-error notice in an
-                # assistant envelope) was neither sent to nor produced by a model.
-                continue
             is_assistant_turn = getattr(message, "role", None) == Role.ASSISTANT
             est = estimate_tokens_from_words_split(
                 input_words=0 if is_assistant_turn else word_count,

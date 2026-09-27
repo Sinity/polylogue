@@ -901,7 +901,7 @@ def _compaction_summary_text(item: Mapping[str, object]) -> tuple[str, str | Non
     return "\n\n".join(texts), start_timestamp, stop_timestamp
 
 
-def _compaction_summary_events(chat_messages: list[object]) -> list[ParsedSessionEvent]:
+def _compaction_summary_events(chat_messages: list[object], kept_message_ids: set[str]) -> list[ParsedSessionEvent]:
     """One ``claude_ai_compaction_summary`` event per message carrying claude.ai's summary.
 
     When claude.ai compacts a conversation it stores the summary it carries
@@ -912,13 +912,24 @@ def _compaction_summary_events(chat_messages: list[object]) -> list[ParsedSessio
     apply, and placing a summary message into claude.ai's branched message tree
     (variant and attachment-owner coordinates) is not done here.
     """
-    events: list[ParsedSessionEvent] = []
+    # One event per surviving message: normalize_chat_messages collapses
+    # duplicate records of one native id to the richest revision, so a summary
+    # on a superseded duplicate must not produce a second event.
+    by_message: dict[str | None, tuple[Mapping[str, object], tuple[str, str | None, str | None]]] = {}
     for item in chat_messages:
         if not isinstance(item, Mapping):
             continue
         found = _compaction_summary_text(item)
         if found is None:
             continue
+        message_id = _first_identity_field(item, "uuid", "id", "message_id", "messageId", "provider_message_id")
+        if message_id is not None and message_id not in kept_message_ids:
+            continue
+        current = by_message.get(message_id)
+        if current is None or len(found[0]) > len(current[1][0]):
+            by_message[message_id] = (item, found)
+    events: list[ParsedSessionEvent] = []
+    for message_id, (item, found) in by_message.items():
         summary_text, start_timestamp, stop_timestamp = found
         payload: dict[str, object] = {"summary": summary_text}
         if start_timestamp is not None:
@@ -929,9 +940,7 @@ def _compaction_summary_events(chat_messages: list[object]) -> list[ParsedSessio
             ParsedSessionEvent(
                 event_type="claude_ai_compaction_summary",
                 timestamp=stop_timestamp or start_timestamp or _session_timestamp(item, "created_at", "updated_at"),
-                source_message_provider_id=_first_identity_field(
-                    item, "uuid", "id", "message_id", "messageId", "provider_message_id"
-                ),
+                source_message_provider_id=message_id,
                 payload=payload,
             )
         )
@@ -1009,7 +1018,12 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
             )
         )
 
-    session_events.extend(_compaction_summary_events(chat_messages))
+    session_events.extend(
+        _compaction_summary_events(
+            chat_messages,
+            {message.provider_message_id for message in normalized.messages if message.provider_message_id},
+        )
+    )
 
     conversation_id = _first_identity_field(payload, "uuid", "id", "conversation_id", "conversationId")
     resolved_session_id = conversation_id or fallback_id

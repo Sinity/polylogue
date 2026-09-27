@@ -858,6 +858,7 @@ def test_api_error_record_is_harness_protocol_with_a_linked_event() -> None:
                 "isApiErrorMessage": True,
                 "apiErrorStatus": 429,
                 "apiErrorIsTransient": True,
+                "error": "rate_limit_error",
                 "errorDetails": "rate limited",
                 "message": {
                     "role": "assistant",
@@ -878,6 +879,7 @@ def test_api_error_record_is_harness_protocol_with_a_linked_event() -> None:
     assert events[0].payload["status"] == 429
     assert events[0].payload["details"] == "rate limited"
     assert events[0].payload["transient"] is True
+    assert events[0].payload["error"] == "rate_limit_error"
 
 
 def test_tool_denial_kind_is_kept_beside_the_error_result() -> None:
@@ -922,6 +924,7 @@ def test_per_turn_effort_lands_as_model_effort() -> None:
                 "uuid": "a-effort",
                 "sessionId": "sess-effort",
                 "perTurnEffort": "high",
+                "effort": "low",
                 "message": {"role": "assistant", "model": "claude-x", "content": [{"type": "text", "text": "ok"}]},
             },
         ],
