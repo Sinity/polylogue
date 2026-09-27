@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -102,11 +103,44 @@ def _inside(path: Path, root: Path) -> bool:
 
 
 def _foreign_checkout(path_text: str, root: Path) -> bool:
-    """Whether ``path_text`` lies in a Polylogue checkout other than ``root``."""
+    """Whether ``path_text`` lies in a Polylogue checkout other than ``root``.
+
+    A relative entry is resolved against the working directory, exactly as the
+    process that consults it would resolve it.
+    """
+    if not path_text:
+        return False
     path = Path(path_text)
-    if not path_text or not path.is_absolute() or _inside(path, root):
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    if _inside(path, root):
         return False
     return find_git_worktree_root(path if path.is_dir() else path.parent) is not None
+
+
+class ForeignInterpreterError(RuntimeError):
+    """Devtools is running on an interpreter that belongs to another checkout."""
+
+
+def assert_interpreter_belongs_to(root: Path, *, context: str) -> None:
+    """Refuse a Python whose environment is another Polylogue checkout's.
+
+    Rewriting ``PATH`` cannot change the interpreter already running, and
+    commands launch children through ``sys.executable``, so a foreign one would
+    run this checkout's code on the other checkout's dependencies.
+    """
+    prefix = Path(sys.prefix)
+    if _inside(prefix, root.resolve()):
+        return
+    if find_git_worktree_root(prefix) is None:
+        return
+    raise ForeignInterpreterError(
+        f"{context}: running on another checkout's interpreter.\n"
+        f"  invoking checkout : {root.resolve()}\n"
+        f"  interpreter prefix: {prefix}\n"
+        "\n"
+        "Provision this checkout's environment (enter its devshell once) and rerun.\n"
+    )
 
 
 def normalize_checkout_environment(root: Path, environ: dict[str, str] | None = None) -> list[str]:
@@ -140,8 +174,10 @@ def normalize_checkout_environment(root: Path, environ: dict[str, str] | None = 
             continue
         entries = value.split(os.pathsep)
         kept = [entry for entry in entries if not _foreign_checkout(entry, resolved_root)]
-        if name == "PATH" and (own_venv / "bin").is_dir() and str(own_venv / "bin") not in kept:
-            kept.insert(0, str(own_venv / "bin"))
+        if name == "PATH" and (own_venv / "bin").is_dir():
+            # First, not merely present: an earlier directory with the same
+            # tool would otherwise still win.
+            kept = [str(own_venv / "bin"), *(entry for entry in kept if entry != str(own_venv / "bin"))]
         if kept != entries:
             dropped = [entry for entry in entries if entry not in kept]
             if dropped:
