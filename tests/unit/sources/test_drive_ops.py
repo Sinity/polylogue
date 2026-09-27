@@ -158,6 +158,9 @@ def test_iter_drive_raw_data_replaces_a_cache_rewritten_with_attachment_bytes(tm
         iter_drive_raw_data(
             source=Source(name="gemini", folder="Google AI Studio", path=tmp_path),
             client=client,
+            # An unchanged revision takes the cursor fast path; a rewritten
+            # cache must not satisfy it.
+            known_mtimes={str(cache): "2025-01-01T00:00:00Z"},
             blob_store=BlobStore(tmp_path / "blob"),
         )
     )

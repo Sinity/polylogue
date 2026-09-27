@@ -93,7 +93,8 @@ def drive_cache_file_path(dest_dir: Path, name: str) -> Path:
 #: Marker of a cache file an earlier acquisition rewrote with fetched
 #: attachment bytes embedded. Such a file is not the provider's document, so
 #: it is not a valid cache: re-downloading replaces it with the real bytes.
-_REWRITTEN_CACHE_MARKER = b'"_polylogue_drive_live_bytes_b64"'
+_REWRITTEN_CACHE_KEY = "_polylogue_drive_live_bytes_b64"
+_REWRITTEN_CACHE_MARKER = f'"{_REWRITTEN_CACHE_KEY}"'.encode()
 
 
 def _read_valid_cache(path: Path) -> bytes | None:
@@ -122,7 +123,8 @@ def _cache_document_is_readable(path: Path) -> bool:
     times the file size -- on every scan, which is what this memory-bounded
     route exists to avoid. ``ijson`` and a line iterator prove the same thing
     in bounded memory, and admit exactly the same documents
-    ``_read_valid_cache`` returns bytes for.
+    ``_read_valid_cache`` returns bytes for -- including refusing a cache an
+    earlier acquisition rewrote with embedded attachment bytes.
     """
     try:
         if path.suffix.lower() in {".jsonl", ".ndjson"}:
@@ -132,7 +134,7 @@ def _cache_document_is_readable(path: Path) -> bool:
                     if not line.strip():
                         continue
                     saw_record = True
-                    if json.loads(line) is None:
+                    if _REWRITTEN_CACHE_MARKER in line or json.loads(line) is None:
                         return False
             return saw_record
         with path.open("rb") as handle:
@@ -140,7 +142,9 @@ def _cache_document_is_readable(path: Path) -> bool:
             # accept a truncated document, which is exactly the cache
             # ``_read_valid_cache`` refuses to hand back.
             events = 0
-            for _event in ijson.parse(handle, use_float=True):
+            for _prefix, event, value in ijson.parse(handle, use_float=True):
+                if event == "map_key" and value == _REWRITTEN_CACHE_KEY:
+                    return False
                 events += 1
             return events > 0
     except (OSError, UnicodeDecodeError, ValueError, ijson.JSONError):
