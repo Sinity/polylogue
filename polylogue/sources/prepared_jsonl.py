@@ -26,6 +26,8 @@ from polylogue.core.sources import origin_from_provider
 from polylogue.logging import WARNING, emit
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import (
+    _json_subtree,
+    _skip_json_subtree,
     claude_design_object_envelope,
     generic_message_object_envelope,
     grok_export_item_count,
@@ -81,6 +83,47 @@ _ARTIFACT_VERSION = 2
 
 class _SourceChangedDuringPreparationError(ValueError):
     """The input revision changed while a worker was preparing it."""
+
+
+def _gemini_cli_envelope(handle: BinaryIO) -> dict[str, JSONValue] | None:
+    """Read parser-visible root fields without constructing the transcript."""
+    events = iter(ijson.parse(handle))
+    if next(events, None) != ("", "start_map", None):
+        return None
+    envelope: dict[str, JSONValue] = {}
+    message_arrays = 0
+    for prefix, event, value in events:
+        if prefix == "" and event == "end_map":
+            if next(events, None) is not None:
+                return None
+            break
+        if prefix != "" or event != "map_key":
+            return None
+        key = str(value)
+        field_prefix, field_event, field_value = next(events)
+        if field_prefix != key:
+            return None
+        if key == "messages":
+            if field_event != "start_array":
+                return None
+            message_arrays += 1
+            _skip_json_subtree(events, field_event)
+        elif field_event in {"start_map", "start_array"}:
+            if key not in {"directories", "memoryScratchpad"}:
+                return None
+            envelope[key] = cast(JSONValue, _json_subtree(events, field_event, field_value))
+        else:
+            envelope[key] = cast(JSONValue, normalize_ijson_stdlib_numbers(field_value))
+    envelope["messages"] = []
+    return envelope if message_arrays == 1 else None
+
+
+def _append_gemini_raw_message(conn: sqlite3.Connection, ordinal: int, item: object) -> None:
+    normalized = normalize_ijson_stdlib_numbers(item)
+    conn.execute(
+        "INSERT INTO gemini_raw_message VALUES (?, ?)",
+        (ordinal, json.dumps(normalized, ensure_ascii=False)),
+    )
 
 
 def _source_digest(path: Path) -> str:
@@ -554,6 +597,7 @@ def prepare_jsonl_blob(
     classify_hermes_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
     classify_chatgpt_object: Callable[[dict[str, object]], bool] | None = None,
     classify_claude_design_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
+    classify_gemini_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
     attempt_directory: Path | None = None,
 ) -> PreparedJsonl:
     """Parse and seal one source without transferring a parsed tree over IPC."""
@@ -581,6 +625,7 @@ def prepare_jsonl_blob(
         design_envelope: dict[str, JSONValue] | None = None
         chatgpt_envelope: dict[str, object] | None = None
         chatgpt_mapping: ChatGPTNodeMapping | None = None
+        gemini_envelope: dict[str, JSONValue] | None = None
         grok_count: int | None = None
         grok_positive_marker = False
         if not is_stream and provider is Provider.CHATGPT and Path(source_path).name.lower().endswith(".json"):
@@ -590,6 +635,23 @@ def prepare_jsonl_blob(
                 chatgpt_envelope, chatgpt_mapping = read_result
             else:
                 store.conn.execute("DROP TABLE chatgpt_node")
+        if not is_stream and provider is Provider.GEMINI_CLI and Path(source_path).name.lower().endswith(".json"):
+            store.conn.execute(
+                "CREATE TABLE gemini_raw_message (ordinal INTEGER PRIMARY KEY, message_json TEXT NOT NULL)"
+            )
+            with source.open("rb") as handle:
+                for ordinal, item in enumerate(ijson.items(handle, "messages.item")):
+                    _append_gemini_raw_message(store.conn, ordinal, item)
+            with source.open("rb") as handle:
+                gemini_envelope = _gemini_cli_envelope(handle)
+            if gemini_envelope is None or not local_agent.looks_like_gemini_cli(gemini_envelope):
+                gemini_envelope = None
+                store.conn.execute("DROP TABLE gemini_raw_message")
+            elif sidecar_resolver is not None:
+                session_id = gemini_envelope.get("sessionId")
+                if isinstance(session_id, str) and sidecar_resolver.gemini_cli_scope(source_path, session_id).available:
+                    gemini_envelope = None
+                    store.conn.execute("DROP TABLE gemini_raw_message")
         # Cohort callbacks may inspect or rewrite the entire parse result.
         # The direct worker route can publish independent bundle members.
         if (
@@ -662,7 +724,59 @@ def prepare_jsonl_blob(
         ):
             with source.open("rb") as handle:
                 design_envelope = claude_design_object_envelope(handle)
-        if chatgpt_envelope is not None:
+        if gemini_envelope is not None:
+            _create_artifact_tables(store.conn)
+            shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
+            sample = tuple(
+                json.loads(row[0])
+                for row in store.conn.execute("SELECT message_json FROM gemini_raw_message ORDER BY ordinal LIMIT 64")
+            )
+            gemini_admitted = (
+                classify_gemini_object(gemini_envelope, sample) if classify_gemini_object is not None else True
+            )
+            gemini_session = None
+            if gemini_admitted:
+                gemini_records = (
+                    json.loads(row[0])
+                    for row in store.conn.execute("SELECT message_json FROM gemini_raw_message ORDER BY ordinal")
+                )
+                gemini_session = local_agent.parse_gemini_cli_records(
+                    gemini_envelope,
+                    gemini_records,
+                    fallback_id,
+                    messages=store.new_sink(),
+                    session_events=store.new_event_sink(),
+                )
+            store.conn.execute("DROP TABLE gemini_raw_message")
+            if gemini_session is not None and require_positive_conversational_evidence(
+                [gemini_session], provider=provider, source_path=source_path
+            ):
+                if prepare_sessions is not None:
+                    selected = prepare_sessions([gemini_session])
+                    if len(selected) > 1:
+                        raise ValueError("Gemini CLI finalizer expanded one session")
+                    gemini_session = selected[0] if selected else None
+                elif prepare_session is not None:
+                    gemini_session = prepare_session(gemini_session)
+            else:
+                gemini_session = None
+            session_count = 0
+            if gemini_session is not None:
+                gemini_session.content_hash = session_content_hash(gemini_session)
+                append_session_to_shard(shard_builder, gemini_session)
+                _append_artifact_session(store, session_count, gemini_session)
+                session_count += 1
+            after_hash = _source_digest(source)
+            if before_hash != after_hash:
+                raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
+            enrichment_digest, enrichment_index_path = (
+                preparation_dependency() if preparation_dependency is not None else (None, None)
+            )
+            _seal_artifact(store.conn, after_hash, session_count, enrichment_digest, enrichment_index_path)
+            store.conn.commit()
+            shard_path = shard_builder.seal().path
+            shard_builder = None
+        elif chatgpt_envelope is not None:
             assert chatgpt_mapping is not None
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
@@ -1069,6 +1183,7 @@ def prepare_jsonl_blob(
             resolved_provider=provider,
             positive_evidence_filtered=stream_prefix is not None
             or chatgpt_envelope is not None
+            or gemini_envelope is not None
             or generic_envelope is not None
             or hermes_envelope is not None
             or design_envelope is not None

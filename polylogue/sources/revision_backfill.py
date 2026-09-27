@@ -1113,6 +1113,10 @@ def prepare_retained_jsonl_artifact(
                 witness = {**envelope, "mapping": sample_mapping}
                 return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
 
+            def classify_gemini_object(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
+                witness: JSONValue = {**envelope, "messages": list(messages)}
+                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
+
             artifact = prepare_jsonl_blob(
                 str(blob_path),
                 source_path,
@@ -1133,6 +1137,7 @@ def prepare_retained_jsonl_artifact(
                 classify_hermes_object=classify_hermes_object,
                 classify_claude_design_object=classify_claude_design_object,
                 classify_chatgpt_object=classify_chatgpt_object,
+                classify_gemini_object=classify_gemini_object,
                 preparation_dependency=lambda: (
                     _retained_dependency_digest(
                         evidence_digest,
