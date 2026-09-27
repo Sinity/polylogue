@@ -794,3 +794,55 @@ def test_timeline_head_held_in_the_continuation_reports_its_enumerated_observati
     assert [(item.reference, item.bytes, item.mtime_ns) for item in second.items] == [
         ("codex:old.jsonl", before.st_size, before.st_mtime_ns)
     ]
+
+
+def test_memory_fanout_ends_when_an_unfinished_provider_loses_its_continuation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: keeping the later provider's cursor lets a resume read the lost provider's ``None`` as finished."""
+    import errno
+
+    claude = tmp_path / "claude"
+    _write(claude / "a.jsonl", "x" * 64 + "needle claude\n", 1)
+    codex = tmp_path / "codex"
+    _write(codex / "c.jsonl", "x" * 64 + "needle codex\n", 1)
+    sources = (SessionSource("claude-code", claude), SessionSource("codex", codex))
+    real_create = snapshot_store.SnapshotStore.create
+
+    def create_fails_for_claude(
+        self: snapshot_store.SnapshotStore, binding: snapshot_store.SnapshotBinding, files: Any
+    ) -> snapshot_store.SearchSnapshot:
+        if binding.provider == "claude-code":
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_create(self, binding, files)
+
+    monkeypatch.setattr(snapshot_store.SnapshotStore, "create", create_fails_for_claude)
+    page = raw_operation(RawMemorySearch(query="needle", limit=5, scan_bytes=8), sources=sources)
+    assert page.outcome == "degraded" and not page.coverage.complete
+    assert not any((page.source_cursors or {}).values())
+    assert any("continuation unavailable" in gap for gap in page.coverage.gaps)
+
+
+def test_transient_snapshot_directory_probe_failure_is_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: ``Path.is_dir()`` folds EIO into False and reports the snapshot expired."""
+    import errno
+
+    root = tmp_path / "codex"
+    first_file = _write(root / "a.jsonl", "needle a\n", 2)
+    _write(root / "b.jsonl", "needle b\n", 1)
+    sources = _sources(root)
+    token = _search(sources, scan_bytes=first_file.stat().st_size).continuation
+    directory = state_home() / "raw-session-search"
+    real_stat = os.stat
+
+    def failing_stat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        if Path(path) == directory:
+            raise OSError(errno.EIO, "Input/output error")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", failing_stat)
+    request = RawSearch(origin="codex-session", query="needle", continuation=token)
+    envelope = asyncio.run(session_operation_response(None, request, raw_sources=sources))
+    assert envelope.model_dump()["code"] == "retryable"

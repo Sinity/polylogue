@@ -222,8 +222,13 @@ class SnapshotStore:
             raise SnapshotUnavailableError("session continuation snapshot is malformed")
         now_ms = _now_ms()
         principal_key = _principal_key(binding.principal)
-        if not self.directory.is_dir():
-            raise SnapshotUnavailableError("session continuation expired or was evicted; restart the search")
+        # Path.is_dir() folds EIO into False; only absence means "no snapshot".
+        try:
+            os.stat(self.directory)
+        except FileNotFoundError as exc:
+            raise SnapshotUnavailableError("session continuation expired or was evicted; restart the search") from exc
+        except OSError as exc:
+            raise SnapshotTemporarilyUnavailableError(str(exc)) from exc
         # Lookup, read and last-use touch hold the same lock as creation's
         # prune, so a handle being resumed can neither be pruned between its
         # read and its touch nor be renamed under a concurrent resume.

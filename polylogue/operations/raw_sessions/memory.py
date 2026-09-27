@@ -58,6 +58,9 @@ class MemoryService:
         # Completion tokens resumed this page; reissuing them keeps one
         # retained snapshot per finished provider instead of one per page.
         reusable: dict[str, str] = {}
+        # A provider that stopped early without a cursor (its population could
+        # not be retained) would read as finished in the returned map.
+        continuation_lost = False
         earlier_skips = 0
         page_full = False
         for provider in requested:
@@ -157,6 +160,8 @@ class MemoryService:
             )
             gaps.extend(f"{provider}: {gap}" for gap in result.get("gaps", ()))
             next_cursors[provider] = result["next_cursor"]
+            if result["truncated"] and result["next_cursor"] is None:
+                continuation_lost = True
             earlier_skips += result["skipped_earlier"]
             if result["next_cursor"] is None and result["skipped_earlier"] + result["skipped_now"]:
                 owed_skips[provider] = result["skipped_earlier"] + result["skipped_now"]
@@ -166,7 +171,9 @@ class MemoryService:
         # More pages exist only while some provider has a live cursor or has not
         # started; reaching ``limit`` exactly on a provider's last match is not truncation.
         truncated = any(source.get("coverage", {}).get("truncated") is True for source in sources)
-        if truncated and cursor_key is not None:
+        if continuation_lost:
+            next_cursors = dict.fromkeys(next_cursors)
+        elif truncated and cursor_key is not None:
             # A finished provider's skips must survive to the fan-out's terminal
             # page, which a ``None`` slot would forget.
             for provider, owed in owed_skips.items():
