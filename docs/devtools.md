@@ -104,6 +104,7 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools bench baseline` | List or record committed measurement receipts under tests/benchmarks/baselines/. |
 | `devtools bench collection` | Measure what a pytest selection costs to collect, before any test runs. |
+| `devtools bench fresh-build` | Build a fresh archive from a sealed corpus through polylogued run and write a comparable receipt. |
 | `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |
 | `devtools bench parser-census` | Parse a recorded source denominator with no archive and diff the result against the last census. |
 | `devtools bench pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |

@@ -67,6 +67,17 @@ result = "exit"
 cache = "none"
 timeout_seconds = 28800
 
+[operations.fresh_build_bench]
+description = "Run one measured fresh archive build through polylogued run (devtools bench fresh-build run) in the bulk pool"
+exec = ["devtools", "bench", "fresh-build"]
+pool = "bulk"
+result = "exit"
+cache = "none"
+# Receipts record host load at start; compare runs made under similar load.
+# A few-hundred-MiB corpus takes minutes; the watchdog covers a multi-GiB
+# sample.
+timeout_seconds = 28800
+
 [operations.verify_quick]
 description = "Run Polylogue's static fast verification gates"
 exec = ["devtools", "verify", "--quick"]
