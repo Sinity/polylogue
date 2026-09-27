@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import io
 import json
 import os
@@ -34,25 +33,6 @@ ROOT = Path(__file__).parents[1]
 _DURABLE_TIERS = (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT)
 _MIGRATIONS_ROOT = "polylogue/storage/sqlite/migrations"
 _MIGRATION_NAME_RE = re.compile(r"^(?P<version>\d{3,})_[a-z0-9_]+\.sql$")
-_FRESH_V1_PREPARATION_MARKER = ROOT / "docs/plans/fresh-v1-schema-preparation.json"
-
-
-def _approved_fresh_v1_ddl(tier: ArchiveTier, ddl: str) -> bool:
-    """Accept only the reviewed pre-construction v1 source DDL digest.
-
-    The marker is frozen before the first fresh build. A later same-version
-    edit, or an edit to any other durable tier, follows normal migration rules.
-    """
-    if tier is not ArchiveTier.SOURCE:
-        return False
-    try:
-        marker = json.loads(_FRESH_V1_PREPARATION_MARKER.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
-    return bool(
-        marker.get("state") == "preparation"
-        and marker.get("source_ddl_sha256") == hashlib.sha256(ddl.encode()).hexdigest()
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -436,7 +416,6 @@ def _durable_ddl_evolution_violations(explicit_base: str | None = None) -> list[
             and old_version == new_version
             and not new_fresh_lineage
             and not _is_retirement_only(old_ddl, new_ddl, tier)
-            and not (new_version == ARCHIVE_FORMAT_FLOOR_VERSION and _approved_fresh_v1_ddl(tier, new_ddl))
         ):
             violations.append(f"{tier.value}: rendered DDL changed without a schema-version bump")
     return violations

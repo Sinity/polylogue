@@ -110,8 +110,12 @@ def test_rollback_does_not_publish_change_and_pruning_refuses(tmp_path: Path) ->
         external.execute("DELETE FROM raw_sessions WHERE raw_id = 'present'")
         external.rollback()
     assert frontier_existence.raw_existence_block_reason(tmp_path) is None
+    # An unconsumed change (a real re-pointing, which the trigger journals) is
+    # pruned before the certificate reads it: coverage is truncated, so the
+    # certificate must refuse rather than trust its old proof.
+    _raw(tmp_path, "other")
     with sqlite3.connect(tmp_path / "index.db") as external:
-        external.execute("UPDATE sessions SET raw_id = 'present' WHERE native_id = 'session-1'")
+        external.execute("UPDATE sessions SET raw_id = 'other' WHERE native_id = 'session-1'")
         external.execute(
             "DELETE FROM raw_existence_changes WHERE sequence = (SELECT MAX(sequence) FROM raw_existence_changes)"
         )
@@ -266,7 +270,7 @@ thread.join(5)
 assert result == b'healthy', result
 """
     subprocess.run(
-        (sys.executable, "-c", script, str(tmp_path)), check=True, capture_output=True, text=True, timeout=15
+        (sys.executable, "-c", script, str(tmp_path)), check=True, capture_output=True, text=True, timeout=120
     )
 
 

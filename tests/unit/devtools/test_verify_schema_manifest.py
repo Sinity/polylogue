@@ -45,7 +45,7 @@ def test_schema_manifest_normalization_keeps_escaped_literal_values_exact() -> N
 
 
 def _schema_state(
-    *, source_version: int = 1, source_ddl: str = "source", lineage: str = "polylogue.archive-format.v3"
+    *, source_version: int = 1, source_ddl: str = "source", lineage: str = "polylogue.archive-format.v4"
 ) -> verify_schema_manifest._SchemaState:
     ddl = {tier: tier.value for tier in ArchiveTier}
     ddl[ArchiveTier.SOURCE] = source_ddl
@@ -96,36 +96,12 @@ def test_new_fresh_lineage_allows_floor_ddl_change_without_migration(monkeypatch
         "_render_schema_state",
         lambda ref: _schema_state(
             source_ddl="before" if ref == "base" else "after",
-            lineage="polylogue.archive-format.v2" if ref == "base" else "polylogue.archive-format.v3",
+            lineage="polylogue.archive-format.v3" if ref == "base" else "polylogue.archive-format.v4",
         ),
     )
     monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: ())
 
     assert verify_schema_manifest._durable_ddl_evolution_violations() == []
-
-
-def test_fresh_v1_source_preparation_marker_freezes_after_build(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A frozen marker cannot approve another unchanged-v1 source DDL edit."""
-    import hashlib
-    import json
-
-    ddl = "CREATE TABLE new_source_fact (id TEXT PRIMARY KEY) STRICT;"
-    marker = tmp_path / "fresh-v1-schema-preparation.json"
-    marker.write_text(
-        json.dumps({"state": "preparation", "source_ddl_sha256": hashlib.sha256(ddl.encode()).hexdigest()}),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(verify_schema_manifest, "_FRESH_V1_PREPARATION_MARKER", marker)
-    assert verify_schema_manifest._approved_fresh_v1_ddl(ArchiveTier.SOURCE, ddl)
-    assert not verify_schema_manifest._approved_fresh_v1_ddl(ArchiveTier.SOURCE, ddl + " ")
-    marker.write_text(
-        json.dumps({"state": "frozen", "source_ddl_sha256": hashlib.sha256(ddl.encode()).hexdigest()}),
-        encoding="utf-8",
-    )
-    assert not verify_schema_manifest._approved_fresh_v1_ddl(ArchiveTier.SOURCE, ddl)
-    assert not verify_schema_manifest._approved_fresh_v1_ddl(ArchiveTier.SOURCE, ddl + " ")
 
 
 _RETIRED_DDL = """
