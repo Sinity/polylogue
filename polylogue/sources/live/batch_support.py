@@ -886,6 +886,11 @@ def _browser_capture_provider_from_path(path: Path) -> Provider | None:
 
 
 def _jsonl_sample_from_path(path: Path, *, max_records: int = 32) -> list[JSONValue]:
+    return _jsonl_sample_with_failure(path, max_records=max_records)[0]
+
+
+def _jsonl_sample_with_failure(path: Path, *, max_records: int = 32) -> tuple[list[JSONValue], str | None]:
+    """Sample a JSONL file's leading records; the second value names a decode failure."""
     try:
         records, _malformed_lines, _malformed_detail = _sample_jsonl_payload_with_detail(
             path,
@@ -893,9 +898,14 @@ def _jsonl_sample_from_path(path: Path, *, max_records: int = 32) -> list[JSONVa
             scan_full=False,
             max_record_bytes=JSONL_RECORD_INSPECTION_BYTES,
         )
-    except ValueError:
-        return []
-    return records
+    except ValueError as exc:
+        return [], _crash(exc)
+    return records, None
+
+
+def jsonl_detection_failure(path: Path) -> str | None:
+    """Why sampling ``path`` for provider detection failed, or ``None`` if it decoded."""
+    return _jsonl_sample_with_failure(path)[1]
 
 
 def _detect_provider_from_path_sample(
@@ -934,10 +944,10 @@ def detect_provider_from_path_sample_evidence(
     ):
         return Provider.HERMES, None
     if is_jsonl_source_path(str(path)):
-        records = _jsonl_sample_from_path(path)
+        records, failure = _jsonl_sample_with_failure(path)
         if records:
             return detect_provider(records) or fallback_provider, None
-        return fallback_provider, None
+        return fallback_provider, failure
     if json_document or path.suffix.lower() == ".json":
         browser_capture, capture_provider = _browser_capture_prefix_probe(path)
         if browser_capture and capture_provider is not None:

@@ -34,3 +34,14 @@ def test_unclaimed_document_is_a_shape_fallback(tmp_path: Path) -> None:
 
     assert provider is Provider.CHATGPT
     assert crash is None
+
+
+def test_undecodable_jsonl_reports_the_crash(tmp_path: Path) -> None:
+    """A JSONL file with no decodable record is a crash fallback, not a shape one."""
+    stream = tmp_path / "session.jsonl"
+    stream.write_bytes(b"{not json\n{also not json\n")
+
+    provider, crash = detect_provider_from_path_sample_evidence(stream, Provider.CODEX)
+
+    assert provider is Provider.CODEX
+    assert crash is not None

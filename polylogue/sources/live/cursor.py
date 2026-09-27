@@ -1744,8 +1744,27 @@ class CursorStore:
 
         self._read_modify_write_cursor_record(path, mutate, actuator="defer_full_cursor_reconciliation")
 
-    def mark_excluded(self, path: Path, *, observed_stat: os.stat_result | None = None) -> None:
-        """Quarantine a source file, binding an optional nonregular observation."""
+    def mark_excluded(
+        self,
+        path: Path,
+        *,
+        observed_stat: os.stat_result | None = None,
+        observation: tuple[int, int, int, int, int] | None = None,
+    ) -> None:
+        """Quarantine a source file, binding an optional observation.
+
+        ``observation`` is ``(st_dev, st_ino, st_size, st_mtime_ns,
+        st_ctime_ns)`` captured when the failing attempt read the file; it
+        wins over ``observed_stat`` because a fresh stat may already describe
+        a later revision that was never attempted.
+        """
+        if observation is not None:
+            dev, ino, size, mtime_ns, _ctime_ns = observation
+            bound: tuple[int, int, int, int] | None = (size, dev, ino, mtime_ns)
+        elif observed_stat is not None:
+            bound = (observed_stat.st_size, observed_stat.st_dev, observed_stat.st_ino, observed_stat.st_mtime_ns)
+        else:
+            bound = None
 
         def mutate(current: CursorRecord | None) -> CursorRecord | None:
             if current is None:
@@ -1754,10 +1773,10 @@ class CursorStore:
                 current,
                 updated_at=datetime.now(UTC).isoformat(),
                 excluded=True,
-                byte_size=observed_stat.st_size if observed_stat is not None else current.byte_size,
-                st_dev=observed_stat.st_dev if observed_stat is not None else current.st_dev,
-                st_ino=observed_stat.st_ino if observed_stat is not None else current.st_ino,
-                mtime_ns=observed_stat.st_mtime_ns if observed_stat is not None else current.mtime_ns,
+                byte_size=bound[0] if bound is not None else current.byte_size,
+                st_dev=bound[1] if bound is not None else current.st_dev,
+                st_ino=bound[2] if bound is not None else current.st_ino,
+                mtime_ns=bound[3] if bound is not None else current.mtime_ns,
             )
 
         self._read_modify_write_cursor_record(path, mutate, actuator="mark_excluded")

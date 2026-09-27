@@ -170,7 +170,9 @@ def test_value_also_carried_outside_the_role_is_not_duplication() -> None:
 def test_values_under_the_coverage_extra_key_are_out_of_scope() -> None:
     """The generator's invented key names no provider field, so nothing beneath it is conserved.
 
-    Anti-vacuity: drop the ``COVERAGE_EXTRA_KEY`` skip and the planted value reports as loss.
+    Anti-vacuity: drop the ``_is_coverage_extra_key`` skip and the planted
+    value reports as loss; skip the key even when the schema declares it and
+    the declared property's loss goes unreported.
     """
     schema = {
         "type": "object",
@@ -181,6 +183,12 @@ def test_values_under_the_coverage_extra_key_are_out_of_scope() -> None:
 
     assert result.conserved
     assert result.planted_count == 0
+
+    declared = {
+        "type": "object",
+        "properties": {COVERAGE_EXTRA_KEY: {"type": "string", "x-polylogue-semantic-role": "message_body"}},
+    }
+    assert not check_conservation(declared, [{COVERAGE_EXTRA_KEY: "alpha"}], [_session()]).conserved
 
 
 def test_truncated_rendering_is_not_conserved() -> None:

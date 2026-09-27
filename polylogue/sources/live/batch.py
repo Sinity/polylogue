@@ -142,6 +142,7 @@ from polylogue.sources.live.batch_support import (
     fingerprint_file,
     jsonl_complete_prefix,
     jsonl_complete_prefix_path,
+    jsonl_detection_failure,
     last_complete_newline_from_tail,
     sha256_range_from_path,
     tail_hash_from_path,
@@ -1447,7 +1448,10 @@ class LiveBatchProcessor:
                 for path in full_result.failed:
                     failed_paths.append(str(path))
                     cursor_fingerprint_read_bytes += await self._run_ops_write(
-                        "cursor_failed", self._record_failed_cursor, path
+                        "cursor_failed",
+                        self._record_failed_cursor,
+                        path,
+                        attempted_observation=full_result.captured_file_observations.get(path),
                     )
                 for path in full_result.preparation_deferred:
                     deferred_paths.append(path)
@@ -1840,7 +1844,9 @@ class LiveBatchProcessor:
 
         return _throttled_phase_heartbeat(emit)
 
-    def _record_failed_cursor(self, path: Path) -> int:
+    def _record_failed_cursor(
+        self, path: Path, *, attempted_observation: tuple[int, int, int, int, int] | None = None
+    ) -> int:
         # polylogue-awy5: an already-excluded cursor is a poison pill the
         # daemon has already given up on (5-failure cap,
         # ``_MAX_CURSOR_FAILURES_BEFORE_EXCLUDE``). Re-running the same
@@ -1862,15 +1868,17 @@ class LiveBatchProcessor:
         if preexisting is not None and preexisting.excluded:
             # The watcher revives an excluded cursor only when the file's
             # observation differs from the one the exclusion is bound to.
-            # Rebind it to this failed observation, so a changing file costs
-            # one attempt per change rather than one per poll (polylogue-d8fpj).
-            try:
-                self._cursor.mark_excluded(path, observed_stat=path.stat())
-            except FileNotFoundError:
-                pass
-            except sqlite3.OperationalError as exc:
-                if not is_transient_sqlite_lock(exc):
-                    raise
+            # Rebind it to the observation this attempt actually read, so a
+            # changing file costs one attempt per change rather than one per
+            # poll (polylogue-d8fpj). Without that observation nothing is
+            # rebound: a fresh stat could name a later, unattempted revision
+            # and quarantine it unread.
+            if attempted_observation is not None:
+                try:
+                    self._cursor.mark_excluded(path, observation=attempted_observation)
+                except sqlite3.OperationalError as exc:
+                    if not is_transient_sqlite_lock(exc):
+                        raise
             return 0
         try:
             stat = path.stat()
@@ -3202,6 +3210,8 @@ class LiveBatchProcessor:
                     )
             elif is_jsonl_source_path(str(path)):
                 provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
+                if provider is fallback_provider and (detection_crash := jsonl_detection_failure(path)) is not None:
+                    detection_fallbacks[path] = detection_crash
                 source_name = provider.value
                 # An unknown JSONL cannot be safely excluded from acquire: the
                 # strict parse route persists typed terminal evidence for empty

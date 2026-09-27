@@ -48,8 +48,18 @@ _MAX_WALK_DEPTH = 12
 
 #: Key the coverage-witness generator invents to exercise a schema's
 #: ``additionalProperties``. It names no provider field, so no parser can be
-#: expected to carry a value planted beneath it.
+#: expected to carry a value planted beneath it. The generator prefixes
+#: underscores when a declared property already has this name.
 COVERAGE_EXTRA_KEY = "__polylogue_coverage_extra__"
+
+
+def _is_coverage_extra_key(key: object) -> bool:
+    """True for the generator's invented additional-property key.
+
+    Only undeclared keys reach this test, so a provider property that happens
+    to share the name is walked as declared and stays in scope.
+    """
+    return isinstance(key, str) and key.lstrip("_") == COVERAGE_EXTRA_KEY.lstrip("_")
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,7 +263,7 @@ def collect_planted_values(
         if isinstance(additional_properties, Mapping) and isinstance(payload, Mapping):
             declared_properties = properties if isinstance(properties, Mapping) else {}
             for key, value in payload.items():
-                if key in declared_properties or key in visited_keys:
+                if key in declared_properties or key in visited_keys or _is_coverage_extra_key(key):
                     continue
                 visited_keys.add(key)
                 found.extend(
@@ -419,7 +429,7 @@ def check_conservation(
     excluded: list[str] = []
     for payload in payloads:
         for item in collect_planted_values(schema, payload):
-            if COVERAGE_EXTRA_KEY in item.path or _is_excluded(item.path, excluded_paths):
+            if _is_excluded(item.path, excluded_paths):
                 excluded.append(item.path)
                 continue
             planted.append(item)

@@ -147,7 +147,9 @@ def test_failed_retry_of_an_excluded_cursor_rebinds_it_to_the_failed_observation
     Anti-vacuity: drop the ``mark_excluded`` rebind in
     ``_record_failed_cursor`` and the cursor keeps the pre-append size, so the
     watcher (which revives an excluded cursor whose observation differs) sees
-    a change on every poll and re-runs the failing ingest indefinitely.
+    a change on every poll and re-runs the failing ingest indefinitely; bind
+    to a fresh stat instead and the later, unattempted revision is
+    quarantined unread.
     """
     from polylogue.sources.live.cursor import _MAX_CURSOR_FAILURES_BEFORE_EXCLUDE
 
@@ -159,9 +161,14 @@ def test_failed_retry_of_an_excluded_cursor_rebinds_it_to_the_failed_observation
     with source.open("a") as handle:
         handle.write('{"b":2}\n')
     appended = source.stat()
+    attempted = (appended.st_dev, appended.st_ino, appended.st_size, appended.st_mtime_ns, appended.st_ctime_ns)
+    # A later write lands after the attempt read the file; the exclusion must
+    # bind to what was attempted, not to this unattempted revision.
+    with source.open("a") as handle:
+        handle.write('{"c":3}\n')
 
     processor = LiveBatchProcessor(cast(Any, object()), [], cursor=store, parser_fingerprint="fp:test")
-    processor._record_failed_cursor(source)
+    processor._record_failed_cursor(source, attempted_observation=attempted)
 
     record = store.get_record(source)
     assert record is not None
