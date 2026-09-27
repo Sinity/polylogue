@@ -192,7 +192,12 @@ def advance_cold_build_preparation(
     _emit_preparation(*snapshot, 0.0, outcome="ok")
 
 
-def end_cold_build_preparation(*, failed: bool = False) -> None:
+def end_cold_build_preparation(*, failed: bool = False, cancelled: bool = False) -> None:
+    """Clear the preparation phase.
+
+    ``cancelled`` is a shutdown or task cancellation: the phase stops without
+    having failed, so it is reported at INFO as skipped rather than as an error.
+    """
     global _preparation
     with _lock:
         state = _preparation
@@ -201,14 +206,17 @@ def end_cold_build_preparation(*, failed: bool = False) -> None:
             return
         now = time.monotonic()
         snapshot = (
-            "prepared" if not failed else state.phase,
+            state.phase if failed or cancelled else "prepared",
             state.inspected,
             state.revisions,
             state.hashed_bytes,
             (now - state.started) * 1000,
             (now - state.last_advanced) * 1000,
         )
-    _emit_preparation(*snapshot, outcome="error" if failed else "ok")
+    if cancelled:
+        _emit_preparation(*snapshot, outcome="skipped", reason="cancelled")
+    else:
+        _emit_preparation(*snapshot, outcome="error" if failed else "ok")
 
 
 def _emit_preparation(
@@ -220,7 +228,9 @@ def _emit_preparation(
     age_ms: float,
     *,
     outcome: str,
+    reason: str | None = None,
 ) -> None:
+    fields: dict[str, object] = {} if reason is None else {"reason": reason}
     emit(
         "daemon.cold_build.preparation",
         level=ERROR if outcome == "error" else INFO,
@@ -231,6 +241,7 @@ def _emit_preparation(
         bytes=hashed_bytes,
         duration_ms=duration_ms,
         age_ms=age_ms,
+        **fields,
     )
 
 

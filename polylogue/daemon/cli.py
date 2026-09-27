@@ -2924,6 +2924,10 @@ async def _run_daemon_services_under_active_writer_lease(
                                 sources=sources,
                                 progress=advance_cold_build_preparation,
                             )
+                        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+                            # Shutdown during preparation is not a failed build.
+                            end_cold_build_preparation(cancelled=True)
+                            raise
                         except BaseException:
                             end_cold_build_preparation(failed=True)
                             raise

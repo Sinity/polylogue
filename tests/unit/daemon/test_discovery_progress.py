@@ -335,3 +335,34 @@ def test_status_lines_name_cold_build_preparation() -> None:
         "  cold build preparing: phase=baseline_hash inspected=9 revisions=4 hashed=512 bytes "
         "age=3.0s phase_age=1.0s last_advance=0.25s planned=unknown"
     ]
+
+
+def test_cancelled_cold_build_preparation_is_not_reported_as_an_error() -> None:
+    """Routing cancellation through ``failed=True`` makes this red."""
+    import io
+    import json
+
+    from polylogue.daemon.discovery_progress import (
+        advance_cold_build_preparation,
+        begin_cold_build_preparation,
+        end_cold_build_preparation,
+    )
+    from polylogue.logging import add_sink, make_stream_sink, remove_sink
+
+    stream = io.StringIO()
+    sink = add_sink(make_stream_sink(stream, fmt="json"))
+    begin_cold_build_preparation()
+    try:
+        advance_cold_build_preparation("baseline_hash", revisions=2, hashed_bytes=10)
+    finally:
+        end_cold_build_preparation(cancelled=True)
+        remove_sink(sink)
+        reset_discovery_progress()
+    records = [json.loads(line) for line in stream.getvalue().splitlines()]
+    assert not [record for record in records if record["event"] == "log.field_rejected"]
+    final = [record for record in records if record["event"] == "daemon.cold_build.preparation"][-1]
+    assert final["level"] == "info"
+    assert final["outcome"] == "skipped"
+    assert final["reason"] == "cancelled"
+    assert final["phase"] == "baseline_hash"
+    assert active_discovery_payload() is None
