@@ -10,9 +10,25 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from typing_extensions import Self
 
-from polylogue.surfaces.payloads import SurfacePayloadModel
+
+class ProjectionContractModel(BaseModel):
+    """Immutable projection contract base without response-payload imports."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    def to_json(self, *, exclude_none: bool = False) -> str:
+        return self.model_dump_json(indent=2, exclude_none=exclude_none)
+
+    @classmethod
+    def _from_row_generic(cls, row: object, **field_overrides: object) -> Self:
+        payload_fields = {
+            field_name: getattr(row, field_name) for field_name in cls.model_fields if hasattr(row, field_name)
+        }
+        payload_fields.update(field_overrides)
+        return cls(**payload_fields)
 
 
 class EvidenceFamily(str, Enum):
@@ -59,16 +75,6 @@ class RenderFormat(str, Enum):
     CSV = "csv"
 
 
-class RenderDestination(str, Enum):
-    """Where rendered output is delivered."""
-
-    TERMINAL = "terminal"
-    STDOUT = "stdout"
-    BROWSER = "browser"
-    CLIPBOARD = "clipboard"
-    FILE = "file"
-
-
 RENDER_FORMAT_ALIASES: dict[str, RenderFormat] = {
     "text": RenderFormat.PLAINTEXT,
     "plain": RenderFormat.PLAINTEXT,
@@ -84,7 +90,17 @@ class RenderTimestampPolicy(str, Enum):
     OMIT = "omit"
 
 
-class SelectionSpec(SurfacePayloadModel):
+class RenderDestination(str, Enum):
+    """Where rendered output is delivered."""
+
+    TERMINAL = "terminal"
+    STDOUT = "stdout"
+    BROWSER = "browser"
+    CLIPBOARD = "clipboard"
+    FILE = "file"
+
+
+class SelectionSpec(ProjectionContractModel):
     """Evidence selection independent of projection and rendering."""
 
     refs: tuple[str, ...] = ()
@@ -97,7 +113,7 @@ class SelectionSpec(SurfacePayloadModel):
     limit: int | None = Field(default=None, ge=1)
 
 
-class ProjectionSpec(SurfacePayloadModel):
+class ProjectionSpec(ProjectionContractModel):
     """Evidence families and body policies to include in a result."""
 
     families: tuple[EvidenceFamily, ...] = (EvidenceFamily.SESSIONS,)
@@ -133,7 +149,7 @@ class ProjectionSpec(SurfacePayloadModel):
         return self
 
 
-class RenderSpec(SurfacePayloadModel):
+class RenderSpec(ProjectionContractModel):
     """Output encoding, layout, and destination."""
 
     format: RenderFormat = RenderFormat.MARKDOWN
@@ -149,7 +165,7 @@ class RenderSpec(SurfacePayloadModel):
         return self
 
 
-class QueryProjectionSpec(SurfacePayloadModel):
+class QueryProjectionSpec(ProjectionContractModel):
     """Composable replacement for read/export/recovery view-specific flags."""
 
     selection: SelectionSpec = Field(default_factory=SelectionSpec)

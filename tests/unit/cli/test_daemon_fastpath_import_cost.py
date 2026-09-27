@@ -23,9 +23,11 @@ served the request over UDS and the CLI never touched ``ArchiveStore``, the
 
 This is a subprocess-based behavioral contract (following the pattern
 ``tests/unit/cli/test_schema_drift_status.py::test_drift_marker_import_path_stays_light``
-established for #3507): it actually drives ``execute_query_request`` through a
-mocked daemon-success response and inspects ``sys.modules`` in a fresh
-interpreter, rather than grepping import statements. Reverting any of the
+established for #3507): it drives ``execute_query_request`` through a real UDS
+daemon request and inspects ``sys.modules`` in a fresh interpreter, rather than
+grepping import statements. The daemon protocol validator legitimately loads
+``surfaces.payloads`` for its response schema, so that module is not treated as
+a local-execution import. Reverting any of the
 three fixes above makes this fail: e.g. restoring
 ``from polylogue.api.sync.bridge import run_coroutine_sync`` at the top of
 ``query.py`` makes ``polylogue.api`` appear in ``sys.modules`` even though the
@@ -34,6 +36,7 @@ daemon served the request.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -46,44 +49,13 @@ _FORBIDDEN_ON_DAEMON_HIT = (
     "polylogue.storage.repository",
     "polylogue.storage.sqlite.archive_tiers.archive",
     "polylogue.storage.sqlite.archive_tiers.write",
-    "polylogue.surfaces.payloads",
 )
 
 _PROBE = r"""
 import sys
 
-import polylogue.cli.archive_query as aq
-
-_PAYLOAD = {
-    "items": [
-        {
-            "id": "demo:1",
-            "origin": "claude-code-session",
-            "title": "demo session",
-            "created_at": None,
-            "updated_at": None,
-            "message_count": 1,
-        }
-    ],
-    "total": 1,
-}
-
-
-# Stand in for a daemon that served the request, at the adapter's own read
-# seam. Everything this test claims -- Seam A lowering, the query verb, AppEnv,
-# and every renderer that touches the served payload -- runs for real above it.
-#
-# The transport itself is deliberately NOT exercised: dispatch imports
-# ``polylogue.daemon.api_auth``, which today transitively imports the whole
-# ``polylogue.api`` stack. That is a real leak, tracked separately; it is below
-# this seam and was never inside this test's scope.
-def _served_read(config, request, *, daemon_disabled):
-    return dict(_PAYLOAD), aq._ServedBy("daemon", 1)
-
-
-aq._dispatch_read = _served_read
-
 import io
+import json
 from contextlib import redirect_stdout
 
 from polylogue.cli.query import execute_query_request
@@ -93,14 +65,16 @@ from polylogue.config import resolve_runtime_config
 
 runtime = resolve_runtime_config()
 env = AppEnv(runtime=runtime, plain=True)
-request = RootModeRequest(params={"output_format": "json", "limit": 5}, query_terms=("demo",))
+request = RootModeRequest(params={"output_format": "json", "limit": 5}, query_terms=("demo", "session"))
 
 buf = io.StringIO()
 with redirect_stdout(buf):
     execute_query_request(env, request)
 
 rendered = buf.getvalue()
-assert '"demo:1"' in rendered, f"daemon-mock payload did not reach output: {rendered!r}"
+document = json.loads(rendered)
+assert document["source"] == "daemon", f"request was not served by the daemon: {document!r}"
+assert __EXPECTED_SESSION_ID__ in rendered, f"seeded session did not reach output: {document!r}"
 
 forbidden = __FORBIDDEN__
 loaded = [m for m in forbidden if m in sys.modules]
@@ -114,23 +88,55 @@ print(",".join(loaded) if loaded else "CLEAN")
 def test_daemon_served_query_does_not_import_heavy_local_execution_stack(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A daemon-served ``find`` must never import ``polylogue.api``/ArchiveStore/payloads."""
+    """A daemon-served ``find`` must not import the local API/storage execution stack."""
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from tests.infra.daemon_operations import running_daemon_operations
+    from tests.infra.storage_records import SessionBuilder
+
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
-    # The adapter checks that the index tier exists before dispatching, and it
-    # must do so without opening it: an empty file is enough for a served
-    # request, and opening it would itself import the forbidden storage stack.
-    (archive_root / "index.db").touch()
-    monkeypatch.delenv("POLYLOGUE_ARCHIVE_ROOT", raising=False)
-    env = dict(**{"POLYLOGUE_ARCHIVE_ROOT": str(archive_root), "POLYLOGUE_FORCE_PLAIN": "1"})
-    code = _PROBE.replace("__FORBIDDEN__", repr(_FORBIDDEN_ON_DAEMON_HIT))
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        env={**__import__("os").environ, **env},
+    builder = (
+        SessionBuilder(archive_root / "index.db", "fastpath-probe")
+        .provider("claude-code")
+        .title("Demo session")
+        .add_message("m1", role="user", text="demo session")
     )
+    expected_session_id = builder.native_session_id()
+
+    def seed(owned_root: Path) -> None:
+        assert owned_root == archive_root
+        builder.save()
+
+    monkeypatch.delenv("POLYLOGUE_ARCHIVE_ROOT", raising=False)
+    code = _PROBE.replace("__FORBIDDEN__", repr(_FORBIDDEN_ON_DAEMON_HIT)).replace(
+        "__EXPECTED_SESSION_ID__", repr(expected_session_id)
+    )
+    client_home = tmp_path / "client-home"
+    xdg_values = {
+        "HOME": str(client_home),
+        "XDG_CONFIG_HOME": str(client_home / ".config"),
+        "XDG_DATA_HOME": str(client_home / ".local/share"),
+        "XDG_CACHE_HOME": str(client_home / ".cache"),
+        "XDG_STATE_HOME": str(client_home / ".local/state"),
+    }
+    client_home.mkdir()
+    with running_daemon_operations(
+        archive_root,
+        seed_archive=seed,
+        socket_path=daemon_socket_path(archive_root),
+    ):
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env={
+                **os.environ,
+                **xdg_values,
+                "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),
+                "POLYLOGUE_FORCE_PLAIN": "1",
+            },
+        )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "CLEAN", (
         f"heavy modules leaked into the daemon fast path: {result.stdout.strip()}\nstderr: {result.stderr}"

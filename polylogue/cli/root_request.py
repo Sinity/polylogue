@@ -10,7 +10,7 @@ from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.cli.query_contracts import coerce_query_terms
 from polylogue.operations.query_lowering import (
     QueryLoweringError,
-    cli_read_request,
+    cli_query_spec,
     desugar_retrieval_flags,
 )
 
@@ -61,7 +61,7 @@ class RootModeRequest:
         ``repo:polylogue`` or ``since:7d`` are compiled to the appropriate
         spec fields; bare words and quoted phrases continue to go to FTS.
         """
-        return cli_read_request(self.query_params()).selection
+        return cli_query_spec(self.query_params())
 
     @property
     def verbose(self) -> bool:
