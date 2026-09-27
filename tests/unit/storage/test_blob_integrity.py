@@ -37,6 +37,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 
 def _make_db(path: Path) -> sqlite3.Connection:
@@ -431,7 +432,7 @@ def test_scan_attachment_coverage_uses_read_profile_that_rejects_mutations(
     initialize_archive_tier(conn, ArchiveTier.INDEX)
     conn.close()
 
-    real_open = blob_integrity.open_readonly_connection
+    real_open = open_readonly_connection
     attempted = (
         "INSERT INTO attachments DEFAULT VALUES",
         "UPDATE attachments SET acquisition_status = 'acquired'",
