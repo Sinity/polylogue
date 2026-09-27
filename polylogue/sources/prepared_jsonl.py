@@ -535,6 +535,7 @@ def prepare_jsonl_blob(
     preparation_dependency: Callable[[], tuple[str | None, str | None]] | None = None,
     parse_prefix_size: int | None = None,
     prepare_records: Callable[[Iterable[JSONValue]], Iterable[JSONValue]] | None = None,
+    classify_grok_export: Callable[[int, bool], bool] | None = None,
     attempt_directory: Path | None = None,
 ) -> PreparedJsonl:
     """Parse and seal one source without transferring a parsed tree over IPC."""
@@ -559,13 +560,14 @@ def prepare_jsonl_blob(
         stream_prefix: str | None = None
         generic_envelope: dict[str, JSONValue] | None = None
         grok_count: int | None = None
+        grok_positive_marker = False
         # Cohort callbacks may inspect or rewrite the entire parse result.
         # The direct worker route can publish independent bundle members.
         if (
             not is_stream
             and provider is Provider.GROK
-            and prepare_sessions is None
-            and prepare_records is None
+            and (prepare_sessions is None or classify_grok_export is not None)
+            and (prepare_records is None or classify_grok_export is not None)
             and Path(source_path).name.lower().endswith(".json")
         ):
             store.conn.execute("CREATE TABLE grok_member_valid (ordinal INTEGER PRIMARY KEY, valid INTEGER NOT NULL)")
@@ -574,8 +576,16 @@ def prepare_jsonl_blob(
             def record_grok_member(index: int, valid: bool) -> None:
                 grok_probe_conn.execute("INSERT INTO grok_member_valid VALUES (?, ?)", (index, int(valid)))
 
+            def record_grok_marker(found: bool) -> None:
+                nonlocal grok_positive_marker
+                grok_positive_marker = found
+
             with source.open("rb") as handle:
-                grok_count = grok_export_item_count(handle, on_item=record_grok_member)
+                grok_count = grok_export_item_count(
+                    handle,
+                    on_item=record_grok_member,
+                    on_positive_marker=record_grok_marker if classify_grok_export is not None else None,
+                )
             if grok_count is None:
                 store.conn.execute("DROP TABLE grok_member_valid")
         if (
@@ -632,6 +642,9 @@ def prepare_jsonl_blob(
         elif grok_count is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(directory / f"shard-{uuid.uuid4().hex}.db")
+            grok_admitted = (
+                classify_grok_export(grok_count, grok_positive_marker) if classify_grok_export is not None else True
+            )
             grok_member_conn = store.conn
 
             def include_grok_member(index: int) -> bool:
@@ -648,7 +661,9 @@ def prepare_jsonl_blob(
             member_responses = False
             member_messages: SqliteMessageSink | None = None
             with source.open("rb") as handle:
-                for event, value in iter_grok_export_events(handle, include_item=include_grok_member):
+                for event, value in (
+                    iter_grok_export_events(handle, include_item=include_grok_member) if grok_admitted else ()
+                ):
                     if event == "begin":
                         member_index += 1
                         member_conversation = None
@@ -674,7 +689,14 @@ def prepare_jsonl_blob(
                             {"conversation": {}, "responses": []}, session.provider_session_id
                         )
                         session = session.model_copy(update={"unit_accounting": admitted.unit_accounting})
-                        if prepare_session is not None:
+                        if prepare_sessions is not None:
+                            selected = prepare_sessions([session])
+                            if len(selected) > 1:
+                                raise ValueError("Grok per-member finalizer expanded one session")
+                            if not selected:
+                                continue
+                            session = selected[0]
+                        elif prepare_session is not None:
                             if not require_positive_conversational_evidence(
                                 [session], provider=provider, source_path=source_path
                             ):
@@ -684,7 +706,7 @@ def prepare_jsonl_blob(
                         append_session_to_shard(shard_builder, session)
                         _append_artifact_session(store, session_count, session)
                         session_count += 1
-            if member_index + 1 != grok_count:
+            if grok_admitted and member_index + 1 != grok_count:
                 raise _SourceChangedDuringPreparationError("Grok conversation count changed during preparation")
             store.conn.execute("DROP TABLE grok_member_valid")
             after_hash = _source_digest(source)
@@ -809,6 +831,7 @@ def prepare_jsonl_blob(
             resolved_provider=provider,
             positive_evidence_filtered=stream_prefix is not None
             or generic_envelope is not None
+            or (grok_count is not None and classify_grok_export is not None)
             or (prepare_sessions is None and prepare_session is not None),
             attempt_directory=attempt_directory,
         )
