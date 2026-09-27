@@ -21,6 +21,7 @@ import pytest
 
 from polylogue.schemas.synthetic import SyntheticCorpus
 from tests.benchmarks.helpers import BenchmarkFixture, benchmark_one_shot
+from tests.infra.convergence_probe_contract import intake_measurement
 from tests.infra.workload_declarations import (
     MULTI_PROVIDER_SCALE_TIERS,
     ConvergenceWorkloadTier,
@@ -74,6 +75,26 @@ def _run_convergence_probe(
     t_total = time.perf_counter()
     metrics = asyncio.run(processor.ingest_files(files, emit_event=False))
     elapsed = time.perf_counter() - t_total
+    summary = converger.summary()
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    with ArchiveStore(tmp_path, initialize=False, read_only=True) as archive:
+        stored_sessions = archive.count_sessions()
+        stored_messages = archive.count_session_messages(metrics.changed_session_ids)
+    measurement = intake_measurement(
+        expected_files=len(files),
+        expected_sessions=int(metrics.ingested_session_count),
+        expected_messages=int(metrics.ingested_message_count),
+        succeeded_files=metrics.succeeded_file_count,
+        failed_files=metrics.failed_file_count,
+        skipped_files=metrics.skipped_file_count,
+        excluded_files=metrics.excluded_file_count,
+        deferred_files=metrics.deferred_file_count,
+        refused_bytes=metrics.refused_bytes,
+        stored_sessions=stored_sessions,
+        stored_messages=stored_messages,
+        stage_summary=summary,
+    )
 
     return {
         # Unrounded elapsed: rounding to 2 decimals would collapse a sub-10ms
@@ -82,8 +103,7 @@ def _run_convergence_probe(
         "total_s": elapsed,
         "files": float(len(files)),
         "total_files": float(len(files)),
-        "succeeded_files": float(metrics.succeeded_file_count),
-        "failed_files": float(metrics.failed_file_count),
+        **{key: float(value) for key, value in measurement.items()},
         "parse_wall_s": metrics.parse_time_s,
         "convergence_wall_s": metrics.convergence_time_s,
     }
@@ -140,9 +160,10 @@ def test_convergence_per_provider(
         }
         if hasattr(benchmark, "extra_info"):
             benchmark.extra_info.update(extras)
-        assert result["succeeded_files"] == result["total_files"], (
-            f"{provider}/{tier}: {result['failed_files']} files failed"
-        )
+        assert result["intake_expected_files"] == files
+        assert result["stored_sessions"] == files, f"{provider}/{tier}: stored session count mismatch"
+        assert result["stored_messages"] == total_msgs, f"{provider}/{tier}: stored message count mismatch"
+        assert result["intake_succeeded_files"] == result["intake_expected_files"]
     else:
         pytest.fail("Zero elapsed time — measurement broken")
 
@@ -166,14 +187,17 @@ def test_convergence_single_file_per_provider(
     result = benchmark_one_shot(benchmark, _run_convergence_probe, root.parent, tmp_path)
     msgs = 500
     if result["total_s"] > 0:
+        assert result["intake_expected_files"] == 1
+        assert result["stored_sessions"] == 1
+        assert result["stored_messages"] == msgs
         extras = {
             "provider": provider,
             "total_s": round(result["total_s"], 2),
-            "msgs_per_s": round(msgs / result["total_s"], 1),
+            "msgs_per_s": round(result["stored_messages"] / result["total_s"], 1),
         }
         if hasattr(benchmark, "extra_info"):
             benchmark.extra_info.update(extras)
-        assert result["failed_files"] == 0
+        assert result["stage_failed_files"] == 0
 
 
 # ── Cross-provider correctness assertion ──────────────────────────────
@@ -200,16 +224,28 @@ def test_cross_provider_convergence_correctness(
 
     result = benchmark_one_shot(benchmark, _run_convergence_probe, corpus_root, tmp_path)
 
-    assert result["failed_files"] == 0, f"Cross-provider convergence had failures: {result}"
-    assert result["succeeded_files"] >= len(providers), (
-        f"Expected at least {len(providers)} converged, got {result['succeeded_files']}"
+    assert result["stage_failed_files"] == 0, f"Cross-provider stage failures: {result}"
+    assert result["intake_succeeded_files"] == result["intake_expected_files"]
+    expected_sessions = sum(
+        shape[1]
+        for shape in convergence_workload_profile(ConvergenceWorkloadTier.MULTI_XS_TINY.value).provider_session_shapes
+        if shape[0] in providers
     )
+    expected_messages = sum(
+        shape[1] * shape[2]
+        for shape in convergence_workload_profile(ConvergenceWorkloadTier.MULTI_XS_TINY.value).provider_session_shapes
+        if shape[0] in providers
+    )
+    assert result["intake_expected_files"] == expected_sessions
+    assert result["stored_sessions"] == expected_sessions
+    assert result["stored_messages"] == expected_messages
 
     extras = {
         "providers": ",".join(providers),
         "total_files": result["files"],
         "total_s": round(result["total_s"], 2),
-        "succeeded": int(result["succeeded_files"]),
+        "intake_succeeded_files": int(result["intake_succeeded_files"]),
+        "stage_converged_files": int(result["stage_converged_files"]),
     }
     if hasattr(benchmark, "extra_info"):
         benchmark.extra_info.update(extras)
