@@ -453,6 +453,53 @@ class DaemonClient:
             raise
         if envelope is None or envelope.get("outcome") not in {"accepted", "running"}:
             return envelope
+        return self._follow_accepted(
+            operation, envelope, archive_root=archive_root, deadline=deadline, progress_callback=progress_callback
+        )
+
+    def follow_operation(
+        self,
+        operation: str,
+        envelope: Mapping[str, Any],
+        *,
+        archive_root: str,
+        wait_s: float | None = None,
+        progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        """Follow already-accepted work to its terminal receipt, or to ``wait_s``.
+
+        For a verb that submits with :meth:`operation` and only sometimes
+        waits (``import --wait``): the same event-driven waits
+        :meth:`operation_to_completion` uses, bounded by the caller's budget
+        rather than the operation's declared deadline. A budget that runs out
+        returns ``outcome="indeterminate"``: the work is still the daemon's,
+        and nothing here resubmits it.
+        """
+        spec = daemon_operation_spec(operation)
+        if spec is None:
+            raise DaemonOperationProtocolError(f"operation is not declared: {operation}")
+        if envelope.get("outcome") not in {"accepted", "running"}:
+            return dict(envelope)
+        budget = spec.deadline_s if wait_s is None else wait_s
+        return self._follow_accepted(
+            operation,
+            envelope,
+            archive_root=archive_root,
+            deadline=perf_counter() + budget,
+            progress_callback=progress_callback,
+        )
+
+    def _follow_accepted(
+        self,
+        operation: str,
+        envelope: Mapping[str, Any],
+        *,
+        archive_root: str,
+        deadline: float,
+        progress_callback: Callable[[Mapping[str, Any]], None] | None,
+    ) -> dict[str, Any]:
+        spec = daemon_operation_spec(operation)
+        assert spec is not None
         target = str(envelope["request_id"])
         state = envelope.get("result")
         progress_operation = spec.progress

@@ -474,6 +474,90 @@ def test_an_accepted_write_is_never_called_indeterminate_without_one_receipt_rea
     assert envelope["outcome"] == "completed"
 
 
+def _accepted_ingest() -> tuple[dict[str, object], dict[str, object]]:
+    reference = {
+        "request_id": "accepted-ingest",
+        "archive_identity": "archive-identity",
+        "principal_ref": "principal",
+        "fingerprint": "fingerprint",
+        "operation_name": "ingest",
+    }
+    accepted = {
+        "request_id": "accepted-ingest",
+        "outcome": "accepted",
+        "result": {"sequence": 1, "outcome": "accepted", "reference": reference},
+        "accepted_reference": reference,
+    }
+    return accepted, reference
+
+
+def test_follow_operation_waits_on_the_accepted_request_within_the_callers_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``import --wait`` follows the work it already submitted; it never resubmits.
+
+    Anti-vacuity: budget the waits by the declared ingest deadline (300s)
+    instead of ``wait_s`` and the ``timeout_ms`` assertion goes red; route the
+    follow through ``operation_to_completion`` and the submit guard raises.
+    """
+    from polylogue.daemon_client import DaemonClient
+
+    accepted, reference = _accepted_ingest()
+    readings = iter([0.0, 0.0, 0.5, 0.5])
+    monkeypatch.setattr("polylogue.daemon_client.perf_counter", lambda: next(readings, 0.5))
+    states = iter(
+        [
+            {"result": {"sequence": 2, "outcome": "running", "reference": reference}},
+            {
+                **{key: {} for key in ("archive", "generation", "readiness", "served_by", "timing", "schema_versions")},
+                "authority_snapshot": {},
+                "degraded_components": [],
+                "result": {"sequence": 3, "outcome": "cancelled", "reference": reference},
+            },
+        ]
+    )
+    client = DaemonClient(tmp_path / "daemon.sock")
+    awaited: list[tuple[str, int, int]] = []
+
+    def await_operation(request_id: str, **kwargs: object) -> dict[str, object]:
+        awaited.append((request_id, int(str(kwargs["after_sequence"])), int(str(kwargs["timeout_ms"]))))
+        return next(states)
+
+    def no_resubmission(*args: object, **kwargs: object) -> None:
+        raise AssertionError("follow_operation resubmitted accepted work")
+
+    monkeypatch.setattr(client, "operation", no_resubmission)
+    monkeypatch.setattr(client, "await_operation", await_operation)
+
+    envelope = client.follow_operation("ingest", accepted, archive_root=str(tmp_path), wait_s=2.0)
+
+    assert [(request_id, after) for request_id, after, _ in awaited] == [("accepted-ingest", 1), ("accepted-ingest", 2)]
+    assert all(timeout_ms <= 2000 for _, _, timeout_ms in awaited)
+    assert envelope["outcome"] == "cancelled"
+
+
+def test_follow_operation_reports_an_exhausted_budget_as_indeterminate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Running work past the caller's budget is indeterminate, not failed or resubmitted."""
+    from polylogue.daemon_client import DaemonClient
+
+    accepted, reference = _accepted_ingest()
+    readings = iter([0.0, 0.0, 0.0])
+    monkeypatch.setattr("polylogue.daemon_client.perf_counter", lambda: next(readings, 10.0))
+    client = DaemonClient(tmp_path / "daemon.sock")
+    monkeypatch.setattr(
+        client,
+        "await_operation",
+        lambda request_id, **kwargs: {"result": {"sequence": 2, "outcome": "running", "reference": reference}},
+    )
+
+    envelope = client.follow_operation("ingest", accepted, archive_root=str(tmp_path), wait_s=1.0)
+
+    assert envelope["outcome"] == "indeterminate"
+    assert envelope["request_id"] == "accepted-ingest"
+
+
 def test_progress_frames_are_delivered_before_terminal_and_renderer_failures_are_isolated(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

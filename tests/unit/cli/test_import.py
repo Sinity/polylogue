@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 from polylogue.cli.operation_kernel import (
     OperationFailedError,
     OperationIndeterminateError,
@@ -409,10 +411,13 @@ def test_import_demo_wait_verifies_after_daemon_acceptance(
         events.append("augment-daemon")
         return {"outcome": "completed", "effect": "committed", "sequence": 1}
 
-    def fake_wait(*, timeout_s: float, require_overlays: bool = False) -> None:
-        captured["timeout_s"] = timeout_s
-        captured["require_overlays"] = require_overlays
+    def fake_follow(config: Any, operation: str, accepted: Any, *, wait_s: float) -> dict[str, object]:
+        del config
+        assert operation == "ingest"
+        assert accepted["outcome"] == "accepted"
+        captured["timeout_s"] = wait_s
         events.append("wait-base")
+        return {"outcome": "completed"}
 
     fake_result = DemoVerifyResult(
         archive_root=workspace_env["archive_root"],
@@ -433,7 +438,7 @@ def test_import_demo_wait_verifies_after_daemon_acceptance(
     with (
         patch("polylogue.cli.operation_kernel.configured_accepted_operation", new=fake_submit),
         patch("polylogue.cli.operation_kernel.configured_mutation_operation", new=fake_augment),
-        patch("polylogue.cli.commands.import_command._wait_for_demo_archive_ready", side_effect=fake_wait),
+        patch("polylogue.cli.operation_kernel.configured_follow_operation", new=fake_follow),
         patch("polylogue.cli.commands.import_command._verify_demo_now", side_effect=fake_verify),
     ):
         result = runner.invoke(cli, ["import", "--demo", "--wait", "--timeout", "12.5"])
@@ -441,7 +446,6 @@ def test_import_demo_wait_verifies_after_daemon_acceptance(
     assert result.exit_code == 0, result.output
     assert captured == {
         "timeout_s": 12.5,
-        "require_overlays": False,
         "augment_payload": {"with_overlays": False},
     }
     assert events == ["daemon", "wait-base", "augment-daemon", "verify"]
@@ -485,10 +489,12 @@ def test_import_demo_wait_with_overlays_seeds_after_convergence(
         events.append("augment-daemon")
         return {"outcome": "completed", "effect": "committed", "sequence": 1}
 
-    def fake_wait(*, timeout_s: float, require_overlays: bool = False) -> None:
-        assert timeout_s == 30.0
-        assert require_overlays is False
+    def fake_follow(config: Any, operation: str, accepted: Any, *, wait_s: float) -> dict[str, object]:
+        del config, accepted
+        assert operation == "ingest"
+        assert wait_s == 30.0
         events.append("wait-base")
+        return {"outcome": "completed"}
 
     fake_result = DemoVerifyResult(
         archive_root=workspace_env["archive_root"],
@@ -509,7 +515,7 @@ def test_import_demo_wait_with_overlays_seeds_after_convergence(
     with (
         patch("polylogue.cli.operation_kernel.configured_accepted_operation", new=fake_submit),
         patch("polylogue.cli.operation_kernel.configured_mutation_operation", new=fake_augment),
-        patch("polylogue.cli.commands.import_command._wait_for_demo_archive_ready", side_effect=fake_wait),
+        patch("polylogue.cli.operation_kernel.configured_follow_operation", new=fake_follow),
         patch("polylogue.cli.commands.import_command._verify_demo_now", side_effect=fake_verify),
     ):
         result = runner.invoke(cli, ["import", "--demo", "--wait", "--with-overlays"])
@@ -519,6 +525,54 @@ def test_import_demo_wait_with_overlays_seeds_after_convergence(
     assert augment_payloads == [{"with_overlays": True}]
     assert "sessions=19 messages=31" in result.output
     assert "overlays=yes" in result.output
+
+
+@pytest.mark.parametrize(
+    ("receipt", "message"),
+    [
+        ({"outcome": "indeterminate"}, "still the daemon's work"),
+        ({"outcome": "failed", "error": {"code": "ingest_failed", "detail": "parser refused"}}, "parser refused"),
+    ],
+)
+def test_import_demo_wait_never_verifies_an_unfinished_ingest(
+    workspace_env: dict[str, Path], receipt: dict[str, object], message: str
+) -> None:
+    """Only a ``completed`` ingest receipt proceeds to augmentation and verification.
+
+    Anti-vacuity: treat any receipt as convergence and both rows exit 0 with
+    "Demo archive verified" after augmenting a half-ingested archive.
+    """
+    from click.testing import CliRunner
+
+    from polylogue.cli.click_app import cli
+
+    augmented: list[str] = []
+
+    def fake_submit(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        del config, operation, payload
+        return _accepted_envelope("import-demo-fixture-world")
+
+    def fake_follow(config: Any, operation: str, accepted: Any, *, wait_s: float) -> dict[str, object]:
+        del config, operation, accepted, wait_s
+        return receipt
+
+    def fake_augment(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        del config, payload
+        augmented.append(operation)
+        return {"outcome": "completed", "effect": "committed", "sequence": 1}
+
+    with (
+        patch("polylogue.cli.operation_kernel.configured_accepted_operation", new=fake_submit),
+        patch("polylogue.cli.operation_kernel.configured_follow_operation", new=fake_follow),
+        patch("polylogue.cli.operation_kernel.configured_mutation_operation", new=fake_augment),
+    ):
+        result = CliRunner().invoke(cli, ["import", "--demo", "--wait", "--timeout", "0.5"])
+
+    combined = result.output + (result.stderr if result.stderr_bytes else "")
+    assert result.exit_code != 0, combined
+    assert message in combined
+    assert augmented == []
+    assert "Demo archive verified" not in combined
 
 
 def test_import_wait_requires_demo(tmp_path: Path) -> None:
@@ -784,14 +838,15 @@ def test_import_demo_wait_refuses_failed_augmentation(
         del config, operation, payload
         raise OperationFailedError("write_coordinator_unavailable", "no writer lease")
 
-    def fake_wait(*, timeout_s: float, require_overlays: bool = False) -> None:
-        del timeout_s, require_overlays
+    def fake_follow(config: Any, operation: str, accepted: Any, *, wait_s: float) -> dict[str, object]:
+        del config, operation, accepted, wait_s
+        return {"outcome": "completed"}
 
     runner = CliRunner()
     with (
         patch("polylogue.cli.operation_kernel.configured_accepted_operation", new=fake_submit),
         patch("polylogue.cli.operation_kernel.configured_mutation_operation", new=refused),
-        patch("polylogue.cli.commands.import_command._wait_for_demo_archive_ready", side_effect=fake_wait),
+        patch("polylogue.cli.operation_kernel.configured_follow_operation", new=fake_follow),
     ):
         result = runner.invoke(cli, ["import", "--demo", "--wait"])
 

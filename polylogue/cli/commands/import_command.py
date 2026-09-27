@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -45,7 +44,6 @@ if TYPE_CHECKING:
 # Statuses that mean the daemon accepted scheduling and the work is now
 # observable through the inbox / ``polylogue ops status`` surfaces.
 _ACCEPTED_STATUSES = frozenset({"accepted", "pending", "scheduled", "queued"})
-_DEMO_WAIT_POLL_INTERVAL_S = 0.25
 
 
 def _default_daemon_url() -> str:
@@ -97,35 +95,37 @@ def _materialize_demo_source() -> Path:
     return materialize_demo_source(archive_root(), force=True)
 
 
-def _wait_for_demo_archive_ready(*, timeout_s: float, require_overlays: bool = False) -> DemoVerifyResult:
-    """Wait until the daemon-ingested demo archive reaches base ingest convergence.
+def _wait_for_demo_ingest(env: AppEnv, accepted: dict[str, object], *, timeout_s: float) -> None:
+    """Wait for the accepted demo ingest's terminal receipt from the daemon.
 
-    Deliberately skips the declared demo-construct minimums
-    (``check_constructs=False``): several constructs (provider usage,
-    synthetic embeddings, the canonical repo name) are populated by
-    ``apply_demo_post_ingest_augmentation`` after this wait returns, not by
-    ingest itself, so waiting on them here would never converge.
+    The ingest operation reaches ``completed`` only after its material is
+    parsed, materialized and its session profiles converged, so its receipt is
+    the convergence signal; no archive file is re-read on a timer. The
+    demo-only constructs (provider usage, synthetic embeddings, the canonical
+    repo name) are layered on by ``apply_demo_post_ingest_augmentation`` after
+    this returns, which is why the final verification runs after that.
     """
-    from polylogue.demo import verify_demo_archive
+    from polylogue.cli.operation_kernel import OperationKernelError, configured_follow_operation
+    from polylogue.cli.shared.helpers import load_effective_config
 
-    deadline = time.monotonic() + timeout_s
-    last_problems: tuple[str, ...] = ("verification did not run",)
-    while time.monotonic() <= deadline:
-        result = verify_demo_archive(
-            archive_root(),
-            require_overlays=require_overlays,
-            check_source_path_leaks=False,
-            check_constructs=False,
+    try:
+        receipt = configured_follow_operation(load_effective_config(env), "ingest", accepted, wait_s=timeout_s)
+    except OperationKernelError as exc:
+        fail("import", f"Lost the demo ingest before its receipt ({exc}); refusing to claim a verified archive.")
+    outcome = receipt.get("outcome")
+    if outcome == "completed":
+        return
+    if outcome == "indeterminate":
+        fail(
+            "import",
+            f"Timed out waiting {timeout_s:g}s for the demo ingest to converge; it is still the daemon's "
+            "work. Check `polylogued status`, then re-run with --wait to verify.",
         )
-        if result.ok:
-            return result
-        last_problems = result.problems
-        time.sleep(_DEMO_WAIT_POLL_INTERVAL_S)
-
-    problem_text = "; ".join(last_problems) if last_problems else "semantic checks did not pass"
+    error = receipt.get("error")
+    detail = error.get("detail") if isinstance(error, dict) else None
     fail(
         "import",
-        f"Timed out waiting {timeout_s:g}s for demo archive convergence: {problem_text}",
+        f"Demo ingest ended {outcome!r}{f': {detail}' if detail else ''}; refusing to claim a verified archive.",
     )
 
 
@@ -202,13 +202,14 @@ def _preflight_or_fail(staged: Path) -> None:
     )
 
 
-def _submit_ingest(env: AppEnv, *, staged: Path, requested_source: Path) -> dict[str, object]:
+def _submit_ingest(env: AppEnv, *, staged: Path, requested_source: Path) -> tuple[dict[str, object], dict[str, object]]:
     """Submit the declared ``ingest`` operation and report its acceptance.
 
     Returns an :class:`~polylogue.operations.import_contracts.ImportOperation`
-    shaped mapping. Acceptance is decided exactly as the daemon's own ingest
-    route decides it: a durable ``accepted_reference`` *and* an outcome that
-    admits the work. Anything else is reported as a failure, never as success.
+    shaped mapping and the accepted operation envelope ``--wait`` follows.
+    Acceptance is decided exactly as the daemon's own ingest route decides it:
+    a durable ``accepted_reference`` *and* an outcome that admits the work.
+    Anything else is reported as a failure, never as success.
     """
     from polylogue.cli.operation_kernel import (
         OperationFailedError,
@@ -264,7 +265,7 @@ def _submit_ingest(env: AppEnv, *, staged: Path, requested_source: Path) -> dict
         "status": "accepted" if accepted else "failed",
         "path": str(staged),
         "error": None if accepted else f"daemon returned outcome {outcome!r} with no durable acceptance reference",
-    }
+    }, envelope
 
 
 def _daemon_required(archive: object, *, operation: str) -> DaemonRequiredError:
@@ -393,7 +394,7 @@ def import_command(
     from polylogue.cli.shared.helpers import load_effective_config
 
     _preflight_or_fail(staged)
-    raw = _submit_ingest(env, staged=staged, requested_source=requested_source)
+    raw, accepted_envelope = _submit_ingest(env, staged=staged, requested_source=requested_source)
 
     from polylogue.operations.import_contracts import ImportOperation
 
@@ -423,7 +424,7 @@ def import_command(
 
     if wait:
         env.ui.console.print(f"[bold]Waiting:[/bold] demo archive convergence (timeout {wait_timeout_s:g}s)")
-        _wait_for_demo_archive_ready(timeout_s=wait_timeout_s)
+        _wait_for_demo_ingest(env, accepted_envelope, timeout_s=wait_timeout_s)
 
         # Ingest alone (whichever path scheduled it) only produces the parsed
         # session/message tree. Demo-only enrichments -- provider usage,

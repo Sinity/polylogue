@@ -483,6 +483,47 @@ def configured_operation_to_completion(
     return {str(key): value for key, value in envelope.items()}
 
 
+def configured_follow_operation(
+    config: Any,
+    operation: str,
+    accepted: Mapping[str, object],
+    *,
+    wait_s: float,
+    progress_callback: Callable[[Mapping[str, object]], None] | None = None,
+) -> dict[str, object]:
+    """Follow an envelope from :func:`configured_accepted_operation` to its receipt.
+
+    Event-driven ``operation.await`` waits bounded by ``wait_s``; an exhausted
+    budget returns ``outcome="indeterminate"`` and never resubmits the work.
+    """
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.daemon_client import DaemonClient
+    from polylogue.operations.archive_root import operation_archive_root
+
+    root = operation_archive_root(config)
+    client = DaemonClient(
+        daemon_socket_path(root),
+        auth_token=lambda: resolve_api_auth_token(
+            getattr(config, "api_auth_token", None),
+            allow_no_auth=getattr(config, "api_allow_no_auth", False),
+        ),
+    )
+    try:
+        envelope = client.follow_operation(
+            operation,
+            accepted,
+            archive_root=str(root),
+            wait_s=wait_s,
+            progress_callback=progress_callback,
+        )
+    except DaemonMutationIndeterminateError as exc:
+        raise OperationIndeterminateError(str(exc), request_id=exc.request_id) from exc
+    except DaemonOperationProtocolError as exc:
+        raise OperationFailedError("daemon_transport_error", str(exc)) from exc
+    return {str(key): value for key, value in envelope.items()}
+
+
 __all__ = [
     "OperationCancelledError",
     "OperationEnvelopeError",
@@ -494,6 +535,7 @@ __all__ = [
     "OperationResult",
     "OperationUnavailableError",
     "configured_accepted_operation",
+    "configured_follow_operation",
     "configured_operation_to_completion",
     "configured_mutation_operation",
     "configured_read_operation",
