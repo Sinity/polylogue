@@ -71,6 +71,7 @@ from polylogue.core.sources import origin_from_provider
 from polylogue.core.stage_admission import admit_stage_write
 from polylogue.core.storage_faults import (
     ARCHIVE_SIDE_FAULTS,
+    CAPACITY_FAULTS,
     raise_if_storage_fault,
     storage_fault_kind,
 )
@@ -988,6 +989,21 @@ class LiveBatchProcessor:
                     defer_convergence=defer_convergence,
                     open_attempt=attempt,
                 )
+            except asyncio.CancelledError:
+                # Cancellation is shutdown: no further ops write is admitted
+                # here (it could hold the writer past the shutdown deadline).
+                # The row stays ``running`` and the next start records it as
+                # ``interrupted``, which is what happened; this event says so
+                # now, with the attempt it names.
+                if attempt.attempt_id is not None and not attempt.finished:
+                    emit(
+                        "live.ingest.attempt_cancelled",
+                        level=WARNING,
+                        outcome="refused",
+                        reason="cancelled",
+                        attempt_id=attempt.attempt_id,
+                    )
+                raise
             except Exception as exc:
                 await self._finish_escaped_attempt(attempt, exc)
                 raise_if_storage_fault(exc)
@@ -3152,7 +3168,12 @@ class LiveBatchProcessor:
                     raw_id = hermes_profile_raw_id(source_path, 0, snapshot.source_revision)
                     raw_source_revisions[path] = snapshot.source_revision
                     raw_source_fingerprints[path] = snapshot.source_fingerprint
-                except OSError:
+                except OSError as exc:
+                    # The export stages into the archive's blob area, so a
+                    # full archive refuses it for every database alike. A
+                    # read-only or corrupt report can come from the source
+                    # database itself, which stays this file's failure.
+                    raise_if_storage_fault(exc, kinds=CAPACITY_FAULTS)
                     failed.append(path)
                     continue
                 source_payload_read_bytes += blob_size
@@ -3211,7 +3232,12 @@ class LiveBatchProcessor:
                     raw_id = codex_state_raw_id(source_path, snapshot.source_revision)
                     raw_source_revisions[path] = snapshot.source_revision
                     raw_source_fingerprints[path] = snapshot.source_fingerprint
-                except OSError:
+                except OSError as exc:
+                    # The export stages into the archive's blob area, so a
+                    # full archive refuses it for every database alike. A
+                    # read-only or corrupt report can come from the source
+                    # database itself, which stays this file's failure.
+                    raise_if_storage_fault(exc, kinds=CAPACITY_FAULTS)
                     failed.append(path)
                     continue
                 source_payload_read_bytes += blob_size

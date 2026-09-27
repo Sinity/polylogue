@@ -115,10 +115,14 @@ def raise_if_storage_fault(exc: BaseException, *, kinds: frozenset[StorageFaultK
 
 #: Faults that can only originate on the archive (write) side of a copy.
 ARCHIVE_SIDE_FAULTS = frozenset({StorageFaultKind.CAPACITY, StorageFaultKind.READ_ONLY})
+#: The narrower set for a boundary whose source can itself report read-only
+#: or I/O failures (a SQLite export opens the source database).
+CAPACITY_FAULTS = frozenset({StorageFaultKind.CAPACITY})
 
 
 __all__ = [
     "ARCHIVE_SIDE_FAULTS",
+    "CAPACITY_FAULTS",
     "ArchiveStorageFaultError",
     "StorageFaultKind",
     "raise_if_storage_fault",

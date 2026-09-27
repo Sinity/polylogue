@@ -86,3 +86,25 @@ def test_archive_write_classification_keeps_storage_faults_retryable() -> None:
 
     defect = classify_archive_write_exception(KeyError("missing"))
     assert defect.outcome_code == "parser_defect"
+
+
+def test_sqlite_snapshot_export_escapes_only_on_capacity() -> None:
+    """The live SQLite export adapter re-raises SQLite errors as ``OSError``
+    from the original; a full archive must still be recognized through that
+    chain, while read-only (which the source database itself can report)
+    stays the file's own failure. Anti-vacuity: without cause-chain
+    following the capacity case does not escape."""
+    from polylogue.core.storage_faults import CAPACITY_FAULTS
+    from polylogue.sources.sqlite_snapshot import sqlite_snapshot_failure_as_oserror
+
+    def exported(code: int) -> OSError:
+        try:
+            with sqlite_snapshot_failure_as_oserror():
+                raise _sqlite_error(code)
+        except OSError as exc:
+            return exc
+        raise AssertionError("adapter did not translate the SQLite error")
+
+    with pytest.raises(ArchiveStorageFaultError):
+        raise_if_storage_fault(exported(sqlite3.SQLITE_FULL), kinds=CAPACITY_FAULTS)
+    raise_if_storage_fault(exported(sqlite3.SQLITE_READONLY), kinds=CAPACITY_FAULTS)

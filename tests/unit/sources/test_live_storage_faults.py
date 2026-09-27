@@ -248,3 +248,33 @@ async def test_events_inside_an_ingest_attempt_carry_its_attempt_id(
     finally:
         watcher.stop()
         await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_attempt_is_named_and_cancellation_propagates(
+    storage_env: tuple[Polylogue, LiveWatcher, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation (shutdown) admits no further ops write, but the attempt
+    it interrupted is named at once. Anti-vacuity: without the explicit
+    ``CancelledError`` branch no ``live.ingest.attempt_cancelled`` event is
+    emitted; swallowing it instead fails ``pytest.raises``."""
+    import asyncio
+
+    from polylogue.sources.live.batch import LiveBatchProcessor
+
+    archive, watcher, source_path = storage_env
+
+    async def cancelled_mid_attempt(self: LiveBatchProcessor, paths: list[Path], **kwargs: Any) -> Any:
+        kwargs["open_attempt"].opened("attempt-under-cancellation")
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(LiveBatchProcessor, "_ingest_files", cancelled_mid_attempt)
+    try:
+        with capture() as events, pytest.raises(asyncio.CancelledError):
+            await watcher._batch_processor.ingest_files([source_path])
+        cancelled = [event for event in events if event.get("event") == "live.ingest.attempt_cancelled"]
+        assert [event.get("attempt_id") for event in cancelled] == ["attempt-under-cancellation"]
+    finally:
+        watcher.stop()
+        await archive.close()
