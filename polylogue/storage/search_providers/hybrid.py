@@ -2,8 +2,8 @@
 
 polylogue-a7xr.10 (kill-or-adopt the search-provider lane): ``HybridSearchProvider``
 and ``FTS5Provider`` had zero production call sites — production hybrid
-retrieval (``cli/archive_query.py``, ``archive/query/archive_execution.py``,
-``archive/query/retrieval_search.py``) has always fused FTS and vector
+retrieval (``cli/archive_query.py``, ``archive/query/archive_execution.py``)
+has always fused FTS and vector
 results inline against live query-plan state rather than through those
 classes, which existed only in their own tests. Killed the unproven classes
 (this module used to also define ``HybridSearchProvider``); kept

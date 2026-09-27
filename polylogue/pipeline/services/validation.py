@@ -11,7 +11,6 @@ from polylogue.pipeline.services.validation_flow import (
 )
 from polylogue.pipeline.services.validation_flow import (
     schema_validation_mode,
-    validation_progress_desc,
 )
 from polylogue.pipeline.services.validation_flow import (
     validate_raw_ids as _validate_raw_ids,
@@ -47,9 +46,6 @@ class ValidationService:
             env_var=self.SCHEMA_VALIDATION_MODE_ENV,
             default=self.SCHEMA_VALIDATION_DEFAULT,
         )
-
-    def _validation_progress_desc(self, processed: int, total: int) -> str:
-        return validation_progress_desc(processed, total)
 
     async def validate_raw_ids(
         self,

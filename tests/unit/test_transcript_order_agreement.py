@@ -18,7 +18,6 @@ import pytest
 from polylogue import Polylogue
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.cli.read_views.streaming_markdown import stream_exact_session_markdown
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -97,24 +96,6 @@ def _seed(root: Path) -> tuple[str, str]:
     return parent_id, child_id
 
 
-def _streamed_message_order(root: Path, session_id: str, expected: list[str]) -> list[str]:
-    """Map the markdown export back to message ids through each body's text.
-
-    The export renders blocks, not identities, so the fixture gives every
-    message a unique body and the rendered offsets recover the order the
-    export emitted them in.
-    """
-    out = root / "export.md"
-    assert stream_exact_session_markdown(root, session_id, out, prose_only=False)
-    text = out.read_text(encoding="utf-8")
-    offsets = {}
-    for position, message_id in enumerate(expected):
-        body = _body(position)
-        assert body in text, f"{body} missing from the export"
-        offsets[message_id] = text.index(body)
-    return sorted(offsets, key=lambda message_id: offsets[message_id])
-
-
 @pytest.mark.asyncio
 async def test_every_read_route_returns_one_message_order(
     tmp_path: Path,
@@ -157,11 +138,6 @@ async def test_every_read_route_returns_one_message_order(
             assert composed_child == expected_composed
     finally:
         await backend.close()
-
-    assert _streamed_message_order(tmp_path, parent_id, expected) == expected
-    # The export declines a prefix-sharing child rather than emitting a
-    # tail-only transcript, so the eager composed path serves it.
-    assert not stream_exact_session_markdown(tmp_path, child_id, tmp_path / "child.md", prose_only=False)
 
     archive = Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
     try:

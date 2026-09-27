@@ -21,7 +21,7 @@ import json
 import os
 import sqlite3
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypedDict
+from typing import TYPE_CHECKING
 
 import click
 
@@ -34,8 +34,6 @@ if TYPE_CHECKING:
 from polylogue.storage.embeddings.preflight import (
     PreflightReport,
     build_preflight_report,
-    effective_cost_cap,
-    preflight_backfill_args,
     preflight_payload,
 )
 
@@ -45,10 +43,6 @@ from polylogue.storage.embeddings.preflight import (
 #   3. VOYAGE_API_KEY environment variable
 # Only #1 and #3 are accepted by ``enable``; #2 is reused on the second
 # enable run so existing keys are not lost.
-
-
-def _effective_cost_cap(config_cap_usd: float, run_cap_usd: float | None) -> float:
-    return effective_cost_cap(config_cap_usd, run_cap_usd)
 
 
 def _build_preflight_report(
@@ -142,44 +136,12 @@ def _render_preflight(env: AppEnv, report: PreflightReport) -> None:
     )
 
 
-def _preflight_backfill_args(report: PreflightReport) -> list[str] | None:
-    return preflight_backfill_args(report)
-
-
 def _preflight_payload(report: PreflightReport) -> dict[str, object]:
     return preflight_payload(report)
 
 
 def _render_preflight_json(report: PreflightReport) -> None:
     click.echo(json.dumps(_preflight_payload(report), indent=2, sort_keys=True))
-
-
-class BackfillSessionPayload(TypedDict):
-    index: int
-    total: int
-    session_id: str
-    title: str | None
-    status: str
-    embedded_message_count: int
-    estimated_cost_usd: float
-    error: str | None
-
-
-class BackfillResultPayload(TypedDict):
-    status: Literal["complete", "stopped"]
-    embedded_sessions: int
-    skipped_sessions: int
-    error_count: int
-    estimated_cost_usd: float
-    stopped_reason: str | None
-    candidate_sessions: int
-    processed_sessions: int
-    preflight: dict[str, object]
-    sessions: list[BackfillSessionPayload]
-
-
-def _render_backfill_json(payload: BackfillResultPayload) -> None:
-    click.echo(json.dumps(payload, indent=2, sort_keys=True))
 
 
 # ---------------------------------------------------------------------------

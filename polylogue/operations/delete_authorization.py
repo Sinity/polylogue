@@ -247,22 +247,6 @@ def consume_cli_delete(
         raise DeleteAuthorizationError("authorization_not_active") from exc
 
 
-def cancel_cli_delete(
-    archive_root: Path,
-    preview_ref: str,
-    principal: MutationPrincipal,
-) -> None:
-    """Cancel an authenticated caller's unconfirmed durable delete preview."""
-
-    audit = _audit_repository(archive_root)
-    # An explicit decline is itself a terminal decision.  It must remain
-    # recordable after the preview's authorization window closes; otherwise
-    # the durable row is stranded in ``prepared`` even though the daemon has
-    # acknowledged the operator's refusal to mutate.
-    preview = _load_preview(audit, preview_ref, principal, require_prepared=True, require_unexpired=False)
-    audit.cancel_preview(preview)
-
-
 def _load_preview(
     audit: AuditRepository,
     preview_ref: str,

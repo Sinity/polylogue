@@ -729,26 +729,6 @@ def load_marker_blocks_sync(
     return result
 
 
-async def load_marker_blocks_async(
-    conn: aiosqlite.Connection,
-    session_ids: Sequence[str],
-) -> dict[str, list[BlockRecord]]:
-    """Async diagnostic twin of :func:`load_marker_blocks_sync`."""
-    if not session_ids:
-        return {}
-    placeholders = ", ".join("?" for _ in session_ids)
-    result: dict[str, list[BlockRecord]] = {str(session_id): [] for session_id in session_ids}
-    cursor = await conn.execute(
-        _SESSION_INSIGHT_MARKER_BLOCK_SQL_TEMPLATE.format(placeholders=placeholders),
-        tuple(session_ids),
-    )
-    decode_block = bind_block_row_mapper(cursor_column_names(cursor.description))
-    for row in await cursor.fetchall():
-        block = decode_block(row)
-        result.setdefault(str(block.session_id), []).append(block)
-    return result
-
-
 def hydrate_sessions(
     batch: SessionInsightArchiveBatch,
 ) -> list[Session]:

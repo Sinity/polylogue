@@ -513,19 +513,6 @@ class DaemonWriteCoordinator:
         """Run blocking writer work without making process exit unbounded."""
         return await self._run_sync(actor, function, None, None, *args, **kwargs)
 
-    async def run_sync_with_completion(
-        self,
-        actor: str,
-        function: Callable[P, T],
-        on_complete: Callable[[asyncio.Task[object]], None],
-        on_admit: Callable[[], None] | None = None,
-        /,
-        *args: P.args,
-        **kwargs: P.kwargs,
-    ) -> T:
-        """Run sync work and observe its coordinator-owned completion task."""
-        return await self._run_sync(actor, function, on_complete, on_admit, *args, **kwargs)
-
     async def _run_sync(
         self,
         actor: str,
@@ -658,18 +645,6 @@ class DaemonWriteCoordinator:
                 self._idle.set()
 
         task.add_done_callback(completed)
-
-    def create_managed_task(self, operation: Awaitable[object], *, actor: str) -> asyncio.Task[object]:
-        """Track post-write lifecycle work so shutdown drains it before loop close."""
-
-        async def managed_operation() -> object:
-            return await operation
-
-        task: asyncio.Task[object] = asyncio.create_task(managed_operation(), name=f"polylogue-managed:{actor}")
-        self._managed.add(task)
-        task.add_done_callback(self._managed.discard)
-        self._track_execution(task, actor=actor)
-        return task
 
     def _remove_queued(self, sequence: int) -> None:
         self._queued = [item for item in self._queued if item[0] != sequence]

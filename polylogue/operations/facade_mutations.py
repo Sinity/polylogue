@@ -6,12 +6,11 @@ owns actuator selection and the bound prepare/authorize/execute route.
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 
 from polylogue.config import Config
 from polylogue.operations import mutation_actuators as actuators
-from polylogue.operations.archive_mutation import execute_archive_mutation
-from polylogue.operations.mutation_transaction import MutationPlan, MutationReceipt
+from polylogue.operations.mutation_transaction import MutationReceipt
 
 
 class FacadeProductRefusalError(ValueError):
@@ -109,25 +108,6 @@ def _normalize_product_fields(product: str, fields: dict[str, Any]) -> dict[str,
     return fields
 
 
-def execute_facade_product(
-    config: Config,
-    product: str,
-    **fields: Any,
-) -> tuple[MutationReceipt, MutationPlan]:
-    """Execute one named product with its operation-owned actuator contract."""
-    fields = _normalize_product_fields(product, fields)
-    actuator_type, args_type = _PRODUCTS[product]
-    actuator = actuator_type()
-    session_id = fields.get("session_id")
-    return execute_archive_mutation(
-        config,
-        actuator,
-        lambda archive: args_type(archive=archive, **fields),
-        capability=f"archive.{product}",
-        session_id=session_id if isinstance(session_id, str) else None,
-    )
-
-
 def delete_session_product(config: Config, session_id: str, *, actor: str) -> tuple[str, MutationReceipt] | None:
     """Delete a resolved session with a bound-token authorization."""
     from polylogue.config import active_archive_root
@@ -181,31 +161,6 @@ def record_work_event_product(
             summary=summary,
             timestamp=timestamp,
         )
-
-
-async def import_annotation_batch_product(
-    config: Config,
-    request: Any,
-    resolve_ref: Any,
-    *,
-    registry: Any = None,
-) -> Any:
-    """Apply one annotation import with a bounded facade ref resolver."""
-    from polylogue.annotations.importer import import_annotation_batch
-    from polylogue.config import active_archive_root
-    from polylogue.operations.archive_mutation import require_archive_write_authority
-
-    require_archive_write_authority(config, "api.import_annotation_batch")
-
-    class _ImportHandle:
-        archive_root = active_archive_root(config)
-
-        async def resolve_ref(self, ref: str) -> Any:
-            return await resolve_ref(ref)
-
-    if registry is None:
-        return await import_annotation_batch(cast(Any, _ImportHandle()), request)
-    return await import_annotation_batch(cast(Any, _ImportHandle()), request, registry=registry)
 
 
 def _to_wire(value: Any) -> Any:

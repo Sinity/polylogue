@@ -2011,15 +2011,6 @@ def _block_ref(session: Session, message: Message, block_index: int, block: Mapp
     )
 
 
-def _message_ref(session: Session, message: Message) -> TransformRawRef:
-    return TransformRawRef(
-        session_id=str(session.id),
-        message_id=str(message.id),
-        ref_kind="message",
-        preview=_preview(message.text or ""),
-    )
-
-
 def _role_value(message: Message) -> str:
     role = message.role
     return str(getattr(role, "value", role))

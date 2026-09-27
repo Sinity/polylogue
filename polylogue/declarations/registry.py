@@ -84,9 +84,6 @@ class DeclarationRegistry:
     def get(self, declaration_id: str) -> DeclarationSpec:
         return self._by_id[declaration_id]
 
-    def by_public_name(self, public_name: str) -> DeclarationSpec:
-        return self._by_public_name[public_name]
-
     def declarations(self) -> tuple[DeclarationSpec, ...]:
         """Return declarations in stable id order, independent of registration order."""
 

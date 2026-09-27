@@ -234,11 +234,3 @@ class TableColumnSpec:
                 value = col.domain_transform(value)
             result[col.domain_name] = value
         return result
-
-    def domain_value(self, record: Any, domain_name: str) -> Any:
-        """Return one domain field using the declaration's record mapping."""
-        for col in self.record_columns:
-            if col.domain_name == domain_name and col.record_name is not None:
-                value = getattr(record, col.record_name)
-                return col.domain_transform(value) if col.domain_transform is not None else value
-        raise KeyError(f"{self.table_name} has no domain field {domain_name!r}")

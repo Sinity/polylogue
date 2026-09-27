@@ -81,27 +81,6 @@ class SqliteVecProvider(
         )
 
 
-class _LegacySqliteVecProvider(SqliteVecProvider):
-    """Private compatibility adapter for pre-split arbitrary test fixtures."""
-
-    def __init__(
-        self,
-        voyage_key: str,
-        db_path: Path,
-        model: str = DEFAULT_MODEL,
-        dimension: int = DEFAULT_DIMENSION,
-    ) -> None:
-        self.db_path = db_path.absolute()
-        self.archive_root = None
-        self._legacy_compatibility = True
-        self.voyage_key = voyage_key
-        self.model = model
-        self.dimension = dimension
-        self._vec_available: bool | None = None
-        self._tables_ensured = False
-        self._snapshot_connection: sqlite3.Connection | None = None
-
-
 __all__ = [
     "BATCH_SIZE",
     "DEFAULT_DIMENSION",

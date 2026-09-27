@@ -326,11 +326,6 @@ class PassCursor:
     def position(self, domain: str) -> DomainCursor:
         return self.positions.get(domain, DomainCursor())
 
-    def with_position(self, domain: str, cursor: DomainCursor) -> PassCursor:
-        merged = dict(self.positions)
-        merged[domain] = cursor
-        return PassCursor(merged)
-
 
 @dataclass(frozen=True, slots=True)
 class DerivationReport:

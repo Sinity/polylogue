@@ -7704,22 +7704,6 @@ def _refresh_thread(conn: sqlite3.Connection, root_session_id: str) -> None:
     del conn, root_session_id
 
 
-def _root_ids(conn: sqlite3.Connection, session_ids: set[str]) -> set[str]:
-    root_ids: set[str] = set()
-    for session_id in session_ids:
-        row = conn.execute(
-            """
-            SELECT COALESCE(root_session_id, session_id)
-            FROM sessions
-            WHERE session_id = ?
-            """,
-            (session_id,),
-        ).fetchone()
-        if row is not None and row[0]:
-            root_ids.add(str(row[0]))
-    return root_ids
-
-
 def _next_session_event_position(conn: sqlite3.Connection, session_id: str) -> int:
     row = conn.execute(
         """

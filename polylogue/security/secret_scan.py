@@ -723,10 +723,8 @@ def scan_path_for_secret_candidates(path: Path, *, max_bytes: int = 20_000_000) 
 
     Companion to :func:`scan_text_for_secret_candidates` for render/export
     writers that stream content directly to a file handle rather than
-    building it in memory first (e.g. ``read --view transcript --to file``'s
-    non-lineage fast path, ``polylogue/cli/read_views/streaming_markdown.py``)
-    -- those still need a scan chokepoint after the fact
-    (polylogue-t9xd).
+    building it in memory first (e.g. ``read --view transcript --to file``)
+    -- those still need a scan chokepoint after the fact (polylogue-t9xd).
 
     Anything above ``max_bytes``, or unreadable as UTF-8, comes back as
     ``scanned=False`` with a reason instead of an empty finding list: a file

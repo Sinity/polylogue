@@ -339,13 +339,6 @@ async def _bulk_connection(backend: SQLiteBackend) -> AsyncIterator[None]:
         await conn.close()
 
 
-async def _bulk_flush(backend: SQLiteBackend) -> None:
-    """Commit the current bulk transaction and start a new one."""
-    if backend._bulk_conn is not None:
-        await backend._bulk_conn.commit()
-        await backend._bulk_conn.execute("BEGIN IMMEDIATE")
-
-
 @asynccontextmanager
 async def _read_pool(backend: SQLiteBackend, size: int = 4) -> AsyncIterator[None]:
     """Open a pool of reusable read connections for concurrent operations."""
@@ -490,10 +483,6 @@ class SQLiteBackend(
     def bulk_connection(self) -> AbstractAsyncContextManager[None]:
         """Keep a single connection alive for many sequential operations."""
         return _bulk_connection(self)
-
-    async def bulk_flush(self) -> None:
-        """Commit the current bulk transaction and start a new one."""
-        await _bulk_flush(self)
 
     def read_pool(self, size: int = 4) -> AbstractAsyncContextManager[None]:
         """Open a pool of reusable read connections for concurrent operations."""

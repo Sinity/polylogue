@@ -47,9 +47,6 @@ OPS_TABLE_DISPOSITIONS: dict[str, OpsTableDisposition] = {
     "ingest_cursor": OpsTableDisposition("live ingest", "one cursor per source path", True, "retain"),
     "ingest_attempts": OpsTableDisposition("ingest", "one row per ingest attempt", True, "retain"),
     "convergence_debt": OpsTableDisposition("daemon converger", "one retryable debt row per target", True, "retain"),
-    "whole_archive_convergence_pledge": OpsTableDisposition(
-        "live cursor", "one open archive-wide lease", True, "retain"
-    ),
     "cursor_lag_samples": OpsTableDisposition(
         "daemon diagnostics", "one bounded lag sample", False, "retain pending map"
     ),
@@ -268,26 +265,6 @@ CREATE TABLE IF NOT EXISTS convergence_debt (
 
 CREATE INDEX IF NOT EXISTS idx_convergence_debt_stage
 ON convergence_debt(stage, priority DESC, updated_at_ms);
-
--- A chunked catch-up cycle defers every ``whole_archive`` convergence stage
--- to one final flush. Those stages are recorded ``SKIPPED`` (converged, no
--- debt) in the intermediate bounded flushes, so an interrupt landing after
--- the last chunk's cursor commit but before that final flush leaves no
--- retryable evidence anywhere: the next start replans, finds every file
--- cursored, and returns without ever running the archive-wide stages.
---
--- The pledge is written *before* the first chunk is ingested and deleted
--- only after the whole-archive flush completes, so the obligation exists
--- for the entire window in which it can be lost. An open row is the next
--- start's instruction to run the archive-wide stages even when no source
--- file needs ingest. ops.db is disposable; losing it also loses the
--- ingest cursors, which makes the catch-up replan the same work anyway.
-CREATE TABLE IF NOT EXISTS whole_archive_convergence_pledge (
-    pledge_id      TEXT PRIMARY KEY,
-    anchor_path    TEXT NOT NULL,
-    created_at_ms  INTEGER NOT NULL,
-    updated_at_ms  INTEGER NOT NULL
-) STRICT;
 
 CREATE TABLE IF NOT EXISTS cursor_lag_samples (
     sample_id        TEXT PRIMARY KEY,

@@ -23,7 +23,6 @@ from polylogue.operations.machine_receipts import (
     MAX_PAGE_ITEMS,
     IngestHistoricalReceipt,
     IngestHistoricalReceiptV2,
-    IngestInputHistoricalReceipt,
     IngestInputPageHistoricalReceipt,
     IngestInputRawPageHistoricalReceipt,
     IngestInsightPageHistoricalReceipt,
@@ -3257,21 +3256,6 @@ class AuditRepository:
         ):
             raise ValueError("ingest input raw pages differ from terminal receipt")
         return pages
-
-    def resolve_ingest_input_raw_pages(
-        self, receipt: IngestInputHistoricalReceipt
-    ) -> list[IngestInputRawPageHistoricalReceipt]:
-        if receipt.raw_id_pages_ref is None:
-            return []
-        assert receipt.raw_ids_digest is not None
-        return self.read_ingest_input_raw_pages(
-            receipt.raw_id_pages_ref,
-            source_item_id=receipt.source_item_id,
-            page_count=receipt.raw_id_page_count,
-            raw_count=receipt.raw_id_count,
-            unresolved_count=receipt.unresolved_raw_count,
-            digest=receipt.raw_ids_digest,
-        )
 
     def historical_machine_receipt(self, operation_id: str) -> MachineHistoricalReceipt | None:
         """Return a closed terminal receipt from audit history, never live tiers.

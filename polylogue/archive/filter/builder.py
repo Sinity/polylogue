@@ -210,15 +210,6 @@ class SessionFilterBuilderMixin:
     def min_words(self, n: int) -> Self:
         return _replace_plan(self, min_words=n)
 
-    def has_file_operations(self) -> Self:
-        return self.action("file_read", "file_write", "file_edit")
-
-    def has_git_operations(self) -> Self:
-        return self.action("git")
-
-    def has_subagent_spawns(self) -> Self:
-        return self.action("subagent")
-
     def parent(self, session_id: str) -> Self:
         return _replace_plan(self, parent_id=session_id)
 

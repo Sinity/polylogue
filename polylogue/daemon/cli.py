@@ -1153,17 +1153,6 @@ def _emit_mapped_bytes_budget_check(check: Any) -> None:
     )
 
 
-def _raw_source_path(archive: Path, raw_id: str) -> str | None:
-    """Read one raw's physical source path from the source tier, read-only."""
-    from contextlib import closing
-
-    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-    with closing(open_readonly_connection(archive / "source.db", validate_schema=False)) as conn:
-        row = conn.execute("SELECT source_path FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
-    return None if row is None or row[0] is None else str(row[0])
-
-
 def _raw_materialized_session_ids(archive: Path, raw_id: str) -> tuple[str, ...]:
     """Return every current session output in one admitted raw component.
 

@@ -195,7 +195,7 @@ class TestSharedLimitCeiling:
     def test_search_limit_fallback_is_max_query_limit_not_10000(self) -> None:
         """CLI query-first fallback is MAX_QUERY_LIMIT, not the old 10000."""
         from polylogue.archive.query.plan import SessionQueryPlan
-        from polylogue.archive.query.retrieval_candidates import search_limit
+        from polylogue.archive.query.retrieval import search_limit
         from polylogue.archive.query.spec import MAX_QUERY_LIMIT
 
         # Build a plan with no explicit limit (the query-first bare-token case).

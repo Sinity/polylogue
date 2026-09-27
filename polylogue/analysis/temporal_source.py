@@ -41,9 +41,8 @@ Recognized values:
 This taxonomy intentionally only describes the *source clock* of a
 timestamp — it is orthogonal to existing ``timing_provenance`` (which
 describes the *coverage shape*: ``timestamped_range`` vs
-``untimestamped`` vs ``start_timestamp_only`` vs ``end_timestamp_only``)
-and to ``date_provenance`` (which describes how a canonical session date
-was derived). The three axes coexist and answer different questions.
+``untimestamped`` vs ``start_timestamp_only`` vs ``end_timestamp_only``).
+The two axes coexist and answer different questions.
 
 Consumer time-confidence contract
 ---------------------------------
