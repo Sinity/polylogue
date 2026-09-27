@@ -543,9 +543,18 @@ def qualify(
     release = artifacts / "release-discovery"
     config = artifacts / "absent-private-config.toml"
     candidate_root = Path(__file__).resolve().parents[2]
+    # Sources are acquired only from canonical locations, so the sealed
+    # fixture tree is presented as Claude Code's projects directory of an
+    # isolated home; the operator's real provider directories stay unwatched.
+    home = artifacts / "home"
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
+    projects = home / ".claude" / "projects"
+    if not projects.is_symlink():
+        projects.symlink_to(source, target_is_directory=True)
     env = os.environ.copy()
     env.update(
         {
+            "HOME": str(home),
             "POLYLOGUE_ARCHIVE_ROOT": str(archive),
             "POLYLOGUE_CONFIG": str(config),
             "POLYLOGUE_SITE_CONFIG": "",
@@ -575,9 +584,6 @@ def qualify(
         command += ["-c", "from polylogue.daemon.cli import main; main()"]
     command += [
         "run",
-        "--root",
-        str(source),
-        "--no-default-sources",
         "--no-browser-capture",
         "--api-port",
         str(port),
@@ -850,7 +856,9 @@ def qualify(
                             receipt["outcome"] = "success"
                             break
                     if malformed_last and durable_raw_count_max >= 3:
-                        parse_error = _durable_parse_error(archive, source / "nested" / "z-session-2.jsonl")
+                        parse_error = _durable_parse_error(
+                            archive, projects / "nested" / "z-session-2.jsonl"
+                        ) or _durable_parse_error(archive, source / "nested" / "z-session-2.jsonl")
                         candidate_sessions = _unpublished_candidate_session_count(archive)
                         catchup = latest_status.get("catchup") if isinstance(latest_status, dict) else None
                         failed_count = (

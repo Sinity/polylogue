@@ -16,7 +16,6 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextlib import redirect_stdout
-from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
 from http.server import ThreadingHTTPServer
@@ -87,7 +86,7 @@ from polylogue.operations.embedding_lifecycle import (
 )
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
-from polylogue.sources.live.watcher import INBOX_SOURCE_SUFFIXES, default_sources
+from polylogue.sources.live.watcher import default_sources
 
 # The daemon ring's seam onto the storage checkpoint and one-tier writer
 # factories: daemon modules take them from here rather than each reaching
@@ -157,9 +156,6 @@ _OWNED_DEBT_STAGES = frozenset(
 T = TypeVar("T")
 _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS = 30
 
-# An additional root is content-detected by the ordinary export route. SQLite
-# remains admitted only by typed provider sources such as Hermes and Codex.
-_ADDITIONAL_SOURCE_SUFFIXES = (".json", ".jsonl", ".ndjson", ".zip")
 # Parse passes checkpoint between raw batches. Acquisition has no pass-time
 # limit, but its downloads and preparation hold no archive writer lease.
 _DRIVE_CATCHUP_MAX_PASS_SECONDS = 20.0
@@ -394,66 +390,24 @@ def _enable_faulthandler_if_supported() -> None:
         faulthandler.enable()
 
 
-def _watch_sources_from_roots(
-    roots: tuple[Path, ...],
+def _watch_sources(
     *,
     browser_capture_spool_path: Path | None = None,
     hermes_root: Path | None = None,
-    include_defaults: bool = True,
-    default_source_names: tuple[str, ...] = (),
 ) -> tuple[WatchSource, ...]:
-    """Build typed default sources plus configured additional roots.
+    """The daemon's watch set: every origin at its canonical location.
 
-    The archive inbox is different: ``polylogue import`` stages approved
-    exports there, including ChatGPT ``.json`` files and zipped takeouts, so
-    it keeps the same suffix contract as the default inbox source. Other
-    additional roots use content detection over ordinary export formats.
-
-    ``default_source_names`` selects whole typed default source definitions.
-    An empty selection keeps all defaults; ``include_defaults=False`` drops
-    them. Explicit roots remain additive in either case.
+    There are no custom source roots. Each origin is acquired from the place
+    its tool writes it, account exports arrive through ``polylogue import``
+    into the archive inbox, and a relocated tool directory is followed by a
+    symlink at the canonical path rather than by configuration. The one
+    substitution is the browser-capture spool, which Polylogue itself owns.
     """
-    from polylogue.paths import archive_root, browser_capture_spool_root
-
-    inbox_root = (archive_root() / "inbox").resolve(strict=False)
-    browser_root = (
-        browser_capture_spool_path.expanduser()
-        if browser_capture_spool_path is not None
-        else browser_capture_spool_root()
-    ).resolve(strict=False)
-
-    sources = list(default_sources(hermes_root=hermes_root)) if include_defaults else []
-    if default_source_names:
-        available = {source.name for source in sources}
-        unknown = set(default_source_names) - available
-        if unknown:
-            raise click.UsageError(
-                f"unknown default source(s): {', '.join(sorted(unknown))}; available: {', '.join(sorted(available))}"
-            )
-        selected = set(default_source_names)
-        sources = [source for source in sources if source.name in selected]
-    if browser_capture_spool_path is not None and any(source.name == "browser-capture" for source in sources):
+    sources = list(default_sources(hermes_root=hermes_root))
+    if browser_capture_spool_path is not None:
         spool = browser_capture_spool_path.expanduser()
         sources = [source for source in sources if source.name != "browser-capture"]
         sources.append(WatchSource(name="browser-capture", root=spool, suffixes=(".json",)))
-
-    known_roots = {source.root.resolve(strict=False) for source in sources}
-    for root in roots:
-        resolved = root.resolve(strict=False)
-        if resolved in known_roots:
-            sources = [
-                replace(source, required=True) if source.root.resolve(strict=False) == resolved else source
-                for source in sources
-            ]
-            continue
-        if resolved == inbox_root:
-            source = WatchSource(name="inbox", root=root, suffixes=INBOX_SOURCE_SUFFIXES, required=True)
-        elif resolved == browser_root:
-            source = WatchSource(name="browser-capture", root=root, suffixes=(".json",), required=True)
-        else:
-            source = WatchSource(name=root.name, root=root, suffixes=_ADDITIONAL_SOURCE_SUFFIXES, required=True)
-        sources.append(source)
-        known_roots.add(resolved)
     return tuple(sources)
 
 
@@ -2346,7 +2300,7 @@ async def _run_daemon_services_under_active_writer_lease(
                     "browser_capture_port": browser_capture_port,
                     "watch_enabled": enable_watch,
                     "source_catchup_enabled": enable_source_catchup,
-                    "source_roots": [str(src.root) for src in sources],
+                    "watch_roots": [str(src.root) for src in sources],
                 },
             )
     except BaseException:
@@ -3799,13 +3753,6 @@ def health_command(
 
 @main.command("run", help="Run configured long-lived daemon components.")
 @click.option(
-    "--root",
-    "roots",
-    multiple=True,
-    type=click.Path(exists=False, path_type=Path),
-    help="Add a watch root alongside typed defaults (repeatable).",
-)
-@click.option(
     "--host",
     default="127.0.0.1",
     show_default=True,
@@ -3915,22 +3862,9 @@ def health_command(
         "through it -- default OFF; an explicit opt-out for the auto-minted-token default."
     ),
 )
-@click.option(
-    "--no-default-sources",
-    is_flag=True,
-    default=False,
-    help="Watch only the given --root values; do not add the typed default sources.",
-)
-@click.option(
-    "--default-source",
-    "default_source_names",
-    multiple=True,
-    help="Watch only this named typed default source (repeatable); --root values remain additive.",
-)
 @click.pass_context
 def run_command(
     ctx: click.Context,
-    roots: tuple[Path, ...],
     host: str,
     port: int,
     spool_path: Path | None,
@@ -3948,8 +3882,6 @@ def run_command(
     browser_port: int | None,
     api_auth_token: str | None,
     api_allow_no_auth: bool,
-    no_default_sources: bool,
-    default_source_names: tuple[str, ...],
 ) -> None:
     """Run configured daemon components.
 
@@ -3975,8 +3907,6 @@ def run_command(
         source = ctx.get_parameter_source(name)
         return source is None or source is click.core.ParameterSource.DEFAULT
 
-    if not roots and cfg.source_roots:
-        roots = tuple(Path(root).expanduser() for root in cfg.source_roots)
     if parameter_is_default("host") and cfg.layer_of("browser_capture_host") != "default":
         host = cfg.browser_capture_host
     if parameter_is_default("port") and cfg.layer_of("browser_capture_port") != "default":
@@ -4011,16 +3941,9 @@ def run_command(
 
     atexit.register(_cleanup_pidfile)
 
-    if no_default_sources and not roots:
-        raise click.UsageError("--no-default-sources requires at least one --root")
-    if no_default_sources and default_source_names:
-        raise click.UsageError("--default-source cannot be used with --no-default-sources")
-    sources = _watch_sources_from_roots(
-        roots,
+    sources = _watch_sources(
         browser_capture_spool_path=spool_path,
         hermes_root=runtime.source_paths.hermes,
-        include_defaults=not no_default_sources,
-        default_source_names=default_source_names,
     )
     components = []
     if enable_watch:
@@ -4071,41 +3994,13 @@ def run_command(
 
 
 @main.command("watch", help="Watch source directories and ingest new sessions live.")
-@click.option(
-    "--root",
-    "roots",
-    multiple=True,
-    type=click.Path(exists=False, path_type=Path),
-    help="Add a watch root alongside typed defaults (repeatable).",
-)
-@click.option(
-    "--no-default-sources",
-    is_flag=True,
-    default=False,
-    help="Watch only the given --root values; do not add the typed default sources.",
-)
-@click.option(
-    "--default-source",
-    "default_source_names",
-    multiple=True,
-    help="Watch only this named typed default source (repeatable); --root values remain additive.",
-)
-def watch_command(roots: tuple[Path, ...], no_default_sources: bool, default_source_names: tuple[str, ...]) -> None:
+def watch_command() -> None:
     from polylogue.config import resolve_runtime_config
     from polylogue.operations.durable_change_train import ArchiveOwnershipError, DurableChangeTrainError
     from polylogue.paths import archive_root
 
-    if no_default_sources and not roots:
-        raise click.UsageError("--no-default-sources requires at least one --root")
-    if no_default_sources and default_source_names:
-        raise click.UsageError("--default-source cannot be used with --no-default-sources")
     runtime_source_paths = resolve_runtime_config().source_paths
-    sources = _watch_sources_from_roots(
-        roots,
-        hermes_root=runtime_source_paths.hermes,
-        include_defaults=not no_default_sources,
-        default_source_names=default_source_names,
-    )
+    sources = _watch_sources(hermes_root=runtime_source_paths.hermes)
 
     archive_root_path = Path(archive_root())
     archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)

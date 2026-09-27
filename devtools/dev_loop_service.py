@@ -212,7 +212,7 @@ def _start_daemon(
         str(api_port),
         "--port",
         str(capture_port),
-        "--root",
+        "--spool",
         str(spool),
         "--browser-capture-auth-token",
         _RECEIVER_TOKEN,
