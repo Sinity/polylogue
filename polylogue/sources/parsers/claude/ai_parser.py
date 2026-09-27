@@ -23,7 +23,7 @@ Four distinct wire shapes live under the ``claude-ai`` acquisition family:
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, MutableSequence
 
 from polylogue.archive.message.artifacts import classify_material_origin
 from polylogue.archive.message.roles import Role
@@ -32,6 +32,8 @@ from polylogue.core.enums import BlockType, MaterialOrigin, Provider, SessionKin
 from polylogue.logging import get_logger
 
 from ..base import (
+    AdmissionLedger,
+    AdmissionUnit,
     ParsedAttachment,
     ParsedContentBlock,
     ParsedMessage,
@@ -494,13 +496,39 @@ def _design_user_message(
 
 @parser_admission("claude_design")
 def parse_design(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
-    resolved_session_id = str(payload.get("uuid") or payload.get("id") or fallback_id)
     raw_messages = payload.get("messages")
     design_messages = raw_messages if isinstance(raw_messages, list) else []
+    return _parse_design_records(payload, design_messages, fallback_id, [], [])
 
-    messages: list[ParsedMessage] = []
+
+def parse_design_stream(
+    envelope: Mapping[str, object],
+    records: Iterable[object],
+    fallback_id: str,
+    *,
+    message_sink: MutableSequence[ParsedMessage],
+    event_sink: MutableSequence[ParsedSessionEvent],
+) -> ParsedSession:
+    """Lower a proved Design object without retaining its message array."""
+    session = _parse_design_records(envelope, records, fallback_id, message_sink, event_sink)
+    ledger = AdmissionLedger()
+    ledger.expect(AdmissionUnit.OUTER_RECORD, 1)
+    ledger.materialized(AdmissionUnit.OUTER_RECORD, 0, "parsed")
+    return session.model_copy(
+        update={"messages": message_sink, "session_events": event_sink, "unit_accounting": ledger.close()}
+    )
+
+
+def _parse_design_records(
+    payload: Mapping[str, object],
+    design_messages: Iterable[object],
+    fallback_id: str,
+    messages: MutableSequence[ParsedMessage],
+    session_events: MutableSequence[ParsedSessionEvent],
+) -> ParsedSession:
+    resolved_session_id = str(payload.get("uuid") or payload.get("id") or fallback_id)
+
     attachments: list[ParsedAttachment] = []
-    session_events: list[ParsedSessionEvent] = []
     position = 0
     for raw_message in design_messages:
         if not isinstance(raw_message, Mapping):
@@ -514,7 +542,9 @@ def parse_design(payload: Mapping[str, object], fallback_id: str) -> ParsedSessi
             message, message_attachments, author_event = _design_user_message(
                 raw_message, content_payload, position=position
             )
-            messages.append(message)
+            messages.append(
+                message if isinstance(messages, list) else message.model_copy(update={"is_active_leaf": False})
+            )
             attachments.extend(message_attachments)
             if author_event is not None:
                 session_events.append(author_event)
@@ -526,7 +556,11 @@ def parse_design(payload: Mapping[str, object], fallback_id: str) -> ParsedSessi
                 start_position=position,
                 resolved_session_id=resolved_session_id,
             )
-            messages.extend(segment_messages)
+            messages.extend(
+                segment_messages
+                if isinstance(messages, list)
+                else [message.model_copy(update={"is_active_leaf": False}) for message in segment_messages]
+            )
             if turn_event is not None:
                 session_events.append(turn_event)
         else:
@@ -535,12 +569,15 @@ def parse_design(payload: Mapping[str, object], fallback_id: str) -> ParsedSessi
             )
 
     active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
-    messages = mark_last_occurrence_as_active_leaf(messages)
+    if isinstance(messages, list):
+        messages = mark_last_occurrence_as_active_leaf(messages)
+    elif messages:
+        messages[-1] = messages[-1].model_copy(update={"is_active_leaf": True})
 
     title, title_source, title_ref = _resolve_claude_ai_title(
         payload, resolved_session_id, ref_prefix="claude-design-title"
     )
-    return ParsedSession(
+    session = ParsedSession(
         source_name=Provider.CLAUDE_DESIGN,
         provider_session_id=resolved_session_id,
         title=str(title),
@@ -549,11 +586,14 @@ def parse_design(payload: Mapping[str, object], fallback_id: str) -> ParsedSessi
         session_kind=_session_kind(payload),
         created_at=str(payload.get("created_at")) if payload.get("created_at") else None,
         updated_at=str(payload.get("updated_at")) if payload.get("updated_at") else None,
-        messages=messages,
+        messages=messages if isinstance(messages, list) else [],
         active_leaf_message_provider_id=active_leaf_message_provider_id,
         attachments=attachments,
-        session_events=session_events,
+        session_events=session_events if isinstance(session_events, list) else [],
     )
+    if not isinstance(messages, list) or not isinstance(session_events, list):
+        return session.model_copy(update={"messages": messages, "session_events": session_events})
+    return session
 
 
 # ---------------------------------------------------------------------------
