@@ -339,6 +339,7 @@ _retired_sink_totals = {"delivered": 0, "dropped": 0, "failures": 0, "undrained"
 FIELD_MAX_CHARS = 256
 EVENT_MAX_FIELDS = 32
 EVENT_MAX_BYTES = 4096
+_MAX_EVENT_INTEGER_BITS = 63
 _PHASE_NAME = re.compile(r"[a-z][a-z0-9_.]{0,47}\Z")
 _REASON_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_.:-]{0,127}\Z")
 
@@ -418,14 +419,25 @@ def _validate(fields: Mapping[str, object]) -> tuple[dict[str, object], dict[str
         if (
             kind == "count"
             and value is not None
-            and (isinstance(value, bool) or not isinstance(value, int) or value < 0)
+            and (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+                or int.bit_length(value) > _MAX_EVENT_INTEGER_BITS
+            )
         ):
             rejected[name] = "invalid_count"
             continue
         if (
             kind in {"duration", "epoch"}
             and value is not None
-            and (isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value < 0)
+            and (
+                isinstance(value, bool)
+                or not isinstance(value, int | float)
+                or (isinstance(value, int) and int.bit_length(value) > _MAX_EVENT_INTEGER_BITS)
+                or not math.isfinite(value)
+                or value < 0
+            )
         ):
             rejected[name] = "invalid_duration" if kind == "duration" else "invalid_epoch"
             continue
@@ -442,6 +454,7 @@ def _validate(fields: Mapping[str, object]) -> tuple[dict[str, object], dict[str
                     and _PHASE_NAME.fullmatch(key) is not None
                     and not isinstance(milliseconds, bool)
                     and isinstance(milliseconds, int | float)
+                    and (not isinstance(milliseconds, int) or int.bit_length(milliseconds) <= _MAX_EVENT_INTEGER_BITS)
                     and math.isfinite(milliseconds)
                     and milliseconds >= 0
                     for key, milliseconds in value.items()
@@ -463,6 +476,9 @@ def _validate(fields: Mapping[str, object]) -> tuple[dict[str, object], dict[str
             rejected[name] = "invalid_reason"
             continue
         if isinstance(value, float) and not math.isfinite(value):
+            rejected[name] = "invalid_value"
+            continue
+        if isinstance(value, int) and int.bit_length(value) > _MAX_EVENT_INTEGER_BITS:
             rejected[name] = "invalid_value"
             continue
         try:
@@ -519,11 +535,17 @@ def _emit_raw(level: int, event: str, fields: Mapping[str, object]) -> None:
     record["ts"] = _now()
     record["level"] = _LEVEL_NAMES.get(level, "info")
     record["event"] = _truncate_scalar(event)
-    while len(json.dumps(record, default=str)) > EVENT_MAX_BYTES and fields:
-        removable = next((key for key in reversed(record) if key not in {"ts", "level", "event"}), None)
-        if removable is None:
-            break
-        record.pop(removable)
+    try:
+        while len(json.dumps(record, default=str)) > EVENT_MAX_BYTES and fields:
+            removable = next((key for key in reversed(record) if key not in {"ts", "level", "event"}), None)
+            if removable is None:
+                break
+            record.pop(removable)
+    except Exception:
+        # A diagnostic encoding failure cannot change the observed operation.
+        with _sinks_lock:
+            _sync_sink_failures += 1
+        return
     with _sinks_lock:
         sinks = tuple(_sinks)
     for sink in sinks:
