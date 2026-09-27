@@ -19,6 +19,7 @@ import pytest
 
 from polylogue import logging as plog
 from polylogue.logging_fields import FIELDS, FORBIDDEN_FIELDS, QUARANTINED_FIELDS
+from polylogue.pipeline.batch_policy import WriteDestination, select_cold_build_shape
 
 
 @pytest.fixture(autouse=True)
@@ -314,6 +315,64 @@ def test_json_is_the_storage_form_and_console_is_a_view() -> None:
     assert parsed["event"] == "daemon.stage.ok"
     assert parsed["sessions"] == 3
     assert "daemon.stage.ok" in plog.render_console(parsed)
+
+
+def test_cold_build_shape_fields_reach_the_json_sink() -> None:
+    """The real cold-build policy event must survive validation and rendering.
+
+    Anti-vacuity: remove any of the three field declarations and the sink emits
+    a ``log.field_rejected`` record while omitting that diagnostic.
+    """
+    shape = select_cold_build_shape(
+        destination=WriteDestination(tier="index", owned_rebuildable_generation=True),
+        archive_empty=True,
+    )
+    stream = io.StringIO()
+    sink = plog.add_sink(plog.make_stream_sink(stream, fmt="json"))
+    try:
+        plog.emit(
+            "live.ingest.cold_build_shape_engaged",
+            outcome="ok",
+            reason="index_generation_empty",
+            shape=shape.reason,
+            fresh_build=shape.fresh_build,
+            owned_generation=True,
+            files=3,
+        )
+    finally:
+        plog.remove_sink(sink)
+
+    records = [json.loads(line) for line in stream.getvalue().splitlines()]
+    assert len(records) == 1
+    assert records[0]["event"] == "live.ingest.cold_build_shape_engaged"
+    assert records[0]["reason"] == "index_generation_empty"
+    assert records[0]["shape"] == shape.reason
+    assert records[0]["fresh_build"] is True
+    assert records[0]["owned_generation"] is True
+
+
+def test_cold_build_checkpoint_fields_reach_the_json_sink() -> None:
+    stream = io.StringIO()
+    sink = plog.add_sink(plog.make_stream_sink(stream, fmt="json"))
+    try:
+        plog.emit(
+            "live.ingest.cold_build_shape_released",
+            outcome="ok",
+            reason="pass_complete",
+            sessions=3,
+            checkpoint_busy_pages=0,
+            checkpoint_log_pages=24,
+            checkpointed_pages=24,
+        )
+    finally:
+        plog.remove_sink(sink)
+
+    records = [json.loads(line) for line in stream.getvalue().splitlines()]
+    assert len(records) == 1
+    assert records[0]["checkpoint_busy_pages"] == 0
+    assert records[0]["checkpoint_log_pages"] == 24
+    assert records[0]["checkpointed_pages"] == 24
+    assert records[0]["reason"] == "pass_complete"
 
 
 def test_stdlib_records_are_bridged_into_the_event_stream() -> None:
