@@ -57,7 +57,7 @@ ingest and full replay/reindex.
 | --- | --- | --- |
 | `source.db` | durable | raw acquired bytes, artifact taxonomy, blob/GC substrate, hook events, sidecars |
 | `index.db` | rebuildable | parsed tree, FTS, links, costs, materialized insights |
-| `embeddings.db` | expensive to rebuild | vectors, meta, status; preserve reusable vectors before replacement |
+| `embeddings.db` | expensive to rebuild | vectors, meta, status; vectors are repurchased, never replayed, so no product route replaces this tier |
 | `user.db` | durable, irreplaceable | unified `assertions`, settings, annotation schemas/provenance |
 | `audit.db` | durable, continuity-chained | previews, authorizations, attempts, continuity |
 | `ops.db` | disposable | cursors, attempts, convergence debt, daemon telemetry |

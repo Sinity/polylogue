@@ -60,7 +60,7 @@ def test_archive_debt_blocks_a_lost_durable_tier_and_keeps_fresh_roots_actionabl
     lost = by_ref["debt:archive-tier:audit:missing"]
     assert lost.status == "blocked"
     assert lost.actions == ()
-    assert "Restore the archive root from a verified backup" in lost.details
+    assert "Restore the archive root from a verified backup" in (lost.details or "")
     derived = by_ref["debt:archive-tier:ops:missing"]
     assert derived.status == "actionable"
     assert [action.command for action in derived.actions] == [("polylogued", "run")]

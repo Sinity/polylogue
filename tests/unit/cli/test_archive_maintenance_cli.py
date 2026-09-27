@@ -1677,6 +1677,7 @@ _RETIRED_MAINTENANCE_VERBS = (
     "migrate-tier",
     "blob-disposition",
     "blob-residue-compare",
+    "embedding-preservation",
     "operation-recovery",
 )
 

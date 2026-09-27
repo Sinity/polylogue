@@ -259,13 +259,6 @@ MAINTENANCE_COMMAND_DECLARATIONS: Final[tuple[MaintenanceCommandDeclaration, ...
         "wanted_sources_command",
         "Freeze or authorize the private wanted-source denominator for the final rebuild.",
     ),
-    _command(
-        "embedding-preservation",
-        "_embedding_preservation",
-        "embedding_preservation_group",
-        "Preserve, restore, prove, and discard embedding vectors across a rebuild.",
-        nested_group=True,
-    ),
 )
 
 MAINTENANCE_COMMAND_BY_NAME: Final[dict[str, MaintenanceCommandDeclaration]] = {
