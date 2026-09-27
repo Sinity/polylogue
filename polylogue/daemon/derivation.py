@@ -846,7 +846,17 @@ class _Pass:
             )
             return
 
+        held_at_admission: dict[str, str] = {}
+
         def _publish(adapter: DerivationAdapter = adapter, replacement: ReplacementLike = replacement) -> bool:
+            # Compute ran outside the writer, so the pre-compute barrier
+            # decision may be stale: an ingest can stage a newer, unpublished
+            # revision meanwhile. Re-decide inside the writer admission, where
+            # no such ingest can interleave, and refuse the publication.
+            if not retiring:
+                held_at_admission.update(self.barrier_blocks(adapter, (key,), phase=DiscoveryPhase.REQUIRED))
+                if held_at_admission:
+                    return False
             return adapter.publish(self.frame, replacement)
 
         # The publication budget bounds *attempts*, not successes. Counting
@@ -882,7 +892,8 @@ class _Pass:
                 KeyOutcome(
                     key=derivation_key,
                     outcome=Outcome.PENDING,
-                    reason=PendingReason.BINDING_MOVED,
+                    reason=PendingReason.BLOCKED if held_at_admission else PendingReason.BINDING_MOVED,
+                    error=held_at_admission.get(key),
                     elapsed_s=elapsed,
                 )
             )

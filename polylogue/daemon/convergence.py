@@ -574,8 +574,29 @@ def _converge_selected_session_parts_sync(
                     )
                 )
                 break
+            held_at_admission: list[str] = []
+
+            def publish_unless_held(
+                replacement: ReplacementLike = replacement,
+                target: SelectedSessionTarget = target,
+                held_at_admission: list[str] = held_at_admission,
+            ) -> bool:
+                # Re-decide the barrier inside the writer admission: compute
+                # ran outside it, so a newer unpublished revision may have been
+                # staged since the pre-compute check.
+                if barrier is not None and target.expected == "required":
+                    try:
+                        waiting = target.session_id in barrier((target.session_id,))
+                    except Exception as exc:
+                        held_at_admission.append(f"publication barrier unreadable: {exc}")
+                        return False
+                    if waiting:
+                        held_at_admission.append("awaits primary publication")
+                        return False
+                return adapter.publish(frame, replacement)
+
             try:
-                accepted = admission("session_profile", partial(adapter.publish, frame, replacement))
+                accepted = admission("session_profile", publish_unless_held)
             except Exception as exc:
                 # polylogue-ylh7v: session-profile publication is one index
                 # transaction with one outcome. The partial-commit branch this
@@ -587,6 +608,13 @@ def _converge_selected_session_parts_sync(
                 outcomes.append(
                     _selected_outcome(
                         target, "failed", before, input_binding=prepared_binding, reason=f"publish: {exc}"
+                    )
+                )
+                break
+            if held_at_admission:
+                outcomes.append(
+                    _selected_outcome(
+                        target, "pending", before, input_binding=prepared_binding, reason=held_at_admission[0]
                     )
                 )
                 break

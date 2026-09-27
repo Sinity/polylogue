@@ -86,3 +86,40 @@ def test_selected_maintenance_waits_for_the_primary_barrier() -> None:
     held = outcomes[0]
     assert (held.session_id, held.state, held.reason) == ("held", "pending", "awaits primary publication")
     assert adapter.computed == ["gone"]
+
+
+def test_selected_maintenance_rechecks_the_barrier_at_publication() -> None:
+    """A revision staged during compute blocks publication of the selected target.
+
+    Anti-vacuity: a pre-compute-only check publishes the stale derivation.
+    """
+    from polylogue.daemon.convergence import SelectedSessionTarget, _converge_selected_session_parts_sync
+    from polylogue.daemon.derivation import DerivationFrame
+
+    staged: set[str] = set()
+    published: list[object] = []
+
+    class _Adapter(_SelectedAdapter):
+        def compute(self, frame: object, session_id: str) -> object:
+            staged.add(session_id)
+            return type("R", (), {"input_binding": "b1"})()
+
+        def publish(self, frame: object, replacement: object) -> bool:
+            published.append(replacement)
+            return True
+
+    frame = DerivationFrame(archive_root="/archive", source_revision="g", recipe_versions={"session_profile": "r"})
+    outcomes = _converge_selected_session_parts_sync(
+        frame,
+        targets=(SelectedSessionTarget("s", "required"),),
+        expected_generation="g",
+        expected_recipe="r",
+        adapter=_Adapter(),  # type: ignore[arg-type]
+        adapter_recipe="r",
+        stop_requested=lambda: None,
+        admission=lambda domain, publish: publish(),  # type: ignore[arg-type]
+        barrier=lambda sessions: staged & set(sessions),
+    )
+
+    assert published == []
+    assert (outcomes[0].state, outcomes[0].reason) == ("pending", "awaits primary publication")

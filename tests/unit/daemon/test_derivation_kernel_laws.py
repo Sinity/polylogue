@@ -1041,3 +1041,27 @@ def test_retiring_excess_output_is_never_held_by_the_barrier() -> None:
 
     assert adapter.published == ["orphan"]
     assert "orphan" not in adapter.output
+
+
+def test_a_revision_staged_during_compute_is_refused_at_publication() -> None:
+    """The barrier is re-decided inside the writer admission.
+
+    Anti-vacuity (polylogue-wtfyv review): checking only before compute lets a
+    session whose newer revision was staged while computing publish anyway.
+    """
+    adapter = SessionKeyedDerivation("d", required=("s",))
+    staged: set[str] = set()
+    original_compute = adapter.compute
+
+    def compute_then_stage(frame: DerivationFrame, key: str) -> Replacement:
+        replacement = original_compute(frame, key)
+        staged.add(key)  # a concurrent ingest stages an unpublished revision
+        return replacement
+
+    adapter.compute = compute_then_stage  # type: ignore[method-assign]
+
+    report = converge(DerivationRegistry([adapter]), FRAME, barrier=lambda sessions: staged & set(sessions))
+
+    assert adapter.computed == ["s"]
+    assert adapter.published == []
+    assert [(item.outcome, item.reason) for item in report.outcomes] == [(Outcome.PENDING, PendingReason.BLOCKED)]
