@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 from hashlib import sha256
+from pathlib import Path
 
 import pytest
 from hypothesis import given, settings
@@ -121,3 +122,84 @@ def test_surrogate_escape_split_across_read_windows_is_seen() -> None:
     lone = prefix + b'\\ud83dx"]'
     assert payload_content_identity(paired) == _decoded_identity(paired)
     assert payload_content_identity(lone) == _decoded_identity(lone)
+
+
+_SPILL_CASES = [
+    json.dumps({"text": "a" * 300, "k": 1}).encode(),
+    json.dumps({"text": 'line\n"q"\\ \t' * 40}).encode(),
+    json.dumps({"t": "\U0001f600" * 60}, ensure_ascii=True).encode(),
+    json.dumps({"t": "é" * 150}, ensure_ascii=False).encode(),
+    json.dumps({"t": "é가" * 60}, ensure_ascii=True).encode(),
+    json.dumps({"k" * 300: 1, "a": 2}).encode(),
+    json.dumps(["x" * 300, "y", "z" * 300]).encode(),
+    b'{"t":"' + b"a" * 300 + b'\\ud800b"}',
+    b'["' + b"\\\\" * 200 + b'"]',
+    b'["' + b"a" * 300 + b'\\x"]',
+    b'["' + b"a" * 300,
+    b'{"a":1e400,"a":1}',
+    b'{"a":1,"a":1e400}',
+    b"[1e9999999999999999999]",
+]
+
+
+@pytest.mark.parametrize("window", [7, 64, 4096])
+@pytest.mark.parametrize("payload", _SPILL_CASES)
+def test_spilled_strings_and_small_windows_match_the_decoder(
+    payload: bytes, window: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Strings above the spill bound and every window boundary give the decoder's identity.
+
+    Tiny read windows and a tiny spill bound put escapes, surrogate pairs,
+    combining sequences and multi-byte UTF-8 on every boundary.
+
+    Anti-vacuity: split a surrogate pair, a UTF-8 sequence or an NFC
+    composition across spill windows and a case diverges from the decoder.
+    """
+    from polylogue.core import content_identity
+
+    monkeypatch.setattr(content_identity, "_SPILL_STRING_BYTES", 64)
+    monkeypatch.setattr(content_identity, "_STREAM_READ_BYTES", window)
+    assert payload_content_identity(payload) == _decoded_identity(payload)
+
+
+def test_a_duplicate_key_drops_a_discarded_non_finite_member() -> None:
+    """Last-key-wins decides before a non-finite member forfeits structure.
+
+    Anti-vacuity: fail on the first non-finite number and ``{"a":1e400,"a":1}``
+    gets its byte digest instead of the identity of ``{"a":1}``.
+    """
+    assert payload_content_identity(b'{"a":1e400,"a":1}') == payload_content_identity(b'{"a":1}')
+    assert payload_content_identity(b'{"a":1,"a":1e400}') == sha256(b'{"a":1,"a":1e400}').hexdigest()
+
+
+def test_a_single_huge_string_is_never_held_whole(tmp_path: Path) -> None:
+    """Anti-vacuity: hand the whole string to the tokenizer and the traced peak
+    exceeds the string's own size."""
+    import tracemalloc
+
+    path = tmp_path / "member.json"
+    size = 64 * 1024 * 1024
+    with path.open("wb") as handle:
+        handle.write(b'{"t":"')
+        for _ in range(size // (1024 * 1024)):
+            handle.write(b"a" * (1024 * 1024))
+        handle.write(b'"}')
+    tracemalloc.start()
+    try:
+        with path.open("rb") as handle:
+            stream_payload_content_identity(handle)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < size // 2
+
+
+def test_a_long_backslash_run_scans_in_linear_time() -> None:
+    """Anti-vacuity: a non-possessive backslash run retries from every position,
+    and a 1 MiB run takes minutes instead of well under the bound."""
+    import time
+
+    payload = b'["' + b"\\\\" * (512 * 1024) + b'"]'
+    started = time.perf_counter()
+    payload_content_identity(payload)
+    assert time.perf_counter() - started < 20
