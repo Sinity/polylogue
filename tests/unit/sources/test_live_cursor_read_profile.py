@@ -124,7 +124,7 @@ def test_interrupted_attempts_stay_running_when_the_recovery_read_expires(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A recovery read that keeps expiring leaves the obligation in place.
+    """A recovery read that keeps expiring fails startup and keeps the obligation.
 
     Anti-vacuity: mark attempts interrupted before the rewind read (the old
     order in ``_mark_interrupted_ops_attempts``) and the attempt leaves
@@ -156,7 +156,8 @@ def test_interrupted_attempts_stay_running_when_the_recovery_read_expires(
     monkeypatch.setattr(ReadFrame, "stream", always_expired)
     monkeypatch.setattr(ReadFrame, "rebind", lambda _frame: None)
 
-    store._mark_interrupted_ops_attempts()
+    with pytest.raises(ReadFrameExpiredError):
+        store._mark_interrupted_ops_attempts()
 
     with store._connect_ops() as conn:
         assert conn.execute("SELECT status FROM ingest_attempts WHERE attempt_id = 'attempt-1'").fetchone() == (

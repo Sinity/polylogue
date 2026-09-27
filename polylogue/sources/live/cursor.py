@@ -601,7 +601,7 @@ class CursorStore:
 
         best_effort_cursor_write("archive ops interrupted attempt recovery", write)
 
-    def _rewind_interrupted_unparsed_cursors(self, source_paths: Iterable[str]) -> bool:
+    def _rewind_interrupted_unparsed_cursors(self, source_paths: Iterable[str]) -> bool | None:
         """Reopen cursors that outran a raw row left unparsed by interruption.
 
         Full ingest admits source bytes before parsing them. If the daemon
@@ -612,8 +612,10 @@ class CursorStore:
         Decided ambiguous membership is already terminal authority and stays
         cursor-complete.
 
-        Returns whether source state was read, so the caller keeps the
-        attempts as the recovery obligation when it was not.
+        Returns a true value only when source state was read and every
+        rewind was written, so the caller keeps the attempts as the recovery
+        obligation otherwise. A read that keeps expiring propagates, with the
+        attempts still ``running`` for the next startup.
         """
         paths = tuple(dict.fromkeys(path for path in source_paths if path))
         if not paths:
@@ -645,11 +647,7 @@ class CursorStore:
                             break
                         except ReadFrameExpiredError:
                             if attempt >= _INTERRUPTED_SOURCE_PAGE_RETRIES:
-                                logger.warning(
-                                    "archive ops interrupted recovery: source parse-state read kept expiring; "
-                                    "attempts stay running for the next startup"
-                                )
-                                return False
+                                raise
                             frame.rebind()
                     else:
                         raise AssertionError("bounded interrupted-source page retry loop fell through")
@@ -659,7 +657,7 @@ class CursorStore:
                 "archive ops interrupted recovery: could not inspect source parse state",
                 exc_info=True,
             )
-            return False
+            return
         if not unparsed:
             return True
 
