@@ -116,7 +116,13 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     prepare_session_shard,
 )
 from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError, discard_session_shard
-from polylogue.storage.sqlite.connection_profile import ReadContinuation, ReadFrame, read_frame
+from polylogue.storage.sqlite.connection_profile import (
+    ReadContinuation,
+    ReadFrame,
+    ReadFrameExpiredError,
+    StaleContinuationError,
+    read_frame,
+)
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
 _LOGGER = _polylogue_logging.get_logger(__name__)
@@ -2352,16 +2358,15 @@ def require_current_parser_source_census(
     ) as source_frame:
         source_frontier_rowid: int | None = None
         if selections is None:
-            frontier_rows = source_frame.stream("SELECT COALESCE(MAX(rowid), 0) FROM raw_sessions")
-            try:
-                source_frontier_rowid = int(next(frontier_rows)[0])
-            finally:
-                frontier_rows.close()
+            source_frontier_rowid = _current_source_rowid_frontier(source_frame)
         for selection in _current_source_raw_id_selections(
             source_frame, selections, frontier_rowid=source_frontier_rowid
         ):
             where = f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
-            rows = source_frame.stream(
+            rows = _read_current_source_census_page(
+                source_frame,
+                selection,
+                source_frontier_rowid,
                 f"""
                 SELECT r.raw_id, c.parser_fingerprint, c.status, c.logical_keys_json
                 FROM raw_sessions AS r
@@ -2384,6 +2389,7 @@ def require_current_parser_source_census(
                     stale_raw_ids.append(raw_id)
                     continue
                 recorded_logical_keys[raw_id] = normalized_keys
+        _require_current_source_census_frame(source_frame)
     if stale_raw_ids:
         sample = ", ".join(stale_raw_ids[:5])
         raise FrozenSourceRemediationRequiredError(
@@ -2407,7 +2413,10 @@ def require_current_parser_source_census(
                 RawRevisionAuthority.BYTE_PROVEN.value,
                 *selection,
             )
-            rows = source_frame.stream(
+            rows = _read_current_source_census_page(
+                source_frame,
+                selection,
+                source_frontier_rowid,
                 f"""
                 SELECT r.raw_id, r.logical_source_key, r.revision_kind, r.source_index, m.logical_source_key,
                        EXISTS(SELECT 1 FROM raw_artifacts AS a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0),
@@ -2525,7 +2534,10 @@ def require_current_parser_source_census(
             source_frame, selections, frontier_rowid=source_frontier_rowid
         ):
             where = f"WHERE raw_id IN ({','.join('?' for _ in selection)})"
-            rows = source_frame.stream(
+            rows = _read_current_source_census_page(
+                source_frame,
+                selection,
+                source_frontier_rowid,
                 f"""
                 SELECT raw_id, logical_source_key, revision_kind, revision_authority,
                        source_index, predecessor_raw_id, baseline_raw_id
@@ -2628,7 +2640,10 @@ def require_current_parser_source_census(
             authority_params: tuple[object, ...] = selection
             unresolved_raw_ids.extend(
                 str(row[0])
-                for row in source_frame.stream(
+                for row in _read_current_source_census_page(
+                    source_frame,
+                    selection,
+                    source_frontier_rowid,
                     f"""
                     SELECT DISTINCT r.raw_id
                     FROM raw_sessions AS r
@@ -2666,6 +2681,81 @@ def require_current_parser_source_census(
 
 
 _CURRENT_SOURCE_CENSUS_PAGE_SIZE = 500
+_CURRENT_SOURCE_CENSUS_PAGE_RETRIES = 1
+
+
+def _current_source_rowid_frontier(source_frame: ReadFrame) -> int:
+    """Capture the committed source row frontier, retrying if its frame expires."""
+    sql = "SELECT COALESCE(MAX(rowid), 0) FROM raw_sessions"
+    for attempt in range(_CURRENT_SOURCE_CENSUS_PAGE_RETRIES + 1):
+        try:
+            rows = tuple(source_frame.stream(sql))
+            return int(rows[0][0]) if rows else 0
+        except ReadFrameExpiredError:
+            if attempt >= _CURRENT_SOURCE_CENSUS_PAGE_RETRIES:
+                raise
+            _require_current_source_census_frame(source_frame)
+            source_frame.rebind()
+    raise AssertionError("bounded source frontier retry loop fell through")
+
+
+def _current_source_selection_continuation(
+    source_frame: ReadFrame,
+    selection: tuple[str, ...],
+    frontier_rowid: int | None,
+) -> ReadContinuation:
+    """Anchor one page by its source endpoint or its immutable input selection."""
+    last_raw_id = selection[-1]
+    if frontier_rowid is None:
+        continuation = ReadContinuation(
+            position=last_raw_id,
+            anchor_sql="SELECT ?",
+            anchor_params=(last_raw_id,),
+        )
+    else:
+        continuation = ReadContinuation(
+            position=last_raw_id,
+            anchor_sql="SELECT raw_id FROM raw_sessions WHERE raw_id = ? AND rowid <= ?",
+            anchor_params=(last_raw_id, frontier_rowid),
+        )
+    return source_frame.bind(continuation)
+
+
+def _require_current_source_census_frame(source_frame: ReadFrame) -> None:
+    """Refuse a mixed census if the source changed since this frame opened."""
+    if not source_frame.revalidate():
+        raise StaleContinuationError(
+            "source archive changed during parser source census; retry against one unchanged generation"
+        )
+
+
+def _resume_current_source_census(
+    source_frame: ReadFrame,
+    continuation: ReadContinuation,
+) -> ReadContinuation:
+    if source_frame.expired:
+        _require_current_source_census_frame(source_frame)
+    return source_frame.resume(continuation)
+
+
+def _read_current_source_census_page(
+    source_frame: ReadFrame,
+    selection: tuple[str, ...],
+    frontier_rowid: int | None,
+    sql: str,
+    parameters: Sequence[object],
+) -> tuple[sqlite3.Row, ...]:
+    """Read a whole selection before changing result state, retrying one expiry."""
+    continuation = _current_source_selection_continuation(source_frame, selection, frontier_rowid)
+    for attempt in range(_CURRENT_SOURCE_CENSUS_PAGE_RETRIES + 1):
+        try:
+            return tuple(source_frame.stream(sql, parameters))
+        except ReadFrameExpiredError:
+            if attempt >= _CURRENT_SOURCE_CENSUS_PAGE_RETRIES:
+                raise
+            _require_current_source_census_frame(source_frame)
+            _resume_current_source_census(source_frame, continuation)
+    raise AssertionError("bounded source census page retry loop fell through")
 
 
 def _current_source_raw_id_selections(
@@ -2681,18 +2771,9 @@ def _current_source_raw_id_selections(
             if not selection:
                 continue
             if continuation is not None:
-                source_frame.resume(continuation)
-            continuation = source_frame.bind(
-                ReadContinuation(
-                    position=selection[-1],
-                    # Explicit selections are an immutable caller-owned page;
-                    # unlike archive enumeration, a missing selected raw is
-                    # still a valid empty result rather than a stale cursor.
-                    anchor_sql="SELECT ?",
-                    anchor_params=(selection[-1],),
-                )
-            )
-            source_frame.resume(continuation)
+                _resume_current_source_census(source_frame, continuation)
+            continuation = _current_source_selection_continuation(source_frame, selection, frontier_rowid)
+            _resume_current_source_census(source_frame, continuation)
             yield selection
         return
 
@@ -2702,7 +2783,7 @@ def _current_source_raw_id_selections(
     after_raw_id: str | None = None
     while True:
         if continuation is not None:
-            source_frame.resume(continuation)
+            _resume_current_source_census(source_frame, continuation)
             after_raw_id = str(continuation.position)
         params: tuple[object, ...] = (
             (frontier_rowid, _CURRENT_SOURCE_CENSUS_PAGE_SIZE)
@@ -2710,27 +2791,29 @@ def _current_source_raw_id_selections(
             else (frontier_rowid, after_raw_id, _CURRENT_SOURCE_CENSUS_PAGE_SIZE)
         )
         where = "WHERE rowid <= ?" if after_raw_id is None else "WHERE rowid <= ? AND raw_id > ?"
-        raw_ids = tuple(
-            str(row[0])
-            for row in source_frame.stream(
-                f"SELECT raw_id FROM raw_sessions {where} ORDER BY raw_id LIMIT ?",
-                params,
-            )
+        page_sql = f"SELECT raw_id FROM raw_sessions {where} ORDER BY raw_id LIMIT ?"
+        page_anchor = continuation or source_frame.bind(
+            ReadContinuation(position=frontier_rowid, anchor_sql="SELECT ?", anchor_params=(frontier_rowid,))
         )
+        for attempt in range(_CURRENT_SOURCE_CENSUS_PAGE_RETRIES + 1):
+            try:
+                raw_ids = tuple(str(row[0]) for row in source_frame.stream(page_sql, params))
+                break
+            except ReadFrameExpiredError:
+                if attempt >= _CURRENT_SOURCE_CENSUS_PAGE_RETRIES:
+                    raise
+                _require_current_source_census_frame(source_frame)
+                _resume_current_source_census(source_frame, page_anchor)
+        else:
+            raise AssertionError("bounded source ID page retry loop fell through")
         if not raw_ids:
             return
         after_raw_id = raw_ids[-1]
-        continuation = source_frame.bind(
-            ReadContinuation(
-                position=after_raw_id,
-                anchor_sql="SELECT raw_id FROM raw_sessions WHERE raw_id = ? AND rowid <= ?",
-                anchor_params=(after_raw_id, frontier_rowid),
-            )
-        )
+        continuation = _current_source_selection_continuation(source_frame, raw_ids, frontier_rowid)
         # A page's ID scan can itself spend time near the frame limit. Renew
         # before handing its selection to the caller, which starts the page's
         # authority query on the same frame.
-        source_frame.resume(continuation)
+        _resume_current_source_census(source_frame, continuation)
         yield raw_ids
 
 
