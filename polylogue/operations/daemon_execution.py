@@ -28,8 +28,10 @@ from polylogue.operations.operation_context import (
     OperationControlResult,
     PinnedOperationRead,
     observe_control_authority,
+    observe_embedding_mutation_authority,
     open_operation_read,
 )
+from polylogue.storage.embeddings.generations import EmbeddingGenerationBusyError
 from polylogue.version import POLYLOGUE_VERSION
 
 _T = TypeVar("_T")
@@ -79,7 +81,9 @@ class OperationRuntime(Protocol):
         execution_context: QueryExecutionContext | None = None,
     ) -> OperationControlResult: ...
 
-    def observe_snapshot(self, request: DaemonOperationRequest, snapshot: PinnedOperationRead) -> None: ...
+    def observe_snapshot(
+        self, request: DaemonOperationRequest, snapshot: PinnedOperationRead | OperationControlRead
+    ) -> None: ...
 
     def request_deadline_unix_ms(self, request: DaemonOperationRequest) -> int: ...
 
@@ -101,6 +105,7 @@ def operation_envelope(
     reference: dict[str, object] | None = None,
     degraded_components: tuple[str, ...] | None = None,
     progress: dict[str, object] | None = None,
+    admitted_snapshot: OperationControlRead | None = None,
 ) -> DaemonOperationEnvelope:
     spec = daemon_operation_spec(request.operation)
     elapsed = max(0, int((monotonic() - started_at) * 1000)) if started_at is not None else 0
@@ -142,6 +147,14 @@ def operation_envelope(
             "class": spec.authority.value if spec is not None else "unavailable",
             "fallback": spec.fallback.value if spec is not None else "never",
             "writes": "daemon-owned",
+            **(
+                {
+                    "admitted_archive_identity": admitted_snapshot.identity.authority_identity_digest,
+                    "admitted_generation": admitted_snapshot.identity.active_generation,
+                }
+                if admitted_snapshot is not None
+                else {}
+            ),
         },
         progress=progress or {"state": "complete" if outcome == "completed" else outcome},
         outcome=outcome,
@@ -210,6 +223,41 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
             snapshot = control_result.snapshot
             validate_operation_result(request.operation, result)
             return operation_envelope(request, context, snapshot=snapshot, started_at=started, result=result)
+
+        # Lifecycle adoption/checkpoint needs the embedding tier free of our
+        # own pinned reader. Observe tier versions through short-lived reads,
+        # then enter the handler under the writer lease.
+        if request.operation == "maintenance.embeddings.failure.resolve":
+            runtime = context.runtime
+            assert runtime is not None
+
+            def resolve_failure() -> DaemonOperationEnvelope:
+                nonlocal snapshot
+                from polylogue.operations.daemon_protocol import resolve_operation_handler
+
+                snapshot = observe_embedding_mutation_authority(context.archive_root)
+                _validate_identity(request, context, snapshot)
+                runtime.observe_snapshot(request, snapshot)
+                audit = runtime.audit_for_request(request, context)
+                result = resolve_operation_handler(spec)(request, context, audit, snapshot)
+                validate_operation_result(request.operation, result)
+                # The handler may adopt a legacy embeddings.db into a
+                # generation, changing the archive identity after admission.
+                # Keep the request bound to the pre-write snapshot but report
+                # the settled identity in the successful response.
+                from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
+
+                settled_identity = ArchiveIdentity.resolve_location(ArchiveLocation.resolve(context.archive_root))
+                return operation_envelope(
+                    request,
+                    context,
+                    snapshot=replace(snapshot, identity=settled_identity),
+                    admitted_snapshot=snapshot,
+                    started_at=started,
+                    result=result,
+                )
+
+            return runtime.run_write(spec.name, resolve_failure)
 
         def execute(*, mutating: bool) -> DaemonOperationEnvelope:
             nonlocal snapshot
@@ -312,6 +360,15 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
                 "retryable": True,
                 "data": details,
             },
+        )
+    except EmbeddingGenerationBusyError as exc:
+        return operation_envelope(
+            request,
+            context,
+            snapshot=snapshot,
+            started_at=started,
+            outcome="rejected",
+            error={"code": "embedding_generation_busy", "detail": str(exc), "retryable": True},
         )
     except (ValueError, PermissionError) as exc:
         return operation_envelope(

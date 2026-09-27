@@ -84,9 +84,11 @@ def resolve_embedding_failure_with_lifecycle(
     """Apply a failure resolution while holding the lifecycle writer lock."""
     from polylogue.storage.embeddings.generations import EmbeddingGenerationStore
     from polylogue.storage.sqlite.archive_tiers.embedding_write import resolve_embedding_failure
+    from polylogue.storage.sqlite.write_lease import require_write_lease
 
+    require_write_lease("embedding failure resolution", archive_root=embeddings_db.parent)
     store = EmbeddingGenerationStore(embeddings_db.parent, active_path=embeddings_db)
-    with store.writer_lock() as binding:
+    with store.writer_lock(prepare_active=True) as binding:
         store.assert_binding(binding)
         conn = open_isolated_write_connection(
             binding.database_path,

@@ -76,7 +76,7 @@ class _Exchange:
     future: Future[DaemonOperationEnvelope] | None = None
     cancellation: CancellationHandle = field(default_factory=CancellationHandle)
     acceptance_started: bool = False
-    snapshot: PinnedOperationRead | None = None
+    snapshot: PinnedOperationRead | OperationControlRead | None = None
     binding: MachineRequestBinding | None = None
     accepted_reference: dict[str, object] | None = None
     queue_ms: int = 0
@@ -208,7 +208,9 @@ class DaemonOperationRuntime:
             part, stop_requested=lambda: self.stop_reason(request) or stop_requested()
         )
 
-    def observe_snapshot(self, request: DaemonOperationRequest, snapshot: PinnedOperationRead) -> None:
+    def observe_snapshot(
+        self, request: DaemonOperationRequest, snapshot: PinnedOperationRead | OperationControlRead
+    ) -> None:
         with self._condition:
             exchange = self._exchanges[str(request.request_id)]
             exchange.snapshot = snapshot
@@ -221,6 +223,7 @@ class DaemonOperationRuntime:
             )
             spec = daemon_operation_spec(request.operation)
             if spec is not None and spec.authority is DaemonAuthority.READ:
+                assert isinstance(snapshot, PinnedOperationRead)
                 exchange.cancellation.add_listener(snapshot.archive.interrupt_reads)
 
     def request_deadline_unix_ms(self, request: DaemonOperationRequest) -> int:

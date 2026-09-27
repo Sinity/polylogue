@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import re
 import sqlite3
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -10,6 +13,7 @@ from typing import Any, cast
 import pytest
 
 from polylogue.storage.embeddings.generations import (
+    EmbeddingGenerationBusyError,
     EmbeddingGenerationError,
     EmbeddingGenerationState,
     EmbeddingGenerationStore,
@@ -88,6 +92,70 @@ def test_pre_lifecycle_active_database_is_retained_on_first_replacement(tmp_path
         for path in (tmp_path / ".embeddings-generations").glob("gen-*/generation.json")
     }
     assert states == {EmbeddingGenerationState.ACTIVE.value, EmbeddingGenerationState.RETAINED.value}
+
+
+def test_adopting_wal_mode_legacy_database_leaves_sealed_generation_without_sidecars(tmp_path: Path) -> None:
+    """Ordinary read-only validation creates sidecars that the next scan refuses."""
+    legacy = tmp_path / "embeddings.db"
+    _sqlite(legacy, "legacy")
+    with closing(sqlite3.connect(legacy)) as conn:
+        assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+
+    ensure_embedding_lifecycle(tmp_path)
+
+    active = legacy.resolve()
+    assert legacy.is_symlink()
+    assert not active.with_name(active.name + "-wal").exists()
+    assert not active.with_name(active.name + "-shm").exists()
+    with EmbeddingGenerationStore(tmp_path).writer_lock() as binding:
+        assert Path(binding.database_path) == active
+
+
+def test_failure_admission_prepares_legacy_database_under_lifecycle_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A competing lifecycle owner cannot enter while WAL preparation runs."""
+    legacy = tmp_path / "embeddings.db"
+    _sqlite(legacy, "legacy")
+    with closing(sqlite3.connect(legacy)) as conn:
+        assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    store = EmbeddingGenerationStore(tmp_path)
+    original = EmbeddingGenerationStore.prepare_active_database_for_writer
+    observed = False
+
+    def prepare_with_competing_owner(current: EmbeddingGenerationStore) -> None:
+        nonlocal observed
+        descriptor = os.open(current.lock_path, os.O_RDONLY)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(descriptor)
+        observed = True
+        original(current)
+
+    monkeypatch.setattr(EmbeddingGenerationStore, "prepare_active_database_for_writer", prepare_with_competing_owner)
+    with store.writer_lock(prepare_active=True):
+        assert observed
+
+
+def test_failure_admission_prepares_already_adopted_generation_sidecars(tmp_path: Path) -> None:
+    """An ordinary semantic reader can leave sidecars beside the active generation."""
+    from polylogue.storage.sqlite.managed_connection import sqlite_connection
+
+    legacy = tmp_path / "embeddings.db"
+    _sqlite(legacy, "legacy")
+    with closing(sqlite3.connect(legacy)) as conn:
+        assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    ensure_embedding_lifecycle(tmp_path)
+    active = legacy.resolve()
+
+    with sqlite_connection(f"file:{active}?mode=ro", uri=True) as reader:
+        assert reader.execute("SELECT COUNT(*) FROM values_").fetchone()[0] == 1
+    assert active.with_name(active.name + "-wal").exists()
+
+    with EmbeddingGenerationStore(tmp_path).writer_lock(prepare_active=True) as binding:
+        assert Path(binding.database_path) == active
 
 
 def test_generation_admission_does_not_require_legacy_message_refs(tmp_path: Path) -> None:
@@ -231,6 +299,19 @@ def test_rejects_symlink_candidate_before_promotion(tmp_path: Path) -> None:
     assert not (tmp_path / "embeddings.db").exists()
 
 
+def test_rejects_candidate_with_rollback_journal_before_immutable_validation(tmp_path: Path) -> None:
+    """Immutable SQLite reads ignore a hot journal and could publish uncommitted pages."""
+    candidate = tmp_path / "candidate.db"
+    _sqlite(candidate, "candidate")
+    candidate.with_name(candidate.name + "-journal").write_bytes(b"unrecovered journal")
+
+    with pytest.raises(EmbeddingGenerationError, match="unrecovered rollback journal"):
+        EmbeddingGenerationStore(tmp_path).replace(candidate)
+
+    assert not (tmp_path / "embeddings.db").exists()
+    assert not list((tmp_path / ".embeddings-generations").glob("gen-*/generation.json"))
+
+
 def test_rejects_wrong_tier_and_incomplete_candidate(tmp_path: Path) -> None:
     candidate = tmp_path / "candidate.db"
     with sqlite3.connect(candidate) as conn:
@@ -269,7 +350,7 @@ def test_legacy_adoption_rejects_sidecars_that_sqlite_cannot_clear(tmp_path: Pat
         writer.execute("INSERT INTO values_ VALUES ('wal')")
         writer.commit()
         assert active.with_name("embeddings.db-wal").exists()
-        with pytest.raises(EmbeddingGenerationError, match="retains SQLite sidecars"):
+        with pytest.raises(EmbeddingGenerationBusyError, match="retains SQLite sidecars"):
             ensure_embedding_lifecycle(tmp_path)
     finally:
         writer.close()
