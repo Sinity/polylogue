@@ -18,6 +18,7 @@ import pytest
 from polylogue.core.enums import Provider, Role
 from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import iter_grok_export_events
 from polylogue.sources.decoders import _iter_json_stream
@@ -532,6 +533,185 @@ def test_grok_future_wire_type_keeps_parser_admission_event(tmp_path: Path) -> N
     [expected] = parse_payload(Provider.GROK, record, "fallback")
     assert list(actual.session_events) == expected.session_events
     assert [event.event_type for event in actual.session_events] == ["grok_unknown_input"]
+    artifact.discard()
+
+
+def test_retained_grok_streams_responses_with_replay_parity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.sources import revision_backfill
+
+    responses = [
+        {"response": {"sender": "human" if index % 2 == 0 else "grok", "message": f"Turn {index}"}}
+        for index in range(350)
+    ]
+    responses.append(dict(responses[-1]))
+    record = {
+        "conversations": [
+            {"conversation": {"title": "Retained", "create_time": 1712000000}, "responses": responses},
+            {"conversation": {"title": "Empty"}, "responses": []},
+            {"responses": responses},
+        ]
+    }
+    fallback_timestamp = "2025-01-02T03:04:05Z"
+    source_path = str(tmp_path / "prod-grok-backend.json")
+    expected = require_positive_conversational_evidence(
+        parse_payload(Provider.GROK, record, Path(source_path).stem),
+        provider=Provider.GROK,
+        source_path=source_path,
+    )
+    expected = [normalize_session_timestamps(session, fallback_timestamp=fallback_timestamp) for session in expected]
+    for session in expected:
+        session.content_hash = session_content_hash(session)
+    expected_shard = prepare_session_shard(tmp_path / "expected", expected)
+    blob_root = tmp_path / "blob"
+    blob_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(record).encode("utf-8"))
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
+        with sqlite3.connect(path) as conn:
+            initialize_archive_tier(conn, tier)
+
+    def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("retained Grok object decoded as a whole document")
+
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
+    decoded = 0
+    first_append_after: int | None = None
+    original_events = iter_grok_export_events
+    original_append = SqliteMessageSink.append
+
+    def tracked_events(handle: IO[bytes], *, include_item: Callable[[int], bool] | None = None) -> object:
+        nonlocal decoded
+        for event, value in original_events(handle, include_item=include_item):
+            if event == "response":
+                decoded += 1
+            yield event, value
+
+    def tracked_append(self: SqliteMessageSink, value: ParsedMessage) -> None:
+        nonlocal first_append_after
+        if first_append_after is None:
+            first_append_after = decoded
+        original_append(self, value)
+
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_grok_export_events", tracked_events)
+    monkeypatch.setattr(SqliteMessageSink, "append", tracked_append)
+    artifact = revision_backfill.prepare_retained_jsonl_artifact(
+        "synthetic-grok-raw",
+        Provider.GROK.value,
+        blob_hash,
+        source_path,
+        "full",
+        None,
+        str(blob_root),
+        str(source_db),
+        str(index_db),
+        str(tmp_path / "prepared"),
+        fallback_timestamp,
+    )
+    assert artifact.error is None
+    assert artifact.positive_evidence_filtered is True
+    assert first_append_after == 1
+    actual = list(artifact.iter_sessions())
+    assert [(session.provider_session_id, session.content_hash) for session in actual] == [
+        (session.provider_session_id, session.content_hash) for session in expected
+    ]
+    assert [session.created_at for session in actual] == [session.created_at for session in expected]
+    assert artifact.shard_path is not None
+    with sqlite3.connect(expected_shard.path) as baseline, sqlite3.connect(artifact.shard_path) as prepared:
+        for table in ("messages", "blocks", "shard_session"):
+            assert (
+                prepared.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+                == baseline.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+            )
+    assert artifact.sessions_path is not None
+    with sqlite3.connect(artifact.sessions_path) as prepared:
+        assert prepared.execute("SELECT COUNT(*) FROM prepared_message").fetchone()[0] == len(responses)
+    artifact.discard()
+
+    sidecar = revision_backfill.prepare_retained_jsonl_artifact(
+        "synthetic-grok-sidecar",
+        Provider.GROK.value,
+        blob_hash,
+        str(tmp_path / "agent-neutral.meta.json"),
+        "full",
+        None,
+        str(blob_root),
+        str(source_db),
+        str(index_db),
+        str(tmp_path / "sidecar-prepared"),
+        fallback_timestamp,
+    )
+    assert sidecar.error is None
+    assert list(sidecar.iter_sessions()) == []
+    sidecar.discard()
+
+
+def test_retained_grok_corrupt_suffix_leaves_no_publishable_artifact(tmp_path: Path) -> None:
+    from polylogue.sources import revision_backfill
+
+    blob_root = tmp_path / "blob"
+    payload = b'{"conversations":[{"conversation":{},"responses":[{"sender":"human","message":"Hi"}]}]} trailing'
+    blob_hash, _size = BlobStore(blob_root).write_from_bytes(payload)
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
+        with sqlite3.connect(path) as conn:
+            initialize_archive_tier(conn, tier)
+    directory = tmp_path / "prepared"
+    artifact = revision_backfill.prepare_retained_jsonl_artifact(
+        "synthetic-corrupt-grok",
+        Provider.GROK.value,
+        blob_hash,
+        str(tmp_path / "prod-grok-backend.json"),
+        "full",
+        None,
+        str(blob_root),
+        str(source_db),
+        str(index_db),
+        str(directory),
+        None,
+    )
+    assert artifact.error is not None
+    assert artifact.sessions_path is None
+    assert artifact.shard_path is None
+    assert list(directory.glob("*.db")) == []
+
+
+def test_retained_grok_future_wire_keeps_parser_admission_event(tmp_path: Path) -> None:
+    from polylogue.sources import revision_backfill
+
+    record = {
+        "conversations": [
+            {
+                "conversation": {"title": "Future"},
+                "responses": [{"sender": "human", "message": "Hi", "type": "future_response"}],
+            }
+        ]
+    }
+    blob_root = tmp_path / "blob"
+    blob_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(record).encode("utf-8"))
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
+        with sqlite3.connect(path) as conn:
+            initialize_archive_tier(conn, tier)
+    artifact = revision_backfill.prepare_retained_jsonl_artifact(
+        "synthetic-future-grok",
+        Provider.GROK.value,
+        blob_hash,
+        str(tmp_path / "prod-grok-backend.json"),
+        "full",
+        None,
+        str(blob_root),
+        str(source_db),
+        str(index_db),
+        str(tmp_path / "prepared"),
+        None,
+    )
+    assert artifact.error is None
+    assert artifact.positive_evidence_filtered is False
+    [session] = artifact.iter_sessions()
+    assert [event.event_type for event in session.session_events] == ["grok_unknown_input"]
     artifact.discard()
 
 

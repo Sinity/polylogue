@@ -1017,6 +1017,12 @@ def prepare_retained_jsonl_artifact(
                 and provider in BUNDLE_PROVIDERS
                 and Path(source_path).name.lower().endswith(".json")
             )
+            stream_grok = (
+                provider is Provider.GROK
+                and not is_stream_record_provider(source_path, provider)
+                and Path(source_path).name.lower().endswith(".json")
+                and get_assembly_spec(provider) is None
+            )
 
             # Bundle providers have source-scoped assembly evidence. Codex's
             # title enrichment needs the cohort's session IDs and is not a
@@ -1067,6 +1073,13 @@ def prepare_retained_jsonl_artifact(
                     return iter(())
                 return chain(sample, source)
 
+            def classify_grok_export(count: int) -> bool:
+                # The stream probe has already proved the complete Grok
+                # wrapper. This bounded witness gives taxonomy the same
+                # shape, while its path rules still outrank session content.
+                witness: JSONValue = {"conversations": [] if count == 0 else [{"conversation": {}, "responses": []}]}
+                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
+
             artifact = prepare_jsonl_blob(
                 str(blob_path),
                 source_path,
@@ -1082,6 +1095,7 @@ def prepare_retained_jsonl_artifact(
                 prepare_session=prepare_bundle_session if prepare_per_session else None,
                 prepare_sessions=None if prepare_per_session else finalize,
                 prepare_records=classify_records,
+                classify_grok_export=classify_grok_export if stream_grok else None,
                 preparation_dependency=lambda: (
                     _retained_dependency_digest(
                         evidence_digest,

@@ -490,6 +490,7 @@ def grok_export_item_count(handle: JsonReadable, *, on_item: Callable[[int, bool
     member_conversation = False
     member_responses = False
     valid_members = 0
+    root_beads_keys: set[str] = set()
 
     def finish_member() -> None:
         nonlocal valid_members
@@ -519,6 +520,8 @@ def grok_export_item_count(handle: JsonReadable, *, on_item: Callable[[int, bool
                 if value in {"sessions", "polylogue_capture_kind"}:
                     # Dispatch gives these envelopes precedence over Grok.
                     return None
+                if value in {"id", "kind", "created_at", "issue_id", "extra"}:
+                    root_beads_keys.add(value)
                 if value == "conversations":
                     keys += 1
             elif prefix == "conversations" and event == "start_array":
@@ -552,6 +555,10 @@ def grok_export_item_count(handle: JsonReadable, *, on_item: Callable[[int, bool
         return None
     finally:
         handle.seek(0)
+    # The retained artifact taxonomy checks Beads interactions before Grok.
+    # Leave this ambiguous wrapper on that exact classification path.
+    if len(root_beads_keys) == 5:
+        return None
     return count if keys == arrays == 1 and (count == 0 or valid_members > 0) else None
 
 
