@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import re
 import sqlite3
 import uuid
 from collections.abc import Iterable, Iterator, Mapping, MutableSequence, Set
@@ -15,8 +17,18 @@ from urllib.parse import quote
 
 import ijson
 
+from polylogue.core.hashing import hash_text
+from polylogue.core.json import JSONDocument, json_document
 from polylogue.sources.decoder_json import _json_subtree, normalize_ijson_stdlib_numbers
+from polylogue.sources.live.tool_result_sidecars import (
+    _MAX_SIDECAR_AGGREGATE_BYTES,
+    _MAX_SIDECAR_FILE_BYTES,
+    _SIDECAR_SIZE_EXCEEDED,
+    SidecarDebt,
+    SidecarMatch,
+)
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
+from polylogue.sources.sidecar_evidence import RetainedSidecarScope
 
 _ACTIVE_PARENT_LOOKUP_SQL = (
     "SELECT parent_id FROM prepared_message INDEXED BY prepared_message_provider "
@@ -61,6 +73,193 @@ def _decode_attachment(encoded: str, path: Path, session_ordinal: int, attachmen
     return ParsedAttachment.model_validate(payload).model_copy(
         update={"prepared_carrier_key": (str(path), session_ordinal, attachment_ordinal)}
     )
+
+
+# The envelope's pointer line, and the bare path as it also appears inside the
+# retained head/tail excerpt. Both spellings resolve to the same basename.
+_POINTER_RE = re.compile(r"tool-outputs/[^\s\"'\\,)]+")
+
+# Gemini CLI's masking envelope. Either marker alone identifies a truncated
+# inline rendering: the wrapper tag is absent on some tools that emit only the
+# "Output too large" preamble.
+_MASK_RE = re.compile(
+    r"<tool_output_masked>|Output too large\. Showing first [\d,]+ and last [\d,]+ characters",
+)
+
+
+def is_masked_tool_output(text: str | None) -> bool:
+    """True when ``text`` is Gemini CLI's truncated rendering of a larger output."""
+    return bool(text) and _MASK_RE.search(text or "") is not None
+
+
+def _tool_call_texts(tool_record: JSONDocument) -> list[str]:
+    """Every string a tool call could carry a sidecar pointer in."""
+    texts: list[str] = []
+    results = tool_record.get("result")
+    for result_item in results if isinstance(results, list) else []:
+        response = json_document(json_document(result_item).get("functionResponse")).get("response")
+        texts.extend(value for value in json_document(response).values() if isinstance(value, str))
+    display = tool_record.get("resultDisplay")
+    if isinstance(display, str):
+        texts.append(display)
+    elif display is not None:
+        texts.append(json.dumps(display))
+    return texts
+
+
+class GeminiToolOutputIndex:
+    """Disk-backed owner, pointer, and replacement state for one checkpoint."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+        conn.executescript("""
+            CREATE TABLE gemini_tool_owner (
+                tool_id TEXT PRIMARY KEY, first_ordinal INTEGER NOT NULL,
+                inline_len INTEGER NOT NULL, masked INTEGER NOT NULL
+            );
+            CREATE TABLE gemini_tool_pointer (filename TEXT PRIMARY KEY, tool_id TEXT NOT NULL);
+            CREATE TABLE gemini_tool_present (filename TEXT PRIMARY KEY);
+            CREATE TABLE gemini_tool_matched (tool_id TEXT PRIMARY KEY);
+            CREATE TABLE gemini_tool_debt (
+                ordinal INTEGER PRIMARY KEY, filename TEXT NOT NULL, byte_size INTEGER NOT NULL,
+                reason TEXT NOT NULL, file_mtime_ms INTEGER
+            );
+            CREATE TABLE gemini_tool_replacement (tool_id TEXT PRIMARY KEY, full_text TEXT NOT NULL);
+        """)
+        self._tool_ordinal = 0
+
+    def observe(self, message: object) -> None:
+        raw_calls = json_document(message).get("toolCalls")
+        for item in raw_calls if isinstance(raw_calls, list) else []:
+            tool_record = json_document(item)
+            tool_id = tool_record.get("id")
+            if not isinstance(tool_id, str) or not tool_id:
+                continue
+            inline = ""
+            masked = False
+            results = tool_record.get("result")
+            for result_item in results if isinstance(results, list) else []:
+                response = json_document(json_document(result_item).get("functionResponse")).get("response")
+                output = json_document(response).get("output")
+                if isinstance(output, str):
+                    inline = output if len(output) > len(inline) else inline
+                    masked = masked or is_masked_tool_output(output)
+            self.conn.execute(
+                "INSERT INTO gemini_tool_owner VALUES (?, ?, ?, ?) ON CONFLICT(tool_id) "
+                "DO UPDATE SET inline_len = excluded.inline_len, masked = excluded.masked",
+                (tool_id, self._tool_ordinal, len(inline), int(masked)),
+            )
+            self._tool_ordinal += 1
+            for text in _tool_call_texts(tool_record):
+                for pointer in _POINTER_RE.findall(text):
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO gemini_tool_pointer VALUES (?, ?)",
+                        (os.path.basename(pointer), tool_id),
+                    )
+
+    def _owner_for_stem(self, stem: str) -> str | None:
+        exact = self.conn.execute("SELECT tool_id FROM gemini_tool_owner WHERE tool_id = ?", (stem,)).fetchone()
+        if exact is not None:
+            return str(exact[0])
+        row = self.conn.execute(
+            "SELECT tool_id FROM gemini_tool_owner WHERE instr(?, '_' || tool_id || '_') > 0 "
+            "OR substr(?, -length(tool_id) - 1) = '_' || tool_id "
+            "OR substr(?, 1, length(tool_id) + 1) = tool_id || '_' "
+            "ORDER BY length(tool_id) DESC, first_ordinal LIMIT 1",
+            (stem, stem, stem),
+        ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    def _pointer_owner(self, filename: str, stem: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT tool_id FROM gemini_tool_pointer WHERE filename IN (?, ?) "
+            "ORDER BY CASE filename WHEN ? THEN 0 ELSE 1 END LIMIT 1",
+            (filename, stem, filename),
+        ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    def join(self, scope: RetainedSidecarScope) -> Iterator[SidecarMatch | SidecarDebt]:
+        """Yield ordered matches, then ordered debt, keeping only one file in memory."""
+        if not scope.available:
+            return
+        aggregate_bytes = 0
+        debt_ordinal = 0
+        for entry in sorted(scope.files, key=lambda candidate: candidate.filename):
+            self.conn.execute("INSERT OR IGNORE INTO gemini_tool_present VALUES (?)", (entry.filename,))
+            stem = entry.filename.rsplit(".", 1)[0]
+            tool_id = self._owner_for_stem(stem) or self._pointer_owner(entry.filename, stem)
+            owner = (
+                self.conn.execute(
+                    "SELECT inline_len, masked FROM gemini_tool_owner WHERE tool_id = ?", (tool_id,)
+                ).fetchone()
+                if tool_id is not None
+                else None
+            )
+            reason = None
+            full_text = ""
+            if owner is None:
+                reason = "no_owning_tool_call"
+            elif (
+                entry.byte_size > _MAX_SIDECAR_FILE_BYTES
+                or aggregate_bytes + entry.byte_size > _MAX_SIDECAR_AGGREGATE_BYTES
+            ):
+                reason = _SIDECAR_SIZE_EXCEEDED
+            else:
+                try:
+                    full_text = entry.read_text()
+                except OSError as exc:
+                    reason = f"read_error:{type(exc).__name__}"
+            if reason is not None:
+                self.conn.execute(
+                    "INSERT INTO gemini_tool_debt VALUES (?, ?, ?, ?, ?)",
+                    (debt_ordinal, entry.filename, entry.byte_size, reason, entry.file_mtime_ms),
+                )
+                debt_ordinal += 1
+                continue
+            assert tool_id is not None and owner is not None
+            aggregate_bytes += entry.byte_size
+            was_truncated = bool(owner[1]) or len(full_text) > int(owner[0])
+            self.conn.execute("INSERT OR IGNORE INTO gemini_tool_matched VALUES (?)", (tool_id,))
+            if was_truncated:
+                self.conn.execute(
+                    "INSERT INTO gemini_tool_replacement VALUES (?, ?) "
+                    "ON CONFLICT(tool_id) DO UPDATE SET full_text = excluded.full_text",
+                    (tool_id, full_text),
+                )
+            yield SidecarMatch(
+                tool_use_id=tool_id,
+                filename=entry.filename,
+                byte_size=entry.byte_size,
+                content_hash=hash_text(full_text),
+                was_truncated=was_truncated,
+                full_text=full_text,
+                file_mtime_ms=entry.file_mtime_ms,
+            )
+        for filename, tool_id in self.conn.execute(
+            "SELECT filename, tool_id FROM gemini_tool_pointer ORDER BY filename"
+        ):
+            present = self.conn.execute("SELECT 1 FROM gemini_tool_present WHERE filename = ?", (filename,)).fetchone()
+            matched = self.conn.execute("SELECT 1 FROM gemini_tool_matched WHERE tool_id = ?", (tool_id,)).fetchone()
+            if present is None and matched is None:
+                self.conn.execute(
+                    "INSERT INTO gemini_tool_debt VALUES (?, ?, 0, 'expected_sidecar_not_retained', NULL)",
+                    (debt_ordinal, filename),
+                )
+                debt_ordinal += 1
+        for filename, byte_size, reason, file_mtime_ms in self.conn.execute(
+            "SELECT filename, byte_size, reason, file_mtime_ms FROM gemini_tool_debt ORDER BY ordinal"
+        ):
+            yield SidecarDebt(filename, byte_size, reason, file_mtime_ms)
+
+    def replacement_for(self, tool_id: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT full_text FROM gemini_tool_replacement WHERE tool_id = ?", (tool_id,)
+        ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    def close(self) -> None:
+        for name in ("owner", "pointer", "present", "matched", "debt", "replacement"):
+            self.conn.execute(f"DROP TABLE gemini_tool_{name}")
 
 
 class SqliteMessageSink(MutableSequence[ParsedMessage]):
@@ -1102,6 +1301,7 @@ def _read_chatgpt_node(
 
 
 __all__ = [
+    "GeminiToolOutputIndex",
     "SqliteMessageSink",
     "SqliteMessageStore",
     "SqliteAttachmentSink",

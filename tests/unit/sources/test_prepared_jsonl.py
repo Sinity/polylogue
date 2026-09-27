@@ -26,6 +26,7 @@ from polylogue.sources.decoder_json import claude_design_object_envelope, iter_g
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
 from polylogue.sources.live.sidecar_resolution import FilesystemSidecarResolver
+from polylogue.sources.live.tool_result_sidecars import _MAX_SIDECAR_FILE_BYTES
 from polylogue.sources.parsers import chatgpt, local_agent
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.sources.parsers.chatgpt_sidecars import ChatGPTAssetIndex
@@ -39,6 +40,7 @@ from polylogue.sources.prepared_message_sink import (
     SqliteSessionEventSink,
     read_chatgpt_mapping_object,
 )
+from polylogue.sources.sidecar_evidence import RetainedSidecarFile, RetainedSidecarScope
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -976,6 +978,337 @@ def test_gemini_cli_object_keeps_sidecar_debt_on_existing_scope(tmp_path: Path) 
     ]
     assert any(event.event_type == "gemini_cli_tool_output_sidecar" for event in actual.session_events)
     artifact.discard()
+
+
+def _gemini_message_payloads(session: ParsedSession) -> list[dict[str, object]]:
+    payloads = [message.model_dump(mode="json") for message in session.messages]
+    for message in payloads:
+        blocks = message["blocks"]
+        assert isinstance(blocks, list)
+        for block in blocks:
+            # The sealed reader resolves the parser's nullable legacy outcome
+            # from the tool status when it validates a persisted block.
+            block.pop("tool_outcome", None)
+    return payloads
+
+
+def test_gemini_cli_sidecar_scope_streams_and_matches_object_parser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.sources import prepared_jsonl
+
+    def tool(tool_id: str, output: str) -> dict[str, object]:
+        return {
+            "id": tool_id,
+            "name": "run_shell_command",
+            "status": "success",
+            "result": [
+                {"functionResponse": {"id": tool_id, "name": "run_shell_command", "response": {"output": output}}}
+            ],
+        }
+
+    pointer = "For full output see: tool-outputs/session-process-1/"
+    record = {
+        "sessionId": "process-1",
+        "kind": "chat",
+        "startTime": "2026-01-01T00:00:00Z",
+        "messages": [
+            {"id": "m1", "type": "gemini", "toolCalls": [tool("run_1", pointer + "missing-alias.txt")]},
+            {
+                "id": "m2",
+                "type": "gemini",
+                "toolCalls": [
+                    tool("run_1", "short"),
+                    tool("run_1_long", "tiny"),
+                    tool("fallback", pointer + "pointer.txt"),
+                    tool("absent", pointer + "missing.txt"),
+                    tool("oversize", "tiny"),
+                    tool("unreadable", "tiny"),
+                ],
+            },
+        ],
+    }
+    source = tmp_path / "project" / "chats" / "session.json"
+    source.parent.mkdir(parents=True)
+    source.write_text(json.dumps(record), encoding="utf-8")
+
+    def entry(name: str, text: str, *, size: int | None = None, unreadable: bool = False) -> RetainedSidecarFile:
+        def read() -> str:
+            if unreadable:
+                raise OSError("synthetic read failure")
+            return text
+
+        return RetainedSidecarFile(name, len(text) if size is None else size, 1_700_000_000_000, read)
+
+    scope = RetainedSidecarScope(
+        scope_key="retained-gemini",
+        available=True,
+        files=(
+            entry("run_1.txt", "first complete output"),
+            entry("run_1.txt", "second complete output"),
+            entry("prefix_run_1_long_slug.txt", "long id output"),
+            entry("pointer.txt", "pointer fallback output"),
+            entry("oversize.txt", "not read", size=_MAX_SIDECAR_FILE_BYTES + 1),
+            entry("unreadable.txt", "not read", unreadable=True),
+        ),
+    )
+
+    class Resolver:
+        def claude_code_scope(self, *_args: object) -> RetainedSidecarScope:
+            return scope
+
+        def gemini_cli_scope(self, *_args: object) -> RetainedSidecarScope:
+            return scope
+
+    resolver = Resolver()
+    [expected] = parse_payload(
+        Provider.GEMINI_CLI, record, "fallback", source_path=str(source), sidecar_resolver=resolver
+    )
+    appended = 0
+    original_append = prepared_jsonl._append_gemini_raw_message
+    original_items = ijson.items
+
+    def tracked_append(conn: sqlite3.Connection, ordinal: int, item: object) -> None:
+        nonlocal appended
+        original_append(conn, ordinal, item)
+        appended += 1
+
+    def tracked_items(*args: object, **kwargs: object) -> object:
+        for index, item in enumerate(original_items(*args, **kwargs)):
+            if index == 1:
+                assert appended == 1
+            yield item
+
+    monkeypatch.setattr(prepared_jsonl, "_append_gemini_raw_message", tracked_append)
+    monkeypatch.setattr(ijson, "items", tracked_items)
+    monkeypatch.setattr(prepared_jsonl, "_iter_json_stream", lambda *_a, **_k: pytest.fail("whole-object fallback"))
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.GEMINI_CLI.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+        sidecar_resolver=resolver,
+    )
+    assert artifact.error is None
+    assert appended == 2
+    [actual] = artifact.iter_sessions()
+    assert actual.content_hash == session_content_hash(expected)
+    assert _gemini_message_payloads(actual) == _gemini_message_payloads(expected)
+    assert [event.model_dump(mode="json") for event in actual.session_events] == [
+        event.model_dump(mode="json") for event in expected.session_events
+    ]
+    sidecar_events = [
+        event.payload for event in actual.session_events if event.event_type == "gemini_cli_tool_output_sidecar"
+    ]
+    assert [event["acquisition_status"] for event in sidecar_events] == [
+        "matched",
+        "matched",
+        "matched",
+        "matched",
+        "debt",
+        "debt",
+        "debt",
+    ]
+    assert [(event["filename"], event["tool_use_id"]) for event in sidecar_events[:4]] == [
+        ("pointer.txt", "fallback"),
+        ("prefix_run_1_long_slug.txt", "run_1_long"),
+        ("run_1.txt", "run_1"),
+        ("run_1.txt", "run_1"),
+    ]
+    assert [event["reason"] for event in sidecar_events[4:]] == [
+        "size_exceeded",
+        "read_error:OSError",
+        "expected_sidecar_not_retained",
+    ]
+    assert any(block.text == "second complete output" for message in actual.messages for block in message.blocks)
+    artifact.discard()
+
+
+def test_retained_gemini_sidecar_replay_uses_sealed_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.sources import revision_backfill
+    from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
+
+    record = {
+        "sessionId": "retained-process",
+        "kind": "chat",
+        "startTime": "2026-01-01T00:00:00Z",
+        "messages": [
+            {"id": "user", "type": "user", "content": "Run a neutral command"},
+            {
+                "id": "answer",
+                "type": "gemini",
+                "toolCalls": [
+                    {
+                        "id": "run_1",
+                        "name": "run_shell_command",
+                        "status": "success",
+                        "result": [
+                            {
+                                "functionResponse": {
+                                    "id": "run_1",
+                                    "name": "run_shell_command",
+                                    "response": {
+                                        "output": "For full output see: tool-outputs/session-retained-process/run_1.txt",
+                                    },
+                                }
+                            }
+                        ],
+                    }
+                ],
+            },
+        ],
+    }
+    source_path = str(tmp_path / "old-project" / "chats" / "session.json")
+    scope = RetainedSidecarScope(
+        scope_key="retained-only",
+        available=True,
+        files=(RetainedSidecarFile("run_1.txt", 19, None, lambda: "Retained full output"),),
+    )
+    monkeypatch.setattr(RetainedSidecarResolver, "gemini_cli_scope", lambda *_args: scope)
+    blob_root = tmp_path / "blob"
+    blob_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(record).encode())
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
+        with sqlite3.connect(path) as conn:
+            initialize_archive_tier(conn, tier)
+    monkeypatch.setattr(
+        "polylogue.sources.prepared_jsonl._iter_json_stream", lambda *_a, **_k: pytest.fail("whole-object replay")
+    )
+    artifact = revision_backfill.prepare_retained_jsonl_artifact(
+        "retained-gemini",
+        Provider.GEMINI_CLI.value,
+        blob_hash,
+        source_path,
+        "full",
+        None,
+        str(blob_root),
+        str(source_db),
+        str(index_db),
+        str(tmp_path / "prepared"),
+        None,
+    )
+    assert artifact.error is None
+    [actual] = artifact.iter_sessions()
+    [expected] = parse_payload(
+        Provider.GEMINI_CLI,
+        record,
+        "session",
+        source_path=source_path,
+        sidecar_resolver=RetainedSidecarResolver(tmp_path),
+    )
+    assert actual.provider_session_id == expected.provider_session_id
+    assert [message.provider_message_id for message in actual.messages] == [
+        message.provider_message_id for message in expected.messages
+    ]
+    assert _gemini_message_payloads(actual) == _gemini_message_payloads(expected)
+    assert [event.model_dump(mode="json") for event in actual.session_events] == [
+        event.model_dump(mode="json") for event in expected.session_events
+    ]
+    artifact.discard()
+
+
+def test_gemini_sidecar_join_failure_discards_unsealed_scratch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.sources.prepared_message_sink import GeminiToolOutputIndex
+
+    record = {
+        "sessionId": "process-1",
+        "kind": "chat",
+        "messages": [{"id": f"m{index}", "type": "user", "content": "Neutral"} for index in range(2)],
+    }
+    source = tmp_path / "project" / "chats" / "session.json"
+    source.parent.mkdir(parents=True)
+    source.write_text(json.dumps(record), encoding="utf-8")
+    outputs = tmp_path / "project" / "tool-outputs" / "session-process-1"
+    outputs.mkdir(parents=True)
+    original_observe = GeminiToolOutputIndex.observe
+    observed = 0
+
+    def broken_observe(self: GeminiToolOutputIndex, message: object) -> None:
+        nonlocal observed
+        original_observe(self, message)
+        observed += 1
+        if observed == 2:
+            raise RuntimeError("synthetic join failure")
+
+    monkeypatch.setattr(GeminiToolOutputIndex, "observe", broken_observe)
+    directory = tmp_path / "prepared"
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.GEMINI_CLI.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(directory),
+        sidecar_resolver=FilesystemSidecarResolver(),
+    )
+    assert "synthetic join failure" in (artifact.error or "")
+    assert artifact.sessions_path is None
+    assert list(directory.glob("*.db")) == []
+
+
+def test_gemini_sidecar_source_mutation_discards_unsealed_scratch(tmp_path: Path) -> None:
+    source = tmp_path / "project" / "chats" / "session.json"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        json.dumps(
+            {
+                "sessionId": "process-1",
+                "kind": "chat",
+                "messages": [
+                    {
+                        "id": "m1",
+                        "type": "gemini",
+                        "toolCalls": [
+                            {
+                                "id": "run_1",
+                                "name": "run_shell_command",
+                                "status": "success",
+                                "result": [{"functionResponse": {"response": {"output": "short"}}}],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def changing_read() -> str:
+        with source.open("a", encoding="utf-8") as writer:
+            writer.write(" ")
+        return "Full neutral output"
+
+    scope = RetainedSidecarScope(
+        scope_key="changed-source",
+        available=True,
+        files=(RetainedSidecarFile("run_1.txt", 19, None, changing_read),),
+    )
+
+    class Resolver:
+        def claude_code_scope(self, *_args: object) -> RetainedSidecarScope:
+            return scope
+
+        def gemini_cli_scope(self, *_args: object) -> RetainedSidecarScope:
+            return scope
+
+    directory = tmp_path / "prepared"
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.GEMINI_CLI.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(directory),
+        sidecar_resolver=Resolver(),
+    )
+    assert artifact.deferred
+    assert artifact.sessions_path is None
+    assert list(directory.glob("*.db")) == []
 
 
 def test_gemini_cli_object_preserves_future_wire_admission(tmp_path: Path) -> None:
