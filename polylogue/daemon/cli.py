@@ -3547,7 +3547,12 @@ def _status_probe_token(config: PolylogueConfig, url: str) -> str | None:
         if url_is_discovered and not _from_discovered_project_config(config, "api_auth_token"):
             return None
         return config.api_auth_token
-    host = urlparse(url).hostname
+    try:
+        host = urlparse(url).hostname
+    except ValueError:
+        # A malformed URL (``http://[::1``) earns no credential; the probe's
+        # own request then fails and status falls back as before.
+        return None
     if url_is_discovered or host is None or not is_loopback_host(host):
         return None
     return load_api_auth_token()
@@ -3574,7 +3579,7 @@ def _live_daemon_status_payload(*, timeout: float = _LIVE_DAEMON_STATUS_TIMEOUT_
     running daemon's view.
     """
     from urllib.error import HTTPError, URLError
-    from urllib.request import Request, urlopen
+    from urllib.request import ProxyHandler, Request, build_opener
 
     from polylogue.config import load_polylogue_config
 
@@ -3586,7 +3591,9 @@ def _live_daemon_status_payload(*, timeout: float = _LIVE_DAEMON_STATUS_TIMEOUT_
         headers["Authorization"] = f"Bearer {token}"
     try:
         req = Request(f"{url}/api/status", headers=headers, method="GET")
-        with urlopen(req, timeout=timeout) as resp:
+        # Never through an environment proxy: the request can carry the
+        # daemon's bearer, and the daemon is reached directly.
+        with build_opener(ProxyHandler({})).open(req, timeout=timeout) as resp:
             body = resp.read()
     except HTTPError as exc:
         click.echo(

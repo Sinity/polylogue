@@ -260,3 +260,34 @@ def test_persisted_token_reaches_any_loopback_address(
     with patch("polylogue.daemon.api_auth.api_auth_token_path", return_value=token_file):
         token = daemon_cli._status_probe_token(load_polylogue_config(), "http://127.0.0.2:8766")
     assert token == _TOKEN
+
+
+def test_probe_bypasses_environment_proxies(
+    workspace_env: dict[str, Path],
+    status_server: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bearer must reach the daemon directly. Anti-vacuity: with plain
+    ``urlopen`` the request goes to the dead proxy below and the probe
+    returns ``None``."""
+    token_file = tmp_path / "api-token"
+    token_file.write_text(_TOKEN, encoding="utf-8")
+    token_file.chmod(0o600)
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    with patch("polylogue.daemon.api_auth.api_auth_token_path", return_value=token_file):
+        payload = daemon_cli._live_daemon_status_payload(timeout=5.0)
+    assert payload is not None
+
+
+def test_malformed_daemon_url_falls_back_without_a_traceback(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anti-vacuity: reading ``urlparse(url).hostname`` unguarded raises
+    ``ValueError`` out of the probe."""
+    monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "http://[::1")
+    assert daemon_cli._live_daemon_status_payload(timeout=1.0) is None
