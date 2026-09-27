@@ -1500,7 +1500,14 @@ class LiveBatchProcessor:
                 # Remaining sources stay ordinary backlog for the next tick;
                 # nothing here was attempted, so nothing to mark failed.
                 break
-            for source_paths in _full_parse_progress_groups(grouped_paths):
+            # Evidence goes first across the whole source, before the list is
+            # split into progress groups; a later group cannot revisit an
+            # earlier one (see ``_enrichment_evidence_first``).
+            ordered_paths = _enrichment_evidence_first(
+                list(grouped_paths),
+                Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name)),
+            )
+            for source_paths in _full_parse_progress_groups(ordered_paths):
                 if self._stop_requested():
                     break
                 if is_fully_degraded():

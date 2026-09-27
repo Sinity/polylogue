@@ -254,7 +254,9 @@ def _session_rows(archive_root: Path) -> list[tuple[object, ...]]:
         return [tuple(row) for row in conn.execute("SELECT session_id, title, content_hash FROM sessions")]
 
 
-def test_parse_stage_reenriches_when_a_sidecar_lands_in_the_same_pass(tmp_path: Path) -> None:
+def test_parse_stage_reenriches_when_a_sidecar_lands_in_the_same_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A carrier enriched before the pass admitted its sidecar is not published.
 
     The worker enriches during warm-up, before the writer admits the
@@ -262,8 +264,9 @@ def test_parse_stage_reenriches_when_a_sidecar_lands_in_the_same_pass(tmp_path: 
     the evidence digest against what it has admitted and re-enriches.
 
     Anti-vacuity: drop the write-time ``prepared_enrichment_dependency_state``
-    check, or the evidence-first ordering of the pass
-    (``_enrichment_evidence_first``, the transcript is offered first here), and
+    check, or the evidence-first ordering of the source before it is split into
+    progress groups (``_enrichment_evidence_first``; the transcript is offered
+    first here, one file per group), and
     the parse-stage route stores the heuristic ``"prompt 0"`` title with a
     different content hash than the route without the stage.
     """
@@ -275,6 +278,9 @@ def test_parse_stage_reenriches_when_a_sidecar_lands_in_the_same_pass(tmp_path: 
     assert [row[1] for row in plain] == ["Curated 0"]
 
     staged_root = tmp_path / "staged"
+    # One file per progress group: the index must still lead, so evidence is
+    # ordered across the whole source before the list is split.
+    monkeypatch.setattr("polylogue.sources.live.batch_support._FULL_PARSE_PROGRESS_MAX_FILES", 1)
     stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
     try:
         # Discovery order: the UUID-named transcript sorts before the index.
@@ -469,7 +475,9 @@ def test_retained_prewarm_spends_one_deadline_across_members(tmp_path: Path) -> 
     assert submitted == ["raw-0"]
 
 
-def test_unpublishable_retained_carrier_falls_back_to_the_writer_parse(tmp_path: Path) -> None:
+def test_unpublishable_retained_carrier_falls_back_to_the_writer_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A carrier the writer cannot publish is a prewarm miss, not a refusal.
 
     During a cold build the carrier may be enriched against the active index
@@ -488,7 +496,7 @@ def test_unpublishable_retained_carrier_falls_back_to_the_writer_parse(tmp_path:
         parser_fingerprint=_PARSER_FINGERPRINT,
     )
     replayed = ParsedSession(source_name=Provider.CODEX, provider_session_id="inline", messages=[])
-    processor._parse_retained_raw_sessions = lambda _archive, _raw_id: [replayed]  # type: ignore[method-assign]
+    monkeypatch.setattr(processor, "_parse_retained_raw_sessions", lambda _archive, _raw_id: [replayed])
     stale = SimpleNamespace(current=lambda _archive: False)
     parsed = processor._parse_raw_revision_chain(
         SimpleNamespace(),
