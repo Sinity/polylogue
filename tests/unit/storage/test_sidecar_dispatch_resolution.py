@@ -168,3 +168,35 @@ def test_a_large_sidecar_is_streamed_to_its_dispatch_identity(
     finally:
         conn.close()
     assert tool_ids == {"toolu_large"}
+
+
+def test_a_scalar_sidecar_root_carries_no_dispatch_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: object
+) -> None:
+    """A JSON string whose text looks like a sidecar is not a sidecar.
+
+    Anti-vacuity: hand the decoded scalar to the artifact parser and it is
+    decoded a second time into a document naming ``toolu_parent``.
+    """
+    del frozen_clock
+    digest = "ee" * 32
+    payload = b'"{\\"toolUseId\\":\\"toolu_parent\\"}"'
+    conn = _source_conn(tmp_path)
+    try:
+        _insert_sidecar(
+            conn,
+            raw_id="raw-scalar",
+            source_path="/export/parent-1/subagents/agent-scalar.meta.json",
+            digest=digest,
+            size=len(payload),
+        )
+        monkeypatch.setattr(write_mod, "get_blob_store", lambda: _FakeBlobStore({digest: payload}))
+        tool_ids = _sidecar_dispatch_tool_ids(
+            conn,
+            origin=_ORIGIN,
+            parent_values={"parent-1"},
+            child_values={"agent-scalar"},
+        )
+    finally:
+        conn.close()
+    assert tool_ids == set()

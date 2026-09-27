@@ -1377,23 +1377,40 @@ def test_hermes_jsonl_probe_reads_a_long_record_instead_of_skipping_it(tmp_path:
 def test_top_level_envelopes_keep_root_fields_and_placeholders() -> None:
     import io
 
-    from polylogue.core.json_envelope import top_level_envelopes
+    from polylogue.core.json_envelope import jsonl_record_envelopes, top_level_envelopes
 
-    document = b'{"session_id": "s", "messages": [{"role": "user"}], "meta": {"a": 1}, "n": 2}'
-    assert list(top_level_envelopes(io.BytesIO(document), multiple_values=False, expand_arrays=True)) == [
-        {"session_id": "s", "messages": [], "meta": {}, "n": 2}
+    document = b'{"session_id": "s", "messages": [{"role": "user"}], "meta": {"a": 1}, "n": 18446744073709551616}'
+    assert list(top_level_envelopes(io.BytesIO(document), expand_arrays=True)) == [
+        {"session_id": "s", "messages": [], "meta": {}, "n": 18446744073709551616}
     ]
     array = b'[{"a": 1, "b": [1, 2]}, 3, [4]]'
-    assert list(top_level_envelopes(io.BytesIO(array), multiple_values=False, expand_arrays=True)) == [
-        {"a": 1, "b": []},
-        3,
-        [],
-    ]
-    lines = b'{"a": 1}\n[1, 2]\n'
-    assert list(top_level_envelopes(io.BytesIO(lines), multiple_values=True, expand_arrays=False)) == [
-        {"a": 1},
-        [],
-    ]
+    assert list(top_level_envelopes(io.BytesIO(array), expand_arrays=True)) == [{"a": 1, "b": []}, 3, []]
+    lines = b'{"a": 1}\n\n[1, 2]\n{"b": 2} {"c": 3}\nnot json\n{"d": 4}'
+    assert list(jsonl_record_envelopes(io.BytesIO(lines))) == [{"a": 1}, [], {"d": 4}]
+
+
+def test_envelope_keeps_a_prefix_of_a_huge_string_without_holding_it() -> None:
+    """Anti-vacuity: let the tokenizer build the whole string and the traced
+    peak exceeds the string's own size."""
+    import io
+    import tracemalloc
+
+    from polylogue.core.json_envelope import ENVELOPE_TEXT_PREFIX_CHARS, top_level_envelopes
+
+    size = 32 * 1024 * 1024
+    document = b'{"padding": "' + b"\\u00e9" * (size // 6) + b'", "tool_use_id": "toolu_x"}'
+    handle = io.BytesIO(document)
+    tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        (envelope,) = top_level_envelopes(handle, expand_arrays=False)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert isinstance(envelope, dict)
+    assert envelope["tool_use_id"] == "toolu_x"
+    assert envelope["padding"] == "\u00e9" * ENVELOPE_TEXT_PREFIX_CHARS
+    assert peak < size // 4
 
 
 def _reset_closure_caches(module: object) -> None:

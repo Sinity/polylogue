@@ -10875,13 +10875,19 @@ def _sidecar_dispatch_tool_ids(
             # sidecar is streamed to its root envelope, never read whole.
             try:
                 with store.open(bytes(blob_hash).hex()) as handle:
-                    (envelope,) = top_level_envelopes(handle, multiple_values=False, expand_arrays=False)
-                artifact = parse_claude_orchestration_artifact(str(source_path), envelope)
+                    (envelope,) = top_level_envelopes(handle, expand_arrays=False)
+                # Only an object root carries dispatch identity; a scalar root
+                # must not be decoded a second time into a document.
+                artifact = (
+                    parse_claude_orchestration_artifact(str(source_path), envelope)
+                    if isinstance(envelope, dict)
+                    else None
+                )
             # RecursionError is a RuntimeError, not a ValueError: a deeply
             # nested sidecar would otherwise escape this handler and abort the
             # whole session write, and because the raw row persists it would
             # abort it again on every later replay of the same lineage.
-            except (OSError, ValueError, RecursionError, ijson.JSONError) as exc:
+            except (OSError, ValueError, ArithmeticError, RecursionError, ijson.JSONError) as exc:
                 emit(
                     "storage.dispatch_sidecar.refused",
                     level=WARNING,

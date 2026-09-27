@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from polylogue.core.enums import Origin, Provider, ToolResultUnknownReason
-from polylogue.core.json_envelope import top_level_envelopes
+from polylogue.core.json_envelope import jsonl_record_envelopes, top_level_envelopes
 from polylogue.declarations import (
     CompatibilityKey,
     CompletenessEdge,
@@ -779,15 +779,14 @@ def recognize_source_class(
         try:
             with path.open("rb") as handle:
                 if is_jsonl:
-                    records = top_level_envelopes(handle, multiple_values=True, expand_arrays=False)
-                    payload = list(islice(records, SOURCE_CLASS_JSONL_LEADING_RECORDS))
+                    payload = list(islice(jsonl_record_envelopes(handle), SOURCE_CLASS_JSONL_LEADING_RECORDS))
                 else:
-                    (payload,) = top_level_envelopes(handle, multiple_values=False, expand_arrays=False)
+                    (payload,) = top_level_envelopes(handle, expand_arrays=False)
             if not is_jsonl and isinstance(payload, list):
                 # A JSON array document: its signature is read per element.
                 with path.open("rb") as handle:
-                    payload = list(top_level_envelopes(handle, multiple_values=False, expand_arrays=True))
-        except (OSError, UnicodeDecodeError, ValueError, ijson.JSONError):
+                    payload = list(top_level_envelopes(handle, expand_arrays=True))
+        except (OSError, UnicodeDecodeError, ValueError, ArithmeticError, ijson.JSONError):
             return SourceClassRecognition("unsupported", f"{provider.value} candidate is not readable JSON")
 
     if provider is Provider.HERMES:
