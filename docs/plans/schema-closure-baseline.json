@@ -369,7 +369,6 @@
     "polylogue/sources/parsers/claude/stream_scratch.py",
     "polylogue/sources/parsers/claude/todos.py",
     "polylogue/sources/parsers/codex.py",
-    "polylogue/sources/parsers/drive_support_attachments.py",
     "polylogue/sources/parsers/grok.py",
     "polylogue/sources/parsers/hermes_finish_reason.py",
     "polylogue/sources/parsers/hermes_identity.py",
