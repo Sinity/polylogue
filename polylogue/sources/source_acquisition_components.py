@@ -423,13 +423,21 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
             # byte read below comes from the retained content-addressed input.
             blob_hash, blob_size = context.retained_blob.sha256, context.retained_blob.size_bytes
         prefix = context.blob_store.read_prefix(blob_hash, _DETECTION_PREFIX_SIZE)
+        from polylogue.sources.origin_specs import path_declaration_refuses_session
+
         with stage_timings.stage("detect"):
-            detected_provider, detection_evidence = detect_provider_from_raw_bytes_evidence(
-                prefix,
-                context.path.name,
-                context.provider_hint,
-                truncated_tail_ok=blob_size > len(prefix),
-            )
+            if path_declaration_refuses_session(context.provider_hint, context.path):
+                # Declared raw-only evidence (a prompt log, a sidecar) is
+                # classified by location; its shape is never consulted.
+                detected_provider = context.provider_hint
+                detection_evidence = "declared raw-only artifact rule (location)"
+            else:
+                detected_provider, detection_evidence = detect_provider_from_raw_bytes_evidence(
+                    prefix,
+                    context.path.name,
+                    context.provider_hint,
+                    truncated_tail_ok=blob_size > len(prefix),
+                )
             if detected_provider is Provider.UNKNOWN and context.source.name == "browser-capture":
                 detected_provider = _stream_browser_capture_provider(context.blob_store, blob_hash)
                 detection_evidence = "browser_capture provider recovered from spool metadata"

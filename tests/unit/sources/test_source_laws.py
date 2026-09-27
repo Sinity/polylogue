@@ -2068,10 +2068,12 @@ def test_session_emitter_detects_individual_jsonl_provider_from_payloads(
     )
     original_detect_provider = dispatch_module.detect_provider
 
-    def tracking_detect_provider(payload: object, path: object | None = None) -> Provider | None:
+    def tracking_detect_provider(
+        payload: object, path: object | None = None, *, expected: Provider | None = None
+    ) -> Provider | None:
         if isinstance(payload, list):
             raise AssertionError("individual JSONL sniff should not require whole-list provider detection")
-        return original_detect_provider(payload, path)
+        return original_detect_provider(payload, path, expected=expected)
 
     monkeypatch.setattr("polylogue.sources.emitter.detect_provider", tracking_detect_provider)
 
@@ -2745,11 +2747,13 @@ def test_iter_entry_payloads_locks_provider_after_first_detected_payload(
     detect_calls: list[JSONDocument] = []
     original_detect_provider = dispatch_module.detect_provider
 
-    def tracking_detect_provider(payload: object, path: object | None = None) -> Provider | None:
+    def tracking_detect_provider(
+        payload: object, path: object | None = None, *, expected: Provider | None = None
+    ) -> Provider | None:
         del path
         if isinstance(payload, dict):
             detect_calls.append(payload)
-        return original_detect_provider(payload)
+        return original_detect_provider(payload, expected=expected)
 
     monkeypatch.setattr("polylogue.sources.source_acquisition_components.detect_provider", tracking_detect_provider)
 

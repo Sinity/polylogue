@@ -246,7 +246,7 @@ class _SessionEmitter:
         buffered_payloads: list[JsonValue] = []
         for payload in payload_iter:
             buffered_payloads.append(payload)
-            detected_provider = detect_provider(payload)
+            detected_provider = detect_provider(payload, expected=self._ctx.bound_provider)
             if detected_provider is None:
                 continue
             if detected_provider in GROUP_PROVIDERS:
@@ -258,7 +258,9 @@ class _SessionEmitter:
                 )
             return _SniffResult(provider=detected_provider, payloads=chain(buffered_payloads, payload_iter))
 
-        detected_provider = detect_provider(buffered_payloads) or self._ctx.provider_hint
+        detected_provider = (
+            detect_provider(buffered_payloads, expected=self._ctx.bound_provider) or self._ctx.provider_hint
+        )
         if detected_provider in GROUP_PROVIDERS:
             return _SniffResult(
                 provider=detected_provider,
@@ -404,7 +406,7 @@ class _SessionEmitter:
             return None
 
     def _resolve_payload(self, payload: JsonValue) -> _ResolvedPayload:
-        provider = detect_provider(payload) or self._ctx.provider_hint
+        provider = detect_provider(payload, expected=self._ctx.bound_provider) or self._ctx.provider_hint
         artifact = classify_artifact(payload, provider=provider)
         if not artifact.parse_as_session:
             artifact = classify_artifact(

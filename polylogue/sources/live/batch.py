@@ -102,6 +102,7 @@ from polylogue.sources.decoder_zip import (
 from polylogue.sources.decoders import JsonlDecodeError, _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import (
     BUNDLE_PROVIDERS,
+    ForeignOriginContentError,
     is_jsonl_source_path,
     is_stream_record_provider,
     parse_payload,
@@ -577,7 +578,10 @@ def _live_parse_stage_candidates(paths: list[Path], *, fallback_provider: Provid
     for path in paths:
         if not is_jsonl_source_path(str(path)):
             continue
-        provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
+        try:
+            provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
+        except ForeignOriginContentError:
+            continue  # the acquisition pass records the typed refusal
         if not parse_as_session:
             continue
         try:
@@ -605,7 +609,10 @@ def _live_parse_stage_path_candidates(
     candidates: list[tuple[str, Provider, bool]] = []
     for path in paths:
         if is_jsonl_source_path(str(path)):
-            provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
+            try:
+                provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
+            except ForeignOriginContentError:
+                continue  # the acquisition pass records the typed refusal
             if parse_as_session or provider is Provider.UNKNOWN:
                 candidates.append((str(path), provider, is_stream_record_provider(str(path), str(provider))))
         elif path.suffix.lower() == ".json":
@@ -3496,7 +3503,17 @@ class LiveBatchProcessor:
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
             elif is_jsonl_source_path(str(path)):
-                provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
+                try:
+                    provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
+                except ForeignOriginContentError as exc:
+                    self._mark_refused_cursor(
+                        path,
+                        stat,
+                        source_name=fallback_provider.value,
+                        reason=f"{exc.code}: {exc}",
+                        excluded=excluded_paths,
+                    )
+                    continue
                 source_name = provider.value
                 # An unknown JSONL cannot be safely excluded from acquire: the
                 # strict parse route persists typed terminal evidence for empty
@@ -3548,9 +3565,21 @@ class LiveBatchProcessor:
                     )
             else:
                 json_document = path.suffix.lower() == ".json"
-                provider = (
-                    fallback_provider if json_document else _detect_provider_from_path_sample(path, fallback_provider)
-                )
+                try:
+                    provider = (
+                        fallback_provider
+                        if json_document
+                        else _detect_provider_from_path_sample(path, fallback_provider)
+                    )
+                except ForeignOriginContentError as exc:
+                    self._mark_refused_cursor(
+                        path,
+                        stat,
+                        source_name=fallback_provider.value,
+                        reason=f"{exc.code}: {exc}",
+                        excluded=excluded_paths,
+                    )
+                    continue
                 source_name = provider.value
                 if path.suffix.lower() != ".json" and not _parse_path_as_session_artifact(path, provider=provider):
                     self._mark_excluded_cursor(
@@ -3593,13 +3622,31 @@ class LiveBatchProcessor:
                 if json_document:
                     # The captured blob, rather than the pre-copy path, owns
                     # provider identity when the source changes after prewarm.
-                    provider = (
-                        preparation.resolved_provider
-                        if preparation is not None and not preparation.deferred and preparation.error is None
-                        else None
-                    ) or _detect_provider_from_path_sample(
-                        blob_store.blob_path(raw_id), fallback_provider, json_document=True
-                    )
+                    try:
+                        # A declared raw-only document (a prompt log, a sidecar)
+                        # is retained evidence by location; its shape is never
+                        # consulted, so it cannot be refused as foreign.
+                        provider = (
+                            fallback_provider
+                            if path_declaration_refuses_session(fallback_provider, path)
+                            else (
+                                preparation.resolved_provider
+                                if preparation is not None and not preparation.deferred and preparation.error is None
+                                else None
+                            )
+                            or _detect_provider_from_path_sample(
+                                blob_store.blob_path(raw_id), fallback_provider, json_document=True
+                            )
+                        )
+                    except ForeignOriginContentError as exc:
+                        self._mark_refused_cursor(
+                            path,
+                            stat,
+                            source_name=fallback_provider.value,
+                            reason=f"{exc.code}: {exc}",
+                            excluded=excluded_paths,
+                        )
+                        continue
                     source_name = provider.value
                 if heartbeat is not None:
                     heartbeat(

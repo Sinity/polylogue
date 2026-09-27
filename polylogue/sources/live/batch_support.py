@@ -28,7 +28,13 @@ from polylogue.core.json import JSONDecodeError, JSONValue
 from polylogue.core.json import loads as json_loads
 from polylogue.core.write_hold import check_write_hold_budget
 from polylogue.pipeline.services.process_pool import select_ingest_worker_count
-from polylogue.sources.dispatch import _detect_provider_from_raw_bytes, detect_provider, is_jsonl_source_path
+from polylogue.sources.dispatch import (
+    ForeignOriginContentError,
+    _detect_provider_from_raw_bytes,
+    bound_location_provider,
+    detect_provider,
+    is_jsonl_source_path,
+)
 from polylogue.sources.parsers import antigravity, hermes_state, hermes_verification
 from polylogue.storage.runtime import RawSessionRecord
 
@@ -876,24 +882,35 @@ def _detect_provider_from_path_sample(
             return fallback_provider
     if fallback_provider is Provider.ANTIGRAVITY and antigravity.looks_like_trajectory_db_path(path):
         return Provider.ANTIGRAVITY
-    if hermes_state.looks_like_state_db_path(path) or hermes_verification.looks_like_verification_evidence_db_path(
-        path
+    if fallback_provider in (Provider.HERMES, Provider.UNKNOWN) and (
+        hermes_state.looks_like_state_db_path(path)
+        or hermes_verification.looks_like_verification_evidence_db_path(path)
     ):
         return Provider.HERMES
     if is_jsonl_source_path(str(path)):
         records = _jsonl_sample_from_path(path)
         if records:
-            return detect_provider(records) or fallback_provider
+            return detect_provider(records, expected=fallback_provider) or fallback_provider
         return fallback_provider
     if json_document or path.suffix.lower() == ".json":
         browser_capture, capture_provider = _browser_capture_prefix_probe(path)
         if browser_capture and capture_provider is not None:
+            bound = bound_location_provider(fallback_provider)
+            if bound is not None and capture_provider is not bound:
+                raise ForeignOriginContentError(
+                    expected=bound, found=capture_provider, evidence="browser-capture envelope provider"
+                )
             return capture_provider
         from polylogue.sources.decoder_json import grok_export_item_count
 
         try:
             with path.open("rb") as handle:
                 if grok_export_item_count(handle) is not None:
+                    bound = bound_location_provider(fallback_provider)
+                    if bound is not None and bound is not Provider.GROK:
+                        raise ForeignOriginContentError(
+                            expected=bound, found=Provider.GROK, evidence="grok export envelope"
+                        )
                     return Provider.GROK
         except OSError:
             return fallback_provider
@@ -903,7 +920,7 @@ def _detect_provider_from_path_sample(
         try:
             with path.open("rb") as handle:
                 for record in _iter_json_stream(handle, path.name):
-                    detected = detect_provider(record)
+                    detected = detect_provider(record, expected=fallback_provider)
                     if detected is not None:
                         return detected
                     sample.append(record)
@@ -911,7 +928,7 @@ def _detect_provider_from_path_sample(
                         break
         except (OSError, ValueError):
             return fallback_provider
-        return detect_provider(sample) or fallback_provider
+        return detect_provider(sample, expected=fallback_provider) or fallback_provider
     try:
         with path.open("rb") as handle:
             payload = handle.read(_NON_JSON_PROBE_BYTES + 1)
@@ -929,7 +946,7 @@ def _jsonl_provider_and_session_artifact(
     from polylogue.sources.origin_specs import path_declaration_refuses_session
 
     records = _jsonl_sample_from_path(path)
-    provider = (detect_provider(records) if records else None) or fallback_provider
+    provider = (detect_provider(records, expected=fallback_provider) if records else None) or fallback_provider
     # A ``raw-only`` declaration is terminal: its bytes are evidence and the
     # record shape cannot decide otherwise (polylogue-ximhz). Checked before
     # the content probe so a prompt-history log -- whose rows carry the same

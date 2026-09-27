@@ -18,6 +18,7 @@ from . import cursor as _cursor
 from . import decoders as _decoders
 from .cursor import _log_source_iteration_summary, _record_cursor_failure
 from .decoders import _ZipEntryValidator
+from .dispatch import ForeignOriginContentError
 from .parsers.base import RawSessionData
 from .source_acquisition_components import (
     ObservationCallback,
@@ -154,6 +155,10 @@ def iter_source_raw_data(
                 str(path),
                 f"File not found (may have been deleted): {exc}",
             )
+        except ForeignOriginContentError as exc:
+            failed_count += 1
+            logger.warning("Refused foreign-origin content %s: %s", path, exc)
+            _record_cursor_failure(cursor_state, str(path), f"{exc.code}: {exc}")
         except (UnicodeDecodeError, zipfile.BadZipFile, OSError) as exc:
             failed_count += 1
             logger.warning("Failed to read %s: %s", path, exc)

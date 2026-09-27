@@ -22,7 +22,7 @@ from . import decoders as _decoders
 from .cursor import _log_source_iteration_summary, _ParseContext, _record_cursor_failure
 from .decoders import _process_zip
 from .dispatch import GROUP_PROVIDERS as _GROUP_PROVIDERS
-from .dispatch import is_jsonl_source_path
+from .dispatch import bound_location_provider, is_jsonl_source_path
 from .emitter import _SessionEmitter
 from .origin_specs import SourceClassRecognition, artifact_rule_for_path, recognize_source_class
 from .parsers import antigravity, hermes_identity, hermes_state, hermes_verification
@@ -421,6 +421,7 @@ def parse_one_source_path(
         file_mtime=file_mtime,
         capture_raw=capture_raw,
         sidecar_data=sidecar_data,
+        bound_provider=bound_location_provider(provider_hint),
     )
     emitter = _SessionEmitter(ctx)
 

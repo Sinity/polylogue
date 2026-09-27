@@ -109,9 +109,14 @@ surfaces. `Source` carries richer acquisition identity. The GEMINI+DRIVE →
 AISTUDIO_DRIVE mapping is non-injective: never reverse an Origin into a
 guessed Provider. Full table: `docs/provider-origin-identity.md`.
 
-Detection (`sources/dispatch.py`) is shape-based in tightness order; insert new
-detectors at the tightness they deserve or an earlier parser claims their
-records.
+Input handling fails closed. Each source location binds its origin: shape
+detection there only validates, and content carrying another origin's shape is
+a typed refusal (`ForeignOriginContentError`, recorded as a gap), never
+reparsed as that origin. Declared `raw-only` paths (sidecars, prompt logs) are
+evidence by location and never sessions; Drive admits only AI Studio prompts,
+so uploaded attachments stay attachments. Only the import inbox and
+browser-capture envelopes (which declare their provider) classify, using the
+tightness-ordered detectors in `sources/dispatch.py`.
 
 ## Runtime
 
