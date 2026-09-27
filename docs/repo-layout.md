@@ -22,9 +22,8 @@ repository tools. For the Python package itself, see
 | `.gitignore` | Git ignore policy | repo |
 | `.release-please-manifest.json` | Release Please component-version manifest | release tooling |
 | `.tokeignore` | Repository-owned source-attribution exclusions | repo |
-| `AGENTS.md` | Symlink-compatible agent entrypoint generated from `CLAUDE.md` | repo |
+| `AGENTS.md` | Shared agent instructions and working rules | repo |
 | `CHANGELOG.md` | Release history maintained by Release Please | release tooling |
-| `CLAUDE.md` | Primary standalone agent instructions and working rules | repo |
 | `CONTRIBUTING.md` | Contribution, branch, schema, verification, and PR workflow | repo |
 | `LICENSE` | Project license | repo |
 | `README.md` | Public project entrypoint | repo |

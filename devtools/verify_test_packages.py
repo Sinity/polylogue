@@ -7,8 +7,7 @@ share a basename then collide, and pytest aborts the *whole* collection with
 "import file mismatch".
 
 The failure is invisible to any selection that touches only one side of a
-collision, so it hides until the full corpus is collected as one unit --
-exactly the run CLAUDE.md requires and the one nobody completes.  Keeping
+collision, so it hides until the full corpus is collected as one unit. Keeping
 every test directory a package makes each module name package-qualified by
 path, so a duplicate basename is structurally harmless and this class of
 break cannot be reintroduced.

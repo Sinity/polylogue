@@ -7,7 +7,7 @@ without them having to ask for it.
 
 Agents start every session cold. They don't know what you worked on yesterday,
 what decisions were made, what patterns were established, or what errors were
-hit. CLAUDE.md provides static context, but the dynamic context — what actually
+hit. AGENTS.md provides static context, but the dynamic context — what actually
 happened in recent sessions — is locked in the archive.
 
 Agents can query polylogue for this context, but they have to know what to ask.
@@ -102,7 +102,7 @@ ingestion), it completes in <100ms.
 
 - Not a full sessional search. The agent can use MCP search tools for
   deeper queries — this is just the "while you were away" summary.
-- Not a replacement for CLAUDE.md. Static conventions belong in CLAUDE.md;
+- Not a replacement for AGENTS.md. Static conventions belong in AGENTS.md;
   dynamic context belongs here.
 - Not cross-project by default. Sessions are filtered to the current project
   root. Cross-project queries are available via MCP tools.

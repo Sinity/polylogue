@@ -18,7 +18,7 @@ nix develop
 All commands below assume you are already inside that environment. If not, use
 `nix develop -c <command>`.
 
-`AGENTS.md` is a symlink to [CLAUDE.md](CLAUDE.md); edit `CLAUDE.md`.
+Repository instructions live in [AGENTS.md](AGENTS.md).
 
 For repository maintenance, use `devtools`:
 

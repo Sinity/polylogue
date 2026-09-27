@@ -1,7 +1,7 @@
 # Project Memory
 
 Machine-observed knowledge about a project, accumulated from AI coding sessions.
-Complements CLAUDE.md — CLAUDE.md is what humans declare; project memory is what
+Complements AGENTS.md — AGENTS.md is what humans declare; project memory is what
 agents actually do.
 
 ## Design Properties
@@ -133,12 +133,12 @@ Three tools:
 - `search_project_memory(query, project_path)` — FTS5 search across summaries and details
 - `record_project_memory(kind, summary, detail, file_refs)` — agent-initiated recording (requires write role)
 
-## Relationship to CLAUDE.md
+## Relationship to AGENTS.md
 
-CLAUDE.md is human-curated and checked into the repo. Project memory is
+AGENTS.md is human-curated and checked into the repo. Project memory is
 machine-observed and stored in the archive. They serve different needs:
 
-| | CLAUDE.md | Project Memory |
+| | AGENTS.md | Project Memory |
 |---|---|---|
 | Author | Human | Agent (observed) |
 | Content | Declared conventions | Revealed behavior |
@@ -146,7 +146,7 @@ machine-observed and stored in the archive. They serve different needs:
 | Scope | What should be true | What actually happens |
 | Verification | Code review | Session evidence |
 
-Neither replaces the other. CLAUDE.md says "we use WAL mode." Project memory
+Neither replaces the other. AGENTS.md says "we use WAL mode." Project memory
 says "we tried switching to rollback journal in session X and it caused Y."
 
 ## Build Order

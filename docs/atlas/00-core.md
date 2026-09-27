@@ -1,7 +1,7 @@
 # Polylogue Atlas
 
 This is the cold-start map for the repository. It is orientation, not a
-second project contract: `CLAUDE.md` owns semantics and task authority lives
+second project contract: `AGENTS.md` owns semantics and task authority lives
 in the external task backend.
 
 ## What the system is

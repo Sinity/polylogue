@@ -91,7 +91,7 @@ DECLARATION_PATH = "docs/plans/durable-write-census.yaml"
 
 #: Tiers whose rows are durable: losing or corrupting one is not recoverable by
 #: reconvergence. ``index``/``embeddings``/``ops`` are rebuildable or disposable
-#: and are out of this census's subject by the tier table in ``CLAUDE.md``.
+#: and are out of this census's subject by the tier table in ``AGENTS.md``.
 DURABLE_TIERS: frozenset[str] = frozenset({"source", "user", "audit"})
 
 #: Placeholder table name for a statement whose table is an interpolation hole.
