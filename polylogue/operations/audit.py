@@ -54,7 +54,11 @@ from polylogue.storage.sqlite.archive_tiers.source_items import (
     SealedSourceManifestRef,
     source_manifest_from_dict,
 )
-from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditMutation
+from polylogue.storage.sqlite.audit_continuity import (
+    AuditContinuityCoordinator,
+    AuditContinuityUnknownMutationError,
+    AuditMutation,
+)
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityError as AuditContinuityError
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityPendingError as AuditContinuityPendingError
 from polylogue.storage.sqlite.audit_leaf import (
@@ -1579,7 +1583,7 @@ class AuditRepository:
                         evidence_ref=cast(str | None, payload.get("evidence_ref")),
                     ),
                 )
-            raise RuntimeError(f"unregistered audit continuity mutation {mutation.kind!r}")
+            raise AuditContinuityUnknownMutationError(mutation.kind)
         finally:
             self._coordinated_mutation = None
             self._coordinated_connection = None

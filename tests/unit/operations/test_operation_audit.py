@@ -67,7 +67,11 @@ from polylogue.operations.mutation_transaction import (
     recover_interrupted_operations,
 )
 from polylogue.operations.specs import OperationKind, OperationSpec
-from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditMutation
+from polylogue.storage.sqlite.audit_continuity import (
+    AuditContinuityCoordinator,
+    AuditContinuityUnknownMutationError,
+    AuditMutation,
+)
 from polylogue.storage.sqlite.audit_leaf import (
     AuditLeafError,
     VerifiedAuditLeaf,
@@ -3002,3 +3006,23 @@ def test_ingest_v2_input_pages_are_ordered_and_audit_owned(tmp_path: Path) -> No
         audit.read_ingest_input_pages(root.model_copy(update={"input_pages_ref": "operation:foreign"}))
     with pytest.raises(ValueError, match="terminal root"):
         audit.read_ingest_input_pages(root.model_copy(update={"input_pages_digest": "0" * 64}))
+
+
+def test_pending_command_of_an_undeclared_kind_is_a_typed_refusal(tmp_path: Path) -> None:
+    """A prepared command this runtime does not declare refuses reconciliation by name.
+
+    Only another runtime can have prepared it, so replay would guess its effect
+    and clearing it would drop an effect that may have committed. Anti-vacuity:
+    raise a bare ``RuntimeError`` from ``_replay_domain_mutation`` again and the
+    ``pytest.raises`` below fails; clear the pending entry instead and the
+    final assertion fails.
+    """
+    audit = _audit(tmp_path)
+    coordinator = AuditContinuityCoordinator(tmp_path)
+    coordinator._prepare(AuditMutation("retired_kind", "mutation:retired", 0, {}))
+
+    with pytest.raises(AuditContinuityUnknownMutationError) as refusal:
+        audit.reconcile_continuity()
+
+    assert refusal.value.kind == "retired_kind"
+    assert coordinator._pending() is not None

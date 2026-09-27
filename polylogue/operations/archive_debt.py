@@ -107,11 +107,19 @@ def _include(kind: ArchiveDebtKind, selected: set[str] | None) -> bool:
 
 
 def _tier_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]:
+    from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
+
     rows: list[ArchiveDebtRowPayload] = []
+    # Bootstrap creates every durable tier together, so a durable tier missing
+    # beside a surviving one was lost outside Polylogue. Opening the archive
+    # refuses that state rather than recreating the tier; only a fresh root
+    # (no durable tier at all) or a missing derived tier is the daemon's to fix.
+    established = any((archive_root / ARCHIVE_TIER_SPECS[tier].filename).exists() for tier in DURABLE_MIGRATION_TIERS)
     for tier, spec in ARCHIVE_TIER_SPECS.items():
         path = archive_root / spec.filename
         subject_ref = f"archive-tier:{tier.value}"
         if not path.exists():
+            lost_durable = established and tier in DURABLE_MIGRATION_TIERS
             rows.append(
                 ArchiveDebtRowPayload(
                     debt_ref=f"debt:archive-tier:{tier.value}:missing",
@@ -119,14 +127,21 @@ def _tier_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]:
                     stage="archive-layout",
                     subject_ref=subject_ref,
                     severity=_tier_missing_severity(spec.durability),
-                    status="actionable",
+                    status="blocked" if lost_durable else "actionable",
                     owner="ops",
                     summary=f"{spec.filename} is missing",
-                    details=f"Expected {spec.durability} archive tier at {path}.",
+                    details=(
+                        f"Durable tier {path} was lost from an established archive; it is never recreated. "
+                        "Restore the archive root from a verified backup."
+                        if lost_durable
+                        else f"Expected {spec.durability} archive tier at {path}."
+                    ),
                     evidence_refs=(f"file:{path}",),
-                    actions=(
+                    actions=()
+                    if lost_durable
+                    else (
                         ArchiveDebtActionPayload(
-                            label="Open the archive; bootstrap creates missing tiers and refuses a lost durable tier",
+                            label="Open the archive; bootstrap creates a fresh root and missing derived tiers",
                             command=("polylogued", "run"),
                         ),
                     ),

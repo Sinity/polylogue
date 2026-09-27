@@ -492,8 +492,8 @@ def reset_command(
         if _embeddings_db_present():
             env.ui.console.print(
                 "Preserving embeddings.db (expensive to rebuild: vectors are re-purchased from the embedding "
-                "provider, never replayed from source.db). Its vectors are keyed by content, so they are "
-                "reused after an index rebuild."
+                "provider, never replayed from source.db). The reuse key survives an index rebuild; manage it "
+                "with `polylogue ops maintenance embedding-preservation {preserve,restore,verify,discard}`."
             )
         if not include_user_db and _user_db_present():
             env.ui.console.print(

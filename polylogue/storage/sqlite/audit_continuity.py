@@ -60,6 +60,22 @@ class AuditContinuityPendingError(AuditContinuityError):
     """A reader cannot acknowledge an in-flight or unreconciled transition."""
 
 
+class AuditContinuityUnknownMutationError(AuditContinuityError):
+    """A prepared command names a mutation kind this runtime does not declare.
+
+    Only another runtime can have prepared it. Replaying it here would guess
+    its effect, and clearing it would drop an effect that may have committed,
+    so reconciliation refuses and the command stays pending for that runtime.
+    """
+
+    def __init__(self, kind: str) -> None:
+        super().__init__(
+            f"pending audit continuity command has kind {kind!r}, which this runtime does not declare; "
+            "open this archive with the runtime that prepared it"
+        )
+        self.kind = kind
+
+
 @dataclass(frozen=True, slots=True)
 class AuditMutation:
     """One typed audit command with generated identity and replay inputs."""
@@ -827,6 +843,7 @@ class AuditContinuityCoordinator:
 __all__ = [
     "AuditContinuityCoordinator",
     "AuditContinuityError",
+    "AuditContinuityUnknownMutationError",
     "AuditMutation",
     "audit_semantic_sha256",
     "prepared_audit_continuity_command",

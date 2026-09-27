@@ -1020,6 +1020,28 @@ class TestMaintenanceConfirmGates:
             assert "confirm" in result.get("message", "").lower()
 
     @pytest.mark.asyncio
+    async def test_declared_minimal_call_reaches_the_rebuild_route(self, tmp_path: Path) -> None:
+        """The declaration's minimal valid call passes the confirmation gate.
+
+        Anti-vacuity: drop ``("confirm", True)`` from the maintenance row's
+        minimal arguments in ``polylogue/mcp/declarations/registry.py`` and the
+        call is refused by the gate instead of reaching the daemon route.
+        """
+        from polylogue.mcp.declarations.registry import MCP_TOOL_DECLARATIONS
+        from polylogue.mcp.server import build_server
+
+        declaration = next(item for item in MCP_TOOL_DECLARATIONS if item.name == "maintenance")
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
+        maintenance_fn = server._tool_manager._tools["maintenance"].fn
+
+        with installed_runtime_services(archive_root):
+            result = json.loads(await invoke_surface_async(maintenance_fn, **dict(declaration.minimal_arguments)))
+        assert "confirm" not in result.get("message", "").lower()
+        assert result.get("code") == "daemon_required"
+
+    @pytest.mark.asyncio
     async def test_rebuild_insights_with_confirm_names_its_sealed_owner(self, tmp_path: Path) -> None:
         """A confirmed MCP rebuild is refused with the route the caller can take.
 

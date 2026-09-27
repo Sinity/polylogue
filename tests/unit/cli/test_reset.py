@@ -449,7 +449,7 @@ class TestResetCommandDeletion:
         assert result.exit_code == 0, result.output
         assert embeddings_db.exists(), "embeddings.db is expensive_rebuild and must survive --database"
         assert "Preserving embeddings.db" in result.output
-        assert "reused after an index rebuild" in result.output
+        assert "embedding-preservation" in result.output
 
     def test_reset_database_include_source_and_user_db_deletes_everything(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

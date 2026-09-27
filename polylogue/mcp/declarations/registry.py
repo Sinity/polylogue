@@ -267,7 +267,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         ("maintenance-operation",),
         MCPResultSemantics.MAINTENANCE,
         "polylogue.mcp.server_cutover.maintenance:inspect.signature",
-        (("operation", "rebuild_insights"),),
+        (("operation", "rebuild_insights"), ("confirm", True)),
         "operation_result",
         "mutate-rebuild-insights",
         target_object_kinds=("maintenance-plan", "maintenance-operation"),
