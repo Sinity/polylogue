@@ -39,14 +39,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import sqlite3
 import threading
 import time
 import weakref
 from collections.abc import Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from concurrent.futures import thread as _thread_impl
-from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +64,8 @@ from polylogue.pipeline.parsed_tree_size import (
 from polylogue.sources import revision_backfill
 from polylogue.sources.dispatch import is_stream_record_provider
 from polylogue.sources.revision_backfill import RawParsePrefetchCache
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import read_frame
 
 logger = get_logger(__name__)
 
@@ -97,7 +97,8 @@ def _readonly_descriptors(
     if not raw_ids:
         return {}
     descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int]] = {}
-    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
+    with read_frame(archive_root / "source.db", timeout_class="background-read", tier=ArchiveTier.SOURCE) as frame:
+        conn = frame.connection
         for offset in range(0, len(raw_ids), 500):
             raw_id_chunk = raw_ids[offset : offset + 500]
             placeholders = ",".join("?" for _ in raw_id_chunk)
@@ -197,16 +198,17 @@ def _resolve_readonly_native_ids(archive_root: Path, raw_ids: Sequence[str]) -> 
     """Read-only ``native_id`` lookup for pre-parse dispatch (no writer needed).
 
     polylogue-6lyh1: mirrors ``ArchiveStore.raw_native_id`` (same column, same
-    "blank means unknown" contract) but over a plain ``mode=ro`` connection --
-    kept as a small dedicated query here rather than widening a shared
-    helper's return shape, since its other callers do not need this column.
+    "blank means unknown" contract) in a background read frame -- kept as a
+    small dedicated query here rather than widening a shared helper's return
+    shape, since its other callers do not need this column.
     """
     raw_ids = list(raw_ids)
     if not raw_ids:
         return {}
     placeholders = ",".join("?" for _ in raw_ids)
     result: dict[str, str | None] = {}
-    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
+    with read_frame(archive_root / "source.db", timeout_class="background-read", tier=ArchiveTier.SOURCE) as frame:
+        conn = frame.connection
         rows = conn.execute(
             f"SELECT raw_id, native_id FROM raw_sessions WHERE raw_id IN ({placeholders})",
             raw_ids,

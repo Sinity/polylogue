@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -17,6 +16,8 @@ from polylogue.sources.parsers import codex_state
 from polylogue.sources.sqlite_snapshot import is_declared_logical_export
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.materials import admit_material, link_material
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import read_frame
 
 CODEX_STATE_CENSUS_DETAIL = "retained Codex state evidence applied"
 
@@ -324,7 +325,8 @@ def record_codex_state_snapshot_terminal(
 
 def _unreceipted_codex_state_raw_ids(source_db: Path) -> list[str]:
     origin = Origin.CODEX_SESSION.value
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+    with read_frame(source_db, timeout_class="background-read", tier=ArchiveTier.SOURCE) as frame:
+        conn = frame.connection
         rows = conn.execute(
             """
             SELECT r.raw_id
@@ -370,14 +372,16 @@ def _thread_state_projection_is_current(archive_root: Path) -> bool:
     if not index_db.is_file():
         return True
     try:
-        with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as source_conn:
-            latest = codex_state_projection.latest_retained_state_exports(source_conn)
+        with read_frame(
+            archive_root / "source.db", timeout_class="background-read", tier=ArchiveTier.SOURCE
+        ) as source_frame:
+            latest = codex_state_projection.latest_retained_state_exports(source_frame.connection)
         if not latest:
             return True
-        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as index_conn:
+        with read_frame(index_db, timeout_class="background-read", tier=ArchiveTier.INDEX) as index_frame:
             current = {
                 export.source_scope: codex_state_projection.projection_provenance(
-                    index_conn, source_scope=export.source_scope
+                    index_frame.connection, source_scope=export.source_scope
                 )
                 for export in latest
             }
