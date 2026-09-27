@@ -175,10 +175,6 @@ configured Voyage key.
 [archive]
 root = "/home/user/.local/share/polylogue"
 
-[daemon]
-host = "127.0.0.1" # legacy alias used by Nix/HM when api/browser host is omitted
-port = 8766         # legacy API port alias
-
 [daemon.api]
 host = "127.0.0.1"
 port = 8766

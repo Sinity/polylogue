@@ -1,6 +1,7 @@
 """Synthetic stop-predicate checks for the ordinary-daemon scratch probe."""
 
 from dataclasses import replace
+from pathlib import Path
 
 from devtools.daemon_finished_build import REQUIRED_READINESS_DOMAINS, BuildEvidence
 
@@ -109,3 +110,31 @@ def test_convergence_is_not_finished_output_acceptance() -> None:
     )
     assert converged.converged
     assert not converged.ready
+
+
+def test_qualification_environment_isolates_every_discovery_root(tmp_path: Path) -> None:
+    """Inherited XDG roots and path overrides never reach the qualification daemon.
+
+    Anti-vacuity: set only ``HOME`` and the inherited ``XDG_CONFIG_HOME`` (and
+    with it the operator's real config) is passed to the run.
+    """
+    from devtools.daemon_finished_build import qualification_environment
+
+    inherited = {
+        "HOME": "/home/operator",
+        "XDG_CONFIG_HOME": "/home/operator/.config",
+        "XDG_DATA_HOME": "/home/operator/.local/share",
+        "POLYLOGUE_CONFIG": "/home/operator/.config/polylogue/polylogue.toml",
+        "POLYLOGUE_HERMES_ROOT": "/home/operator/.hermes",
+        "PATH": "/usr/bin",
+    }
+    home = tmp_path / "home"
+
+    env = qualification_environment(inherited, home=home, archive=tmp_path / "archive", candidate=tmp_path / "c")
+
+    assert env["HOME"] == str(home)
+    assert env["XDG_CONFIG_HOME"] == str(home / ".config")
+    assert env["XDG_DATA_HOME"] == str(home / ".local/share")
+    assert "POLYLOGUE_CONFIG" not in env and "POLYLOGUE_HERMES_ROOT" not in env
+    assert env["POLYLOGUE_SITE_CONFIG"] == ""
+    assert env["PATH"] == "/usr/bin"

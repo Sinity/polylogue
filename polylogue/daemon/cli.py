@@ -2281,10 +2281,16 @@ async def _run_daemon_services_under_active_writer_lease(
         raise
 
     try:
-        # Ensure all configured source roots exist so health checks don't flag
-        # never-yet-used sources (e.g. hooks sidecar dir) as missing.
+        # Create the source roots Polylogue owns (hook carriers, the
+        # browser-capture spool, the inbox) so health checks don't flag a
+        # never-yet-used one as missing. A provider's own directory belongs
+        # to that tool: it is never created here, so an uninstalled tool or a
+        # relocated directory whose symlink is currently dangling reads as an
+        # unavailable source instead of being fabricated or failing startup.
+        owned_root = archive_root_path.resolve(strict=False)
         for src in sources:
-            src.root.mkdir(parents=True, exist_ok=True)
+            if src.root.resolve(strict=False).is_relative_to(owned_root):
+                src.root.mkdir(parents=True, exist_ok=True)
 
         if lifecycle_events_enabled:
             await _emit_daemon_lifecycle_event(

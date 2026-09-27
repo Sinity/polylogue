@@ -23,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Mapping
 from contextlib import closing, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -500,21 +501,49 @@ def _verify_args(args: argparse.Namespace) -> tuple[Path, Path, str]:
     return candidate, source, digest
 
 
-def qualify(args: argparse.Namespace) -> dict[str, Any]:
-    candidate, source, digest = _verify_args(args)
-    archive = args.archive_root.absolute()
-    archive.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ)
-    # Sources are acquired only from canonical locations: the source root is
-    # the isolated home whose provider directory holds the input.
-    env["HOME"] = str(args.source_root.resolve())
+def qualification_environment(
+    inherited: Mapping[str, str], *, home: Path, archive: Path, candidate: Path
+) -> dict[str, str]:
+    """The daemon's environment for one isolated qualification run.
+
+    Sources are acquired only from canonical locations, so ``home`` is the
+    isolated home whose provider directory holds the input. Every discovery
+    root is pointed into it, not only ``HOME``: an inherited XDG config or data
+    directory, or a Polylogue path override, would otherwise add the
+    operator's real config and sources to the run.
+    """
+    env = dict(inherited)
+    env["HOME"] = str(home)
+    for variable, relative in (
+        ("XDG_CONFIG_HOME", ".config"),
+        ("XDG_DATA_HOME", ".local/share"),
+        ("XDG_STATE_HOME", ".local/state"),
+        ("XDG_CACHE_HOME", ".cache"),
+    ):
+        env[variable] = str(home / relative)
+    env["POLYLOGUE_SITE_CONFIG"] = ""
+    for variable in (
+        "POLYLOGUE_CONFIG",
+        "POLYLOGUE_HERMES_ROOT",
+        "POLYLOGUE_BROWSER_CAPTURE_SPOOL_PATH",
+        "POLYLOGUE_HOOK_SIDECAR_DIR",
+        "POLYLOGUE_CREDENTIAL_PATH",
+        "POLYLOGUE_TOKEN_PATH",
+    ):
+        env.pop(variable, None)
     env["POLYLOGUE_ARCHIVE_ROOT"] = str(archive)
     # The qualification's required domains are local archive convergence. Keep
     # externally backed Sinex publication explicitly off for this scratch run.
     env["POLYLOGUE_SINEX_MODE"] = "off"
-    env.pop("POLYLOGUE_CONFIG", None)
-    env.pop("PYTHONPATH", None)
     env["PYTHONPATH"] = str(candidate)
+    return env
+
+
+def qualify(args: argparse.Namespace) -> dict[str, Any]:
+    candidate, source, digest = _verify_args(args)
+    archive = args.archive_root.absolute()
+    archive.mkdir(parents=True, exist_ok=True)
+    env = qualification_environment(os.environ, home=args.source_root.resolve(), archive=archive, candidate=candidate)
     command = [
         sys.executable,
         "-c",
