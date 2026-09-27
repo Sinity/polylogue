@@ -64,19 +64,12 @@ class StatusSnapshot:
     # a last-good payload from the old generation must then be advisory.
     frame: str | None = None
     frame_error: str | None = None
+    rich_observed: bool = False
 
     def with_metadata(self) -> JSONDocument:
         age_s = max(0.0, time.monotonic() - self.captured_monotonic)
         current_frame = _status_frame()
-        frame_changed = current_frame != self.frame
-        frame_unavailable = self.frame is None or current_frame is None
-        frame_error = "archive frame unavailable" if frame_unavailable else self.frame_error
-        if frame_unavailable:
-            state = "unavailable"
-        elif frame_error or frame_changed or age_s > STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S:
-            state = "stale"
-        else:
-            state = "fresh"
+        state, frame_changed, frame_error, cause = _snapshot_freshness(self, current_frame, age_s)
         base_payload: dict[str, object] = dict(self.payload)
         base_payload.setdefault("component_readiness", _minimal_component_readiness(base_payload))
         payload: dict[str, object] = normalize_raw_frontier_status_payload(
@@ -99,12 +92,39 @@ class StatusSnapshot:
                 state=state,
                 captured_at=self.captured_at,
                 evaluated_at=evaluated_at,
-                stale_cause=frame_error or ("snapshot-frame-changed" if frame_changed else None),
-                unavailable_cause=frame_error,
+                stale_cause=cause,
+                unavailable_cause=cause,
             ).to_dict(),
         }
         payload["daemon_write_coordinator"] = _daemon_write_coordinator_payload()
         return json_document(overlay_active_discovery(payload))
+
+
+def _snapshot_freshness(
+    snapshot: StatusSnapshot, current_frame: str | None, age_s: float
+) -> tuple[str, bool, str | None, str | None]:
+    """Classify one captured payload for both HTTP and metrics consumers."""
+    frame_changed = current_frame != snapshot.frame
+    frame_unavailable = snapshot.frame is None or current_frame is None
+    frame_error = "archive frame unavailable" if frame_unavailable else snapshot.frame_error
+    if frame_unavailable:
+        return "unavailable", frame_changed, frame_error, frame_error
+    if not snapshot.rich_observed:
+        return (
+            "unavailable",
+            frame_changed,
+            frame_error,
+            "rich-status-refresh-failed" if snapshot.refresh_error is not None else "rich-status-unavailable",
+        )
+    if snapshot.refresh_error is not None:
+        return "stale", frame_changed, frame_error, "rich-status-refresh-failed"
+    if frame_error:
+        return "stale", frame_changed, frame_error, frame_error
+    if frame_changed:
+        return "stale", frame_changed, frame_error, "snapshot-frame-changed"
+    if age_s > STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S:
+        return "stale", frame_changed, frame_error, None
+    return "fresh", frame_changed, frame_error, None
 
 
 def _status_frame() -> str | None:
@@ -482,19 +502,20 @@ def refresh_status_snapshot(*, payload: JSONDocument | None = None, rich: bool =
                         include_exact_raw_materialization_readiness=False,
                         include_archive_debt=False,
                         registry=periodic_status_component_registry(),
+                        collecting_status_snapshot=True,
                     )
                 else:
                     payload = _minimal_status_payload()
         except Exception as exc:
-            refresh_error = str(exc)
+            refresh_error = str(exc) or type(exc).__name__
             payload = _minimal_status_payload(refresh_error=refresh_error)
         end_frame = _status_frame()
+        with _SNAPSHOT_LOCK:
+            previous = _SNAPSHOT
         if start_frame != end_frame:
-            with _SNAPSHOT_LOCK:
-                previous = _SNAPSHOT
             reason = "archive frame changed during status collection"
             if previous is not None:
-                snapshot = replace(previous, frame_error=reason)
+                snapshot = replace(previous, frame_error=reason, refresh_error=refresh_error or previous.refresh_error)
             else:
                 snapshot = StatusSnapshot(
                     payload=_minimal_status_payload(refresh_error=reason),
@@ -504,6 +525,9 @@ def refresh_status_snapshot(*, payload: JSONDocument | None = None, rich: bool =
                     frame=start_frame,
                     frame_error=reason,
                 )
+        elif refresh_error is not None and previous is not None and previous.rich_observed:
+            # Keep the last coherent rich observation and its original age.
+            snapshot = replace(previous, refresh_error=refresh_error)
         else:
             snapshot = StatusSnapshot(
                 payload=json_document(dict(payload)),
@@ -512,6 +536,7 @@ def refresh_status_snapshot(*, payload: JSONDocument | None = None, rich: bool =
                 refresh_error=refresh_error,
                 frame=start_frame,
                 frame_error="archive frame unavailable" if start_frame is None else None,
+                rich_observed=rich and refresh_error is None,
             )
         with _SNAPSHOT_LOCK:
             _SNAPSHOT = snapshot
@@ -547,15 +572,7 @@ def snapshot_state_for_metrics() -> dict[str, Any]:
         return {"age_s": -1.0, "state": "missing", "refresh_error": ""}
     age_s = max(0.0, time.monotonic() - snapshot.captured_monotonic)
     current_frame = _status_frame()
-    frame_changed = current_frame != snapshot.frame
-    frame_unavailable = snapshot.frame is None or current_frame is None
-    frame_error = "archive frame unavailable" if frame_unavailable else snapshot.frame_error
-    if frame_unavailable:
-        state = "unavailable"
-    elif frame_error or frame_changed or age_s > STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S:
-        state = "stale"
-    else:
-        state = "fresh"
+    state, frame_changed, frame_error, _ = _snapshot_freshness(snapshot, current_frame, age_s)
     return {
         "age_s": round(age_s, 3),
         "state": state,

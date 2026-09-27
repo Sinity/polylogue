@@ -3429,6 +3429,7 @@ def daemon_status_payload(
     include_archive_debt: bool = False,
     include_assertion_candidate_queue: bool = False,
     registry: StatusComponentRegistry | None = None,
+    collecting_status_snapshot: bool = False,
 ) -> JSONDocument:
     """Return the local daemon component status payload (backward-compat dict).
 
@@ -3558,6 +3559,13 @@ def daemon_status_payload(
             "frame_changed": None,
             "refresh_error": f"status snapshot metadata unavailable: {exc}",
         }
+
+    # The periodic collector is producing the replacement for the cached
+    # frame. Its health verdict must be based on the newly observed components,
+    # not refuted by the previous frame's stale state. The refresh owner stamps
+    # the resulting snapshot metadata after collection completes.
+    if collecting_status_snapshot:
+        status_snapshot = {**status_snapshot, "state": "refreshing"}
 
     return json_document(
         {
