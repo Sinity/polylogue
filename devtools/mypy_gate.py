@@ -44,11 +44,17 @@ import sys
 from collections.abc import Iterator
 from pathlib import Path
 
+import tomllib
+
 #: mypy exits 0 (clean) or 1 (type errors) with a complete cache; anything
 #: else is a crash or a usage error and may leave a partial one.
 _CACHE_COMPLETE_EXITS = frozenset({0, 1})
 #: Written inside a cache after a run that left it complete.
 _STAMP = ".polylogue-complete"
+#: Passthrough options that disable or redirect the module cache. A run using
+#: one produces no reusable cache here, so it is not managed: it runs
+#: serialized on the shared lock and neither seeds, stamps nor publishes.
+_UNMANAGED_OPTIONS = ("--no-incremental", "--cache-dir")
 
 
 def _git_common_dir(root: Path) -> Path:
@@ -78,13 +84,34 @@ def _locked(lock_path: Path) -> Iterator[None]:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
-def _input_key(mypy_args: list[str]) -> str:
-    """Digest of what decides whether a cache can be reused."""
+def _input_key(root: Path, mypy_args: list[str]) -> str:
+    """Digest of what decides whether a cache can be reused.
+
+    mypy's version, the passthrough arguments and the ``[tool.mypy]``
+    configuration: a sibling that narrowed ``files`` publishes a partial cache
+    that a full-corpus checkout must not accept as warm.
+    """
     try:
         version = importlib.metadata.version("mypy")
     except importlib.metadata.PackageNotFoundError:
         version = "unknown"
-    return hashlib.sha256(json.dumps([version, mypy_args]).encode("utf-8")).hexdigest()
+    try:
+        with (root / "pyproject.toml").open("rb") as handle:
+            config = tomllib.load(handle).get("tool", {}).get("mypy", {})
+    except (OSError, tomllib.TOMLDecodeError):
+        config = None
+    payload = json.dumps([version, mypy_args, config], sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _unmanaged(mypy_args: list[str]) -> bool:
+    return any(arg == option or arg.startswith(f"{option}=") for arg in mypy_args for option in _UNMANAGED_OPTIONS)
+
+
+def _remove_abandoned(directory: Path, prefix: str) -> None:
+    """Remove staging copies a killed or cancelled gate left behind; caller holds the lock."""
+    for stale in directory.glob(f"{prefix}*"):
+        shutil.rmtree(stale, ignore_errors=True)
 
 
 def _is_complete(path: Path, key: str) -> bool:
@@ -113,7 +140,7 @@ def _copy_tree(source: Path, target: Path) -> None:
 def _seed(local: Path, shared: Path) -> None:
     """Give *local* a copy of the shared cache; caller holds the lock."""
     staging = local.with_name(f"{local.name}.seed-{os.getpid()}")
-    shutil.rmtree(staging, ignore_errors=True)
+    _remove_abandoned(local.parent, f"{local.name}.seed-")
     local.parent.mkdir(parents=True, exist_ok=True)
     _copy_tree(shared, staging)
     shutil.rmtree(local, ignore_errors=True)
@@ -124,7 +151,8 @@ def _publish(local: Path, shared: Path) -> None:
     """Replace the shared cache with *local*'s; caller holds the lock."""
     staging = shared.with_name(f"{shared.name}.publish-{os.getpid()}")
     retired = shared.with_name(f"{shared.name}.retired-{os.getpid()}")
-    shutil.rmtree(staging, ignore_errors=True)
+    _remove_abandoned(shared.parent, f"{shared.name}.publish-")
+    _remove_abandoned(shared.parent, f"{shared.name}.retired-")
     _copy_tree(local, staging)
     if shared.exists():
         os.replace(shared, retired)
@@ -157,7 +185,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"mypy gate: missing {mypy}", file=sys.stderr)
         return 127
 
-    key = _input_key(mypy_args)
+    if _unmanaged(mypy_args):
+        with _locked(lock_path):
+            return subprocess.run([str(mypy), *mypy_args], cwd=root, check=False).returncode
+
+    key = _input_key(root, mypy_args)
     local.parent.mkdir(parents=True, exist_ok=True)
     # Lock order is always checkout, then shared, so the two cannot deadlock.
     with _locked(local.parent / "mypy.lock"):

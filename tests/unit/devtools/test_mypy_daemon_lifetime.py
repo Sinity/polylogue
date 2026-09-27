@@ -26,11 +26,11 @@ def test_mypy_command_isolated_by_checkout(tmp_path: Path) -> None:
     assert gate.mypy_command(root=tmp_path) == [str(tmp_path / ".venv/bin/python"), "-m", "devtools.mypy_gate"]
 
 
-def _stamped_seed(shared: Path) -> None:
-    """A complete shared cache for the default inputs."""
+def _stamped_seed(shared: Path, root: Path) -> None:
+    """A complete shared cache for *root*'s default inputs."""
     shared.mkdir(parents=True)
     (shared / "seed.db").write_text("seed", encoding="utf-8")
-    (shared / mypy_gate._STAMP).write_text(mypy_gate._input_key([]), encoding="utf-8")
+    (shared / mypy_gate._STAMP).write_text(mypy_gate._input_key(root, []), encoding="utf-8")
 
 
 def _stub_checker(lane: Path, body: str) -> None:
@@ -51,7 +51,7 @@ def test_gate_checks_on_its_checkout_cache_and_publishes_it(monkeypatch: pytest.
     common.mkdir()
     monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
     shared = common / "polylogue-mypy" / "cache"
-    _stamped_seed(shared)
+    _stamped_seed(shared, tmp_path)
     # mypy exits 1 on type errors with a complete cache; that cache is published.
     _stub_checker(tmp_path, 'echo "$2" > "$2/checked-by"\nexit 1\n')
 
@@ -61,7 +61,7 @@ def test_gate_checks_on_its_checkout_cache_and_publishes_it(monkeypatch: pytest.
     assert (local / "seed.db").read_text(encoding="utf-8") == "seed"
     assert (local / "checked-by").read_text(encoding="utf-8").strip() == str(local)
     assert (shared / "checked-by").is_file()
-    assert mypy_gate._is_complete(local, mypy_gate._input_key([]))
+    assert mypy_gate._is_complete(local, mypy_gate._input_key(tmp_path, []))
 
 
 def test_a_crashed_check_does_not_publish_its_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -70,7 +70,7 @@ def test_a_crashed_check_does_not_publish_its_cache(monkeypatch: pytest.MonkeyPa
     common.mkdir()
     monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
     shared = common / "polylogue-mypy" / "cache"
-    _stamped_seed(shared)
+    _stamped_seed(shared, tmp_path)
     _stub_checker(tmp_path, 'echo partial > "$2/partial"\nexit 2\n')
 
     assert mypy_gate.main(["--root", str(tmp_path)]) == 2
@@ -78,7 +78,7 @@ def test_a_crashed_check_does_not_publish_its_cache(monkeypatch: pytest.MonkeyPa
     assert not (shared / "partial").exists()
     assert (shared / "seed.db").is_file()
     # The crashed checkout's own cache is not complete either: the next run re-checks.
-    assert not mypy_gate._is_complete(tmp_path / ".cache" / "mypy", mypy_gate._input_key([]))
+    assert not mypy_gate._is_complete(tmp_path / ".cache" / "mypy", mypy_gate._input_key(tmp_path, []))
 
 
 def test_an_unstamped_shared_cache_is_not_a_seed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -93,7 +93,9 @@ def test_an_unstamped_shared_cache_is_not_a_seed(monkeypatch: pytest.MonkeyPatch
     shared = common / "polylogue-mypy" / "cache"
     shared.mkdir(parents=True)
     (shared / "partial.db").write_text("interrupted", encoding="utf-8")
-    (shared / mypy_gate._STAMP).write_text(mypy_gate._input_key(["--python-version", "3.12"]), encoding="utf-8")
+    (shared / mypy_gate._STAMP).write_text(
+        mypy_gate._input_key(tmp_path, ["--python-version", "3.12"]), encoding="utf-8"
+    )
     _stub_checker(tmp_path, "exit 0\n")
 
     assert mypy_gate.main(["--root", str(tmp_path)]) == 0
@@ -126,7 +128,7 @@ def test_two_gates_in_one_checkout_do_not_share_a_running_cache(tmp_path: Path) 
     once, so one exits 9.
     """
     lane = _worktrees(tmp_path, 1)[0]
-    _stamped_seed(lane / ".git" / "polylogue-mypy" / "cache")
+    _stamped_seed(lane / ".git" / "polylogue-mypy" / "cache", lane)
     _stub_checker(
         lane,
         'if ! mkdir "$2/busy" 2>/dev/null; then exit 9; fi\nsleep 0.5\nrmdir "$2/busy"\nexit 0\n',
@@ -187,7 +189,7 @@ def test_warm_sibling_worktrees_check_side_by_side(tmp_path: Path) -> None:
     """
     lanes = _worktrees(tmp_path, 3)
     shared = lanes[0] / ".git" / "polylogue-mypy" / "cache"
-    _stamped_seed(shared)
+    _stamped_seed(shared, lanes[0])
     observed = tmp_path / "observed"
     observed.mkdir()
     for index, lane in enumerate(lanes):
@@ -235,3 +237,56 @@ def test_cold_siblings_run_one_cold_scan_and_seed_from_it(tmp_path: Path) -> Non
     assert (observed / "cold").read_text(encoding="utf-8").split() == ["cold"]
     for lane in lanes:
         assert (lane / ".cache" / "mypy" / "scanned.db").is_file()
+
+
+def test_arguments_that_bypass_the_cache_run_unmanaged(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """``--no-incremental`` produces no reusable cache, so nothing is stamped or published.
+
+    Anti-vacuity: manage such a run like any other and its empty cache is
+    stamped complete and published as the shared seed.
+    """
+    common = tmp_path / ".git"
+    common.mkdir()
+    monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
+    _stub_checker(tmp_path, 'echo "$@" > "$(dirname "$0")/argv"\nexit 0\n')
+
+    assert mypy_gate.main(["--root", str(tmp_path), "--no-incremental"]) == 0
+
+    assert (tmp_path / ".venv" / "bin" / "argv").read_text(encoding="utf-8").split() == ["--no-incremental"]
+    assert not (tmp_path / ".cache" / "mypy").exists()
+    assert not (common / "polylogue-mypy" / "cache").exists()
+
+
+def test_publishing_reclaims_abandoned_staging_copies(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A gate killed mid-copy leaves a staging directory the next publisher removes.
+
+    Anti-vacuity: remove only this process's own staging path and the
+    abandoned copy survives.
+    """
+    common = tmp_path / ".git"
+    common.mkdir()
+    monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
+    shared = common / "polylogue-mypy" / "cache"
+    _stamped_seed(shared, tmp_path)
+    abandoned = common / "polylogue-mypy" / "cache.publish-1"
+    abandoned.mkdir()
+    (abandoned / "partial.db").write_text("partial", encoding="utf-8")
+    _stub_checker(tmp_path, "exit 0\n")
+
+    assert mypy_gate.main(["--root", str(tmp_path)]) == 0
+
+    assert not abandoned.exists()
+
+
+def test_the_mypy_configuration_is_part_of_the_cache_key(tmp_path: Path) -> None:
+    """A sibling that narrowed ``[tool.mypy].files`` does not seed a full checkout.
+
+    Anti-vacuity: key only the version and argv and the two keys are equal.
+    """
+    narrowed = tmp_path / "narrowed"
+    full = tmp_path / "full"
+    for root, files in ((narrowed, '["polylogue/core"]'), (full, '["polylogue"]')):
+        root.mkdir()
+        (root / "pyproject.toml").write_text(f"[tool.mypy]\nfiles = {files}\n", encoding="utf-8")
+
+    assert mypy_gate._input_key(narrowed, []) != mypy_gate._input_key(full, [])
