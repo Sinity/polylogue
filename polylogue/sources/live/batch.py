@@ -1857,6 +1857,17 @@ class LiveBatchProcessor:
                 raise
             preexisting = None
         if preexisting is not None and preexisting.excluded:
+            # The watcher revives an excluded cursor only when the file's
+            # observation differs from the one the exclusion is bound to.
+            # Rebind it to this failed observation, so a changing file costs
+            # one attempt per change rather than one per poll (polylogue-d8fpj).
+            try:
+                self._cursor.mark_excluded(path, observed_stat=path.stat())
+            except FileNotFoundError:
+                pass
+            except sqlite3.OperationalError as exc:
+                if not is_transient_sqlite_lock(exc):
+                    raise
             return 0
         try:
             stat = path.stat()
