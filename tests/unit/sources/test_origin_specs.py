@@ -1325,49 +1325,75 @@ class TestSemanticSourceClosureMemo:
 # -----------------------------------------------------------------------------
 
 
-def test_unsupported_large_hermes_json_remains_refused_after_bounded_probe(tmp_path: Path) -> None:
-    """Large Hermes JSON without the supported snapshot envelope stays refused.
+def test_large_antigravity_export_is_recognized_by_streaming_envelope(tmp_path: Path) -> None:
+    """A large Antigravity export is a session whatever its size.
 
-    The bounded probe may admit recognized Hermes snapshots, but other shapes
-    cannot fall through to the whole-document structural reader.
+    Anti-vacuity: reinstate a size ceiling on the whole-document probe (the
+    removed 64 MiB refusal) and this candidate is classified ``unsupported``.
     """
     from polylogue.core.enums import Provider
-    from polylogue.sources.origin_specs import SOURCE_CLASS_JSON_PROBE_MAX_BYTES, recognize_source_class
+    from polylogue.core.json_envelope import ENVELOPE_TEXT_PREFIX_CHARS
+    from polylogue.sources.origin_specs import recognize_source_class
 
-    candidate = tmp_path / "trajectory.json"
-    candidate.write_text("{}", encoding="utf-8")
-
-    recognition = recognize_source_class(
-        Provider.HERMES, candidate, source_size_bytes=SOURCE_CLASS_JSON_PROBE_MAX_BYTES + 1
+    candidate = tmp_path / "export.json"
+    markdown = "## User\n" + "x" * (ENVELOPE_TEXT_PREFIX_CHARS * 4)
+    candidate.write_text(
+        json.dumps({"source": "antigravity_language_server", "cascadeId": "c-1", "markdown": markdown}),
+        encoding="utf-8",
     )
 
+    recognition = recognize_source_class(Provider.ANTIGRAVITY, candidate)
+
     assert recognition is not None
-    assert recognition.source_class == "unsupported"
-    assert "inspection ceiling" in recognition.reason
+    assert recognition.source_class == "session"
 
 
-def test_hermes_jsonl_probe_skips_an_oversized_record(tmp_path: Path) -> None:
-    """One over-long JSONL record is skipped, not read whole.
+def test_hermes_jsonl_probe_reads_a_long_record_instead_of_skipping_it(tmp_path: Path) -> None:
+    """A long leading JSONL record is classified, not skipped.
 
-    The 32-record cap left each ``json.loads(line)`` unbounded. A record above
-    ``JSONL_RECORD_INSPECTION_BYTES`` buys no classification accuracy (the
-    signature is decided by leading keys), so it is skipped and the next real
-    record still classifies the file.
-
-    Anti-vacuity: restore the plain ``for line in handle`` loop and the
-    oversized record is parsed in full before the recognizer ever sees the
-    ATOF record that decides the answer.
+    Anti-vacuity: reinstate the per-record byte skip and the long ATOF record
+    is dropped, leaving no ATOF record, so the file is ``unsupported``.
     """
-    from polylogue.archive.raw_payload.decode import JSONL_RECORD_INSPECTION_BYTES
-    from polylogue.sources.origin_specs import _bounded_jsonl_records
+    from polylogue.core.enums import Provider
+    from polylogue.sources.origin_specs import recognize_source_class
 
     candidate = tmp_path / "events.jsonl"
-    huge = json.dumps({"pad": "x" * (JSONL_RECORD_INSPECTION_BYTES * 2)})
-    candidate.write_text(huge + "\n" + json.dumps({"kept": True}) + "\n", encoding="utf-8")
+    record = {
+        "atof_version": "0.1",
+        "kind": "mark",
+        "uuid": "u-1",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "name": "event",
+        "data": {"pad": "x" * (4 * 1024 * 1024)},
+    }
+    candidate.write_text(json.dumps(record) + "\n" + json.dumps({"other": True}) + "\n", encoding="utf-8")
 
-    records = _bounded_jsonl_records(candidate, limit=32, max_record_bytes=JSONL_RECORD_INSPECTION_BYTES)
+    recognition = recognize_source_class(Provider.HERMES, candidate)
 
-    assert records == [{"kept": True}]
+    assert recognition is not None
+    assert recognition.source_class == "session"
+
+
+def test_top_level_envelopes_keep_root_fields_and_placeholders() -> None:
+    import io
+
+    from polylogue.core.json_envelope import top_level_envelopes
+
+    document = b'{"session_id": "s", "messages": [{"role": "user"}], "meta": {"a": 1}, "n": 2}'
+    assert list(top_level_envelopes(io.BytesIO(document), multiple_values=False, expand_arrays=True)) == [
+        {"session_id": "s", "messages": [], "meta": {}, "n": 2}
+    ]
+    array = b'[{"a": 1, "b": [1, 2]}, 3, [4]]'
+    assert list(top_level_envelopes(io.BytesIO(array), multiple_values=False, expand_arrays=True)) == [
+        {"a": 1, "b": []},
+        3,
+        [],
+    ]
+    lines = b'{"a": 1}\n[1, 2]\n'
+    assert list(top_level_envelopes(io.BytesIO(lines), multiple_values=True, expand_arrays=False)) == [
+        {"a": 1},
+        [],
+    ]
 
 
 def _reset_closure_caches(module: object) -> None:

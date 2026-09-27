@@ -24,6 +24,7 @@ fake store is asked for the oversized blob.
 
 from __future__ import annotations
 
+import io
 import sqlite3
 from pathlib import Path
 
@@ -43,9 +44,9 @@ class _FakeBlobStore:
         self.payloads = payloads
         self.requested: list[str] = []
 
-    def read_all(self, hash_hex: str) -> bytes:
+    def open(self, hash_hex: str) -> io.BytesIO:
         self.requested.append(hash_hex)
-        return self.payloads[hash_hex]
+        return io.BytesIO(self.payloads[hash_hex])
 
 
 def _source_conn(tmp_path: Path) -> sqlite3.Connection:
@@ -134,29 +135,36 @@ def test_a_deeply_nested_sidecar_is_refused_instead_of_aborting_the_write(
     assert tool_ids == set()
 
 
-def test_an_oversized_sidecar_is_never_read(
+def test_a_large_sidecar_is_streamed_to_its_dispatch_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: object
 ) -> None:
+    """Sidecar size never refuses dispatch identity.
+
+    Anti-vacuity: reinstate a byte ceiling on the sidecar read (the removed
+    8 MiB refusal) and the parent tool_use id is not resolved.
+    """
     del frozen_clock
     digest = "dd" * 32
+    payload = (
+        b'{"type":"subagent","padding":"' + b"x" * (9 * 1024 * 1024) + b'","tool_use_id":"toolu_large","uuid":"u1"}'
+    )
     conn = _source_conn(tmp_path)
     try:
         _insert_sidecar(
             conn,
-            raw_id="raw-huge",
-            source_path="/export/parent-1/subagents/agent-huge.meta.json",
+            raw_id="raw-large",
+            source_path="/export/parent-1/subagents/agent-large.meta.json",
             digest=digest,
-            size=write_mod._SIDECAR_DISPATCH_MAX_BYTES + 1,
+            size=len(payload),
         )
-        store = _FakeBlobStore({digest: _meta("toolu_huge")})
+        store = _FakeBlobStore({digest: payload})
         monkeypatch.setattr(write_mod, "get_blob_store", lambda: store)
         tool_ids = _sidecar_dispatch_tool_ids(
             conn,
             origin=_ORIGIN,
             parent_values={"parent-1"},
-            child_values={"agent-huge"},
+            child_values={"agent-large"},
         )
     finally:
         conn.close()
-    assert tool_ids == set()
-    assert store.requested == [], "the oversized blob was read despite the bound"
+    assert tool_ids == {"toolu_large"}

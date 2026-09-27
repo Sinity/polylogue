@@ -24,10 +24,12 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from functools import cache, lru_cache
+from itertools import islice
 from pathlib import Path
 from typing import Literal, cast
 
 from polylogue.core.enums import Origin, Provider, ToolResultUnknownReason
+from polylogue.core.json_envelope import top_level_envelopes
 from polylogue.declarations import (
     CompatibilityKey,
     CompletenessEdge,
@@ -680,36 +682,9 @@ def _looks_like_extracted_transcript_corpus_path(
     return looks_like_extracted_transcript_corpus(dict_items)
 
 
-#: Ceiling for structural probes that still require a whole document. Large
-#: Hermes snapshots use the parser's bounded envelope probe below, so this
-#: value does not reject that supported shape based on file size.
-SOURCE_CLASS_JSON_PROBE_MAX_BYTES = 64 * 1024 * 1024
-
-
-def _bounded_jsonl_records(path: Path, *, limit: int, max_record_bytes: int) -> list[object]:
-    """Parse at most ``limit`` JSONL records, never holding more than one record.
-
-    A record longer than ``max_record_bytes`` is skipped rather than read: the
-    structural signatures below are decided by a record's leading keys, so an
-    unbounded line buys no classification accuracy.
-    """
-    records: list[object] = []
-    with path.open(encoding="utf-8") as handle:
-        while len(records) < limit:
-            chunk = handle.readline(max_record_bytes + 1)
-            if not chunk:
-                break
-            if len(chunk) > max_record_bytes:
-                # Drain the rest of this oversized record in bounded steps so
-                # the next readline starts at a real record boundary.
-                while True:
-                    tail = handle.readline(max_record_bytes)
-                    if not tail or tail.endswith("\n"):
-                        break
-                continue
-            if chunk.strip():
-                records.append(json.loads(chunk))
-    return records
+#: Records a JSONL candidate is classified by: a declared JSONL source's kind
+#: shows in its leading records, and every record is read whole however long.
+SOURCE_CLASS_JSONL_LEADING_RECORDS = 32
 
 
 def recognize_source_class(
@@ -718,7 +693,6 @@ def recognize_source_class(
     *,
     payload: object | None = None,
     source_only: bool = False,
-    source_size_bytes: int | None = None,
 ) -> SourceClassRecognition | None:
     """Classify broad-root candidates before provider-session admission.
 
@@ -726,9 +700,7 @@ def recognize_source_class(
     enumerate cheaply by suffix, but may not assign a provider session from
     that suffix alone.
 
-    ``source_size_bytes`` is the candidate's already-observed stat size. When
-    given, a whole-document probe above
-    :data:`SOURCE_CLASS_JSON_PROBE_MAX_BYTES` is refused instead of performed.
+    The JSON probe streams, so a candidate's size never changes the answer.
     """
     if provider is Provider.UNKNOWN:
         if source_only and Path(source_path).suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
@@ -801,38 +773,22 @@ def recognize_source_class(
         return None
 
     if payload is None:
+        import ijson
+
+        is_jsonl = path.suffix.lower() in {".jsonl", ".ndjson"}
         try:
-            if path.suffix.lower() in {".jsonl", ".ndjson"}:
-                # Imported lazily: ``archive.raw_payload`` imports
-                # ``sources.dispatch``, which imports this module back.
-                from polylogue.archive.raw_payload.decode import JSONL_RECORD_INSPECTION_BYTES
-
-                payload = _bounded_jsonl_records(path, limit=32, max_record_bytes=JSONL_RECORD_INSPECTION_BYTES)
-            else:
-                if source_size_bytes is not None and source_size_bytes > SOURCE_CLASS_JSON_PROBE_MAX_BYTES:
-                    if provider is Provider.HERMES:
-                        # Hermes snapshots have one production bounded probe
-                        # that retains the parser's required envelope and
-                        # leaves the messages array out of Python memory. Use
-                        # it to admit that supported shape even when unrelated
-                        # document fields make the file large. Other large
-                        # JSON shapes remain explicitly unrecognized here.
-                        from polylogue.sources.decoder_json import hermes_snapshot_envelope
-
-                        with path.open("rb") as handle:
-                            envelope = hermes_snapshot_envelope(handle)
-                        candidate = {**envelope, "messages": []} if envelope is not None else None
-                        if candidate is not None and local_agent.looks_like_hermes(candidate):
-                            return SourceClassRecognition(
-                                "session", "Hermes snapshot recognized by bounded structural probe"
-                            )
-                    return SourceClassRecognition(
-                        "unsupported",
-                        "candidate exceeds the structural source-class inspection ceiling",
-                    )
-                payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            return SourceClassRecognition("unsupported", "Hermes candidate is not readable JSON")
+            with path.open("rb") as handle:
+                if is_jsonl:
+                    records = top_level_envelopes(handle, multiple_values=True, expand_arrays=False)
+                    payload = list(islice(records, SOURCE_CLASS_JSONL_LEADING_RECORDS))
+                else:
+                    (payload,) = top_level_envelopes(handle, multiple_values=False, expand_arrays=False)
+            if not is_jsonl and isinstance(payload, list):
+                # A JSON array document: its signature is read per element.
+                with path.open("rb") as handle:
+                    payload = list(top_level_envelopes(handle, multiple_values=False, expand_arrays=True))
+        except (OSError, UnicodeDecodeError, ValueError, ijson.JSONError):
+            return SourceClassRecognition("unsupported", f"{provider.value} candidate is not readable JSON")
 
     if provider is Provider.HERMES:
         record = payload if isinstance(payload, dict) else None

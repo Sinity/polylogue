@@ -3150,9 +3150,7 @@ class LiveBatchProcessor:
             source_class = (
                 None
                 if path.suffix.lower() == ".zip"
-                else recognize_source_class(
-                    fallback_provider, path, source_only=source_only, source_size_bytes=stat.st_size
-                )
+                else recognize_source_class(fallback_provider, path, source_only=source_only)
             )
             hermes_database_capability = database_capability_for_provider(Provider.HERMES)
             hermes_member = (

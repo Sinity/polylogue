@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Any, Literal, cast, overload
 from urllib.parse import quote, urlparse
 
+import ijson
+
 from polylogue.archive.attachment.availability import AttachmentAvailability, resolve_attachment_availability
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
@@ -58,6 +60,7 @@ from polylogue.core.hook_payload import payload_key_spellings
 from polylogue.core.identity_law import message_id as archive_message_id
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
+from polylogue.core.json_envelope import top_level_envelopes
 from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.sqlite_scratch import connect_scratch_database
@@ -10820,13 +10823,6 @@ def _session_provider_values(conn: sqlite3.Connection, session_id: str) -> set[s
     return values
 
 
-#: A dispatch sidecar is a small metadata document. The raw row is selected
-#: without requiring a successful parse or a current revision, and ZIP
-#: admission permits a member up to 10 GiB, so the writer must not agree to
-#: read whatever the row points at.
-_SIDECAR_DISPATCH_MAX_BYTES = 8 * 1024 * 1024
-
-
 def _escape_like(value: str) -> str:
     """Escape SQL LIKE wildcards so a provider-derived value matches literally."""
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -10867,37 +10863,25 @@ def _sidecar_dispatch_tool_ids(
             # than one tool id is read as a dispatch-identity contradiction,
             # so the stray match does not mis-bind the edge -- it refuses a
             # correct one.
-            "SELECT source_path, blob_hash, blob_size FROM raw_sessions "
-            "WHERE origin = ? AND source_path LIKE ? ESCAPE '\\'",
+            "SELECT source_path, blob_hash FROM raw_sessions WHERE origin = ? AND source_path LIKE ? ESCAPE '\\'",
             (origin, f"%/subagents/{_escape_like(stem)}.meta.json"),
         ).fetchall()
-        for source_path, blob_hash, blob_size in rows:
+        for source_path, blob_hash in rows:
             parts = str(source_path).replace("\\", "/").split("/")
             if len(parts) < 3 or parts[-3] not in parent_values:
                 continue
-            # This runs in the synchronous writer, not a parsing worker, and
-            # the row is selected without requiring a successful parse or a
-            # size bound -- ZIP admission alone permits a 10 GiB member. Read
-            # only what a sidecar can plausibly be, and say so when refusing.
-            if blob_size is not None and int(blob_size) > _SIDECAR_DISPATCH_MAX_BYTES:
-                emit(
-                    "storage.dispatch_sidecar.refused",
-                    level=WARNING,
-                    outcome="refused",
-                    reason="sidecar_over_size_bound",
-                    source_path=source_path,
-                    blob_size=int(blob_size),
-                    max_bytes=_SIDECAR_DISPATCH_MAX_BYTES,
-                )
-                continue
+            # This runs in the synchronous writer, and ZIP admission permits
+            # very large members. Dispatch identity is a root field, so the
+            # sidecar is streamed to its root envelope, never read whole.
             try:
-                payload = store.read_all(bytes(blob_hash).hex())
-                artifact = parse_claude_orchestration_artifact(str(source_path), payload)
+                with store.open(bytes(blob_hash).hex()) as handle:
+                    (envelope,) = top_level_envelopes(handle, multiple_values=False, expand_arrays=False)
+                artifact = parse_claude_orchestration_artifact(str(source_path), envelope)
             # RecursionError is a RuntimeError, not a ValueError: a deeply
             # nested sidecar would otherwise escape this handler and abort the
             # whole session write, and because the raw row persists it would
             # abort it again on every later replay of the same lineage.
-            except (OSError, ValueError, RecursionError) as exc:
+            except (OSError, ValueError, RecursionError, ijson.JSONError) as exc:
                 emit(
                     "storage.dispatch_sidecar.refused",
                     level=WARNING,
