@@ -90,11 +90,17 @@ def drive_cache_file_path(dest_dir: Path, name: str) -> Path:
     return dest_dir / safe_name
 
 
+#: Marker of a cache file an earlier acquisition rewrote with fetched
+#: attachment bytes embedded. Such a file is not the provider's document, so
+#: it is not a valid cache: re-downloading replaces it with the real bytes.
+_REWRITTEN_CACHE_MARKER = b'"_polylogue_drive_live_bytes_b64"'
+
+
 def _read_valid_cache(path: Path) -> bytes | None:
-    """Return cached bytes only when the complete JSON document is readable."""
+    """Return cached bytes only when they are the provider's complete, readable document."""
     try:
         raw = path.read_bytes()
-        if not raw.strip():
+        if not raw.strip() or _REWRITTEN_CACHE_MARKER in raw:
             return None
         if path.suffix.lower() in {".jsonl", ".ndjson"}:
             if not all(line.strip() and json.loads(line) is not None for line in raw.splitlines() if line.strip()):

@@ -127,6 +127,46 @@ def test_iter_drive_raw_data_replaces_torn_cache_even_when_revision_is_unchanged
     assert json.loads(cache.read_bytes()) == payload
 
 
+def test_iter_drive_raw_data_replaces_a_cache_rewritten_with_attachment_bytes(tmp_path: Path) -> None:
+    """A cache an earlier acquisition rewrote with embedded bytes is re-downloaded.
+
+    Anti-vacuity: drop the marker check in ``_read_valid_cache`` and the
+    rewritten document (valid JSON) is served as the raw, carrying the base64
+    sidecar into the archive.
+    """
+    payload = {"chunkedPrompt": {"chunks": [{"role": "user", "text": "fresh"}]}}
+    rewritten = {
+        "chunkedPrompt": {
+            "chunks": [
+                {
+                    "role": "user",
+                    "text": "fresh",
+                    "driveDocument": {"id": "att", "_polylogue_drive_live_bytes_b64": "Ynl0ZXM="},
+                }
+            ]
+        }
+    }
+    client = _DriveSessionClient(
+        files=[DriveFile("file-1", "session.json", "application/json", "2025-01-01T00:00:00Z", 64)],
+        payload_bytes={"file-1": json.dumps(payload).encode()},
+    )
+    cache = drive_cache_file_path(tmp_path, "session.json")
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_bytes(json.dumps(rewritten).encode())
+
+    records = list(
+        iter_drive_raw_data(
+            source=Source(name="gemini", folder="Google AI Studio", path=tmp_path),
+            client=client,
+            blob_store=BlobStore(tmp_path / "blob"),
+        )
+    )
+
+    assert len(records) == 1
+    assert client.download_bytes_calls == ["file-1"]
+    assert json.loads(cache.read_bytes()) == payload
+
+
 def _write_via_ingest_batch(
     *,
     conn: sqlite3.Connection,
