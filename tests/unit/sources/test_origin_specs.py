@@ -1379,14 +1379,97 @@ def test_top_level_envelopes_keep_root_fields_and_placeholders() -> None:
 
     from polylogue.core.json_envelope import jsonl_record_envelopes, top_level_envelopes
 
+    fields = frozenset({"session_id", "messages", "meta", "n", "a", "b", "d"})
     document = b'{"session_id": "s", "messages": [{"role": "user"}], "meta": {"a": 1}, "n": 18446744073709551616}'
-    assert list(top_level_envelopes(io.BytesIO(document), expand_arrays=True)) == [
+    assert list(top_level_envelopes(io.BytesIO(document), expand_arrays=True, fields=fields)) == [
         {"session_id": "s", "messages": [], "meta": {}, "n": 18446744073709551616}
     ]
     array = b'[{"a": 1, "b": [1, 2]}, 3, [4]]'
-    assert list(top_level_envelopes(io.BytesIO(array), expand_arrays=True)) == [{"a": 1, "b": []}, 3, []]
+    assert list(top_level_envelopes(io.BytesIO(array), expand_arrays=True, fields=fields)) == [
+        {"a": 1, "b": []},
+        3,
+        [],
+    ]
     lines = b'{"a": 1}\n\n[1, 2]\n{"b": 2} {"c": 3}\nnot json\n{"d": 4}'
-    assert list(jsonl_record_envelopes(io.BytesIO(lines))) == [{"a": 1}, [], {"d": 4}]
+    assert list(jsonl_record_envelopes(io.BytesIO(lines), fields=fields)) == [{"a": 1}, [], {"d": 4}]
+
+
+def test_envelope_keeps_only_declared_root_fields() -> None:
+    """Anti-vacuity: keep every root key again and the undeclared keys appear."""
+    import io
+
+    from polylogue.core.json_envelope import top_level_envelopes
+
+    body = ", ".join(f'"k{index}": {index}' for index in range(5000))
+    document = ('{"session_id": "s", ' + body + "}").encode()
+    (envelope,) = top_level_envelopes(io.BytesIO(document), expand_arrays=False, fields=frozenset({"session_id"}))
+    assert envelope == {"session_id": "s"}
+
+
+def test_invalid_escape_in_a_skipped_string_suffix_rejects_the_record() -> None:
+    """Anti-vacuity: stop validating the skipped suffix and the record is admitted."""
+    import io
+
+    import ijson
+    import pytest
+
+    from polylogue.core.json_envelope import jsonl_record_envelopes, top_level_envelopes
+
+    long_text = "x" * (200 * 1024) + "\\q" + "y" * 16
+    bad = ('{"atof_version": "0.1", "padding": "' + long_text + '"}').encode()
+    good = b'{"atof_version": "0.2"}'
+    fields = frozenset({"atof_version"})
+    with pytest.raises(ijson.JSONError):
+        list(top_level_envelopes(io.BytesIO(bad), expand_arrays=False, fields=fields))
+    assert list(jsonl_record_envelopes(io.BytesIO(bad + b"\n" + good), fields=fields)) == [{"atof_version": "0.2"}]
+    control = ('{"atof_version": "0.1", "padding": "' + "x" * (200 * 1024) + "\x01" + '"}').encode()
+    with pytest.raises(ijson.JSONError):
+        list(top_level_envelopes(io.BytesIO(control), expand_arrays=False, fields=fields))
+    valid = ('{"atof_version": "0.1", "padding": "' + "x" * (200 * 1024) + '\\n\\u00e9\\\\q"}').encode()
+    (envelope,) = top_level_envelopes(io.BytesIO(valid), expand_arrays=False, fields=fields)
+    assert envelope == {"atof_version": "0.1"}
+
+
+def test_declared_identity_field_is_read_whole_or_refused() -> None:
+    """Anti-vacuity: drop ``whole_fields`` and the long id comes back cut to the prefix."""
+    import io
+
+    import pytest
+
+    import polylogue.core.json_envelope as json_envelope
+
+    tool_id = "toolu_" + "a" * (60 * 1024)
+    document = ('{"toolUseId": "' + tool_id + '", "padding": "' + "p" * (80 * 1024) + '"}').encode()
+    fields = frozenset({"toolUseId"})
+    (envelope,) = json_envelope.top_level_envelopes(
+        io.BytesIO(document), expand_arrays=False, fields=fields, whole_fields=fields
+    )
+    assert envelope == {"toolUseId": tool_id}
+
+    json_envelope._sqlite_value_limit.cache_clear()
+    original = json_envelope._sqlite_value_limit
+    try:
+        json_envelope._sqlite_value_limit = lambda: 1024  # type: ignore[assignment]
+        with pytest.raises(json_envelope.EnvelopeValueTooLargeError):
+            list(
+                json_envelope.top_level_envelopes(
+                    io.BytesIO(document), expand_arrays=False, fields=fields, whole_fields=fields
+                )
+            )
+    finally:
+        json_envelope._sqlite_value_limit = original  # type: ignore[assignment]
+
+
+def test_an_oversized_integer_skips_only_its_own_jsonl_record() -> None:
+    """Anti-vacuity: let ValueError escape the record scope and no envelope is yielded."""
+    import io
+
+    from polylogue.core.json_envelope import jsonl_record_envelopes
+
+    lines = b'{"n": ' + b"9" * 4301 + b'}\n{"atof_version": "0.1"}'
+    assert list(jsonl_record_envelopes(io.BytesIO(lines), fields=frozenset({"n", "atof_version"}))) == [
+        {"atof_version": "0.1"}
+    ]
 
 
 def test_envelope_keeps_a_prefix_of_a_huge_string_without_holding_it() -> None:
@@ -1403,7 +1486,7 @@ def test_envelope_keeps_a_prefix_of_a_huge_string_without_holding_it() -> None:
     tracemalloc.start()
     try:
         tracemalloc.reset_peak()
-        (envelope,) = top_level_envelopes(handle, expand_arrays=False)
+        (envelope,) = top_level_envelopes(handle, expand_arrays=False, fields=frozenset({"padding", "tool_use_id"}))
         peak = tracemalloc.get_traced_memory()[1]
     finally:
         tracemalloc.stop()

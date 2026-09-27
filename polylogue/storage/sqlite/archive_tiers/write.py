@@ -89,7 +89,11 @@ from polylogue.sources.parsers.base import (
     ParsedSessionEvent,
 )
 from polylogue.sources.parsers.base_support import derive_attachment_provenance
-from polylogue.sources.parsers.claude.orchestration import parse_claude_orchestration_artifact
+from polylogue.sources.parsers.claude.orchestration import (
+    DISPATCH_IDENTITY_FIELDS,
+    DOCUMENT_READ_FIELDS,
+    parse_claude_orchestration_artifact,
+)
 from polylogue.sources.parsers.hermes_identity import split_qualified_session_id
 from polylogue.sources.prepared_message_sink import SqliteMessageSink
 from polylogue.sources.tool_outcomes import derive_tool_outcomes as _derive_tool_outcomes
@@ -10872,10 +10876,17 @@ def _sidecar_dispatch_tool_ids(
                 continue
             # This runs in the synchronous writer, and ZIP admission permits
             # very large members. Dispatch identity is a root field, so the
-            # sidecar is streamed to its root envelope, never read whole.
+            # sidecar is streamed to the root fields the artifact parser reads,
+            # never read whole; the tool_use id itself is kept complete, since
+            # it is the exact join key to the parent block.
             try:
                 with store.open(bytes(blob_hash).hex()) as handle:
-                    (envelope,) = top_level_envelopes(handle, expand_arrays=False)
+                    (envelope,) = top_level_envelopes(
+                        handle,
+                        expand_arrays=False,
+                        fields=DOCUMENT_READ_FIELDS,
+                        whole_fields=DISPATCH_IDENTITY_FIELDS,
+                    )
                 # Only an object root carries dispatch identity; a scalar root
                 # must not be decoded a second time into a document.
                 artifact = (

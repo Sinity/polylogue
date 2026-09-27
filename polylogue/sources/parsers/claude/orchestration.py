@@ -89,6 +89,22 @@ _DOCUMENT_FIELDS = frozenset(
 )
 _JOURNAL_FIELDS = _DOCUMENT_FIELDS | frozenset({"type", "event", "key", "ordinal", "retryOf", "retry_of"})
 
+#: Every root field :func:`_document_fact` reads from a document artifact.
+DOCUMENT_READ_FIELDS = _DOCUMENT_FIELDS | frozenset(
+    {
+        "id",
+        "agentId",
+        "agent_id",
+        "sessionId",
+        "session_id",
+        "contentKey",
+        "content_key",
+        "callKey",
+        "call_key",
+        "key",
+    }
+)
+
 
 def _string(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
@@ -246,7 +262,14 @@ def _journal_fact(source_path: str, line: int, payload: Mapping[str, object]) ->
     )
 
 
+#: The dispatching tool_use id: the exact join key from a subagent sidecar to
+#: its parent block, so it must never be read as a prefix.
+DISPATCH_IDENTITY_FIELDS = frozenset({"toolUseId", "tool_use_id"})
+
+
 __all__ = [
+    "DISPATCH_IDENTITY_FIELDS",
+    "DOCUMENT_READ_FIELDS",
     "ClaudeOrchestrationArtifact",
     "ClaudeOrchestrationFact",
     "parse_claude_orchestration_artifact",

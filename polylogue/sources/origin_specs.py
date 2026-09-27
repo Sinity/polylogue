@@ -776,16 +776,27 @@ def recognize_source_class(
         import ijson
 
         is_jsonl = path.suffix.lower() in {".jsonl", ".ndjson"}
+        # Only the root fields a signature reads are kept, so a document of any
+        # width costs the same memory.
+        fields = (
+            hermes_spans.ATIF_SIGNATURE_FIELDS
+            | hermes_spans.ATOF_SIGNATURE_FIELDS
+            | local_agent.HERMES_SIGNATURE_FIELDS
+            if provider is Provider.HERMES
+            else antigravity.MARKDOWN_EXPORT_SIGNATURE_FIELDS
+        )
         try:
             with path.open("rb") as handle:
                 if is_jsonl:
-                    payload = list(islice(jsonl_record_envelopes(handle), SOURCE_CLASS_JSONL_LEADING_RECORDS))
+                    payload = list(
+                        islice(jsonl_record_envelopes(handle, fields=fields), SOURCE_CLASS_JSONL_LEADING_RECORDS)
+                    )
                 else:
-                    (payload,) = top_level_envelopes(handle, expand_arrays=False)
+                    (payload,) = top_level_envelopes(handle, expand_arrays=False, fields=fields)
             if not is_jsonl and isinstance(payload, list):
                 # A JSON array document: its signature is read per element.
                 with path.open("rb") as handle:
-                    payload = list(top_level_envelopes(handle, expand_arrays=True))
+                    payload = list(top_level_envelopes(handle, expand_arrays=True, fields=fields))
         except (OSError, UnicodeDecodeError, ValueError, ArithmeticError, ijson.JSONError):
             return SourceClassRecognition("unsupported", f"{provider.value} candidate is not readable JSON")
 

@@ -2,15 +2,19 @@
 
 Structural signatures (source-class recognition, sidecar dispatch identity)
 decide from a document's root fields: their presence, type and short leading
-text. :func:`top_level_envelopes` streams a document and keeps exactly that,
-so a signature gives the same answer for a document of any size. No string is
-materialized beyond a bounded prefix, so one huge scalar costs no memory.
+text. :func:`top_level_envelopes` streams a document and keeps exactly the
+root fields its caller declares, so a signature gives the same answer for a
+document of any size or width. No string is materialized beyond a bounded
+prefix, except a declared identity field, which is read whole or refused at
+SQLite's value limit.
 """
 
 from __future__ import annotations
 
 import re
+import sqlite3
 from collections.abc import Iterator
+from functools import cache
 from typing import IO, Protocol
 
 #: Characters of a top-level string an envelope keeps. The source-class
@@ -25,6 +29,49 @@ _STRING_PREFIX_BYTES = 12 * ENVELOPE_TEXT_PREFIX_CHARS
 _READ_BYTES = 1024 * 1024
 
 _ESCAPE_TOKEN = re.compile(rb'\\(?:u([0-9a-fA-F]{4})|["\\/bfnrt])')
+
+#: Tokens of a skipped string suffix worth examining: complete valid escapes
+#: pass; a lone backslash (an invalid or not-yet-complete escape) or a raw
+#: control character is not valid JSON string content.
+_SKIPPED_TOKEN = re.compile(rb'\\(?:u[0-9a-fA-F]{4}|["\\/bfnrt])|\\|[\x00-\x1f]')
+
+#: Injected into the tokenizer's view of a string whose skipped suffix is not
+#: valid JSON, so the tokenizer rejects the document as the full decoder does.
+_INVALID_ESCAPE = b"\\q"
+
+
+class EnvelopeValueTooLargeError(ValueError):
+    """A declared identity field exceeds SQLite's maximum value length.
+
+    Such a value cannot be stored or joined, so it is refused by name rather
+    than shortened into a different identifier.
+    """
+
+    def __init__(self, field: str, size: int, limit: int) -> None:
+        super().__init__(f"root field {field!r} is {size} bytes, beyond the {limit}-byte SQLite value limit")
+        self.field = field
+        self.size = size
+        self.limit = limit
+
+
+class _TruncatedText(str):
+    """A string field kept as its leading prefix.
+
+    ``raw_bytes`` is the raw length of its token and ``ordinal`` its position
+    among the document's string tokens, so it can be re-read whole.
+    """
+
+    raw_bytes: int
+    ordinal: int
+
+
+@cache
+def _sqlite_value_limit() -> int:
+    connection = sqlite3.connect(":memory:")
+    try:
+        return connection.getlimit(sqlite3.SQLITE_LIMIT_LENGTH)
+    finally:
+        connection.close()
 
 
 class _Readable(Protocol):
@@ -67,13 +114,22 @@ class _PrefixStringReader:
     leading text.
     """
 
-    def __init__(self, source: _Readable) -> None:
+    def __init__(self, source: _Readable, *, whole_ordinals: frozenset[int] = frozenset()) -> None:
         self._source = source
+        self._whole_ordinals = whole_ordinals
         self._in_string = False
         self._backslashes = 0
         self._string = bytearray()
         self._skipping = False
         self._eof = False
+        #: Ordinal of the current string token, counted from 1 in stream order;
+        #: the tokenizer reports keys and string values in the same order.
+        self._ordinal = 0
+        #: Raw byte length of each string token passed on as a prefix only.
+        self.truncated: dict[int, int] = {}
+        self._skipped_bytes = 0
+        self._skip_carry = b""
+        self._skip_invalid = False
 
     def read(self, size: int = -1) -> bytes:
         if size == 0:
@@ -108,24 +164,61 @@ class _PrefixStringReader:
                 self._backslashes = 0
                 self._string = bytearray()
                 self._skipping = False
+                self._ordinal += 1
                 position = quote + 1
                 continue
             end = self._string_end(data, position)
             piece = data[position:end] if end >= 0 else data[position:]
-            if not self._skipping:
+            if self._skipping:
+                self._skipped_bytes += len(piece)
+                self._validate_skipped(piece, out)
+            else:
                 self._string += piece
-                if len(self._string) > _STRING_PREFIX_BYTES:
-                    out += self._string[: _prefix_cut(bytes(self._string[:_STRING_PREFIX_BYTES]))]
+                if len(self._string) > _STRING_PREFIX_BYTES and self._ordinal not in self._whole_ordinals:
+                    cut = _prefix_cut(bytes(self._string[:_STRING_PREFIX_BYTES]))
+                    out += self._string[:cut]
+                    self._skipped_bytes = len(self._string)
+                    self._skip_carry = b""
+                    self._skip_invalid = False
+                    self._validate_skipped(bytes(self._string[cut:]), out)
                     self._string = bytearray()
                     self._skipping = True
             if end < 0:
                 return
-            if not self._skipping:
+            if self._skipping:
+                if self._skip_carry and not self._skip_invalid:
+                    # An escape left incomplete by the closing quote.
+                    out += _INVALID_ESCAPE
+                self.truncated[self._ordinal] = self._skipped_bytes
+            else:
                 out += self._string
             out += b'"'
             self._in_string = False
             self._string = bytearray()
             position = end + 1
+
+    def _validate_skipped(self, piece: bytes, out: bytearray) -> None:
+        """Check that a skipped string suffix is valid JSON string content.
+
+        The tokenizer never sees the suffix, so an invalid escape or raw
+        control character there is injected as an invalid escape: the
+        document is then rejected exactly as the full decoder rejects it.
+        """
+        if self._skip_invalid:
+            return
+        buffer = self._skip_carry + piece
+        self._skip_carry = b""
+        for match in _SKIPPED_TOKEN.finditer(buffer):
+            token = match.group()
+            if len(token) > 1:
+                continue
+            if token == b"\\" and len(buffer) - match.start() < 6:
+                # Possibly an escape the next chunk completes.
+                self._skip_carry = buffer[match.start() :]
+                return
+            self._skip_invalid = True
+            out += _INVALID_ESCAPE
+            return
 
     def _string_end(self, data: bytes, start: int) -> int:
         """Index of the closing quote of the open string in ``data``, or -1."""
@@ -199,20 +292,32 @@ class _Line:
             pass
 
 
-def _envelope_scalar(value: object) -> object:
-    if isinstance(value, str) and len(value) > ENVELOPE_TEXT_PREFIX_CHARS:
-        return value[:ENVELOPE_TEXT_PREFIX_CHARS]
+def _envelope_scalar(value: object, raw_bytes: int | None, ordinal: int) -> object:
+    if isinstance(value, str) and (raw_bytes is not None or len(value) > ENVELOPE_TEXT_PREFIX_CHARS):
+        text = _TruncatedText(value[:ENVELOPE_TEXT_PREFIX_CHARS])
+        text.raw_bytes = raw_bytes if raw_bytes is not None else len(value.encode("utf-8", "surrogatepass"))
+        text.ordinal = ordinal
+        return text
     return value
 
 
-def _envelopes(events: Iterator[tuple[str, object]], *, expand_arrays: bool) -> Iterator[object]:
+def _envelopes(
+    events: Iterator[tuple[str, object]],
+    reader: _PrefixStringReader,
+    *,
+    expand_arrays: bool,
+    fields: frozenset[str],
+) -> Iterator[object]:
     depth = 0
     root: object = None
     element: object = None
     key: str | None = None
     element_key: str | None = None
     expanding = False
+    ordinal = 0
     for event, value in events:
+        if event in ("map_key", "string"):
+            ordinal += 1
         if event in ("start_map", "start_array"):
             placeholder: object = {} if event == "start_map" else []
             if depth == 0:
@@ -220,9 +325,9 @@ def _envelopes(events: Iterator[tuple[str, object]], *, expand_arrays: bool) -> 
                 expanding = expand_arrays and event == "start_array"
             elif depth == 1 and expanding:
                 element = placeholder
-            elif depth == 1 and isinstance(root, dict) and key is not None:
+            elif depth == 1 and isinstance(root, dict) and key in fields:
                 root[key] = placeholder
-            elif depth == 2 and expanding and isinstance(element, dict) and element_key is not None:
+            elif depth == 2 and expanding and isinstance(element, dict) and element_key in fields:
                 element[element_key] = placeholder
             depth += 1
             continue
@@ -239,44 +344,90 @@ def _envelopes(events: Iterator[tuple[str, object]], *, expand_arrays: bool) -> 
             elif depth == 2 and expanding:
                 element_key = str(value)
             continue
-        scalar = _envelope_scalar(value)
+        scalar = _envelope_scalar(value, reader.truncated.get(ordinal) if event == "string" else None, ordinal)
         if depth == 0 or (depth == 1 and expanding):
             yield scalar
-        elif depth == 1 and isinstance(root, dict) and key is not None:
+        elif depth == 1 and isinstance(root, dict) and key in fields:
             root[key] = scalar
-        elif depth == 2 and expanding and isinstance(element, dict) and element_key is not None:
+        elif depth == 2 and expanding and isinstance(element, dict) and element_key in fields:
             element[element_key] = scalar
 
 
-def top_level_envelopes(handle: IO[bytes], *, expand_arrays: bool) -> Iterator[object]:
-    """Stream one JSON document's envelope, or one per element of an array document.
+def _whole_string(handle: IO[bytes], ordinal: int) -> str:
+    """Re-read the string token at ``ordinal`` of a seekable document whole.
 
-    An object's envelope keeps its keys with scalar values (strings as a
-    leading prefix) and a typed empty placeholder for container values.
-    Numbers are read exactly, so no magnitude makes a document unreadable.
-    A malformed document raises ``ijson.JSONError``.
+    Every other string is still passed on as a prefix only, so the re-read
+    costs the memory of this one value, however large its neighbours are.
     """
     import ijson
 
-    events = ijson.basic_parse(_PrefixStringReader(handle), use_float=False)
-    yield from _envelopes(events, expand_arrays=expand_arrays)
+    handle.seek(0)
+    reader = _PrefixStringReader(handle, whole_ordinals=frozenset({ordinal}))
+    seen = 0
+    for event, value in ijson.basic_parse(reader, use_float=False):
+        if event in ("map_key", "string"):
+            seen += 1
+            if seen == ordinal and isinstance(value, str):
+                return value
+    raise ValueError(f"string token {ordinal} vanished between two reads of the same document")
 
 
-def jsonl_record_envelopes(handle: IO[bytes]) -> Iterator[object]:
+def top_level_envelopes(
+    handle: IO[bytes],
+    *,
+    expand_arrays: bool,
+    fields: frozenset[str],
+    whole_fields: frozenset[str] = frozenset(),
+) -> Iterator[object]:
+    """Stream one JSON document's envelope, or one per element of an array document.
+
+    An object's envelope keeps only the root keys named in ``fields``, with
+    scalar values (strings as a leading prefix) and a typed empty placeholder
+    for container values, so a document of any width costs the same memory.
+    A string in ``whole_fields`` is an identity used as an exact join key: it
+    is re-read whole from ``handle`` (which must then be seekable), or refused
+    with :class:`EnvelopeValueTooLargeError` beyond SQLite's value limit -- never
+    shortened. Numbers are read exactly, so no magnitude makes a document
+    unreadable. A malformed document raises ``ijson.JSONError``.
+    """
+    import ijson
+
+    reader = _PrefixStringReader(handle)
+    events = ijson.basic_parse(reader, use_float=False)
+    envelopes = list(_envelopes(events, reader, expand_arrays=expand_arrays, fields=fields))
+    if whole_fields and not expand_arrays:
+        for envelope in envelopes:
+            if not isinstance(envelope, dict):
+                continue
+            for field in sorted(whole_fields & envelope.keys()):
+                value = envelope[field]
+                if not isinstance(value, _TruncatedText):
+                    continue
+                limit = _sqlite_value_limit()
+                if value.raw_bytes > limit:
+                    raise EnvelopeValueTooLargeError(field, value.raw_bytes, limit)
+                envelope[field] = _whole_string(handle, value.ordinal)
+    yield from envelopes
+
+
+def jsonl_record_envelopes(handle: IO[bytes], *, fields: frozenset[str]) -> Iterator[object]:
     """Stream the envelope of each physical line that holds exactly one JSON value.
 
-    A blank or malformed line is skipped, as the JSONL decoder skips it; a
-    line holding two values is malformed, not two records.
+    A blank or malformed line is skipped, as the JSONL decoder skips it --
+    including a line whose integer exceeds Python's conversion limit, which
+    the decoder rejects per line with ``ValueError``. A line holding two
+    values is malformed, not two records.
     """
     import ijson
 
     lines = _LineSource(handle)
     while (line := lines.next_line()) is not None:
+        reader = _PrefixStringReader(line)
         try:
             values = list(
-                _envelopes(ijson.basic_parse(_PrefixStringReader(line), use_float=False), expand_arrays=False)
+                _envelopes(ijson.basic_parse(reader, use_float=False), reader, expand_arrays=False, fields=fields)
             )
-        except (ijson.JSONError, UnicodeDecodeError, ArithmeticError):
+        except (ijson.JSONError, UnicodeDecodeError, ArithmeticError, ValueError):
             line.drain()
             continue
         line.drain()
@@ -284,4 +435,9 @@ def jsonl_record_envelopes(handle: IO[bytes]) -> Iterator[object]:
             yield values[0]
 
 
-__all__ = ["ENVELOPE_TEXT_PREFIX_CHARS", "jsonl_record_envelopes", "top_level_envelopes"]
+__all__ = [
+    "ENVELOPE_TEXT_PREFIX_CHARS",
+    "EnvelopeValueTooLargeError",
+    "jsonl_record_envelopes",
+    "top_level_envelopes",
+]
