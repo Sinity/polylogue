@@ -570,6 +570,18 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    # Refuse a missing path before queueing for the host pytest slot: pytest
+    # fails such a run at collection anyway, but only after it has waited out
+    # the pool admission, which on a contended pool is many minutes.
+    absent_before_admission = absent_selection_paths(selection, root=ROOT)
+    if absent_before_admission:
+        sys.stderr.write(
+            "devtools test: these selected paths do not exist, so nothing was queued: "
+            + ", ".join(absent_before_admission)
+            + "\n"
+        )
+        return 4
+
     run = VerifyRun(
         tier="focused-test",
         argv=selection,
