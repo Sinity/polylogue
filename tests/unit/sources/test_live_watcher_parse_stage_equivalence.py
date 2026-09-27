@@ -47,6 +47,7 @@ from polylogue.sources.live.parse_prefetch import LiveParseStage
 from polylogue.sources.live.watcher import _PARSER_FINGERPRINT, LiveWatcher, WatchSource
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
+from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_raw_session_id
 
 _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "raw_sessions": frozenset({"acquired_at_ms", "parsed_at_ms"}),
@@ -108,6 +109,33 @@ def _codex_session_bytes(native_id: str, messages: tuple[tuple[str, str], ...]) 
     return b"".join(json.dumps(row, sort_keys=True).encode() + b"\n" for row in rows)
 
 
+def _chatgpt_bundle_bytes(*texts: str) -> bytes:
+    return json.dumps(
+        [
+            {
+                "id": f"bundle-{index}",
+                "title": f"session {index}",
+                "create_time": 1,
+                "current_node": "m",
+                "mapping": {
+                    "m": {
+                        "id": "m",
+                        "parent": None,
+                        "children": [],
+                        "message": {
+                            "id": "m",
+                            "author": {"role": "user"},
+                            "create_time": 1,
+                            "content": {"content_type": "text", "parts": [text]},
+                        },
+                    }
+                },
+            }
+            for index, text in enumerate(texts)
+        ]
+    ).encode()
+
+
 def _write_fixture_corpus(root: Path, *, count: int) -> list[Path]:
     root.mkdir(parents=True, exist_ok=True)
     paths = []
@@ -163,14 +191,20 @@ def _raw_sessions_source_path_order(archive_root: Path) -> tuple[str, ...]:
     return tuple(str(row["source_path"]) for row in rows)
 
 
-async def _ingest(archive_root: Path, paths: list[Path], *, parse_stage: LiveParseStage | None) -> None:
+async def _ingest(
+    archive_root: Path,
+    paths: list[Path],
+    *,
+    parse_stage: LiveParseStage | None,
+    source_name: str = "codex",
+) -> None:
     archive_root.mkdir(parents=True, exist_ok=True)
     db_path = archive_root / "index.db"
     polylogue = Polylogue(archive_root=archive_root, db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
         polylogue,
-        (WatchSource(name="codex", root=paths[0].parent),),
+        (WatchSource(name=source_name, root=paths[0].parent),),
         cursor=cursor,
         parser_fingerprint=_PARSER_FINGERPRINT,
         parse_stage=parse_stage,
@@ -1039,6 +1073,111 @@ async def test_existing_session_preparation_uses_controlled_pinned_snapshot(tmp_
         prepared.discard()
     finally:
         stage.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_existing_session_preparation_skips_replay_and_prepares_changed_append(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    path = _write_fixture_corpus(tmp_path / "sessions", count=1)[0]
+    await _ingest(archive_root, [path], parse_stage=None)
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    candidate = [(str(path), Provider.CODEX, True)]
+    try:
+        stage.warm_paths(candidate, archive_root=archive_root, read_snapshot=open_operation_read)
+        unchanged = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+        assert unchanged is not None and unchanged.prepared_writes == ()
+        unchanged.discard()
+
+        path.write_bytes(
+            _codex_session_bytes(
+                "session-0",
+                (("user", "question 0"), ("assistant", "answer 0"), ("user", "follow up")),
+            )
+        )
+        stage.warm_paths(candidate, archive_root=archive_root, read_snapshot=open_operation_read)
+        changed = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+        assert changed is not None and len(changed.prepared_writes) == 1
+        changed.discard()
+    finally:
+        stage.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_existing_session_preparation_binds_capture_mode_instead_of_parser_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polylogue.storage.sqlite.archive_tiers.write as archive_write
+
+    archive_root = tmp_path / "archive"
+    path = _write_fixture_corpus(tmp_path / "sessions", count=1)[0]
+    await _ingest(archive_root, [path], parse_stage=None)
+    path.write_bytes(_codex_session_bytes("session-0", (("user", "changed question"),)))
+    observed_raw_ids: list[str | None] = []
+    original_prepare = archive_write.prepare_session_write
+
+    def observe_prepare(*args: Any, **kwargs: Any) -> Any:
+        observed_raw_ids.append(kwargs.get("raw_id"))
+        return original_prepare(*args, **kwargs)
+
+    monkeypatch.setattr(archive_write, "prepare_session_write", observe_prepare)
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    try:
+        stage.warm_paths(
+            [(str(path), Provider.CODEX, True)],
+            archive_root=archive_root,
+            read_snapshot=open_operation_read,
+            capture_mode=Provider.CLAUDE_CODE,
+        )
+        prepared = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+        assert prepared is not None and len(prepared.prepared_writes) == 1
+        prepared.discard()
+    finally:
+        stage.shutdown()
+    assert observed_raw_ids == [
+        deterministic_raw_session_id(
+            origin_from_provider(Provider.CLAUDE_CODE), str(path), 0, hashlib.sha256(path.read_bytes()).digest()
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_existing_bundle_preparation_binds_later_acquisition_index_for_each_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polylogue.storage.sqlite.archive_tiers.write as archive_write
+
+    archive_root = tmp_path / "archive"
+    path = tmp_path / "sessions" / "conversations.json"
+    path.parent.mkdir()
+    path.write_bytes(_chatgpt_bundle_bytes("first old", "second old"))
+    await _ingest(archive_root, [path], parse_stage=None, source_name="chatgpt")
+    path.write_bytes(_chatgpt_bundle_bytes("first new", "second new"))
+    observed_raw_ids: list[str | None] = []
+    original_prepare = archive_write.prepare_session_write
+
+    def observe_prepare(*args: Any, **kwargs: Any) -> Any:
+        observed_raw_ids.append(kwargs.get("raw_id"))
+        return original_prepare(*args, **kwargs)
+
+    monkeypatch.setattr(archive_write, "prepare_session_write", observe_prepare)
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    try:
+        stage.warm_paths(
+            [(str(path), Provider.CHATGPT, False)],
+            archive_root=archive_root,
+            read_snapshot=open_operation_read,
+            capture_mode=Provider.CHATGPT,
+            source_index=3,
+        )
+        prepared = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+        assert prepared is not None and len(prepared.prepared_writes) == 2
+        prepared.discard()
+    finally:
+        stage.shutdown()
+    expected_raw_id = deterministic_raw_session_id(
+        origin_from_provider(Provider.CHATGPT), str(path), 3, hashlib.sha256(path.read_bytes()).digest()
+    )
+    assert observed_raw_ids == [expected_raw_id, expected_raw_id]
 
 
 def test_existing_session_preparation_defers_when_controlled_snapshot_unavailable(tmp_path: Path) -> None:

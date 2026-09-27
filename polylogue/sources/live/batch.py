@@ -2560,6 +2560,8 @@ class LiveBatchProcessor:
                         path_candidates,
                         archive_root=archive_root,
                         read_snapshot=self._read_snapshot,
+                        capture_mode=fallback_provider,
+                        source_index=0,
                     )
             except Exception:
                 prepared_json_paths = frozenset()

@@ -444,6 +444,8 @@ class LiveParseStage:
         *,
         archive_root: Path | None = None,
         read_snapshot: ReadSnapshot | None = None,
+        capture_mode: Provider | None = None,
+        source_index: int = 0,
     ) -> int:
         """Prepare path-backed JSON/JSONL outside the writer lease.
 
@@ -529,10 +531,22 @@ class LiveParseStage:
             if future.done():
                 self._collect_path_future(source_path, future)
         if archive_root is not None:
-            self._prepare_existing_session_writes(archive_root, read_snapshot=read_snapshot)
+            self._prepare_existing_session_writes(
+                archive_root,
+                read_snapshot=read_snapshot,
+                capture_mode=capture_mode,
+                source_index=source_index,
+            )
         return len(candidates)
 
-    def _prepare_existing_session_writes(self, archive_root: Path, *, read_snapshot: ReadSnapshot | None) -> None:
+    def _prepare_existing_session_writes(
+        self,
+        archive_root: Path,
+        *,
+        read_snapshot: ReadSnapshot | None,
+        capture_mode: Provider | None,
+        source_index: int,
+    ) -> None:
         """Reconcile prior acquisitions on a read-only index before admission."""
         from polylogue.core.identity_law import session_id as archive_session_id
         from polylogue.core.sources import origin_from_provider
@@ -562,16 +576,23 @@ class LiveParseStage:
                     writes = []
                     try:
                         assert result.blob_hash is not None
+                        acquisition_provider = (
+                            capture_mode
+                            if capture_mode is not None and capture_mode is not Provider.UNKNOWN
+                            else result.resolved_provider
+                        )
+                        if acquisition_provider is None:
+                            raise ValueError("prepared live write has no acquisition provider")
+                        expected_raw_id = deterministic_raw_session_id(
+                            origin_from_provider(acquisition_provider),
+                            str(path),
+                            source_index,
+                            bytes.fromhex(result.blob_hash),
+                        )
                         for session in result.iter_sessions():
                             session_id = archive_session_id(
                                 origin_from_provider(session.source_name).value,
                                 session.provider_session_id,
-                            )
-                            expected_raw_id = deterministic_raw_session_id(
-                                origin_from_provider(session.source_name),
-                                str(path),
-                                0,
-                                bytes.fromhex(result.blob_hash),
                             )
                             row = index_conn.execute(
                                 "SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)
@@ -672,6 +693,8 @@ class LiveParseStage:
         result = self._path_results.pop(source_path, None)
         if result is None:
             return None
+        if result.error is not None:
+            return result
         if result.blob_hash != blob_hash:
             result.discard()
             return LivePathPreparation(None, None, None, "captured source changed after preparation", deferred=True)
