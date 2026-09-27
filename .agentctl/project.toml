@@ -125,7 +125,7 @@ timeout_seconds = 180
 [packets.review]
 backend = "codex"
 model = "gpt-6-luna"
-effort = "high"
+effort = "medium"
 
 [operations.parser_census]
 description = "Parse the recorded source denominator with no archive and diff it against the last census"

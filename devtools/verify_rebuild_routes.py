@@ -3,7 +3,7 @@
 Gate classification: **blocking architectural boundary check**.
 
 The campaign invariant is that a derived tier is rebuilt only by ordinary
-daemon convergence, and the recovery design in ``CLAUDE.md`` is reconvergence
+daemon convergence, and the recovery design in ``AGENTS.md`` is reconvergence
 through the production daemon.  That invariant was asserted in prose and cited
 ``devtools gate layering`` as its check.  The citation was false, and the hole
 was measured on 2026-09-21: an orchestration-only rebuild route added under

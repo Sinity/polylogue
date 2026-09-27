@@ -436,7 +436,7 @@ REPO_GUIDE_ENTRIES: tuple[DocsEntry, ...] = (
     DocsEntry(
         "Testing", "TESTING.md", "Baseline test matrix, protected surfaces, and verification entrypoints.", "operations"
     ),
-    DocsEntry("Agent Guide", "CLAUDE.md", "Agent memory and working rules.", "operations"),
+    DocsEntry("Agent Guide", "AGENTS.md", "Agent memory and working rules.", "operations"),
     DocsEntry(
         "Security Policy",
         "SECURITY.md",

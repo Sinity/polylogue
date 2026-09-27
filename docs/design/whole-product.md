@@ -290,8 +290,8 @@ different presentations.
 
 - Not a cloud service. Polylogue data stays on the user's machine. No
   telemetry, no sync, no accounts.
-- Not a replacement for CLAUDE.md. Polylogue provides context *about* AI
-  usage; CLAUDE.md provides instructions *for* AI usage.
+- Not a replacement for AGENTS.md. Polylogue provides context *about* AI
+  usage; AGENTS.md provides instructions *for* AI usage.
 - Not a project management tool. Polylogue surfaces work that happened; it
   does not plan work that should happen.
 - Not a code search engine. FTS5 indexes session text, not code
