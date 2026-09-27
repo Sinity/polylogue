@@ -434,7 +434,8 @@ def evaluate_budgets(limits: dict[str, float], observed: dict[str, float | None]
 
 def _progress_timeline(observations: list[Any]) -> list[tuple[Any, ...]]:
     """One row per observable change: (t, cursors complete, raw rows, open
-    debt, promoted, ready domains, open debt by stage)."""
+    debt, promoted, ready domains, open debt by stage, debt in backoff by
+    stage)."""
     rows: list[tuple[Any, ...]] = []
     for observation in observations:
         row = (
@@ -445,6 +446,7 @@ def _progress_timeline(observations: list[Any]) -> list[tuple[Any, ...]]:
             observation.promoted_index is not None,
             sorted(domain for domain, ready in observation.readiness.items() if ready),
             dict(sorted(observation.debt_by_stage.items())),
+            dict(sorted(observation.debt_waiting_by_stage.items())),
         )
         if not rows or rows[-1][1:] != row[1:]:
             rows.append(row)

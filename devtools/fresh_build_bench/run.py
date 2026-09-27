@@ -30,6 +30,7 @@ import time
 from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
@@ -199,6 +200,9 @@ class Observation:
     memberships_pending: int = 0
     open_debt: int = 0
     debt_by_stage: dict[str, int] = field(default_factory=dict)
+    #: Open debt rows whose retry time is still in the future (in backoff),
+    #: by stage: a backlog that is waiting, not being worked.
+    debt_waiting_by_stage: dict[str, int] = field(default_factory=dict)
     promoted_index: str | None = None
     readiness: dict[str, bool] = field(default_factory=dict)
     error: str | None = None
@@ -273,6 +277,13 @@ def observe(archive: Path, started: float) -> Observation:
                 for stage, count in conn.execute("SELECT stage, COUNT(*) FROM convergence_debt GROUP BY stage"):
                     observation.debt_by_stage[str(stage)] = int(count)
                 observation.open_debt = sum(observation.debt_by_stage.values())
+                now_iso = datetime.now(UTC).isoformat()
+                for stage, count in conn.execute(
+                    "SELECT stage, COUNT(*) FROM convergence_debt "
+                    "WHERE next_retry_at IS NOT NULL AND next_retry_at > ? GROUP BY stage",
+                    (now_iso,),
+                ):
+                    observation.debt_waiting_by_stage[str(stage)] = int(count)
         with closing(_ro(source_path)) as conn:
             tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if "raw_sessions" in tables:
