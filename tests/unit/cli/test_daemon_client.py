@@ -475,14 +475,14 @@ def test_an_accepted_write_is_never_called_indeterminate_without_one_receipt_rea
 
 
 def _accepted_ingest() -> tuple[dict[str, object], dict[str, object]]:
-    reference = {
+    reference: dict[str, object] = {
         "request_id": "accepted-ingest",
         "archive_identity": "archive-identity",
         "principal_ref": "principal",
         "fingerprint": "fingerprint",
         "operation_name": "ingest",
     }
-    accepted = {
+    accepted: dict[str, object] = {
         "request_id": "accepted-ingest",
         "outcome": "accepted",
         "result": {"sequence": 1, "outcome": "accepted", "reference": reference},
@@ -505,7 +505,7 @@ def test_follow_operation_waits_on_the_accepted_request_within_the_callers_budge
     accepted, reference = _accepted_ingest()
     readings = iter([0.0, 0.0, 0.5, 0.5])
     monkeypatch.setattr("polylogue.daemon_client.perf_counter", lambda: next(readings, 0.5))
-    states = iter(
+    states: Iterator[dict[str, object]] = iter(
         [
             {"result": {"sequence": 2, "outcome": "running", "reference": reference}},
             {
