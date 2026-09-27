@@ -290,3 +290,39 @@ def test_the_mypy_configuration_is_part_of_the_cache_key(tmp_path: Path) -> None
         (root / "pyproject.toml").write_text(f"[tool.mypy]\nfiles = {files}\n", encoding="utf-8")
 
     assert mypy_gate._input_key(narrowed, []) != mypy_gate._input_key(full, [])
+
+
+def test_an_explicit_config_file_is_part_of_the_cache_key(tmp_path: Path) -> None:
+    """Two checkouts passing the same ``--config-file`` name with different contents differ.
+
+    Anti-vacuity: key only the default ``pyproject.toml`` table and the argv,
+    and the two keys are equal.
+    """
+    narrowed = tmp_path / "narrowed"
+    full = tmp_path / "full"
+    for root, files in ((narrowed, "polylogue/core"), (full, "polylogue")):
+        root.mkdir()
+        (root / "mypy-ci.ini").write_text(f"[mypy]\nfiles = {files}\n", encoding="utf-8")
+    args = ["--config-file", "mypy-ci.ini"]
+
+    assert mypy_gate._input_key(narrowed, args) != mypy_gate._input_key(full, args)
+
+
+def test_a_swap_interrupted_between_renames_restores_the_shared_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A publisher killed after retiring the old cache leaves it recoverable, not cold.
+
+    Anti-vacuity: decide coldness without restoring the retired copy and the
+    checkout scans cold, so ``seed.db`` never reaches it.
+    """
+    common = tmp_path / ".git"
+    common.mkdir()
+    monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
+    retired = common / "polylogue-mypy" / "cache.retired-4242"
+    _stamped_seed(retired, tmp_path)
+    _stub_checker(tmp_path, "exit 0\n")
+
+    assert mypy_gate.main(["--root", str(tmp_path)]) == 0
+
+    assert (tmp_path / ".cache" / "mypy" / "seed.db").read_text(encoding="utf-8") == "seed"

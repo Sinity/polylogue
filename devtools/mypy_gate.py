@@ -84,22 +84,52 @@ def _locked(lock_path: Path) -> Iterator[None]:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
+#: mypy's own discovery order for a configuration file in the working directory.
+_CONFIG_DISCOVERY = ("mypy.ini", ".mypy.ini", "pyproject.toml", "setup.cfg")
+
+
+def _config_file(root: Path, mypy_args: list[str]) -> Path | None:
+    """The configuration file mypy will read, mirroring its selection."""
+    for index, arg in enumerate(mypy_args):
+        if arg == "--config-file" and index + 1 < len(mypy_args):
+            return root / mypy_args[index + 1]
+        if arg.startswith("--config-file="):
+            return root / arg.split("=", 1)[1]
+    for name in _CONFIG_DISCOVERY:
+        candidate = root / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _config_contents(path: Path | None) -> object:
+    """What of *path* configures mypy: ``[tool.mypy]`` for pyproject, else the whole file."""
+    if path is None:
+        return None
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    if path.name == "pyproject.toml":
+        try:
+            return tomllib.loads(raw.decode("utf-8")).get("tool", {}).get("mypy", {})
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError):
+            pass
+    return hashlib.sha256(raw).hexdigest()
+
+
 def _input_key(root: Path, mypy_args: list[str]) -> str:
     """Digest of what decides whether a cache can be reused.
 
-    mypy's version, the passthrough arguments and the ``[tool.mypy]``
-    configuration: a sibling that narrowed ``files`` publishes a partial cache
-    that a full-corpus checkout must not accept as warm.
+    mypy's version, the passthrough arguments and the configuration mypy will
+    read: a sibling whose configuration narrowed ``files`` publishes a partial
+    cache that a full-corpus checkout must not accept as warm.
     """
     try:
         version = importlib.metadata.version("mypy")
     except importlib.metadata.PackageNotFoundError:
         version = "unknown"
-    try:
-        with (root / "pyproject.toml").open("rb") as handle:
-            config = tomllib.load(handle).get("tool", {}).get("mypy", {})
-    except (OSError, tomllib.TOMLDecodeError):
-        config = None
+    config = _config_contents(_config_file(root, mypy_args))
     payload = json.dumps([version, mypy_args, config], sort_keys=True, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -145,6 +175,21 @@ def _seed(local: Path, shared: Path) -> None:
     _copy_tree(shared, staging)
     shutil.rmtree(local, ignore_errors=True)
     os.replace(staging, local)
+
+
+def _recover_shared(shared: Path) -> None:
+    """Restore the shared cache a publisher killed mid-swap left retired; caller holds the lock.
+
+    Publishing moves the old cache aside before renaming the new one in, so a
+    kill between the two renames leaves only the retired, complete copy.
+    """
+    if shared.exists():
+        return
+    retired = sorted(
+        shared.parent.glob(f"{shared.name}.retired-*"), key=lambda path: path.stat().st_mtime, reverse=True
+    )
+    if retired:
+        os.replace(retired[0], shared)
 
 
 def _publish(local: Path, shared: Path) -> None:
@@ -195,6 +240,7 @@ def main(argv: list[str] | None = None) -> int:
     with _locked(local.parent / "mypy.lock"):
         if not _is_complete(local, key):
             with _locked(lock_path):
+                _recover_shared(shared)
                 if _is_complete(shared, key):
                     _seed(local, shared)
                 else:
