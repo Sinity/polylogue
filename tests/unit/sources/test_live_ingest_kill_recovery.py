@@ -48,6 +48,7 @@ _CHILD = textwrap.dedent(
     from pathlib import Path
 
     from polylogue import Polylogue
+    from polylogue.daemon.intake import AdmissionOutcome
     from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
     from polylogue.operations.operation_context import open_operation_read
     from polylogue.sources.live import LiveWatcher, WatchSource
@@ -80,11 +81,16 @@ _CHILD = textwrap.dedent(
             cursor=CursorStore(archive_root / "index.db"),
             read_snapshot=open_operation_read,
         )
-        adapter = FileIntakeAdapter(
-            DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=watcher._sources),
-            watcher._sources[0],
-        )
-        await adapter.admit_page(await adapter.discover(limit=8))
+        # A page that only defers pending preparation never reaches the
+        # write; offer fresh pages until one does (the kill ends the loop).
+        for _ in range(20):
+            adapter = FileIntakeAdapter(
+                DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=watcher._sources),
+                watcher._sources[0],
+            )
+            outcomes = await adapter.admit_page(await adapter.discover(limit=8))
+            if {result.outcome for result in outcomes.values()} != {AdmissionOutcome.DEFERRED}:
+                break
         sys.stdout.write("survived\\n")
 
     asyncio.run(main())
