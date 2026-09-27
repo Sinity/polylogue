@@ -318,17 +318,27 @@ class ColdBuildGeneration:
     _accepted_progress_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        accepted = self.source_baseline.accepted
-        self._accepted_progress_total = len(accepted)
-        # begin() supplies an immutable, integrity-sealed discovery baseline.
-        self._accepted_progress_denominator_sealed = bool(self.source_baseline.digest)
+        self._reset_accepted_progress(self.source_baseline)
+
+    def _reset_accepted_progress(self, baseline: ProductionSourceBaseline) -> int:
+        accepted = baseline.accepted
         weights: dict[tuple[str, int, str], int] = {}
         for row in accepted:
             if row.revision is None:
                 continue
             key = (row.path, row.source_index or 0, row.revision)
             weights[key] = weights.get(key, 0) + 1
-        self._accepted_progress_weights = weights
+        with self._accepted_progress_lock:
+            previous_count = self._accepted_progress_count
+            self._accepted_progress_total = len(accepted)
+            self._accepted_progress_denominator_sealed = bool(baseline.digest)
+            self._accepted_progress_weights = weights
+            self._accepted_progress_seen.clear()
+            self._accepted_progress_count = 0
+            self._accepted_progress_rowid = 0
+            self._accepted_progress_index_identity = None
+            self._accepted_progress_valid = False
+        return previous_count
 
     @property
     def accepted_progress(self) -> tuple[int | None, int, float | None, float | None]:
@@ -739,12 +749,21 @@ class ColdBuildGeneration:
         else:
             revision.extend((0, binding_metadata.st_mode, 0))
         if self.settlement_reason == "capacity_unavailable":
-            try:
-                space = os.statvfs(self.archive_root)
-            except OSError as exc:
-                revision.extend(unavailable(exc))
-            else:
-                revision.extend((0, space.f_bavail * space.f_frsize, 0))
+            # Capacity admission accounts for candidate, blob, source DB and
+            # receipt destinations, which can live on different filesystems.
+            for destination in (
+                self.archive_root,
+                self.generation_root,
+                self.archive_root / "blob",
+                self.archive_root / "source.db",
+                self.archive_root / MAINTENANCE_STATE_DIRNAME,
+            ):
+                try:
+                    space = os.statvfs(destination)
+                except OSError as exc:
+                    revision.extend(unavailable(exc))
+                else:
+                    revision.extend((0, space.f_bavail * space.f_frsize, 0))
         return tuple(revision)
 
     def settlement_evidence_revision(self, sources: tuple[WatchSource, ...] = ()) -> tuple[int, ...]:
@@ -828,6 +847,13 @@ class ColdBuildGeneration:
             ).encode(),
         )
         self.source_baseline = merged
+        previous_count = self._reset_accepted_progress(merged)
+        with self._accepted_progress_lock:
+            previous_advance_at = self._accepted_progress_last_advanced_at
+        self.refresh_accepted_progress()
+        with self._accepted_progress_lock:
+            if self._accepted_progress_valid and self._accepted_progress_count <= previous_count:
+                self._accepted_progress_last_advanced_at = previous_advance_at
         return True
 
     def open_writer(self) -> ArchiveStore:

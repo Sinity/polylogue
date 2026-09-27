@@ -666,6 +666,25 @@ def test_blocked_settlement_revision_survives_unavailable_evidence(
         assert cold_build.settlement_evidence_revision() != unavailable
 
 
+def test_capacity_blocked_revision_tracks_candidate_filesystem_space(
+    cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cold_build.settlement_reason = "capacity_unavailable"
+    original_statvfs = os.statvfs
+    candidate_space = 1000
+
+    def split_statvfs(path: os.PathLike[str] | str) -> os.statvfs_result:
+        statistics = list(original_statvfs(path))
+        if Path(path) == cold_build.generation_root:
+            statistics[4] = candidate_space
+        return os.statvfs_result(statistics)
+
+    monkeypatch.setattr(os, "statvfs", split_statvfs)
+    blocked = cold_build.settlement_evidence_revision()
+    candidate_space += 1000
+    assert cold_build.settlement_evidence_revision() != blocked
+
+
 def test_the_live_pass_writes_into_the_owned_generation_not_the_active_one(
     tmp_path: Path, cold_build: ColdBuildGeneration
 ) -> None:
@@ -1109,6 +1128,8 @@ def test_faulted_baseline_refresh_retains_prior_accepted_revisions(tmp_path: Pat
             asyncio.run(_processor(archive, first_root).ingest_files([first], emit_event=False)).succeeded_file_count
             == 1
         )
+        generation.refresh_accepted_progress()
+        assert generation.accepted_progress[:2] == (1, 1)
         first.unlink()
         second_root.mkdir()
         second = second_root / "second.jsonl"
@@ -1117,10 +1138,13 @@ def test_faulted_baseline_refresh_retains_prior_accepted_revisions(tmp_path: Pat
             asyncio.run(_processor(archive, second_root).ingest_files([second], emit_event=False)).succeeded_file_count
             == 1
         )
+        generation.refresh_accepted_progress()
+        assert generation.accepted_progress[:2] == (1, 1)
 
         observed_baseline = generation.observe_faulted_baseline(sources)
         assert observed_baseline is not None
         assert generation.refresh_faulted_baseline(observed_baseline)
+        assert generation.accepted_progress[:2] == (2, 2)
         assert not generation.refresh_faulted_baseline(observed_baseline)
         assert not any(row.disposition == "fault" for row in generation.source_baseline.decisions)
         assert {row.path for row in generation.source_baseline.accepted} == {str(first), str(second)}

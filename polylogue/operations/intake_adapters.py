@@ -33,7 +33,7 @@ from polylogue.daemon.intake import (
     IntakePass,
 )
 from polylogue.logging import WARNING, emit
-from polylogue.maintenance.candidate_capacity import InsufficientCapacityError
+from polylogue.maintenance.candidate_capacity import ArchiveCapacityError, InsufficientCapacityError
 from polylogue.maintenance.receipt_fs import MaintenanceReceiptPathError
 from polylogue.sources.live.cold_build import (
     ColdBuildGeneration,
@@ -99,6 +99,24 @@ def classify_cold_build_settlement_failure(exc: Exception) -> tuple[str, bool] |
         return "source_integrity", False
     if isinstance(exc, InsufficientCapacityError):
         return "capacity_unavailable", False
+    if (
+        isinstance(exc, ArchiveCapacityError)
+        and isinstance(exc.__cause__, OSError)
+        and exc.__cause__.errno
+        in {
+            errno.EIO,
+            errno.EACCES,
+            errno.EPERM,
+            errno.ESTALE,
+            errno.ETIMEDOUT,
+            errno.EAGAIN,
+            errno.EBUSY,
+            errno.ENOENT,
+            errno.ENOSPC,
+            errno.EDQUOT,
+        }
+    ):
+        return "capacity_inventory_unavailable", True
     if isinstance(exc, sqlite3.Error):
         code = getattr(exc, "sqlite_errorcode", None)
         primary = code & 0xFF if isinstance(code, int) else None

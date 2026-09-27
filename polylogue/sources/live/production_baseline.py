@@ -63,7 +63,14 @@ def _retryable_read_fault(exc: Exception) -> bool:
     return (isinstance(exc, OSError) and exc.errno in _RETRYABLE_READ_ERRNOS) or (
         isinstance(exc, sqlite3.Error)
         and isinstance(sqlite_code, int)
-        and sqlite_code & 0xFF in {sqlite3.SQLITE_IOERR, sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+        and sqlite_code & 0xFF
+        in {
+            sqlite3.SQLITE_IOERR,
+            sqlite3.SQLITE_BUSY,
+            sqlite3.SQLITE_LOCKED,
+            sqlite3.SQLITE_CANTOPEN,
+            sqlite3.SQLITE_PERM,
+        }
     )
 
 

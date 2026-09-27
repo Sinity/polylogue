@@ -287,6 +287,35 @@ def test_history_rule_and_codex_sqlite_use_their_typed_revisions(tmp_path: Path)
     )
 
 
+def test_temporarily_unopenable_sqlite_source_remains_a_retryable_baseline_fault(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.sources.live import production_baseline
+
+    codex = tmp_path / ".codex"
+    codex.mkdir()
+    state = codex / "state_5.sqlite"
+    with sqlite3.connect(state) as conn:
+        conn.execute("CREATE TABLE threads(id TEXT)")
+    with pytest.raises(sqlite3.OperationalError) as unavailable:
+        sqlite3.connect(f"file:{tmp_path / 'temporarily-unavailable.db'}?mode=ro", uri=True)
+    assert unavailable.value.sqlite_errorcode & 0xFF == sqlite3.SQLITE_CANTOPEN
+
+    def unavailable_revision(_path: Path) -> tuple[str, int]:
+        raise unavailable.value
+
+    monkeypatch.setattr(production_baseline, "sqlite_member_revision_and_size", unavailable_revision)
+    baseline = capture_production_source_baseline(
+        (WatchSource("codex-state", codex, suffixes=(".sqlite",), allow_path_scoped_artifacts=False),),
+        operation_id="temporary-sqlite-open",
+    )
+    assert any(
+        row.path == str(state) and row.reason.startswith("revision_io_unavailable:") for row in baseline.decisions
+    )
+    with pytest.raises(ProductionBaselineReadUnavailableError):
+        baseline.verify(tmp_path / "source.db")
+
+
 def test_zip_members_keep_live_coordinates_and_exclusions(tmp_path: Path) -> None:
     root = tmp_path / "account"
     root.mkdir()

@@ -4077,6 +4077,7 @@ async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
 def test_cold_build_settlement_classifies_typed_faults(tmp_path: Path) -> None:
     from polylogue.core.durable_fs import DurableFilesystemError
     from polylogue.daemon.intake_adapters import classify_cold_build_settlement_failure
+    from polylogue.maintenance.candidate_capacity import ArchiveCapacityError
     from polylogue.sources.live.production_baseline import (
         ProductionBaselineError,
         ProductionBaselineReadUnavailableError,
@@ -4102,6 +4103,11 @@ def test_cold_build_settlement_classifies_typed_faults(tmp_path: Path) -> None:
         raise DurableFilesystemError("receipt publication failed") from OSError(errno.ENOSPC, "full")
     except DurableFilesystemError as wrapped:
         assert classify_cold_build_settlement_failure(wrapped) == ("capacity_unavailable", False)
+    try:
+        raise ArchiveCapacityError("capacity inventory unavailable") from OSError(errno.EIO, "temporary scan failure")
+    except ArchiveCapacityError as wrapped:
+        assert classify_cold_build_settlement_failure(wrapped) == ("capacity_inventory_unavailable", True)
+    assert classify_cold_build_settlement_failure(ArchiveCapacityError("invalid capacity topology")) is None
 
 
 @pytest.mark.asyncio
