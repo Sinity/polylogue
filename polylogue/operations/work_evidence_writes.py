@@ -109,9 +109,11 @@ async def replace_work_evidence_graph_checked(
     """
     current = await repository.get_work_evidence_graph(graph.graph_id)
     previous_digest = work_evidence_graph_digest(current)
-    if expected_base_digest is not None and expected_base_digest != previous_digest:
-        raise WorkEvidenceGraphConflictError(graph.graph_id, expected=expected_base_digest, current=previous_digest)
     digest = work_evidence_graph_digest(graph)
+    # A stored graph already equal to the replacement is a replayed request
+    # (the operation is declared idempotent), not a conflict.
+    if expected_base_digest is not None and expected_base_digest != previous_digest and digest != previous_digest:
+        raise WorkEvidenceGraphConflictError(graph.graph_id, expected=expected_base_digest, current=previous_digest)
     if digest != previous_digest:
         await repository.replace_work_evidence_graph(graph)
     return WorkEvidenceGraphReplacement(

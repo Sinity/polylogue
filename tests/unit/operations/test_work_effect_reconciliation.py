@@ -169,6 +169,29 @@ async def test_checked_replace_refuses_a_base_that_moved(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_checked_replace_replay_after_commit_is_no_effect(tmp_path: Path) -> None:
+    """A retried replace whose first attempt committed is not a conflict.
+
+    Anti-vacuity: drop the ``digest != previous_digest`` guard in
+    ``replace_work_evidence_graph_checked`` and the replay raises
+    ``WorkEvidenceGraphConflictError`` although the stored graph is exactly
+    the requested one.
+    """
+    graph = _seed_graph()
+    replacement = graph.model_copy(update={"nodes": graph.nodes[:1]})
+
+    async with SessionRepository(db_path=tmp_path / "index.db") as repository:
+        await repository.replace_work_evidence_graph(graph)
+        base = work_evidence_graph_digest(graph)
+        first = await replace_work_evidence_graph_checked(repository, replacement, expected_base_digest=base)
+        replay = await replace_work_evidence_graph_checked(repository, replacement, expected_base_digest=base)
+
+    assert first.changed is True
+    assert replay.changed is False
+    assert replay.digest == first.digest
+
+
+@pytest.mark.asyncio
 async def test_unknown_graph_id_raises_typed_error(tmp_path: Path) -> None:
     async with SessionRepository(db_path=tmp_path / "index.db") as repository:
         with pytest.raises(WorkEvidenceGraphNotFoundError):
