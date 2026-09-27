@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import uuid
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
@@ -22,6 +23,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider
+from polylogue.logging import WARNING, emit
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import (
     generic_message_object_envelope,
@@ -147,6 +149,7 @@ class PreparedJsonl:
     parsed_prefix_size: int | None = None
     resolved_provider: Provider | None = None
     positive_evidence_filtered: bool = False
+    attempt_directory: Path | None = None
 
     @classmethod
     def seal(
@@ -160,6 +163,7 @@ class PreparedJsonl:
         parsed_prefix_size: int | None = None,
         resolved_provider: Provider | None = None,
         positive_evidence_filtered: bool = False,
+        attempt_directory: Path | None = None,
     ) -> PreparedJsonl:
         """Take custody only after both SQLite writers have closed."""
         return cls(
@@ -173,6 +177,7 @@ class PreparedJsonl:
             parsed_prefix_size=parsed_prefix_size,
             resolved_provider=resolved_provider,
             positive_evidence_filtered=positive_evidence_filtered,
+            attempt_directory=attempt_directory,
         )
 
     def verify_files(self, *, full: bool) -> None:
@@ -190,6 +195,19 @@ class PreparedJsonl:
     def discard(self) -> None:
         for prepared in self.prepared_writes:
             prepared.close()
+        if self.attempt_directory is not None:
+            try:
+                shutil.rmtree(self.attempt_directory)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                emit(
+                    "live.parse_prefetch.cleanup_blocked",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="sealed attempt scratch removal failed",
+                )
+            return
         if self.sessions_path is not None:
             self.sessions_path.unlink(missing_ok=True)
             self.sessions_path.with_name(self.sessions_path.name + "-journal").unlink(missing_ok=True)
@@ -515,11 +533,17 @@ def prepare_jsonl_blob(
     preparation_dependency: Callable[[], tuple[str | None, str | None]] | None = None,
     parse_prefix_size: int | None = None,
     prepare_records: Callable[[Iterable[JSONValue]], Iterable[JSONValue]] | None = None,
+    attempt_directory: Path | None = None,
 ) -> PreparedJsonl:
     """Parse and seal one source without transferring a parsed tree over IPC."""
     directory = Path(shard_directory)
     directory.mkdir(parents=True, exist_ok=True)
-    sessions_path = directory / f"prepared-{uuid.uuid4().hex}.db"
+    artifact_directory = attempt_directory if attempt_directory is not None else directory
+    if attempt_directory is not None:
+        artifact_directory.mkdir(parents=True, exist_ok=True)
+        if artifact_directory.parent != directory:
+            raise ValueError("prepared attempt directory must be a direct child of the shard directory")
+    sessions_path = artifact_directory / f"prepared-{uuid.uuid4().hex}.db"
     shard_path: Path | None = None
     store: SqliteMessageStore | None = None
     shard_builder: SessionShardBuilder | None = None
@@ -556,7 +580,7 @@ def prepare_jsonl_blob(
                 generic_envelope = candidate
         if generic_envelope is not None:
             _create_artifact_tables(store.conn)
-            shard_builder = SessionShardBuilder(directory / f"shard-{uuid.uuid4().hex}.db")
+            shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
             with source.open("rb") as handle:
                 session = parse_generic_messages_stream(
                     provider,
@@ -602,7 +626,7 @@ def prepare_jsonl_blob(
                     isinstance(record, dict) and browser_capture.looks_like(record)
                 )
             _create_artifact_tables(store.conn)
-            shard_builder = SessionShardBuilder(directory / f"shard-{uuid.uuid4().hex}.db")
+            shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
             session_count = 0
             for session in iter_bundle_record_sessions(
                 provider,
@@ -674,7 +698,7 @@ def prepare_jsonl_blob(
                 ]
             for session in sessions:
                 session.content_hash = session_content_hash(session)
-            shard_path = prepare_session_shard(directory, sessions).path
+            shard_path = prepare_session_shard(artifact_directory, sessions).path
             enrichment_digest, enrichment_index_path = (
                 preparation_dependency() if preparation_dependency is not None else (None, None)
             )
@@ -698,6 +722,7 @@ def prepare_jsonl_blob(
             positive_evidence_filtered=stream_prefix is not None
             or generic_envelope is not None
             or (prepare_sessions is None and prepare_session is not None),
+            attempt_directory=attempt_directory,
         )
         sealed = True
         return result
