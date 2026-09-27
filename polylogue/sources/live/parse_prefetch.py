@@ -43,6 +43,7 @@ logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionWrite
 
 
 class PreparedReadSnapshot(Protocol):
@@ -586,78 +587,87 @@ class LiveParseStage:
         }
         if not pending:
             return
-        try:
-            if read_snapshot is None:
-                raise RuntimeError("prepared live write has no controlled read snapshot")
-            with read_snapshot(archive_root) as pinned:
-                archive = pinned.archive
-                index_conn = archive.index_connection
-                if index_conn is None:
-                    raise RuntimeError("prepared live write has no readable index snapshot")
-                source_conn = archive.source_connection
-                for path, result in pending.items():
-                    writes = []
-                    try:
-                        assert result.blob_hash is not None
-                        acquisition_provider = (
-                            capture_mode
-                            if capture_mode is not None and capture_mode is not Provider.UNKNOWN
-                            else result.resolved_provider
-                        )
-                        if acquisition_provider is None:
-                            raise ValueError("prepared live write has no acquisition provider")
-                        expected_raw_id = deterministic_raw_session_id(
-                            origin_from_provider(acquisition_provider),
-                            str(path),
-                            source_index,
-                            bytes.fromhex(result.blob_hash),
-                        )
-                        for session in result.iter_sessions():
-                            session_id = archive_session_id(
-                                origin_from_provider(session.source_name).value,
-                                session.provider_session_id,
-                            )
-                            row = index_conn.execute(
-                                "SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)
-                            ).fetchone()
-                            if row is None or row[0] is None or row[0] == expected_raw_id:
-                                continue
-                            writes.append(
-                                prepare_session_write(
-                                    index_conn,
-                                    session,
-                                    merge_append=False,
-                                    source_conn=source_conn,
-                                    raw_id=expected_raw_id,
-                                    prepared_rows=prepared_session_rows_from_shard(result.shard_path, session_id)
-                                    if result.shard_path is not None
-                                    else None,
-                                )
-                            )
-                        self._path_results[path] = replace(result, prepared_writes=tuple(writes))
-                    except Exception as exc:
-                        for prepared in writes:
-                            prepared.close()
-                        result.discard()
-                        self._path_results[path] = LivePathPreparation(
-                            None,
-                            None,
-                            None,
-                            f"existing-session preparation failed: {type(exc).__name__}"[:500],
-                            deferred=True,
-                        )
-        except Exception as exc:
+        if read_snapshot is None:
             for path, result in pending.items():
-                if self._path_results.get(path) is not result:
-                    continue
                 result.discard()
                 self._path_results[path] = LivePathPreparation(
+                    None, None, None, "read-only preparation snapshot unavailable: RuntimeError", deferred=True
+                )
+            return
+
+        def prepare_one(path: str, result: LivePathPreparation) -> LivePathPreparation:
+            # Each task owns its read transaction. Sharing one SQLite
+            # connection across threads would also share its snapshot state.
+            writes: list[PreparedSessionWrite] = []
+            opened_snapshot = False
+            try:
+                with read_snapshot(archive_root) as pinned:
+                    opened_snapshot = True
+                    archive = pinned.archive
+                    index_conn = archive.index_connection
+                    if index_conn is None:
+                        raise RuntimeError("prepared live write has no readable index snapshot")
+                    source_conn = archive.source_connection
+                    assert result.blob_hash is not None
+                    acquisition_provider = (
+                        capture_mode
+                        if capture_mode is not None and capture_mode is not Provider.UNKNOWN
+                        else result.resolved_provider
+                    )
+                    if acquisition_provider is None:
+                        raise ValueError("prepared live write has no acquisition provider")
+                    expected_raw_id = deterministic_raw_session_id(
+                        origin_from_provider(acquisition_provider),
+                        str(path),
+                        source_index,
+                        bytes.fromhex(result.blob_hash),
+                    )
+                    for session in result.iter_sessions():
+                        session_id = archive_session_id(
+                            origin_from_provider(session.source_name).value,
+                            session.provider_session_id,
+                        )
+                        row = index_conn.execute(
+                            "SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)
+                        ).fetchone()
+                        if row is None or row[0] is None or row[0] == expected_raw_id:
+                            continue
+                        writes.append(
+                            prepare_session_write(
+                                index_conn,
+                                session,
+                                merge_append=False,
+                                source_conn=source_conn,
+                                raw_id=expected_raw_id,
+                                prepared_rows=prepared_session_rows_from_shard(result.shard_path, session_id)
+                                if result.shard_path is not None
+                                else None,
+                            )
+                        )
+                return replace(result, prepared_writes=tuple(writes))
+            except Exception as exc:
+                for prepared in writes:
+                    prepared.close()
+                result.discard()
+                return LivePathPreparation(
                     None,
                     None,
                     None,
-                    f"read-only preparation snapshot unavailable: {type(exc).__name__}"[:500],
+                    (
+                        f"existing-session preparation failed: {type(exc).__name__}"
+                        if opened_snapshot
+                        else f"read-only preparation snapshot unavailable: {type(exc).__name__}"
+                    )[:500],
                     deferred=True,
                 )
+
+        # Bound reconciliation to the same path admission width as parsing.
+        # Results are installed on the caller thread, so publication order is
+        # still the intake order even when read tasks finish out of order.
+        with ThreadPoolExecutor(max_workers=min(self._max_path_pending, len(pending))) as executor:
+            futures = {path: executor.submit(prepare_one, path, result) for path, result in pending.items()}
+            for path, future in futures.items():
+                self._path_results[path] = future.result()
 
     def _collect_path_future(self, source_path: str, future: Future[LivePathPreparation]) -> None:
         if self._path_futures.get(source_path) is not future:
