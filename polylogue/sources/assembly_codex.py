@@ -150,6 +150,33 @@ def _parse_codex_state_titles(sessions_root: Path) -> dict[str, str]:
     return _parse_state_db_file(state_path)
 
 
+def _parse_codex_state_names(sessions_root: Path) -> dict[str, str]:
+    """Read user-set ``threads.name`` values from the live ``state_5.sqlite``.
+
+    Same degradation contract as :func:`_parse_codex_state_titles`: any failure,
+    including a Codex version without the column, yields no names.
+    """
+    state_path = sessions_root.parent / "state_5.sqlite"
+    if not state_path.exists():
+        return {}
+    names: dict[str, str] = {}
+    try:
+        conn = sqlite3.connect(f"file:{state_path}?mode=ro", uri=True, timeout=1.0)
+    except sqlite3.Error as exc:
+        logger.debug("Failed to open Codex state_5.sqlite: %s", exc)
+        return {}
+    try:
+        for thread_id, name in conn.execute("SELECT id, name FROM threads WHERE name IS NOT NULL"):
+            if isinstance(thread_id, str) and thread_id and isinstance(name, str) and name.strip():
+                names[thread_id] = name.strip()
+    except sqlite3.Error as exc:
+        logger.debug("Failed to read Codex state_5.sqlite thread names: %s", exc)
+        return {}
+    finally:
+        conn.close()
+    return names
+
+
 def _parse_state_db_file(state_path: Path) -> dict[str, str]:
     """Return every non-empty ``threads.title``, keyed by thread id.
 
@@ -294,6 +321,11 @@ class CodexAssemblySpec:
                 if parent.name == "sessions" and parent not in seen_roots:
                     seen_roots.add(parent)
                     thread_names.update(_parse_codex_session_index(parent))
+                    # A user-set name also lives in state_5.sqlite; it fills
+                    # threads session_index.jsonl does not list (some installs
+                    # no longer write that file) and never overrides it.
+                    for thread_id, name in _parse_codex_state_names(parent).items():
+                        thread_names.setdefault(thread_id, name)
                     history_titles.update(_parse_codex_history(parent))
                     state_titles.update(_parse_codex_state_titles(parent))
                     break
