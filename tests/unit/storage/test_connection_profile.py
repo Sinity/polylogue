@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -397,3 +399,22 @@ def test_ordinary_immutable_reader_still_rejects_temp_staging(tmp_path: Path) ->
         assert connection.execute("PRAGMA query_only").fetchone() == (1,)
         with pytest.raises(sqlite3.DatabaseError, match="not authorized|readonly database"):
             connection.execute("CREATE TEMP TABLE forbidden (value TEXT)")
+
+
+def test_explicit_read_timeout_bounds_the_lock_wait_even_at_the_default_value(tmp_path: Path) -> None:
+    """An explicit bound equal to the old default sentinel used to be discarded.
+
+    Anti-vacuity: comparing ``timeout`` against ``READ_DB_TIMEOUT`` (5 s)
+    instead of ``None`` makes the background profile's 30 s busy_timeout win.
+    """
+    db_path = tmp_path / "evidence.db"
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute("CREATE TABLE evidence (value TEXT)")
+
+    def busy_ms(**kwargs: Any) -> int:
+        with closing(connection_profile.open_readonly_connection(db_path, **kwargs)) as connection:
+            return int(connection.execute("PRAGMA busy_timeout").fetchone()[0])
+
+    assert busy_ms(timeout_class="background-read") == 30_000
+    assert busy_ms(timeout_class="background-read", timeout=5.0) == 5_000
+    assert busy_ms(timeout=0.2) == 200

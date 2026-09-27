@@ -1129,7 +1129,7 @@ def _descriptor_database_uri(opened_main_fd: int, suffix: str) -> str | None:
 def open_readonly_connection(
     path: str | Path,
     *,
-    timeout: float = READ_DB_TIMEOUT,
+    timeout: float | None = None,
     immutable: bool = False,
     opened_main_fd: int | None = None,
     tier: ArchiveTier | None = None,
@@ -1180,7 +1180,11 @@ def open_readonly_connection(
             )
         profile = SEALED_READ_CONNECTION_PROFILE
     immutable = immutable or profile.immutable
-    timeout = profile.timeout_seconds if timeout == READ_DB_TIMEOUT else timeout
+    # ``None`` selects the profile's lock wait. An explicit value is the
+    # caller's bound and replaces the profile's busy_timeout as well: the
+    # PRAGMA runs after connect and would otherwise silently win.
+    explicit_timeout = timeout is not None
+    timeout = profile.timeout_seconds if timeout is None else timeout
     suffix = "?mode=ro&immutable=1" if immutable else "?mode=ro"
     if opened_main_fd is not None and immutable:
         raise ValueError("an opened SQLite file descriptor cannot use immutable mode")
@@ -1200,6 +1204,8 @@ def open_readonly_connection(
         if validate_schema:
             _assert_schema_supported(conn, path, tier)
         for stmt in profile.pragma_statements:
+            if explicit_timeout and stmt.startswith("PRAGMA busy_timeout"):
+                stmt = f"PRAGMA busy_timeout = {int(timeout * 1000)}"
             conn.execute(stmt)
         conn.set_authorizer(_authorize_read_operation)
     except BaseException:
