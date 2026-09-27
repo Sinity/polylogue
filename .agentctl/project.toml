@@ -31,9 +31,10 @@ retain_artifacts = [
 # inside the agent's own process.
 agent_memory_max = "3000M"
 # Review is intentionally omitted; the hosted candidate gate is the publication
-# check. Focused and complete suites remain explicit manual operations below.
+# check. The focused profile requires a behavioral selector; static and complete
+# verification remain separately named operations below.
 review = "none"
-verify = { candidate = "hosted:ci/circleci: quick-gate", focused = "verify_quick" }
+verify = { candidate = "hosted:ci/circleci: quick-gate", focused = "pytest_focused" }
 publish = "pr"
 
 # Manual bounded selections and broad suites use the declared operations below.
@@ -42,6 +43,7 @@ description = "Run one managed pytest launch file, or a devtools test selection,
 exec = ["python", "-m", "devtools.pytest_slot"]
 pool = "pytest-quick"
 result = "pytest"
+arguments = "required"
 cache = "none"
 timeout_seconds = 7200
 
