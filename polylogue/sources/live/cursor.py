@@ -913,7 +913,8 @@ class CursorStore:
                             deferred=debt_write.deferred,
                         )
 
-        best_effort_cursor_write("archive ops convergence debt batch", write)
+        if not best_effort_cursor_write("archive ops convergence debt batch", write):
+            raise RuntimeError("ops.db remained write-locked; convergence debt batch was not persisted")
 
     def _clear_convergence_debt_from_ops(
         self,
