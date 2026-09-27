@@ -224,6 +224,10 @@ class FileIntakeAdapter(IntakeAdapter):
             records = get_records(self._fresh_page_paths) if callable(get_records) else {}
             live_paths = [path for path in self._fresh_page_paths if self._pending_path_is_live(path)]
             with self._retry_state_lock:
+                if len(live_paths) != len(self._fresh_page_paths) and self._overflow_rescan_due_at is None:
+                    # A vanished unacknowledged carrier may reappear without a
+                    # recursive watcher hint; revisit it after the cooldown.
+                    self._overflow_rescan_due_at = due_at
                 for retry_path in live_paths:
                     record = records.get(retry_path)
                     if record is not None and (record.failure_count > 0 or record.next_retry_at is not None):
@@ -437,7 +441,7 @@ class FileIntakeAdapter(IntakeAdapter):
                 continue
             if not self.source.root.is_dir():
                 break
-            if not self._owns_retry_path(path):
+            if not self._pending_path_is_live(path) or not self._owns_retry_path(path):
                 stale_local.append(path)
                 continue
             due_local.append(path)
@@ -458,6 +462,7 @@ class FileIntakeAdapter(IntakeAdapter):
             with self._retry_state_lock:
                 for path in due_local:
                     if path in self._fresh_retry_debt:
+                        self._fresh_retry_debt.pop(path)
                         self._fresh_retry_debt[path] = now + _FILE_RETRY_DELAY_S
             self._local_retry_page = True
             self._prefer_local_retry = False
@@ -492,6 +497,7 @@ class FileIntakeAdapter(IntakeAdapter):
             with self._retry_state_lock:
                 for path in due_local:
                     if path in self._fresh_retry_debt:
+                        self._fresh_retry_debt.pop(path)
                         self._fresh_retry_debt[path] = now + _FILE_RETRY_DELAY_S
             self._local_retry_page = True
             self._prefer_local_retry = False
@@ -505,9 +511,14 @@ class FileIntakeAdapter(IntakeAdapter):
         if path not in self._retry_page_paths:
             return
         if self._local_retry_page:
-            if acknowledged:
-                with self._retry_state_lock:
+            with self._retry_state_lock:
+                if acknowledged:
                     self._fresh_retry_debt.pop(path, None)
+                elif path in self._fresh_retry_debt:
+                    # A partially planned page must move its attempted head
+                    # behind healthy siblings left outside the byte budget.
+                    due_at = self._fresh_retry_debt.pop(path)
+                    self._fresh_retry_debt[path] = due_at
             self._retry_page_pending = False
             return
         position = str(path)
@@ -749,7 +760,8 @@ class FileIntakeAdapter(IntakeAdapter):
         payload = item.payload
         if isinstance(payload, (str, Path)):
             if Path(payload) in self._fresh_page_paths:
-                self._fresh_page_pending = False
+                self._fresh_page_paths = tuple(path for path in self._fresh_page_paths if path != Path(payload))
+                self._fresh_page_pending = bool(self._fresh_page_paths)
             position = str(payload)
             if self._after is None or position > self._after:
                 self._after = position

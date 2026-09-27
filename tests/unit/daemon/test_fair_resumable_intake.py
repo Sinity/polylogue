@@ -681,6 +681,143 @@ async def test_retry_debt_overflow_revisits_evicted_file_after_cooldown(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("vanish_without_hint", [False, True])
+async def test_mixed_fresh_page_keeps_failed_sibling_retryable(tmp_path: Path, vanish_without_hint: bool) -> None:
+    root = tmp_path / "source"
+    root.mkdir()
+    failed = root / "a" / "failed.json" if vanish_without_hint else root / "a.json"
+    failed.parent.mkdir(exist_ok=True)
+    accepted = root / "b.json"
+    failed.write_text("{}")
+    accepted.write_text("{}")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+    now = [0.0]
+
+    class MixedWatcher:
+        admitted: list[Path] = []
+
+        def intake_revision(self, _source: WatchSource) -> int:
+            return 0
+
+        def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
+            return tuple(paths)
+
+        async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+            if failed in paths and now[0] < 5.0 and vanish_without_hint and failed.exists():
+                failed.unlink()
+            succeeded = tuple(path for path in paths if path != failed or now[0] >= 5.0)
+            self.admitted.extend(succeeded)
+            return SimpleNamespace(
+                succeeded_paths=tuple(str(path) for path in succeeded),
+                failed_paths=(str(failed),) if failed in paths and now[0] < 5.0 else (),
+                source_payload_read_bytes=2 * len(succeeded),
+            )
+
+    watcher = MixedWatcher()
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+        clock=lambda: now[0],
+    )
+    dispatcher = FairIntakeDispatcher(
+        [IntakeClassSpec(name="capture", adapter=adapter, page_size=2, retry_cooldown_s=5.0)],
+        clock=lambda: now[0],
+    )
+    await dispatcher.run_once()
+    assert accepted in watcher.admitted
+    assert failed not in watcher.admitted
+    await dispatcher.run_once()
+    assert adapter.retry_due_in_s == 5.0
+
+    if vanish_without_hint:
+        failed.write_text("{}")
+    now[0] = 5.1
+    for _ in range(5):
+        await dispatcher.run_once()
+        if failed in watcher.admitted:
+            break
+    assert failed in watcher.admitted
+
+
+def test_symlink_alias_releases_local_retry_debt(tmp_path: Path) -> None:
+    root = tmp_path / "source"
+    root.mkdir()
+    target = root / "target.json"
+    target.write_text("{}")
+    alias = root / "alias.json"
+    alias.write_text("{}")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+    now = [0.0]
+    watcher = SimpleNamespace(intake_revision=lambda _source: 0)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+        clock=lambda: now[0],
+    )
+    adapter._fresh_retry_debt[alias] = 5.0
+    alias.unlink()
+    alias.symlink_to(target)
+
+    now[0] = 5.1
+    assert adapter._due_retry_paths(2) == []
+    assert alias not in adapter._fresh_retry_debt
+    assert adapter.retry_due_in_s is None
+
+
+@pytest.mark.asyncio
+async def test_partially_planned_local_retry_rotates_past_poison(tmp_path: Path) -> None:
+    root = tmp_path / "source"
+    root.mkdir()
+    poison, healthy, later = (root / name for name in ("a.json", "b.json", "c.json"))
+    for path in (poison, healthy, later):
+        path.write_text("{}")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+    now = [5.0]
+
+    class RetryWatcher:
+        admitted: list[Path] = []
+
+        def intake_revision(self, _source: WatchSource) -> int:
+            return 0
+
+        def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
+            return tuple(paths)
+
+        async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+            succeeded = tuple(path for path in paths if path != poison)
+            self.admitted.extend(succeeded)
+            return SimpleNamespace(
+                succeeded_paths=tuple(str(path) for path in succeeded),
+                failed_paths=(str(poison),) if poison in paths else (),
+                source_payload_read_bytes=2 * len(succeeded),
+            )
+
+    watcher = RetryWatcher()
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+        clock=lambda: now[0],
+    )
+    adapter._fresh_retry_debt.update({poison: 5.0, healthy: 5.0, later: 5.0})
+    adapter._fresh_exhausted = True
+    adapter._fresh_exhausted_at = 5.0
+    adapter._retry_turn = True
+    dispatcher = FairIntakeDispatcher(
+        [IntakeClassSpec(name="capture", adapter=adapter, page_size=3, retry_cooldown_s=5.0)],
+        clock=lambda: now[0],
+    )
+
+    await dispatcher.run_once(budget=1)
+    assert healthy not in watcher.admitted
+    now[0] = 10.1
+    for _ in range(3):
+        await dispatcher.run_once(budget=1)
+        if healthy in watcher.admitted:
+            break
+    assert healthy in watcher.admitted
+
+
+@pytest.mark.asyncio
 async def test_pending_path_replaced_by_escaping_symlink_is_not_admitted(tmp_path: Path) -> None:
     """A changed pending carrier must pass the source boundary again."""
     root = tmp_path / "source"
