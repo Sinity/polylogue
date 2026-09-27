@@ -776,6 +776,9 @@ def test_pre_admission_gate_ignores_option_values_that_look_like_paths() -> None
     assert not run_tests._is_test_module_name("results.xml")
     assert run_tests._is_test_module_name("test_widget.py")
     assert run_tests._is_test_module_name("widget_test.py")
+    assert run_tests._certain_selections(
+        ["--ignore", "tests/unit/test_retired.py", "tests/unit/test_a.py", "--junit-xml=out.xml", "tests/test_b.py"]
+    ) == ["--ignore", "tests/unit/test_a.py", "--junit-xml=out.xml", "tests/test_b.py"]
 
 
 def test_focused_run_never_loads_or_names_a_testmon_graph(tmp_path: Path) -> None:
