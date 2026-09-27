@@ -372,8 +372,8 @@ def _self_heal_stale_demo_archive_tiers(archive_root: Path) -> tuple[str, ...]:
     Only ever called after :func:`_archive_root_is_demo_owned` has confirmed
     ``archive_root`` is a disposable demo archive this exact command
     regenerates every run (never the live/production archive). ``index.db``
-    and friends are declared *rebuildable* tiers (see ``AGENTS.md``'s "Schema
-    regimes"), and a demo archive's content is entirely synthetic fixture
+    and friends are declared *rebuildable* tiers (see ``AGENTS.md``'s "Storage
+    tiers"), and a demo archive's content is entirely synthetic fixture
     data with no durability requirement at all, so a stale on-disk schema
     version here is safe to move aside and rebuild automatically -- unlike
     the live archive, where the same version drift requires an explicit,

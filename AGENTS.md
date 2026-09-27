@@ -157,8 +157,9 @@ command needs its `CommandSpec` and `devtools render devtools-reference`).
   green does not prove behavior. `.agentctl/project.toml` on the candidate
   declares the hosted checks.
 - Tests exercise the production route and name the change that would turn
-  them red. Timestamp-sensitive tests use `frozen_clock`; fixtures come from
-  `tests/infra/`.
+  them red. They assert typed outcomes, stable event tokens, and declared
+  fields, never natural-language wording. Timestamp-sensitive tests use
+  `frozen_clock`; fixtures come from `tests/infra/`.
 - Cross-check by change type: parser or detection → origin specs, real
   fixtures, replay parity; storage or schema → fresh DDL, the migration or
   moved identity, readers and writers, restart; query or read → equivalence of
