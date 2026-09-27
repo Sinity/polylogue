@@ -68,9 +68,7 @@ def candidate_tree_refusal(payload: Mapping[str, Any], candidate: str) -> str | 
 
     Separate from :func:`refusal` because the two answer different questions:
     ``refusal`` asks whether tests ran, this asks which tree they ran on. A run
-    can be flawlessly green and still describe another tree entirely -- which
-    is exactly what the 03:00 corpus run produced while it executed on the
-    operator's divergent working branch.
+    can be flawlessly green and still describe another tree entirely.
     """
 
     tested = payload.get("git_head")

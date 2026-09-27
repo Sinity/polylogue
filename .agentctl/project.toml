@@ -84,10 +84,8 @@ exec = ["devtools", "verify", "--all"]
 # checkout = "candidate" (polylogue-p2mbi AC4). AgentCTL resolves this to its
 # own candidate worktree at [workspace].default_base, reset to that base on
 # every launch (agentctl/checkout.py candidate_tree()), independently of
-# whatever tree a caller passes or the operator's root checkout is on. A
-# scheduled `job fire` passes no workspace, so this is what makes the 03:00
-# timer qualify the integrated candidate rather than the operator's
-# deliberately divergent working branch. The reading-side guard,
+# whatever tree a caller passes or the operator's root checkout is on. This
+# keeps an explicit full run bound to the integrated candidate. The reading-side guard,
 # `devtools.verify_receipt_check --candidate`, still refuses a receipt whose
 # recorded tested SHA is not the candidate's, so a run on the wrong tree
 # remains unusable as evidence even if this declaration were ever wrong.
@@ -95,7 +93,6 @@ checkout = "candidate"
 pool = "pytest-heavy"
 result = "pytest"
 cache = "tree+environment"
-schedule = "*-*-* 03:00"
 timeout_seconds = 14400
 
 [operations.dev_loop_proof]
