@@ -157,8 +157,8 @@ def _profile_demand_sql(session_id: str) -> str:
 #
 # polylogue-u6tl: v51 wires delegation_facts.mapping_state/result_status onto
 # the `literal_check` generator (storage/sqlite/archive_tiers/common.py),
-# which previously had zero call sites despite AGENTS.md documenting it by
-# name as the mechanism that keeps `typing.Literal` types and their SQL CHECK
+# which previously had zero call sites despite the agent instructions of the
+# time naming it as the mechanism that keeps `typing.Literal` types and their SQL CHECK
 # lists in lockstep. Both columns already only ever receive values from their
 # typed counterparts (DelegationMappingState / DelegationResultStatus in
 # archive_tiers/archive.py) in the canonical delegation-facts view; this only
@@ -231,7 +231,7 @@ def _profile_demand_sql(session_id: str) -> str:
 #    carried by resolved_dst_session_id IS NOT NULL.
 # Both title_source's CHECK and status's CHECK are also switched from a
 # hand-written literal IN (...) list to the generated `nullable_check()`
-# form, closing the AGENTS.md-documented drift gap ("most hand-written
+# form, closing a drift gap the agent instructions of the time recorded ("most hand-written
 # CHECK(col IN (...)) lists ... still have no generator tie"). A live archive
 # can carry `title_source='unknown'` today (14,915 rows measured against
 # index.db user_version=46 before this bead's fix) or `link_type='repaired'`
