@@ -36,10 +36,18 @@ def test_chatgpt_declares_no_session_inheritance_branch_point() -> None:
 
 
 class _FakeSource:
-    def __init__(self, name: str, root: Path, suffixes: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        name: str,
+        root: Path,
+        suffixes: tuple[str, ...],
+        *,
+        exact_paths: frozenset[Path] | None = None,
+    ) -> None:
         self.name = name
         self.root = root
         self._suffixes = suffixes
+        self.exact_paths = exact_paths
 
     def accepts(self, path: Path) -> bool:
         return any(path.name.lower().endswith(suffix) for suffix in self._suffixes)
@@ -71,6 +79,27 @@ def test_typed_source_keeps_ownership_of_a_nested_generic_root(tmp_path: Path) -
 
     assert deepest_source_for_path(protobuf, (typed, generic)) is typed
     assert deepest_source_for_path(shared, (typed, generic)) is generic
+
+
+def test_exact_file_source_outranks_an_equal_depth_directory_source(tmp_path: Path) -> None:
+    """An explicit file declaration wins when overlapping roots both accept it.
+
+    Anti-vacuity: removing exact-file precedence makes the first declaration
+    win and assigns the Codex file to the Antigravity directory source.
+    """
+    root = tmp_path / "captures"
+    root.mkdir()
+    file_path = root / "session.jsonl"
+    file_path.write_text("{}\n")
+    directory_source = _FakeSource("antigravity", root, (".jsonl",))
+    exact_file_source = _FakeSource(
+        "codex",
+        root,
+        (".jsonl",),
+        exact_paths=frozenset({file_path.resolve()}),
+    )
+
+    assert deepest_source_for_path(file_path, (directory_source, exact_file_source)) is exact_file_source
 
 
 def test_autoincrement_state_changes_the_logical_revision(tmp_path: Path) -> None:

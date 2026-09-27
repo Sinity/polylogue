@@ -253,11 +253,17 @@ class WatchSource:
     allow_path_scoped_artifacts: bool = True
     required: bool = False
     recursive: bool = True
+    exact_paths: frozenset[Path] | None = None
 
     def exists(self) -> bool:
         return self.root.exists()
 
     def accepts(self, path: Path) -> bool:
+        if self.exact_paths is not None:
+            try:
+                return path.resolve() in self.exact_paths
+            except OSError:
+                return False
         name = path.name.lower()
         # A declared artifact rule is the source-owned escape hatch for
         # extensionless and path-scoped artifacts. Check it before suffixes,

@@ -48,12 +48,14 @@ def deepest_source_for_path(path: Path, sources: Iterable[SourceT]) -> SourceT |
         resolved = path.resolve()
     except OSError:
         return None
-    matches: list[tuple[int, SourceT]] = []
+    matches: list[tuple[bool, int, SourceT]] = []
     for source in sources:
         try:
             source_root = source.root.resolve()
             if resolved.is_relative_to(source_root):
-                matches.append((len(source_root.parts), source))
+                exact_paths = getattr(source, "exact_paths", None)
+                exact_match = exact_paths is not None and resolved in exact_paths
+                matches.append((exact_match, len(source_root.parts), source))
         except (OSError, ValueError):
             continue
     if not matches:
@@ -61,10 +63,13 @@ def deepest_source_for_path(path: Path, sources: Iterable[SourceT]) -> SourceT |
     if len(matches) == 1:
         # Unambiguous ownership needs no acceptance check, which keeps the
         # declared-artifact lookup out of the common single-root path.
-        return matches[0][1]
-    accepting = [match for match in matches if _accepts(match[1], resolved)]
+        return matches[0][2]
+    accepting = [match for match in matches if _accepts(match[2], resolved)]
     preferred = accepting or matches
-    return max(preferred, key=lambda match: match[0])[1]
+    # An explicit file declaration is stronger than a directory root even
+    # when both roots have the same depth. It expresses ownership of this
+    # exact artifact, while the directory remains a broad discovery root.
+    return max(preferred, key=lambda match: (match[0], match[1]))[2]
 
 
 __all__ = ["deepest_source_for_path"]

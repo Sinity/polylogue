@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from polylogue.config import Source
+from polylogue.core.enums import Provider
 from polylogue.pipeline.services.parsing_models import ParseResult
 
 _OWNED_ROOT: contextvars.ContextVar[tuple[Path, int, int] | None] = contextvars.ContextVar(
@@ -185,19 +186,32 @@ async def ingest_sources_archive(
     for source in sources:
         if source.path is None:
             continue
-        # Keep the caller's declared spelling for durable source provenance.
-        # Resolve separately for the capture-root safety check; turning every
-        # relative path into an absolute one changes the raw source identity.
-        source_path = source.path.expanduser()
-        resolved_source_path = source_path.resolve()
+        # Resolve once, then bind admission, provider path rules, traversal,
+        # and acquired provenance to that physical coordinate. Keep the
+        # caller's Source untouched so its declared spelling remains available
+        # to the caller while relative paths gain a durable resolution base.
+        resolved_source_path = source.path.expanduser().resolve()
         refuse_non_capture_source_root(resolved_source_path, destination=root)
+        is_individual_file = resolved_source_path.is_file()
+        is_antigravity_pb_file = (
+            is_individual_file
+            and Provider.from_string(source.name) is Provider.ANTIGRAVITY
+            and resolved_source_path.suffix.lower() == ".pb"
+        )
+        if is_antigravity_pb_file:
+            from polylogue.sources.source_parsing import _antigravity_source_root
+
+            watch_root = _antigravity_source_root(resolved_source_path)
+        else:
+            watch_root = resolved_source_path if resolved_source_path.is_dir() else resolved_source_path.parent
         watch_sources.append(
             WatchSource(
                 name=source.name,
-                root=source_path if source_path.is_dir() else source_path.parent,
+                root=watch_root,
+                exact_paths=frozenset({resolved_source_path}) if is_individual_file else None,
             )
         )
-        paths.extend(_resolve_source_paths(Source(name=source.name, path=source_path)))
+        paths.extend(_resolve_source_paths(Source(name=source.name, path=resolved_source_path)))
     paths = list(dict.fromkeys(paths))
     result = ParseResult()
     if not paths:
