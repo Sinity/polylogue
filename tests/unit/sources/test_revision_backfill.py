@@ -156,37 +156,44 @@ def test_revision_backfill_profile_preserves_stale_source_tier_diagnostic(tmp_pa
 def test_current_parser_source_census_rebinds_between_bounded_pages(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: Any
 ) -> None:
-    """The archive-wide census releases each page and resumes after frame expiry."""
+    """The census holds one insertion frontier and resumes after a page expires.
+
+    Anti-vacuity: the concurrent row sorts below the initial raw-ID frontier,
+    and the clock advances while the first bounded ID stream is yielding.
+    """
     root = tmp_path / "archive"
     bootstrap_archive_root(root)
     raw_ids: list[str] = []
+
+    def write_terminal_non_session(archive: ArchiveStore, index: int) -> str:
+        source_path = f"synthetic/census-{index}.jsonl"
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=f"not valid codex jsonl {index}".encode(),
+            source_path=source_path,
+            acquired_at_ms=index + 1,
+        )
+        archive.record_raw_failure_evidence(
+            raw_id,
+            provider=Provider.CODEX,
+            source_path=source_path,
+            source_index=0,
+            acquired_at_ms=index + 1,
+            kind=RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
+        )
+        archive.mark_raw_parse_failed(
+            raw_id,
+            provider=Provider.CODEX,
+            error=ValueError("synthetic terminal corrupt source"),
+            preserve_existing_failure_evidence=True,
+        )
+        with archive._ensure_source_conn():
+            archive_revision_governance.record_current_parser_source_census(archive._ensure_source_conn(), raw_id)
+        return raw_id
+
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         for index in range(2):
-            raw_id = archive.write_raw_payload(
-                provider=Provider.CODEX,
-                payload=b"not valid codex jsonl",
-                source_path=f"synthetic/census-{index}.jsonl",
-                acquired_at_ms=index + 1,
-            )
-            raw_ids.append(raw_id)
-            archive.record_raw_failure_evidence(
-                raw_id,
-                provider=Provider.CODEX,
-                source_path=f"synthetic/census-{index}.jsonl",
-                source_index=0,
-                acquired_at_ms=index + 1,
-                kind=RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
-            )
-            archive.mark_raw_parse_failed(
-                raw_id,
-                provider=Provider.CODEX,
-                error=ValueError("synthetic terminal corrupt source"),
-                preserve_existing_failure_evidence=True,
-            )
-            with archive._ensure_source_conn():
-                archive_revision_governance.record_current_parser_source_census(
-                    archive._ensure_source_conn(), raw_id, parser_sessions=()
-                )
+            raw_ids.append(write_terminal_non_session(archive, index))
 
     monkeypatch.setattr(revision_backfill, "_CURRENT_SOURCE_CENSUS_PAGE_SIZE", 1)
     real_read_frame = cast(Any, revision_backfill).read_frame
@@ -200,13 +207,24 @@ def test_current_parser_source_census_rebinds_between_bounded_pages(
 
     real_stream = ReadFrame.stream
     aged = False
+    late_raw_id: str | None = None
 
     def expire_after_first_census_page(frame: ReadFrame, sql: str, parameters: Any = ()) -> Iterator[sqlite3.Row]:
-        nonlocal aged
-        yield from real_stream(frame, sql, parameters)
-        if not aged and "LEFT JOIN raw_authority_parser_census" in sql:
-            aged = True
-            frozen_clock.advance(301)
+        nonlocal aged, late_raw_id
+        if sql.startswith("SELECT raw_id FROM raw_sessions") and late_raw_id is None:
+            with ArchiveStore.open_existing(root, read_only=False) as archive:
+                initial_max = max(raw_ids)
+                for attempt in range(100):
+                    candidate = write_terminal_non_session(archive, 100 + attempt)
+                    if candidate < initial_max:
+                        late_raw_id = candidate
+                        break
+                assert late_raw_id is not None
+        for row in real_stream(frame, sql, parameters):
+            yield row
+            if not aged and sql.startswith("SELECT raw_id FROM raw_sessions"):
+                aged = True
+                frozen_clock.advance(301)
 
     monkeypatch.setattr(revision_backfill, "read_frame", capture_frames)
     monkeypatch.setattr(ReadFrame, "stream", expire_after_first_census_page)
@@ -214,6 +232,8 @@ def test_current_parser_source_census_rebinds_between_bounded_pages(
     result = revision_backfill.require_current_parser_source_census(root)
 
     assert result == dict.fromkeys(raw_ids, ())
+    assert late_raw_id is not None and late_raw_id < max(raw_ids)
+    assert late_raw_id not in result
     assert aged
     assert frames and frames[0].epoch >= 1
 

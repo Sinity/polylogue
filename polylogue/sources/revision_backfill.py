@@ -2350,7 +2350,16 @@ def require_current_parser_source_census(
     with read_frame(
         archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
     ) as source_frame:
-        for selection in _current_source_raw_id_selections(source_frame, selections):
+        source_frontier_rowid: int | None = None
+        if selections is None:
+            frontier_rows = source_frame.stream("SELECT COALESCE(MAX(rowid), 0) FROM raw_sessions")
+            try:
+                source_frontier_rowid = int(next(frontier_rows)[0])
+            finally:
+                frontier_rows.close()
+        for selection in _current_source_raw_id_selections(
+            source_frame, selections, frontier_rowid=source_frontier_rowid
+        ):
             where = f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
             rows = source_frame.stream(
                 f"""
@@ -2388,7 +2397,9 @@ def require_current_parser_source_census(
     with read_frame(
         archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
     ) as source_frame:
-        for selection in _current_source_raw_id_selections(source_frame, selections):
+        for selection in _current_source_raw_id_selections(
+            source_frame, selections, frontier_rowid=source_frontier_rowid
+        ):
             where = f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
             params = (
                 RAW_AUTHORITY_PARSER_FINGERPRINT,
@@ -2510,7 +2521,9 @@ def require_current_parser_source_census(
     with read_frame(
         archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
     ) as source_frame:
-        for selection in _current_source_raw_id_selections(source_frame, selections):
+        for selection in _current_source_raw_id_selections(
+            source_frame, selections, frontier_rowid=source_frontier_rowid
+        ):
             where = f"WHERE raw_id IN ({','.join('?' for _ in selection)})"
             rows = source_frame.stream(
                 f"""
@@ -2608,7 +2621,9 @@ def require_current_parser_source_census(
     with read_frame(
         archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
     ) as source_frame:
-        for selection in _current_source_raw_id_selections(source_frame, selections):
+        for selection in _current_source_raw_id_selections(
+            source_frame, selections, frontier_rowid=source_frontier_rowid
+        ):
             authority_where = f"AND r.raw_id IN ({','.join('?' for _ in selection)})"
             authority_params: tuple[object, ...] = selection
             unresolved_raw_ids.extend(
@@ -2656,6 +2671,8 @@ _CURRENT_SOURCE_CENSUS_PAGE_SIZE = 500
 def _current_source_raw_id_selections(
     source_frame: ReadFrame,
     selections: tuple[tuple[str, ...] | None, ...] | None,
+    *,
+    frontier_rowid: int | None,
 ) -> Iterator[tuple[str, ...]]:
     """Yield bounded raw-id selections, rebinding between pages as needed."""
     if selections is not None:
@@ -2675,9 +2692,12 @@ def _current_source_raw_id_selections(
                     anchor_params=(selection[-1],),
                 )
             )
+            source_frame.resume(continuation)
             yield selection
         return
 
+    if frontier_rowid is None:
+        raise ValueError("archive-wide source census requires its initial rowid frontier")
     continuation = None
     after_raw_id: str | None = None
     while True:
@@ -2685,11 +2705,11 @@ def _current_source_raw_id_selections(
             source_frame.resume(continuation)
             after_raw_id = str(continuation.position)
         params: tuple[object, ...] = (
-            (_CURRENT_SOURCE_CENSUS_PAGE_SIZE,)
+            (frontier_rowid, _CURRENT_SOURCE_CENSUS_PAGE_SIZE)
             if after_raw_id is None
-            else (after_raw_id, _CURRENT_SOURCE_CENSUS_PAGE_SIZE)
+            else (frontier_rowid, after_raw_id, _CURRENT_SOURCE_CENSUS_PAGE_SIZE)
         )
-        where = "" if after_raw_id is None else "WHERE raw_id > ?"
+        where = "WHERE rowid <= ?" if after_raw_id is None else "WHERE rowid <= ? AND raw_id > ?"
         raw_ids = tuple(
             str(row[0])
             for row in source_frame.stream(
@@ -2703,10 +2723,14 @@ def _current_source_raw_id_selections(
         continuation = source_frame.bind(
             ReadContinuation(
                 position=after_raw_id,
-                anchor_sql="SELECT raw_id FROM raw_sessions WHERE raw_id = ?",
-                anchor_params=(after_raw_id,),
+                anchor_sql="SELECT raw_id FROM raw_sessions WHERE raw_id = ? AND rowid <= ?",
+                anchor_params=(after_raw_id, frontier_rowid),
             )
         )
+        # A page's ID scan can itself spend time near the frame limit. Renew
+        # before handing its selection to the caller, which starts the page's
+        # authority query on the same frame.
+        source_frame.resume(continuation)
         yield raw_ids
 
 
