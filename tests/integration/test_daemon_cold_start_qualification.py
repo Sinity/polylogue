@@ -32,11 +32,29 @@ def test_empty_archive_discovers_rejected_prefix_and_publishes_exact_sessions(
         artifacts=workspace / f"cold-artifacts-{rejected}",
         rejected=rejected,
         digest=digest,
+        measure_discovery=rejected == 4096,
     )
     assert receipt["outcome"] == "success"
     assert len(receipt["verified_sessions"]) == 3
     assert "public_search_all" in receipt["milestones_upper_bound_s"]
+    assert receipt["intake_counts"]["offered_bytes"] > 0
+    assert receipt["intake_counts"]["succeeded"] > 0
+    assert isinstance(receipt["intake_counts"]["failed"], int)
+    assert isinstance(receipt["intake_counts"]["deferred"], int)
+    assert receipt["fixture"]["unchanged_after_run"] is True
     assert receipt["diagnostics"]["state"] == "measured"
+    if rejected == 4096:
+        measurement = receipt["discovery_measurement"]
+        assert measurement["missing_events"] == []
+        assert measurement["intervals_s"]["root_listing_and_entry_inspection"] >= 0
+        assert measurement["intervals_s"]["root_sort_after_listing"] >= 0
+        assert (
+            measurement["timestamps_elapsed_s"]["first_yielded_entry"]
+            >= measurement["timestamps_elapsed_s"]["root_sort_end"]
+        )
+        assert measurement["intervals_s"]["first_yield_to_first_publication_upper_bound"] > 0
+        assert receipt["process_tree_rss_bytes"] > 0
+        assert receipt["process_tree_rss_sample_count"] > 0
 
 
 def test_held_first_directory_walk_keeps_status_and_metrics_responsive(
