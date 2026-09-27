@@ -237,24 +237,6 @@ def test_cold_siblings_run_one_cold_scan_and_seed_from_it(tmp_path: Path) -> Non
         assert (lane / ".cache" / "mypy" / "scanned.db").is_file()
 
 
-def test_arguments_that_bypass_the_cache_run_unmanaged(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """``--no-incremental`` produces no reusable cache, so nothing is stamped or published.
-
-    Anti-vacuity: manage such a run like any other and its empty cache is
-    stamped complete and published as the shared seed.
-    """
-    common = tmp_path / ".git"
-    common.mkdir()
-    monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
-    _stub_checker(tmp_path, 'echo "$@" > "$(dirname "$0")/argv"\nexit 0\n')
-
-    assert mypy_gate.main(["--root", str(tmp_path), "--no-incremental"]) == 0
-
-    assert (tmp_path / ".venv" / "bin" / "argv").read_text(encoding="utf-8").split() == ["--no-incremental"]
-    assert not (tmp_path / ".cache" / "mypy").exists()
-    assert not (common / "polylogue-mypy" / "cache").exists()
-
-
 def test_publishing_reclaims_abandoned_staging_copies(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A gate killed mid-copy leaves a staging directory the next publisher removes.
 
@@ -290,27 +272,48 @@ def test_the_mypy_configuration_is_part_of_the_cache_key(tmp_path: Path) -> None
     assert mypy_gate._input_key(narrowed) != mypy_gate._input_key(full)
 
 
-@pytest.mark.parametrize("passthrough", [["@opts"], ["--version"], ["--cache-dir", ".cache/mypy"]])
-def test_any_passthrough_runs_unmanaged(
+@pytest.mark.parametrize(
+    "passthrough", [["@opts"], ["--version"], ["--no-incremental"], ["--cache-dir", "/elsewhere/.cache/mypy"]]
+)
+def test_passthrough_arguments_are_refused(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, passthrough: list[str]
 ) -> None:
-    """A response file, an early-exit flag or a cache alias never stamps or publishes.
+    """Arguments that can change whether or where mypy caches never reach the gate's check.
 
-    Anti-vacuity: manage passthrough runs and ``--version`` (exit 0, no cache)
-    is stamped complete and published over the shared seed.
+    Anti-vacuity: pass them through and ``--version`` (exit 0, no cache) is
+    stamped and published, or ``--cache-dir`` writes a sibling's cache.
     """
     common = tmp_path / ".git"
     common.mkdir()
     monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
     shared = common / "polylogue-mypy" / "cache"
     _stamped_seed(shared, tmp_path)
-    _stub_checker(tmp_path, 'echo "$@" > "$(dirname "$0")/argv"\nexit 0\n')
+    _stub_checker(tmp_path, 'touch "$(dirname "$0")/ran"\nexit 0\n')
 
-    assert mypy_gate.main(["--root", str(tmp_path), *passthrough]) == 0
+    assert mypy_gate.main(["--root", str(tmp_path), *passthrough]) == 2
 
-    assert (tmp_path / ".venv" / "bin" / "argv").read_text(encoding="utf-8").split() == passthrough
-    assert not mypy_gate._is_complete(tmp_path / ".cache" / "mypy", mypy_gate._input_key(tmp_path))
+    assert not (tmp_path / ".venv" / "bin" / "ran").exists()
     assert (shared / "seed.db").is_file()
+
+
+def test_a_first_publish_killed_after_copying_is_recovered(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """With no retired copy, a finished staging copy becomes the shared cache.
+
+    Anti-vacuity: recover only retired copies and the checkout scans cold, so
+    ``seed.db`` never reaches it; recover unmarked staging and a half-copied
+    directory would be adopted.
+    """
+    common = tmp_path / ".git"
+    common.mkdir()
+    monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
+    finished = common / "polylogue-mypy" / "cache.publish-4242"
+    _stamped_seed(finished, tmp_path)
+    (finished / mypy_gate._STAGED).touch()
+    _stub_checker(tmp_path, "exit 0\n")
+
+    assert mypy_gate.main(["--root", str(tmp_path)]) == 0
+
+    assert (tmp_path / ".cache" / "mypy" / "seed.db").read_text(encoding="utf-8") == "seed"
 
 
 def test_a_swap_interrupted_between_renames_restores_the_shared_cache(

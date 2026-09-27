@@ -15,9 +15,11 @@ and then seed from its result, and at most one cold scan runs.
 
 A cache counts as warm only when it carries a completion stamp keyed to
 mypy's version and configuration, written after a run that left a complete
-cache; a partial, interrupted or differently configured cache is cold. Only
-the gate's own argument-free check is managed this way: any passthrough
-argument runs serialized on mypy's own cache settings. Each checkout's own seed-check-publish lifecycle is
+cache; a partial, interrupted or differently configured cache is cold. The
+gate runs only its own configured check: passthrough arguments (a response
+file, ``--cache-dir``, ``--no-incremental``, ``--version``) could change
+whether or where mypy caches, so they are refused; run ``.venv/bin/mypy``
+directly for a custom invocation. Each checkout's own seed-check-publish lifecycle is
 serialized by a checkout-local lock, so two gates in one checkout never write
 the same cache at once.
 
@@ -52,6 +54,8 @@ import tomllib
 _CACHE_COMPLETE_EXITS = frozenset({0, 1})
 #: Written inside a cache after a run that left it complete.
 _STAMP = ".polylogue-complete"
+#: Written inside a publish staging copy once the copy has finished.
+_STAGED = ".polylogue-staged"
 
 
 def _git_common_dir(root: Path) -> Path:
@@ -178,6 +182,17 @@ def _recover_shared(shared: Path) -> None:
     )
     if retired:
         os.replace(retired[0], shared)
+        return
+    # A first publish has no retired copy; a staging copy that finished
+    # copying before the kill is complete.
+    staged = sorted(
+        (path for path in shared.parent.glob(f"{shared.name}.publish-*") if (path / _STAGED).is_file()),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    if staged:
+        (staged[0] / _STAGED).unlink()
+        os.replace(staged[0], shared)
 
 
 def _publish(local: Path, shared: Path) -> None:
@@ -187,8 +202,10 @@ def _publish(local: Path, shared: Path) -> None:
     _remove_abandoned(shared.parent, f"{shared.name}.publish-")
     _remove_abandoned(shared.parent, f"{shared.name}.retired-")
     _copy_tree(local, staging)
+    (staging / _STAGED).touch()
     if shared.exists():
         os.replace(shared, retired)
+    (staging / _STAGED).unlink()
     os.replace(staging, shared)
     shutil.rmtree(retired, ignore_errors=True)
 
@@ -221,13 +238,12 @@ def main(argv: list[str] | None = None) -> int:
     local.parent.mkdir(parents=True, exist_ok=True)
     checkout_lock = local.parent / "mypy.lock"
     if mypy_args:
-        # Only the gate's own configured check is managed. Any passthrough
-        # (a response file, --no-incremental, --cache-dir, --version) may
-        # change what mypy caches or whether it caches at all, so it runs
-        # serialized on both locks, on mypy's own cache settings, and never
-        # seeds, stamps or publishes.
-        with _locked(checkout_lock), _locked(lock_path):
-            return subprocess.run([str(mypy), *mypy_args], cwd=root, check=False).returncode
+        print(
+            f"mypy gate: refusing passthrough arguments {mypy_args!r}; the gate runs only the configured "
+            f"check. Run {mypy} directly for a custom invocation.",
+            file=sys.stderr,
+        )
+        return 2
 
     key = _input_key(root)
     # Lock order is always checkout, then shared, so the two cannot deadlock.
