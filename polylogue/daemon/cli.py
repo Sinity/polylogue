@@ -3518,27 +3518,39 @@ main.add_command(api_command)
 _LIVE_DAEMON_STATUS_TIMEOUT_S = 0.3
 
 
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+def _from_discovered_project_config(config: PolylogueConfig, key: str) -> bool:
+    """Whether ``key`` came from a ``polylogue.toml`` discovered in the working directory.
+
+    That file is the one configuration layer an untrusted checkout controls.
+    """
+    if config.layer_of(key) != "user" or os.environ.get("POLYLOGUE_CONFIG"):
+        return False
+    user_path = config.layer_paths.get("user")
+    return user_path is not None and user_path.resolve() == (Path.cwd() / "polylogue.toml").resolve()
 
 
-def _may_forward_persisted_token(config: PolylogueConfig, url: str) -> bool:
-    """Whether the daemon's persisted bearer may be sent to ``url``.
+def _status_probe_token(config: PolylogueConfig, url: str) -> str | None:
+    """The bearer the live status probe may send to ``url``, if any.
 
-    The persisted token authorizes archive reads and mutations on the real
-    daemon. Send it only to a loopback URL that did not come from a
-    ``polylogue.toml`` discovered in the working directory, which is the one
-    configuration layer an untrusted checkout controls. A token configured
-    explicitly alongside the URL is that configuration's own credential and
-    is sent as configured.
+    A daemon token authorizes archive reads and mutations, so it never follows
+    a URL chosen by a discovered project config unless that same file supplied
+    the token (then it is that file's own credential). The persisted token is
+    sent only to a loopback URL, where the daemon that minted it listens.
     """
     from urllib.parse import urlparse
 
-    if urlparse(url).hostname not in _LOOPBACK_HOSTS:
-        return False
-    if config.layer_of("daemon_url") != "user" or os.environ.get("POLYLOGUE_CONFIG"):
-        return True
-    user_path = config.layer_paths.get("user")
-    return user_path is None or user_path.resolve() != (Path.cwd() / "polylogue.toml").resolve()
+    from polylogue.core.loopback import is_loopback_host
+    from polylogue.daemon.api_auth import load_api_auth_token
+
+    url_is_discovered = _from_discovered_project_config(config, "daemon_url")
+    if config.api_auth_token:
+        if url_is_discovered and not _from_discovered_project_config(config, "api_auth_token"):
+            return None
+        return config.api_auth_token
+    host = urlparse(url).hostname
+    if url_is_discovered or host is None or not is_loopback_host(host):
+        return None
+    return load_api_auth_token()
 
 
 def _live_daemon_status_payload(*, timeout: float = _LIVE_DAEMON_STATUS_TIMEOUT_S) -> JSONDocument | None:
@@ -3565,12 +3577,11 @@ def _live_daemon_status_payload(*, timeout: float = _LIVE_DAEMON_STATUS_TIMEOUT_
     from urllib.request import Request, urlopen
 
     from polylogue.config import load_polylogue_config
-    from polylogue.daemon.api_auth import load_api_auth_token
 
     config = load_polylogue_config()
     url = (config.daemon_url or "http://127.0.0.1:8766").rstrip("/")
     headers = {"Accept": "application/json"}
-    token = config.api_auth_token or (load_api_auth_token() if _may_forward_persisted_token(config, url) else None)
+    token = _status_probe_token(config, url)
     if token:
         headers["Authorization"] = f"Bearer {token}"
     try:

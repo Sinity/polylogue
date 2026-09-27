@@ -223,3 +223,40 @@ def test_explicit_spool_is_answered_locally_even_with_a_live_daemon() -> None:
     assert result.exit_code == 0, result.output
     probe.assert_not_called()
     assert local_payload.call_args.kwargs["include_browser_capture_spool_path"] is True
+
+
+def test_configured_token_does_not_follow_a_discovered_project_url(
+    workspace_env: dict[str, Path],
+    status_server: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An operator token from the environment must not be sent to a URL a
+    working-directory ``polylogue.toml`` chose. Anti-vacuity: sending
+    ``config.api_auth_token`` unconditionally makes the fake server answer 200."""
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "polylogue.toml").write_text(f'[daemon]\nurl = "{status_server}"\n', encoding="utf-8")
+    monkeypatch.delenv("POLYLOGUE_DAEMON_URL")
+    monkeypatch.delenv("POLYLOGUE_CONFIG", raising=False)
+    monkeypatch.setenv("POLYLOGUE_API_AUTH_TOKEN", _TOKEN)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty-config-home"))
+    monkeypatch.chdir(checkout)
+    assert daemon_cli._live_daemon_status_payload(timeout=5.0) is None
+
+
+def test_persisted_token_reaches_any_loopback_address(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """The bind policy accepts all of 127.0.0.0/8, so the probe must too.
+    Anti-vacuity: a literal {127.0.0.1, localhost, ::1} set withholds the
+    token from 127.0.0.2 and the running daemon answers 401."""
+    from polylogue.config import load_polylogue_config
+
+    token_file = tmp_path / "api-token"
+    token_file.write_text(_TOKEN, encoding="utf-8")
+    token_file.chmod(0o600)
+    with patch("polylogue.daemon.api_auth.api_auth_token_path", return_value=token_file):
+        token = daemon_cli._status_probe_token(load_polylogue_config(), "http://127.0.0.2:8766")
+    assert token == _TOKEN
