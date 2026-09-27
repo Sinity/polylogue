@@ -228,8 +228,6 @@ _MATRIX_EXEMPT: Mapping[str, str] = {
     "ingest": "needs a real staged export path; `import` refuses an absent path first",
     "maintenance.demo.augment": "only reachable behind `import --demo`, which seeds a fixture world first",
     "maintenance.blob-publications.abandon": "needs live publication ids read from source.db",
-    "maintenance.blob-refs.replace-from-source": "needs a manifest file produced by a prior scan",
-    "maintenance.blob-refs.prune-orphans": "needs a quarantine path and a prior orphan scan",
     "mutation.raw-authority-blocker.resolve": "needs a live blocker id read from source.db",
     # `ops reset` accepts --format/--json only alongside --session/--source,
     # so its tier-reset branch has no machine envelope to carry a code in. The
