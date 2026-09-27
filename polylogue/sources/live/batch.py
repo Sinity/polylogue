@@ -92,6 +92,7 @@ from polylogue.sources.decoder_zip import (
 )
 from polylogue.sources.decoders import JsonlDecodeError, _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import (
+    BUNDLE_PROVIDERS,
     is_jsonl_source_path,
     is_stream_record_provider,
     parse_payload,
@@ -184,11 +185,12 @@ from polylogue.sources.origin_specs import (
 )
 from polylogue.sources.parsers import antigravity, codex_state, hermes_identity, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.sources.prepared_jsonl import PreparedJsonl
+from polylogue.sources.prepared_jsonl import PreparedJsonl, PreparedSessionSequence
 from polylogue.sources.prepared_message_sink import SqliteMessageSink
 from polylogue.sources.revision_backfill import (
     _declared_non_session_artifact_classification,
     parse_retained_raw_sessions,
+    prepare_retained_jsonl_artifact,
 )
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
@@ -3944,7 +3946,7 @@ class LiveBatchProcessor:
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
                     t0 = time.perf_counter()
-                    cached_sessions = (
+                    cached_sessions: Sequence[ParsedSession] | None = (
                         parsed_sessions_by_raw_id.pop(record.raw_id, None)
                         if parsed_sessions_by_raw_id
                         and not (
@@ -3964,7 +3966,11 @@ class LiveBatchProcessor:
                             continue
                         if path_preparation.error is not None:
                             raise RuntimeError(f"off-writer preparation failed: {path_preparation.error}")
-                        cached_sessions = path_preparation.load_sessions()
+                        cached_sessions = (
+                            path_preparation.session_sequence()
+                            if path_preparation.positive_evidence_filtered
+                            else path_preparation.load_sessions()
+                        )
                         if path_preparation.shard_path is not None and shard_paths_by_raw_id is not None:
                             shard_paths_by_raw_id[source_raw_id] = path_preparation.shard_path
                     prepared_writes = (
@@ -4084,9 +4090,12 @@ class LiveBatchProcessor:
                     # that produced none: a recorded, bounded
                     # mark_raw_parse_failed outcome below, never a silently
                     # written phantom session.
-                    sessions = require_positive_conversational_evidence(
-                        sessions, provider=provider, source_path=record.source_path
-                    )
+                    if path_preparation is None or not path_preparation.positive_evidence_filtered:
+                        sessions = require_positive_conversational_evidence(
+                            cast(list[ParsedSession], sessions),
+                            provider=provider,
+                            source_path=record.source_path,
+                        )
                     record_timings["full.provider_parse"] = record_timings.get("full.provider_parse", 0.0) + (
                         time.perf_counter() - t0
                     )
@@ -4603,7 +4612,7 @@ class LiveBatchProcessor:
         self,
         archive: Any,
         source_raw_id: str,
-        sessions: list[Any],
+        sessions: Sequence[ParsedSession],
         *,
         acquired_at_ms: int,
         stage_timings_s: dict[str, float] | None = None,
@@ -4639,145 +4648,215 @@ class LiveBatchProcessor:
         session_ids: list[str] = []
         session_count = 0
         message_count = 0
-        for session in sessions:
-            logical_source_key = f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
-            for revision_raw_id in archive.convertible_full_revision_raw_ids(logical_source_key):
-                retained_sessions = (
-                    sessions
-                    if revision_raw_id == source_raw_id
-                    else self._parse_retained_raw_sessions(archive, revision_raw_id)
-                )
-                matches = [
-                    item
-                    for item in retained_sessions
-                    if f"{origin_from_provider(item.source_name).value}:{item.provider_session_id}"
-                    == logical_source_key
-                ]
-                if len(retained_sessions) != 1 or len(matches) != 1:
-                    raise RuntimeError(
-                        f"full revision {revision_raw_id}:{logical_source_key} no longer parses uniquely"
+        retained_sessions_cache: dict[str, Sequence[ParsedSession]] = {}
+        retained_by_key_cache: dict[str, dict[str, ParsedSession]] = {}
+        retired_full_revision_raw_ids: set[str] = set()
+
+        def retained_sessions(raw_id: str) -> Sequence[ParsedSession]:
+            if raw_id == source_raw_id:
+                return sessions
+            cached = retained_sessions_cache.get(raw_id)
+            if cached is None:
+                descriptor_reader = getattr(archive, "raw_revision_descriptor", None)
+                if descriptor_reader is None:
+                    legacy = cast(Sequence[ParsedSession], self._parse_retained_raw_sessions(archive, raw_id))
+                    retained_sessions_cache[raw_id] = legacy
+                    return legacy
+                provider, blob_hash, source_path, kind, _size = descriptor_reader(raw_id)
+                if Path(source_path).suffix.lower() == ".json" and provider in BUNDLE_PROVIDERS:
+                    native_id = archive.raw_native_id(raw_id) if kind is RawRevisionKind.APPEND else None
+                    artifact = prepare_retained_jsonl_artifact(
+                        raw_id,
+                        provider.value,
+                        blob_hash,
+                        source_path,
+                        kind.value,
+                        native_id,
+                        str(archive.archive_root / "blob"),
+                        str(archive.source_db_path),
+                        str(archive.index_db_path),
+                        str(archive.archive_root / "tmp" / "live-retained-prepared"),
+                        archive.raw_revision_file_mtime(raw_id),
                     )
-                try:
-                    archive.replace_raw_membership_census(
-                        revision_raw_id,
-                        retained_sessions,
-                        parser_fingerprint=self._current_parser_fingerprint(),
-                        censused_at_ms=acquired_at_ms,
-                        detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
-                        retire_full_revision_governance=True,
+                    if artifact.error is not None or artifact.sessions_path is None:
+                        artifact.discard()
+                        raise RuntimeError(artifact.error or f"retained raw {raw_id} did not prepare")
+                    try:
+                        sequence = artifact.session_sequence()
+                    except BaseException:
+                        artifact.discard()
+                        raise
+                    retained_sessions_cache[raw_id] = sequence
+                    return sequence
+                legacy = cast(Sequence[ParsedSession], self._parse_retained_raw_sessions(archive, raw_id))
+                retained_sessions_cache[raw_id] = legacy
+                return legacy
+            return cached
+
+        def retained_session_for(raw_id: str, logical_source_key: str) -> ParsedSession:
+            if raw_id == source_raw_id:
+                raise RuntimeError("the current session is supplied by the publication iterator")
+            try:
+                cached = retained_sessions_cache.get(raw_id)
+                if cached is None:
+                    cached = retained_sessions(raw_id)
+                if isinstance(cached, PreparedSessionSequence):
+                    return cached.by_session_id(logical_source_key)
+                indexed_sessions = retained_by_key_cache.get(raw_id)
+                if indexed_sessions is None:
+                    indexed_sessions = {}
+                    for item in cached:
+                        key = f"{origin_from_provider(item.source_name).value}:{item.provider_session_id}"
+                        if key in indexed_sessions:
+                            raise RuntimeError(f"membership {raw_id}:{key} is not unique")
+                        indexed_sessions[key] = item
+                    retained_by_key_cache[raw_id] = indexed_sessions
+                return indexed_sessions[logical_source_key]
+            except KeyError as exc:
+                raise RuntimeError(f"membership {raw_id}:{logical_source_key} no longer parses uniquely") from exc
+
+        try:
+            for session in sessions:
+                logical_source_key = f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
+                for revision_raw_id in archive.convertible_full_revision_raw_ids(logical_source_key):
+                    if revision_raw_id in retired_full_revision_raw_ids:
+                        continue
+                    revision_sessions = retained_sessions(revision_raw_id)
+                    revision_session = (
+                        session
+                        if revision_raw_id == source_raw_id
+                        else retained_session_for(revision_raw_id, logical_source_key)
                     )
-                except ActiveByteRevisionChainError:
-                    # polylogue-lpen: another raw's predecessor_raw_id/
-                    # baseline_raw_id still points at revision_raw_id, so it
-                    # cannot be retired out of byte-revision governance yet.
-                    # This is expected, transient sibling-discovery-ordering
-                    # contention (the same class as polylogue-52l2/hm2f, on
-                    # the retire leg instead of the accept-cohort leg), not a
-                    # failure of the raw currently being ingested
-                    # (source_raw_id). Defer this specific sibling's
-                    # retirement to a later tick -- once the dependent chain
-                    # resolves, convertible_full_revision_raw_ids will surface
-                    # it again -- instead of letting the exception propagate
-                    # up and quarantine the unrelated raw being processed.
-                    logger.warning(
-                        "live.watcher: deferring full-revision retirement of %s (%s): "
-                        "active byte-revision chain dependent still present",
-                        revision_raw_id,
+                    if len(revision_sessions) != 1 or (
+                        f"{origin_from_provider(revision_session.source_name).value}:{revision_session.provider_session_id}"
+                        != logical_source_key
+                    ):
+                        raise RuntimeError(
+                            f"full revision {revision_raw_id}:{logical_source_key} no longer parses uniquely"
+                        )
+                    try:
+                        archive.replace_raw_membership_census(
+                            revision_raw_id,
+                            revision_sessions,
+                            parser_fingerprint=self._current_parser_fingerprint(),
+                            censused_at_ms=acquired_at_ms,
+                            detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
+                            retire_full_revision_governance=True,
+                        )
+                        retired_full_revision_raw_ids.add(revision_raw_id)
+                    except ActiveByteRevisionChainError:
+                        # polylogue-lpen: another raw's predecessor_raw_id/
+                        # baseline_raw_id still points at revision_raw_id, so it
+                        # cannot be retired out of byte-revision governance yet.
+                        # This is expected, transient sibling-discovery-ordering
+                        # contention (the same class as polylogue-52l2/hm2f, on
+                        # the retire leg instead of the accept-cohort leg), not a
+                        # failure of the raw currently being ingested
+                        # (source_raw_id). Defer this specific sibling's
+                        # retirement to a later tick -- once the dependent chain
+                        # resolves, convertible_full_revision_raw_ids will surface
+                        # it again -- instead of letting the exception propagate
+                        # up and quarantine the unrelated raw being processed.
+                        logger.warning(
+                            "live.watcher: deferring full-revision retirement of %s (%s): "
+                            "active byte-revision chain dependent still present",
+                            revision_raw_id,
+                            logical_source_key,
+                        )
+                        retired_full_revision_raw_ids.add(revision_raw_id)
+                        continue
+                member_sessions: dict[str, Any] = {}
+                projections: dict[str, Any] = {}
+                revisions: list[MembershipRevision] = []
+                member_raw_ids = list(
+                    archive.raw_membership_raw_ids(
                         logical_source_key,
+                        include_complete_raw_ids=frozenset({source_raw_id})
+                        if allow_current_complete_raw
+                        else frozenset(),
                     )
-                    continue
-            member_sessions: dict[str, Any] = {}
-            projections: dict[str, Any] = {}
-            revisions: list[MembershipRevision] = []
-            member_raw_ids = list(
-                archive.raw_membership_raw_ids(
-                    logical_source_key,
-                    include_complete_raw_ids=frozenset({source_raw_id}) if allow_current_complete_raw else frozenset(),
                 )
+                for extra_raw_id in extra_member_raw_ids:
+                    if extra_raw_id not in member_raw_ids:
+                        member_raw_ids.append(extra_raw_id)
+                accepted_head_raw_id = archive.raw_revision_head_raw_id(logical_source_key)
+                if accepted_head_raw_id is not None and accepted_head_raw_id not in member_raw_ids:
+                    member_raw_ids.append(accepted_head_raw_id)
+                for member_raw_id in member_raw_ids:
+                    retained_session = (
+                        session
+                        if member_raw_id == source_raw_id
+                        else retained_session_for(member_raw_id, logical_source_key)
+                    )
+                    projection = session_revision_projection(retained_session)
+                    member_sessions[member_raw_id] = retained_session
+                    projections[member_raw_id] = projection
+                    browser_snapshot_fidelity: Literal["dom", "native"] | None = None
+                    if NATIVE_BROWSER_CAPTURE_INGEST_FLAG in retained_session.ingest_flags or (
+                        COMPACT_BROWSER_CAPTURE_INGEST_FLAG in retained_session.ingest_flags
+                    ):
+                        browser_snapshot_fidelity = "native"
+                    elif DOM_FALLBACK_INGEST_FLAG in retained_session.ingest_flags:
+                        browser_snapshot_fidelity = "dom"
+                    revisions.append(
+                        MembershipRevision(
+                            member_raw_id,
+                            projection,
+                            retained_session.updated_at,
+                            observed_at_ms=archive.raw_revision_acquired_at_ms(member_raw_id),
+                            browser_snapshot_fidelity=browser_snapshot_fidelity,
+                            provider_message_ids=(
+                                retained_session.messages.provider_message_ids(include_none=False)
+                                if isinstance(retained_session.messages, SqliteMessageSink)
+                                else frozenset(
+                                    provider_message_id
+                                    for message in retained_session.messages
+                                    if (provider_message_id := cast(str | None, message.provider_message_id))
+                                    is not None
+                                )
+                            ),
+                            provider_attachment_ids=frozenset(
+                                attachment.provider_attachment_id for attachment in retained_session.attachments
+                            ),
+                        )
+                    )
+                classification = classify_membership_revisions(revisions, existing_accepted_raw_id=accepted_head_raw_id)
+                member_fresh = _fresh_build_admits(member_sessions.values(), fresh_build_batch)
+                with self._attached_member_shards(
+                    archive, member_sessions, shard_paths_by_raw_id
+                ) as prepared_by_raw_id:
+                    membership_session_id = archive.apply_raw_membership_classification(
+                        logical_source_key,
+                        classification,
+                        member_sessions,
+                        projections,
+                        acquired_at_ms=acquired_at_ms,
+                        stage_timings_s=stage_timings_s,
+                        stage_timing_prefix="full",
+                        defer_fts=True,
+                        fresh_build=member_fresh,
+                        fresh_build_batch=fresh_build_batch if member_fresh else None,
+                        prepared_by_raw_id=prepared_by_raw_id,
+                        prepared_write=(
+                            (prepared_writes or {}).get(logical_source_key)
+                            if classification.accepted_raw_ids and classification.accepted_raw_ids[-1] == source_raw_id
+                            else None
+                        ),
+                    )
+                if membership_session_id is not None:
+                    session_ids.append(membership_session_id)
+                    session_count += 1
+                    message_count += len(member_sessions[classification.accepted_raw_ids[-1]].messages)
+            return (
+                session_ids,
+                session_count,
+                message_count,
+                archive.raw_membership_authority_complete(source_raw_id),
             )
-            for extra_raw_id in extra_member_raw_ids:
-                if extra_raw_id not in member_raw_ids:
-                    member_raw_ids.append(extra_raw_id)
-            accepted_head_raw_id = archive.raw_revision_head_raw_id(logical_source_key)
-            if accepted_head_raw_id is not None and accepted_head_raw_id not in member_raw_ids:
-                member_raw_ids.append(accepted_head_raw_id)
-            for member_raw_id in member_raw_ids:
-                retained_sessions = (
-                    sessions
-                    if member_raw_id == source_raw_id
-                    else self._parse_retained_raw_sessions(archive, member_raw_id)
-                )
-                matches = [
-                    item
-                    for item in retained_sessions
-                    if f"{origin_from_provider(item.source_name).value}:{item.provider_session_id}"
-                    == logical_source_key
-                ]
-                if len(matches) != 1:
-                    raise RuntimeError(f"membership {member_raw_id}:{logical_source_key} no longer parses uniquely")
-                projection = session_revision_projection(matches[0])
-                member_sessions[member_raw_id] = matches[0]
-                projections[member_raw_id] = projection
-                retained_session = matches[0]
-                browser_snapshot_fidelity: Literal["dom", "native"] | None = None
-                if NATIVE_BROWSER_CAPTURE_INGEST_FLAG in retained_session.ingest_flags or (
-                    COMPACT_BROWSER_CAPTURE_INGEST_FLAG in retained_session.ingest_flags
-                ):
-                    browser_snapshot_fidelity = "native"
-                elif DOM_FALLBACK_INGEST_FLAG in retained_session.ingest_flags:
-                    browser_snapshot_fidelity = "dom"
-                revisions.append(
-                    MembershipRevision(
-                        member_raw_id,
-                        projection,
-                        retained_session.updated_at,
-                        observed_at_ms=archive.raw_revision_acquired_at_ms(member_raw_id),
-                        browser_snapshot_fidelity=browser_snapshot_fidelity,
-                        provider_message_ids=(
-                            retained_session.messages.provider_message_ids(include_none=False)
-                            if isinstance(retained_session.messages, SqliteMessageSink)
-                            else frozenset(
-                                message.provider_message_id
-                                for message in retained_session.messages
-                                if message.provider_message_id is not None
-                            )
-                        ),
-                        provider_attachment_ids=frozenset(
-                            attachment.provider_attachment_id for attachment in retained_session.attachments
-                        ),
-                    )
-                )
-            classification = classify_membership_revisions(revisions, existing_accepted_raw_id=accepted_head_raw_id)
-            member_fresh = _fresh_build_admits(member_sessions.values(), fresh_build_batch)
-            with self._attached_member_shards(archive, member_sessions, shard_paths_by_raw_id) as prepared_by_raw_id:
-                membership_session_id = archive.apply_raw_membership_classification(
-                    logical_source_key,
-                    classification,
-                    member_sessions,
-                    projections,
-                    acquired_at_ms=acquired_at_ms,
-                    stage_timings_s=stage_timings_s,
-                    stage_timing_prefix="full",
-                    defer_fts=True,
-                    fresh_build=member_fresh,
-                    fresh_build_batch=fresh_build_batch if member_fresh else None,
-                    prepared_by_raw_id=prepared_by_raw_id,
-                    prepared_write=(
-                        (prepared_writes or {}).get(logical_source_key)
-                        if classification.accepted_raw_ids and classification.accepted_raw_ids[-1] == source_raw_id
-                        else None
-                    ),
-                )
-            if membership_session_id is not None:
-                session_ids.append(membership_session_id)
-                session_count += 1
-                message_count += len(member_sessions[classification.accepted_raw_ids[-1]].messages)
-        return (
-            session_ids,
-            session_count,
-            message_count,
-            archive.raw_membership_authority_complete(source_raw_id),
-        )
+        finally:
+            for cached in retained_sessions_cache.values():
+                if isinstance(cached, PreparedSessionSequence):
+                    cached.artifact.discard()
 
     @staticmethod
     def _parse_retained_raw_sessions(archive: Any, raw_id: str) -> list[Any]:

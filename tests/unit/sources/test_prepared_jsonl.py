@@ -14,6 +14,7 @@ import pytest
 
 from polylogue.core.enums import Provider, Role
 from polylogue.core.message_owner import MessageOwnerCoordinate
+from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload
@@ -25,6 +26,9 @@ from polylogue.sources.prepared_message_sink import (
     SqliteMessageStore,
     SqliteSessionEventSink,
 )
+from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
 from tests.infra.source_builders import ChatGPTExportBuilder
 
@@ -268,6 +272,119 @@ def test_chatgpt_bundle_worker_keeps_original_positions_after_skipped_siblings(t
     assert [(session.provider_session_id, session.content_hash) for session in artifact.iter_sessions()] == [
         (session.provider_session_id, session.content_hash) for session in expected
     ]
+
+
+def test_whole_json_preparation_transforms_and_indexes_each_session_without_iteration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    records = [
+        ChatGPTExportBuilder(f"conversation-{index}").add_node("user", f"Neutral prompt {index}").build()
+        for index in range(80)
+    ]
+    source = tmp_path / "conversations.json"
+    source.write_text(json.dumps(records), encoding="utf-8")
+    transformed: list[str] = []
+
+    def transform(session: ParsedSession) -> ParsedSession:
+        transformed.append(session.provider_session_id)
+        return session
+
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+        prepare_records=lambda items: items,
+        prepare_session=transform,
+    )
+    assert artifact.error is None
+    assert len(transformed) == 80
+    sequence = artifact.session_sequence()
+
+    def forbidden_iteration(_self: PreparedJsonl) -> object:
+        raise AssertionError("keyed sibling lookup must not materialize or scan the session cohort")
+
+    monkeypatch.setattr(PreparedJsonl, "iter_sessions", forbidden_iteration)
+    session_id = f"{origin_from_provider(Provider.CHATGPT).value}:conversation-73"
+    assert sequence.by_session_id(session_id).provider_session_id == "conversation-73"
+
+
+def test_retained_top_level_chatgpt_object_keeps_fallback_and_sidecar_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polylogue.sources.revision_backfill as revision_backfill
+    from polylogue.sources.parsers.chatgpt_sidecars import ChatGPTAssetIndex
+
+    record = ChatGPTExportBuilder("single-object").add_node("user", "A neutral prompt").build()
+    record.pop("create_time", None)
+    mapping = record["mapping"]
+    assert isinstance(mapping, dict)
+    for node in mapping.values():
+        assert isinstance(node, dict)
+        message = node.get("message")
+        if isinstance(message, dict):
+            message.pop("create_time", None)
+            message["content"] = {
+                "content_type": "multimodal_text",
+                "parts": [
+                    {"content_type": "text", "text": "A neutral prompt"},
+                    {
+                        "content_type": "image_asset_pointer",
+                        "asset_pointer": "file-service://file-sidecar",
+                        "width": 1,
+                        "height": 1,
+                        "size_bytes": 1,
+                    },
+                ],
+            }
+    payload = json.dumps(record).encode("utf-8")
+    blob_root = tmp_path / "blob"
+    blob_hash, _size = BlobStore(blob_root).write_from_bytes(payload)
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
+        with sqlite3.connect(path) as conn:
+            initialize_archive_tier(conn, tier)
+
+    evidence_providers: list[Provider] = []
+    asset_index = ChatGPTAssetIndex.build(
+        library_files_payload=[],
+        asset_file_names_payload={"file-sidecar.dat": "resolved-sidecar.png"},
+    )
+
+    def sidecar_evidence(**kwargs: object) -> dict[str, object]:
+        provider = kwargs["provider"]
+        assert isinstance(provider, Provider)
+        evidence_providers.append(provider)
+        return {"chatgpt_asset_index": asset_index}
+
+    monkeypatch.setattr(revision_backfill, "_retained_enrichment_sidecar_data", sidecar_evidence)
+    artifact = revision_backfill.prepare_retained_jsonl_artifact(
+        "synthetic-raw",
+        Provider.CHATGPT.value,
+        blob_hash,
+        str(tmp_path / "snapshot.json"),
+        "full",
+        None,
+        str(blob_root),
+        str(source_db),
+        str(index_db),
+        str(tmp_path / "prepared"),
+        "2025-01-02T03:04:05Z",
+    )
+    assert artifact.error is None
+    assert artifact.positive_evidence_filtered is True
+    sessions = list(artifact.session_sequence())
+    assert len(sessions) == 1
+    assert sessions[0].created_at == "2025-01-02T03:04:05+00:00"
+    assert sessions[0].updated_at == "2025-01-02T03:04:05+00:00"
+    assert len(sessions[0].attachments) == 1
+    assert sessions[0].attachments[0].name == "resolved-sidecar.png"
+    assert evidence_providers == [Provider.CHATGPT]
+    assert artifact.enrichment_digest is not None
+    artifact.discard()
 
 
 def test_bundle_worker_discards_partial_artifact_on_corrupt_suffix(tmp_path: Path) -> None:
