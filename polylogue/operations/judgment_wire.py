@@ -3,7 +3,7 @@
 Deliberately not in :mod:`polylogue.analysis.judgment.types`: that module is IN
 the derived-schema identity closure, so a transport shape added there would move
 the archive's schema identity and force a reconvergence for a CLI change
-(CLAUDE.md, "the identity moves on ordinary code edits"). ``polylogue/operations``
+(AGENTS.md, "the identity moves on ordinary code edits"). ``polylogue/operations``
 is outside the closure, which is where a transport contract belongs anyway.
 
 :func:`comparative_judgment_wire_form` and

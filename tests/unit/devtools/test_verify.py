@@ -669,7 +669,7 @@ def test_descriptor_only_changes_use_contract_tests_and_python_changes_use_testm
     [
         frozenset({"docs/devtools.md"}),
         frozenset({".github/workflows/verify.yml"}),
-        frozenset({".agentctl/README.md", "CLAUDE.md", ".github/CODEOWNERS"}),
+        frozenset({".agentctl/README.md", "AGENTS.md", ".github/CODEOWNERS"}),
     ],
 )
 def test_metadata_only_changes_select_no_pytest_step(changed: frozenset[str]) -> None:
