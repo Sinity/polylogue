@@ -453,6 +453,36 @@ async def test_unavailable_source_root_keeps_pending_file_retryable(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_unavailable_root_backs_off_due_local_retry(tmp_path: Path) -> None:
+    root = tmp_path / "source"
+    root.mkdir()
+    carrier = root / "capture.json"
+    carrier.write_text("{}")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+    now = [5.0]
+    watcher = SimpleNamespace(intake_revision=lambda _source: 0)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+        clock=lambda: now[0],
+    )
+    adapter._fresh_retry_debt[carrier] = 5.0
+    adapter._fresh_exhausted = True
+    adapter._fresh_exhausted_at = 5.0
+    root.rename(tmp_path / "parked")
+
+    with pytest.raises(WalkRefusedError):
+        await adapter.discover(limit=1)
+    assert adapter.retry_due_in_s == 5.0
+    now[0] = 9.0
+    assert adapter.retry_due_in_s == 1.0
+    now[0] = 10.0
+    with pytest.raises(WalkRefusedError):
+        await adapter.discover(limit=1)
+    assert adapter.retry_due_in_s == 5.0
+
+
+@pytest.mark.asyncio
 async def test_root_outage_keeps_failed_sibling_after_later_ack(tmp_path: Path) -> None:
     root = tmp_path / "source"
     root.mkdir()
@@ -956,6 +986,38 @@ async def test_durable_retry_alias_is_retired_after_symlink_swap(tmp_path: Path,
         mtime_ns=restored.st_mtime_ns,
     )
     assert cursor.get_record(carrier).excluded is False  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_escaping_retry_alias_has_bounded_cost_and_distinct_source_identity(tmp_path: Path) -> None:
+    alias_root = tmp_path / "alias-source"
+    target_root = tmp_path / "target-source"
+    alias_root.mkdir()
+    target_root.mkdir()
+    alias = alias_root / "capture.json"
+    target = target_root / "capture.json"
+    with target.open("wb") as target_file:
+        target_file.truncate(1 << 40)
+    alias.symlink_to(target)
+    sources = (
+        WatchSource(name="alias", root=alias_root, suffixes=(".json",)),
+        WatchSource(name="target", root=target_root, suffixes=(".json",)),
+    )
+    cursor = CursorStore(tmp_path / "index.db")
+    cursor.set(alias, 2, next_retry_at="1970-01-01T00:00:00+00:00")
+    watcher = SimpleNamespace(_cursor=cursor, intake_revision=lambda _source: 0)
+    context = DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=sources)  # type: ignore[arg-type]
+    alias_adapter = FileIntakeAdapter(context, sources[0])
+    target_adapter = FileIntakeAdapter(context, sources[1])
+    alias_adapter._retry_turn = True
+    multiplex = MultiplexIntakeAdapter((alias_adapter, target_adapter))
+
+    page = await multiplex.discover(limit=2)
+    assert [item.payload for item in page] == [alias, target]
+    assert [item.estimated_cost for item in page] == [1, 1 << 40]
+    assert len({item.item_id for item in page}) == 2
+    assert multiplex._by_item[page[0].item_id] is alias_adapter
+    assert multiplex._by_item[page[1].item_id] is target_adapter
 
 
 @pytest.mark.asyncio

@@ -357,6 +357,18 @@ class FileIntakeAdapter(IntakeAdapter):
                 self._request_fresh_rescan()
             self._last_source_entries = entries
             self._last_root_mtime_ns = root_mtime_ns
+        if not self.source.root.is_dir():
+            # A missing mount cannot service local retry debt. Move expired
+            # deadlines forward before the root refusal reaches the daemon,
+            # so it uses the retry cooldown instead of a 50 ms wake loop.
+            now = self._clock()
+            due_at = now + _FILE_RETRY_DELAY_S
+            with self._retry_state_lock:
+                for path, deadline in self._fresh_retry_debt.items():
+                    if deadline <= now:
+                        self._fresh_retry_debt[path] = due_at
+                if self._overflow_rescan_due_at is not None and self._overflow_rescan_due_at <= now:
+                    self._overflow_rescan_due_at = due_at
         with self._retry_state_lock:
             overflow_due = self._overflow_rescan_due_at is not None and self._clock() >= self._overflow_rescan_due_at
             if overflow_due:
@@ -387,12 +399,13 @@ class FileIntakeAdapter(IntakeAdapter):
         items: list[IntakeItem] = []
         for path in paths:
             try:
-                size = path.stat().st_size
+                observed = path.lstat()
+                size = observed.st_size if stat.S_ISREG(observed.st_mode) else 1
             except OSError:
                 size = 1
             items.append(
                 IntakeItem(
-                    item_id=f"file:{path.resolve()}",
+                    item_id=f"file:{path.absolute()}",
                     class_name=self.class_name,
                     payload=path,
                     estimated_cost=max(1, size),
