@@ -1043,7 +1043,7 @@ class LiveBatchProcessor:
             error_detail=str(exc),
         )
         try:
-            await self._run_ops_write(
+            closed = await self._run_ops_write(
                 "attempt_finish",
                 self._cursor.finish_ingest_attempt,
                 attempt.attempt_id,
@@ -1062,8 +1062,19 @@ class LiveBatchProcessor:
                 error_type=type(finish_exc).__name__,
                 error_detail=str(finish_exc),
             )
-        else:
-            attempt.finished = True
+            return
+        if closed is False:
+            # The bounded cursor-write retries gave up on a locked ops tier:
+            # the row is still ``running``, and saying so is the point.
+            emit(
+                "live.ingest.attempt_finish_failed",
+                level=ERROR,
+                outcome="error",
+                reason="ops_write_skipped",
+                attempt_id=attempt.attempt_id,
+            )
+            return
+        attempt.finished = True
 
     async def _ingest_files(
         self,
@@ -3130,6 +3141,9 @@ class LiveBatchProcessor:
                 except Exception as error:
                     if not antigravity._is_trajectory_storage_error(error):
                         raise
+                    # The export stages into the archive's blob area; a full
+                    # archive is not this database's failure.
+                    raise_if_storage_fault(error, kinds=CAPACITY_FAULTS)
                     logger.exception("antigravity: trajectory SQLite acquisition failed: %s", path)
                     failed.append(path)
                     continue

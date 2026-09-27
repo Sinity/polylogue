@@ -107,21 +107,24 @@ class AcquisitionService:
         """Persist stat cursors only for source paths acquired successfully."""
         if source.path is None:
             return
-        # A failure names a physical file or a ZIP member as ``<file>:<member>``.
-        # Match it against each real source path rather than splitting at the
-        # first colon: a POSIX path may itself contain ``:``, and a truncated
-        # prefix would match nothing and let the failed file's cursor advance.
-        failure_paths: list[str] = []
+        # A failure names a physical file or a ZIP member as ``<file>:<member>``,
+        # and a POSIX path may itself contain ``:``, so the first colon is not
+        # the boundary. Index every file a failure could name -- the whole
+        # string and each prefix ending before a ``:`` -- so the per-file check
+        # is one set lookup however many files failed.
+        failed_paths: set[str] = set()
         failed_everything = False
         if cursor_state:
-            failure_paths = [str(failure["path"]) for failure in cursor_state.get("failed_files", [])]
+            for failure in cursor_state.get("failed_files", []):
+                raw_path = str(failure["path"])
+                failed_paths.add(raw_path)
+                failed_paths.update(raw_path[:index] for index, char in enumerate(raw_path) if char == ":")
             # An unscoped failure means the pass did not prove any path safe
             # to skip.  Do not turn a failed persistence/read pass into a
             # successful stat cursor for every file in the source.
             failed_everything = bool(cursor_state.get("error_count"))
         for file_path in _resolve_source_paths(source):
-            key = str(file_path)
-            if failed_everything or any(failure == key or failure.startswith(f"{key}:") for failure in failure_paths):
+            if failed_everything or str(file_path) in failed_paths:
                 continue
             try:
                 st = file_path.stat()

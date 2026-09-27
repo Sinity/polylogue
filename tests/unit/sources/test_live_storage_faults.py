@@ -399,3 +399,35 @@ async def test_append_storage_fault_leaves_the_append_raw_unmarked(
     finally:
         watcher.stop()
         await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_an_attempt_close_skipped_under_lock_is_reported(
+    storage_env: tuple[Polylogue, LiveWatcher, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``finish_ingest_attempt`` gives up quietly (returns ``False``) when the
+    ops tier stays locked; the closer must say the row is still running.
+    Anti-vacuity: treating every non-raising call as closed emits nothing."""
+    from polylogue.core.write_hold import WriteHoldBudgetError
+    from polylogue.sources.live.batch import LiveBatchProcessor
+
+    archive, watcher, source_path = storage_env
+
+    async def spend_hold(self: LiveBatchProcessor, paths: list[Path], **kwargs: Any) -> Any:
+        attempt_id = await self._run_ops_write(
+            "attempt_start", self._cursor.begin_ingest_attempt, paths=paths, input_bytes=0, queued_file_count=1
+        )
+        kwargs["open_attempt"].opened(attempt_id)
+        raise WriteHoldBudgetError(actor="test", checkpoint="full_acquisition_complete", hold_seconds=2.0, budget_s=1.0)
+
+    monkeypatch.setattr(LiveBatchProcessor, "_ingest_files", spend_hold)
+    monkeypatch.setattr(CursorStore, "finish_ingest_attempt", lambda self, *args, **kwargs: False)
+    try:
+        with capture() as events, pytest.raises(WriteHoldBudgetError):
+            await watcher._batch_processor.ingest_files([source_path])
+        skipped = [event for event in events if event.get("event") == "live.ingest.attempt_finish_failed"]
+        assert [event.get("reason") for event in skipped] == ["ops_write_skipped"]
+    finally:
+        watcher.stop()
+        await archive.close()
