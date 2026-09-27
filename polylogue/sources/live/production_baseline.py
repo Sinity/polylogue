@@ -397,6 +397,9 @@ def _archive_members(
             if provider_detection_path(info.filename)
         ]
         provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
+        # The location binds, not the sniffed dominant provider: an inbox
+        # archive stays unbound so each member classifies, as in live intake.
+        location_binding = bound_location_provider(provider)
         if provider is Provider.UNKNOWN:
             provider = sniff_zip_provider(archive, detection_entries) or provider
         allowed_path = is_declared_artifact_path if provider is Provider.UNKNOWN else None
@@ -429,7 +432,7 @@ def _archive_members(
                     None,
                     entry_provider,
                     None,  # type: ignore[arg-type]
-                    bound_provider=bound_location_provider(provider),
+                    bound_provider=location_binding,
                 )
                 for payload in replay_zip_entry_acquisition_payloads(archive, context):
                     _check_observation_cancelled(cancelled)

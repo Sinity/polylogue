@@ -366,3 +366,39 @@ def test_one_shot_fact_path_refuses_foreign_document(tmp_path: Path) -> None:
                 capture_raw=False,
             )
         )
+
+
+def test_baseline_keeps_inbox_archives_unbound(tmp_path: Path) -> None:
+    """An inbox archive classifies each member in replay, as live intake does.
+
+    Anti-vacuity: binding replay to the sniffed dominant provider excludes the
+    Gemini member of a ChatGPT-dominant inbox export as foreign.
+    """
+    import zipfile
+
+    from polylogue.sources.live.production_baseline import _archive_members
+
+    chatgpt_member = {
+        "id": "chatgpt-1",
+        "title": "t",
+        "create_time": 1700000000.0,
+        "mapping": {
+            "n1": {
+                "id": "n1",
+                "message": {
+                    "id": "n1",
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["hi"]},
+                },
+                "children": [],
+            }
+        },
+    }
+    archive = tmp_path / "export.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("a.json", json.dumps(chatgpt_member))
+        zf.writestr("b.json", json.dumps(chatgpt_member | {"id": "chatgpt-2"}))
+        zf.writestr("gemini.json", json.dumps({"chunkedPrompt": {"chunks": [{"role": "user", "text": "hi"}]}}))
+
+    decisions = _archive_members(archive, "inbox")
+    assert not [decision for decision in decisions if "foreign_origin_content" in decision.reason]

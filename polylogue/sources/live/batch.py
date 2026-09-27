@@ -211,6 +211,7 @@ from polylogue.sources.source_acquisition_components import (
     iter_zip_entry_raw_data,
     sniff_zip_provider,
     stream_preserved_zip_entry_raw_data,
+    validate_bound_grouped_zip_member,
 )
 from polylogue.sources.sqlite_snapshot import (
     codex_state_raw_id,
@@ -3147,7 +3148,31 @@ class LiveBatchProcessor:
                 # A broad Hermes root is suffix-enumerated so every candidate
                 # remains observable.  Only the OriginSpec recognizer may
                 # admit a candidate to the Hermes parser; unknown/config/cache
-                # material is a typed non-session observation instead.
+                # material is a typed non-session observation instead --
+                # unless it carries another origin's shape, which is refused.
+                if bound_location_provider(fallback_provider) is not None and (
+                    path.suffix.lower() == ".json" or is_jsonl_source_path(str(path))
+                ):
+                    try:
+                        with path.open("rb") as source_handle:
+                            detect_provider_from_raw_bytes_evidence(
+                                source_handle.read(_SOURCE_ONLY_VALIDATION_PREFIX_BYTES),
+                                path.name,
+                                fallback_provider,
+                                truncated_tail_ok=True,
+                            )
+                    except ForeignOriginContentError as exc:
+                        self._mark_refused_cursor(
+                            path,
+                            stat,
+                            source_name=fallback_provider.value,
+                            reason=f"{exc.code}: {exc}",
+                            excluded=excluded_paths,
+                        )
+                        continue
+                    except OSError:
+                        failed.append(path)
+                        continue
                 logger.info(
                     "live.source_candidate_not_admitted path=%s provider=%s source_class=%s reason=%s",
                     path,
@@ -3430,7 +3455,7 @@ class LiveBatchProcessor:
                     continue
                 if (
                     bound_location_provider(fallback_provider) is not None
-                    and path.suffix.lower() in (".json", ".jsonl", ".ndjson")
+                    and (path.suffix.lower() == ".json" or is_jsonl_source_path(str(path)))
                     and not path_declaration_refuses_session(fallback_provider, path)
                 ):
                     # The retained replay trusts a bound raw's stored provider,
@@ -5464,23 +5489,18 @@ class LiveBatchProcessor:
                     except ForeignOriginContentError as exc:
                         # A refused member is named on its own; admissible
                         # siblings in the archive are still acquired.
-                        member_path = f"{path}:{info.filename}"
-                        emit(
-                            "live.ingest.zip_member_refused",
-                            level=WARNING,
-                            outcome="refused",
-                            source_path=member_path,
-                            reason=f"{exc.code}: {exc}",
-                        )
-                        # The archive cursor advances with its admissible
-                        # siblings, so the refused member keeps its own
-                        # durable, retryable gap.
-                        self._cursor.record_convergence_debt(
-                            stage="live_ingest_admission",
-                            subject_type="source_path",
-                            subject_id=member_path,
-                            error=f"{exc.code}: {exc}",
-                        )
+                        self._record_zip_member_refusal(path, info.filename, exc)
+                    else:
+                        # A member admitted now clears any refusal an earlier
+                        # revision of the archive recorded for it. Refusals
+                        # exist only at bound locations; an inbox archive
+                        # classifies its members and never records one.
+                        if bound_location_provider(fallback_provider) is not None:
+                            self._cursor.clear_convergence_debt(
+                                subject_type="source_path",
+                                subject_id=f"{path}:{info.filename}",
+                                stage="live_ingest_admission",
+                            )
         except (zipfile.BadZipFile, OSError) as exc:
             # Members stream into the archive's blob staging: a full or
             # read-only archive is not a property of this ZIP, and reporting
@@ -5524,22 +5544,33 @@ class LiveBatchProcessor:
                         entry_ordinal=entry_ordinal,
                         split_index=split_index,
                     )
+                    member_context = ZipEntryReadContext(
+                        source=source,
+                        zip_path=path,
+                        entry=info,
+                        file_mtime=file_mtime,
+                        provider_hint=fallback_provider,
+                        blob_store=blob_store,
+                        bound_provider=bound_location_provider(fallback_provider),
+                    )
                     try:
+                        if info.filename.lower().endswith(ZIP_JSON_SUFFIXES) and not path_declaration_refuses_session(
+                            fallback_provider, info.filename
+                        ):
+                            # Retained replay trusts a bound member's stored
+                            # provider, so validate before preserving it.
+                            validate_bound_grouped_zip_member(zf, member_context)
                         raw_data = stream_preserved_zip_entry_raw_data(
                             zf,
-                            ZipEntryReadContext(
-                                source=source,
-                                zip_path=path,
-                                entry=info,
-                                file_mtime=file_mtime,
-                                provider_hint=fallback_provider,
-                                blob_store=blob_store,
-                            ),
+                            member_context,
                             provider_hint=fallback_provider,
                             source_index=source_index,
                         )
                     except ZipBombError as exc:
                         logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
+                        continue
+                    except ForeignOriginContentError as exc:
+                        self._record_zip_member_refusal(path, info.filename, exc)
                         continue
                     if raw_data.blob_hash is None:
                         continue
@@ -5610,6 +5641,28 @@ class LiveBatchProcessor:
             st_ino=getattr(stat, "st_ino", None),
             mtime_ns=getattr(stat, "st_mtime_ns", None),
             excluded=True,
+        )
+
+    def _record_zip_member_refusal(self, path: Path, member: str, exc: ForeignOriginContentError) -> None:
+        """Keep a durable, retryable gap for one refused ZIP member.
+
+        The archive cursor advances with its admissible siblings, so the
+        refused member carries its own ``live_ingest_admission`` debt; a later
+        pass that admits the member clears it.
+        """
+        member_path = f"{path}:{member}"
+        emit(
+            "live.ingest.zip_member_refused",
+            level=WARNING,
+            outcome="refused",
+            source_path=member_path,
+            reason=f"{exc.code}: {exc}",
+        )
+        self._cursor.record_convergence_debt(
+            stage="live_ingest_admission",
+            subject_type="source_path",
+            subject_id=member_path,
+            error=f"{exc.code}: {exc}",
         )
 
     def _mark_refused_cursor(

@@ -266,6 +266,12 @@ def _refuse_foreign_fact_document(path: Path, provider_hint: Provider) -> None:
     detect_provider_from_raw_bytes_evidence(prefix, path.name, provider_hint, truncated_tail_ok=True)
 
 
+def _path_is_raw_only(provider_hint: Provider, path: Path) -> bool:
+    from .origin_specs import path_declaration_refuses_session
+
+    return path_declaration_refuses_session(provider_hint, path)
+
+
 #: Bounded prefix used to validate a fact document at a bound location.
 _FACT_VALIDATION_PREFIX_BYTES = 8192
 
@@ -456,6 +462,13 @@ def parse_one_source_path(
     emitter = _SessionEmitter(ctx)
 
     if capture_raw and should_group:
+        if ctx.bound_provider is not None and not _path_is_raw_only(provider_hint, path):
+            # Grouped files are published whole before the emitter sees their
+            # records; validate a bounded prefix against the location first.
+            with path.open("rb") as handle:
+                detect_provider_from_raw_bytes_evidence(
+                    handle.read(_FACT_VALIDATION_PREFIX_BYTES), path.name, provider_hint, truncated_tail_ok=True
+                )
         if blob_root is None:
             from polylogue.paths import blob_store_root
 
