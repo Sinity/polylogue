@@ -178,17 +178,78 @@ _JSON_WHITESPACE = b" \t\r\n"
 _BARE_TOKEN = re.compile(rb"[^\s\[\]{}:,\"]+")
 
 
+# JSON number grammar states, for runs outside strings. Literals (``true``,
+# ``false``, ``null``) read as invalid numbers; they are never long.
+_NUM_START, _NUM_MINUS, _NUM_ZERO, _NUM_INT, _NUM_DOT, _NUM_FRAC, _NUM_E, _NUM_ESIGN, _NUM_EXP, _NUM_INVALID = range(10)
+_NUM_COMPLETE = frozenset({_NUM_ZERO, _NUM_INT, _NUM_FRAC, _NUM_EXP})
+_NUM_DIGIT_RUNS = frozenset({_NUM_INT, _NUM_FRAC, _NUM_EXP})
+
+
+_DIGIT_RUN = re.compile(rb"[0-9]*")
+
+
+def _number_step(state: int, data: bytes) -> int:
+    """Advance the number grammar over ``data``; digit runs are skipped whole."""
+    index = 0
+    while index < len(data):
+        if state == _NUM_INVALID:
+            return state
+        if state in _NUM_DIGIT_RUNS:
+            match = _DIGIT_RUN.match(data, index)
+            assert match is not None
+            index = match.end()
+            if index == len(data):
+                return state
+        byte = data[index]
+        index += 1
+        digit = 0x30 <= byte <= 0x39
+        if state in (_NUM_START, _NUM_MINUS):
+            if state == _NUM_START and byte == 0x2D:
+                state = _NUM_MINUS
+            else:
+                state = _NUM_ZERO if byte == 0x30 else _NUM_INT if digit else _NUM_INVALID
+        elif state in (_NUM_ZERO, _NUM_INT, _NUM_FRAC):
+            if byte == 0x2E and state != _NUM_FRAC:
+                state = _NUM_DOT
+            elif byte in (0x45, 0x65):
+                state = _NUM_E
+            else:
+                # A digit after a leading zero, or any other byte.
+                state = _NUM_INVALID
+        elif state == _NUM_DOT:
+            state = _NUM_FRAC if digit else _NUM_INVALID
+        elif state == _NUM_E:
+            state = _NUM_ESIGN if byte in (0x2B, 0x2D) else _NUM_EXP if digit else _NUM_INVALID
+        else:  # _NUM_ESIGN, _NUM_EXP
+            state = _NUM_EXP if digit else _NUM_INVALID
+    return state
+
+
 class _SpilledStrings:
     """String values streamed to scratch files, addressed by a unique marker."""
 
     def __init__(self) -> None:
         self._nonce = secrets.token_hex(16)
         self._files: dict[str, IO[bytes]] = {}
+        self._placeholders = 0
+        #: A token past the physical value limit. Raised only once the whole
+        #: document has parsed: until then the bytes may not be JSON at all,
+        #: and a non-JSON member takes its byte identity instead.
+        self.refusal: ContentIdentityRefusal | None = None
 
     def add(self, handle: IO[bytes]) -> bytes:
         marker = f"polylogue-spilled-string-{self._nonce}-{len(self._files)}"
         self._files[marker] = handle
         return marker.encode("ascii")
+
+    def refuse(self, token: str, size: int) -> None:
+        if self.refusal is None:
+            self.refusal = ContentIdentityRefusal(token, size)
+
+    def placeholder_key(self) -> bytes:
+        """A unique stand-in for a refused key, keeping the document parseable."""
+        self._placeholders += 1
+        return f"polylogue-refused-key-{self._nonce}-{self._placeholders}".encode("ascii")
 
     def take(self, marker: object) -> IO[bytes] | None:
         if not isinstance(marker, str) or not self._files:
@@ -199,6 +260,7 @@ class _SpilledStrings:
         for handle in self._files.values():
             handle.close()
         self._files.clear()
+        self.refusal = None
 
 
 class _TokenReader:
@@ -233,7 +295,10 @@ class _TokenReader:
         self._string: bytearray | None = None
         self._spill: IO[bytes] | None = None
         self._awaiting_role = False
-        self._bare_run = 0
+        self._bare_open = False
+        self._bare_len = 0
+        self._bare_state = _NUM_START
+        self._bare_suppressed = False
 
     def read(self, size: int = -1) -> bytes:
         if size == 0:
@@ -252,6 +317,8 @@ class _TokenReader:
                     self._finish_spill(is_key=False, out=out)
                 elif self._in_string:
                     out += self._flush_string()
+                else:
+                    self._end_bare_run(out)
             else:
                 self._consume(chunk, out)
         data = bytes(out)
@@ -276,12 +343,11 @@ class _TokenReader:
                 continue
             if not self._in_string:
                 quote = data.find(b'"', position)
-                segment = data[position:] if quote < 0 else data[position:quote]
-                self._check_bare_tokens(segment)
                 if quote < 0:
-                    out += data[position:]
+                    self._emit_outside(data[position:], out, open_end=True)
                     return
-                out += data[position : quote + 1]
+                self._emit_outside(data[position:quote], out, open_end=False)
+                out += b'"'
                 self._in_string = True
                 self._backslashes = 0
                 self._string = bytearray()
@@ -302,19 +368,71 @@ class _TokenReader:
             else:
                 self._awaiting_role = True
 
-    def _check_bare_tokens(self, segment: bytes) -> None:
-        """Refuse a number or literal longer than the physical value limit."""
-        limit = physical_value_limit()
-        runs = _BARE_TOKEN.findall(segment)
-        if not runs:
-            self._bare_run = 0
+    def _emit_outside(self, segment: bytes, out: bytearray, *, open_end: bool) -> None:
+        """Forward bytes outside strings, tracking number and literal runs.
+
+        A run longer than the physical value limit is forwarded only up to a
+        point where it is still a complete number; the rest is validated here
+        and not handed on. A valid overlong number records a refusal that is
+        raised once the document has parsed; an invalid run ends in a byte
+        the tokenizer rejects, so the member takes its byte identity.
+        """
+        position = 0
+        for match in _BARE_TOKEN.finditer(segment):
+            start, end = match.span()
+            if start > position or not self._bare_open:
+                self._end_bare_run(out)
+                out += segment[position:start]
+            self._bare_open = True
+            self._feed_bare(segment[start:end], out)
+            position = end
+        if position < len(segment):
+            self._end_bare_run(out)
+            out += segment[position:]
+        elif not open_end:
+            self._end_bare_run(out)
+
+    def _feed_bare(self, piece: bytes, out: bytearray) -> None:
+        if self._bare_suppressed:
+            self._bare_state = _number_step(self._bare_state, piece)
+            self._bare_len += len(piece)
             return
-        first = len(runs[0]) + (self._bare_run if segment[: len(runs[0])] == runs[0] else 0)
-        longest = max([first, *(len(run) for run in runs[1:])])
-        if longest > limit:
-            raise ContentIdentityRefusal("number token", longest)
-        last = runs[-1]
-        self._bare_run = (first if len(runs) == 1 else len(last)) if segment.endswith(last) else 0
+        room = physical_value_limit() - self._bare_len
+        head = piece[: max(room, 0)]
+        self._bare_state = _number_step(self._bare_state, head)
+        self._bare_len += len(head)
+        out += head
+        rest = piece[len(head) :]
+        if not rest:
+            return
+        index = 0
+        while index < len(rest) and self._bare_state not in _NUM_COMPLETE and self._bare_state != _NUM_INVALID:
+            self._bare_state = _number_step(self._bare_state, rest[index : index + 1])
+            out += rest[index : index + 1]
+            index += 1
+        self._bare_len += index
+        if self._bare_state == _NUM_INVALID:
+            # Not a number: the tokenizer rejects it at once.
+            out += rest[index:]
+            self._bare_len += len(rest) - index
+            return
+        if self._bare_state in _NUM_COMPLETE:
+            self._bare_suppressed = True
+            self._bare_state = _number_step(self._bare_state, rest[index:])
+            self._bare_len += len(rest) - index
+
+    def _end_bare_run(self, out: bytearray) -> None:
+        if not self._bare_open:
+            return
+        if self._bare_suppressed:
+            if self._bare_state in _NUM_COMPLETE:
+                self._spills.refuse("number token", self._bare_len)
+            else:
+                out += b"x"
+        self._bare_open = False
+        self._bare_len = 0
+        self._bare_state = _NUM_START
+        self._bare_suppressed = False
 
     def _string_end(self, data: bytes, start: int) -> int:
         """Index of the closing quote of the open string in ``data``, or -1."""
@@ -360,13 +478,26 @@ class _TokenReader:
         self._spill = None
         self._awaiting_role = False
         if is_key:
-            size = spill.seek(0, 2)
-            if size > physical_value_limit():
-                spill.close()
-                raise ContentIdentityRefusal("object key", size)
+            # A key decides member order, so it is held whole -- but it is
+            # measured decoded, not by its escaped spelling.
             spill.seek(0)
-            out += spill.read()
+            pieces: list[str] = []
+            size = 0
+            for piece in _iter_decoded_windows(spill):
+                size += len(piece.encode("utf-8", "surrogatepass"))
+                if size <= physical_value_limit():
+                    pieces.append(piece)
             spill.close()
+            if size > physical_value_limit():
+                self._spills.refuse("object key", size)
+                out += self._spills.placeholder_key()
+            else:
+                key = "".join(pieces)
+                try:
+                    out += json.dumps(key, ensure_ascii=False)[1:-1].encode("utf-8")
+                except UnicodeEncodeError:
+                    # A lone surrogate stays an escape for the exact tokenizer.
+                    out += json.dumps(key, ensure_ascii=True)[1:-1].encode("ascii")
         else:
             spill.seek(0)
             out += self._spills.add(spill)
@@ -430,10 +561,15 @@ def _composition_followers() -> frozenset[str]:
     return frozenset(followers)
 
 
-def _stable_split(text: str) -> int:
-    """Largest index before which NFC of ``text`` may be split without effect."""
+def _stable_split(text: str, start: int = 0) -> int:
+    """Largest index before which NFC of ``text`` may be split without effect.
+
+    ``text[:start]`` holds no split point past index 0, so only the rest is
+    searched: an unbroken composition sequence costs one pass, not one per
+    window.
+    """
     followers = _composition_followers()
-    for index in range(len(text) - 1, 0, -1):
+    for index in range(len(text) - 1, max(start, 1) - 1, -1):
         char = text[index]
         if unicodedata.combining(char) == 0 and char not in followers and unicodedata.is_normalized("NFC", char):
             return index
@@ -452,62 +588,87 @@ def _utf8_boundary(data: bytes, cut: int) -> int:
     return index if index + width > cut else cut
 
 
-def _encode_spilled_text(raw: IO[bytes], sink: _Sink) -> None:
+def _iter_decoded_windows(raw: IO[bytes]) -> Iterator[str]:
+    """JSON-unescape one spilled string's raw content in windows.
+
+    Windows are cut outside any escape, never between the two escapes of a
+    surrogate pair, and never inside a UTF-8 sequence. Malformed content
+    raises :class:`_NotJsonError`.
+    """
+    pending_raw = b""
+    while True:
+        block = raw.read(_STREAM_READ_BYTES)
+        final = not block
+        data = pending_raw + block
+        cut = len(data)
+        if not final:
+            tokens = list(_ESCAPE_TOKEN.finditer(data))
+            last_end = tokens[-1].end() if tokens else 0
+            dangling = data.find(b"\\", last_end)
+            if dangling >= 0:
+                # Only an escape cut by the window end may wait for more
+                # bytes; a complete invalid escape is malformed now.
+                if len(data) - dangling > 12:
+                    raise _NotJsonError
+                cut = dangling
+            for token in reversed(tokens):
+                if token.end() < cut:
+                    break
+                unit = token.group(1)
+                if token.end() == cut and unit is not None and 0xD800 <= int(unit, 16) <= 0xDBFF:
+                    cut = token.start()
+                    break
+            cut = _utf8_boundary(data, cut)
+        pending_raw = data[cut:]
+        try:
+            yield json.loads('"' + data[:cut].decode("utf-8") + '"')
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise _NotJsonError from exc
+        if final:
+            if pending_raw:
+                raise _NotJsonError
+            return
+
+
+def _encode_spilled_text(raw: IO[bytes], sink: _Sink, spills: _SpilledStrings) -> None:
     """Encode one spilled JSON string exactly as :func:`_encode_text` would.
 
     The raw content is JSON-unescaped and NFC-normalized in windows cut at
     escape and composition boundaries, written to scratch to learn its length
-    for the tag, then streamed into ``sink``.
+    for the tag, then streamed into ``sink``. An unbroken composition sequence
+    longer than a storable value cannot be normalized in windows: it records
+    a refusal, and the rest of the string is still read for validity.
     """
+    limit = physical_value_limit()
     with tempfile.TemporaryFile() as normalized:
         length = 0
-        pending_raw = b""
         pending_text = ""
-        while True:
-            block = raw.read(_STREAM_READ_BYTES)
-            final = not block
-            data = pending_raw + block
-            cut = len(data)
-            if not final:
-                # Cut outside any escape, never between the two escapes of a
-                # surrogate pair, and never inside a UTF-8 sequence.
-                tokens = list(_ESCAPE_TOKEN.finditer(data))
-                last_end = tokens[-1].end() if tokens else 0
-                dangling = data.find(b"\\", last_end)
-                if dangling >= 0:
-                    # Only an escape cut by the window end may wait for more
-                    # bytes; a complete invalid escape is malformed now.
-                    if len(data) - dangling > 12:
-                        raise _NotJsonError
-                    cut = dangling
-                for token in reversed(tokens):
-                    if token.end() < cut:
-                        break
-                    unit = token.group(1)
-                    if token.end() == cut and unit is not None and 0xD800 <= int(unit, 16) <= 0xDBFF:
-                        cut = token.start()
-                        break
-                cut = _utf8_boundary(data, cut)
-            pending_raw = data[cut:]
-            try:
-                text = pending_text + json.loads('"' + data[:cut].decode("utf-8") + '"')
-            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                raise _NotJsonError from exc
-            split = len(text) if final else _stable_split(text)
+        pending_bytes = 0
+        draining = False
+        windows = _iter_decoded_windows(raw)
+        for piece in windows:
+            if draining:
+                continue
+            text = pending_text + piece
+            split = _stable_split(text, len(pending_text))
             encoded = nfc(text[:split]).encode("utf-8", errors="surrogatepass")
             normalized.write(encoded)
             length += len(encoded)
+            if split == 0:
+                pending_bytes += len(piece.encode("utf-8", "surrogatepass"))
+            else:
+                pending_bytes = len(text[split:].encode("utf-8", "surrogatepass"))
             pending_text = text[split:]
-            if len(pending_text) * 4 > physical_value_limit():
-                # One unbroken composition sequence longer than a storable
-                # value: no split point exists to normalize it in windows.
-                raise ContentIdentityRefusal(
-                    "combining character sequence", len(pending_text.encode("utf-8", "surrogatepass"))
-                )
-            if final:
-                if pending_raw:
-                    raise _NotJsonError
-                break
+            if pending_bytes > limit:
+                spills.refuse("combining character sequence", pending_bytes)
+                pending_text = ""
+                draining = True
+        if draining:
+            sink.update(b"s0:;")
+            return
+        encoded = nfc(pending_text).encode("utf-8", errors="surrogatepass")
+        normalized.write(encoded)
+        length += len(encoded)
         sink.update(b"s%d:" % length)
         normalized.seek(0)
         while chunk := normalized.read(_STREAM_READ_BYTES):
@@ -657,7 +818,7 @@ def _stream_identity(events: Iterator[tuple[str, object]], spills: _SpilledStrin
             try:
                 if spilled is not None:
                     with spilled:
-                        _encode_spilled_text(spilled, sink)
+                        _encode_spilled_text(spilled, sink, spills)
                 elif event == "number" and isinstance(value, Decimal):
                     # The decoder contract reads any fraction or exponent as a
                     # binary float and a bare integer exactly.
@@ -693,7 +854,7 @@ def stream_payload_content_identity(handle: IO[bytes]) -> str:
         try:
             reader = _TokenReader(handle, spills, scan=True)
             events = ijson.basic_parse(reader, use_float=False, buf_size=_STREAM_READ_BYTES)
-            return _stream_identity(events, spills)
+            digest = _stream_identity(events, spills)
         except (_LoneSurrogateEscapeError, UnicodeDecodeError):
             # The C tokenizer either met a lone surrogate escape or rejected
             # one while decoding; the exact tokenizer decides.
@@ -701,7 +862,11 @@ def stream_payload_content_identity(handle: IO[bytes]) -> str:
             handle.seek(start)
             reader = _TokenReader(handle, spills, scan=False)
             events = exact_backend.basic_parse(reader, use_float=False, buf_size=_STREAM_READ_BYTES)
-            return _stream_identity(events, spills)
+            digest = _stream_identity(events, spills)
+        if spills.refusal is not None:
+            # The document is JSON, so an overlong token is a real refusal.
+            raise spills.refusal
+        return digest
     except (_NotJsonError, ijson.JSONError, UnicodeDecodeError, TypeError, ValueError, ArithmeticError):
         handle.seek(start)
         opaque = sha256()

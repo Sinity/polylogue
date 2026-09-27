@@ -34,6 +34,8 @@ class MemberCandidate:
     addressing_mode: MemberAddressingMode
     element_index: int | None
     payload_bytes: bytes
+    #: The identity acquisition replay already computed, when it did.
+    precomputed_identity: str | None = None
 
     @property
     def coordinate(self) -> tuple[str, int | None]:
@@ -47,6 +49,8 @@ class MemberCandidate:
         its bytes are its identity. Acquisition records identity through the
         same function, so the two sides agree for every member size.
         """
+        if self.precomputed_identity is not None:
+            return self.precomputed_identity
         return payload_content_identity(self.payload_bytes)
 
     @property
@@ -217,6 +221,7 @@ def zip_reacquisition_payload(
                         addressing_mode=acquired.addressing_mode,
                         element_index=acquired.source_index,
                         payload_bytes=acquired.payload_bytes,
+                        precomputed_identity=acquired.content_identity,
                     )
                     for acquired in replay_zip_entry_acquisition_payloads(archive, context)
                 )

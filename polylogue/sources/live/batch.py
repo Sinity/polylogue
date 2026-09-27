@@ -41,6 +41,7 @@ from polylogue.archive.revision_replay import ApplicationDecision, RevisionCandi
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.archive.zip_admission import ZIP_JSON_SUFFIXES, ZipAdmission
 from polylogue.config import Source
+from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.degraded import degraded_reason, is_fully_degraded
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import DatabaseError, SchemaVersionMismatchError
@@ -5406,7 +5407,7 @@ class LiveBatchProcessor:
                                     ),
                                 )
                             )
-                    except ZipBombError as exc:
+                    except (ZipBombError, ContentIdentityRefusal) as exc:
                         logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
         except (zipfile.BadZipFile, OSError) as exc:
             # Members stream into the archive's blob staging: a full or
@@ -5465,7 +5466,7 @@ class LiveBatchProcessor:
                             provider_hint=fallback_provider,
                             source_index=source_index,
                         )
-                    except ZipBombError as exc:
+                    except (ZipBombError, ContentIdentityRefusal) as exc:
                         logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
                         continue
                     if raw_data.blob_hash is None:

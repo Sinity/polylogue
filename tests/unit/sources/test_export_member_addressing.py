@@ -540,3 +540,36 @@ def test_recorded_addressing_mode_survives_a_round_trip(tmp_path: Path) -> None:
                 addressing_mode="element",
                 manage_transaction=False,
             )
+
+
+def test_replay_reuses_the_identity_acquisition_already_computed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale hint does not re-hash candidates the replay already identified.
+
+    Anti-vacuity: drop the precomputed identity from ``MemberCandidate`` and
+    resolving the reordered member calls the patched hash, failing the test.
+    """
+    from polylogue.operations import zip_acquisition_replay
+
+    zip_path = tmp_path / "export.zip"
+    recorded_path = f"{zip_path}:conversations.json"
+    expected = dumps_bytes(_session("first"))
+    _write_member(zip_path, [_META, _session("second"), _session("first")])
+
+    def _no_rehash(payload: bytes) -> str:
+        raise AssertionError("candidate identity recomputed during replay")
+
+    monkeypatch.setattr(zip_acquisition_replay, "payload_content_identity", _no_rehash)
+    payload, error = zip_reacquisition_payload(
+        {
+            **_row(recorded_path, payload=b"old", source_index=0),
+            "content_identity": structural_content_identity(_session("first")),
+            "addressing_mode": MemberAddressingMode.ELEMENT_OF_CONTAINER.value,
+        },
+        source_path=recorded_path,
+        zip_payload_cache={},
+    )
+
+    assert error is None
+    assert payload == expected

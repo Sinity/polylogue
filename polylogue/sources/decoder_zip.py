@@ -17,7 +17,7 @@ from polylogue.archive.zip_admission import (
     ZipBombError,
     open_bounded_zip_entry,
 )
-from polylogue.core.content_identity import stream_payload_content_identity
+from polylogue.core.content_identity import ContentIdentityRefusal, stream_payload_content_identity
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
@@ -329,7 +329,9 @@ def process_zip(
                         precomputed_raw=precomputed_raw,
                         session_artifact=session_artifact,
                     )
-            except ZipBombError as exc:
+            except (ZipBombError, ContentIdentityRefusal) as exc:
+                # A refused member is a recorded gap; the rest of the ZIP
+                # is still acquired.
                 logger.warning(
                     "Skipping ZIP entry %s in %s: %s",
                     name,

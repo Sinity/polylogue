@@ -252,3 +252,60 @@ def test_a_token_beyond_the_physical_value_limit_is_refused_by_name(
     with pytest.raises(content_identity.ContentIdentityRefusal) as refusal:
         payload_content_identity(payload)
     assert refusal.value.token == token
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"x" * 200,
+        b'{"n": ' + b"1" * 64 + b"x}",
+        b'{"n": 1.' + b"2" * 64 + b"e}",
+        b'{"' + b"k" * 200 + b'": 1',
+    ],
+)
+def test_an_overlong_token_in_a_non_json_member_takes_the_byte_identity(
+    payload: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refusal waits until the member is known to be JSON.
+
+    Anti-vacuity: raise at the overlong token instead of after the parse and
+    these opaque members are refused instead of receiving their byte digest.
+    """
+    from polylogue.core import content_identity
+
+    monkeypatch.setattr(content_identity, "_SPILL_STRING_BYTES", 16)
+    monkeypatch.setattr(content_identity, "_STREAM_READ_BYTES", 8)
+    monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 32)
+    assert payload_content_identity(payload) == sha256(payload).hexdigest()
+
+
+def test_an_overlong_float_in_valid_json_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: forward only a prefix that is not a complete number and the
+    valid member is mistaken for non-JSON and gets a byte digest."""
+    from polylogue.core import content_identity
+
+    monkeypatch.setattr(content_identity, "_STREAM_READ_BYTES", 8)
+    monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 32)
+    with pytest.raises(content_identity.ContentIdentityRefusal) as refusal:
+        payload_content_identity(b'{"n": 1.' + b"2" * 64 + b"e5}")
+    assert refusal.value.token == "number token"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # 12 combining marks: 24 UTF-8 bytes, but 48 at four bytes per character.
+        b'["a' + "́".encode() * 12 + b'"]',
+        # A key spelled with escapes: 60 raw bytes that decode to 10.
+        b'{"' + b"\\u0061" * 10 + b'": 1}',
+    ],
+)
+def test_a_value_is_measured_by_its_decoded_utf8_size(payload: bytes, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: measure four bytes per character or the escaped spelling and
+    these storable values are refused instead of matching the decoder."""
+    from polylogue.core import content_identity
+
+    monkeypatch.setattr(content_identity, "_SPILL_STRING_BYTES", 16)
+    monkeypatch.setattr(content_identity, "_STREAM_READ_BYTES", 8)
+    monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 32)
+    assert payload_content_identity(payload) == _decoded_identity(payload)

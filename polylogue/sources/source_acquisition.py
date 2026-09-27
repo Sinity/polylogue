@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import IO, TypeAlias
 
 from polylogue.config import Source
+from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue
 from polylogue.logging import get_logger
@@ -121,19 +122,25 @@ def iter_source_raw_data(
                             logger.debug("Skipping empty source entry: %s", entry_path)
                             _record_cursor_failure(cursor_state, entry_path, "empty file")
                             continue
-                        yield from iter_zip_entry_raw_data(
-                            zf,
-                            ZipEntryReadContext(
-                                source=source,
-                                zip_path=path,
-                                entry=info,
-                                file_mtime=file_mtime,
-                                provider_hint=provider_hint,
-                                blob_store=blob_store,
-                                observation_callback=observation_callback,
-                                status_callback=status_callback,
-                            ),
-                        )
+                        try:
+                            yield from iter_zip_entry_raw_data(
+                                zf,
+                                ZipEntryReadContext(
+                                    source=source,
+                                    zip_path=path,
+                                    entry=info,
+                                    file_mtime=file_mtime,
+                                    provider_hint=provider_hint,
+                                    blob_store=blob_store,
+                                    observation_callback=observation_callback,
+                                    status_callback=status_callback,
+                                ),
+                            )
+                        except ContentIdentityRefusal as exc:
+                            # The member cannot be stored; record the gap and
+                            # acquire the rest of the ZIP.
+                            logger.warning("Refusing ZIP member %s: %s", entry_path, exc)
+                            _record_cursor_failure(cursor_state, entry_path, str(exc))
             else:
                 yield read_plain_source_file(
                     SourceReadContext(
