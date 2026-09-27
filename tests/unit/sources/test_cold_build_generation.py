@@ -548,6 +548,7 @@ def test_rollback_preallocation_refusal_keeps_candidate_inactive(
             cold_build.promote()
     assert failure.value.errno == errno.ENOSPC
     assert cold_build._store.load(cold_build.generation_id).state == "inactive"
+    assert (cold_build.generation_root / "generation.rollback-pointer.json").exists()
     assert cold_build.promote().generation_id == cold_build.generation_id
 
 

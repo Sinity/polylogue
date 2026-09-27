@@ -52,6 +52,7 @@ from polylogue.sources.live.production_baseline import ProductionBaselineError, 
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource, _log_ingest_metrics
 from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
+from polylogue.storage.archive_identity import ArchiveLocationError
 
 _T = TypeVar("_T")
 
@@ -99,11 +100,11 @@ def classify_cold_build_settlement_failure(exc: Exception) -> tuple[str, bool] |
         return "source_integrity", False
     if isinstance(exc, InsufficientCapacityError):
         return "capacity_unavailable", False
-    if (
-        isinstance(exc, ArchiveCapacityError)
-        and isinstance(exc.__cause__, OSError)
-        and exc.__cause__.errno
-        in {
+    if isinstance(exc, ArchiveCapacityError):
+        capacity_cause = exc.__cause__
+        if isinstance(capacity_cause, ArchiveLocationError):
+            capacity_cause = capacity_cause.__cause__
+        if isinstance(capacity_cause, OSError) and capacity_cause.errno in {
             errno.EIO,
             errno.EACCES,
             errno.EPERM,
@@ -114,9 +115,8 @@ def classify_cold_build_settlement_failure(exc: Exception) -> tuple[str, bool] |
             errno.ENOENT,
             errno.ENOSPC,
             errno.EDQUOT,
-        }
-    ):
-        return "capacity_inventory_unavailable", True
+        }:
+            return "capacity_inventory_unavailable", True
     if isinstance(exc, sqlite3.Error):
         code = getattr(exc, "sqlite_errorcode", None)
         primary = code & 0xFF if isinstance(code, int) else None
@@ -132,6 +132,8 @@ def classify_cold_build_settlement_failure(exc: Exception) -> tuple[str, bool] |
     if isinstance(exc, OSError):
         if exc.errno in (errno.EAGAIN, errno.EBUSY):
             return "storage_busy", True
+        if exc.errno in (errno.EIO, errno.ESTALE, errno.ETIMEDOUT):
+            return "storage_io_unavailable", True
         if exc.errno in (errno.ENOSPC, errno.EDQUOT):
             return "capacity_unavailable", False
         if exc.errno in (errno.ENOENT, errno.EACCES):

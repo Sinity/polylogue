@@ -4082,6 +4082,7 @@ def test_cold_build_settlement_classifies_typed_faults(tmp_path: Path) -> None:
         ProductionBaselineError,
         ProductionBaselineReadUnavailableError,
     )
+    from polylogue.storage.archive_identity import ArchiveLocationError
 
     assert classify_cold_build_settlement_failure(ProductionBaselineError("missing source revision")) == (
         "source_integrity",
@@ -4092,6 +4093,10 @@ def test_cold_build_settlement_classifies_typed_faults(tmp_path: Path) -> None:
         True,
     )
     assert classify_cold_build_settlement_failure(RuntimeError("database is locked")) is None
+    assert classify_cold_build_settlement_failure(OSError(errno.EIO, "transient pointer I/O")) == (
+        "storage_io_unavailable",
+        True,
+    )
     not_database = tmp_path / "not-a-database.db"
     not_database.write_bytes(b"not a SQLite database")
     with contextlib.closing(sqlite3.connect(not_database)) as conn:
@@ -4107,6 +4112,19 @@ def test_cold_build_settlement_classifies_typed_faults(tmp_path: Path) -> None:
         raise ArchiveCapacityError("capacity inventory unavailable") from OSError(errno.EIO, "temporary scan failure")
     except ArchiveCapacityError as wrapped:
         assert classify_cold_build_settlement_failure(wrapped) == ("capacity_inventory_unavailable", True)
+    try:
+        try:
+            raise ArchiveLocationError("cannot inspect active index pointer") from PermissionError(
+                errno.EACCES, "pointer unavailable"
+            )
+        except ArchiveLocationError as location_error:
+            raise ArchiveCapacityError("cannot resolve archive identity") from location_error
+    except ArchiveCapacityError as wrapped:
+        assert classify_cold_build_settlement_failure(wrapped) == ("capacity_inventory_unavailable", True)
+    try:
+        raise ArchiveCapacityError("cannot resolve archive identity") from ArchiveLocationError("invalid pointer")
+    except ArchiveCapacityError as malformed:
+        assert classify_cold_build_settlement_failure(malformed) is None
     assert classify_cold_build_settlement_failure(ArchiveCapacityError("invalid capacity topology")) is None
 
 
