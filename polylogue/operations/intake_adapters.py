@@ -179,7 +179,9 @@ class FileIntakeAdapter(IntakeAdapter):
 
     @property
     def discovery_pending(self) -> bool:
-        return self._fresh_walk is not None or bool(self._fresh_pending) or self._rescan_after_walk
+        return not self._root_refused_pending and (
+            self._fresh_walk is not None or bool(self._fresh_pending) or self._rescan_after_walk
+        )
 
     @property
     def retry_due_in_s(self) -> float | None:

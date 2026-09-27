@@ -440,16 +440,19 @@ async def test_unavailable_source_root_keeps_pending_file_retryable(tmp_path: Pa
     )
     page = await adapter.discover(limit=1)
     assert [item.payload for item in page] == [carrier]
+    assert adapter.discovery_pending
 
     parked = tmp_path / "parked"
     root.rename(parked)
     with pytest.raises(WalkRefusedError, match="source root"):
         await adapter.discover(limit=1)
-    assert adapter.discovery_pending
+    assert not adapter.discovery_pending
+    assert adapter._fresh_page_paths == (carrier,)
 
     parked.rename(root)
     recovered = await adapter.discover(limit=1)
     assert [item.payload for item in recovered] == [carrier]
+    assert adapter.discovery_pending
 
 
 @pytest.mark.asyncio
