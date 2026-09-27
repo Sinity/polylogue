@@ -1135,6 +1135,10 @@ class MutationResult(_OperationPayload):
     # clean, committed ingest fail its own await contract and surface to the
     # client as ``DaemonMutationIndeterminateError``.
     source_generation_id: str | None = None
+    #: The typed error of a settled ``degraded`` ingest, carried in the
+    #: durable lifecycle state so ``operation.await``/``status``/``cancel``
+    #: report what the executing request reported.
+    error: dict[str, object] | None = None
     #: The executor's durable handle for the audited attempt
     #: (``mutation-operation:<operation_id>``).  ``OperationExecutor`` already
     #: stamps it onto the :class:`MutationReceipt` it returns, but the

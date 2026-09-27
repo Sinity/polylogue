@@ -235,9 +235,11 @@ class IngestTerminalSummaryHistorical(_Receipt):
     @property
     def converged(self) -> bool | None:
         """Whether the ingest's source and derived convergence both finished."""
-        if self.profile_convergence_complete is None:
-            return None
-        return self.source_complete and self.profile_convergence_complete
+        if not self.source_complete:
+            # Known on every receipt, including ones written before profile
+            # convergence was recorded.
+            return False
+        return self.profile_convergence_complete
 
     @model_validator(mode="after")
     def valid_parse_projection(self) -> IngestTerminalSummaryHistorical:
@@ -382,12 +384,28 @@ def ingest_terminal_outcome(history: IngestHistoricalReceipt | IngestHistoricalR
 def ingest_unconverged_error(history: IngestHistoricalReceipt | IngestHistoricalReceiptV2) -> dict[str, object]:
     summary = getattr(history, "summary", None)
     source_complete = bool(getattr(summary, "source_complete", False))
+    if not source_complete:
+        # Recorded membership refusals and unresolved raws are this source
+        # generation's terminal facts; nothing retries them at this head.
+        return {
+            "code": "ingest_source_incomplete",
+            "detail": (
+                "ingest committed its rows, but source admission refused or could not resolve some members; "
+                "the receipt names them"
+            ),
+            "retryable": False,
+            "data": {
+                "source_complete": False,
+                "refused_membership_count": getattr(summary, "refused_membership_count", 0),
+                "unresolved_raw_count": getattr(summary, "unresolved_raw_count", 0),
+                "profile_convergence_complete": getattr(summary, "profile_convergence_complete", None),
+            },
+        }
     return {
         "code": "ingest_convergence_pending",
         "detail": (
-            "ingest committed its rows, but "
-            + ("profile and insight convergence" if source_complete else "source admission")
-            + " did not finish; the daemon's convergence continues it"
+            "ingest committed its rows, but profile and insight convergence did not finish; "
+            "the daemon's convergence continues it"
         ),
         "retryable": True,
         "data": {
