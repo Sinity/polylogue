@@ -1277,13 +1277,25 @@ def _authorize_read_operation(
     return sqlite3.SQLITE_DENY
 
 
-def attach_readonly_database(conn: sqlite3.Connection, path: str | Path, *, alias: str) -> None:
-    """Attach a second read-only tier to a profiled reader."""
+def attach_readonly_database(
+    conn: sqlite3.Connection,
+    path: str | Path,
+    *,
+    alias: str,
+    immutable: bool = False,
+) -> None:
+    """Attach a second read-only database to a profiled reader.
+
+    SQLite's authorizer receives a NULL filename while preparing a
+    parameterized ATTACH, so this tightly scoped helper temporarily removes
+    it for the single ATTACH statement. ``query_only`` remains enabled, and
+    the attached URI is always opened read-only.
+    """
     if conn.execute("PRAGMA query_only").fetchone()[0] != 1:
         raise ValueError("read-only attachment requires a query-only connection")
     if re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", alias) is None:
         raise ValueError(f"invalid SQLite attachment alias: {alias!r}")
-    uri = f"file:{quote(str(path))}?mode=ro"
+    uri = f"file:{quote(str(path))}?mode=ro" + ("&immutable=1" if immutable else "")
     conn.set_authorizer(None)
     try:
         conn.execute(f"ATTACH DATABASE ? AS {alias}", (uri,))
