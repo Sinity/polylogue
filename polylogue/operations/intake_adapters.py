@@ -236,7 +236,11 @@ class FileIntakeAdapter(IntakeAdapter):
                     self._overflow_rescan_due_at = due_at
                 for retry_path in live_paths:
                     record = records.get(retry_path)
-                    if record is not None and (record.failure_count > 0 or record.next_retry_at is not None):
+                    if (
+                        record is not None
+                        and not getattr(record, "excluded", False)
+                        and (record.failure_count > 0 or record.next_retry_at is not None)
+                    ):
                         # The durable cursor owns this retry and its backoff.
                         self._fresh_retry_debt.pop(retry_path, None)
                         continue
@@ -427,8 +431,22 @@ class FileIntakeAdapter(IntakeAdapter):
         return frozenset((path, Path(f"{path}-wal"), Path(f"{path}-shm")))
 
     def _owns_retry_path(self, path: Path) -> bool:
+        try:
+            mode = path.lstat().st_mode
+        except OSError:
+            return False
+        if stat.S_ISLNK(mode):
+            # A retired carrier's symlink target may escape the source. Page
+            # the old cursor by its lexical owner so admission can exclude it.
+            lexical = path.absolute()
+            owners = (
+                source
+                for source in self.context.sources
+                if lexical.is_relative_to(source.root.absolute()) and source.accepts(path)
+            )
+            return max(owners, key=lambda source: len(source.root.parts), default=None) is self.source
         return (
-            path.is_file()
+            stat.S_ISREG(mode)
             and deepest_source_for_path(path, self.context.sources) is self.source
             and self.source.accepts(path)
         )
@@ -440,6 +458,7 @@ class FileIntakeAdapter(IntakeAdapter):
         with self._retry_state_lock:
             local_snapshot = tuple(self._fresh_retry_debt.items())
         stale_local: list[Path] = []
+        vanished_local: list[Path] = []
         for path, due_at in local_snapshot:
             if len(due_local) >= limit:
                 break
@@ -451,6 +470,7 @@ class FileIntakeAdapter(IntakeAdapter):
                 mode = path.lstat().st_mode
             except (FileNotFoundError, NotADirectoryError):
                 stale_local.append(path)
+                vanished_local.append(path)
                 continue
             except OSError:
                 # Nested permissions can obscure a retained carrier without
@@ -467,9 +487,15 @@ class FileIntakeAdapter(IntakeAdapter):
         with self._retry_state_lock:
             for path in stale_local:
                 self._fresh_retry_debt.pop(path, None)
+            if vanished_local and self._overflow_rescan_due_at is None:
+                self._overflow_rescan_due_at = now + _FILE_RETRY_DELAY_S
             for path in due_local:
                 record = records.get(path)
-                if record is not None and (record.failure_count > 0 or record.next_retry_at is not None):
+                if (
+                    record is not None
+                    and not getattr(record, "excluded", False)
+                    and (record.failure_count > 0 or record.next_retry_at is not None)
+                ):
                     self._fresh_retry_debt.pop(path, None)
                 else:
                     local_without_durable_row.append(path)
@@ -565,6 +591,7 @@ class FileIntakeAdapter(IntakeAdapter):
             self._consume_retry_item(item)
         outcomes: dict[str, AdmissionResult] = {}
         batch: list[IntakeItem] = []
+        nonregular_paths: list[Path] = []
         for item in items:
             path = Path(item.payload) if isinstance(item.payload, (str, Path)) else None
             if path is None:
@@ -576,6 +603,9 @@ class FileIntakeAdapter(IntakeAdapter):
                 regular_file = stat.S_ISREG(path.lstat().st_mode)
             except OSError:
                 regular_file = False
+            else:
+                if not regular_file:
+                    nonregular_paths.append(path)
             if (
                 not regular_file
                 or deepest_source_for_path(path, self.context.sources) is not self.source
@@ -586,6 +616,15 @@ class FileIntakeAdapter(IntakeAdapter):
                 )
                 continue
             batch.append(item)
+        cursor = getattr(self.context.watcher, "_cursor", None)
+        mark_excluded = getattr(cursor, "mark_excluded", None)
+        if nonregular_paths and callable(mark_excluded):
+
+            def retire_nonregular() -> None:
+                for path in nonregular_paths:
+                    mark_excluded(path)
+
+            await self.context.run_write("daemon.intake.retire_nonregular_cursor", retire_nonregular)
         if not batch:
             return outcomes
 

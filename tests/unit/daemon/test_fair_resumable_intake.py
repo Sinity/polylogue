@@ -837,6 +837,103 @@ def test_inaccessible_nested_carrier_keeps_local_retry_debt(tmp_path: Path, monk
 
 
 @pytest.mark.asyncio
+async def test_vanished_local_retry_gets_one_due_rescan(tmp_path: Path) -> None:
+    root = tmp_path / "source"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+    carrier = nested / "capture.json"
+    carrier.write_text("{}")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+    watcher = SimpleNamespace(intake_revision=lambda _source: 0)
+    now = [5.0]
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+        clock=lambda: now[0],
+    )
+    adapter._fresh_retry_debt[carrier] = 5.0
+    adapter._fresh_exhausted = True
+    adapter._fresh_exhausted_at = 5.0
+    carrier.unlink()
+    assert adapter._due_retry_paths(1) == []
+    assert carrier not in adapter._fresh_retry_debt
+    assert adapter.retry_due_in_s == 5.0
+
+    carrier.write_text("{}")
+    now[0] = 10.1
+    page = await adapter.discover(limit=1)
+    assert [item.payload for item in page] == [carrier]
+
+
+@pytest.mark.asyncio
+async def test_excluded_cursor_row_does_not_replace_local_retry_debt(tmp_path: Path) -> None:
+    carrier = tmp_path / "capture.json"
+    carrier.write_text("{}")
+    source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
+    now = [0.0]
+
+    class ExcludedCursor:
+        def get_records(self, paths: Sequence[Path]) -> dict[Path, SimpleNamespace]:
+            return {path: SimpleNamespace(failure_count=1, next_retry_at="later", excluded=True) for path in paths}
+
+        def list_due_retry_paths(self, _root: Path, **_kwargs: object) -> tuple[Path, ...]:
+            return ()
+
+    class RetryWatcher:
+        _cursor = ExcludedCursor()
+
+        def intake_revision(self, _source: WatchSource) -> int:
+            return 0
+
+        def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
+            return tuple(paths)
+
+        async def _ingest_files(self, _paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(succeeded_paths=(), failed_paths=(str(carrier),), source_payload_read_bytes=0)
+
+    watcher = RetryWatcher()
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+        clock=lambda: now[0],
+    )
+    dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="capture", adapter=adapter)], clock=lambda: now[0])
+    await dispatcher.run_once()
+    await dispatcher.run_once()
+    assert adapter.retry_due_in_s == 5.0
+
+    now[0] = 5.1
+    assert [item.payload for item in await adapter.discover(limit=1)] == [carrier]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("escape", [False, True])
+async def test_durable_retry_alias_is_retired_after_symlink_swap(tmp_path: Path, escape: bool) -> None:
+    root = tmp_path / "source"
+    root.mkdir()
+    carrier = root / "alias.json"
+    target = (tmp_path if escape else root) / "target.json"
+    carrier.write_text("{}")
+    target.write_text("{}")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+    cursor = CursorStore(tmp_path / "index.db")
+    cursor.set(carrier, 2, next_retry_at="1970-01-01T00:00:00+00:00")
+    carrier.unlink()
+    carrier.symlink_to(target)
+    watcher = SimpleNamespace(_cursor=cursor, intake_revision=lambda _source: 0)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    adapter._retry_turn = True
+    page = await adapter.discover(limit=1)
+    assert [item.payload for item in page] == [carrier]
+    outcomes = await adapter.admit_page(page)
+    assert outcomes[page[0].item_id].outcome is AdmissionOutcome.RETRYABLE
+    assert cursor.has_pending_retries((root,)) is False
+
+
+@pytest.mark.asyncio
 async def test_partially_planned_local_retry_rotates_past_poison(tmp_path: Path) -> None:
     root = tmp_path / "source"
     root.mkdir()
