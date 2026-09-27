@@ -409,13 +409,12 @@ def provider_sessions(
     try:
         source = synthetic_source(provider, count=3, seed=42)
     except FileNotFoundError:
-        pytest.skip(f"No schema for {provider}")
+        pytest.fail(f"{provider} is listed as available but has no schema")
     if not isinstance(source, Source):
         raise TypeError(f"expected Source, got {type(source).__name__}")
 
     convos = list(iter_source_sessions(source))
-    if not convos:
-        pytest.skip(f"No sessions parsed for {provider}")
+    assert convos, f"no sessions parsed from synthetic {provider} data, so every property below would be vacuous"
 
     return provider, convos
 

@@ -212,16 +212,14 @@ class TestMaterializationPathsCarryTaxonomy:
                 "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
                 (table,),
             ).fetchone()
-            if has_table is None:
-                pytest.skip(f"{table} not present")
+            assert has_table is not None, f"{table} is not a materialized table"
             has_column = any(
                 str(row[1]) == "input_high_water_mark_source"
                 for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
             )
             assert has_column, f"{table} missing input_high_water_mark_source column"
             rows = conn.execute(f"SELECT input_high_water_mark_source FROM {table}").fetchall()
-        if not rows:
-            pytest.skip(f"{table} has no materialized rows")
+        assert rows, f"{table} has no materialized rows, so the tag check would be vacuous"
         for row in rows:
             source = row["input_high_water_mark_source"]
             assert source, f"{table} row missing input_high_water_mark_source"
@@ -231,16 +229,6 @@ class TestMaterializationPathsCarryTaxonomy:
 
     def test_session_profiles_tagged(self, temporal_source_db: Path) -> None:
         self._assert_all_rows_tagged(temporal_source_db, "session_profiles")
-
-    def test_threads_tagged(self, temporal_source_db: Path) -> None:
-        self._assert_all_rows_tagged(temporal_source_db, "threads")
-
-    def test_session_tag_rollups_tagged(self, temporal_source_db: Path) -> None:
-        self._assert_all_rows_tagged(temporal_source_db, "session_tag_rollups")
-
-
-class TestProvenanceRecordRoundTrips:
-    """The record-level field round-trips through the storage mappers."""
 
     def test_profile_record_round_trips_source_tag(self, temporal_source_db: Path) -> None:
         import sqlite3

@@ -633,8 +633,7 @@ async def test_search_accuracy_basic_terms(temp_config_and_repo: WorkflowRepos, 
             if len(words) >= 3:
                 break
 
-    if len(words) < 3:
-        pytest.skip("No message with 3+ words for meaningful search test")
+    assert len(words) >= 3, "the fixture must hold a message with 3+ words, or the search check is vacuous"
 
     # Search for these words
     search_term = " ".join(words[:3])

@@ -62,8 +62,7 @@ class TestProfileSessionAgreement:
             has_profiles = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profiles'"
             ).fetchone()
-            if has_profiles is None:
-                pytest.skip("session_profiles table not present")
+            assert has_profiles is not None, "session_profiles table not present"
             profile_count = conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0]
             assert profile_count == conv_count, f"Profile count ({profile_count}) != session count ({conv_count})"
 
@@ -73,8 +72,7 @@ class TestProfileSessionAgreement:
             has_profiles = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profiles'"
             ).fetchone()
-            if has_profiles is None:
-                pytest.skip("session_profiles table not present")
+            assert has_profiles is not None, "session_profiles table not present"
 
             phantom_count = conn.execute(
                 "SELECT COUNT(*) FROM session_profiles sp "
@@ -94,8 +92,7 @@ class TestProfileSessionAgreement:
             has_profiles = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profiles'"
             ).fetchone()
-            if has_profiles is None:
-                pytest.skip("session_profiles table not present")
+            assert has_profiles is not None, "session_profiles table not present"
 
             orphans = conn.execute(
                 "SELECT sp.session_id "
@@ -115,8 +112,7 @@ class TestInsightMaterializationIdempotence:
             has_profiles = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profiles'"
             ).fetchone()
-            if has_profiles is None:
-                pytest.skip("session_profiles table not present")
+            assert has_profiles is not None, "session_profiles table not present"
 
             ids_before = {r["session_id"] for r in conn.execute("SELECT session_id FROM session_profiles").fetchall()}
 
