@@ -3428,6 +3428,47 @@ def supervised_service_states() -> dict[str, str] | None:
     return {name: state.value for name, state in supervisor.states().items()}
 
 
+_FAILED_SERVICE_STATES = frozenset({"failed", "orphaned"})
+_SERVICE_FAILURE_REASON_MAX_CHARS = 300
+
+
+def supervised_service_failures() -> list[dict[str, object]] | None:
+    """Return this process' failed or orphaned services with their reasons.
+
+    An ``isolate`` service that raised is marked failed and never restarted;
+    an orphan outlived its shutdown deadline. Either is work the daemon was
+    asked to do and is no longer doing, so it is named with its reason rather
+    than left as a bare state string. ``None`` outside a daemon, as for
+    :func:`supervised_service_states`.
+    """
+    from polylogue.daemon.cli import active_supervisor
+
+    supervisor = active_supervisor()
+    if supervisor is None:
+        return None
+    last_transition = {transition.service: transition for transition in supervisor.transitions()}
+    failures: list[dict[str, object]] = []
+    for name, state in sorted(supervisor.states().items()):
+        if state.value not in _FAILED_SERVICE_STATES:
+            continue
+        exc = supervisor.failure(name)
+        transition = last_transition.get(name)
+        reason = (
+            f"{type(exc).__name__}: {exc}"
+            if exc is not None
+            else (transition.reason if transition is not None and transition.reason else state.value)
+        )
+        failures.append(
+            {
+                "service": name,
+                "state": state.value,
+                "reason": reason[:_SERVICE_FAILURE_REASON_MAX_CHARS],
+                "at": transition.at if transition is not None else None,
+            }
+        )
+    return failures
+
+
 def daemon_status_payload(
     *,
     config: Config | None = None,
@@ -3577,6 +3618,7 @@ def daemon_status_payload(
     # the resulting snapshot metadata after collection completes.
     if collecting_status_snapshot:
         status_snapshot = {**status_snapshot, "state": "refreshing"}
+    service_failures = supervised_service_failures()
 
     return json_document(
         {
@@ -3594,10 +3636,12 @@ def daemon_status_payload(
                 raw_frontier_integrity=status.raw_frontier_integrity.model_dump(),
                 tier_count_unavailable=None,
                 halted_units=halted_units,
+                failed_services=service_failures,
                 status_snapshot=status_snapshot,
             ),
             "halted_units": halted_units,
             "services": supervised_service_states(),
+            "service_failures": service_failures,
             # Per-loop cadence evidence: last run, next due, last error and
             # which startup gate (if any) a loop is waiting on. Without it an
             # idle loop and a frozen one look identical (polylogue-74wvj).
@@ -3755,6 +3799,24 @@ def _excluded_archive_debt_status_summary() -> dict[str, object]:
     }
 
 
+def _failing_periodic_loops(loops: object) -> list[dict[str, object]]:
+    """Loops whose most recent run raised (an earlier, since-recovered error is not failing)."""
+    if not isinstance(loops, list):
+        return []
+    failing: list[dict[str, object]] = []
+    for loop in loops:
+        if not isinstance(loop, dict):
+            continue
+        error_at = loop.get("last_error_at")
+        completed_at = loop.get("last_run_completed_at")
+        if not isinstance(error_at, int | float):
+            continue
+        if isinstance(completed_at, int | float) and completed_at > error_at:
+            continue
+        failing.append(loop)
+    return failing
+
+
 def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     """Render daemon component status as plain text lines."""
     lines = ["Polylogue daemon"]
@@ -3765,6 +3827,22 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
             if not isinstance(record, dict):
                 continue
             lines.append(f"    {record.get('unit', '?')}: {record.get('reason', '?')} - {record.get('message', '')}")
+    service_failures = payload.get("service_failures")
+    if isinstance(service_failures, list) and service_failures:
+        lines.append(f"  FAILED SERVICES: {len(service_failures)} declared service(s) stopped doing their work")
+        for record in service_failures:
+            if isinstance(record, dict):
+                lines.append(
+                    f"    {record.get('service', '?')}: {record.get('state', '?')} - {record.get('reason', '')}"
+                )
+    failing_loops = _failing_periodic_loops(payload.get("periodic_loops"))
+    if failing_loops:
+        lines.append(f"  Failing loops: {len(failing_loops)} (last run raised)")
+        for loop in failing_loops:
+            lines.append(
+                f"    {loop.get('name', '?')}: {loop.get('last_error_type', '?')}: {loop.get('last_error', '')} "
+                f"(failures {loop.get('failures', '?')}, runs {loop.get('runs', '?')})"
+            )
     lifecycle = payload.get("daemon_lifecycle")
     if payload.get("daemon_liveness"):
         age = lifecycle.get("heartbeat_age_s") if isinstance(lifecycle, dict) else None

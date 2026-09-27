@@ -3468,6 +3468,14 @@ def _daemon_payload_for_verdict_variant(variant: str, *, collecting_status_snaps
         patch("polylogue.daemon.status.halted_unit_status", return_value=halted),
         patch("polylogue.daemon.status.periodic_loop_payload", return_value={"loops": []}),
         patch("polylogue.daemon.status_snapshot.snapshot_state_for_metrics", return_value=snapshot),
+        patch(
+            "polylogue.daemon.status.supervised_service_failures",
+            return_value=(
+                [{"service": "secret_scan_sweep", "state": "failed", "reason": "RuntimeError: boom", "at": 1.0}]
+                if variant == "failed_service"
+                else []
+            ),
+        ),
     ):
         return cast(
             dict[str, object],
@@ -3492,6 +3500,7 @@ def test_status_refresh_verdict_ignores_previous_stale_frame() -> None:
         ("lifecycle_unavailable", False),
         ("frontier_violated", False),
         ("component_stale", False),
+        ("failed_service", False),
     ],
 )
 def test_daemon_status_payload_verdict_keeps_every_refutation(variant: str, expected_ok: bool) -> None:
@@ -3516,6 +3525,7 @@ def test_daemon_status_payload_verdict_keeps_every_refutation(variant: str, expe
         ("clean", True),
         ("halted_unit", False),
         ("stale_snapshot", False),
+        ("failed_service", False),
     ],
 )
 def test_overall_ok_verdict_agrees_across_both_status_surfaces(variant: str, expected_ok: bool) -> None:

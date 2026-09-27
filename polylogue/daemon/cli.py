@@ -3529,17 +3529,37 @@ def _live_daemon_status_payload(*, timeout: float = _LIVE_DAEMON_STATUS_TIMEOUT_
     heartbeat/DB descriptors were healthy" hang (polylogue-20d.17). Honours
     ``POLYLOGUE_DAEMON_URL`` like the archive CLI's ``polylogue status`` so
     tests can route this probe to an unreachable address (#1325).
+
+    ``/api/status`` requires the daemon's bearer token. The probe sends the
+    configured token, or the one the running daemon persisted; it never mints
+    one. A daemon that answers but refuses is reported on stderr: silently
+    recomputing in this process would present the CLI's own configuration and
+    an empty in-process state (no build progress, no writer, no ETA) as the
+    running daemon's view.
     """
-    from urllib.error import URLError
+    from urllib.error import HTTPError, URLError
     from urllib.request import Request, urlopen
 
     from polylogue.config import load_polylogue_config
+    from polylogue.daemon.api_auth import load_api_auth_token
 
-    url = (load_polylogue_config().daemon_url or "http://127.0.0.1:8766").rstrip("/")
+    config = load_polylogue_config()
+    url = (config.daemon_url or "http://127.0.0.1:8766").rstrip("/")
+    headers = {"Accept": "application/json"}
+    token = config.api_auth_token or load_api_auth_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     try:
-        req = Request(f"{url}/api/status", headers={"Accept": "application/json"}, method="GET")
+        req = Request(f"{url}/api/status", headers=headers, method="GET")
         with urlopen(req, timeout=timeout) as resp:
             body = resp.read()
+    except HTTPError as exc:
+        click.echo(
+            f"polylogued status: the daemon at {url} refused the status request (HTTP {exc.code}); "
+            "showing a recomputation in this process, which cannot see the daemon's in-process state",
+            err=True,
+        )
+        return None
     except (OSError, URLError, ValueError):
         return None
     try:
