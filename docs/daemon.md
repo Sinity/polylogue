@@ -726,8 +726,9 @@ raw parse state untouched, closes its `ingest_attempts` row as
 page is refused at ERROR as `daemon.intake.page_refused` with reason
 `storage_fault.<kind>`. Every item stays retryable, so the same inputs are
 admitted once storage recovers; none backs off into quarantine. Every event
-emitted inside an ingest attempt carries its `attempt_id`, which joins the log
-to the attempt row.
+the daemon process emits inside an ingest attempt carries its `attempt_id`,
+which joins the log to the attempt row. Parse-worker processes are not
+covered: they have no configured event sink yet.
 
 ### Daemon-Owned Tasks
 

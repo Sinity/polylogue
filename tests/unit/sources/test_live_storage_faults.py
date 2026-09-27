@@ -431,3 +431,69 @@ async def test_an_attempt_close_skipped_under_lock_is_reported(
     finally:
         watcher.stop()
         await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_a_storage_fault_discards_blobs_staged_earlier_in_the_pass(
+    storage_env: tuple[Polylogue, LiveWatcher, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The first file's blob is staged, the second copy hits ENOSPC. The
+    staged copy would only be published by the write the fault prevented, so
+    it must not stay behind in ``.staging``. Anti-vacuity: without the
+    discard the first file's temporary remains after every retry."""
+    archive, watcher, source_path = storage_env
+    _write_session(source_path.parent / "second.jsonl", "storage-fault-2")
+    original = ArchiveBlobPublisher.write_from_path
+    calls = 0
+
+    def fail_second(self: ArchiveBlobPublisher, *args: Any, **kwargs: Any) -> tuple[str, int]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_path", fail_second)
+    try:
+        outcomes = await _admit(watcher)
+        assert calls == 2
+        assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.RETRYABLE}
+        staging = archive.archive_root / "blob" / ".staging"
+        assert not staging.exists() or not [path for path in staging.rglob("*") if path.is_file()]
+    finally:
+        watcher.stop()
+        await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_start_still_names_its_attempt(
+    storage_env: tuple[Polylogue, LiveWatcher, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation can land while the attempt-start write is detached and
+    still committing; the key is chosen first, so the event names the row.
+    Anti-vacuity: taking the key from the write's return value leaves
+    ``attempt_id`` unset and no event is emitted."""
+    import asyncio
+
+    from polylogue.sources.live.batch import LiveBatchProcessor
+
+    archive, watcher, source_path = storage_env
+    original = LiveBatchProcessor._run_ops_write
+
+    async def cancel_at_start(self: LiveBatchProcessor, label: str, *args: Any, **kwargs: Any) -> Any:
+        if label == "attempt_start":
+            raise asyncio.CancelledError
+        return await original(self, label, *args, **kwargs)
+
+    monkeypatch.setattr(LiveBatchProcessor, "_run_ops_write", cancel_at_start)
+    try:
+        with capture() as events, pytest.raises(asyncio.CancelledError):
+            await watcher._batch_processor.ingest_files([source_path])
+        cancelled = [event for event in events if event.get("event") == "live.ingest.attempt_cancelled"]
+        assert len(cancelled) == 1
+        assert cancelled[0].get("attempt_id")
+    finally:
+        watcher.stop()
+        await archive.close()

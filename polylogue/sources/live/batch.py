@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 import time
+import uuid
 import zipfile
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import Future
@@ -72,6 +73,7 @@ from polylogue.core.stage_admission import admit_stage_write
 from polylogue.core.storage_faults import (
     ARCHIVE_SIDE_FAULTS,
     CAPACITY_FAULTS,
+    ArchiveStorageFaultError,
     raise_if_storage_fault,
     storage_fault_kind,
 )
@@ -720,9 +722,9 @@ class _ArchiveFullWriteResult:
 class _OpenIngestAttempt:
     """The ``ingest_attempts`` row one ``_ingest_files`` call opened, until it is finished.
 
-    ``scope`` holds the attempt's correlation binding: once the row exists,
-    every event emitted inside the attempt -- across ``asyncio.to_thread`` and
-    the writer handoff, which copy the context -- carries its ``attempt_id``,
+    ``scope`` holds the attempt's correlation binding: every event this
+    process emits inside the attempt -- across ``asyncio.to_thread`` and the
+    writer handoff, which copy the context -- carries its ``attempt_id``,
     the key of ``ingest_attempts`` and ``daemon_stage_events``. The caller
     that created the holder closes the scope when the attempt returns or
     escapes.
@@ -1113,15 +1115,20 @@ class LiveBatchProcessor:
         # split below reconciles exactly, even if a file grows mid-batch.
         path_sizes = {path: _path_size(path) for path in paths}
         input_bytes = sum(path_sizes.values())
+        # The key is chosen before the write: if cancellation detaches the
+        # admitted start (the coordinator shields an acquired write), the row
+        # can still commit, and the cancelled attempt must be able to name it.
+        attempt_id = str(uuid.uuid4())
+        if open_attempt is not None:
+            open_attempt.opened(attempt_id)
         attempt_id = await self._run_ops_write(
             "attempt_start",
             self._cursor.begin_ingest_attempt,
             paths=paths,
             input_bytes=input_bytes,
             queued_file_count=queued_file_count if queued_file_count is not None else len(paths),
+            attempt_id=attempt_id,
         )
-        if open_attempt is not None:
-            open_attempt.opened(attempt_id)
         await self._record_attempt_progress_admitted(
             attempt_id,
             phase="planning",
@@ -2815,6 +2822,43 @@ class LiveBatchProcessor:
         pass_started: float | None = None,
         prepared_json_paths: frozenset[str] = frozenset(),
     ) -> _FullIngestResult:
+        """Acquire and write one source group; a storage fault takes its staged blobs with it.
+
+        Blobs staged for earlier files in the pass are published only by the
+        write that the fault prevented. Leaving their private staging copies
+        behind would spend more of an already-full archive on every retry.
+        """
+        publishers: list[BlobStore] = []
+        try:
+            return self._ingest_full_paths_sync_staged(
+                paths,
+                publishers=publishers,
+                source_name=source_name,
+                heartbeat=heartbeat,
+                attempt_id=attempt_id,
+                max_pass_seconds=max_pass_seconds,
+                pass_started=pass_started,
+                prepared_json_paths=prepared_json_paths,
+            )
+        except ArchiveStorageFaultError:
+            for publisher in publishers:
+                discard_pending = getattr(publisher, "discard_pending", None)
+                if callable(discard_pending):
+                    discard_pending()
+            raise
+
+    def _ingest_full_paths_sync_staged(
+        self,
+        paths: list[Path],
+        *,
+        publishers: list[BlobStore],
+        source_name: str,
+        heartbeat: _FullIngestHeartbeat | None = None,
+        attempt_id: str | None = None,
+        max_pass_seconds: float | None = None,
+        pass_started: float | None = None,
+        prepared_json_paths: frozenset[str] = frozenset(),
+    ) -> _FullIngestResult:
         if not paths:
             return _FullIngestResult(succeeded=[], failed=[], source_payload_read_bytes=0)
         pass_clock_started = pass_started if pass_started is not None else time.monotonic()
@@ -2861,6 +2905,7 @@ class LiveBatchProcessor:
         from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
         blob_store = ArchiveBlobPublisher(source_db, blob_root)
+        publishers.append(blob_store)
         archive_active = self._archive_active(archive_root)
         archive_bootstrapped = not archive_active and not source_only
         if archive_bootstrapped:
@@ -2914,7 +2959,10 @@ class LiveBatchProcessor:
                 ):
                     if raw_data is not None:
                         antigravity_pairs[Path(raw_data.source_path)] = (raw_data, session)
-            except Exception:
+            except Exception as exc:
+                # Conversion publishes each raw into the archive blob store; a
+                # full or read-only archive is not a property of these files.
+                raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
                 logger.exception("antigravity: language-server cohort conversion failed")
             for path in antigravity_pb_paths:
                 pair = antigravity_pairs.get(path)
