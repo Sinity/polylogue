@@ -175,7 +175,8 @@ def bootstrap_archive_root(root: Path) -> Path:
     # mode. A fresh production bootstrap intentionally initializes source.db
     # in WAL mode, so restore that one shared mode after cloning the pristine
     # bootstrap template.
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
     from polylogue.storage.sqlite.connection_profile import initialize_source_tier_database_mode
 
     source_path = root / ARCHIVE_TIER_SPECS[ArchiveTier.SOURCE].filename
