@@ -390,6 +390,8 @@ class WorkloadProfile:
     shares: Mapping[str, float]
     #: Byte share of this origin in the measured source set.
     source_bytes: int
+    #: Main (non-subagent) sessions in the measured source set.
+    main_sessions: int = 0
     #: Share of texts carrying non-ASCII characters, per record kind.
     non_ascii_by_kind: Mapping[str, float] = field(default_factory=dict)
     #: Measured key skeletons per template kind, with weights.
@@ -407,6 +409,7 @@ class WorkloadProfile:
             subagents_per_session=Histogram.from_payload(_mapping(payload.get("subagents_per_session"))),
             shares={str(k): float(v) for k, v in shares.items() if isinstance(v, int | float)},
             source_bytes=int(payload.get("source_bytes") or 0),
+            main_sessions=int(payload.get("main_sessions") or 0),
             non_ascii_by_kind={
                 str(k): float(v)
                 for k, v in _mapping(payload.get("non_ascii_by_kind")).items()
@@ -446,9 +449,17 @@ class WorkloadProfile:
         return record if isinstance(record, dict) else {}
 
     def orphan_subagents(self, rng: random.Random) -> int:
-        """Subagent transcripts whose parent is not a retained main session."""
-        whole, fraction = divmod(self.share("orphan_subagents_per_session"), 1.0)
-        return int(whole) + (1 if rng.random() < fraction else 0)
+        """Subagent transcripts whose parent is not a retained session."""
+        return _rate(rng, self.share("orphan_subagents_per_session"))
+
+    def nested_subagents(self, rng: random.Random) -> int:
+        """Subagents spawned by one subagent (a nested spawn)."""
+        return _rate(rng, self.share("nested_subagents_per_subagent"))
+
+
+def _rate(rng: random.Random, mean: float) -> int:
+    whole, fraction = divmod(mean, 1.0)
+    return int(whole) + (1 if rng.random() < fraction else 0)
 
 
 _DEFAULT_STRINGS = Histogram((3, 4, 5), (1.0, 1.0, 1.0))
@@ -507,6 +518,8 @@ _SYLLABLES = (
     "ka", "lo", "mi", "ne", "ru", "ta", "vo", "si", "pe", "da", "gu", "ho", "ze", "xi", "fa", "bo",
     "en", "ar", "ul", "is", "om", "et", "an", "or",
 )  # fmt: skip
+#: Single-code-unit characters, so a substitution keeps the exact length.
+_NON_ASCII_BMP = ("ą", "ż", "ó", "é", "ü", "ß", "ñ", "ł", "ś", "ć", "—", "…", "→", "λ", "Ж", "日", "本")
 _NON_ASCII = ("ą", "ż", "ó", "é", "ü", "ß", "ñ", "ł", "ś", "ć", "—", "…", "→", "λ", "Ж", "日", "本", "🙂")
 
 
@@ -535,9 +548,15 @@ def synthetic_text(rng: random.Random, length: int, *, non_ascii: bool) -> str:
     pool = _text_pool(60 if non_ascii else 0)
     if length <= len(pool):
         start = rng.randrange(0, len(pool) - length + 1)
-        return pool[start : start + length]
-    repeats, remainder = divmod(length, len(pool))
-    return pool * repeats + pool[:remainder]
+        text = pool[start : start + length]
+    else:
+        repeats, remainder = divmod(length, len(pool))
+        text = pool * repeats + pool[:remainder]
+    if non_ascii and text.isascii():
+        # A text sampled into the non-ASCII class must carry one.
+        position = rng.randrange(length)
+        text = text[:position] + rng.choice(_NON_ASCII_BMP) + text[position + 1 :]
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -991,13 +1010,15 @@ def _codex_session(
     files.append(main)
     sub_stream = profile.streams.get("subagent")
     if sub_stream is not None:
-        for _ in range(profile.subagents_per_session.sample(rng)):
-            child_start = start + (end - start) * rng.random()
-            item, _ = rollout(sub_stream, main.session_id, child_start)
+        # Spawn edges: main → subagents, subagent → nested subagents (at the
+        # measured rate), and orphans whose parent was never retained.
+        pending = [main.session_id] * profile.subagents_per_session.sample(rng)
+        pending += [_uuid(rng) for _ in range(profile.orphan_subagents(rng))]
+        while pending:
+            parent = pending.pop()
+            item, _ = rollout(sub_stream, parent, start + (end - start) * rng.random())
             files.append(item)
-        for _ in range(profile.orphan_subagents(rng)):
-            item, _ = rollout(sub_stream, _uuid(rng), start + (end - start) * rng.random())
-            files.append(item)
+            pending += [item.session_id] * profile.nested_subagents(rng)
     return files, stats
 
 
@@ -1088,8 +1109,12 @@ def _resolve_sidecar_refs(item: WorkloadFile, projects_root: str) -> WorkloadFil
 
 
 def default_origin_weights(origins: Sequence[str] = WORKLOAD_ORIGINS) -> tuple[tuple[str, float], ...]:
-    """Weight origins by their measured source-byte share."""
-    return tuple((origin, float(max(1, load_workload_profile(origin).source_bytes))) for origin in origins)
+    """Weight origins by their measured main-session populations.
+
+    Sessions are drawn one at a time, so session counts are the right weight;
+    each origin's own size distribution then yields the byte mix.
+    """
+    return tuple((origin, float(max(1, load_workload_profile(origin).main_sessions))) for origin in origins)
 
 
 def generate_workload_corpus(

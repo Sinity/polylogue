@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import random
 from collections import Counter
@@ -9,11 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.schemas.synthetic.build_records import _declares_number
+from polylogue.schemas.synthetic.build_records import _declared_numeric
 from polylogue.schemas.synthetic.workload import (
     Histogram,
+    _codex_session,
     classify_claude_code_record,
     classify_codex_record,
+    default_origin_weights,
     generate_workload_corpus,
     load_workload_profile,
     published_field_names,
@@ -224,5 +227,43 @@ def test_skeleton_keeps_only_published_field_names() -> None:
 
 def test_numeric_detection_accepts_type_lists_inside_unions() -> None:
     """Anti-vacuity: appending a branch's type list whole raises TypeError on this ordinary schema."""
-    assert _declares_number({"anyOf": [{"type": ["number", "null"]}]})
-    assert not _declares_number({"anyOf": [{"type": ["string", "null"]}, {"type": "object"}]})
+    assert _declared_numeric({"anyOf": [{"type": ["number", "null"]}]}) == "number"
+    assert _declared_numeric({"anyOf": [{"type": ["string", "null"]}, {"type": "object"}]}) is None
+
+
+def test_integer_only_timestamp_fields_get_integral_defaults() -> None:
+    """Anti-vacuity: treating ``integer`` like ``number`` inserts a float that fails the element's schema."""
+    assert _declared_numeric({"type": "integer"}) == "integer"
+    assert _declared_numeric({"anyOf": [{"type": "integer"}, {"type": "number"}]}) == "number"
+
+
+def test_short_texts_sampled_non_ascii_always_carry_one() -> None:
+    """Anti-vacuity: slicing the mixed pool alone leaves most short slices pure ASCII."""
+    rng = random.Random(3)
+    texts = [synthetic_text(rng, 12, non_ascii=True) for _ in range(500)]
+    assert all(not text.isascii() and len(text) == 12 for text in texts)
+
+
+def test_default_origin_mix_follows_session_populations() -> None:
+    """Anti-vacuity: weighting sessions by source bytes over-draws the byte-heavy origin."""
+    weights = dict(default_origin_weights())
+    expected = {origin: load_workload_profile(origin).main_sessions for origin in weights}
+    assert weights == {origin: float(count) for origin, count in expected.items()}
+    assert all(count > 0 for count in expected.values())
+
+
+def test_codex_nested_subagents_keep_their_subagent_parent() -> None:
+    """Anti-vacuity: collapsing nested spawns into orphans gives them parents that exist nowhere."""
+    measured = load_workload_profile("codex")
+    assert measured.share("nested_subagents_per_subagent") > 0
+    profile = dataclasses.replace(
+        measured,
+        shares={**measured.shares, "nested_subagents_per_subagent": 0.5, "orphan_subagents_per_session": 0.0},
+        subagents_per_session=Histogram((2,), (1.0,)),
+    )
+    files, _ = _codex_session(random.Random(1), profile, index=0)
+    parents = {item.session_id: item.parent_session_id for item in files}
+    main = next(item.session_id for item in files if item.parent_session_id is None)
+    subagents = {thread for thread, parent in parents.items() if parent is not None}
+    assert all(parent == main or parent in subagents for parent in parents.values() if parent is not None)
+    assert any(parent in subagents for parent in parents.values())

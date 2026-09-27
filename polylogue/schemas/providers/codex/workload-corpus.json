@@ -1,5 +1,6 @@
 {
  "kind": "polylogue.synthetic-workload-profile",
+ "main_sessions": 4500,
  "non_ascii_by_kind": {
   "assistant_message": 0.9082,
   "custom_tool_call": 0.0207,
@@ -17,8 +18,9 @@
   "codex_custom_json_share": 0.1543,
   "codex_exec_envelope_share": 0.6149,
   "codex_exec_error_share": 0.0783,
+  "nested_subagents_per_subagent": 0.0073,
   "non_ascii_text_share": 0.1577,
-  "orphan_subagents_per_session": 0.0102,
+  "orphan_subagents_per_session": 0.0027,
   "sidecar_share_of_large": 0.0,
   "tool_error_share": 0.03
  },

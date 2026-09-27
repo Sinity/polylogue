@@ -1,19 +1,21 @@
 {
  "kind": "polylogue.synthetic-workload-profile",
+ "main_sessions": 4500,
  "non_ascii_by_kind": {
-  "assistant_text": 0.2405,
+  "assistant_text": 0.2446,
   "assistant_thinking": 0.5909,
-  "assistant_tool_use": 0.0228,
-  "user_text": 0.3086,
-  "user_tool_result": 0.2708
+  "assistant_tool_use": 0.0219,
+  "user_text": 0.3141,
+  "user_tool_result": 0.2707
  },
  "origin": "claude-code",
  "shares": {
   "assistant_usage_share": 1.0,
-  "non_ascii_text_share": 0.2631,
+  "nested_subagents_per_subagent": 0.0,
+  "non_ascii_text_share": 0.2643,
   "orphan_subagents_per_session": 0.0,
-  "sidecar_share_of_large": 0.3528,
-  "tool_error_share": 0.0467
+  "sidecar_share_of_large": 0.3474,
+  "tool_error_share": 0.0461
  },
  "source_bytes": 19000000000,
  "streams": {
@@ -21,7 +23,7 @@
    "gap_ms": {
     "0": 150000.0,
     "1": 54000.0,
-    "10": 480000.0,
+    "10": 490000.0,
     "11": 280000.0,
     "12": 360000.0,
     "13": 340000.0,
@@ -30,24 +32,24 @@
     "16": 31000.0,
     "17": 20000.0,
     "18": 11000.0,
-    "19": 6000.0,
-    "2": 43000.0,
+    "19": 5900.0,
+    "2": 42000.0,
     "20": 3900.0,
     "21": 1800.0,
     "22": 1300.0,
-    "23": 700.0,
+    "23": 690.0,
     "24": 470.0,
-    "25": 400.0,
+    "25": 410.0,
     "26": 360.0,
     "27": 120.0,
     "28": 69.0,
     "29": 30.0,
-    "3": 61000.0,
+    "3": 60000.0,
     "30": 3.0,
-    "4": 87000.0,
+    "4": 86000.0,
     "5": 100000.0,
     "6": 170000.0,
-    "7": 160000.0,
+    "7": 170000.0,
     "8": 120000.0,
     "9": 120000.0
    },
@@ -56,7 +58,7 @@
      "0": 42.0,
      "1": 3.0,
      "10": 12000.0,
-     "11": 10000.0,
+     "11": 9900.0,
      "12": 6700.0,
      "13": 3100.0,
      "14": 1300.0,
@@ -64,7 +66,7 @@
      "16": 42.0,
      "2": 85.0,
      "3": 55.0,
-     "4": 370.0,
+     "4": 350.0,
      "5": 9000.0,
      "6": 62000.0,
      "7": 100000.0,
@@ -74,22 +76,22 @@
     "assistant_thinking": {
      "0": 120000.0,
      "10": 12000.0,
-     "11": 7600.0,
+     "11": 7800.0,
      "12": 2700.0,
-     "13": 590.0,
+     "13": 610.0,
      "14": 150.0,
      "15": 18.0,
      "2": 27.0,
      "3": 6.0,
-     "4": 130.0,
-     "5": 3100.0,
+     "4": 160.0,
+     "5": 3200.0,
      "6": 28000.0,
      "7": 22000.0,
-     "8": 18000.0,
-     "9": 14000.0
+     "8": 19000.0,
+     "9": 15000.0
     },
     "assistant_tool_use": {
-     "10": 69000.0,
+     "10": 68000.0,
      "11": 44000.0,
      "12": 24000.0,
      "13": 11000.0,
@@ -100,18 +102,18 @@
      "18": 3.0,
      "2": 490.0,
      "4": 79.0,
-     "5": 2300.0,
+     "5": 2200.0,
      "6": 29000.0,
      "7": 180000.0,
      "8": 170000.0,
-     "9": 95000.0
+     "9": 96000.0
     },
     "user_text": {
      "0": 31.0,
      "1": 36.0,
-     "10": 4700.0,
+     "10": 4500.0,
      "11": 3300.0,
-     "12": 3000.0,
+     "12": 2900.0,
      "13": 2800.0,
      "14": 3200.0,
      "15": 1400.0,
@@ -126,17 +128,17 @@
      "3": 810.0,
      "4": 1100.0,
      "5": 4300.0,
-     "6": 5800.0,
+     "6": 5700.0,
      "7": 6800.0,
      "8": 11000.0,
-     "9": 6800.0
+     "9": 6600.0
     },
     "user_tool_result": {
      "0": 14000.0,
      "1": 1800.0,
      "10": 98000.0,
      "11": 81000.0,
-     "12": 56000.0,
+     "12": 57000.0,
      "13": 31000.0,
      "14": 18000.0,
      "15": 11000.0,
@@ -148,13 +150,13 @@
      "20": 100.0,
      "22": 3.0,
      "24": 3.0,
-     "3": 6700.0,
+     "3": 6800.0,
      "4": 8900.0,
      "5": 29000.0,
-     "6": 23000.0,
-     "7": 70000.0,
+     "6": 24000.0,
+     "7": 71000.0,
      "8": 94000.0,
-     "9": 79000.0
+     "9": 80000.0
     }
    },
    "records": {
@@ -182,10 +184,10 @@
     "record:ai-title": 30.0,
     "record:attachment:hook_success": 3.0,
     "record:bridge-session": 3.0,
-    "record:custom-title": 21.0,
+    "record:custom-title": 24.0,
     "record:file-history-snapshot": 580.0,
     "record:last-prompt": 160.0,
-    "record:mode": 110.0,
+    "record:mode": 100.0,
     "record:permission-mode": 150.0,
     "record:progress:hook_progress": 69.0,
     "record:queue-operation": 1500.0,
@@ -201,12 +203,12 @@
     "assistant_text": {
      "assistant_text": 230.0,
      "assistant_thinking": 380.0,
-     "assistant_tool_use": 250000.0,
+     "assistant_tool_use": 260000.0,
      "record:attachment:date_change": 3.0,
      "record:attachment:deferred_tools_record": 3.0,
-     "record:attachment:goal_status": 42.0,
+     "record:attachment:goal_status": 45.0,
      "record:attachment:hook_cancelled": 660.0,
-     "record:attachment:hook_non_blocking_error": 72.0,
+     "record:attachment:hook_non_blocking_error": 81.0,
      "record:attachment:hook_success": 230.0,
      "record:attachment:output_style": 9.0,
      "record:attachment:prompt_snapshot": 24.0,
@@ -215,7 +217,7 @@
      "record:attachment:total_tokens_reminder": 27.0,
      "record:custom-title": 6.0,
      "record:file-history-snapshot": 1900.0,
-     "record:last-prompt": 2400.0,
+     "record:last-prompt": 2300.0,
      "record:progress:agent_progress": 73.0,
      "record:progress:bash_progress": 610.0,
      "record:progress:hook_progress": 2900.0,
@@ -229,16 +231,17 @@
      "record:system:local_command": 37.0,
      "record:system:model_refusal_fallback": 3.0,
      "record:system:model_refusal_no_fallback": 6.0,
-     "record:system:stop_hook_summary": 11000.0,
+     "record:system:scheduled_task_fire": 3.0,
+     "record:system:stop_hook_summary": 10000.0,
      "record:system:turn_duration": 2300.0,
      "user_text": 9600.0,
      "user_tool_result": 1700.0
     },
     "assistant_thinking": {
-     "assistant_text": 89000.0,
-     "assistant_thinking": 13000.0,
-     "assistant_tool_use": 120000.0,
-     "record:attachment:goal_status": 9.0,
+     "assistant_text": 90000.0,
+     "assistant_thinking": 12000.0,
+     "assistant_tool_use": 130000.0,
+     "record:attachment:goal_status": 6.0,
      "record:attachment:output_style": 24.0,
      "record:attachment:queued_command": 9.0,
      "record:attachment:task_reminder": 42.0,
@@ -252,7 +255,7 @@
      "record:system:local_command": 6.0,
      "record:system:model_refusal_no_fallback": 42.0,
      "record:system:scheduled_task_fire": 3.0,
-     "record:system:stop_hook_summary": 90.0,
+     "record:system:stop_hook_summary": 93.0,
      "record:system:turn_duration": 110.0,
      "user_text": 180.0,
      "user_tool_result": 190.0
@@ -275,11 +278,11 @@
      "record:attachment:structured_output": 66.0,
      "record:attachment:task_reminder": 99.0,
      "record:attachment:total_tokens_reminder": 3.0,
-     "record:custom-title": 9.0,
-     "record:file-history-delta": 1800.0,
-     "record:file-history-snapshot": 5400.0,
+     "record:custom-title": 12.0,
+     "record:file-history-delta": 1900.0,
+     "record:file-history-snapshot": 5500.0,
      "record:frame-link": 96.0,
-     "record:last-prompt": 15000.0,
+     "record:last-prompt": 14000.0,
      "record:permission-mode": 12.0,
      "record:pr-link": 1700.0,
      "record:progress:agent_progress": 960.0,
@@ -288,7 +291,7 @@
      "record:progress:mcp_progress": 17.0,
      "record:progress:query_update": 3.0,
      "record:progress:waiting_for_task": 850.0,
-     "record:queue-operation": 5700.0,
+     "record:queue-operation": 5600.0,
      "record:relocated": 3.0,
      "record:summary": 150.0,
      "record:system:away_summary": 3.0,
@@ -304,7 +307,7 @@
      "record:system:local_command": 9.0
     },
     "record:agent-name": {
-     "assistant_text": 27.0,
+     "assistant_text": 30.0,
      "assistant_thinking": 27.0,
      "assistant_tool_use": 3.0,
      "record:agent-name": 15.0,
@@ -313,7 +316,7 @@
      "record:custom-title": 6.0,
      "record:file-history-snapshot": 15.0,
      "record:last-prompt": 3.0,
-     "record:mode": 5400.0,
+     "record:mode": 5700.0,
      "record:permission-mode": 510.0,
      "record:progress:hook_progress": 36.0,
      "record:queue-operation": 9.0,
@@ -322,11 +325,11 @@
      "user_text": 21.0
     },
     "record:ai-title": {
-     "assistant_text": 54.0,
+     "assistant_text": 51.0,
      "assistant_thinking": 420.0,
      "assistant_tool_use": 42.0,
      "record:agent-color": 170.0,
-     "record:agent-name": 2800.0,
+     "record:agent-name": 3200.0,
      "record:atis-latch": 1700.0,
      "record:attachment:hook_success": 3.0,
      "record:attachment:task_reminder": 3.0,
@@ -363,14 +366,13 @@
      "record:attachment:hook_cancelled": 570.0,
      "record:attachment:hook_non_blocking_error": 210.0,
      "record:attachment:hook_success": 18.0,
-     "record:attachment:instructions": 350.0,
+     "record:attachment:instructions": 340.0,
      "record:attachment:queued_command": 130.0,
      "record:attachment:remote_session_change": 3.0,
      "record:attachment:structured_output": 100.0,
      "record:attachment:task_reminder": 3.0,
      "record:attachment:total_tokens_reminder": 120.0,
-     "record:bridge-session": 3700.0,
-     "record:cost-state": 3.0,
+     "record:bridge-session": 3100.0,
      "record:custom-title": 3.0,
      "record:frame-link": 90.0,
      "record:pr-link": 16000.0,
@@ -383,22 +385,22 @@
     "record:attachment:agent_listing_delta": {
      "record:attachment:mcp_instructions_delta": 880.0,
      "record:attachment:skill_listing": 42.0,
-     "record:attachment:total_tokens_reminder": 9.0
+     "record:attachment:total_tokens_reminder": 6.0
     },
     "record:attachment:already_read_file": {
      "record:attachment:already_read_file": 6.0,
      "record:attachment:output_style": 3.0
     },
     "record:attachment:auto_mode": {
-     "assistant_text": 30.0,
+     "assistant_text": 33.0,
      "assistant_thinking": 60.0,
      "assistant_tool_use": 18.0,
      "record:attachment:command_permissions": 51.0,
      "record:attachment:diagnostics": 6.0,
      "record:attachment:output_style": 75.0,
      "record:attachment:task_reminder": 18.0,
-     "record:attachment:total_tokens_reminder": 470.0,
-     "record:last-prompt": 140.0,
+     "record:attachment:total_tokens_reminder": 450.0,
+     "record:last-prompt": 150.0,
      "record:queue-operation": 9.0,
      "user_text": 3.0
     },
@@ -407,7 +409,7 @@
      "record:attachment:command_permissions": 18.0,
      "record:attachment:output_style": 3.0,
      "record:attachment:task_reminder": 15.0,
-     "record:attachment:total_tokens_reminder": 6.0,
+     "record:attachment:total_tokens_reminder": 3.0,
      "record:file-history-snapshot": 3.0,
      "record:last-prompt": 51.0,
      "record:queue-operation": 6.0
@@ -415,24 +417,23 @@
     "record:attachment:bash_output_audience_note": {
      "assistant_tool_use": 12.0,
      "record:attachment:deferred_tools_record": 6.0,
-     "record:attachment:edited_text_file": 6.0,
-     "record:attachment:environment": 60.0,
+     "record:attachment:environment": 42.0,
      "record:attachment:hook_cancelled": 680.0,
-     "record:attachment:prompt_snapshot": 15.0,
-     "record:attachment:queued_command": 33.0,
-     "record:attachment:silent_turn_reminder": 140.0,
-     "record:attachment:total_tokens_reminder": 1100.0,
+     "record:attachment:prompt_snapshot": 9.0,
+     "record:attachment:queued_command": 9.0,
+     "record:attachment:silent_turn_reminder": 54.0,
+     "record:attachment:total_tokens_reminder": 330.0,
      "record:last-prompt": 6.0,
-     "record:queue-operation": 12.0
+     "record:queue-operation": 3.0
     },
     "record:attachment:batching_reminder_sent": {
-     "assistant_text": 240.0,
-     "assistant_thinking": 1800.0,
-     "assistant_tool_use": 530.0,
+     "assistant_text": 180.0,
+     "assistant_thinking": 800.0,
+     "assistant_tool_use": 350.0,
      "record:ai-title": 3.0,
-     "record:last-prompt": 740.0,
+     "record:last-prompt": 560.0,
      "record:pr-link": 3.0,
-     "record:queue-operation": 87.0,
+     "record:queue-operation": 69.0,
      "user_text": 3.0
     },
     "record:attachment:command_permissions": {
@@ -444,10 +445,9 @@
      "record:attachment:hook_non_blocking_error": 15.0,
      "record:attachment:instructions": 3.0,
      "record:attachment:output_style": 15.0,
-     "record:attachment:prompt_snapshot": 3.0,
      "record:attachment:queued_command": 3.0,
      "record:attachment:task_reminder": 3.0,
-     "record:attachment:total_tokens_reminder": 75.0,
+     "record:attachment:total_tokens_reminder": 66.0,
      "record:file-history-snapshot": 210.0,
      "record:last-prompt": 190.0,
      "record:permission-mode": 3.0,
@@ -456,8 +456,8 @@
      "user_tool_result": 3.0
     },
     "record:attachment:compact_file_reference": {
-     "record:attachment:compact_file_reference": 280.0,
-     "record:attachment:deferred_tools_delta": 18.0,
+     "record:attachment:compact_file_reference": 290.0,
+     "record:attachment:deferred_tools_delta": 21.0,
      "record:attachment:file": 240.0,
      "record:attachment:invoked_skills": 66.0,
      "record:attachment:mcp_instructions_delta": 3.0,
@@ -470,23 +470,22 @@
      "record:queue-operation": 6.0
     },
     "record:attachment:credential_org": {
-     "record:attachment:prompt_snapshot": 3.0,
-     "record:attachment:remote_session_change": 3.0
+     "record:attachment:prompt_snapshot": 3.0
     },
     "record:attachment:date": {
      "assistant_text": 3.0,
-     "assistant_thinking": 15.0,
+     "assistant_thinking": 12.0,
      "assistant_tool_use": 3.0,
      "record:attachment:batching_reminder_sent": 3.0,
-     "record:attachment:credential_org": 6.0,
+     "record:attachment:credential_org": 3.0,
      "record:attachment:prompt_snapshot": 320.0,
-     "record:attachment:remote_session_change": 57.0,
+     "record:attachment:remote_session_change": 51.0,
      "record:last-prompt": 3.0,
      "record:queue-operation": 3.0,
      "user_text": 18.0
     },
     "record:attachment:date_change": {
-     "assistant_thinking": 48.0,
+     "assistant_thinking": 51.0,
      "record:attachment:command_permissions": 3.0,
      "record:attachment:deferred_tools_delta": 3.0,
      "record:attachment:diagnostics": 3.0,
@@ -506,7 +505,7 @@
      "assistant_thinking": 33.0,
      "record:ai-title": 3.0,
      "record:attachment:agent_listing_delta": 920.0,
-     "record:attachment:auto_mode": 18.0,
+     "record:attachment:auto_mode": 15.0,
      "record:attachment:edited_text_file": 9.0,
      "record:attachment:mcp_instructions_delta": 490.0,
      "record:attachment:output_style": 3.0,
@@ -520,19 +519,15 @@
      "user_text": 3.0
     },
     "record:attachment:deferred_tools_record": {
-     "assistant_text": 12.0,
-     "assistant_thinking": 18.0,
-     "assistant_tool_use": 6.0,
      "record:attachment:auto_mode": 9.0,
      "record:attachment:environment": 9.0,
      "record:attachment:hook_cancelled": 12.0,
      "record:attachment:hook_non_blocking_error": 6.0,
      "record:attachment:plan_mode_exit": 3.0,
      "record:attachment:queued_command": 18.0,
-     "record:attachment:silent_turn_reminder": 3.0,
-     "record:attachment:total_tokens_reminder": 250.0,
-     "record:last-prompt": 30.0,
-     "record:queue-operation": 9.0,
+     "record:attachment:total_tokens_reminder": 240.0,
+     "record:last-prompt": 27.0,
+     "record:queue-operation": 6.0,
      "user_text": 3.0
     },
     "record:attachment:diagnostics": {
@@ -550,23 +545,23 @@
      "record:file-history-snapshot": 3.0
     },
     "record:attachment:edited_text_file": {
-     "assistant_text": 75.0,
-     "assistant_thinking": 420.0,
+     "assistant_text": 81.0,
+     "assistant_thinking": 470.0,
      "assistant_tool_use": 78.0,
      "record:ai-title": 3.0,
      "record:attachment:auto_mode": 6.0,
      "record:attachment:auto_mode_exit": 9.0,
      "record:attachment:command_permissions": 9.0,
-     "record:attachment:edited_text_file": 970.0,
+     "record:attachment:edited_text_file": 1000.0,
      "record:attachment:hook_success": 3.0,
      "record:attachment:output_style": 220.0,
-     "record:attachment:skill_listing": 42.0,
+     "record:attachment:skill_listing": 33.0,
      "record:attachment:task_reminder": 190.0,
-     "record:attachment:total_tokens_reminder": 760.0,
+     "record:attachment:total_tokens_reminder": 750.0,
      "record:file-history-snapshot": 27.0,
-     "record:last-prompt": 330.0,
+     "record:last-prompt": 350.0,
      "record:pr-link": 3.0,
-     "record:queue-operation": 93.0,
+     "record:queue-operation": 96.0,
      "record:system:bridge_status": 3.0,
      "user_text": 3.0,
      "user_tool_result": 3.0
@@ -574,12 +569,12 @@
     "record:attachment:environment": {
      "record:attachment:auto_mode": 3.0,
      "record:attachment:deferred_tools_delta": 6.0,
-     "record:attachment:edited_text_file": 30.0,
-     "record:attachment:model": 400.0,
-     "record:attachment:silent_turn_reminder": 27.0,
-     "record:attachment:skill_listing": 15.0,
+     "record:attachment:edited_text_file": 27.0,
+     "record:attachment:model": 390.0,
+     "record:attachment:silent_turn_reminder": 21.0,
+     "record:attachment:skill_listing": 12.0,
      "record:attachment:total_tokens_reminder": 2500.0,
-     "record:last-prompt": 210.0,
+     "record:last-prompt": 200.0,
      "record:pr-link": 9.0,
      "record:queue-operation": 81.0,
      "user_tool_result": 6.0
@@ -587,13 +582,12 @@
     "record:attachment:file": {
      "assistant_tool_use": 3.0,
      "record:attachment:compact_file_reference": 230.0,
-     "record:attachment:deferred_tools_delta": 57.0,
+     "record:attachment:deferred_tools_delta": 60.0,
      "record:attachment:directory": 3.0,
-     "record:attachment:file": 520.0,
+     "record:attachment:file": 530.0,
      "record:attachment:invoked_skills": 90.0,
      "record:attachment:plan_file_reference": 12.0,
      "record:attachment:task_status": 54.0,
-     "record:attachment:total_tokens_reminder": 3.0,
      "record:last-prompt": 3.0,
      "user_tool_result": 3.0
     },
@@ -601,21 +595,21 @@
      "assistant_text": 3.0,
      "record:attachment:hook_cancelled": 12.0,
      "record:attachment:hook_success": 18.0,
-     "record:file-history-snapshot": 18.0,
+     "record:file-history-snapshot": 15.0,
      "record:last-prompt": 6.0,
-     "record:system:stop_hook_summary": 670.0,
+     "record:system:stop_hook_summary": 700.0,
      "user_text": 99.0
     },
     "record:attachment:hook_additional_context": {
      "assistant_thinking": 9.0,
      "record:attachment:total_tokens_reminder": 3.0,
-     "record:file-history-snapshot": 130.0,
-     "record:last-prompt": 93.0,
+     "record:file-history-snapshot": 120.0,
+     "record:last-prompt": 90.0,
      "record:permission-mode": 9.0,
      "record:system:bridge_status": 150.0,
      "record:system:informational": 6.0,
      "record:system:local_command": 12.0,
-     "user_text": 340.0,
+     "user_text": 350.0,
      "user_tool_result": 75.0
     },
     "record:attachment:hook_blocking_error": {
@@ -675,24 +669,24 @@
      "record:file-history-snapshot": 72.0,
      "record:last-prompt": 160.0,
      "record:queue-operation": 54.0,
-     "record:system:stop_hook_summary": 57.0,
+     "record:system:stop_hook_summary": 66.0,
      "user_text": 63.0,
      "user_tool_result": 2400.0
     },
     "record:attachment:hook_success": {
      "record:ai-title": 3.0,
      "record:attachment:goal_status": 3.0,
-     "record:attachment:hook_additional_context": 580.0,
-     "record:attachment:hook_cancelled": 390.0,
+     "record:attachment:hook_additional_context": 590.0,
+     "record:attachment:hook_cancelled": 380.0,
      "record:attachment:hook_non_blocking_error": 9.0,
      "record:attachment:hook_success": 2500.0,
-     "record:attachment:hook_system_message": 2900.0,
+     "record:attachment:hook_system_message": 2800.0,
      "record:attachment:queued_command": 6.0,
      "record:attachment:remote_session_change": 9.0,
      "record:attachment:task_reminder": 9.0,
      "record:bridge-session": 3.0,
      "record:file-history-snapshot": 66.0,
-     "record:last-prompt": 190.0,
+     "record:last-prompt": 200.0,
      "record:queue-operation": 24.0,
      "record:system:away_summary": 3.0,
      "record:system:compact_boundary": 3.0,
@@ -706,12 +700,12 @@
      "record:attachment:hook_cancelled": 110.0,
      "record:attachment:output_style": 3.0,
      "record:attachment:total_tokens_reminder": 3.0,
-     "user_tool_result": 2800.0
+     "user_tool_result": 2600.0
     },
     "record:attachment:instructions": {
      "assistant_thinking": 3.0,
      "record:attachment:remote_session_change": 3.0,
-     "record:attachment:session_context": 400.0,
+     "record:attachment:session_context": 390.0,
      "record:last-prompt": 18.0
     },
     "record:attachment:invoked_skills": {
@@ -727,10 +721,10 @@
      "record:attachment:auto_mode_exit": 6.0,
      "record:attachment:context_tip": 3.0,
      "record:attachment:edited_text_file": 9.0,
-     "record:attachment:environment": 30.0,
+     "record:attachment:environment": 27.0,
      "record:attachment:hook_cancelled": 12.0,
      "record:attachment:hook_non_blocking_error": 6.0,
-     "record:attachment:hook_success": 280.0,
+     "record:attachment:hook_success": 290.0,
      "record:attachment:output_style": 6.0,
      "record:attachment:plan_mode": 3.0,
      "record:attachment:skill_listing": 980.0,
@@ -741,9 +735,9 @@
      "user_text": 6.0
     },
     "record:attachment:model": {
-     "record:attachment:deferred_tools_delta": 320.0,
+     "record:attachment:deferred_tools_delta": 310.0,
      "record:attachment:goal_status": 18.0,
-     "record:attachment:hook_success": 9.0,
+     "record:attachment:hook_success": 6.0,
      "record:attachment:output_style_instructions": 54.0,
      "record:attachment:total_tokens_reminder": 3.0
     },
@@ -821,32 +815,32 @@
     },
     "record:attachment:prompt_snapshot": {
      "record:attachment:deferred_tools_delta": 3.0,
-     "record:attachment:deferred_tools_record": 36.0,
+     "record:attachment:deferred_tools_record": 33.0,
      "record:attachment:hook_non_blocking_error": 15.0,
      "record:attachment:total_tokens_reminder": 310.0,
-     "record:last-prompt": 420.0
+     "record:last-prompt": 410.0
     },
     "record:attachment:queued_command": {
-     "assistant_text": 240.0,
+     "assistant_text": 250.0,
      "assistant_thinking": 2100.0,
      "assistant_tool_use": 470.0,
-     "record:attachment:auto_mode": 15.0,
+     "record:attachment:auto_mode": 18.0,
      "record:attachment:auto_mode_exit": 3.0,
      "record:attachment:date_change": 42.0,
-     "record:attachment:deferred_tools_delta": 9.0,
+     "record:attachment:deferred_tools_delta": 6.0,
      "record:attachment:diagnostics": 15.0,
-     "record:attachment:edited_text_file": 180.0,
+     "record:attachment:edited_text_file": 190.0,
      "record:attachment:environment": 160.0,
      "record:attachment:hook_cancelled": 310.0,
      "record:attachment:hook_non_blocking_error": 210.0,
      "record:attachment:nested_memory": 9.0,
      "record:attachment:output_style": 750.0,
      "record:attachment:plan_mode_exit": 3.0,
-     "record:attachment:queued_command": 3700.0,
-     "record:attachment:silent_turn_reminder": 9.0,
+     "record:attachment:queued_command": 3600.0,
+     "record:attachment:silent_turn_reminder": 3.0,
      "record:attachment:skill_listing": 33.0,
      "record:attachment:task_reminder": 1000.0,
-     "record:attachment:total_tokens_reminder": 4700.0,
+     "record:attachment:total_tokens_reminder": 4600.0,
      "record:file-history-snapshot": 15.0,
      "record:last-prompt": 1200.0,
      "record:pr-link": 27.0,
@@ -867,17 +861,14 @@
     "record:attachment:remote_session_change": {
      "assistant_text": 3.0,
      "assistant_thinking": 3.0,
-     "record:attachment:prompt_snapshot": 78.0,
+     "record:attachment:prompt_snapshot": 69.0,
      "record:last-prompt": 3.0
     },
     "record:attachment:session_context": {
-     "assistant_thinking": 3.0,
-     "record:attachment:date": 400.0
+     "record:attachment:date": 390.0
     },
     "record:attachment:silent_turn_reminder": {
-     "record:attachment:total_tokens_reminder": 360.0,
-     "record:last-prompt": 12.0,
-     "record:pr-link": 3.0
+     "record:attachment:total_tokens_reminder": 190.0
     },
     "record:attachment:skill_listing": {
      "assistant_text": 3.0,
@@ -892,10 +883,10 @@
      "record:attachment:output_style": 72.0,
      "record:attachment:plan_mode": 18.0,
      "record:attachment:plan_mode_exit": 12.0,
-     "record:attachment:task_reminder": 18.0,
-     "record:attachment:total_tokens_reminder": 300.0,
+     "record:attachment:task_reminder": 21.0,
+     "record:attachment:total_tokens_reminder": 260.0,
      "record:file-history-snapshot": 18.0,
-     "record:last-prompt": 160.0,
+     "record:last-prompt": 150.0,
      "record:queue-operation": 15.0,
      "user_text": 3.0
     },
@@ -903,9 +894,9 @@
      "user_tool_result": 210.0
     },
     "record:attachment:task_reminder": {
-     "assistant_text": 1000.0,
-     "assistant_thinking": 6400.0,
-     "assistant_tool_use": 2500.0,
+     "assistant_text": 1100.0,
+     "assistant_thinking": 6700.0,
+     "assistant_tool_use": 2600.0,
      "record:attachment:command_permissions": 33.0,
      "record:attachment:diagnostics": 96.0,
      "record:attachment:hook_cancelled": 9.0,
@@ -913,10 +904,10 @@
      "record:attachment:hook_success": 21.0,
      "record:attachment:output_style": 2200.0,
      "record:attachment:total_tokens_reminder": 2400.0,
-     "record:file-history-snapshot": 380.0,
-     "record:last-prompt": 2900.0,
+     "record:file-history-snapshot": 390.0,
+     "record:last-prompt": 3000.0,
      "record:pr-link": 84.0,
-     "record:queue-operation": 520.0,
+     "record:queue-operation": 530.0,
      "record:system:compact_boundary": 3.0,
      "record:worktree-state": 3.0,
      "user_text": 15.0,
@@ -928,33 +919,31 @@
      "record:attachment:task_status": 230.0
     },
     "record:attachment:thinking_stripped": {
-     "record:attachment:file": 3.0,
-     "record:attachment:invoked_skills": 3.0
+     "record:attachment:file": 3.0
     },
     "record:attachment:todo_reminder": {
      "assistant_thinking": 6.0
     },
     "record:attachment:total_tokens_reminder": {
-     "assistant_text": 6600.0,
+     "assistant_text": 6300.0,
      "assistant_thinking": 38000.0,
-     "assistant_tool_use": 35000.0,
+     "assistant_tool_use": 34000.0,
      "record:ai-title": 3.0,
      "record:atis-latch": 210.0,
-     "record:attachment:batching_reminder_sent": 2900.0,
+     "record:attachment:batching_reminder_sent": 1500.0,
      "record:attachment:compact_file_reference": 9.0,
-     "record:attachment:date": 9.0,
-     "record:attachment:deferred_tools_record": 36.0,
+     "record:attachment:date": 6.0,
      "record:attachment:file": 3.0,
      "record:attachment:goal_status": 3.0,
      "record:attachment:hook_cancelled": 190.0,
      "record:attachment:hook_non_blocking_error": 39.0,
-     "record:attachment:instructions": 24.0,
+     "record:attachment:instructions": 18.0,
      "record:attachment:output_style": 21000.0,
      "record:attachment:queued_command": 72.0,
-     "record:file-history-delta": 21.0,
-     "record:file-history-snapshot": 680.0,
+     "record:file-history-delta": 18.0,
+     "record:file-history-snapshot": 560.0,
      "record:last-prompt": 14000.0,
-     "record:pr-link": 230.0,
+     "record:pr-link": 220.0,
      "record:queue-operation": 3200.0,
      "record:system:model_refusal_no_fallback": 3.0,
      "user_text": 27.0,
@@ -975,79 +964,74 @@
     "record:bridge-session": {
      "assistant_text": 1500.0,
      "assistant_thinking": 14000.0,
-     "assistant_tool_use": 4800.0,
+     "assistant_tool_use": 4900.0,
      "record:ai-title": 140.0,
      "record:artifact-autoreact-ledger": 3.0,
-     "record:atis-latch": 3.0,
      "record:attachment:edited_text_file": 39.0,
      "record:attachment:environment": 3.0,
      "record:attachment:goal_status": 9.0,
      "record:attachment:hook_cancelled": 200.0,
      "record:attachment:hook_non_blocking_error": 51.0,
-     "record:attachment:hook_success": 620.0,
+     "record:attachment:hook_success": 580.0,
      "record:attachment:nested_memory": 3.0,
      "record:attachment:output_style": 3.0,
      "record:attachment:queued_command": 3.0,
      "record:attachment:task_reminder": 18.0,
-     "record:attachment:total_tokens_reminder": 1700.0,
+     "record:attachment:total_tokens_reminder": 1600.0,
      "record:bridge-session": 45.0,
-     "record:continued-in": 3.0,
      "record:cost-state": 9.0,
-     "record:file-history-delta": 470.0,
-     "record:file-history-snapshot": 510.0,
+     "record:file-history-delta": 490.0,
+     "record:file-history-snapshot": 500.0,
      "record:frame-link": 3.0,
      "record:last-prompt": 110.0,
      "record:mode": 3.0,
      "record:pr-link": 390.0,
-     "record:queue-operation": 2900.0,
+     "record:queue-operation": 2800.0,
      "record:system:away_summary": 63.0,
      "record:system:bridge_status": 12.0,
      "record:system:compact_boundary": 210.0,
      "record:system:informational": 3.0,
      "record:system:local_command": 3.0,
      "record:system:model_refusal_no_fallback": 12.0,
-     "record:system:stop_hook_summary": 760.0,
+     "record:system:stop_hook_summary": 710.0,
      "record:system:turn_duration": 6.0,
-     "user_text": 800.0,
-     "user_tool_result": 6400.0
-    },
-    "record:continued-in": {
-     "record:last-prompt": 3.0
+     "user_text": 770.0,
+     "user_tool_result": 6100.0
     },
     "record:cost-state": {
      "record:artifact-autoreact-ledger": 3.0,
      "record:artifact-comment-monitor": 9.0,
-     "record:bridge-session": 9.0,
-     "record:last-prompt": 9.0,
+     "record:bridge-session": 3.0,
+     "record:last-prompt": 6.0,
      "record:queue-operation": 9.0,
      "user_text": 3.0
     },
     "record:custom-title": {
      "assistant_text": 18.0,
-     "assistant_thinking": 66.0,
-     "assistant_tool_use": 54.0,
+     "assistant_thinking": 69.0,
+     "assistant_tool_use": 60.0,
      "record:agent-name": 690.0,
-     "record:ai-title": 3000.0,
-     "record:custom-title": 36.0,
-     "record:file-history-snapshot": 51.0,
+     "record:ai-title": 3300.0,
+     "record:custom-title": 39.0,
+     "record:file-history-snapshot": 54.0,
      "record:mode": 450.0,
-     "record:permission-mode": 640.0,
-     "record:pr-link": 810.0,
+     "record:permission-mode": 1100.0,
+     "record:pr-link": 850.0,
      "record:progress:hook_progress": 3.0,
      "record:queue-operation": 3.0,
      "user_text": 3.0,
-     "user_tool_result": 30.0
+     "user_tool_result": 33.0
     },
     "record:file-history-delta": {
      "assistant_text": 12.0,
-     "assistant_thinking": 81.0,
-     "assistant_tool_use": 51.0,
+     "assistant_thinking": 75.0,
+     "assistant_tool_use": 48.0,
      "record:attachment:hook_cancelled": 24.0,
      "record:attachment:hook_non_blocking_error": 3.0,
      "record:file-history-delta": 39.0,
-     "record:last-prompt": 33.0,
+     "record:last-prompt": 30.0,
      "record:queue-operation": 45.0,
-     "user_tool_result": 2200.0
+     "user_tool_result": 2300.0
     },
     "record:file-history-snapshot": {
      "assistant_text": 660.0,
@@ -1055,19 +1039,18 @@
      "assistant_tool_use": 3200.0,
      "record:ai-title": 15.0,
      "record:atis-latch": 12.0,
-     "record:attachment:deferred_tools_record": 3.0,
-     "record:attachment:goal_status": 12.0,
+     "record:attachment:goal_status": 15.0,
      "record:attachment:hook_cancelled": 3.0,
      "record:attachment:hook_non_blocking_error": 12.0,
-     "record:attachment:hook_success": 270.0,
+     "record:attachment:hook_success": 280.0,
      "record:bridge-session": 6.0,
-     "record:cost-state": 6.0,
+     "record:cost-state": 3.0,
      "record:custom-title": 3.0,
-     "record:file-history-delta": 6.0,
+     "record:file-history-delta": 3.0,
      "record:file-history-snapshot": 2700.0,
-     "record:last-prompt": 810.0,
+     "record:last-prompt": 800.0,
      "record:permission-mode": 15.0,
-     "record:pr-link": 15.0,
+     "record:pr-link": 9.0,
      "record:progress:hook_progress": 680.0,
      "record:queue-operation": 18000.0,
      "record:summary": 9.0,
@@ -1075,8 +1058,8 @@
      "record:system:compact_boundary": 130.0,
      "record:system:local_command": 6.0,
      "record:system:model_refusal_no_fallback": 15.0,
-     "user_text": 9400.0,
-     "user_tool_result": 6900.0
+     "user_text": 9300.0,
+     "user_tool_result": 7000.0
     },
     "record:frame-link": {
      "assistant_text": 3.0,
@@ -1090,14 +1073,14 @@
      "assistant_thinking": 1400.0,
      "assistant_tool_use": 400.0,
      "record:agent-color": 3.0,
-     "record:ai-title": 39000.0,
+     "record:ai-title": 38000.0,
      "record:atis-latch": 9600.0,
      "record:attachment:hook_cancelled": 9.0,
      "record:attachment:hook_success": 3.0,
      "record:attachment:task_reminder": 3.0,
      "record:bridge-session": 24.0,
-     "record:cost-state": 51.0,
-     "record:custom-title": 5600.0,
+     "record:cost-state": 48.0,
+     "record:custom-title": 6400.0,
      "record:file-history-snapshot": 160.0,
      "record:last-prompt": 9.0,
      "record:mode": 1900.0,
@@ -1118,11 +1101,11 @@
      "assistant_tool_use": 230.0,
      "record:ai-title": 27.0,
      "record:artifact-comment-monitor": 3.0,
-     "record:atis-latch": 2400.0,
+     "record:atis-latch": 2200.0,
      "record:attachment:edited_text_file": 3.0,
      "record:attachment:hook_success": 110.0,
      "record:attachment:task_reminder": 6.0,
-     "record:bridge-session": 260.0,
+     "record:bridge-session": 250.0,
      "record:file-history-snapshot": 170.0,
      "record:last-prompt": 6.0,
      "record:permission-mode": 34000.0,
@@ -1140,7 +1123,7 @@
      "assistant_thinking": 3700.0,
      "assistant_tool_use": 560.0,
      "record:ai-title": 6.0,
-     "record:atis-latch": 18000.0,
+     "record:atis-latch": 17000.0,
      "record:attachment:diagnostics": 3.0,
      "record:attachment:edited_text_file": 3.0,
      "record:attachment:hook_cancelled": 6.0,
@@ -1154,7 +1137,7 @@
      "record:file-history-snapshot": 340.0,
      "record:last-prompt": 24.0,
      "record:permission-mode": 39.0,
-     "record:pr-link": 9700.0,
+     "record:pr-link": 11000.0,
      "record:queue-operation": 390.0,
      "record:system:away_summary": 39.0,
      "record:system:bridge_status": 51.0,
@@ -1166,32 +1149,32 @@
     },
     "record:pr-link": {
      "assistant_text": 480.0,
-     "assistant_thinking": 4000.0,
+     "assistant_thinking": 4400.0,
      "assistant_tool_use": 1800.0,
      "record:ai-title": 3.0,
      "record:attachment:diagnostics": 3.0,
-     "record:attachment:edited_text_file": 39.0,
+     "record:attachment:edited_text_file": 42.0,
      "record:attachment:hook_cancelled": 30.0,
      "record:attachment:hook_non_blocking_error": 39.0,
      "record:attachment:hook_success": 320.0,
      "record:attachment:task_reminder": 120.0,
-     "record:attachment:total_tokens_reminder": 54.0,
+     "record:attachment:total_tokens_reminder": 48.0,
      "record:bridge-session": 22000.0,
-     "record:custom-title": 3.0,
-     "record:file-history-delta": 18.0,
-     "record:file-history-snapshot": 170.0,
+     "record:custom-title": 6.0,
+     "record:file-history-delta": 15.0,
+     "record:file-history-snapshot": 180.0,
      "record:last-prompt": 18.0,
      "record:permission-mode": 27.0,
-     "record:pr-link": 400.0,
-     "record:queue-operation": 840.0,
+     "record:pr-link": 390.0,
+     "record:queue-operation": 760.0,
      "record:system:away_summary": 45.0,
      "record:system:compact_boundary": 18.0,
      "record:system:informational": 3.0,
      "record:system:local_command": 12.0,
      "record:system:stop_hook_summary": 30.0,
      "record:system:turn_duration": 3.0,
-     "user_text": 260.0,
-     "user_tool_result": 2900.0
+     "user_text": 250.0,
+     "user_tool_result": 3100.0
     },
     "record:progress:agent_progress": {
      "assistant_text": 77.0,
@@ -1288,7 +1271,7 @@
     },
     "record:queue-operation": {
      "assistant_text": 1500.0,
-     "assistant_thinking": 7900.0,
+     "assistant_thinking": 7800.0,
      "assistant_tool_use": 2900.0,
      "record:artifact-comment-monitor": 3.0,
      "record:attachment:edited_text_file": 3.0,
@@ -1299,7 +1282,7 @@
      "record:attachment:hook_non_blocking_error": 130.0,
      "record:attachment:hook_success": 700.0,
      "record:attachment:output_style": 84.0,
-     "record:attachment:queued_command": 8200.0,
+     "record:attachment:queued_command": 8100.0,
      "record:attachment:structured_output": 3.0,
      "record:attachment:task_reminder": 18.0,
      "record:attachment:total_tokens_reminder": 2300.0,
@@ -1308,23 +1291,23 @@
      "record:file-history-delta": 15.0,
      "record:file-history-snapshot": 17000.0,
      "record:last-prompt": 2000.0,
-     "record:pr-link": 350.0,
+     "record:pr-link": 290.0,
      "record:progress:agent_progress": 130.0,
      "record:progress:bash_progress": 1700.0,
      "record:progress:hook_progress": 1100.0,
      "record:progress:mcp_progress": 3.0,
-     "record:queue-operation": 74000.0,
+     "record:queue-operation": 72000.0,
      "record:summary": 6.0,
      "record:system:api_error": 21.0,
      "record:system:away_summary": 21.0,
-     "record:system:compact_boundary": 75.0,
+     "record:system:compact_boundary": 72.0,
      "record:system:informational": 3.0,
      "record:system:local_command": 39.0,
      "record:system:scheduled_task_fire": 360.0,
      "record:system:stop_hook_summary": 1500.0,
      "record:system:turn_duration": 140.0,
-     "user_text": 6700.0,
-     "user_tool_result": 7100.0
+     "user_text": 6300.0,
+     "user_tool_result": 7000.0
     },
     "record:relocated": {
      "record:agent-name": 2600.0,
@@ -1364,14 +1347,14 @@
      "record:bridge-session": 12.0,
      "record:cost-state": 3.0,
      "record:custom-title": 3.0,
-     "record:file-history-snapshot": 400.0,
-     "record:last-prompt": 130.0,
+     "record:file-history-snapshot": 410.0,
+     "record:last-prompt": 140.0,
      "record:permission-mode": 21.0,
      "record:pr-link": 24.0,
      "record:queue-operation": 590.0,
      "record:system:informational": 3.0,
      "record:system:local_command": 57.0,
-     "user_text": 670.0,
+     "user_text": 700.0,
      "user_tool_result": 3.0
     },
     "record:system:bridge_status": {
@@ -1409,7 +1392,7 @@
      "assistant_text": 12.0,
      "assistant_thinking": 9.0,
      "assistant_tool_use": 12.0,
-     "record:attachment:hook_success": 12.0,
+     "record:attachment:hook_success": 9.0,
      "record:custom-title": 15.0,
      "record:file-history-snapshot": 440.0,
      "record:last-prompt": 72.0,
@@ -1453,7 +1436,7 @@
     },
     "record:system:stop_hook_summary": {
      "assistant_text": 120.0,
-     "assistant_thinking": 580.0,
+     "assistant_thinking": 610.0,
      "assistant_tool_use": 81.0,
      "record:attachment:goal_status": 3.0,
      "record:custom-title": 6.0,
@@ -1466,8 +1449,8 @@
      "record:system:away_summary": 220.0,
      "record:system:informational": 15.0,
      "record:system:local_command": 55.0,
-     "record:system:scheduled_task_fire": 99.0,
-     "record:system:turn_duration": 9900.0,
+     "record:system:scheduled_task_fire": 96.0,
+     "record:system:turn_duration": 9300.0,
      "user_text": 2100.0
     },
     "record:system:turn_duration": {
@@ -1478,23 +1461,23 @@
      "record:artifact-autoreact-ledger": 3.0,
      "record:atis-latch": 3.0,
      "record:attachment:context_tip": 9.0,
-     "record:attachment:goal_status": 21.0,
-     "record:bridge-session": 30.0,
-     "record:cost-state": 9.0,
+     "record:attachment:goal_status": 18.0,
+     "record:bridge-session": 27.0,
+     "record:cost-state": 6.0,
      "record:custom-title": 18.0,
-     "record:file-history-snapshot": 3200.0,
-     "record:last-prompt": 830.0,
+     "record:file-history-snapshot": 3100.0,
+     "record:last-prompt": 810.0,
      "record:permission-mode": 6.0,
-     "record:pr-link": 140.0,
+     "record:pr-link": 120.0,
      "record:progress:agent_progress": 1.0,
      "record:progress:bash_progress": 12.0,
      "record:progress:hook_progress": 18.0,
-     "record:queue-operation": 3900.0,
+     "record:queue-operation": 3500.0,
      "record:summary": 25.0,
      "record:system:away_summary": 1500.0,
      "record:system:informational": 6.0,
      "record:system:local_command": 100.0,
-     "user_text": 2600.0,
+     "user_text": 2500.0,
      "user_tool_result": 6.0
     },
     "record:worktree-state": {
@@ -1511,81 +1494,81 @@
     "user_text": {
      "assistant_text": 14000.0,
      "assistant_thinking": 9700.0,
-     "assistant_tool_use": 4000.0,
+     "assistant_tool_use": 3900.0,
      "record:ai-title": 54.0,
      "record:atis-latch": 3.0,
-     "record:attachment:agent_listing_delta": 9.0,
+     "record:attachment:agent_listing_delta": 6.0,
      "record:attachment:already_read_file": 3.0,
      "record:attachment:auto_mode": 51.0,
-     "record:attachment:auto_mode_exit": 42.0,
+     "record:attachment:auto_mode_exit": 39.0,
      "record:attachment:command_permissions": 390.0,
      "record:attachment:compact_file_reference": 130.0,
      "record:attachment:context_tip": 3.0,
      "record:attachment:date": 12.0,
-     "record:attachment:date_change": 100.0,
+     "record:attachment:date_change": 110.0,
      "record:attachment:deferred_tools_delta": 730.0,
      "record:attachment:diagnostics": 57.0,
      "record:attachment:directory": 12.0,
-     "record:attachment:edited_text_file": 170.0,
+     "record:attachment:edited_text_file": 160.0,
      "record:attachment:environment": 360.0,
      "record:attachment:file": 200.0,
-     "record:attachment:goal_status": 630.0,
+     "record:attachment:goal_status": 670.0,
      "record:attachment:hook_cancelled": 310.0,
      "record:attachment:hook_non_blocking_error": 130.0,
      "record:attachment:hook_success": 3.0,
-     "record:attachment:instructions": 18.0,
+     "record:attachment:instructions": 15.0,
      "record:attachment:mcp_instructions_delta": 120.0,
      "record:attachment:output_style": 1300.0,
      "record:attachment:plan_mode": 39.0,
      "record:attachment:plan_mode_exit": 21.0,
      "record:attachment:plan_mode_reentry": 12.0,
      "record:attachment:silent_turn_reminder": 3.0,
-     "record:attachment:skill_listing": 78.0,
-     "record:attachment:task_reminder": 880.0,
+     "record:attachment:skill_listing": 69.0,
+     "record:attachment:task_reminder": 890.0,
      "record:attachment:task_status": 3.0,
-     "record:attachment:thinking_stripped": 6.0,
+     "record:attachment:thinking_stripped": 3.0,
      "record:attachment:todo_reminder": 3.0,
-     "record:attachment:total_tokens_reminder": 1500.0,
+     "record:attachment:total_tokens_reminder": 1400.0,
      "record:attachment:ultrathink_effort": 150.0,
      "record:bridge-session": 24.0,
      "record:cost-state": 3.0,
      "record:custom-title": 33.0,
      "record:file-history-delta": 3.0,
-     "record:file-history-snapshot": 3400.0,
+     "record:file-history-snapshot": 3500.0,
      "record:last-prompt": 1200.0,
      "record:permission-mode": 12.0,
-     "record:pr-link": 81.0,
+     "record:pr-link": 75.0,
      "record:progress:bash_progress": 57.0,
      "record:progress:hook_progress": 570.0,
-     "record:queue-operation": 980.0,
+     "record:queue-operation": 890.0,
      "record:relocated": 3.0,
      "record:summary": 480.0,
      "record:system:api_error": 39.0,
      "record:system:away_summary": 24.0,
      "record:system:compact_boundary": 50.0,
      "record:system:informational": 6.0,
-     "record:system:local_command": 330.0,
+     "record:system:local_command": 340.0,
      "record:system:microcompact_boundary": 9.0,
      "record:system:model_refusal_no_fallback": 15.0,
      "record:system:stop_hook_summary": 250.0,
      "record:system:turn_duration": 12.0,
      "user_text": 12000.0,
-     "user_tool_result": 34.0
+     "user_tool_result": 37.0
     },
     "user_tool_result": {
      "assistant_text": 160000.0,
-     "assistant_thinking": 75000.0,
+     "assistant_thinking": 78000.0,
      "assistant_tool_use": 140000.0,
      "record:agent-color": 6.0,
      "record:ai-title": 6.0,
      "record:attachment:agent_listing_delta": 3.0,
      "record:attachment:auto_mode": 130.0,
-     "record:attachment:bash_output_audience_note": 2100.0,
+     "record:attachment:bash_output_audience_note": 1200.0,
      "record:attachment:date_change": 69.0,
      "record:attachment:deferred_tools_delta": 48.0,
-     "record:attachment:deferred_tools_record": 260.0,
+     "record:attachment:deferred_tools_record": 250.0,
      "record:attachment:diagnostics": 400.0,
-     "record:attachment:edited_text_file": 1700.0,
+     "record:attachment:edited_text_file": 1800.0,
      "record:attachment:environment": 2000.0,
      "record:attachment:file": 3.0,
      "record:attachment:goal_status": 9.0,
@@ -1602,18 +1585,18 @@
      "record:attachment:prompt_snapshot": 260.0,
      "record:attachment:queued_command": 4300.0,
      "record:attachment:read_truncation_notice": 51.0,
-     "record:attachment:silent_turn_reminder": 110.0,
-     "record:attachment:skill_listing": 210.0,
-     "record:attachment:task_reminder": 16000.0,
+     "record:attachment:silent_turn_reminder": 21.0,
+     "record:attachment:skill_listing": 190.0,
+     "record:attachment:task_reminder": 17000.0,
      "record:attachment:todo_reminder": 3.0,
-     "record:attachment:total_tokens_reminder": 96000.0,
-     "record:custom-title": 24.0,
+     "record:attachment:total_tokens_reminder": 95000.0,
+     "record:custom-title": 30.0,
      "record:file-history-delta": 36.0,
      "record:file-history-snapshot": 2200.0,
      "record:frame-link": 30.0,
-     "record:last-prompt": 17000.0,
+     "record:last-prompt": 18000.0,
      "record:permission-mode": 9.0,
-     "record:pr-link": 540.0,
+     "record:pr-link": 570.0,
      "record:progress:agent_progress": 310.0,
      "record:progress:bash_progress": 680.0,
      "record:progress:hook_progress": 48000.0,
@@ -1624,13 +1607,13 @@
      "record:summary": 190.0,
      "record:system": 3.0,
      "record:system:api_error": 390.0,
-     "record:system:compact_boundary": 260.0,
+     "record:system:compact_boundary": 270.0,
      "record:system:local_command": 9.0,
      "record:system:microcompact_boundary": 26.0,
      "record:system:model_refusal_fallback": 3.0,
      "record:system:stop_hook_summary": 51.0,
      "record:system:turn_duration": 130.0,
-     "user_text": 3900.0,
+     "user_text": 3800.0,
      "user_tool_result": 24000.0
     }
    }
@@ -1639,133 +1622,132 @@
    "gap_ms": {
     "0": 79000.0,
     "1": 44000.0,
-    "10": 270000.0,
-    "11": 300000.0,
+    "10": 280000.0,
+    "11": 290000.0,
     "12": 370000.0,
     "13": 200000.0,
     "14": 77000.0,
-    "15": 31000.0,
+    "15": 30000.0,
     "16": 15000.0,
     "17": 10000.0,
-    "18": 4200.0,
+    "18": 4000.0,
     "19": 1900.0,
-    "2": 37000.0,
-    "20": 1300.0,
-    "21": 280.0,
-    "22": 150.0,
-    "23": 92.0,
-    "24": 110.0,
-    "25": 38.0,
+    "2": 38000.0,
+    "20": 1600.0,
+    "21": 230.0,
+    "22": 100.0,
+    "23": 78.0,
+    "24": 120.0,
+    "25": 23.0,
     "26": 8.4,
-    "3": 95000.0,
-    "4": 69000.0,
-    "5": 50000.0,
+    "3": 98000.0,
+    "4": 76000.0,
+    "5": 53000.0,
     "6": 73000.0,
     "7": 49000.0,
-    "8": 66000.0,
-    "9": 170000.0
+    "8": 65000.0,
+    "9": 180000.0
    },
    "lengths": {
     "assistant_text": {
-     "10": 5100.0,
-     "11": 3300.0,
+     "10": 5700.0,
+     "11": 3700.0,
      "12": 2800.0,
      "13": 2100.0,
      "14": 2600.0,
-     "15": 1100.0,
-     "16": 81.0,
-     "17": 7.4,
-     "3": 88.0,
-     "4": 740.0,
+     "15": 1200.0,
+     "16": 74.0,
+     "17": 22.0,
+     "3": 81.0,
+     "4": 610.0,
      "5": 6500.0,
      "6": 34000.0,
-     "7": 71000.0,
+     "7": 69000.0,
      "8": 34000.0,
      "9": 12000.0
     },
     "assistant_thinking": {
      "0": 170000.0,
-     "10": 2900.0,
-     "11": 1800.0,
-     "12": 1100.0,
-     "13": 680.0,
-     "14": 290.0,
-     "15": 150.0,
+     "10": 3000.0,
+     "11": 2000.0,
+     "12": 1300.0,
+     "13": 730.0,
+     "14": 300.0,
+     "15": 160.0,
      "16": 15.0,
      "17": 15.0,
-     "5": 2000.0,
-     "6": 42000.0,
-     "7": 6500.0,
-     "8": 6800.0,
-     "9": 4200.0
+     "5": 1900.0,
+     "6": 36000.0,
+     "7": 6600.0,
+     "8": 7000.0,
+     "9": 4300.0
     },
     "assistant_tool_use": {
-     "10": 43000.0,
-     "11": 27000.0,
-     "12": 18000.0,
-     "13": 7300.0,
-     "14": 2600.0,
-     "15": 1200.0,
-     "16": 310.0,
-     "17": 44.0,
-     "2": 170.0,
-     "4": 120.0,
-     "5": 2400.0,
-     "6": 28000.0,
+     "10": 44000.0,
+     "11": 26000.0,
+     "12": 16000.0,
+     "13": 7200.0,
+     "14": 2900.0,
+     "15": 1100.0,
+     "16": 300.0,
+     "17": 52.0,
+     "2": 190.0,
+     "4": 130.0,
+     "5": 3200.0,
+     "6": 27000.0,
      "7": 190000.0,
      "8": 190000.0,
-     "9": 94000.0
+     "9": 97000.0
     },
     "user_text": {
-     "10": 3000.0,
+     "10": 3100.0,
      "11": 4200.0,
-     "12": 3900.0,
+     "12": 4000.0,
      "13": 1900.0,
-     "14": 600.0,
+     "14": 590.0,
      "15": 200.0,
-     "16": 220.0,
-     "17": 74.0,
+     "16": 290.0,
+     "17": 96.0,
      "2": 3.0,
-     "21": 7.4,
-     "3": 110.0,
-     "4": 10.0,
-     "5": 530.0,
-     "6": 320.0,
-     "7": 210.0,
-     "8": 680.0,
+     "3": 84.0,
+     "4": 18.0,
+     "5": 480.0,
+     "6": 270.0,
+     "7": 200.0,
+     "8": 590.0,
      "9": 1100.0
     },
     "user_tool_result": {
      "0": 1700.0,
-     "1": 2100.0,
+     "1": 680.0,
      "10": 65000.0,
-     "11": 75000.0,
+     "11": 74000.0,
      "12": 84000.0,
-     "13": 53000.0,
+     "13": 52000.0,
      "14": 28000.0,
      "15": 14000.0,
-     "16": 5200.0,
-     "17": 800.0,
+     "16": 5400.0,
+     "17": 830.0,
      "18": 36.0,
-     "19": 30.0,
-     "2": 3800.0,
-     "20": 11.0,
-     "3": 4900.0,
-     "4": 7700.0,
-     "5": 30000.0,
-     "6": 22000.0,
+     "19": 60.0,
+     "2": 3700.0,
+     "20": 19.0,
+     "3": 5500.0,
+     "4": 7400.0,
+     "5": 29000.0,
+     "6": 23000.0,
      "7": 56000.0,
      "8": 83000.0,
-     "9": 66000.0
+     "9": 68000.0
     }
    },
    "records": {
-    "10": 550.0,
-    "11": 130.0,
-    "12": 8.4,
+    "10": 570.0,
+    "11": 120.0,
+    "12": 16.0,
     "13": 9.4,
     "2": 290.0,
-    "3": 140.0,
+    "3": 130.0,
     "4": 190.0,
     "5": 600.0,
     "6": 1600.0,
@@ -1775,53 +1757,53 @@
    },
    "start": {
     "assistant_text": 59.0,
-    "record:attachment:instructions": 7.4,
+    "record:attachment:instructions": 15.0,
     "record:attachment:remote_session_change": 7.4,
     "record:fork-context-ref": 300.0,
     "record:progress:hook_progress": 46.0,
-    "record:system:compact_boundary": 110.0,
+    "record:system:compact_boundary": 96.0,
     "user_text": 11000.0
    },
    "transitions": {
     "assistant_text": {
-     "assistant_text": 81.0,
-     "assistant_thinking": 90.0,
+     "assistant_text": 88.0,
+     "assistant_thinking": 76.0,
      "assistant_tool_use": 160000.0,
      "record:attachment:hook_non_blocking_error": 29.0,
      "record:progress:agent_progress": 7.4,
-     "record:progress:hook_progress": 380.0,
-     "record:system:local_command": 7.4,
-     "record:system:turn_duration": 230.0,
-     "user_text": 2400.0,
+     "record:progress:hook_progress": 180.0,
+     "record:system:local_command": 15.0,
+     "record:system:turn_duration": 200.0,
+     "user_text": 2500.0,
      "user_tool_result": 23.0
     },
     "assistant_thinking": {
-     "assistant_text": 36000.0,
-     "assistant_thinking": 20000.0,
+     "assistant_text": 38000.0,
+     "assistant_thinking": 15000.0,
      "assistant_tool_use": 180000.0,
      "record:system:local_command": 7.4,
      "user_text": 29.0
     },
     "assistant_tool_use": {
-     "assistant_text": 88.0,
+     "assistant_text": 96.0,
      "assistant_thinking": 7.4,
      "assistant_tool_use": 51000.0,
      "record:attachment:hook_blocking_error": 7.4,
      "record:attachment:hook_cancelled": 6700.0,
      "record:attachment:hook_non_blocking_error": 1400.0,
-     "record:attachment:hook_success": 1200.0,
-     "record:progress:agent_progress": 160.0,
+     "record:attachment:hook_success": 2300.0,
+     "record:progress:agent_progress": 180.0,
      "record:progress:bash_progress": 15.0,
      "record:progress:hook_progress": 61000.0,
      "record:progress:mcp_progress": 37.0,
      "record:progress:query_update": 490.0,
      "record:progress:search_results_received": 100.0,
-     "user_text": 30.0,
+     "user_text": 38.0,
      "user_tool_result": 480000.0
     },
     "record:attachment:agent_listing_delta": {
-     "record:attachment:mcp_instructions_delta": 980.0,
-     "record:attachment:total_tokens_reminder": 15.0
+     "record:attachment:mcp_instructions_delta": 960.0,
+     "record:attachment:total_tokens_reminder": 7.4
     },
     "record:attachment:auto_mode": {
      "assistant_text": 22.0,
@@ -1829,18 +1811,17 @@
      "record:attachment:total_tokens_reminder": 1200.0
     },
     "record:attachment:bash_output_audience_note": {
-     "assistant_tool_use": 7.4,
-     "record:attachment:hook_cancelled": 1100.0,
-     "record:attachment:total_tokens_reminder": 170.0,
-     "user_tool_result": 81.0
+     "record:attachment:hook_cancelled": 740.0,
+     "record:attachment:total_tokens_reminder": 150.0,
+     "user_tool_result": 29.0
     },
     "record:attachment:batching_reminder_sent": {
-     "assistant_text": 96.0,
-     "assistant_thinking": 620.0,
-     "assistant_tool_use": 320.0
+     "assistant_text": 88.0,
+     "assistant_thinking": 560.0,
+     "assistant_tool_use": 290.0
     },
     "record:attachment:command_permissions": {
-     "record:attachment:total_tokens_reminder": 7.4
+     "record:attachment:total_tokens_reminder": 15.0
     },
     "record:attachment:credential_org": {
      "record:attachment:remote_session_change": 7.4
@@ -1855,143 +1836,161 @@
     "record:attachment:deferred_tools_delta": {
      "assistant_text": 15.0,
      "assistant_thinking": 66.0,
-     "record:attachment:agent_listing_delta": 180.0,
-     "record:attachment:environment": 870.0,
-     "record:attachment:mcp_instructions_delta": 59.0,
+     "record:attachment:agent_listing_delta": 190.0,
+     "record:attachment:environment": 830.0,
+     "record:attachment:mcp_instructions_delta": 74.0,
      "record:attachment:skill_listing": 2800.0,
-     "user_text": 680.0
+     "user_text": 640.0
+    },
+    "record:attachment:deferred_tools_record": {
+     "assistant_thinking": 7.4,
+     "assistant_tool_use": 15.0
     },
     "record:attachment:edited_text_file": {
+     "assistant_text": 29.0,
      "assistant_thinking": 59.0,
-     "record:attachment:edited_text_file": 81.0,
+     "assistant_tool_use": 7.4,
+     "record:attachment:edited_text_file": 96.0,
      "record:attachment:nested_memory": 7.4,
      "record:attachment:queued_command": 7.4,
      "record:attachment:skill_listing": 7.4,
-     "record:attachment:total_tokens_reminder": 800.0
+     "record:attachment:task_reminder": 7.4,
+     "record:attachment:total_tokens_reminder": 850.0
     },
     "record:attachment:environment": {
-     "assistant_text": 7.4,
-     "assistant_thinking": 96.0,
+     "assistant_text": 22.0,
+     "assistant_thinking": 130.0,
      "assistant_tool_use": 29.0,
-     "record:attachment:model": 1100.0,
-     "record:attachment:thinking_drop": 15.0
+     "record:attachment:instructions": 7.4,
+     "record:attachment:model": 1100.0
+    },
+    "record:attachment:file": {
+     "record:attachment:deferred_tools_delta": 7.4,
+     "record:attachment:file": 29.0
+    },
+    "record:attachment:hook_additional_context": {
+     "assistant_tool_use": 7.4
     },
     "record:attachment:hook_blocking_error": {
      "user_tool_result": 7.4
     },
     "record:attachment:hook_cancelled": {
-     "assistant_tool_use": 15.0,
-     "record:attachment:deferred_tools_delta": 81.0,
+     "assistant_tool_use": 37.0,
+     "record:attachment:deferred_tools_delta": 74.0,
      "record:attachment:edited_text_file": 130.0,
-     "record:attachment:hook_cancelled": 1000.0,
+     "record:attachment:hook_cancelled": 800.0,
      "record:attachment:mcp_instructions_delta": 22.0,
-     "record:attachment:nested_memory": 29.0,
-     "record:attachment:queued_command": 66.0,
+     "record:attachment:nested_memory": 22.0,
+     "record:attachment:queued_command": 59.0,
      "record:attachment:skill_listing": 29.0,
-     "record:attachment:total_tokens_reminder": 5900.0,
-     "user_tool_result": 7900.0
+     "record:attachment:total_tokens_reminder": 5600.0,
+     "user_tool_result": 7600.0
     },
     "record:attachment:hook_non_blocking_error": {
-     "assistant_tool_use": 66.0,
-     "record:attachment:edited_text_file": 7.4,
-     "record:attachment:hook_non_blocking_error": 15.0,
-     "record:attachment:prompt_snapshot": 29.0,
-     "record:attachment:queued_command": 15.0,
-     "record:attachment:total_tokens_reminder": 1200.0,
+     "assistant_tool_use": 180.0,
+     "record:attachment:edited_text_file": 22.0,
+     "record:attachment:hook_non_blocking_error": 22.0,
+     "record:attachment:nested_memory": 7.4,
+     "record:attachment:prompt_snapshot": 37.0,
+     "record:attachment:queued_command": 22.0,
+     "record:attachment:total_tokens_reminder": 1100.0,
      "user_text": 29.0,
      "user_tool_result": 1400.0
     },
     "record:attachment:hook_success": {
-     "record:attachment:hook_system_message": 650.0,
-     "user_tool_result": 550.0
+     "record:attachment:hook_additional_context": 7.4,
+     "record:attachment:hook_success": 7.4,
+     "record:attachment:hook_system_message": 540.0,
+     "user_tool_result": 1800.0
     },
     "record:attachment:hook_system_message": {
-     "user_tool_result": 650.0
+     "user_tool_result": 540.0
     },
     "record:attachment:instructions": {
-     "assistant_thinking": 7.4,
+     "assistant_thinking": 15.0,
      "record:attachment:session_context": 1200.0
     },
     "record:attachment:mcp_instructions_delta": {
      "record:attachment:auto_mode": 1200.0,
-     "record:attachment:nested_memory": 15.0,
+     "record:attachment:hook_success": 7.4,
+     "record:attachment:nested_memory": 7.4,
      "record:attachment:plan_mode": 7.4,
-     "record:attachment:skill_listing": 59.0,
-     "record:attachment:total_tokens_reminder": 120.0,
-     "user_text": 7.4
+     "record:attachment:skill_listing": 74.0,
+     "record:attachment:total_tokens_reminder": 130.0
     },
     "record:attachment:model": {
-     "record:attachment:instructions": 220.0,
-     "record:attachment:skill_listing": 870.0
+     "record:attachment:instructions": 240.0,
+     "record:attachment:skill_listing": 830.0
     },
     "record:attachment:nested_memory": {
-     "record:attachment:auto_mode": 15.0,
+     "record:attachment:auto_mode": 7.4,
      "record:attachment:total_tokens_reminder": 96.0
     },
     "record:attachment:plan_mode": {
      "record:attachment:total_tokens_reminder": 7.4
     },
-    "record:attachment:plan_mode_exit": {
-     "record:attachment:total_tokens_reminder": 7.4
-    },
     "record:attachment:prompt_snapshot": {
-     "assistant_text": 890.0,
+     "assistant_text": 880.0,
      "assistant_thinking": 180.0,
      "assistant_tool_use": 15.0,
-     "record:attachment:agent_listing_delta": 740.0,
+     "record:attachment:agent_listing_delta": 710.0,
      "record:attachment:deferred_tools_delta": 7.4,
-     "record:attachment:mcp_instructions_delta": 320.0,
+     "record:attachment:mcp_instructions_delta": 340.0,
      "record:attachment:prompt_snapshot": 22.0,
      "user_text": 7.4
     },
     "record:attachment:queued_command": {
-     "record:attachment:edited_text_file": 37.0,
-     "record:attachment:queued_command": 390.0,
-     "record:attachment:total_tokens_reminder": 1500.0
+     "assistant_tool_use": 7.4,
+     "record:attachment:edited_text_file": 44.0,
+     "record:attachment:queued_command": 1300.0,
+     "record:attachment:skill_listing": 7.4,
+     "record:attachment:total_tokens_reminder": 2700.0
     },
     "record:attachment:read_truncation_notice": {
-     "assistant_thinking": 130.0,
-     "assistant_tool_use": 22.0,
+     "assistant_thinking": 150.0,
+     "assistant_tool_use": 37.0,
+     "record:attachment:prompt_snapshot": 7.4,
      "record:attachment:total_tokens_reminder": 7.4,
-     "user_tool_result": 22.0
+     "user_tool_result": 15.0
     },
     "record:attachment:remote_session_change": {
-     "assistant_text": 170.0,
+     "assistant_text": 190.0,
      "assistant_thinking": 120.0,
      "record:attachment:prompt_snapshot": 1100.0,
-     "user_text": 7.4
+     "user_text": 15.0
     },
     "record:attachment:session_context": {
      "record:attachment:date": 1300.0
     },
     "record:attachment:skill_listing": {
-     "assistant_text": 380.0,
+     "assistant_text": 420.0,
      "assistant_thinking": 3000.0,
-     "assistant_tool_use": 22.0,
+     "assistant_tool_use": 29.0,
      "record:attachment:auto_mode": 22.0,
-     "record:attachment:instructions": 960.0,
+     "record:attachment:instructions": 940.0,
      "record:attachment:queued_command": 15.0,
-     "record:attachment:remote_session_change": 66.0,
+     "record:attachment:remote_session_change": 74.0,
      "record:attachment:session_context": 88.0,
-     "record:attachment:total_tokens_reminder": 180.0,
+     "record:attachment:task_reminder": 7.4,
+     "record:attachment:total_tokens_reminder": 310.0,
      "user_text": 15.0
     },
     "record:attachment:task_reminder": {
-     "assistant_text": 22.0,
+     "assistant_text": 210.0,
      "assistant_thinking": 230.0,
-     "assistant_tool_use": 59.0
+     "assistant_tool_use": 150.0
     },
     "record:attachment:thinking_drop": {
-     "assistant_text": 15.0,
-     "assistant_thinking": 15.0,
-     "assistant_tool_use": 22.0
+     "assistant_thinking": 7.4,
+     "assistant_tool_use": 7.4
     },
     "record:attachment:total_tokens_reminder": {
-     "assistant_text": 9000.0,
-     "assistant_thinking": 46000.0,
-     "assistant_tool_use": 41000.0,
-     "record:attachment:batching_reminder_sent": 1000.0,
+     "assistant_text": 10000.0,
+     "assistant_thinking": 50000.0,
+     "assistant_tool_use": 46000.0,
+     "record:attachment:batching_reminder_sent": 940.0,
      "record:attachment:date": 52.0,
+     "record:attachment:deferred_tools_record": 22.0,
      "record:attachment:remote_session_change": 7.4,
      "user_text": 74.0
     },
@@ -1999,10 +1998,10 @@
      "assistant_tool_use": 300.0
     },
     "record:progress:agent_progress": {
-     "assistant_tool_use": 95.0,
-     "record:progress:agent_progress": 8900.0,
+     "assistant_tool_use": 110.0,
+     "record:progress:agent_progress": 13000.0,
      "record:progress:hook_progress": 7.4,
-     "user_tool_result": 90.0
+     "user_tool_result": 120.0
     },
     "record:progress:bash_progress": {
      "record:progress:bash_progress": 100000.0,
@@ -2010,22 +2009,22 @@
     },
     "record:progress:hook_progress": {
      "assistant_text": 23000.0,
-     "assistant_thinking": 52.0,
+     "assistant_thinking": 66.0,
      "assistant_tool_use": 8200.0,
-     "record:progress:bash_progress": 2800.0,
+     "record:progress:bash_progress": 2900.0,
      "record:progress:hook_progress": 32000.0,
-     "record:progress:mcp_progress": 29.0,
+     "record:progress:mcp_progress": 100.0,
      "record:progress:query_update": 96.0,
      "record:progress:search_results_received": 7.4,
-     "record:system:bridge_status": 100.0,
+     "record:system:bridge_status": 52.0,
      "record:system:compact_boundary": 7.4,
-     "record:system:stop_hook_summary": 260.0,
+     "record:system:stop_hook_summary": 130.0,
      "user_text": 69.0,
-     "user_tool_result": 78000.0
+     "user_tool_result": 77000.0
     },
     "record:progress:mcp_progress": {
-     "record:progress:mcp_progress": 22.0,
-     "user_tool_result": 66.0
+     "record:progress:mcp_progress": 81.0,
+     "user_tool_result": 140.0
     },
     "record:progress:query_update": {
      "assistant_tool_use": 290.0,
@@ -2046,71 +2045,70 @@
      "user_text": 3.0
     },
     "record:system:bridge_status": {
-     "user_text": 100.0
+     "user_text": 52.0
     },
     "record:system:compact_boundary": {
-     "user_text": 330.0
+     "user_text": 320.0
     },
     "record:system:local_command": {
      "assistant_text": 7.4,
-     "assistant_thinking": 7.4,
-     "record:system:local_command": 43.0,
-     "user_text": 32.0
+     "record:system:local_command": 36.0,
+     "user_text": 39.0
     },
     "record:system:stop_hook_summary": {
      "record:system:local_command": 2.0,
-     "record:system:turn_duration": 210.0,
-     "user_text": 51.0
+     "record:system:turn_duration": 110.0,
+     "user_text": 22.0
     },
     "record:system:turn_duration": {
      "record:system:local_command": 8.0,
-     "user_text": 420.0
+     "user_text": 310.0
     },
     "user_text": {
-     "assistant_text": 6000.0,
-     "assistant_thinking": 3100.0,
-     "assistant_tool_use": 400.0,
-     "record:attachment:command_permissions": 7.4,
+     "assistant_text": 5900.0,
+     "assistant_thinking": 3000.0,
+     "assistant_tool_use": 410.0,
+     "record:attachment:command_permissions": 15.0,
      "record:attachment:date": 7.4,
      "record:attachment:deferred_tools_delta": 4400.0,
-     "record:attachment:environment": 370.0,
+     "record:attachment:environment": 430.0,
+     "record:attachment:file": 7.4,
      "record:attachment:instructions": 37.0,
-     "record:attachment:skill_listing": 820.0,
-     "record:attachment:thinking_drop": 37.0,
-     "record:progress:hook_progress": 130.0,
+     "record:attachment:remote_session_change": 7.4,
+     "record:attachment:skill_listing": 780.0,
+     "record:attachment:thinking_drop": 15.0,
+     "record:progress:hook_progress": 110.0,
      "record:system:api_error": 6.0,
      "record:system:local_command": 15.0,
      "user_text": 1400.0,
      "user_tool_result": 16.0
     },
     "user_tool_result": {
-     "assistant_text": 99000.0,
+     "assistant_text": 96000.0,
      "assistant_thinking": 160000.0,
      "assistant_tool_use": 160000.0,
-     "record:attachment:agent_listing_delta": 74.0,
-     "record:attachment:bash_output_audience_note": 1300.0,
-     "record:attachment:deferred_tools_delta": 140.0,
-     "record:attachment:edited_text_file": 700.0,
-     "record:attachment:hook_cancelled": 6400.0,
-     "record:attachment:hook_non_blocking_error": 1300.0,
-     "record:attachment:hook_success": 44.0,
+     "record:attachment:agent_listing_delta": 66.0,
+     "record:attachment:bash_output_audience_note": 910.0,
+     "record:attachment:deferred_tools_delta": 180.0,
+     "record:attachment:edited_text_file": 780.0,
+     "record:attachment:hook_cancelled": 6200.0,
+     "record:attachment:hook_non_blocking_error": 1400.0,
+     "record:attachment:hook_success": 66.0,
      "record:attachment:mcp_instructions_delta": 44.0,
      "record:attachment:nested_memory": 59.0,
-     "record:attachment:plan_mode_exit": 7.4,
      "record:attachment:prompt_snapshot": 1000.0,
-     "record:attachment:queued_command": 1400.0,
-     "record:attachment:read_truncation_notice": 180.0,
-     "record:attachment:skill_listing": 230.0,
-     "record:attachment:task_reminder": 310.0,
-     "record:attachment:total_tokens_reminder": 86000.0,
-     "record:progress:agent_progress": 24.0,
+     "record:attachment:queued_command": 2700.0,
+     "record:attachment:read_truncation_notice": 210.0,
+     "record:attachment:skill_listing": 390.0,
+     "record:attachment:task_reminder": 570.0,
+     "record:attachment:total_tokens_reminder": 95000.0,
+     "record:progress:agent_progress": 46.0,
      "record:progress:hook_progress": 51000.0,
      "record:progress:query_update": 15.0,
      "record:progress:search_results_received": 88.0,
      "record:system:api_error": 48.0,
      "record:system:compact_boundary": 210.0,
-     "record:system:local_command": 7.4,
-     "user_text": 830.0,
+     "user_text": 890.0,
      "user_tool_result": 30000.0
     }
    }
@@ -2131,72 +2129,71 @@
  "template_strings": {
   "record:agent-name": {
    "2": 30.0,
-   "4": 8800.0,
+   "4": 9200.0,
    "5": 2400.0,
-   "6": 7100.0,
+   "6": 7800.0,
    "7": 6.0
   },
   "record:ai-title": {
    "4": 42000.0,
-   "5": 14000.0,
+   "5": 13000.0,
    "6": 69000.0,
    "7": 1300.0
   },
   "record:atis-latch": {
    "0": 24000.0,
-   "4": 32000.0,
+   "4": 31000.0,
    "5": 3200.0,
-   "6": 32000.0,
+   "6": 31000.0,
    "8": 4300.0
   },
   "record:attachment:agent_listing_delta": {
    "10": 1700.0,
-   "11": 2300.0,
-   "12": 780.0,
-   "13": 540.0,
-   "2": 1500.0,
-   "3": 7300.0,
-   "4": 4400.0,
+   "11": 2200.0,
+   "12": 730.0,
+   "13": 570.0,
+   "2": 1400.0,
+   "3": 7200.0,
+   "4": 4300.0,
    "5": 10000.0,
    "6": 6900.0,
    "7": 450.0,
-   "8": 2800.0,
-   "9": 910.0
+   "8": 2700.0,
+   "9": 890.0
   },
   "record:attachment:auto_mode": {
-   "10": 6.0,
    "2": 1700.0,
-   "3": 5600.0,
+   "3": 5500.0,
    "4": 6400.0,
-   "5": 6000.0,
+   "5": 5900.0,
    "6": 7300.0,
-   "7": 440.0,
+   "7": 450.0,
    "9": 1600.0
   },
   "record:attachment:auto_mode_exit": {
    "2": 120.0,
    "3": 280.0,
-   "4": 430.0,
-   "5": 330.0,
-   "6": 470.0,
-   "8": 6.0
+   "4": 420.0,
+   "5": 320.0,
+   "6": 460.0,
+   "8": 3.0
   },
   "record:attachment:bash_output_audience_note": {
-   "2": 3500.0,
-   "3": 6300.0,
-   "4": 7000.0,
-   "5": 15000.0,
-   "6": 14000.0,
-   "7": 770.0,
-   "8": 3500.0
+   "2": 2100.0,
+   "3": 3700.0,
+   "4": 4200.0,
+   "5": 9400.0,
+   "6": 8800.0,
+   "7": 340.0,
+   "8": 2100.0
   },
   "record:attachment:batching_reminder_sent": {
-   "2": 4400.0,
-   "3": 8400.0,
-   "4": 8900.0,
-   "5": 19000.0,
-   "6": 19000.0,
-   "7": 4700.0
+   "2": 2900.0,
+   "3": 5400.0,
+   "4": 6000.0,
+   "5": 13000.0,
+   "6": 13000.0,
+   "7": 3100.0
   },
   "record:attachment:command_permissions": {
    "2": 760.0,
@@ -2207,11 +2204,11 @@
    "7": 3.0
   },
   "record:attachment:compact_file_reference": {
-   "2": 670.0,
-   "3": 980.0,
+   "2": 680.0,
+   "3": 990.0,
    "4": 1300.0,
    "5": 2600.0,
-   "6": 3500.0,
+   "6": 3600.0,
    "7": 560.0,
    "8": 100.0,
    "9": 24.0
@@ -2228,42 +2225,42 @@
    "2": 1400.0,
    "3": 5000.0,
    "4": 5400.0,
-   "5": 5500.0,
+   "5": 5400.0,
    "6": 6100.0,
    "7": 2200.0,
-   "8": 89.0
+   "8": 86.0
   },
   "record:attachment:date_change": {
    "2": 220.0,
    "3": 330.0,
-   "4": 870.0,
+   "4": 880.0,
    "5": 530.0,
-   "6": 900.0,
+   "6": 920.0,
    "7": 6.0
   },
   "record:attachment:deferred_tools_delta": {
-   "10": 220.0,
+   "10": 230.0,
    "11": 9.0,
    "12": 1100.0,
-   "13": 310.0,
+   "13": 300.0,
    "2": 5600.0,
-   "3": 16000.0,
-   "4": 53000.0,
+   "3": 17000.0,
+   "4": 52000.0,
    "5": 26000.0,
    "6": 23000.0,
-   "7": 1700.0,
+   "7": 1600.0,
    "9": 27.0
   },
   "record:attachment:deferred_tools_record": {
-   "10": 30.0,
+   "10": 24.0,
    "11": 39.0,
-   "12": 27.0,
+   "12": 21.0,
    "13": 220.0,
-   "2": 200.0,
-   "3": 1600.0,
-   "4": 1600.0,
-   "5": 1100.0,
-   "6": 2000.0,
+   "2": 160.0,
+   "3": 1500.0,
+   "4": 1500.0,
+   "5": 960.0,
+   "6": 1900.0,
    "7": 220.0,
    "8": 6.0,
    "9": 120.0
@@ -2292,74 +2289,73 @@
    "9": 15.0
   },
   "record:attachment:edited_text_file": {
-   "0": 190.0,
-   "10": 410.0,
-   "11": 440.0,
-   "12": 280.0,
-   "13": 1900.0,
+   "0": 150.0,
+   "10": 450.0,
+   "11": 480.0,
+   "12": 300.0,
+   "13": 2100.0,
    "14": 2000.0,
-   "2": 3800.0,
-   "3": 6700.0,
-   "4": 8400.0,
-   "5": 15000.0,
-   "6": 18000.0,
-   "7": 2800.0,
-   "8": 200.0,
-   "9": 270.0
+   "2": 4000.0,
+   "3": 7000.0,
+   "4": 8800.0,
+   "5": 16000.0,
+   "6": 19000.0,
+   "7": 2900.0,
+   "8": 220.0,
+   "9": 230.0
   },
   "record:attachment:environment": {
    "10": 1900.0,
-   "11": 510.0,
+   "11": 490.0,
    "2": 7000.0,
    "3": 18000.0,
    "4": 25000.0,
    "5": 19000.0,
    "6": 19000.0,
-   "7": 6600.0,
+   "7": 6500.0,
    "8": 1900.0,
    "9": 250.0
   },
   "record:attachment:file": {
    "10": 66.0,
-   "11": 96.0,
-   "12": 190.0,
-   "13": 270.0,
-   "14": 200.0,
+   "11": 100.0,
+   "12": 200.0,
+   "13": 280.0,
+   "14": 220.0,
    "15": 36.0,
    "16": 3.0,
    "17": 3.0,
-   "2": 1000.0,
-   "20": 3.0,
-   "3": 3400.0,
-   "4": 2000.0,
-   "5": 2800.0,
-   "6": 5200.0,
-   "7": 1500.0,
-   "8": 470.0,
+   "2": 1100.0,
+   "3": 3500.0,
+   "4": 2100.0,
+   "5": 3000.0,
+   "6": 5500.0,
+   "7": 1600.0,
+   "8": 460.0,
    "9": 54.0
   },
   "record:attachment:goal_status": {
-   "10": 460.0,
-   "11": 400.0,
+   "10": 530.0,
+   "11": 410.0,
    "12": 12.0,
-   "2": 830.0,
-   "3": 1200.0,
-   "4": 2500.0,
-   "5": 2200.0,
-   "6": 3400.0,
-   "7": 430.0,
+   "2": 860.0,
+   "3": 1300.0,
+   "4": 2600.0,
+   "5": 2300.0,
+   "6": 3500.0,
+   "7": 420.0,
    "8": 90.0,
-   "9": 72.0
+   "9": 69.0
   },
   "record:attachment:hook_additional_context": {
-   "10": 640.0,
+   "10": 660.0,
    "12": 12.0,
    "13": 460.0,
-   "2": 760.0,
+   "2": 770.0,
    "3": 1400.0,
-   "4": 4000.0,
-   "5": 2700.0,
-   "6": 2800.0,
+   "4": 4100.0,
+   "5": 2800.0,
+   "6": 2900.0,
    "8": 81.0,
    "9": 93.0
   },
@@ -2372,8 +2368,8 @@
    "8": 3.0
   },
   "record:attachment:hook_cancelled": {
-   "2": 22000.0,
-   "3": 58000.0,
+   "2": 21000.0,
+   "3": 57000.0,
    "4": 140000.0,
    "5": 120000.0,
    "6": 150000.0,
@@ -2381,72 +2377,71 @@
    "8": 12.0
   },
   "record:attachment:hook_non_blocking_error": {
-   "0": 9100.0,
+   "0": 9200.0,
    "10": 4200.0,
    "11": 110.0,
    "12": 21.0,
-   "2": 4500.0,
+   "2": 4600.0,
    "3": 16000.0,
    "4": 31000.0,
-   "5": 38000.0,
-   "6": 45000.0,
+   "5": 39000.0,
+   "6": 46000.0,
    "7": 8200.0,
    "8": 3700.0,
    "9": 9.0
   },
   "record:attachment:hook_success": {
-   "0": 52000.0,
+   "0": 54000.0,
    "10": 1700.0,
-   "11": 1000.0,
+   "11": 1100.0,
    "12": 12.0,
    "13": 510.0,
    "14": 130.0,
-   "15": 39.0,
+   "15": 45.0,
    "16": 160.0,
-   "2": 26000.0,
-   "3": 40000.0,
+   "2": 27000.0,
+   "3": 41000.0,
    "4": 130000.0,
-   "5": 100000.0,
+   "5": 110000.0,
    "6": 150000.0,
-   "7": 5000.0,
-   "8": 3600.0,
-   "9": 660.0
+   "7": 4700.0,
+   "8": 3300.0,
+   "9": 670.0
   },
   "record:attachment:hook_system_message": {
-   "2": 3500.0,
-   "3": 5300.0,
-   "4": 11000.0,
-   "5": 20000.0,
-   "6": 16000.0,
+   "2": 3300.0,
+   "3": 4900.0,
+   "4": 9900.0,
+   "5": 18000.0,
+   "6": 15000.0,
    "7": 1900.0,
-   "8": 1800.0
+   "8": 1600.0
   },
   "record:attachment:instructions": {
    "10": 3.0,
-   "11": 10.0,
-   "12": 170.0,
-   "13": 670.0,
+   "11": 7.4,
+   "12": 200.0,
+   "13": 610.0,
    "14": 3600.0,
    "15": 1300.0,
-   "16": 690.0,
+   "16": 720.0,
    "2": 1300.0,
-   "3": 7900.0,
-   "4": 5100.0,
-   "5": 6700.0,
+   "3": 7800.0,
+   "4": 5000.0,
+   "5": 6600.0,
    "6": 6900.0,
    "7": 2300.0,
-   "8": 6.0,
    "9": 54.0
   },
   "record:attachment:invoked_skills": {
    "10": 3.0,
    "11": 18.0,
    "12": 100.0,
-   "13": 180.0,
+   "13": 170.0,
    "14": 160.0,
-   "15": 200.0,
-   "2": 260.0,
-   "3": 490.0,
+   "15": 190.0,
+   "2": 250.0,
+   "3": 480.0,
    "4": 1000.0,
    "5": 1300.0,
    "6": 1400.0,
@@ -2461,33 +2456,33 @@
    "4": 10000.0,
    "5": 12000.0,
    "6": 10000.0,
-   "7": 490.0,
-   "8": 360.0,
-   "9": 980.0
+   "7": 500.0,
+   "8": 370.0,
+   "9": 1000.0
   },
   "record:attachment:model": {
    "2": 1100.0,
    "3": 4500.0,
-   "4": 5200.0,
-   "5": 6500.0,
-   "6": 5000.0,
+   "4": 5100.0,
+   "5": 6300.0,
+   "6": 4900.0,
    "7": 940.0,
-   "8": 2500.0
+   "8": 2400.0
   },
   "record:attachment:nested_memory": {
    "10": 15.0,
    "11": 27.0,
    "12": 30.0,
    "13": 33.0,
-   "14": 230.0,
+   "14": 210.0,
    "15": 21.0,
    "16": 15.0,
    "2": 280.0,
-   "3": 630.0,
-   "4": 970.0,
-   "5": 740.0,
-   "6": 1500.0,
-   "7": 560.0,
+   "3": 610.0,
+   "4": 950.0,
+   "5": 720.0,
+   "6": 1400.0,
+   "7": 540.0,
    "8": 3.0,
    "9": 6.0
   },
@@ -2521,13 +2516,13 @@
    "7": 67.0
   },
   "record:attachment:plan_mode_exit": {
-   "2": 110.0,
-   "3": 210.0,
-   "4": 340.0,
-   "5": 280.0,
-   "6": 480.0,
-   "7": 58.0,
-   "8": 10.0
+   "2": 100.0,
+   "3": 200.0,
+   "4": 310.0,
+   "5": 260.0,
+   "6": 450.0,
+   "7": 51.0,
+   "8": 3.0
   },
   "record:attachment:plan_mode_reentry": {
    "2": 15.0,
@@ -2538,98 +2533,98 @@
    "7": 12.0
   },
   "record:attachment:prompt_snapshot": {
-   "10": 5500.0,
-   "11": 6200.0,
+   "10": 5400.0,
+   "11": 6100.0,
    "12": 65.0,
-   "13": 230.0,
-   "14": 350.0,
-   "15": 1700.0,
+   "13": 240.0,
+   "14": 380.0,
+   "15": 1600.0,
    "16": 15.0,
-   "2": 2300.0,
+   "2": 2200.0,
    "3": 20000.0,
-   "4": 12000.0,
-   "5": 8900.0,
+   "4": 11000.0,
+   "5": 8700.0,
    "6": 20000.0,
-   "7": 1600.0,
-   "8": 380.0,
-   "9": 5400.0
+   "7": 1500.0,
+   "8": 400.0,
+   "9": 5300.0
   },
   "record:attachment:queued_command": {
    "1": 3.0,
-   "10": 6500.0,
-   "11": 5800.0,
-   "12": 1400.0,
-   "13": 1200.0,
-   "14": 1400.0,
-   "15": 500.0,
+   "10": 8800.0,
+   "11": 7600.0,
+   "12": 1500.0,
+   "13": 1100.0,
+   "14": 1100.0,
+   "15": 480.0,
    "16": 57.0,
    "18": 6.0,
    "19": 9.0,
-   "2": 17000.0,
-   "3": 38000.0,
-   "4": 57000.0,
-   "5": 76000.0,
-   "6": 80000.0,
-   "7": 3400.0,
-   "8": 2400.0,
-   "9": 9800.0
+   "2": 19000.0,
+   "3": 42000.0,
+   "4": 63000.0,
+   "5": 88000.0,
+   "6": 87000.0,
+   "7": 3500.0,
+   "8": 2700.0,
+   "9": 12000.0
   },
   "record:attachment:read_truncation_notice": {
-   "2": 230.0,
-   "3": 350.0,
-   "4": 480.0,
-   "5": 1200.0,
-   "6": 890.0,
-   "7": 100.0,
-   "9": 250.0
+   "2": 260.0,
+   "3": 400.0,
+   "4": 540.0,
+   "5": 1300.0,
+   "6": 990.0,
+   "7": 110.0,
+   "9": 280.0
   },
   "record:attachment:remote_session_change": {
-   "10": 710.0,
-   "2": 1400.0,
-   "3": 2500.0,
+   "10": 680.0,
+   "2": 1500.0,
+   "3": 2600.0,
    "4": 3000.0,
    "5": 6600.0,
-   "6": 6300.0,
-   "7": 1800.0,
+   "6": 6400.0,
+   "7": 1900.0,
    "8": 1300.0,
-   "9": 690.0
+   "9": 710.0
   },
   "record:attachment:session_context": {
    "10": 1700.0,
    "11": 1600.0,
-   "12": 12.0,
-   "2": 1400.0,
+   "12": 6.0,
+   "2": 1300.0,
    "3": 3100.0,
-   "4": 5200.0,
-   "5": 5200.0,
+   "4": 5100.0,
+   "5": 5100.0,
    "6": 5800.0,
    "7": 480.0,
    "9": 1700.0
   },
   "record:attachment:silent_turn_reminder": {
-   "2": 380.0,
-   "3": 730.0,
-   "4": 780.0,
-   "5": 1200.0,
-   "6": 1600.0,
-   "7": 390.0,
-   "8": 380.0
+   "2": 190.0,
+   "3": 360.0,
+   "4": 390.0,
+   "5": 620.0,
+   "6": 840.0,
+   "7": 200.0,
+   "8": 190.0
   },
   "record:attachment:skill_listing": {
-   "10": 77.0,
-   "11": 65.0,
-   "12": 38.0,
+   "10": 83.0,
+   "11": 59.0,
+   "12": 9.0,
    "13": 930.0,
-   "14": 5100.0,
-   "15": 1100.0,
-   "2": 5700.0,
+   "14": 5300.0,
+   "15": 920.0,
+   "2": 5800.0,
    "3": 16000.0,
    "4": 26000.0,
    "5": 28000.0,
-   "6": 22000.0,
+   "6": 23000.0,
    "7": 1600.0,
-   "8": 340.0,
-   "9": 310.0
+   "8": 430.0,
+   "9": 430.0
   },
   "record:attachment:structured_output": {
    "10": 340.0,
@@ -2643,14 +2638,14 @@
    "9": 800.0
   },
   "record:attachment:task_reminder": {
-   "1": 19000.0,
-   "10": 340.0,
-   "11": 250.0,
-   "2": 21000.0,
-   "3": 34000.0,
-   "4": 73000.0,
-   "5": 54000.0,
-   "6": 99000.0,
+   "1": 20000.0,
+   "10": 880.0,
+   "11": 800.0,
+   "2": 23000.0,
+   "3": 35000.0,
+   "4": 77000.0,
+   "5": 57000.0,
+   "6": 100000.0,
    "7": 6400.0,
    "8": 9800.0,
    "9": 5800.0
@@ -2664,20 +2659,13 @@
    "7": 330.0,
    "9": 93.0
   },
-  "record:attachment:thinking_drop": {
-   "2": 52.0,
-   "3": 210.0,
-   "4": 380.0,
-   "5": 350.0,
-   "6": 160.0
-  },
   "record:attachment:total_tokens_reminder": {
-   "2": 180000.0,
-   "3": 370000.0,
-   "4": 440000.0,
-   "5": 820000.0,
+   "2": 190000.0,
+   "3": 390000.0,
+   "4": 460000.0,
+   "5": 860000.0,
    "6": 1100000.0,
-   "7": 210000.0,
+   "7": 220000.0,
    "8": 90.0
   },
   "record:attachment:ultrathink_effort": {
@@ -2691,25 +2679,25 @@
   "record:bridge-session": {
    "4": 36000.0,
    "5": 36000.0,
-   "6": 89000.0
+   "6": 86000.0
   },
   "record:cost-state": {
-   "4": 87.0,
-   "6": 87.0
+   "4": 75.0,
+   "6": 75.0
   },
   "record:custom-title": {
    "2": 30.0,
    "3": 240.0,
-   "4": 8500.0,
+   "4": 9400.0,
    "5": 1400.0,
-   "6": 6600.0,
-   "7": 700.0
+   "6": 7900.0,
+   "7": 1300.0
   },
   "record:file-history-delta": {
    "4": 190.0,
-   "5": 9700.0,
-   "6": 7000.0,
-   "7": 1800.0,
+   "5": 9900.0,
+   "6": 7200.0,
+   "7": 1700.0,
    "8": 210.0
   },
   "record:file-history-snapshot": {
@@ -2719,8 +2707,8 @@
    "7": 34000.0
   },
   "record:fork-context-ref": {
-   "5": 590.0,
-   "6": 590.0
+   "5": 610.0,
+   "6": 610.0
   },
   "record:frame-link": {
    "4": 230.0,
@@ -2732,7 +2720,7 @@
   "record:last-prompt": {
    "1": 140.0,
    "2": 370.0,
-   "3": 910.0,
+   "3": 870.0,
    "4": 76000.0,
    "5": 2500.0,
    "6": 130000.0,
@@ -2740,48 +2728,48 @@
    "8": 42000.0
   },
   "record:mode": {
-   "3": 83000.0,
+   "3": 82000.0,
    "6": 41000.0
   },
   "record:permission-mode": {
    "3": 23000.0,
    "4": 46000.0,
    "5": 20000.0,
-   "6": 44000.0
+   "6": 45000.0
   },
   "record:pr-link": {
    "3": 34000.0,
    "4": 6400.0,
-   "5": 61000.0,
-   "6": 67000.0
+   "5": 62000.0,
+   "6": 68000.0
   },
   "record:progress:agent_progress": {
-   "0": 34000.0,
+   "0": 39000.0,
    "1": 120.0,
    "10": 34000.0,
    "11": 33000.0,
-   "12": 13000.0,
+   "12": 14000.0,
    "13": 10000.0,
-   "14": 4500.0,
-   "15": 2700.0,
-   "16": 940.0,
+   "14": 4700.0,
+   "15": 2800.0,
+   "16": 1000.0,
    "17": 87.0,
    "2": 11000.0,
-   "3": 500000.0,
-   "4": 650000.0,
-   "5": 860000.0,
-   "6": 550000.0,
-   "7": 6900.0,
-   "8": 5800.0,
+   "3": 510000.0,
+   "4": 680000.0,
+   "5": 910000.0,
+   "6": 570000.0,
+   "7": 7600.0,
+   "8": 6200.0,
    "9": 11000.0
   },
   "record:progress:bash_progress": {
-   "0": 630000.0,
-   "1": 740.0,
+   "0": 620000.0,
+   "1": 720.0,
    "10": 15000.0,
    "11": 7300.0,
    "12": 10000.0,
-   "13": 10000.0,
+   "13": 11000.0,
    "14": 1100.0,
    "15": 24.0,
    "17": 3.0,
@@ -2792,14 +2780,14 @@
    "4": 1400000.0,
    "5": 2000000.0,
    "6": 1300000.0,
-   "7": 16000.0,
-   "8": 43000.0,
+   "7": 19000.0,
+   "8": 44000.0,
    "9": 37000.0
   },
   "record:progress:hook_progress": {
    "0": 3.0,
-   "10": 11000.0,
-   "2": 26000.0,
+   "10": 10000.0,
+   "2": 24000.0,
    "3": 660000.0,
    "4": 1400000.0,
    "5": 1600000.0,
@@ -2807,10 +2795,10 @@
    "7": 930.0
   },
   "record:progress:mcp_progress": {
-   "3": 920.0,
-   "4": 1400.0,
-   "5": 2200.0,
-   "6": 1000.0
+   "3": 1400.0,
+   "4": 1900.0,
+   "5": 3100.0,
+   "6": 1400.0
   },
   "record:progress:query_update": {
    "3": 2600.0,
@@ -2836,11 +2824,11 @@
   },
   "record:queue-operation": {
    "1": 12.0,
-   "10": 5400.0,
-   "11": 2700.0,
-   "12": 4000.0,
+   "10": 5100.0,
+   "11": 2600.0,
+   "12": 3900.0,
    "13": 2600.0,
-   "14": 2800.0,
+   "14": 2700.0,
    "15": 1200.0,
    "16": 210.0,
    "17": 1500.0,
@@ -2850,13 +2838,13 @@
    "20": 18.0,
    "21": 9.0,
    "22": 9.0,
-   "3": 140000.0,
-   "4": 140000.0,
+   "3": 130000.0,
+   "4": 130000.0,
    "5": 160000.0,
    "6": 140000.0,
-   "7": 2400.0,
+   "7": 2300.0,
    "8": 16000.0,
-   "9": 27000.0
+   "9": 25000.0
   },
   "record:summary": {
    "3": 9000.0,
@@ -2879,27 +2867,27 @@
    "2": 2100.0,
    "3": 5400.0,
    "4": 4100.0,
-   "5": 4700.0,
-   "6": 7000.0,
+   "5": 4800.0,
+   "6": 7100.0,
    "7": 30.0,
-   "8": 950.0,
+   "8": 980.0,
    "9": 1100.0
   },
   "record:system:bridge_status": {
    "2": 230.0,
-   "3": 1400.0,
-   "4": 990.0,
-   "5": 1300.0,
-   "6": 2000.0,
-   "7": 490.0
+   "3": 1200.0,
+   "4": 880.0,
+   "5": 1100.0,
+   "6": 1700.0,
+   "7": 440.0
   },
   "record:system:compact_boundary": {
    "0": 3.0,
-   "2": 570.0,
-   "3": 7100.0,
+   "2": 560.0,
+   "3": 7000.0,
    "4": 2400.0,
-   "5": 7400.0,
-   "6": 9400.0,
+   "5": 7300.0,
+   "6": 9100.0,
    "7": 68.0
   },
   "record:system:informational": {
@@ -2921,9 +2909,9 @@
    "15": 3.0,
    "16": 24.0,
    "2": 1100.0,
-   "3": 5900.0,
+   "3": 5800.0,
    "4": 3200.0,
-   "5": 4100.0,
+   "5": 4000.0,
    "6": 5400.0,
    "7": 600.0,
    "8": 660.0,
@@ -2948,31 +2936,31 @@
   "record:system:scheduled_task_fire": {
    "2": 480.0,
    "3": 1300.0,
-   "4": 490.0,
+   "4": 480.0,
    "5": 1700.0,
    "6": 2300.0,
-   "7": 15.0
+   "7": 9.0
   },
   "record:system:stop_hook_summary": {
-   "0": 18000.0,
-   "10": 140.0,
+   "0": 17000.0,
+   "10": 260.0,
    "11": 270.0,
    "12": 9.0,
-   "2": 15000.0,
-   "3": 47000.0,
-   "4": 37000.0,
-   "5": 64000.0,
+   "2": 14000.0,
+   "3": 46000.0,
+   "4": 36000.0,
+   "5": 61000.0,
    "6": 110000.0,
    "7": 2000.0,
    "8": 4200.0,
-   "9": 130.0
+   "9": 120.0
   },
   "record:system:turn_duration": {
-   "2": 11000.0,
-   "3": 36000.0,
-   "4": 26000.0,
-   "5": 34000.0,
-   "6": 44000.0,
+   "2": 10000.0,
+   "3": 34000.0,
+   "4": 25000.0,
+   "5": 32000.0,
+   "6": 42000.0,
    "7": 270.0,
    "8": 3.0
   }
@@ -2985,7 +2973,7 @@
      "sessionId": "str",
      "type": "str"
     },
-    "weight": 6100.0
+    "weight": 6500.0
    }
   ],
   "record:ai-title": [
@@ -3005,7 +2993,7 @@
      "sessionId": "str",
      "type": "str"
     },
-    "weight": 32000.0
+    "weight": 31000.0
    }
   ],
   "record:attachment:agent_listing_delta": [
@@ -3042,40 +3030,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 600.0
-   },
-   {
-    "skeleton": {
-     "attachment": {
-      "addedLines": [
-       "str"
-      ],
-      "addedTypes": [
-       "str"
-      ],
-      "isInitial": "bool",
-      "removedTypes": [],
-      "showConcurrencyNote": "bool",
-      "type": "str"
-     },
-     "cwd": "str",
-     "entrypoint": "str",
-     "gitBranch": "str",
-     "isSidechain": "bool",
-     "parentUuid": "str",
-     "rendered": [
-      {
-       "content": "str"
-      }
-     ],
-     "sessionId": "str",
-     "timestamp": "str",
-     "type": "str",
-     "userType": "str",
-     "uuid": "str",
-     "version": "str"
-    },
-    "weight": 360.0
+    "weight": 560.0
    },
    {
     "skeleton": {
@@ -3109,7 +3064,40 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 350.0
+    "weight": 360.0
+   },
+   {
+    "skeleton": {
+     "attachment": {
+      "addedLines": [
+       "str"
+      ],
+      "addedTypes": [
+       "str"
+      ],
+      "isInitial": "bool",
+      "removedTypes": [],
+      "showConcurrencyNote": "bool",
+      "type": "str"
+     },
+     "cwd": "str",
+     "entrypoint": "str",
+     "gitBranch": "str",
+     "isSidechain": "bool",
+     "parentUuid": "str",
+     "rendered": [
+      {
+       "content": "str"
+      }
+     ],
+     "sessionId": "str",
+     "timestamp": "str",
+     "type": "str",
+     "userType": "str",
+     "uuid": "str",
+     "version": "str"
+    },
+    "weight": 360.0
    },
    {
     "skeleton": {
@@ -3170,7 +3158,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 800.0
+    "weight": 770.0
    },
    {
     "skeleton": {
@@ -3200,7 +3188,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 400.0
+    "weight": 410.0
    },
    {
     "skeleton": {
@@ -3229,7 +3217,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 290.0
+    "weight": 280.0
    },
    {
     "skeleton": {
@@ -3296,32 +3284,6 @@
   "record:attachment:bash_output_audience_note": [
    {
     "skeleton": {
-     "attachment": {
-      "toolUseID": "str",
-      "type": "str"
-     },
-     "cwd": "str",
-     "entrypoint": "str",
-     "gitBranch": "str",
-     "isSidechain": "bool",
-     "parentUuid": "str",
-     "rendered": [
-      {
-       "content": "str"
-      }
-     ],
-     "sessionId": "str",
-     "session_id": "str",
-     "timestamp": "str",
-     "type": "str",
-     "userType": "str",
-     "uuid": "str",
-     "version": "str"
-    },
-    "weight": 1200.0
-   },
-   {
-    "skeleton": {
      "agentId": "str",
      "attachment": {
       "toolUseID": "str",
@@ -3345,7 +3307,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 1200.0
+    "weight": 770.0
    },
    {
     "skeleton": {
@@ -3365,64 +3327,18 @@
      ],
      "sessionId": "str",
      "session_id": "str",
-     "slug": "str",
      "timestamp": "str",
      "type": "str",
      "userType": "str",
      "uuid": "str",
      "version": "str"
     },
-    "weight": 900.0
+    "weight": 270.0
    }
   ],
   "record:attachment:batching_reminder_sent": [
    {
     "skeleton": {
-     "attachment": {
-      "model": "str",
-      "text": "str",
-      "type": "str"
-     },
-     "cwd": "str",
-     "entrypoint": "str",
-     "gitBranch": "str",
-     "isSidechain": "bool",
-     "parentUuid": "str",
-     "sessionId": "str",
-     "session_id": "str",
-     "timestamp": "str",
-     "type": "str",
-     "userType": "str",
-     "uuid": "str",
-     "version": "str"
-    },
-    "weight": 1800.0
-   },
-   {
-    "skeleton": {
-     "attachment": {
-      "model": "str",
-      "text": "str",
-      "type": "str"
-     },
-     "cwd": "str",
-     "entrypoint": "str",
-     "gitBranch": "str",
-     "isSidechain": "bool",
-     "parentUuid": "str",
-     "sessionId": "str",
-     "session_id": "str",
-     "slug": "str",
-     "timestamp": "str",
-     "type": "str",
-     "userType": "str",
-     "uuid": "str",
-     "version": "str"
-    },
-    "weight": 1600.0
-   },
-   {
-    "skeleton": {
      "agentId": "str",
      "attachment": {
       "model": "str",
@@ -3442,7 +3358,29 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 790.0
+    "weight": 700.0
+   },
+   {
+    "skeleton": {
+     "attachment": {
+      "model": "str",
+      "text": "str",
+      "type": "str"
+     },
+     "cwd": "str",
+     "entrypoint": "str",
+     "gitBranch": "str",
+     "isSidechain": "bool",
+     "parentUuid": "str",
+     "sessionId": "str",
+     "session_id": "str",
+     "timestamp": "str",
+     "type": "str",
+     "userType": "str",
+     "uuid": "str",
+     "version": "str"
+    },
+    "weight": 400.0
    }
   ],
   "record:attachment:command_permissions": [
@@ -3506,7 +3444,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 63.0
+    "weight": 51.0
    },
    {
     "skeleton": {
@@ -3658,7 +3596,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 880.0
+    "weight": 850.0
    },
    {
     "skeleton": {
@@ -3684,7 +3622,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 430.0
+    "weight": 460.0
    },
    {
     "skeleton": {
@@ -3737,7 +3675,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 44.0
+    "weight": 37.0
    }
   ],
   "record:attachment:date_change": [
@@ -3802,7 +3740,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 57.0
+    "weight": 60.0
    },
    {
     "skeleton": {
@@ -3854,7 +3792,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 1900.0
+    "weight": 1800.0
    },
    {
     "skeleton": {
@@ -3917,7 +3855,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 670.0
+    "weight": 640.0
    },
    {
     "skeleton": {
@@ -3951,7 +3889,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 390.0
+    "weight": 400.0
    }
   ],
   "record:attachment:deferred_tools_record": [
@@ -4050,13 +3988,14 @@
      "parentUuid": "str",
      "sessionId": "str",
      "session_id": "str",
+     "slug": "str",
      "timestamp": "str",
      "type": "str",
      "userType": "str",
      "uuid": "str",
      "version": "str"
     },
-    "weight": 33.0
+    "weight": 27.0
    },
    {
     "skeleton": {
@@ -4086,14 +4025,13 @@
      "parentUuid": "str",
      "sessionId": "str",
      "session_id": "str",
-     "slug": "str",
      "timestamp": "str",
      "type": "str",
      "userType": "str",
      "uuid": "str",
      "version": "str"
     },
-    "weight": 33.0
+    "weight": 21.0
    }
   ],
   "record:attachment:diagnostics": [
@@ -4278,30 +4216,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 1200.0
-   },
-   {
-    "skeleton": {
-     "attachment": {
-      "filename": "str",
-      "snippet": "str",
-      "type": "str"
-     },
-     "cwd": "str",
-     "entrypoint": "str",
-     "gitBranch": "str",
-     "isSidechain": "bool",
-     "parentUuid": "str",
-     "sessionId": "str",
-     "session_id": "str",
-     "slug": "str",
-     "timestamp": "str",
-     "type": "str",
-     "userType": "str",
-     "uuid": "str",
-     "version": "str"
-    },
-    "weight": 710.0
+    "weight": 1300.0
    },
    {
     "skeleton": {
@@ -4329,7 +4244,30 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 670.0
+    "weight": 750.0
+   },
+   {
+    "skeleton": {
+     "attachment": {
+      "filename": "str",
+      "snippet": "str",
+      "type": "str"
+     },
+     "cwd": "str",
+     "entrypoint": "str",
+     "gitBranch": "str",
+     "isSidechain": "bool",
+     "parentUuid": "str",
+     "sessionId": "str",
+     "session_id": "str",
+     "slug": "str",
+     "timestamp": "str",
+     "type": "str",
+     "userType": "str",
+     "uuid": "str",
+     "version": "str"
+    },
+    "weight": 710.0
    },
    {
     "skeleton": {
@@ -4397,7 +4335,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 1700.0
+    "weight": 1600.0
    },
    {
     "skeleton": {
@@ -4435,7 +4373,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 740.0
+    "weight": 700.0
    },
    {
     "skeleton": {
@@ -4519,7 +4457,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 550.0
+    "weight": 520.0
    }
   ],
   "record:attachment:file": [
@@ -4554,7 +4492,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 600.0
+    "weight": 610.0
    },
    {
     "skeleton": {
@@ -4617,7 +4555,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 33.0
+    "weight": 42.0
    },
    {
     "skeleton": {
@@ -4697,6 +4635,28 @@
      "isSidechain": "bool",
      "parentUuid": "str",
      "sessionId": "str",
+     "timestamp": "str",
+     "type": "str",
+     "userType": "str",
+     "uuid": "str",
+     "version": "str"
+    },
+    "weight": 130.0
+   },
+   {
+    "skeleton": {
+     "attachment": {
+      "condition": "str",
+      "met": "bool",
+      "reason": "str",
+      "type": "str"
+     },
+     "cwd": "str",
+     "entrypoint": "str",
+     "gitBranch": "str",
+     "isSidechain": "bool",
+     "parentUuid": "str",
+     "sessionId": "str",
      "slug": "str",
      "timestamp": "str",
      "type": "str",
@@ -4712,28 +4672,6 @@
       "condition": "str",
       "met": "bool",
       "sentinel": "bool",
-      "type": "str"
-     },
-     "cwd": "str",
-     "entrypoint": "str",
-     "gitBranch": "str",
-     "isSidechain": "bool",
-     "parentUuid": "str",
-     "sessionId": "str",
-     "timestamp": "str",
-     "type": "str",
-     "userType": "str",
-     "uuid": "str",
-     "version": "str"
-    },
-    "weight": 90.0
-   },
-   {
-    "skeleton": {
-     "attachment": {
-      "condition": "str",
-      "met": "bool",
-      "reason": "str",
       "type": "str"
      },
      "cwd": "str",
@@ -4775,7 +4713,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 630.0
+    "weight": 640.0
    },
    {
     "skeleton": {
@@ -4912,7 +4850,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 6500.0
+    "weight": 6100.0
    },
    {
     "skeleton": {
@@ -4936,7 +4874,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 6100.0
+    "weight": 5600.0
    },
    {
     "skeleton": {
@@ -5241,7 +5179,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 620.0
+    "weight": 590.0
    },
    {
     "skeleton": {
@@ -5266,7 +5204,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 430.0
+    "weight": 310.0
    },
    {
     "skeleton": {
@@ -5290,7 +5228,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 220.0
+    "weight": 230.0
    }
   ],
   "record:attachment:instructions": [
@@ -5325,7 +5263,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 820.0
+    "weight": 790.0
    },
    {
     "skeleton": {
@@ -5357,7 +5295,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 400.0
+    "weight": 430.0
    },
    {
     "skeleton": {
@@ -5414,13 +5352,14 @@
      ],
      "sessionId": "str",
      "session_id": "str",
+     "slug": "str",
      "timestamp": "str",
      "type": "str",
      "userType": "str",
      "uuid": "str",
      "version": "str"
     },
-    "weight": 30.0
+    "weight": 27.0
    }
   ],
   "record:attachment:invoked_skills": [
@@ -5510,7 +5449,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 12.0
+    "weight": 9.0
    }
   ],
   "record:attachment:mcp_instructions_delta": [
@@ -5545,7 +5484,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 880.0
+    "weight": 850.0
    },
    {
     "skeleton": {
@@ -5603,7 +5542,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 430.0
+    "weight": 460.0
    },
    {
     "skeleton": {
@@ -5634,7 +5573,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 340.0
+    "weight": 330.0
    }
   ],
   "record:attachment:model": [
@@ -5668,37 +5607,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 740.0
-   },
-   {
-    "skeleton": {
-     "attachment": {
-      "identity": {
-       "knowledgeCutoff": "str",
-       "marketingName": "str",
-       "modelId": "str"
-      },
-      "text": "str",
-      "type": "str"
-     },
-     "cwd": "str",
-     "entrypoint": "str",
-     "gitBranch": "str",
-     "isSidechain": "bool",
-     "parentUuid": "str",
-     "rendered": [
-      {
-       "content": "str"
-      }
-     ],
-     "sessionId": "str",
-     "timestamp": "str",
-     "type": "str",
-     "userType": "str",
-     "uuid": "str",
-     "version": "str"
-    },
-    "weight": 370.0
+    "weight": 700.0
    },
    {
     "skeleton": {
@@ -5729,7 +5638,37 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 350.0
+    "weight": 380.0
+   },
+   {
+    "skeleton": {
+     "attachment": {
+      "identity": {
+       "knowledgeCutoff": "str",
+       "marketingName": "str",
+       "modelId": "str"
+      },
+      "text": "str",
+      "type": "str"
+     },
+     "cwd": "str",
+     "entrypoint": "str",
+     "gitBranch": "str",
+     "isSidechain": "bool",
+     "parentUuid": "str",
+     "rendered": [
+      {
+       "content": "str"
+      }
+     ],
+     "sessionId": "str",
+     "timestamp": "str",
+     "type": "str",
+     "userType": "str",
+     "uuid": "str",
+     "version": "str"
+    },
+    "weight": 360.0
    },
    {
     "skeleton": {
@@ -5761,7 +5700,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 33.0
+    "weight": 30.0
    }
   ],
   "record:attachment:nested_memory": [
@@ -6094,7 +6033,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 740.0
+    "weight": 700.0
    },
    {
     "skeleton": {
@@ -6136,7 +6075,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 710.0
+    "weight": 670.0
    },
    {
     "skeleton": {
@@ -6159,7 +6098,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 350.0
+    "weight": 380.0
    },
    {
     "skeleton": {
@@ -6200,7 +6139,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 350.0
+    "weight": 370.0
    }
   ],
   "record:attachment:queued_command": [
@@ -6247,7 +6186,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 3200.0
+    "weight": 3300.0
    },
    {
     "skeleton": {
@@ -6283,9 +6222,11 @@
    },
    {
     "skeleton": {
+     "agentId": "str",
      "attachment": {
       "commandMode": "str",
       "prompt": "str",
+      "timestamp": "str",
       "type": "str"
      },
      "cwd": "str",
@@ -6293,6 +6234,16 @@
      "gitBranch": "str",
      "isSidechain": "bool",
      "parentUuid": "str",
+     "rendered": [
+      {
+       "content": "str"
+      }
+     ],
+     "renderedInHumanTurn": [
+      {
+       "content": "str"
+      }
+     ],
      "sessionId": "str",
      "slug": "str",
      "timestamp": "str",
@@ -6301,7 +6252,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 1500.0
+    "weight": 2200.0
    }
   ],
   "record:attachment:read_truncation_notice": [
@@ -6326,7 +6277,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 130.0
+    "weight": 140.0
    },
    {
     "skeleton": {
@@ -6348,7 +6299,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 44.0
+    "weight": 59.0
    },
    {
     "skeleton": {
@@ -6405,7 +6356,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 520.0
+    "weight": 500.0
    },
    {
     "skeleton": {
@@ -6435,7 +6386,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 360.0
+    "weight": 350.0
    },
    {
     "skeleton": {
@@ -6464,7 +6415,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 300.0
+    "weight": 330.0
    },
    {
     "skeleton": {
@@ -6527,7 +6478,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 800.0
+    "weight": 770.0
    },
    {
     "skeleton": {
@@ -6556,7 +6507,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 400.0
+    "weight": 430.0
    },
    {
     "skeleton": {
@@ -6635,40 +6586,13 @@
      ],
      "sessionId": "str",
      "session_id": "str",
-     "slug": "str",
      "timestamp": "str",
      "type": "str",
      "userType": "str",
      "uuid": "str",
      "version": "str"
     },
-    "weight": 190.0
-   },
-   {
-    "skeleton": {
-     "attachment": {
-      "text": "str",
-      "type": "str"
-     },
-     "cwd": "str",
-     "entrypoint": "str",
-     "gitBranch": "str",
-     "isSidechain": "bool",
-     "parentUuid": "str",
-     "rendered": [
-      {
-       "content": "str"
-      }
-     ],
-     "sessionId": "str",
-     "session_id": "str",
-     "timestamp": "str",
-     "type": "str",
-     "userType": "str",
-     "uuid": "str",
-     "version": "str"
-    },
-    "weight": 190.0
+    "weight": 36.0
    }
   ],
   "record:attachment:skill_listing": [
@@ -6755,7 +6679,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 820.0
+    "weight": 920.0
    },
    {
     "skeleton": {
@@ -6786,7 +6710,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 430.0
+    "weight": 440.0
    }
   ],
   "record:attachment:structured_output": [
@@ -6832,7 +6756,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 5100.0
+    "weight": 5500.0
    },
    {
     "skeleton": {
@@ -6899,7 +6823,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 1800.0
+    "weight": 2100.0
    }
   ],
   "record:attachment:task_status": [
@@ -6990,31 +6914,6 @@
     "weight": 18.0
    }
   ],
-  "record:attachment:thinking_drop": [
-   {
-    "skeleton": {
-     "agentId": "str",
-     "attachment": {
-      "model": "str",
-      "requestId": "str",
-      "type": "str"
-     },
-     "cwd": "str",
-     "entrypoint": "str",
-     "gitBranch": "str",
-     "isSidechain": "bool",
-     "parentUuid": "str",
-     "sessionId": "str",
-     "slug": "str",
-     "timestamp": "str",
-     "type": "str",
-     "userType": "str",
-     "uuid": "str",
-     "version": "str"
-    },
-    "weight": 52.0
-   }
-  ],
   "record:attachment:total_tokens_reminder": [
    {
     "skeleton": {
@@ -7041,7 +6940,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 70000.0
+    "weight": 77000.0
    },
    {
     "skeleton": {
@@ -7088,7 +6987,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 40000.0
+    "weight": 39000.0
    },
    {
     "skeleton": {
@@ -7114,7 +7013,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 27000.0
+    "weight": 30000.0
    }
   ],
   "record:attachment:ultrathink_effort": [
@@ -7168,7 +7067,7 @@
      "sessionId": "str",
      "type": "str"
     },
-    "weight": 26000.0
+    "weight": 25000.0
    },
    {
     "skeleton": {
@@ -7177,7 +7076,7 @@
      "sessionId": "str",
      "type": "str"
     },
-    "weight": 9800.0
+    "weight": 10000.0
    }
   ],
   "record:cost-state": [
@@ -7196,7 +7095,7 @@
      "totalToolDuration": "int",
      "type": "str"
     },
-    "weight": 81.0
+    "weight": 69.0
    }
   ],
   "record:custom-title": [
@@ -7206,7 +7105,7 @@
      "sessionId": "str",
      "type": "str"
     },
-    "weight": 5800.0
+    "weight": 6700.0
    }
   ],
   "record:file-history-delta": [
@@ -7240,7 +7139,7 @@
      "trackingPath": "str",
      "type": "str"
     },
-    "weight": 1100.0
+    "weight": 1000.0
    },
    {
     "skeleton": {
@@ -7255,7 +7154,7 @@
      "trackingPath": "str",
      "type": "str"
     },
-    "weight": 120.0
+    "weight": 180.0
    },
    {
     "skeleton": {
@@ -7270,7 +7169,7 @@
      "trackingPath": "str",
      "type": "str"
     },
-    "weight": 36.0
+    "weight": 57.0
    }
   ],
   "record:file-history-snapshot": [
@@ -7357,7 +7256,7 @@
      "sessionId": "str",
      "type": "str"
     },
-    "weight": 44000.0
+    "weight": 45000.0
    }
   ],
   "record:pr-link": [
@@ -7696,7 +7595,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 40000.0
+    "weight": 41000.0
    }
   ],
   "record:progress:hook_progress": [
@@ -7773,7 +7672,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 17000.0
+    "weight": 15000.0
    },
    {
     "skeleton": {
@@ -7874,7 +7773,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 44.0
+    "weight": 110.0
    },
    {
     "skeleton": {
@@ -7900,7 +7799,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 44.0
+    "weight": 110.0
    }
   ],
   "record:progress:query_update": [
@@ -8033,7 +7932,7 @@
      "timestamp": "str",
      "type": "str"
     },
-    "weight": 77000.0
+    "weight": 76000.0
    },
    {
     "skeleton": {
@@ -8053,7 +7952,7 @@
      "timestamp": "str",
      "type": "str"
     },
-    "weight": 8800.0
+    "weight": 7800.0
    }
   ],
   "record:summary": [
@@ -8139,7 +8038,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 800.0
+    "weight": 810.0
    },
    {
     "skeleton": {
@@ -8205,27 +8104,6 @@
    },
    {
     "skeleton": {
-     "agentId": "str",
-     "content": "str",
-     "cwd": "str",
-     "gitBranch": "str",
-     "isMeta": "bool",
-     "isSidechain": "bool",
-     "parentUuid": "str",
-     "sessionId": "str",
-     "slug": "str",
-     "subtype": "str",
-     "timestamp": "str",
-     "type": "str",
-     "url": "str",
-     "userType": "str",
-     "uuid": "str",
-     "version": "str"
-    },
-    "weight": 100.0
-   },
-   {
-    "skeleton": {
      "content": "str",
      "cwd": "str",
      "entrypoint": "str",
@@ -8243,6 +8121,27 @@
      "version": "str"
     },
     "weight": 57.0
+   },
+   {
+    "skeleton": {
+     "agentId": "str",
+     "content": "str",
+     "cwd": "str",
+     "gitBranch": "str",
+     "isMeta": "bool",
+     "isSidechain": "bool",
+     "parentUuid": "str",
+     "sessionId": "str",
+     "slug": "str",
+     "subtype": "str",
+     "timestamp": "str",
+     "type": "str",
+     "url": "str",
+     "userType": "str",
+     "uuid": "str",
+     "version": "str"
+    },
+    "weight": 52.0
    }
   ],
   "record:system:compact_boundary": [
@@ -8343,35 +8242,20 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 110.0
+    "weight": 120.0
    },
    {
     "skeleton": {
      "agentId": "str",
      "compactMetadata": {
-      "cumulativeDroppedTokens": "int",
-      "durationMs": "int",
-      "postTokens": "int",
+      "preCompactDiscoveredTools": [
+       "str"
+      ],
       "preTokens": "int",
-      "preservedMessages": {
-       "allUuids": [
-        "str"
-       ],
-       "anchorUuid": "str",
-       "uuids": [
-        "str"
-       ]
-      },
-      "preservedSegment": {
-       "anchorUuid": "str",
-       "headUuid": "str",
-       "tailUuid": "str"
-      },
       "trigger": "str"
      },
      "content": "str",
      "cwd": "str",
-     "entrypoint": "str",
      "gitBranch": "str",
      "isMeta": "bool",
      "isSidechain": "bool",
@@ -8387,7 +8271,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 66.0
+    "weight": 59.0
    }
   ],
   "record:system:informational": [
@@ -8709,7 +8593,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 100.0
+    "weight": 110.0
    }
   ],
   "record:system:stop_hook_summary": [
@@ -8744,7 +8628,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 7000.0
+    "weight": 6600.0
    },
    {
     "skeleton": {
@@ -8776,7 +8660,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 3000.0
+    "weight": 2700.0
    },
    {
     "skeleton": {
@@ -8835,7 +8719,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 1800.0
+    "weight": 1900.0
    }
   ],
   "record:system:turn_duration": [
@@ -8857,7 +8741,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 3800.0
+    "weight": 3700.0
    },
    {
     "skeleton": {
@@ -8884,6 +8768,25 @@
     "skeleton": {
      "cwd": "str",
      "durationMs": "int",
+     "gitBranch": "str",
+     "isMeta": "bool",
+     "isSidechain": "bool",
+     "parentUuid": "str",
+     "sessionId": "str",
+     "slug": "str",
+     "subtype": "str",
+     "timestamp": "str",
+     "type": "str",
+     "userType": "str",
+     "uuid": "str",
+     "version": "str"
+    },
+    "weight": 1900.0
+   },
+   {
+    "skeleton": {
+     "cwd": "str",
+     "durationMs": "int",
      "entrypoint": "str",
      "gitBranch": "str",
      "isMeta": "bool",
@@ -8900,26 +8803,7 @@
      "uuid": "str",
      "version": "str"
     },
-    "weight": 2100.0
-   },
-   {
-    "skeleton": {
-     "cwd": "str",
-     "durationMs": "int",
-     "gitBranch": "str",
-     "isMeta": "bool",
-     "isSidechain": "bool",
-     "parentUuid": "str",
-     "sessionId": "str",
-     "slug": "str",
-     "subtype": "str",
-     "timestamp": "str",
-     "type": "str",
-     "userType": "str",
-     "uuid": "str",
-     "version": "str"
-    },
-    "weight": 1900.0
+    "weight": 1800.0
    }
   ]
  },

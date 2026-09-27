@@ -82,7 +82,12 @@ def _reset_semantic_generator(
     self._semantic_gen = SemanticValueGenerator(rng, theme=theme, base_ts=base_ts, role_cycle=list(roles))
 
 
-def _declares_number(schema: SchemaValue | object) -> bool:
+def _declared_numeric(schema: SchemaValue | object) -> str | None:
+    """``"number"`` or ``"integer"`` when the schema admits that type, else None.
+
+    A schema admitting any non-integral number reports ``"number"``; one
+    admitting integers only reports ``"integer"``.
+    """
     node = _coerce_schema(schema)
     declared: list[object] = []
     raw_type = node.get("type")
@@ -93,7 +98,10 @@ def _declares_number(schema: SchemaValue | object) -> bool:
             for variant in variants:
                 variant_type = _coerce_schema(variant).get("type")
                 declared.extend(variant_type if isinstance(variant_type, list) else [variant_type])
-    return any(kind in {"number", "integer"} for kind in declared if isinstance(kind, str))
+    kinds = {kind for kind in declared if isinstance(kind, str)}
+    if "number" in kinds:
+        return "number"
+    return "integer" if "integer" in kinds else None
 
 
 def _has_messages_path(parts: Sequence[str], schema: SchemaRecord) -> tuple[bool, SchemaRecord]:
@@ -179,8 +187,9 @@ def _generate_tree_json(
         # contradict the element's own schema.
         defaults = {"create_time": base_ts, "update_time": base_ts + max(0, n_messages - 1) * 60}
         for field_name, value in defaults.items():
-            if field_name not in top_record and _declares_number(properties.get(field_name)):
-                top_record[field_name] = value
+            numeric = None if field_name in top_record else _declared_numeric(properties.get(field_name))
+            if numeric is not None:
+                top_record[field_name] = int(value) if numeric == "integer" else value
     if theme is not None and "title" in _coerce_schema(self.schema.get("properties")):
         top_record["title"] = theme.title
     return top_record

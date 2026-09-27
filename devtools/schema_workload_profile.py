@@ -300,25 +300,29 @@ def _codex_parent(path: Path) -> str | None:
     return parent if isinstance(parent, str) and parent else None
 
 
-def _fanout(origin: str, root: Path, families: Mapping[str, list[Path]]) -> tuple[Counter[int], float]:
-    """Subagent fan-out per main session, and orphan subagents per main session.
+def _fanout(origin: str, root: Path, families: Mapping[str, list[Path]]) -> tuple[Counter[int], float, float]:
+    """Subagent fan-out per main session, nested spawns per subagent, orphans per main session.
 
-    An orphan is a subagent transcript whose parent session is not among the
-    main transcripts (nested spawns, or a parent that was never retained).
+    A nested spawn is a subagent whose parent is itself a subagent; an orphan
+    is one whose parent is not among the measured sessions at all.
     """
     fanout: Counter[int] = Counter()
     if origin == "claude-code":
-        per_session = Counter(
-            path.parent.parent.name for path in families["subagent"] if path.parent.name == "subagents"
-        )
+        parents = {path: path.parent.parent.name for path in families["subagent"] if path.parent.name == "subagents"}
         main_ids = {main.stem for main in families["main"]}
+        subagent_ids: set[str] = set()
     else:
-        per_session = Counter(parent for path in families["subagent"] if (parent := _codex_parent(path)))
+        parents = {path: parent for path in families["subagent"] if (parent := _codex_parent(path))}
         main_ids = {path.stem[-36:] for path in families["main"]}
+        subagent_ids = {path.stem[-36:] for path in families["subagent"]}
+    per_parent = Counter(parents.values())
     for session_id in main_ids:
-        fanout[log2_bucket(per_session.get(session_id, 0))] += 1
-    orphans = sum(count for session_id, count in per_session.items() if session_id not in main_ids)
-    return fanout, orphans / max(1, len(main_ids))
+        fanout[log2_bucket(per_parent.get(session_id, 0))] += 1
+    nested = sum(count for parent, count in per_parent.items() if parent in subagent_ids and parent not in main_ids)
+    orphans = sum(
+        count for parent, count in per_parent.items() if parent not in main_ids and parent not in subagent_ids
+    )
+    return fanout, nested / max(1, len(parents)), orphans / max(1, len(main_ids))
 
 
 def measure(origin: str, root: Path, *, sample: int, tail: int, seed: int) -> dict[str, object]:
@@ -345,7 +349,7 @@ def measure(origin: str, root: Path, *, sample: int, tail: int, seed: int) -> di
                 print(f"  {origin}/{name}: {index + 1}/{len(tail_paths) + len(drawn)}", file=sys.stderr, flush=True)
         streams[name] = stream.payload()
     ratio = lambda num, den: round(shares[num] / shares[den], 4) if shares[den] else 0.0  # noqa: E731
-    fanout, orphans_per_session = _fanout(origin, root, families)
+    fanout, nested_per_subagent, orphans_per_session = _fanout(origin, root, families)
     kinds = sorted({key.split(":", 1)[1] for key in shares if key.startswith("texts:")})
     template_payload, template_strings = templates.payload()
     large = shares["sidecar_refs"] + shares["large_inline"]
@@ -364,6 +368,7 @@ def measure(origin: str, root: Path, *, sample: int, tail: int, seed: int) -> di
         "version": WORKLOAD_PROFILE_VERSION,
         "origin": origin,
         "source_bytes": int(_round2(source_bytes)),
+        "main_sessions": int(_round2(len(families.get("main", ())))),
         "streams": streams,
         "subagents_per_session": _histogram(fanout),
         "shares": {
@@ -372,6 +377,7 @@ def measure(origin: str, root: Path, *, sample: int, tail: int, seed: int) -> di
             "tool_error_share": ratio("tool_errors", "tool_results") if origin == "claude-code" else 0.03,
             "sidecar_share_of_large": round(shares["sidecar_refs"] / large, 4) if large else 0.0,
             "orphan_subagents_per_session": round(orphans_per_session, 4),
+            "nested_subagents_per_subagent": round(nested_per_subagent, 4),
             **outcome_shares,
         },
         "non_ascii_by_kind": {kind: ratio(f"non_ascii_texts:{kind}", f"texts:{kind}") for kind in kinds},
