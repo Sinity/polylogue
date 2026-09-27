@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import threading
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -840,6 +841,37 @@ async def test_cold_build_waits_for_local_retry_debt_without_cursor_row(
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+@pytest.mark.asyncio
+async def test_local_retry_deadline_does_not_block_on_filesystem_walk(tmp_path: Path) -> None:
+    """A held discovery walk cannot stall the event-loop retry deadline read."""
+    source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
+    watcher = SimpleNamespace(intake_revision=lambda _source: 0)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+        clock=lambda: 0.0,
+    )
+    walking = threading.Event()
+    release = threading.Event()
+    adapter._fresh_retry_debt[tmp_path / "capture.json"] = 5.0
+
+    def hold_discovery_lock() -> None:
+        with adapter._discovery_lock:
+            walking.set()
+            release.wait(timeout=1.0)
+
+    writer = threading.Thread(target=hold_discovery_lock)
+    writer.start()
+    assert await asyncio.to_thread(walking.wait, 1.0)
+    try:
+        started_at = asyncio.get_running_loop().time()
+        assert adapter.retry_due_in_s == 5.0
+        assert asyncio.get_running_loop().time() - started_at < 0.2
+    finally:
+        release.set()
+        writer.join(timeout=2.0)
 
 
 def test_raw_discovery_uses_canonical_adapter_and_returns_payload_costs(

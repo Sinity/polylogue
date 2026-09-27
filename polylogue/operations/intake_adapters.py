@@ -117,6 +117,7 @@ class FileIntakeAdapter(IntakeAdapter):
         self._fresh_pending: list[Path] = []
         self._fresh_page_paths: tuple[Path, ...] = ()
         self._fresh_page_pending = False
+        self._retry_state_lock = threading.Lock()
         self._fresh_retry_debt: dict[Path, float] = {}
         self._overflow_rescan_due_at: float | None = None
         self._local_retry_page = False
@@ -178,9 +179,12 @@ class FileIntakeAdapter(IntakeAdapter):
 
     @property
     def retry_due_in_s(self) -> float | None:
-        deadlines = (*self._fresh_retry_debt.values(),)
-        if self._overflow_rescan_due_at is not None:
-            deadlines += (self._overflow_rescan_due_at,)
+        # The walk lock can be held across filesystem I/O. This short-held
+        # state lock keeps the event loop responsive while snapshotting debt.
+        with self._retry_state_lock:
+            deadlines = (*self._fresh_retry_debt.values(),)
+            if self._overflow_rescan_due_at is not None:
+                deadlines += (self._overflow_rescan_due_at,)
         return max(0.0, min(deadlines) - self._clock()) if deadlines else None
 
     @staticmethod
@@ -218,23 +222,23 @@ class FileIntakeAdapter(IntakeAdapter):
             cursor = getattr(self.context.watcher, "_cursor", None)
             get_records = getattr(cursor, "get_records", None)
             records = get_records(self._fresh_page_paths) if callable(get_records) else {}
-            for retry_path in self._fresh_page_paths:
-                if not self._pending_path_is_live(retry_path):
-                    continue
-                record = records.get(retry_path)
-                if record is not None and (record.failure_count > 0 or record.next_retry_at is not None):
-                    # The durable cursor owns this retry and its backoff.
-                    self._fresh_retry_debt.pop(retry_path, None)
-                    continue
-                if (
-                    retry_path not in self._fresh_retry_debt
-                    and len(self._fresh_retry_debt) >= _FILE_DISCOVERY_STEP_LIMIT
-                ):
-                    # A due rescan recovers evicted debt without growing memory.
-                    self._fresh_retry_debt.pop(next(iter(self._fresh_retry_debt)))
-                    if self._overflow_rescan_due_at is None:
-                        self._overflow_rescan_due_at = due_at
-                self._fresh_retry_debt[retry_path] = due_at
+            live_paths = [path for path in self._fresh_page_paths if self._pending_path_is_live(path)]
+            with self._retry_state_lock:
+                for retry_path in live_paths:
+                    record = records.get(retry_path)
+                    if record is not None and (record.failure_count > 0 or record.next_retry_at is not None):
+                        # The durable cursor owns this retry and its backoff.
+                        self._fresh_retry_debt.pop(retry_path, None)
+                        continue
+                    if (
+                        retry_path not in self._fresh_retry_debt
+                        and len(self._fresh_retry_debt) >= _FILE_DISCOVERY_STEP_LIMIT
+                    ):
+                        # A due rescan recovers evicted debt without growing memory.
+                        self._fresh_retry_debt.pop(next(iter(self._fresh_retry_debt)))
+                        if self._overflow_rescan_due_at is None:
+                            self._overflow_rescan_due_at = due_at
+                    self._fresh_retry_debt[retry_path] = due_at
             self._fresh_pending = [path for path in self._fresh_pending if path not in offered]
         self._fresh_page_pending = False
         self._fresh_page_paths = ()
@@ -332,8 +336,11 @@ class FileIntakeAdapter(IntakeAdapter):
                 self._request_fresh_rescan()
             self._last_source_entries = entries
             self._last_root_mtime_ns = root_mtime_ns
-        if self._overflow_rescan_due_at is not None and self._clock() >= self._overflow_rescan_due_at:
-            self._overflow_rescan_due_at = None
+        with self._retry_state_lock:
+            overflow_due = self._overflow_rescan_due_at is not None and self._clock() >= self._overflow_rescan_due_at
+            if overflow_due:
+                self._overflow_rescan_due_at = None
+        if overflow_due:
             self._request_fresh_rescan()
         # The cursor advances in ``acknowledge``, over items the dispatcher
         # actually consumed -- never here, over everything merely discovered.
@@ -420,7 +427,10 @@ class FileIntakeAdapter(IntakeAdapter):
         now = self._clock()
         cursor = getattr(self.context.watcher, "_cursor", None)
         due_local: list[Path] = []
-        for path, due_at in tuple(self._fresh_retry_debt.items()):
+        with self._retry_state_lock:
+            local_snapshot = tuple(self._fresh_retry_debt.items())
+        stale_local: list[Path] = []
+        for path, due_at in local_snapshot:
             if len(due_local) >= limit:
                 break
             if due_at > now:
@@ -428,22 +438,27 @@ class FileIntakeAdapter(IntakeAdapter):
             if not self.source.root.is_dir():
                 break
             if not self._owns_retry_path(path):
-                self._fresh_retry_debt.pop(path, None)
+                stale_local.append(path)
                 continue
             due_local.append(path)
         get_records = getattr(cursor, "get_records", None)
         records = get_records(due_local) if due_local and callable(get_records) else {}
         local_without_durable_row: list[Path] = []
-        for path in due_local:
-            record = records.get(path)
-            if record is not None and (record.failure_count > 0 or record.next_retry_at is not None):
+        with self._retry_state_lock:
+            for path in stale_local:
                 self._fresh_retry_debt.pop(path, None)
-            else:
-                local_without_durable_row.append(path)
+            for path in due_local:
+                record = records.get(path)
+                if record is not None and (record.failure_count > 0 or record.next_retry_at is not None):
+                    self._fresh_retry_debt.pop(path, None)
+                else:
+                    local_without_durable_row.append(path)
         due_local = local_without_durable_row
         if due_local and self._prefer_local_retry:
-            for path in due_local:
-                self._fresh_retry_debt[path] = now + _FILE_RETRY_DELAY_S
+            with self._retry_state_lock:
+                for path in due_local:
+                    if path in self._fresh_retry_debt:
+                        self._fresh_retry_debt[path] = now + _FILE_RETRY_DELAY_S
             self._local_retry_page = True
             self._prefer_local_retry = False
             return due_local
@@ -474,8 +489,10 @@ class FileIntakeAdapter(IntakeAdapter):
         self._retry_skip_after = None
         self._retry_through = None
         if due_local:
-            for path in due_local:
-                self._fresh_retry_debt[path] = now + _FILE_RETRY_DELAY_S
+            with self._retry_state_lock:
+                for path in due_local:
+                    if path in self._fresh_retry_debt:
+                        self._fresh_retry_debt[path] = now + _FILE_RETRY_DELAY_S
             self._local_retry_page = True
             self._prefer_local_retry = False
             return due_local
@@ -489,7 +506,8 @@ class FileIntakeAdapter(IntakeAdapter):
             return
         if self._local_retry_page:
             if acknowledged:
-                self._fresh_retry_debt.pop(path, None)
+                with self._retry_state_lock:
+                    self._fresh_retry_debt.pop(path, None)
             self._retry_page_pending = False
             return
         position = str(path)
