@@ -218,35 +218,32 @@ class SnapshotStore:
             raise SnapshotUnavailableError("session continuation snapshot is malformed")
         now_ms = _now_ms()
         principal_key = _principal_key(binding.principal)
-        # A concurrent resume of the same handle may rename it between our
-        # listing and our read; that is a refreshed snapshot, not an eviction,
-        # so look it up again under its new name.
-        # Each retry follows a rename some other resume completed, so the loop
-        # ends when the handle is found, expired, or gone -- not at a count.
-        while True:
+        if not self.directory.is_dir():
+            raise SnapshotUnavailableError("session continuation expired or was evicted; restart the search")
+        # Lookup, read and last-use touch hold the same lock as creation's
+        # prune, so a handle being resumed can neither be pruned between its
+        # read and its touch nor be renamed under a concurrent resume.
+        with self._locked():
             entry = next(
                 (row for row in self._entries() if row[2] == handle and row[1] == principal_key),
                 None,
             )
-            if entry is None:
-                break
-            last_used_ms, key, entry_handle, path = entry
-            if last_used_ms + SNAPSHOT_TTL_MS <= now_ms:
-                self._unlink(path)
-                break
-            try:
-                body = json.loads(zlib.decompress(path.read_bytes()))
-            except FileNotFoundError:
-                continue
-            except (OSError, ValueError, zlib.error):
-                break
-            if not isinstance(body, dict) or body.get("v") != 1 or body.get("binding") != binding.as_json():
-                raise SnapshotUnavailableError("session continuation does not match its original search scope")
-            # The TTL slides from last use: the name carries the timestamp and
-            # a rename is atomic. Losing the rename to a concurrent resume
-            # means that resume refreshed it; the contents are the same.
-            with self._locked(), contextlib.suppress(FileNotFoundError):
-                stamp = self._stamp_after_newest(now_ms)
-                path.rename(self.directory / f"{stamp:013d}-{key}-{entry_handle}{_SUFFIX}")
-            return SearchSnapshot(handle, self._decode_rows(binding.root, body["files"]))
+            if entry is not None:
+                last_used_ms, key, entry_handle, path = entry
+                if last_used_ms + SNAPSHOT_TTL_MS <= now_ms:
+                    self._unlink(path)
+                else:
+                    try:
+                        body = json.loads(zlib.decompress(path.read_bytes()))
+                    except (OSError, ValueError, zlib.error):
+                        body = None
+                    if body is not None:
+                        if not isinstance(body, dict) or body.get("v") != 1 or body.get("binding") != binding.as_json():
+                            raise SnapshotUnavailableError(
+                                "session continuation does not match its original search scope"
+                            )
+                        # The TTL slides from last use; the name carries the stamp.
+                        stamp = self._stamp_after_newest(now_ms)
+                        path.rename(self.directory / f"{stamp:013d}-{key}-{entry_handle}{_SUFFIX}")
+                        return SearchSnapshot(handle, self._decode_rows(binding.root, body["files"]))
         raise SnapshotUnavailableError("session continuation expired or was evicted; restart the search")

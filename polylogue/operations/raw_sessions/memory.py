@@ -55,6 +55,9 @@ class MemoryService:
         # Files each provider skipped on earlier pages (plus this page for a
         # provider that finished here). Reported once, on the terminal page.
         owed_skips: dict[str, int] = {}
+        # Completion tokens resumed this page; reissuing them keeps one
+        # retained snapshot per finished provider instead of one per page.
+        reusable: dict[str, str] = {}
         earlier_skips = 0
         page_full = False
         for provider in requested:
@@ -156,6 +159,8 @@ class MemoryService:
             earlier_skips += result["skipped_earlier"]
             if result["next_cursor"] is None and result["skipped_earlier"] + result["skipped_now"]:
                 owed_skips[provider] = result["skipped_earlier"] + result["skipped_now"]
+                if result.get("completion_cursor"):
+                    reusable[provider] = result["completion_cursor"]
             page_full = result["next_cursor"] is not None or len(matches) >= limit
         # More pages exist only while some provider has a live cursor or has not
         # started; reaching ``limit`` exactly on a provider's last match is not truncation.
@@ -164,7 +169,7 @@ class MemoryService:
             # A finished provider's skips must survive to the fan-out's terminal
             # page, which a ``None`` slot would forget.
             for provider, owed in owed_skips.items():
-                next_cursors[provider] = self.sessions.completed_skips_token(
+                next_cursors[provider] = reusable.get(provider) or self.sessions.completed_skips_token(
                     provider, query, owed, cursor_key=cursor_key
                 )
         elif not truncated and earlier_skips:

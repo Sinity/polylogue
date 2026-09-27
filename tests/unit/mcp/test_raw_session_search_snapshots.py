@@ -440,27 +440,49 @@ def test_short_resumed_budget_keeps_the_returned_match_high_water_mark(tmp_path:
     assert lines == [1, 2, 3]
 
 
-def test_concurrent_touch_of_one_handle_is_not_an_eviction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    root = tmp_path / "codex"
-    first_file = _write(root / "a.jsonl", "needle a\n", 2)
-    _write(root / "b.jsonl", "needle b\n", 1)
-    sources = _sources(root)
-    token = _search(sources, scan_bytes=first_file.stat().st_size).continuation
-    original = snapshot_store.SnapshotStore._entries
-    raced = {"done": False}
+def test_resumes_racing_creations_at_capacity_never_fail_or_overfill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lookup, read and touch share the creation lock.
 
-    def entries_then_concurrent_touch(self: snapshot_store.SnapshotStore) -> list[tuple[int, str, str, Path]]:
-        rows = original(self)
-        if not raced["done"] and rows:
-            raced["done"] = True
-            last_used, key, handle, path = rows[0]
-            path.rename(path.with_name(f"{last_used + 1:013d}-{key}-{handle}.snapshot"))
-        return rows
+    Anti-vacuity: reading outside the lock lets a creator prune the handle
+    between read and touch, and the lost rename then escapes as an error or
+    returns a handle that is already gone.
+    """
+    import threading
 
-    monkeypatch.setattr(snapshot_store.SnapshotStore, "_entries", entries_then_concurrent_touch)
-    resumed = _search(sources, continuation=token)
-    assert raced["done"] and resumed.outcome == "ok"
-    assert [item.reference for item in resumed.items] == ["codex:b.jsonl"]
+    monkeypatch.setattr(snapshot_store, "MAX_GLOBAL_SNAPSHOTS", 2)
+    store = snapshot_store.SnapshotStore(tmp_path / "store")
+    binding = snapshot_store.SnapshotBinding("p", "codex", "0" * 64, None, tmp_path)
+    resumed = store.create(binding, ()).handle
+    errors: list[BaseException] = []
+    loaded: list[str] = []
+    barrier = threading.Barrier(12)
+
+    def resume() -> None:
+        barrier.wait()
+        try:
+            loaded.append(store.load(resumed, binding).handle)
+        except snapshot_store.SnapshotUnavailableError:
+            pass
+        except BaseException as exc:  # pragma: no cover - the failure being guarded
+            errors.append(exc)
+
+    def create() -> None:
+        barrier.wait()
+        store.create(binding, ())
+
+    threads = [threading.Thread(target=resume if index % 2 else create) for index in range(12)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    assert len(list((tmp_path / "store").glob("*.snapshot"))) == 2
+    if loaded:
+        # A resume that succeeded touched the handle last or was followed by
+        # creations that legitimately aged it out; it never returns a ghost.
+        assert all(handle == resumed for handle in loaded)
 
 
 def test_raced_reads_are_charged_to_the_scan_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -680,3 +702,30 @@ def test_a_touch_in_the_creation_millisecond_still_makes_the_handle_most_recent(
     store.load(first, binding)
     with pytest.raises(snapshot_store.SnapshotUnavailableError):
         store.load(second, binding)
+
+
+def test_memory_fanout_reuses_one_completion_snapshot_across_pages(tmp_path: Path) -> None:
+    """Anti-vacuity: minting a new completion token every page grows the store by one snapshot per page."""
+    claude = tmp_path / "claude"
+    locked = _write(claude / "a.jsonl", "needle locked\n", 2)
+    _write(claude / "b.jsonl", "needle claude\n", 1)
+    codex = tmp_path / "codex"
+    for index in range(4):
+        _write(codex / f"c{index}.jsonl", f"needle codex {index}\n", index + 1)
+    sources = (SessionSource("claude-code", claude), SessionSource("codex", codex))
+    locked.chmod(0)
+    try:
+        page = raw_operation(RawMemorySearch(query="needle", limit=1), sources=sources)
+        counts = []
+        references = [item.reference for item in page.items]
+        while page.source_cursors and any(page.source_cursors.values()):
+            page = raw_operation(
+                RawMemorySearch(query="needle", limit=1, source_cursors=page.source_cursors), sources=sources
+            )
+            references.extend(item.reference for item in page.items)
+            counts.append(len(_snapshot_files()))
+    finally:
+        locked.chmod(0o600)
+    assert len(references) == 5 and len(set(references)) == 5
+    assert max(counts) <= 2
+    assert any("1 selected files were skipped on earlier pages" in gap for gap in page.coverage.gaps)

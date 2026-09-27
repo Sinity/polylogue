@@ -595,6 +595,9 @@ class SessionLogService:
             "gaps": gaps,
             "skipped_earlier": prior_skipped,
             "skipped_now": result["skipped_now"],
+            # A resumed completion token (empty population) is reusable as-is:
+            # resuming it again scans nothing and carries the same count.
+            "completion_cursor": cursor if cursor is not None and not files else None,
         }
 
     def completed_skips_token(self, provider: str, query: str, skipped: int, *, cursor_key: bytes) -> str | None:
