@@ -679,7 +679,9 @@ def test_the_slot_resizes_the_queued_command(tmp_path: Path, monkeypatch: pytest
         f'"working_directory": "{tmp_path}", "log_path": "{log}"}}'
     )
     monkeypatch.setattr(subprocess, "Popen", _popen)
-    monkeypatch.setattr(slot, "resize_worker_argument", lambda argv: (argv[:-3] + ["-n", "3", "tests"], None))
+    monkeypatch.setattr(
+        slot, "resize_worker_argument", lambda argv, **_kwargs: (argv[:-3] + ["-n", "3", "tests"], None)
+    )
     assert slot.main([str(launch)]) == 0
     assert launched["command"][launched["command"].index("-n") + 1] == "3"
 
@@ -713,7 +715,9 @@ def test_the_slot_records_which_bound_narrowed_the_run(tmp_path: Path, monkeypat
     monkeypatch.setattr(
         slot,
         "resize_worker_argument",
-        lambda argv: resize_worker_argument(argv, meminfo=_meminfo(tmp_path, HOST_NOT_THE_BOUND_MIB), **paths),
+        lambda argv, **kwargs: resize_worker_argument(
+            argv, meminfo=_meminfo(tmp_path, HOST_NOT_THE_BOUND_MIB), **paths, **kwargs
+        ),
     )
     assert slot.main([str(launch)]) == 0
     assert "from the job cgroup" in log.read_text(encoding="utf-8")
@@ -746,7 +750,9 @@ def test_a_run_that_already_holds_the_slot_is_narrowed_too(tmp_path: Path, monke
     monkeypatch.setattr(
         pytest_slot,
         "resize_worker_argument",
-        lambda argv: resize_worker_argument(argv, meminfo=_meminfo(tmp_path, HOST_NOT_THE_BOUND_MIB), **paths),
+        lambda argv, **kwargs: resize_worker_argument(
+            argv, meminfo=_meminfo(tmp_path, HOST_NOT_THE_BOUND_MIB), **paths, **kwargs
+        ),
     )
 
     outcome = pytest_slot.run_pytest(
@@ -1090,8 +1096,7 @@ def test_a_focused_selection_is_sized_by_its_own_charge_not_the_corpus_model(tmp
     argv, basis = resize_worker_argument(
         ["pytest", "-n", "4"],
         meminfo=meminfo,
-        process_cgroup=paths.process_cgroup,
-        cgroup_root=paths.cgroup_root,
+        **paths,
         profile=FOCUSED_CHARGE,
         max_workers=FOCUSED_MAX_WORKERS,
     )
@@ -1099,11 +1104,6 @@ def test_a_focused_selection_is_sized_by_its_own_charge_not_the_corpus_model(tmp
     assert basis["workers"] == 4
     assert argv == ["pytest", "-n", "4"]
 
-    _corpus_argv, corpus_basis = resize_worker_argument(
-        ["pytest", "-n", "4"],
-        meminfo=meminfo,
-        process_cgroup=paths.process_cgroup,
-        cgroup_root=paths.cgroup_root,
-    )
+    _corpus_argv, corpus_basis = resize_worker_argument(["pytest", "-n", "4"], meminfo=meminfo, **paths)
     assert corpus_basis is not None
     assert corpus_basis["workers"] < 4
