@@ -19,6 +19,7 @@ import tempfile
 import unicodedata
 from collections.abc import Iterator
 from decimal import Decimal
+from contextlib import closing
 from functools import lru_cache
 from hashlib import sha256
 from math import isfinite
@@ -128,6 +129,29 @@ def structural_content_identity(value: object) -> str:
     return digest.hexdigest()
 
 
+class ContentIdentityRefusal(Exception):  # noqa: N818 -- a refusal, not an error in the payload
+    """A single token exceeds the archive's physical value limit.
+
+    SQLite cannot store a value longer than its compiled length limit, so a
+    member whose single key, number or unbroken character sequence exceeds it
+    is refused by name rather than hashed or silently re-identified.
+    """
+
+    def __init__(self, token: str, size: int) -> None:
+        super().__init__(f"{token} of {size} bytes exceeds the SQLite value limit of {physical_value_limit()} bytes")
+        self.token = token
+        self.size = size
+
+
+@lru_cache(maxsize=1)
+def physical_value_limit() -> int:
+    """SQLite's compiled maximum length of one string or BLOB value."""
+    import sqlite3
+
+    with closing(sqlite3.connect(":memory:")) as connection:
+        return connection.getlimit(sqlite3.SQLITE_LIMIT_LENGTH)
+
+
 class _NotJsonError(Exception):
     """The byte stream is not one JSON document under the decoder contract."""
 
@@ -147,6 +171,10 @@ _SURROGATE_ESCAPE = re.compile(rb"(?<!\\)(\\++)u([dD][89a-fA-F][0-9a-fA-F]{2})")
 _SPILL_STRING_BYTES = 8 * 1024 * 1024
 
 _JSON_WHITESPACE = b" \t\r\n"
+
+#: A run of bytes outside strings that is not structure or whitespace: a
+#: number or literal token.
+_BARE_TOKEN = re.compile(rb"[^\s\[\]{}:,\"]+")
 
 
 class _SpilledStrings:
@@ -204,6 +232,7 @@ class _TokenReader:
         self._string: bytearray | None = None
         self._spill: IO[bytes] | None = None
         self._awaiting_role = False
+        self._bare_run = 0
 
     def read(self, size: int = -1) -> bytes:
         if size == 0:
@@ -246,6 +275,8 @@ class _TokenReader:
                 continue
             if not self._in_string:
                 quote = data.find(b'"', position)
+                segment = data[position:] if quote < 0 else data[position:quote]
+                self._check_bare_tokens(segment)
                 if quote < 0:
                     out += data[position:]
                     return
@@ -269,6 +300,20 @@ class _TokenReader:
                 self._string = None
             else:
                 self._awaiting_role = True
+
+    def _check_bare_tokens(self, segment: bytes) -> None:
+        """Refuse a number or literal longer than the physical value limit."""
+        limit = physical_value_limit()
+        runs = _BARE_TOKEN.findall(segment)
+        if not runs:
+            self._bare_run = 0
+            return
+        first = len(runs[0]) + (self._bare_run if segment[: len(runs[0])] == runs[0] else 0)
+        longest = max([first, *(len(run) for run in runs[1:])])
+        if longest > limit:
+            raise ContentIdentityRefusal("number token", longest)
+        last = runs[-1]
+        self._bare_run = (first if len(runs) == 1 else len(last)) if segment.endswith(last) else 0
 
     def _string_end(self, data: bytes, start: int) -> int:
         """Index of the closing quote of the open string in ``data``, or -1."""
@@ -314,6 +359,10 @@ class _TokenReader:
         self._spill = None
         self._awaiting_role = False
         if is_key:
+            size = spill.seek(0, 2)
+            if size > physical_value_limit():
+                spill.close()
+                raise ContentIdentityRefusal("object key", size)
             spill.seek(0)
             out += spill.read()
             spill.close()
@@ -425,6 +474,10 @@ def _encode_spilled_text(raw: IO[bytes], sink: _Sink) -> None:
                 last_end = tokens[-1].end() if tokens else 0
                 dangling = data.find(b"\\", last_end)
                 if dangling >= 0:
+                    # Only an escape cut by the window end may wait for more
+                    # bytes; a complete invalid escape is malformed now.
+                    if len(data) - dangling > 12:
+                        raise _NotJsonError
                     cut = dangling
                 for token in reversed(tokens):
                     if token.end() < cut:
@@ -444,6 +497,10 @@ def _encode_spilled_text(raw: IO[bytes], sink: _Sink) -> None:
             normalized.write(encoded)
             length += len(encoded)
             pending_text = text[split:]
+            if len(pending_text) * 4 > physical_value_limit():
+                # One unbroken composition sequence longer than a storable
+                # value: no split point exists to normalize it in windows.
+                raise ContentIdentityRefusal("combining character sequence", len(pending_text.encode("utf-8", "surrogatepass")))
             if final:
                 if pending_raw:
                     raise _NotJsonError
@@ -609,7 +666,9 @@ def structurally_equal(left: object, right: object) -> bool:
 
 
 __all__ = [
+    "ContentIdentityRefusal",
     "payload_content_identity",
+    "physical_value_limit",
     "stream_payload_content_identity",
     "structural_content_identity",
     "structurally_equal",
