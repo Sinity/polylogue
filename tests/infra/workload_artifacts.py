@@ -51,7 +51,11 @@ from polylogue.sources.origin_specs import (
     origin_specs,
     replay_routing_fingerprint,
 )
-from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
+from polylogue.storage.archive_readiness import (
+    assess_raw_materialization,
+    raw_materialization_readiness_snapshot,
+    raw_materialization_ready,
+)
 from polylogue.storage.blob_gc import unlink_unreferenced_blob_hashes_under_exclusion
 from polylogue.storage.blob_integrity import BlobIntegrityFinding, referenced_blob_hashes, scan_blob_integrity
 from polylogue.storage.blob_publication import abandon_blob_publication_receipts, inspect_blob_publication_receipts
@@ -2107,7 +2111,12 @@ def _validate_frontier_convergence(root: Path) -> None:
     """Require a published artifact to be query-ready, not merely ingested."""
     readiness = raw_materialization_readiness_snapshot(root)
     if not raw_materialization_ready(readiness):
-        raise RuntimeError("seeded archive is missing completed raw-authority frontier convergence")
+        assessment = assess_raw_materialization(readiness)
+        parser_census = readiness.get("raw_authority_parser_census")
+        raise RuntimeError(
+            "seeded archive is missing completed raw-authority frontier convergence: "
+            f"assessment={assessment.to_dict()}, parser_census={parser_census}"
+        )
 
 
 def _manifest_from_payload(payload: object) -> CorpusArtifactManifest:

@@ -185,10 +185,17 @@ async def ingest_sources_archive(
     for source in sources:
         if source.path is None:
             continue
-        source_path = source.path.expanduser().resolve()
-        refuse_non_capture_source_root(source_path, destination=root)
+        # Keep the caller's declared spelling for durable source provenance.
+        # Resolve separately for the capture-root safety check; turning every
+        # relative path into an absolute one changes the raw source identity.
+        source_path = source.path.expanduser()
+        resolved_source_path = source_path.resolve()
+        refuse_non_capture_source_root(resolved_source_path, destination=root)
         watch_sources.append(
-            WatchSource(name=source.name, root=source_path if source_path.is_dir() else source_path.parent)
+            WatchSource(
+                name=source.name,
+                root=source_path if source_path.is_dir() else source_path.parent,
+            )
         )
         paths.extend(_resolve_source_paths(Source(name=source.name, path=source_path)))
     paths = list(dict.fromkeys(paths))
