@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import stat
 import threading
 import time
 from collections.abc import Awaitable, Callable, Iterator, Sequence
@@ -44,6 +45,7 @@ from polylogue.sources.live.metrics import (
 )
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource, _log_ingest_metrics
+from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
 
 _T = TypeVar("_T")
 
@@ -68,6 +70,7 @@ __all__ = [
 _RAW_DISCOVERY_INSPECTION_LIMIT = 32
 _FILE_DISCOVERY_STEP_LIMIT = 256
 _FILE_DISCOVERY_RESCAN_S = 600.0
+_FILE_RETRY_DELAY_S = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,10 +89,18 @@ class DaemonIntakeContext:
 class FileIntakeAdapter(IntakeAdapter):
     """Browser/configured-local adapter; durable cursors are its ack state."""
 
-    def __init__(self, context: DaemonIntakeContext, source: WatchSource, *, class_name: str | None = None) -> None:
+    def __init__(
+        self,
+        context: DaemonIntakeContext,
+        source: WatchSource,
+        *,
+        class_name: str | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self.context = context
         self.source = source
         self.class_name = class_name or source.name
+        self._clock = clock
         self._after: str | None = None
         self._retry_after: str | None = None
         self._retry_skip_after: str | None = None
@@ -104,8 +115,18 @@ class FileIntakeAdapter(IntakeAdapter):
         self._last_hint_revision = context.watcher.intake_revision(source)
         self._fresh_walk: Iterator[Path | None] | None = None
         self._fresh_pending: list[Path] = []
+        self._fresh_page_paths: tuple[Path, ...] = ()
+        self._fresh_page_pending = False
+        self._fresh_attempted_paths: set[Path] = set()
+        self._root_refused_pending = False
+        self._retry_state_lock = threading.Lock()
+        self._fresh_retry_debt: dict[Path, float] = {}
+        self._overflow_rescan_due_at: float | None = None
+        self._local_retry_page = False
+        self._prefer_local_retry = True
         self._fresh_exhausted = False
         self._fresh_exhausted_at: float | None = None
+        self._rescan_after_walk = False
         self._discovery_lock = threading.Lock()
         self._discovery_thread = threading.local()
 
@@ -139,32 +160,140 @@ class FileIntakeAdapter(IntakeAdapter):
     def _reset_fresh_walk(self) -> None:
         self._fresh_walk = None
         self._fresh_pending.clear()
+        self._fresh_page_paths = ()
+        self._fresh_page_pending = False
+        self._fresh_attempted_paths.clear()
+        self._root_refused_pending = False
         self._fresh_exhausted = False
         self._fresh_exhausted_at = None
+        self._rescan_after_walk = False
+
+    def _request_fresh_rescan(self) -> None:
+        if self._fresh_walk is not None or self._fresh_pending:
+            # Finish the bounded continuation and its unacknowledged page.
+            # Repeated hints coalesce into one complete follow-up walk.
+            self._rescan_after_walk = True
+        else:
+            self._after = None
+            self._reset_fresh_walk()
 
     @property
     def discovery_pending(self) -> bool:
-        return self._fresh_walk is not None or bool(self._fresh_pending)
+        return not self._root_refused_pending and (
+            self._fresh_walk is not None or bool(self._fresh_pending) or self._rescan_after_walk
+        )
+
+    @property
+    def retry_due_in_s(self) -> float | None:
+        # The walk lock can be held across filesystem I/O. This short-held
+        # state lock keeps the event loop responsive while snapshotting debt.
+        with self._retry_state_lock:
+            deadlines = (*self._fresh_retry_debt.values(),)
+            if self._overflow_rescan_due_at is not None:
+                deadlines += (self._overflow_rescan_due_at,)
+        return max(0.0, min(deadlines) - self._clock()) if deadlines else None
+
+    @staticmethod
+    def _pending_path_is_live(path: Path) -> bool:
+        try:
+            return stat.S_ISREG(path.lstat().st_mode)
+        except (FileNotFoundError, NotADirectoryError):
+            return False
+        except OSError:
+            # An inaccessible live file still needs its retryable admission.
+            return True
+
+    @staticmethod
+    def _has_durable_retry_record(record: Any) -> bool:
+        return (
+            record is not None
+            and not getattr(record, "excluded", False)
+            and (
+                record.failure_count > 0
+                or (getattr(record, "content_fingerprint", None) is None and record.next_retry_at is not None)
+            )
+        )
+
+    def _offer_fresh_page(self, limit: int) -> list[Path]:
+        page = self._fresh_pending[:limit]
+        self._fresh_page_paths = tuple(page)
+        self._fresh_page_pending = bool(page)
+        return page
 
     def _discover_fresh_paths(self, limit: int) -> list[Path]:
         if limit <= 0:
             return []
+        if not self.source.root.is_dir():
+            # A missing mount is a refusal, not the disappearance of every
+            # pending carrier. Keep the page for a later retry.
+            self._root_refused_pending = True
+            raise WalkRefusedError(
+                "intake discovery could not read a source root",
+                [WalkFault(self.source.root, "source root is unavailable")],
+            )
+        if self._root_refused_pending:
+            self._root_refused_pending = False
+            if self._fresh_page_pending:
+                return list(self._fresh_page_paths[:limit])
+        if self._fresh_page_pending:
+            # Only attempted, unacknowledged paths owe a cooldown. A page
+            # tail left outside the dispatcher or source budget is ordinary
+            # backlog and stays in the immediate fresh continuation.
+            offered = set(self._fresh_attempted_paths)
+            due_at = self._clock() + _FILE_RETRY_DELAY_S
+            cursor = getattr(self.context.watcher, "_cursor", None)
+            get_records = getattr(cursor, "get_records", None)
+            records = get_records(self._fresh_page_paths) if callable(get_records) else {}
+            live_paths = [path for path in self._fresh_page_paths if self._pending_path_is_live(path)]
+            with self._retry_state_lock:
+                if len(live_paths) != len(self._fresh_page_paths) and self._overflow_rescan_due_at is None:
+                    # A vanished unacknowledged carrier may reappear without a
+                    # recursive watcher hint; revisit it after the cooldown.
+                    self._overflow_rescan_due_at = due_at
+                for retry_path in live_paths:
+                    if retry_path not in offered:
+                        continue
+                    record = records.get(retry_path)
+                    if self._has_durable_retry_record(record):
+                        # The durable cursor owns this retry and its backoff.
+                        self._fresh_retry_debt.pop(retry_path, None)
+                        continue
+                    if (
+                        retry_path not in self._fresh_retry_debt
+                        and len(self._fresh_retry_debt) >= _FILE_DISCOVERY_STEP_LIMIT
+                    ):
+                        # A due rescan recovers evicted debt without growing memory.
+                        self._fresh_retry_debt.pop(next(iter(self._fresh_retry_debt)))
+                        if self._overflow_rescan_due_at is None:
+                            self._overflow_rescan_due_at = due_at
+                    self._fresh_retry_debt[retry_path] = due_at
+            self._fresh_pending = [path for path in self._fresh_pending if path not in offered]
+        self._fresh_page_pending = False
+        self._fresh_page_paths = ()
+        self._fresh_attempted_paths.clear()
         if self._after is not None:
             self._fresh_pending = [path for path in self._fresh_pending if str(path) > self._after]
+        # A vanished file is retryable when it disappears after discovery, but
+        # retaining that stale page forever prevents both later paths and a
+        # queued rescan from running. Recreated files return in a later scan.
+        self._fresh_pending = [path for path in self._fresh_pending if self._pending_path_is_live(path)]
         if self._fresh_pending:
-            return self._fresh_pending[:limit]
+            return self._offer_fresh_page(limit)
         if self._fresh_exhausted:
-            if (
-                self._fresh_exhausted_at is None
-                or time.monotonic() - self._fresh_exhausted_at < _FILE_DISCOVERY_RESCAN_S
+            if self._rescan_after_walk:
+                self._after = None
+                self._reset_fresh_walk()
+            elif (
+                self._fresh_exhausted_at is None or self._clock() - self._fresh_exhausted_at < _FILE_DISCOVERY_RESCAN_S
             ):
                 return []
-            # A missed recursive watcher event may have inserted a file
-            # before the acknowledged cursor. Reconcile from the beginning;
-            # durable ingest identity makes previously admitted files cheap
-            # duplicates rather than skipping the new file forever.
-            self._after = None
-            self._reset_fresh_walk()
+            else:
+                # A missed recursive watcher event may have inserted a file
+                # before the acknowledged cursor. Reconcile from the beginning;
+                # durable ingest identity makes previously admitted files cheap
+                # duplicates rather than skipping the new file forever.
+                self._after = None
+                self._reset_fresh_walk()
         if self._fresh_walk is None:
             from polylogue.daemon.discovery_progress import advance_discovery
 
@@ -186,14 +315,18 @@ class FileIntakeAdapter(IntakeAdapter):
             except StopIteration:
                 self._fresh_walk = None
                 self._fresh_exhausted = True
-                self._fresh_exhausted_at = time.monotonic()
+                self._fresh_exhausted_at = self._clock()
                 break
             except Exception:
+                # The continuation is gone. If a hint arrived during this
+                # walk, retry from the beginning before clearing its request.
+                if self._rescan_after_walk:
+                    self._after = None
                 self._reset_fresh_walk()
                 raise
             if path is not None:
                 self._fresh_pending.append(path)
-        return self._fresh_pending[:limit]
+        return self._offer_fresh_page(limit)
 
     def _discover_sync(self, limit: int) -> Sequence[IntakeItem]:
         generation = self._ledger_generation()
@@ -206,18 +339,18 @@ class FileIntakeAdapter(IntakeAdapter):
             self._retry_through = None
             self._ops_ledger_generation = generation
             self._reset_fresh_walk()
-        if self._retry_page_pending and self._retry_page_paths:
+        if self._retry_page_pending and self._retry_page_paths and not self._local_retry_page:
             # No item from the previous page reached admission or ack (for
             # example every item was in the dispatcher's cooldown). Rotate
             # past it within a finite sweep; the next sweep revisits it.
             self._retry_skip_after = str(self._retry_page_paths[-1])
         self._retry_page_pending = False
         self._retry_page_paths = ()
+        self._local_retry_page = False
         hint_revision = self.context.watcher.intake_revision(self.source)
         if hint_revision != self._last_hint_revision:
-            self._after = None
             self._last_hint_revision = hint_revision
-            self._reset_fresh_walk()
+            self._request_fresh_rescan()
         # A producer may add a file before the walk's position. Root mtime
         # catches direct additions without a watcher hint, but SQLite sidecars
         # in a coincident archive/source root change that mtime too. Compare
@@ -229,10 +362,27 @@ class FileIntakeAdapter(IntakeAdapter):
         if root_mtime_ns is not None and root_mtime_ns != self._last_root_mtime_ns:
             entries = self._source_entries()
             if self._last_source_entries is not None and entries != self._last_source_entries:
-                self._after = None
-                self._reset_fresh_walk()
+                self._request_fresh_rescan()
             self._last_source_entries = entries
             self._last_root_mtime_ns = root_mtime_ns
+        if not self.source.root.is_dir():
+            # A missing mount cannot service local retry debt. Move expired
+            # deadlines forward before the root refusal reaches the daemon,
+            # so it uses the retry cooldown instead of a 50 ms wake loop.
+            now = self._clock()
+            due_at = now + _FILE_RETRY_DELAY_S
+            with self._retry_state_lock:
+                for path, deadline in self._fresh_retry_debt.items():
+                    if deadline <= now:
+                        self._fresh_retry_debt[path] = due_at
+                if self._overflow_rescan_due_at is not None and self._overflow_rescan_due_at <= now:
+                    self._overflow_rescan_due_at = due_at
+        with self._retry_state_lock:
+            overflow_due = self._overflow_rescan_due_at is not None and self._clock() >= self._overflow_rescan_due_at
+            if overflow_due:
+                self._overflow_rescan_due_at = None
+        if overflow_due:
+            self._request_fresh_rescan()
         # The cursor advances in ``acknowledge``, over items the dispatcher
         # actually consumed -- never here, over everything merely discovered.
         # A page is routinely truncated by the class deficit, so advancing on
@@ -257,12 +407,13 @@ class FileIntakeAdapter(IntakeAdapter):
         items: list[IntakeItem] = []
         for path in paths:
             try:
-                size = path.stat().st_size
+                observed = path.lstat()
+                size = observed.st_size if stat.S_ISREG(observed.st_mode) else 1
             except OSError:
                 size = 1
             items.append(
                 IntakeItem(
-                    item_id=f"file:{path.resolve()}",
+                    item_id=f"file:{path.absolute()}",
                     class_name=self.class_name,
                     payload=path,
                     estimated_cost=max(1, size),
@@ -308,43 +459,133 @@ class FileIntakeAdapter(IntakeAdapter):
         return frozenset((path, Path(f"{path}-wal"), Path(f"{path}-shm")))
 
     def _owns_retry_path(self, path: Path) -> bool:
+        try:
+            mode = path.lstat().st_mode
+        except OSError:
+            return False
+        if stat.S_ISLNK(mode):
+            # A retired carrier's symlink target may escape the source. Page
+            # the old cursor by its lexical owner so admission can exclude it.
+            lexical = path.absolute()
+            owners = (
+                source
+                for source in self.context.sources
+                if lexical.is_relative_to(source.root.absolute()) and source.accepts(path)
+            )
+            return max(owners, key=lambda source: len(source.root.parts), default=None) is self.source
         return (
-            path.is_file()
+            stat.S_ISREG(mode)
             and deepest_source_for_path(path, self.context.sources) is self.source
             and self.source.accepts(path)
         )
 
     def _due_retry_paths(self, limit: int) -> list[Path]:
+        now = self._clock()
         cursor = getattr(self.context.watcher, "_cursor", None)
+        due_local: list[Path] = []
+        with self._retry_state_lock:
+            local_snapshot = tuple(self._fresh_retry_debt.items())
+        stale_local: list[Path] = []
+        vanished_local: list[Path] = []
+        for path, due_at in local_snapshot:
+            if len(due_local) >= limit:
+                break
+            if due_at > now:
+                continue
+            if not self.source.root.is_dir():
+                break
+            try:
+                mode = path.lstat().st_mode
+            except (FileNotFoundError, NotADirectoryError):
+                stale_local.append(path)
+                vanished_local.append(path)
+                continue
+            except OSError:
+                # Nested permissions can obscure a retained carrier without
+                # proving that it vanished or changed ownership.
+                due_local.append(path)
+                continue
+            if not stat.S_ISREG(mode) or not self._owns_retry_path(path):
+                stale_local.append(path)
+                continue
+            due_local.append(path)
+        get_records = getattr(cursor, "get_records", None)
+        records = get_records(due_local) if due_local and callable(get_records) else {}
+        local_without_durable_row: list[Path] = []
+        with self._retry_state_lock:
+            for path in stale_local:
+                self._fresh_retry_debt.pop(path, None)
+            if vanished_local and self._overflow_rescan_due_at is None:
+                self._overflow_rescan_due_at = now + _FILE_RETRY_DELAY_S
+            for path in due_local:
+                record = records.get(path)
+                if self._has_durable_retry_record(record):
+                    self._fresh_retry_debt.pop(path, None)
+                else:
+                    local_without_durable_row.append(path)
+        due_local = local_without_durable_row
+        if due_local and self._prefer_local_retry:
+            with self._retry_state_lock:
+                for path in due_local:
+                    if path in self._fresh_retry_debt:
+                        self._fresh_retry_debt.pop(path)
+                        self._fresh_retry_debt[path] = now + _FILE_RETRY_DELAY_S
+            self._local_retry_page = True
+            self._prefer_local_retry = False
+            return due_local
         due_retries = getattr(cursor, "list_due_retry_paths", None)
         if not callable(due_retries):
-            return []
-        # Acknowledged deferrals can sit before the filesystem walk's
-        # position forever. Retry and fresh discovery alternate so a growing
-        # source cannot starve either side; both walks stay bounded.
-        if self._retry_through is None:
-            high_water = getattr(cursor, "due_retry_high_water", None)
-            self._retry_through = high_water(self.source.root) if callable(high_water) else None
-        resume_positions = tuple(value for value in (self._retry_after, self._retry_skip_after) if value is not None)
-        candidates = due_retries(
-            self.source.root,
-            after=max(resume_positions) if resume_positions else None,
-            limit=limit,
-            through=self._retry_through,
-            owns=self._owns_retry_path,
-        )
-        if not candidates:
-            self._retry_after = None
-            self._retry_skip_after = None
-            self._retry_through = None
-            return []
-        return list(candidates)
+            candidates = ()
+        else:
+            # Acknowledged deferrals can sit before the filesystem walk's
+            # position forever. Retry and fresh discovery alternate so a growing
+            # source cannot starve either side; both walks stay bounded.
+            if self._retry_through is None:
+                high_water = getattr(cursor, "due_retry_high_water", None)
+                self._retry_through = high_water(self.source.root) if callable(high_water) else None
+            resume_positions = tuple(
+                value for value in (self._retry_after, self._retry_skip_after) if value is not None
+            )
+            candidates = due_retries(
+                self.source.root,
+                after=max(resume_positions) if resume_positions else None,
+                limit=limit,
+                through=self._retry_through,
+                owns=self._owns_retry_path,
+            )
+        if candidates:
+            self._prefer_local_retry = True
+            return list(candidates)
+        self._retry_after = None
+        self._retry_skip_after = None
+        self._retry_through = None
+        if due_local:
+            with self._retry_state_lock:
+                for path in due_local:
+                    if path in self._fresh_retry_debt:
+                        self._fresh_retry_debt.pop(path)
+                        self._fresh_retry_debt[path] = now + _FILE_RETRY_DELAY_S
+            self._local_retry_page = True
+            self._prefer_local_retry = False
+            return due_local
+        return []
 
-    def _consume_retry_item(self, item: IntakeItem) -> None:
+    def _consume_retry_item(self, item: IntakeItem, *, acknowledged: bool = False) -> None:
         if not self._retry_page or not isinstance(item.payload, (str, Path)):
             return
         path = Path(item.payload)
         if path not in self._retry_page_paths:
+            return
+        if self._local_retry_page:
+            with self._retry_state_lock:
+                if acknowledged:
+                    self._fresh_retry_debt.pop(path, None)
+                elif path in self._fresh_retry_debt:
+                    # A partially planned page must move its attempted head
+                    # behind healthy siblings left outside the byte budget.
+                    due_at = self._fresh_retry_debt.pop(path)
+                    self._fresh_retry_debt[path] = due_at
+            self._retry_page_pending = False
             return
         position = str(path)
         if self._retry_after is None or position > self._retry_after:
@@ -372,8 +613,13 @@ class FileIntakeAdapter(IntakeAdapter):
         """
         for item in items:
             self._consume_retry_item(item)
+            if not self._retry_page and isinstance(item.payload, (str, Path)):
+                fresh_path = Path(item.payload)
+                if fresh_path in self._fresh_page_paths:
+                    self._fresh_attempted_paths.add(fresh_path)
         outcomes: dict[str, AdmissionResult] = {}
         batch: list[IntakeItem] = []
+        nonregular_paths: list[Path] = []
         for item in items:
             path = Path(item.payload) if isinstance(item.payload, (str, Path)) else None
             if path is None:
@@ -381,15 +627,25 @@ class FileIntakeAdapter(IntakeAdapter):
                     AdmissionOutcome.TERMINAL, reason="file intake item has no path"
                 )
                 continue
-            if not path.is_file():
+            try:
+                regular_file = stat.S_ISREG(path.lstat().st_mode)
+            except OSError:
+                regular_file = False
+            else:
+                if not regular_file:
+                    nonregular_paths.append(path)
+            if (
+                not regular_file
+                or deepest_source_for_path(path, self.context.sources) is not self.source
+                or not self.source.accepts(path)
+            ):
                 outcomes[item.item_id] = AdmissionResult(
-                    AdmissionOutcome.RETRYABLE, reason=f"source carrier vanished: {path}"
+                    AdmissionOutcome.RETRYABLE, reason=f"source carrier unavailable or no longer owned: {path}"
                 )
                 continue
             batch.append(item)
-        if not batch:
-            return outcomes
-
+        cursor = getattr(self.context.watcher, "_cursor", None)
+        mark_excluded = getattr(cursor, "mark_excluded", None)
         try:
             # The source-selection/cursor authority gate runs before anything
             # in this page can mutate cursor state -- before initialization,
@@ -397,7 +653,35 @@ class FileIntakeAdapter(IntakeAdapter):
             # authority is refused must leave the archive exactly as it was.
             processor = getattr(self.context.watcher, "_batch_processor", None)
             if processor is not None:
-                processor.require_cursor_authority([Path(cast(Any, item.payload)) for item in batch])
+                processor.require_cursor_authority(
+                    [*nonregular_paths, *(Path(cast(Any, item.payload)) for item in batch)]
+                )
+                refused_paths: frozenset[Path] = getattr(processor, "_refused_paths", frozenset())
+                if refused_paths:
+                    # The precheck has handled these paths. A page with no
+                    # ingest call must not leak the refusal into a later page.
+                    processor._refused_paths = frozenset()
+                nonregular_paths = [path for path in nonregular_paths if path not in refused_paths]
+                for item in batch:
+                    if Path(cast(Any, item.payload)) in refused_paths:
+                        outcomes[item.item_id] = AdmissionResult(
+                            AdmissionOutcome.RETRYABLE, reason="source carrier refused by cursor authority"
+                        )
+                batch = [item for item in batch if Path(cast(Any, item.payload)) not in refused_paths]
+            if nonregular_paths and callable(mark_excluded):
+
+                def retire_nonregular() -> None:
+                    for path in nonregular_paths:
+                        try:
+                            observed = path.lstat()
+                        except OSError:
+                            continue
+                        if not stat.S_ISREG(observed.st_mode):
+                            mark_excluded(path, observed_stat=observed)
+
+                await self.context.run_write("daemon.intake.retire_nonregular_cursor", retire_nonregular)
+            if not batch:
+                return outcomes
             # Cursor initialization precedes every read of cursor state, and
             # takes the writer admission to do it: the selection below reads
             # the cursor rows, so doing it first would touch (and create) the
@@ -506,6 +790,7 @@ class FileIntakeAdapter(IntakeAdapter):
             if key in succeeded:
                 outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.ADMITTED, actual_cost=actual_cost)
             elif excluded_by_path.get(key) in {REFUSED_UNATTEMPTED, REFUSED_UNATTEMPTED_TIME_BUDGET}:
+                self._fresh_attempted_paths.discard(Path(cast(Any, item.payload)))
                 outcomes[item.item_id] = AdmissionResult(
                     AdmissionOutcome.RETRYABLE,
                     reason=f"source admission left {key} unattempted: {excluded_by_path[key]}",
@@ -534,6 +819,7 @@ class FileIntakeAdapter(IntakeAdapter):
                 # The pass ran out of its declared time budget, or refused
                 # the whole batch while degraded: this item was never
                 # attempted, so it is ordinary backlog, not a re-seen one.
+                self._fresh_attempted_paths.discard(Path(cast(Any, item.payload)))
                 outcomes[item.item_id] = AdmissionResult(
                     AdmissionOutcome.RETRYABLE,
                     reason=f"source admission left {key} unattempted",
@@ -572,10 +858,16 @@ class FileIntakeAdapter(IntakeAdapter):
         # Retry rows may be ahead of ordinary discovery. They cannot advance
         # that walk past files it has not offered yet.
         if self._retry_page:
-            self._consume_retry_item(item)
+            self._consume_retry_item(item, acknowledged=True)
             return
         payload = item.payload
         if isinstance(payload, (str, Path)):
+            with self._retry_state_lock:
+                self._fresh_retry_debt.pop(Path(payload), None)
+            self._fresh_attempted_paths.discard(Path(payload))
+            if Path(payload) in self._fresh_page_paths:
+                self._fresh_page_paths = tuple(path for path in self._fresh_page_paths if path != Path(payload))
+                self._fresh_page_pending = bool(self._fresh_page_paths)
             position = str(payload)
             if self._after is None or position > self._after:
                 self._after = position
@@ -675,9 +967,18 @@ class MultiplexIntakeAdapter(IntakeAdapter):
     def discovery_pending(self) -> bool:
         return any(bool(getattr(adapter, "discovery_pending", False)) for adapter in self.schedulable_adapters())
 
+    @property
+    def retry_due_in_s(self) -> float | None:
+        due = (getattr(adapter, "retry_due_in_s", None) for adapter in self.schedulable_adapters())
+        deadlines = tuple(value for value in due if value is not None)
+        return min(deadlines) if deadlines else None
+
     async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
         if limit <= 0:
             return ()
+        # Ownership is needed only between this page's discovery and its
+        # admission/acknowledgement; prior unacknowledged pages are rediscovered.
+        self._by_item.clear()
         adapters = self.schedulable_adapters()
         if not adapters:
             return ()
@@ -1090,9 +1391,10 @@ class DaemonIntakeService:
         while True:
             self._wakeup.clear()
             result = await self.dispatcher.run_once(budget=self.budget)
-            discovery_pending = any(
-                bool(getattr(spec.adapter, "discovery_pending", False))
-                for spec in self.dispatcher.schedulable_classes()
+            schedulable = self.dispatcher.schedulable_classes()
+            discovery_pending = any(bool(getattr(spec.adapter, "discovery_pending", False)) for spec in schedulable)
+            retry_delays = tuple(
+                delay for spec in schedulable if (delay := getattr(spec.adapter, "retry_due_in_s", None)) is not None
             )
             if result.progressed:
                 self._progressed_once = True
@@ -1104,6 +1406,7 @@ class DaemonIntakeService:
                 self._progressed_once
                 and result.quiescent
                 and not discovery_pending
+                and not retry_delays
                 and self._on_backlog_drained is not None
             ):
                 pending = self._has_pending_backlog() if self._has_pending_backlog is not None else False
@@ -1117,7 +1420,10 @@ class DaemonIntakeService:
                     # completed one-shot callback.
                     self._on_backlog_drained = None
             try:
-                async with asyncio.timeout(0.05 if result.progressed or discovery_pending else self.idle_delay_s):
+                idle_delay = 0.05 if result.progressed or discovery_pending else self.idle_delay_s
+                if retry_delays:
+                    idle_delay = min(idle_delay, max(0.05, min(retry_delays)))
+                async with asyncio.timeout(idle_delay):
                     await self._wakeup.wait()
             except TimeoutError:
                 pass

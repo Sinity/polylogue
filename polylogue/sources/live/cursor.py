@@ -1744,13 +1744,21 @@ class CursorStore:
 
         self._read_modify_write_cursor_record(path, mutate, actuator="defer_full_cursor_reconciliation")
 
-    def mark_excluded(self, path: Path) -> None:
-        """Quarantine a source file (poison pill)."""
+    def mark_excluded(self, path: Path, *, observed_stat: os.stat_result | None = None) -> None:
+        """Quarantine a source file, binding an optional nonregular observation."""
 
         def mutate(current: CursorRecord | None) -> CursorRecord | None:
             if current is None:
                 return None
-            return replace(current, updated_at=datetime.now(UTC).isoformat(), excluded=True)
+            return replace(
+                current,
+                updated_at=datetime.now(UTC).isoformat(),
+                excluded=True,
+                byte_size=observed_stat.st_size if observed_stat is not None else current.byte_size,
+                st_dev=observed_stat.st_dev if observed_stat is not None else current.st_dev,
+                st_ino=observed_stat.st_ino if observed_stat is not None else current.st_ino,
+                mtime_ns=observed_stat.st_mtime_ns if observed_stat is not None else current.mtime_ns,
+            )
 
         self._read_modify_write_cursor_record(path, mutate, actuator="mark_excluded")
 
