@@ -119,14 +119,23 @@ class BlobPublicationReservationStore:
         """
         return open_source_tier_write_connection(self.source_db_path, archive_root=self.source_db_path.parent)
 
-    def reserve_many(self, receipts: Sequence[BlobPublicationReceipt]) -> None:
+    def reserve_many(self, receipts: Sequence[BlobPublicationReceipt]) -> frozenset[str]:
+        """Reserve ``receipts`` and return the blob hashes refused as excised.
+
+        The excision ledger is read in the same write transaction, so no
+        route can publish bytes the operator excised: a refused hash gets no
+        reservation, and its caller discards the staged file instead of
+        exposing it (polylogue-u6jyu).
+        """
         if not receipts:
-            return
+            return frozenset()
         now_ms = int(time.time() * 1000)
         require_write_lease(f"blob publication({self.source_db_path})", archive_root=self.source_db_path.parent)
         conn = self._open_connection()
         try:
             conn.execute("BEGIN IMMEDIATE")
+            excised = _excised_hashes(conn, {receipt.blob_hash for receipt in receipts})
+            receipts = [receipt for receipt in receipts if receipt.blob_hash not in excised]
             conn.executemany(
                 """
                 INSERT INTO blob_publication_reservations (
@@ -150,6 +159,24 @@ class BlobPublicationReservationStore:
             raise
         finally:
             conn.close()
+        return excised
+
+
+def _excised_hashes(conn: sqlite3.Connection, blob_hashes: set[str]) -> frozenset[str]:
+    """Return which of ``blob_hashes`` (hex) the durable excision ledger names."""
+    if not blob_hashes or not _table_exists(conn, "excised_content"):
+        return frozenset()
+    excised: set[str] = set()
+    ordered = sorted(blob_hashes)
+    for start in range(0, len(ordered), 500):
+        chunk = ordered[start : start + 500]
+        placeholders = ", ".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"SELECT removed_hash FROM excised_content WHERE hash_kind = 'blob_hash' AND removed_hash IN ({placeholders})",
+            [bytes.fromhex(blob_hash) for blob_hash in chunk],
+        ).fetchall()
+        excised.update(bytes(row[0]).hex() for row in rows)
+    return frozenset(excised)
 
 
 class ArchiveBlobPublisher(BlobStore):
@@ -223,11 +250,15 @@ class ArchiveBlobPublisher(BlobStore):
         pending = tuple(self._pending)
         receipts = tuple(receipt for receipt, _prepared in pending)
         with _archive_blob_publisher_slot(self.source_db_path):
-            BlobPublicationReservationStore(self.source_db_path).reserve_many(receipts)
-            self._store.publish_many(prepared for _receipt, prepared in pending)
+            excised = BlobPublicationReservationStore(self.source_db_path).reserve_many(receipts)
+            for receipt, prepared in pending:
+                if receipt.blob_hash in excised:
+                    self._store.discard_prepared(prepared)
+                    self._latest_receipt_by_hash.pop(receipt.blob_hash, None)
+            self._store.publish_many(prepared for receipt, prepared in pending if receipt.blob_hash not in excised)
         self._pending.clear()
         self._pending_by_hash.clear()
-        return receipts
+        return tuple(receipt for receipt in receipts if receipt.blob_hash not in excised)
 
     def discard_pending(self) -> None:
         for _receipt, prepared in self._pending:
