@@ -163,3 +163,23 @@ def test_pool_workers_collapse_into_one_thread_group() -> None:
     assert thread_group("ThreadPoolExecutor-3_17") == "ThreadPoolExecutor"
     assert thread_group("polylogue-writer:watcher.live_ingest.full") == "polylogue-writer:watcher.live_ingest.full"
     assert thread_group_label("polylogue-writer:watcher.live_ingest.full") == "polylogue-writer"
+
+
+def test_thread_cpu_separates_writer_actors_from_other_threads() -> None:
+    """Anti-vacuity: grouping by the collapsed label merges every writer
+    actor into one row and loses the per-actor split."""
+    from devtools.fresh_build_bench.report import thread_cpu_summary
+
+    summary = thread_cpu_summary(
+        {
+            "clock_ticks_per_s": 100,
+            "thread_cpu_ticks": {
+                "polylogue-writer:watcher.live_ingest.full": 300,
+                "polylogue-writer:derivation.session_profile": 100,
+                "MainThread": 50,
+            },
+        }
+    )
+    assert summary["writer_total"] == 4.0
+    assert summary["writer_by_actor"] == [["watcher.live_ingest.full", 3.0], ["derivation.session_profile", 1.0]]
+    assert summary["other_threads"] == [["MainThread", 0.5]]

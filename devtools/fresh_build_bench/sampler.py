@@ -69,9 +69,13 @@ def _stack(frame: FrameType | None) -> tuple[tuple[str, str, int], ...]:
 class StackSampler:
     """Sample every Python thread's stack and CPU at a fixed interval."""
 
-    def __init__(self, out_path: Path, *, interval_s: float) -> None:
+    def __init__(self, out_path: Path, *, interval_s: float, stacks: bool = True) -> None:
         self.out_path = out_path
         self.interval_s = interval_s
+        #: Without stacks the sampler only accounts per-thread CPU, which
+        #: needs no ``sys._current_frames`` (a stop-the-world call on the
+        #: free-threaded build) and is cheap enough to leave on for every run.
+        self.stacks = stacks
         self._stop = threading.Event()
         self._wall: Counter[tuple[str, tuple[tuple[str, str, int], ...]]] = Counter()
         self._cpu: Counter[tuple[str, tuple[tuple[str, str, int], ...]]] = Counter()
@@ -89,29 +93,44 @@ class StackSampler:
         atexit.register(self.write)
         self._thread.start()
 
+    def _cpu_delta(self, native_id: int) -> int:
+        ticks = _thread_cpu_ticks(native_id)
+        if ticks is None:
+            return 0
+        # A thread first seen now started after the previous sample (or is a
+        # long-lived thread seen for the first time): all of its CPU so far
+        # belongs to this interval.
+        delta = max(0, ticks - self._previous_cpu.get(native_id, 0))
+        self._previous_cpu[native_id] = ticks
+        return delta
+
     def _run(self) -> None:
         own = threading.get_ident()
         while not self._stop.wait(self.interval_s):
             began = time.perf_counter()
-            frames = sys._current_frames()
-            threads = {thread.ident: thread for thread in threading.enumerate()}
-            for ident, frame in frames.items():
-                if ident == own:
-                    continue
-                thread = threads.get(ident)
-                if thread is None or thread.native_id is None:
-                    continue
-                group = thread_group(thread.name)
-                ticks = _thread_cpu_ticks(thread.native_id)
-                delta = 0
-                if ticks is not None:
-                    delta = max(0, ticks - self._previous_cpu.get(thread.native_id, ticks))
-                    self._previous_cpu[thread.native_id] = ticks
-                key = (group, _stack(frame))
-                self._wall[key] += 1
-                if delta:
-                    self._cpu[key] += delta
-                    self._thread_cpu[group] += delta
+            if not self.stacks:
+                for thread in threading.enumerate():
+                    if thread.ident == own or thread.native_id is None:
+                        continue
+                    delta = self._cpu_delta(thread.native_id)
+                    if delta:
+                        self._thread_cpu[thread_group(thread.name)] += delta
+            else:
+                frames = sys._current_frames()
+                threads = {thread.ident: thread for thread in threading.enumerate()}
+                for ident, frame in frames.items():
+                    if ident == own:
+                        continue
+                    sampled = threads.get(ident)
+                    if sampled is None or sampled.native_id is None:
+                        continue
+                    group = thread_group(sampled.name)
+                    delta = self._cpu_delta(sampled.native_id)
+                    key = (group, _stack(frame))
+                    self._wall[key] += 1
+                    if delta:
+                        self._cpu[key] += delta
+                        self._thread_cpu[group] += delta
             self._ticks += 1
             self._sample_seconds += time.perf_counter() - began
             if time.monotonic() - self._last_flush >= _FLUSH_EVERY_S:
@@ -165,6 +184,7 @@ def start_from_environment() -> StackSampler | None:
     if not target:
         return None
     interval = float(os.environ.get("POLYLOGUE_BENCH_STACK_INTERVAL_S", "0.01"))
-    sampler = StackSampler(Path(target), interval_s=interval)
+    stacks = os.environ.get("POLYLOGUE_BENCH_STACKS", "1") != "0"
+    sampler = StackSampler(Path(target), interval_s=interval, stacks=stacks)
     sampler.start()
     return sampler

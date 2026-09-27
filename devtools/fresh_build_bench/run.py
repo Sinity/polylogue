@@ -405,10 +405,14 @@ def _daemon_env(config: RunConfig, paths: dict[str, Path]) -> dict[str, str]:
         "POLYLOGUE_LOG_FILE": str(paths["events"]),
         "PYTHONPATH": str(config.candidate),
     }
+    # Per-thread CPU is always sampled (cheap); stacks only with --profile.
+    env["POLYLOGUE_BENCH_SAMPLER"] = str(_SAMPLER_PATH)
+    env["POLYLOGUE_BENCH_STACK_SAMPLES"] = str(paths["stacks"])
     if config.profile:
-        env["POLYLOGUE_BENCH_SAMPLER"] = str(_SAMPLER_PATH)
-        env["POLYLOGUE_BENCH_STACK_SAMPLES"] = str(paths["stacks"])
         env["POLYLOGUE_BENCH_STACK_INTERVAL_S"] = str(config.profile_interval_s)
+    else:
+        env["POLYLOGUE_BENCH_STACKS"] = "0"
+        env["POLYLOGUE_BENCH_STACK_INTERVAL_S"] = "0.05"
     env.update(dict(config.extra_env))
     return env
 

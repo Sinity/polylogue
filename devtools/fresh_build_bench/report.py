@@ -421,6 +421,30 @@ def _progress_timeline(observations: list[Any]) -> list[tuple[float, int, int, i
     return rows
 
 
+def thread_cpu_summary(document: dict[str, Any]) -> dict[str, Any]:
+    """Daemon CPU by thread: every writer actor, the writer total, the rest.
+
+    The writer total is the single-writer ceiling: intake cannot go faster
+    than the writer's own CPU allows, whatever the host's load does to wall
+    time.
+    """
+    ticks_per_s = float(document["clock_ticks_per_s"])
+    by_thread = {name: ticks / ticks_per_s for name, ticks in document.get("thread_cpu_ticks", {}).items()}
+    writer = {name: seconds for name, seconds in by_thread.items() if name.startswith("polylogue-writer:")}
+    return {
+        "writer_total": round(sum(writer.values()), 2),
+        "writer_by_actor": [
+            [name.removeprefix("polylogue-writer:"), round(seconds, 2)]
+            for name, seconds in sorted(writer.items(), key=lambda item: -item[1])
+        ],
+        "other_threads": [
+            [name, round(seconds, 2)]
+            for name, seconds in sorted(by_thread.items(), key=lambda item: -item[1])
+            if name not in writer
+        ][:15],
+    }
+
+
 def config_digest(config: Any) -> str:
     """What must match, besides the corpus, for two receipts to compare."""
     payload = {
@@ -564,6 +588,9 @@ def build_receipt(
         "progress": _progress_timeline(observations),
         "started_at_unix": round(started_wall, 3),
     }
+    if paths["stacks"].exists():
+        document = json.loads(paths["stacks"].read_text(encoding="utf-8"))
+        receipt["thread_cpu_s"] = thread_cpu_summary(document)
     if config.profile and paths["stacks"].exists():
         from devtools.fresh_build_bench.profile_report import summarise
 
@@ -618,6 +645,10 @@ def render(receipt: dict[str, Any]) -> str:
     timing = receipt["timing_s"]
     lines.append("timing  " + "  ".join(f"{key}={_fmt(value)}" for key, value in timing.items() if key != "shutdown"))
     lines.append("throughput  " + "  ".join(f"{k}={_fmt(v)}" for k, v in receipt["throughput"].items()))
+    thread_cpu = receipt.get("thread_cpu_s") or {}
+    if thread_cpu:
+        top = ", ".join(f"{name} {seconds}" for name, seconds in (thread_cpu.get("writer_by_actor") or [])[:4])
+        lines.append(f"writer cpu  total={_fmt(thread_cpu.get('writer_total'))}s  ({top})")
     writer = receipt.get("writer") or {}
     lines.append(
         f"writer  busy_share_to_promotion={_fmt(writer.get('busy_share_to_promotion'))}"
