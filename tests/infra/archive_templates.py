@@ -12,6 +12,7 @@ from __future__ import annotations
 import fcntl
 import os
 import shutil
+import sqlite3
 import threading
 from hashlib import sha256
 from pathlib import Path
@@ -170,6 +171,16 @@ def bootstrap_archive_root(root: Path) -> Path:
         initialize_active_archive_root(root)
         return root
     clone_archive_template(template, root)
+    # Sealing a template checkpoints WAL and switches every tier to DELETE
+    # mode. A fresh production bootstrap intentionally initializes source.db
+    # in WAL mode, so restore that one shared mode after cloning the pristine
+    # bootstrap template.
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, ArchiveTier
+    from polylogue.storage.sqlite.connection_profile import initialize_source_tier_database_mode
+
+    source_path = root / ARCHIVE_TIER_SPECS[ArchiveTier.SOURCE].filename
+    with sqlite3.connect(source_path) as conn:
+        initialize_source_tier_database_mode(conn)
     return root
 
 

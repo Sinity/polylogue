@@ -258,6 +258,7 @@ def _archive_state(root: Path) -> dict[str, object]:
             objects = conn.execute("SELECT type, name, sql FROM sqlite_master ORDER BY type, name").fetchall()
             state[f"{spec.filename}:objects"] = objects
             state[f"{spec.filename}:user_version"] = conn.execute("PRAGMA user_version").fetchone()[0]
+            state[f"{spec.filename}:journal_mode"] = conn.execute("PRAGMA journal_mode").fetchone()[0]
             for kind, name, _sql in objects:
                 if kind != "table" or name.startswith("sqlite_"):
                     continue
@@ -295,6 +296,11 @@ def test_bootstrap_clone_reproduces_the_production_bootstrap(tmp_path: Path, boo
 
     assert (bootstrap_template_root / ".bootstrap-archive-template").is_dir()
     assert _archive_state(cloned) == _archive_state(produced)
+    with sqlite3.connect(cloned / "source.db") as conn:
+        assert conn.execute("PRAGMA journal_mode=DELETE").fetchone() == ("delete",)
+    assert _archive_state(cloned) != _archive_state(produced)
+    with sqlite3.connect(cloned / "source.db") as conn:
+        assert conn.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
     (cloned / "extra-durable-member").write_bytes(b"extra")
     assert _archive_state(cloned) != _archive_state(produced)
 
