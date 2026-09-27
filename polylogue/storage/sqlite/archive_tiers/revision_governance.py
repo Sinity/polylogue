@@ -2828,6 +2828,25 @@ def raw_membership_selection_components(
     return raw_membership_selection_components_sync(store._ensure_source_conn(), raw_ids)
 
 
+_MEMBERSHIP_EXPANSION_BATCH = 400
+
+
+def _batched_values(conn: sqlite3.Connection, template: str, values: set[str], *, repeat: int = 1) -> set[str]:
+    """Run ``template`` over ``values`` in bounded ``IN`` batches.
+
+    ``template`` holds one ``{marks}`` per bound copy of the batch. A selection
+    larger than SQLite's variable limit is valid input, so it is paged rather
+    than refused.
+    """
+    ordered = sorted(values)
+    found: set[str] = set()
+    for start in range(0, len(ordered), _MEMBERSHIP_EXPANSION_BATCH):
+        batch = tuple(ordered[start : start + _MEMBERSHIP_EXPANSION_BATCH])
+        marks = ",".join("?" for _ in batch)
+        found.update(str(row[0]) for row in conn.execute(template.format(marks=marks), batch * repeat))
+    return found
+
+
 def expand_raw_membership_selection_sync(
     conn: sqlite3.Connection,
     raw_ids: list[str] | None,
@@ -2837,82 +2856,37 @@ def expand_raw_membership_selection_sync(
         selected = {str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions")}
     else:
         selected = set(raw_ids)
+    keys_for_raws = (
+        "SELECT logical_source_key FROM raw_session_memberships WHERE raw_id IN ({marks}) "
+        "UNION SELECT logical_source_key FROM raw_sessions "
+        "WHERE raw_id IN ({marks}) AND logical_source_key IS NOT NULL"
+    )
     changed = True
     while changed and selected:
         changed = False
-        placeholders = ",".join("?" for _ in selected)
-        paths = {
-            str(row[0])
-            for row in conn.execute(
-                f"SELECT DISTINCT source_path FROM raw_sessions WHERE raw_id IN ({placeholders})",
-                tuple(selected),
-            )
-        }
+        paths = _batched_values(
+            conn, "SELECT DISTINCT source_path FROM raw_sessions WHERE raw_id IN ({marks})", selected
+        )
         if paths:
-            path_marks = ",".join("?" for _ in paths)
             selected.update(
-                str(row[0])
-                for row in conn.execute(
-                    f"SELECT raw_id FROM raw_sessions WHERE source_path IN ({path_marks})", tuple(paths)
-                )
+                _batched_values(conn, "SELECT raw_id FROM raw_sessions WHERE source_path IN ({marks})", paths)
             )
-        placeholders = ",".join("?" for _ in selected)
-        keys = {
-            str(row[0])
-            for row in conn.execute(
-                f"""
-                SELECT logical_source_key
-                FROM raw_session_memberships
-                WHERE raw_id IN ({placeholders})
-                UNION
-                SELECT logical_source_key
-                FROM raw_sessions
-                WHERE raw_id IN ({placeholders})
-                  AND logical_source_key IS NOT NULL
-                """,
-                (*selected, *selected),
-            )
-        }
+        keys = _batched_values(conn, keys_for_raws, selected, repeat=2)
         before = len(selected)
         if keys:
-            key_marks = ",".join("?" for _ in keys)
             selected.update(
-                str(row[0])
-                for row in conn.execute(
-                    f"""
-                    SELECT raw_id
-                    FROM raw_session_memberships
-                    WHERE logical_source_key IN ({key_marks})
-                    UNION
-                    SELECT raw_id
-                    FROM raw_sessions
-                    WHERE logical_source_key IN ({key_marks})
-                    """,
-                    (*keys, *keys),
+                _batched_values(
+                    conn,
+                    "SELECT raw_id FROM raw_session_memberships WHERE logical_source_key IN ({marks}) "
+                    "UNION SELECT raw_id FROM raw_sessions WHERE logical_source_key IN ({marks})",
+                    keys,
+                    repeat=2,
                 )
             )
         changed = len(selected) != before
     if not selected:
         return (), ()
-    placeholders = ",".join("?" for _ in selected)
-    logical_keys = tuple(
-        sorted(
-            str(row[0])
-            for row in conn.execute(
-                f"""
-                SELECT logical_source_key
-                FROM raw_session_memberships
-                WHERE raw_id IN ({placeholders})
-                UNION
-                SELECT logical_source_key
-                FROM raw_sessions
-                WHERE raw_id IN ({placeholders})
-                  AND logical_source_key IS NOT NULL
-                """,
-                (*selected, *selected),
-            )
-        )
-    )
+    logical_keys = tuple(sorted(_batched_values(conn, keys_for_raws, selected, repeat=2)))
     return tuple(sorted(selected)), logical_keys
 
 

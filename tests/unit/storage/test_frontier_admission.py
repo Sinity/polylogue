@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -240,11 +241,10 @@ def test_fork_like_pid_change_discards_certificate(tmp_path: Path, monkeypatch: 
     complete_checks = 0
     original = frontier_existence._missing_reference
 
-    def count_complete(conn: sqlite3.Connection, raw_id: str | None = None) -> bool:
+    def count_complete(conn: sqlite3.Connection) -> bool:
         nonlocal complete_checks
-        if raw_id is None:
-            complete_checks += 1
-        return original(conn, raw_id)
+        complete_checks += 1
+        return original(conn)
 
     monkeypatch.setattr(frontier_existence, "_missing_reference", count_complete)
     monkeypatch.setattr(frontier_existence, "_pid", -1)
@@ -669,3 +669,45 @@ def test_retired_symlink_alias_refuses_the_selected_real_path(tmp_path: Path) ->
     selected = raw_frontier_blocked_selected_paths(tmp_path, (real,))
     assert selected.unattributed_reason is None
     assert str(real.resolve()) in selected.source_paths
+
+
+def test_changed_keys_beyond_one_batch_are_all_checked(tmp_path: Path) -> None:
+    """Every journaled key is examined, in batches, however many a page adds.
+
+    Anti-vacuity: check only the first batch and the missing key, sorted
+    last, is never examined, so admission reports healthy.
+    """
+    initialize_active_archive_root(tmp_path)
+    assert frontier_existence.raw_existence_block_reason(tmp_path) is None
+    count = frontier_existence._CHANGED_KEY_BATCH * 2 + 5
+    for number in range(count):
+        _raw(tmp_path, f"k{number:05d}")
+        _session(tmp_path, f"k{number:05d}", number)
+    _session(tmp_path, "zz-absent", count)
+    assert "zz-absent" in str(frontier_existence.raw_existence_block_reason(tmp_path))
+
+
+def test_membership_expansion_pages_selections_beyond_the_variable_limit(tmp_path: Path) -> None:
+    """A path with more retained raws than SQLite binds at once is still expanded.
+
+    Anti-vacuity: bind the whole selection in one statement and SQLite raises
+    ``too many SQL variables``, so the selected frontier reports unreadable.
+    """
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import expand_raw_membership_selection_sync
+
+    initialize_active_archive_root(tmp_path)
+    shared = tmp_path / "shared.jsonl"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        limit = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    total = limit // 2 + 10
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.executemany(
+            "INSERT INTO raw_sessions(raw_id, origin, source_path, canonical_source_path, blob_hash, blob_size, "
+            "acquired_at_ms, logical_source_key, revision_kind, source_revision, acquisition_generation, "
+            "revision_authority) VALUES (?, 'codex-session', ?, ?, ?, 1, 1, 'codex:shared', 'full', ?, 0, 'byte_proven')",
+            [(f"r{n:06d}", str(shared), str(shared), bytes(32), f"r{n:06d}") for n in range(total)],
+        )
+    with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+        selected, keys = expand_raw_membership_selection_sync(conn, [f"r{n:06d}" for n in range(total)])
+    assert len(selected) == total
+    assert keys == ("codex:shared",)

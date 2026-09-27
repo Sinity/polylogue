@@ -282,21 +282,24 @@ def test_frontier_pages_reconcile_changes_without_repeating_global_scan(
     changed_keys: list[str] = []
     selected_sizes: list[int] = []
     original_missing = frontier_existence._missing_reference
+    original_changed = frontier_existence._first_missing_reference
     original_selected = raw_retention.raw_frontier_blocked_selected_paths
 
-    def count_missing(conn: sqlite3.Connection, raw_id: str | None = None) -> bool:
+    def count_missing(conn: sqlite3.Connection) -> bool:
         nonlocal bootstrap_calls
-        if raw_id is None:
-            bootstrap_calls += 1
-        else:
-            changed_keys.append(raw_id)
-        return original_missing(conn, raw_id)
+        bootstrap_calls += 1
+        return original_missing(conn)
+
+    def count_changed(conn: sqlite3.Connection, raw_ids: set[str]) -> str | None:
+        changed_keys.extend(raw_ids)
+        return original_changed(conn, raw_ids)
 
     def count_selected(root: Path, paths: list[Path]) -> raw_retention.RawFrontierBlockedPaths:
         selected_sizes.append(len(paths))
         return original_selected(root, paths)
 
     monkeypatch.setattr(frontier_existence, "_missing_reference", count_missing)
+    monkeypatch.setattr(frontier_existence, "_first_missing_reference", count_changed)
     monkeypatch.setattr(raw_retention, "raw_frontier_blocked_selected_paths", count_selected)
     archive = tmp_path / "archive"
     initialize_active_archive_root(archive)

@@ -179,24 +179,46 @@ def _read_state(root: Path) -> tuple[tuple[object, ...], int, int, int, int]:
     return identity, source_high, source_floor, index_high, index_floor
 
 
-def _missing_reference(conn: sqlite3.Connection, raw_id: str | None = None) -> bool:
-    predicate = "AND s.raw_id = ?" if raw_id is not None else ""
-    args: tuple[str, ...] = (raw_id,) if raw_id is not None else ()
+def _missing_reference(conn: sqlite3.Connection) -> bool:
+    """Whether any active index raw reference is absent from source (full check)."""
     if conn.execute(
-        f"SELECT 1 FROM index_tier.sessions s WHERE s.raw_id IS NOT NULL {predicate} "
-        "AND NOT EXISTS (SELECT 1 FROM raw_sessions r WHERE r.raw_id = s.raw_id) LIMIT 1",
-        args,
+        "SELECT 1 FROM index_tier.sessions s WHERE s.raw_id IS NOT NULL "
+        "AND NOT EXISTS (SELECT 1 FROM raw_sessions r WHERE r.raw_id = s.raw_id) LIMIT 1"
     ).fetchone():
         return True
-    predicate = "AND h.accepted_raw_id = ?" if raw_id is not None else ""
     return (
         conn.execute(
-            f"SELECT 1 FROM index_tier.raw_revision_heads h WHERE h.accepted_raw_id IS NOT NULL {predicate} "
-            "AND NOT EXISTS (SELECT 1 FROM raw_sessions r WHERE r.raw_id = h.accepted_raw_id) LIMIT 1",
-            args,
+            "SELECT 1 FROM index_tier.raw_revision_heads h WHERE h.accepted_raw_id IS NOT NULL "
+            "AND NOT EXISTS (SELECT 1 FROM raw_sessions r WHERE r.raw_id = h.accepted_raw_id) LIMIT 1"
         ).fetchone()
         is not None
     )
+
+
+_CHANGED_KEY_BATCH = 400
+
+
+def _first_missing_reference(conn: sqlite3.Connection, raw_ids: set[str]) -> str | None:
+    """One changed key still referenced by the index but absent from source.
+
+    Checked in bounded ``IN`` batches: a page that journals thousands of keys
+    costs a handful of anti-joins, not two statements per key.
+    """
+    ordered = sorted(raw_ids)
+    for start in range(0, len(ordered), _CHANGED_KEY_BATCH):
+        batch = tuple(ordered[start : start + _CHANGED_KEY_BATCH])
+        marks = ",".join("?" for _ in batch)
+        row = conn.execute(
+            f"SELECT s.raw_id FROM index_tier.sessions s WHERE s.raw_id IN ({marks}) "
+            "AND NOT EXISTS (SELECT 1 FROM raw_sessions r WHERE r.raw_id = s.raw_id) "
+            f"UNION ALL SELECT h.accepted_raw_id FROM index_tier.raw_revision_heads h "
+            f"WHERE h.accepted_raw_id IN ({marks}) "
+            "AND NOT EXISTS (SELECT 1 FROM raw_sessions r WHERE r.raw_id = h.accepted_raw_id) LIMIT 1",
+            batch * 2,
+        ).fetchone()
+        if row is not None:
+            return str(row[0])
+    return None
 
 
 def _changed_keys(conn: sqlite3.Connection, schema: str, low: int, high: int) -> set[str]:
@@ -236,9 +258,9 @@ def _prove(root: Path, old: _Certificate | None) -> _Certificate:
                 raise ValueError("raw-existence journal watermark regressed")
             changed = _changed_keys(conn, "main", old.source_watermark, source_high)
             changed.update(_changed_keys(conn, "index_tier", old.index_watermark, index_high))
-            for raw_id in changed:
-                if _missing_reference(conn, raw_id):
-                    raise ValueError(f"active index raw is missing from source tier: {raw_id}")
+            missing = _first_missing_reference(conn, changed)
+            if missing is not None:
+                raise ValueError(f"active index raw is missing from source tier: {missing}")
         conn.commit()
     candidate = _Certificate(identity, source_high, index_high)
     if _read_state(root) != (identity, source_high, source_floor, index_high, index_floor):
