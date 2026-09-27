@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sqlite3
+import time
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass
@@ -87,6 +88,7 @@ _PARSER_FINGERPRINT = "live-batched-v3"
 # overshoot is one work item. Past the writer gate's own declared hold bound
 # the same checkpoints end the pass with ``WriteHoldBudgetError``.
 _LIVE_INGEST_MAX_PASS_SECONDS = 20.0
+_RAW_RETENTION_RETRY_BUDGET_SECONDS = 30.0
 _INCOMPLETE_APPEND_PROBE_BYTES = 64 * 1024 * 1024
 # polylogue-dhkuu: the probe's own working set, independent of how much tail
 # it is allowed to scan. The scan looks only for the first b"\n", so it never
@@ -469,15 +471,31 @@ class LiveWatcher:
         return self._intake_revisions[source.root]
 
     async def retry_raw_retention_backlog(self) -> None:
-        """Drain retry-due retention debt even when no source changed."""
-        async with self._ingest_lock:
-            if not self._batch_processor._raw_retention_backlog_paths(exclude=set()):
+        """Drain retry-due retention debt even when no source changed.
+
+        Bounded passes repeat while the due backlog keeps changing, inside a
+        budget shorter than the convergence tick. One pass per tick made the
+        drain cadence-bound: after a cold build every admitted file owes
+        retention, and a fixed page per minute is a day of backlog for a
+        full archive. A pass that retains nothing re-records its paths with
+        backoff, so the due set moves on or empties; an unchanged set ends
+        the drain. The ingest lock is released between passes.
+        """
+        deadline = time.monotonic() + _RAW_RETENTION_RETRY_BUDGET_SECONDS
+        previous: list[Path] | None = None
+        while True:
+            async with self._ingest_lock:
+                backlog = self._batch_processor._raw_retention_backlog_paths(exclude=set())
+                if not backlog or backlog == previous:
+                    return
+                await self._run_writer_sync(
+                    "watcher.live_ingest.raw_compaction_retry",
+                    self._batch_processor._compact_superseded_raw_snapshots,
+                    [],
+                )
+            previous = backlog
+            if time.monotonic() >= deadline:
                 return
-            await self._run_writer_sync(
-                "watcher.live_ingest.raw_compaction_retry",
-                self._batch_processor._compact_superseded_raw_snapshots,
-                [],
-            )
 
     def _existing_source_roots(self) -> list[Path]:
         """Return configured roots that exist at the instant of a scan."""

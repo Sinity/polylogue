@@ -47,6 +47,11 @@ _HOT_INSIGHT_SOURCE_BYTES = 64 * 1024 * 1024
 _HOT_INSIGHT_QUIET_SECONDS = 60.0
 _ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS = 120_000
 _DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS = 8
+#: One stage execution keeps warming bounded cohort batches while each batch
+#: makes progress, up to this much wall time. A single batch per execution
+#: left a fresh archive's cohorts warming eight at a time behind the debt
+#: backoff: hours for a full corpus.
+_DAEMON_RAW_AUTHORITY_CACHE_PASS_SECONDS = 10.0
 
 
 def _sinex_drain_reason(*, rejected: int, transport_failures: int, payload_failures: int) -> str:
@@ -348,6 +353,7 @@ def make_delegation_work_evidence_stage(db_path: Path) -> ConvergenceStage:
         check_many=check_many,
         execute_many=execute_many,
         whole_archive=True,
+        subject_independent=True,
         writer_admission="bridged",
     )
 
@@ -468,18 +474,26 @@ def make_raw_authority_verdict_cache_stage(db_path: Path) -> ConvergenceStage:
 
     def execute_many(_paths: Sequence[Path]) -> StageExecuteReturn:
         with span("daemon.stage.execute", stage="raw_authority_verdict_cache", files=len(_paths)) as work:
-            outcome = warm_raw_authority_verdict_cache(
-                db_path.parent,
-                max_cohorts=_DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS,
-                now_ms=int(time.time() * 1000),
-            )
+            deadline = time.monotonic() + _DAEMON_RAW_AUTHORITY_CACHE_PASS_SECONDS
+            warmed = 0
+            while True:
+                outcome = warm_raw_authority_verdict_cache(
+                    db_path.parent,
+                    max_cohorts=_DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS,
+                    now_ms=int(time.time() * 1000),
+                )
+                warmed += outcome.warmed_cohorts
+                # Stop on convergence, on a batch that warmed nothing (the
+                # residue is not this pass's to clear), or at the budget.
+                if not outcome.pending_cohorts or not outcome.warmed_cohorts or time.monotonic() >= deadline:
+                    break
             pending = int(outcome.pending_cohorts or 0)
             if pending:
                 # Backlog remains: the stage is not converged this pass, and
                 # false_means_pending will schedule the retry.
-                work.degraded("cohorts_still_pending", cohorts=outcome.warmed_cohorts, pending=pending)
-            elif outcome.warmed_cohorts:
-                work.ok(cohorts=outcome.warmed_cohorts, pending=0)
+                work.degraded("cohorts_still_pending", cohorts=warmed, pending=pending)
+            elif warmed:
+                work.ok(cohorts=warmed, pending=0)
             else:
                 work.empty(cohorts=0, pending=0)
             return not outcome.pending_cohorts
@@ -493,6 +507,7 @@ def make_raw_authority_verdict_cache_stage(db_path: Path) -> ConvergenceStage:
         execute_many=execute_many,
         false_means_pending=True,
         whole_archive=True,
+        subject_independent=True,
     )
 
 
@@ -580,6 +595,7 @@ def make_fts_readiness_binding_stage(db_path: Path) -> ConvergenceStage:
         execute_many=execute_many,
         false_means_pending=True,
         whole_archive=True,
+        subject_independent=True,
     )
 
 

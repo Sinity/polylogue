@@ -9462,6 +9462,55 @@ def test_raw_retention_retries_promoted_backlog_after_watcher_restart(
     assert _retention_debt(restarted._cursor) == []
 
 
+def test_raw_retention_retry_drains_more_than_one_bounded_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One retry call keeps draining while the due backlog moves.
+
+    Anti-vacuity: a single pass per call drains one of the three paths (the
+    page is patched to one path) and leaves two retention debts behind.
+    """
+    from polylogue.sources.live import batch as batch_module
+    from polylogue.sources.live import cold_build
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    bootstrap_archive_root(tmp_path)
+    root = tmp_path / "sessions"
+    root.mkdir()
+    processor = _retention_processor(tmp_path, root)
+    monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root: object())
+    superseded: list[str] = []
+    paths = []
+    for index in range(3):
+        path = root / f"session-{index}.jsonl"
+        path.write_text("{}\n", encoding="utf-8")
+        paths.append(path)
+        superseded.extend(
+            _seed_superseded_raw_snapshots(processor, tmp_path / "source.db", path, count=1, prefix=10 * index)
+        )
+    processor._compact_superseded_raw_snapshots(paths)
+    assert len(_retention_debt(processor._cursor)) == 3
+
+    monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root: None)
+    _grant_full_retention_authority(monkeypatch, superseded)
+    monkeypatch.setattr(batch_module, "RAW_RETENTION_BACKLOG_PER_PASS", 1)
+    with closing(sqlite3.connect(tmp_path / "ops.db")) as conn:
+        conn.execute(
+            "UPDATE convergence_debt SET next_retry_at = ? WHERE stage = ?",
+            ("2000-01-01T00:00:00+00:00", RAW_RETENTION_STAGE),
+        )
+        conn.commit()
+    watcher = object.__new__(LiveWatcher)
+    watcher._batch_processor = processor
+    watcher._ingest_lock = asyncio.Lock()
+
+    async def run_writer(_actor: str, function: Any, *args: Any) -> Any:
+        return function(*args)
+
+    monkeypatch.setattr(watcher, "_run_writer_sync", run_writer)
+    asyncio.run(watcher.retry_raw_retention_backlog())
+
+    assert _retention_debt(processor._cursor) == []
+
+
 def test_raw_retention_backlog_does_not_widen_unrelated_batch_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

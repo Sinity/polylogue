@@ -767,6 +767,13 @@ class ConvergenceStage:
     # stages so a catch-up chunk's cost stays bounded by its own input; the
     # catch-up's final chunk runs them once for the whole backlog.
     whole_archive: bool = False
+    # ``check`` and ``execute`` ignore the subject entirely: one verdict
+    # answers for every subject the stage owes. The debt drain runs such a
+    # stage once and settles all of its rows, instead of once per page of
+    # per-file rows. A stage that filters subjects (only some paths are
+    # relevant) must leave this false: a verdict on an irrelevant subject says
+    # nothing about the relevant ones.
+    subject_independent: bool = False
     # How this stage reaches the daemon's sole writer. The engine itself runs
     # off the writer lease, so ``bridged`` -- the stage brackets its own short
     # publication with ``admit_stage_write`` and computes, downloads and drains

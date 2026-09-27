@@ -248,7 +248,9 @@ RAW_RETENTION_STAGE = "raw_retention"
 RAW_RETENTION_LIMIT_PER_PATH = 25
 #: How many retry-due backlog paths one pass additionally drains. The pass
 #: stays bounded by its own input plus this constant, never by the ledger.
-RAW_RETENTION_BACKLOG_PER_PASS = 25
+#: Each pass resolves retention authority once for all of its paths, so a
+#: larger page amortizes that resolution over more of a cold build's backlog.
+RAW_RETENTION_BACKLOG_PER_PASS = 256
 
 
 class CursorAuthorityBlockedError(RuntimeError):

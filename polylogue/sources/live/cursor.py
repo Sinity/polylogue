@@ -2033,12 +2033,35 @@ class CursorStore:
         """Clear derived convergence debt after successful convergence."""
         self._clear_convergence_debt_from_ops(subject_type=subject_type, subject_id=subject_id, stage=stage)
 
+    def clear_stage_convergence_debt(self, *, stage: str, recorded_at_or_before_ms: int) -> int:
+        """Clear every subject's debt for one archive-wide stage.
+
+        A stage whose work is a function of the whole archive converges for
+        all of its subjects at once. Rows recorded after the converging run
+        started describe later changes and are kept.
+        """
+        cleared = 0
+
+        def write() -> None:
+            nonlocal cleared
+            with self._connect_ops() as conn:
+                cursor = conn.execute(
+                    "DELETE FROM convergence_debt WHERE stage = ? AND updated_at_ms <= ?",
+                    (stage, recorded_at_or_before_ms),
+                )
+                cleared = int(cursor.rowcount or 0)
+                conn.commit()
+
+        best_effort_cursor_write("archive ops convergence debt stage clear", write)
+        return cleared
+
     def list_convergence_debt(
         self,
         *,
         limit: int = 20,
         stage: str | None = None,
         retry_due_only: bool = False,
+        exclude_stages: Iterable[str] = (),
     ) -> list[LiveConvergenceDebt]:
         """Return recent derived convergence debt records.
 
@@ -2056,6 +2079,12 @@ class CursorStore:
         if retry_due_only:
             clauses.append("(next_retry_at IS NULL OR next_retry_at <= ?)")
             params.append(now)
+        excluded = tuple(sorted(set(exclude_stages)))
+        if excluded:
+            # Filtered in the query, not after it: rows owned elsewhere would
+            # otherwise fill the page and starve the caller's own stages.
+            clauses.append(f"stage NOT IN ({','.join('?' for _ in excluded)})")
+            params.extend(excluded)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         # Placeholder order follows the statement text: the WHERE clauses, then
         # the ORDER BY's retry-due discriminator, then LIMIT.

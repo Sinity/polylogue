@@ -36,9 +36,11 @@ their own dedup state to keep evaluations hermetic.
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 
 from polylogue.config import PolylogueConfig, load_polylogue_config
@@ -162,6 +164,37 @@ def watchsource_name_to_family(name: str) -> str:
     return _WATCHSOURCE_TO_FAMILY.get(name, "unknown")
 
 
+#: Environment that decides where the typed default sources live.
+_DEFAULT_SOURCE_ENVIRONMENT = (
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "POLYLOGUE_ARCHIVE_ROOT",
+    "POLYLOGUE_CONFIG",
+)
+
+
+@lru_cache(maxsize=4)
+def _default_source_families(environment: tuple[str | None, ...]) -> tuple[tuple[Path, str], ...]:
+    """Resolved default-source roots and their families for one environment.
+
+    Status projections classify every debt row and cursor through this; built
+    per row it constructed and resolved the whole default-source set (hook
+    spool topology included) once for each of thousands of rows.
+    """
+    del environment  # the cache key; default_sources() reads the same values
+    from polylogue.sources.live.watcher import default_sources
+
+    families: list[tuple[Path, str]] = []
+    for src in default_sources():
+        try:
+            families.append((src.root.resolve(strict=False), watchsource_name_to_family(src.name)))
+        except OSError:
+            continue
+    return tuple(families)
+
+
 def source_family_for_path(path: Path | str) -> str:
     """Infer the source-family token from a source-file path.
 
@@ -170,7 +203,7 @@ def source_family_for_path(path: Path | str) -> str:
     or the watch-source name is not recognized.
     """
     try:
-        from polylogue.sources.live.watcher import default_sources
+        families = _default_source_families(tuple(os.environ.get(name) for name in _DEFAULT_SOURCE_ENVIRONMENT))
     except Exception:
         return "unknown"
 
@@ -178,16 +211,12 @@ def source_family_for_path(path: Path | str) -> str:
         resolved = Path(path).resolve(strict=False)
     except OSError:
         return "unknown"
-    for src in default_sources():
-        try:
-            src_root = src.root.resolve(strict=False)
-        except OSError:
-            continue
+    for src_root, family in families:
         try:
             resolved.relative_to(src_root)
         except ValueError:
             continue
-        return watchsource_name_to_family(src.name)
+        return family
     return "unknown"
 
 
