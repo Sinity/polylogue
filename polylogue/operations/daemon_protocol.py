@@ -479,6 +479,17 @@ class SecretScanRequest(_OperationPayload):
         return self
 
 
+class WorkEvidenceGraphReplaceRequest(_OperationPayload):
+    """One whole work-evidence graph, and the stored base it was derived from.
+
+    ``expected_base_digest`` is the digest of the stored graph the caller read
+    (``absent`` when none was stored); ``None`` replaces unconditionally.
+    """
+
+    graph: dict[str, object]
+    expected_base_digest: str | None = Field(default=None, min_length=1)
+
+
 class IngestRequest(_OperationPayload):
     path: str = Field(min_length=1)
     source_path: str | None = None
@@ -2120,6 +2131,20 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=SecretScanRequest,
         result_model=MutationResult,
         handler="maintenance_secret_scan",
+    ),
+    DaemonOperationSpec(
+        "mutation.work_evidence.graph.replace",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.replace_work_evidence_graph",
+        deadline_s=120.0,
+        # A whole incident or reconciled graph, not a parameter map.
+        max_body_bytes=64 * 1024 * 1024,
+        request_contract="mutation.work_evidence.graph.replace.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=WorkEvidenceGraphReplaceRequest,
+        result_model=MutationResult,
+        idempotent=True,
     ),
     DaemonOperationSpec(
         "mutation.session.delete.preview",

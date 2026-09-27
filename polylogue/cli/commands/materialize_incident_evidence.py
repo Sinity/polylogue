@@ -10,6 +10,7 @@ import click
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.query.spec import QuerySpecError, parse_query_date
 from polylogue.cli.shared.types import AppEnv
+from polylogue.cli.shared.work_evidence_submit import render_replacement, submit_work_evidence_graph
 
 
 def _parse_time_bound(field: str, value: str | None) -> datetime | None:
@@ -30,6 +31,7 @@ def _render_plain(payload: dict[str, object]) -> None:
     click.echo(f"Self-reported claims:         {payload['claim_count']}")
     click.echo(f"Mentioned (unresolved) effects: {payload['mentioned_effect_count']}")
     click.echo(f"Edges:                        {payload['edge_count']}")
+    render_replacement(payload)
     if not payload["applied"]:
         click.echo("(dry run -- pass --yes to persist the materialized graph)")
 
@@ -60,6 +62,7 @@ def _render_plain(payload: dict[str, object]) -> None:
     help="Persist the materialized graph. Without this flag the command is a dry run.",
 )
 @click.option(
+    "--format",
     "--output-format",
     "output_format",
     type=click.Choice(["plain", "json"]),
@@ -128,7 +131,6 @@ def materialize_incident_evidence_command(
             env.repository,
             session_ids=resolved_session_ids,
             graph_id=graph_id,
-            apply=apply,
         )
 
     try:
@@ -139,8 +141,12 @@ def materialize_incident_evidence_command(
     payload: dict[str, object] = {
         "mode": "materialize_incident_evidence",
         **result.summary.as_dict(),
-        "applied": result.applied,
+        "applied": apply,
     }
+    if apply:
+        # The graph is built from sessions, not from a stored graph, so the
+        # replace carries no base digest to check.
+        payload["replacement"] = submit_work_evidence_graph(env, result.graph, expected_base_digest=None)
     if output_format == "json":
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
         return

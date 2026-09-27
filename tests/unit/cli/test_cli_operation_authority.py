@@ -173,6 +173,21 @@ _MUTATING_INVOCATIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
         "maintenance.embeddings.failure.resolve",
     ),
     (
+        # ``reconcile-work-effects --yes`` submits the same operation; it needs
+        # a stored graph to reconcile before it reaches the daemon probe.
+        "materialize-incident-evidence",
+        (
+            "ops",
+            "materialize-incident-evidence",
+            "--session-id",
+            _SESSION_ID,
+            "--graph-id",
+            "incident:authority-matrix",
+            "--yes",
+        ),
+        "mutation.work_evidence.graph.replace",
+    ),
+    (
         "annotations-import",
         (
             "annotations",

@@ -1,7 +1,10 @@
-"""CLI smoke tests for ``polylogue ops materialize-incident-evidence``.
+"""CLI tests for ``polylogue ops materialize-incident-evidence``.
 
 Exercises the real command against a real seeded archive (``workspace_env``),
-not a stubbed operation.
+not a stubbed operation. Building the graph is a read the CLI does itself;
+``--yes`` persists it through the resident daemon's declared
+``mutation.work_evidence.graph.replace`` operation, so the persisting test runs
+a real daemon stack and the refusal test proves nothing is written without one.
 """
 
 from __future__ import annotations
@@ -9,6 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from polylogue.analysis.work_evidence import WorkEvidenceGraph
@@ -17,6 +21,7 @@ from polylogue.cli import cli
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.repository import SessionRepository
+from tests.infra.daemon_operations import cli_daemon_archive
 
 
 def _seed_incident_session(workspace_env: dict[str, Path]) -> str:
@@ -72,6 +77,7 @@ def test_dry_run_reports_json_summary_without_persisting(workspace_env: dict[str
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert payload["applied"] is False
+    assert "replacement" not in payload
     assert payload["session_count"] == 1
     assert payload["run_count"] == 1
     assert payload["mentioned_effect_count"] == 1
@@ -83,35 +89,66 @@ def test_dry_run_reports_json_summary_without_persisting(workspace_env: dict[str
     assert run_coroutine_sync(_read()) is None
 
 
-def test_yes_flag_persists_materialized_graph(workspace_env: dict[str, Path]) -> None:
-    session_id = _seed_incident_session(workspace_env)
-
-    result = CliRunner().invoke(
-        cli,
-        [
-            "ops",
-            "materialize-incident-evidence",
-            "--session-id",
-            session_id,
-            "--graph-id",
-            "incident:cli-apply-demo",
-            "--yes",
-            "--output-format",
-            "json",
-        ],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 0
-    assert json.loads(result.output)["applied"] is True
-
+def _stored(graph_id: str) -> WorkEvidenceGraph | None:
     async def _read() -> WorkEvidenceGraph | None:
         async with SessionRepository(db_path=resolve_active_index_path(archive_root())) as repository:
-            return await repository.get_work_evidence_graph("incident:cli-apply-demo")
+            return await repository.get_work_evidence_graph(graph_id)
 
-    stored = run_coroutine_sync(_read())
+    return run_coroutine_sync(_read())
+
+
+def _apply_args(session_id: str, graph_id: str) -> list[str]:
+    return [
+        "ops",
+        "materialize-incident-evidence",
+        "--session-id",
+        session_id,
+        "--graph-id",
+        graph_id,
+        "--yes",
+        "--format",
+        "json",
+    ]
+
+
+def test_yes_flag_persists_materialized_graph_through_the_daemon(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session_id = _seed_incident_session(workspace_env)
+
+    with cli_daemon_archive(archive_root(), monkeypatch):
+        result = CliRunner().invoke(cli, _apply_args(session_id, "incident:cli-apply-demo"), catch_exceptions=False)
+        repeated = CliRunner().invoke(cli, _apply_args(session_id, "incident:cli-apply-demo"), catch_exceptions=False)
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["applied"] is True
+    assert payload["replacement"]["changed"] is True
+    assert payload["replacement"]["previous_digest"] == "absent"
+    # The same sessions build the same graph, so a second apply is a no-op
+    # rather than a rewrite.
+    assert repeated.exit_code == 0, repeated.output
+    assert json.loads(repeated.output)["replacement"]["changed"] is False
+
+    stored = _stored("incident:cli-apply-demo")
     assert stored is not None
     assert any(node.kind == "effect" for node in stored.nodes)
+    assert payload["replacement"]["digest"] == json.loads(repeated.output)["replacement"]["digest"]
+
+
+def test_yes_flag_refuses_without_a_daemon_and_writes_nothing(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: restore the in-process ``replace_work_evidence_graph``
+    write and this exits 0 with the graph stored."""
+    session_id = _seed_incident_session(workspace_env)
+    monkeypatch.setenv("POLYLOGUE_NO_DAEMON", "1")
+
+    result = CliRunner().invoke(cli, _apply_args(session_id, "incident:cli-no-daemon"))
+
+    assert result.exit_code != 0, result.output
+    assert "polylogued run" in f"{result.output}{result.exception}"
+    assert _stored("incident:cli-no-daemon") is None
 
 
 def test_unknown_session_id_reports_usage_error(workspace_env: dict[str, Path]) -> None:

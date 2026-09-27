@@ -8,9 +8,9 @@ session-id set, or a :class:`~polylogue.archive.filter.filters.SessionFilter`
 selection over repo/time/keyword clues -- the same sparse-clue shape the
 owning bead's incident describes: "repo, approximate time, roughly N agents
 worked on concerns"), loads each session's real content and compiles its full
-run projection, and -- when ``apply=True`` -- persists the resulting graph
-through the same ``replace_work_evidence_graph`` route the Claude Workflow
-materializer and work-effect reconciliation already use.
+run projection, and returns the resulting graph. It never writes: persisting
+the graph is the declared ``mutation.work_evidence.graph.replace`` operation
+the resident daemon executes (:mod:`polylogue.operations.work_evidence_writes`).
 
 Loading uses :func:`~polylogue.analysis.transforms.compile_session_run_projection`
 against each full :class:`~polylogue.archive.session.domain_models.Session`
@@ -57,7 +57,6 @@ class NoIncidentSessionsFoundError(PolylogueError):
 class IncidentEvidenceMaterializationResult:
     graph: WorkEvidenceGraph
     summary: IncidentMaterializationSummary
-    applied: bool
 
 
 async def _session_links_for(repository: SessionRepository, session_id: str) -> list[dict[str, object]]:
@@ -89,7 +88,6 @@ async def materialize_incident_work_evidence(
     *,
     session_ids: Sequence[str],
     graph_id: str,
-    apply: bool = False,
 ) -> IncidentEvidenceMaterializationResult:
     """Build one incident's work-evidence graph from real per-session evidence.
 
@@ -131,11 +129,8 @@ async def materialize_incident_work_evidence(
         runs=all_runs,
         events=all_events,
     )
-    if apply:
-        await repository.replace_work_evidence_graph(graph)
-
     summary = summarize_incident_graph(graph, session_ids=resolved_session_ids)
-    return IncidentEvidenceMaterializationResult(graph=graph, summary=summary, applied=apply)
+    return IncidentEvidenceMaterializationResult(graph=graph, summary=summary)
 
 
 __all__ = [
