@@ -13,6 +13,7 @@ import threading
 import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 import pytest
 
@@ -449,6 +450,65 @@ def test_invalid_measurements_are_rejected_by_real_renderer() -> None:
     }
     assert "reason" not in chunk
     assert len(json.dumps(chunk)) <= plog.EVENT_MAX_BYTES
+
+
+def test_unrepresentable_numbers_cannot_change_work_or_break_later_events() -> None:
+    stream = io.StringIO()
+    sink = plog.add_sink(plog.make_stream_sink(stream, fmt="json"))
+    original = ValueError("original failure")
+    try:
+        with plog.span("large.measurement") as active:
+            plog.emit(
+                "large.measurement.sample",
+                files=10**5000,
+                duration_ms=10**1000,
+                stage_timings_ms={"parse": 10**1000},
+            )
+            active.ok(files=10**5000)
+        with pytest.raises(ValueError) as raised:
+            with plog.span("large.measurement.failure") as active:
+                active.set(bytes=10**5000)
+                raise original
+        assert raised.value is original
+        plog.emit("large.measurement.after", files=1)
+    finally:
+        plog.remove_sink(sink)
+
+    records = [json.loads(line) for line in stream.getvalue().splitlines()]
+    assert {record["field"] for record in records if record["event"] == "log.field_rejected"} >= {
+        "files",
+        "duration_ms",
+        "stage_timings_ms",
+        "bytes",
+    }
+    assert any(record["event"] == "large.measurement.ok" for record in records)
+    assert any(record["event"] == "large.measurement.failure.error" for record in records)
+    assert any(record["event"] == "large.measurement.after" and record["files"] == 1 for record in records)
+
+
+def test_render_failure_is_counted_without_changing_the_observed_work(monkeypatch: pytest.MonkeyPatch) -> None:
+    stream = io.StringIO()
+    sink = plog.add_sink(plog.make_stream_sink(stream, fmt="json"))
+    original_dumps = json.dumps
+    before = plog.diagnostic_snapshot()["failures"]
+    failed_once = False
+
+    def fail_once(*args: Any, **kwargs: Any) -> str:
+        nonlocal failed_once
+        if not failed_once:
+            failed_once = True
+            raise ValueError("diagnostic encoding failed")
+        return original_dumps(*args, **kwargs)
+
+    monkeypatch.setattr(json, "dumps", fail_once)
+    try:
+        plog.emit("render.failure")
+        plog.emit("render.recovered")
+    finally:
+        plog.remove_sink(sink)
+
+    assert plog.diagnostic_snapshot()["failures"] == before + 1
+    assert [json.loads(line)["event"] for line in stream.getvalue().splitlines()] == ["render.recovered"]
 
 
 def test_combined_context_and_event_fields_stay_within_record_limit() -> None:
