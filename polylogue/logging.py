@@ -206,26 +206,53 @@ class _StdlibBoundLogger:
     plain CLI invocations. Avoids the ~600ms structlog import penalty.
     """
 
-    def __init__(self, logger: logging.Logger) -> None:
+    def __init__(self, logger: logging.Logger, context: Mapping[str, object] | None = None) -> None:
         self._logger = logger
+        self._context = dict(context or {})
 
     def bind(self, **new_values: object) -> _StdlibBoundLogger:
-        return self  # no-op: stdlib doesn't support structured context
+        accepted, rejected = _validate(new_values)
+        _emit_field_rejections(rejected)
+        return _StdlibBoundLogger(self._logger, {**self._context, **accepted})
+
+    def _log(
+        self, method: Callable[..., object], message: str, args: tuple[object, ...], event_kw: dict[str, object]
+    ) -> None:
+        stdlib_kwargs = _stdlib_log_kwargs(event_kw)
+        supplied_extra = event_kw.get("extra")
+        structured_extra = supplied_extra if isinstance(supplied_extra, Mapping) else {}
+        structured = {
+            key: value
+            for key, value in event_kw.items()
+            if key not in {"exc_info", "stack_info", "stacklevel", "extra"}
+        }
+        accepted, rejected = _validate({**self._context, **structured_extra, **structured})
+        _emit_field_rejections(rejected)
+        if accepted:
+            extra = dict(structured_extra)
+            extra["_polylogue_event_fields"] = accepted
+            stdlib_kwargs["extra"] = extra
+        method(message, *args, **stdlib_kwargs)
 
     def debug(self, message: str, *args: object, **event_kw: object) -> None:
-        self._logger.debug(message, *args, **_stdlib_log_kwargs(event_kw))
+        self._log(self._logger.debug, message, args, event_kw)
 
     def info(self, message: str, *args: object, **event_kw: object) -> None:
-        self._logger.info(message, *args, **_stdlib_log_kwargs(event_kw))
+        self._log(self._logger.info, message, args, event_kw)
 
     def warning(self, message: str, *args: object, **event_kw: object) -> None:
-        self._logger.warning(message, *args, **_stdlib_log_kwargs(event_kw))
+        self._log(self._logger.warning, message, args, event_kw)
 
     def error(self, message: str, *args: object, **event_kw: object) -> None:
-        self._logger.error(message, *args, **_stdlib_log_kwargs(event_kw))
+        self._log(self._logger.error, message, args, event_kw)
 
     def exception(self, message: str, *args: object, **event_kw: object) -> None:
-        self._logger.exception(message, *args, **_stdlib_log_kwargs(event_kw))
+        self._log(self._logger.exception, message, args, event_kw)
+
+
+def _emit_field_rejections(rejected: Mapping[str, str]) -> None:
+    for name, reason in rejected.items():
+        _emit_raw(WARNING, "log.field_rejected", {"reason": reason, "field": name})
 
 
 def _stdlib_log_kwargs(event_kw: dict[str, object]) -> dict[str, Any]:
@@ -996,6 +1023,14 @@ def flush_events(*, timeout_s: float = 0.25) -> bool:
     return sink.flush(timeout_s=timeout_s) if isinstance(sink, _QueuedSink) else True
 
 
+# ``level`` is emit()'s own keyword; the other two are the bridge's record
+# envelope. A bound or ``extra`` field of the same name must not restate them.
+_BRIDGE_OWNED_FIELDS = frozenset({"level", "logger", "error_detail", "error_type"})
+_LOG_RECORD_ATTRIBUTES = frozenset(
+    {*logging.LogRecord("", logging.INFO, "", 0, "", (), None).__dict__, "message", "asctime"}
+)
+
+
 class _StdlibBridge(logging.Handler):
     """Route surviving ``logging.getLogger`` records into the event stream.
 
@@ -1014,6 +1049,20 @@ class _StdlibBridge(logging.Handler):
         except Exception:
             detail = "<unformattable log record>"
         fields: dict[str, object] = {"logger": record.name, "error_detail": detail}
+        bound_fields = record.__dict__.get("_polylogue_event_fields")
+        if isinstance(bound_fields, Mapping):
+            for name, value in bound_fields.items():
+                if name not in _BRIDGE_OWNED_FIELDS:
+                    fields.setdefault(name, value)
+        # Third-party libraries can attach structured values with stdlib's
+        # ``extra`` argument. Preserve only names in our closed field catalog;
+        # LogRecord's own attributes (``thread`` is also a catalog name) never
+        # become event fields.
+        for name, value in record.__dict__.items():
+            if name in _LOG_RECORD_ATTRIBUTES or name in _BRIDGE_OWNED_FIELDS:
+                continue
+            if field_kind(name) is not None and name not in fields:
+                fields[name] = value
         if record.exc_info and record.exc_info[0] is not None:
             fields["error_type"] = record.exc_info[0].__name__
         emit("stdlib.record", level=level, **fields)

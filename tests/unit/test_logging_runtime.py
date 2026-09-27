@@ -210,4 +210,10 @@ def test_stdlib_bound_logger_forwards_exc_info_before_structlog_configured(
 
     bound.warning("probe failed", exc_info=True, extra={"stage": "fts"}, unsupported_kw="dropped")
 
-    assert captured["kwargs"] == {"exc_info": True, "extra": {"stage": "fts"}}
+    forwarded = captured["kwargs"]
+    assert isinstance(forwarded, dict)
+    assert forwarded["exc_info"] is True
+    forwarded_extra = forwarded["extra"]
+    assert isinstance(forwarded_extra, dict)
+    assert forwarded_extra["stage"] == "fts"
+    assert forwarded_extra["_polylogue_event_fields"] == {"stage": "fts"}
