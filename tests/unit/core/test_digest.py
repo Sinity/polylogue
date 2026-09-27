@@ -286,3 +286,35 @@ class TestRegistry:
         for profile in (IDENTITY, RECEIPT, REFERENCE, QUERY, CAPTURE):
             expected = hashlib.sha256(canonical_bytes(payload, profile)).hexdigest()
             assert digest(payload, profile) == profile.digest_prefix + expected
+
+
+class TestStdlibChunks:
+    """C-encoded chunk framing is byte-identical to one stdlib encoder pass."""
+
+    PAYLOADS: tuple[object, ...] = (
+        {},
+        [],
+        (),
+        {"b": [1, (2, 3)], "a": {"z": None, "y": [{}, []]}, "c": "é日"},
+        [{"k": 1e-9, "n": float("nan"), "i": float("inf")}, "x", [["deep", ["deeper"]]]],
+        {"intkeys": {2: "b", 1: "a"}},
+        {3: "top-level int keys", 1.5: "float key", True: "bool key"},
+        {"s": "café", "t": True, "f": False, "big": 2**70},
+    )
+
+    @pytest.mark.parametrize("ensure_ascii", [True, False])
+    @pytest.mark.parametrize("index", range(len(PAYLOADS)))
+    def test_matches_one_stdlib_pass(self, index: int, ensure_ascii: bool) -> None:
+        """Anti-vacuity: unsorted keys or a wrong separator at a framed level fail here."""
+        from polylogue.core.digest import stdlib_chunks
+
+        payload = self.PAYLOADS[index]
+        expected = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=ensure_ascii)
+        assert "".join(stdlib_chunks(payload, ensure_ascii=ensure_ascii)) == expected
+        for depth in range(4):
+            assert "".join(stdlib_chunks(payload, ensure_ascii=ensure_ascii, depth=depth)) == expected
+
+    def test_digest_equals_the_one_pass_digest(self) -> None:
+        for payload in self.PAYLOADS:
+            expected = hashlib.sha256(_reference_query_bytes(payload)).hexdigest()
+            assert digest(payload, QUERY) == expected
