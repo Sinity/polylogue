@@ -83,7 +83,10 @@ class FrontierCandidate:
 
     @property
     def stored_bytes(self) -> int:
-        return sum(len(payload) for payload in self.payloads.values())
+        # Production stores one content-addressed blob per SHA-256, so repeated
+        # identical observations cost their bytes once.
+        unique = {_sha(payload): len(payload) for payload in self.payloads.values()}
+        return sum(unique.values())
 
 
 def _cdc_chunks(payload: bytes) -> tuple[bytes, ...]:

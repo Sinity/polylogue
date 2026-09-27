@@ -129,7 +129,8 @@ def main(argv: list[str] | None = None) -> int:
                 source_inputs=source_inputs,
                 source_cache_path=args.source_cache,
                 source_workers=args.source_workers,
-                persist_cluster_manifest=False,
+                # `schema promote` consumes the persisted cluster manifest.
+                persist_cluster_manifest=bool(args.cluster),
             )
         )
     except ValueError as exc:
