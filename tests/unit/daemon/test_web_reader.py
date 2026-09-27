@@ -157,14 +157,17 @@ def test_archive_filter_kwargs_cover_every_storage_lowerable_spec_field() -> Non
 
 def test_web_reader_archive_root_rejects_schema_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from polylogue.daemon.http import _web_reader_archive_root
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
     from polylogue.storage.sqlite.connection_profile import one_shot_diagnostic_read as real_diagnostic_read
 
     initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
     initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    # Any version but the runtime's; a literal stops meaning "mismatch" when
+    # the counter itself is reset (it restarted at 1 with the fresh-v1 archive).
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        conn.execute("PRAGMA user_version = 1")
+        conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] + 1}")
 
     observed: list[tuple[Path, ArchiveTier | None]] = []
 
@@ -3895,8 +3898,15 @@ class TestDeclaredRouteExamples:
             "/api/query-units": "items",
             "/api/sessions/:id/read": "view",
         }
+        # The replay covers the kernel-bound read routes, whose examples are
+        # typed request shapes. The route-family declarations appended by
+        # ``_family_declarations`` carry placeholder examples (``default`` /
+        # ``route``) with no arguments, which are not request shapes a handler
+        # can be held to; they are listed, not replayed (polylogue-otmpm).
+        kernel_bound = [declaration for declaration in DAEMON_ROUTE_DECLARATIONS if declaration.path in markers]
+        assert {declaration.path for declaration in kernel_bound} == set(markers)
         with _running_server(workspace_env) as (_, base_url):
-            for declaration in DAEMON_ROUTE_DECLARATIONS:
+            for declaration in kernel_bound:
                 for name, path in self._example_paths(declaration):
                     status, payload = _get_json_ex(base_url, path)
                     assert status == 200, (declaration.kernel.declaration_id, name, path, payload)

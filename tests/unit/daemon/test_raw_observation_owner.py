@@ -184,7 +184,12 @@ async def test_paused_raw_preparation_does_not_hold_writer_for_unrelated_publica
             == "published"
         )
         release.set()
-        assert (await asyncio.wait_for(task, timeout=3.0)).done == 1
+        # The property is the unrelated writer above publishing within 1s
+        # while compute is paused. Completion only has to happen: since #5565
+        # retained preparation runs in a spawned worker process, whose start
+        # and replay take several seconds on a loaded host, so this bound is
+        # a hang guard, not a latency budget.
+        assert (await asyncio.wait_for(task, timeout=60.0)).done == 1
     finally:
         release.set()
         if not task.done():

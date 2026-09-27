@@ -527,7 +527,9 @@ def test_browser_action_uses_the_selected_receiver_auth_identity(
         catch_exceptions=False,
     )
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    # ``--allow-no-auth`` logs its loud warning to stderr; ``output`` interleaves
+    # both streams, and the JSON contract is stdout's.
+    payload = json.loads(result.stdout)
     expected = receiver_identity(BrowserCaptureReceiverConfig(spool_path=tmp_path, auth_token=expected_token))
     assert payload["receiver_id"] == expected
 

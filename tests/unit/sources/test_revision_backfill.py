@@ -562,9 +562,13 @@ def test_frozen_inactive_generation_refuses_corrupt_required_shard(
     original_add_raw = revision_backfill._FrozenReplayShardTransport.add_raw
 
     def corrupt_after_seal(
-        transport: revision_backfill._FrozenReplayShardTransport, raw_id: str, sessions: object
+        transport: revision_backfill._FrozenReplayShardTransport,
+        raw_id: str,
+        sessions: object,
+        *,
+        prepared_artifact: object = None,
     ) -> None:
-        original_add_raw(transport, raw_id, sessions)  # type: ignore[arg-type]
+        original_add_raw(transport, raw_id, sessions, prepared_artifact=prepared_artifact)  # type: ignore[arg-type]
         transport.path_for_raw(raw_id).write_bytes(b"not a sqlite shard")
 
     monkeypatch.setattr(revision_backfill._FrozenReplayShardTransport, "add_raw", corrupt_after_seal)
@@ -3429,14 +3433,19 @@ def test_census_batching_reduces_commit_count(tmp_path: Path) -> None:
     batched_flags, batched_explicit_commits = _manage_transaction_flags(batched_root, commit_batch_size=4)
 
     assert len(unbatched_flags) == len(batched_flags) == 9
+    # The public wrapper adds one phase commit after the census loop (#5550):
+    # identity and parser census are durable before membership expansion and
+    # any append-chain composer takes its read-only replay plan. It is the
+    # same single commit in both modes, so the batching lever is the rest.
+    phase_commits = 1
     # Unbatched: revision writes self-commit, then each unit explicitly
     # commits its following parser receipt before the archive wrapper closes.
     assert all(unbatched_flags)
-    assert unbatched_explicit_commits == 9
+    assert unbatched_explicit_commits == 9 + phase_commits
     # Batched (size 4, 9 raws): writes defer (manage_transaction=False) and
     # the loop drives exactly ceil(9/4) = 3 explicit batch-boundary commits.
     assert not any(batched_flags)
-    assert batched_explicit_commits == 3
+    assert batched_explicit_commits == 3 + phase_commits
 
 
 def test_unbatched_census_persists_parser_observed_receipt_before_close(tmp_path: Path) -> None:
