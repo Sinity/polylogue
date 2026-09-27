@@ -757,7 +757,7 @@ def discard_prepared_ingest_cohort(prepared: PreparedIngestCohort) -> None:
 def _writer_preacquired_attachments(
     writer_archive: Any,
     prepared: PreparedIngestCohort,
-) -> tuple[dict[int, tuple[bytes | None, int, str]], tuple[ArchiveSourceBlobRef, ...]]:
+) -> tuple[dict[Any, tuple[bytes | None, int, str]], tuple[ArchiveSourceBlobRef, ...]]:
     """Queue compute-staged blobs; only the writer later reserves and publishes them."""
     if prepared.classification is None or not prepared.classification.accepted_raw_ids:
         return {}, ()
@@ -769,7 +769,7 @@ def _writer_preacquired_attachments(
     accepted_raw_id = prepared.classification.accepted_raw_ids[-1]
     accepted_session = prepared.parsed_by_raw_id[accepted_raw_id]
     binding = next(binding for binding in prepared.member_bindings if binding.raw_id == accepted_raw_id)
-    attachments: dict[int, tuple[bytes | None, int, str]] = {}
+    attachments: dict[Any, tuple[bytes | None, int, str]] = {}
     refs: list[ArchiveSourceBlobRef] = []
     for item in prepared.prepared_attachment_blobs:
         attachment = accepted_session.attachments[item.position]
@@ -777,10 +777,10 @@ def _writer_preacquired_attachments(
             if item.precomputed_blob is None:
                 raise RuntimeError("prepared attachment has neither staged nor precomputed bytes")
             hash_hex, size = item.precomputed_blob
-            attachments[id(attachment)] = (bytes.fromhex(hash_hex), size, "acquired")
+            attachments[attachment.acquisition_key] = (bytes.fromhex(hash_hex), size, "acquired")
             continue
         hash_hex, size = publisher.queue_prepared(item.prepared_blob)
-        attachments[id(attachment)] = (bytes.fromhex(hash_hex), size, "acquired")
+        attachments[attachment.acquisition_key] = (bytes.fromhex(hash_hex), size, "acquired")
         refs.append(
             ArchiveSourceBlobRef(
                 blob_hash=bytes.fromhex(hash_hex),

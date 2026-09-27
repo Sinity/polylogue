@@ -415,7 +415,7 @@ def _match_session_payload(
     # Attachments are session-level (``ParsedSession.attachments``), each
     # linked to its owning message via ``message_provider_id`` -- mirroring
     # exactly how ``_write_attachments`` consumes them (write.py:_attachment_message_id_maps).
-    resolved_message_ids: dict[int, str] = {}
+    resolved_message_ids: dict[object, str] = {}
     attachments_by_message: dict[str, list[ParsedAttachment]] = {}
     for attachment in payload.parsed_session.attachments:
         attachment_id = _attachment_id(session_id, attachment)
@@ -448,10 +448,10 @@ def _match_session_payload(
                     (UnrecoverableAttachmentReason.MESSAGE_MISSING, _MESSAGE_MISSING_REASON),
                 )
             continue
-        resolved_message_ids[id(attachment)] = message_id
+        resolved_message_ids[attachment.acquisition_key] = message_id
         attachments_by_message.setdefault(message_id, []).append(attachment)
 
-    attachment_positions: dict[int, int] = {}
+    attachment_positions: dict[object, int] = {}
     for message_id, message_group in attachments_by_message.items():
         rows = index_conn.execute(
             "SELECT position, attachment_id FROM attachment_refs WHERE message_id = ?",
@@ -463,7 +463,7 @@ def _match_session_payload(
         attachment_id = _attachment_id(session_id, attachment)
         if attachment_id not in pending:
             continue
-        message_id = resolved_message_ids.get(id(attachment))
+        message_id = resolved_message_ids.get(attachment.acquisition_key)
         if message_id is None:
             continue
         # Provenance goes through the same derivation the writer uses, so a
@@ -479,7 +479,7 @@ def _match_session_payload(
             attachment_id=attachment_id,
             session_id=session_id,
             message_id=message_id,
-            position=attachment_positions[id(attachment)],
+            position=attachment_positions[attachment.acquisition_key],
             upload_origin=attachment.upload_origin,
             direction=direction,
             producer_ref=producer_ref,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import os
@@ -11,7 +10,7 @@ import sqlite3
 import uuid
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import closing
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
 from typing import BinaryIO, cast, overload
@@ -60,6 +59,7 @@ from polylogue.sources.parsers.base_support import _unknown_wire_type
 from polylogue.sources.parsers.claude.ai_parser import parse_design_stream
 from polylogue.sources.prepared_message_sink import (
     ChatGPTNodeMapping,
+    SqliteAttachmentSink,
     SqliteMessageSink,
     SqliteMessageStore,
     SqliteSessionEventSink,
@@ -79,7 +79,7 @@ from polylogue.storage.sqlite.archive_tiers.write_shard import (
     open_session_shard,
 )
 
-_ARTIFACT_VERSION = 2
+_ARTIFACT_VERSION = 3
 
 
 class _SourceChangedDuringPreparationError(ValueError):
@@ -309,8 +309,10 @@ class PreparedJsonl:
                 message_count,
                 event_ordinal,
                 event_count,
+                attachment_ordinal,
+                attachment_count,
             ) in conn.execute(
-                "SELECT ordinal, session_id, metadata_json, message_ordinal, message_count, event_ordinal, event_count "
+                "SELECT ordinal, session_id, metadata_json, message_ordinal, message_count, event_ordinal, event_count, attachment_ordinal, attachment_count "
                 "FROM prepared_session ORDER BY ordinal"
             ):
                 try:
@@ -328,17 +330,22 @@ class PreparedJsonl:
                 ).fetchone()[0]
                 if physical_events != event_count:
                     raise ValueError("JSONL preparation event count changed")
-                for attachment in metadata.get("attachments", []):
-                    encoded = attachment.pop("_prepared_inline_bytes", None)
-                    if encoded is not None:
-                        attachment["inline_bytes"] = base64.b64decode(encoded, validate=True)
+                physical_attachments = conn.execute(
+                    "SELECT COUNT(*) FROM prepared_attachment WHERE session_ordinal = ?", (attachment_ordinal,)
+                ).fetchone()[0]
+                if physical_attachments != attachment_count:
+                    raise ValueError("JSONL preparation attachment count changed")
                 metadata["messages"] = []
                 metadata["session_events"] = []
+                metadata["attachments"] = []
                 session = ParsedSession.model_validate(metadata)
                 yield session.model_copy(
                     update={
                         "messages": SqliteMessageSink(self.sessions_path, message_ordinal, count=message_count),
                         "session_events": SqliteSessionEventSink(self.sessions_path, event_ordinal, count=event_count),
+                        "attachments": SqliteAttachmentSink(
+                            self.sessions_path, attachment_ordinal, count=attachment_count
+                        ),
                     }
                 )
 
@@ -398,13 +405,22 @@ class PreparedJsonl:
             ]:
                 raise ValueError("JSONL preparation seal or source dependency changed")
             rows = conn.execute(
-                "SELECT session_id, metadata_json, message_ordinal, message_count, event_ordinal, event_count "
+                "SELECT session_id, metadata_json, message_ordinal, message_count, event_ordinal, event_count, attachment_ordinal, attachment_count "
                 "FROM prepared_session WHERE session_id = ? LIMIT 2",
                 (session_id,),
             ).fetchall()
             if len(rows) != 1:
                 raise KeyError(session_id)
-            stored_id, metadata_json, message_ordinal, message_count, event_ordinal, event_count = rows[0]
+            (
+                stored_id,
+                metadata_json,
+                message_ordinal,
+                message_count,
+                event_ordinal,
+                event_count,
+                attachment_ordinal,
+                attachment_count,
+            ) = rows[0]
             try:
                 shard_entry = shard.by_session_id()[stored_id]
             except KeyError as exc:
@@ -419,18 +435,21 @@ class PreparedJsonl:
             ).fetchone()[0]
             if physical_events != event_count:
                 raise ValueError("JSONL preparation event count changed")
+            physical_attachments = conn.execute(
+                "SELECT COUNT(*) FROM prepared_attachment WHERE session_ordinal = ?", (attachment_ordinal,)
+            ).fetchone()[0]
+            if physical_attachments != attachment_count:
+                raise ValueError("JSONL preparation attachment count changed")
             metadata = json.loads(metadata_json)
-            for attachment in metadata.get("attachments", []):
-                encoded = attachment.pop("_prepared_inline_bytes", None)
-                if encoded is not None:
-                    attachment["inline_bytes"] = base64.b64decode(encoded, validate=True)
             metadata["messages"] = []
             metadata["session_events"] = []
+            metadata["attachments"] = []
             session = ParsedSession.model_validate(metadata)
             return session.model_copy(
                 update={
                     "messages": SqliteMessageSink(self.sessions_path, message_ordinal, count=message_count),
                     "session_events": SqliteSessionEventSink(self.sessions_path, event_ordinal, count=event_count),
+                    "attachments": SqliteAttachmentSink(self.sessions_path, attachment_ordinal, count=attachment_count),
                 }
             )
 
@@ -506,7 +525,7 @@ def _write_artifact(
 
 def _create_artifact_tables(conn: sqlite3.Connection) -> None:
     conn.execute(
-        "CREATE TABLE prepared_session (ordinal INTEGER PRIMARY KEY, session_id TEXT NOT NULL UNIQUE, metadata_json TEXT NOT NULL, message_ordinal INTEGER NOT NULL, message_count INTEGER NOT NULL, event_ordinal INTEGER NOT NULL, event_count INTEGER NOT NULL)"
+        "CREATE TABLE prepared_session (ordinal INTEGER PRIMARY KEY, session_id TEXT NOT NULL UNIQUE, metadata_json TEXT NOT NULL, message_ordinal INTEGER NOT NULL, message_count INTEGER NOT NULL, event_ordinal INTEGER NOT NULL, event_count INTEGER NOT NULL, attachment_ordinal INTEGER NOT NULL, attachment_count INTEGER NOT NULL)"
     )
     conn.execute(
         "CREATE TABLE artifact_seal (version INTEGER NOT NULL, source_hash TEXT NOT NULL, "
@@ -530,7 +549,14 @@ def _append_artifact_session(store: SqliteMessageStore, ordinal: int, session: P
     else:
         events = store.new_event_sink()
         events.extend(session.session_events)
-    metadata = session.model_dump(mode="json", exclude={"messages", "session_events"})
+    source_attachments: object = session.attachments
+    attachments: SqliteAttachmentSink
+    if isinstance(source_attachments, SqliteAttachmentSink) and source_attachments.path == store.path:
+        attachments = source_attachments
+    else:
+        attachments = store.new_attachment_sink()
+        attachments.extend(session.attachments)
+    metadata = session.model_dump(mode="json", exclude={"messages", "session_events", "attachments"})
     metadata["content_hash"] = session.content_hash
     metadata["unit_accounting"] = (
         session.unit_accounting.model_dump(mode="json") if session.unit_accounting is not None else None
@@ -538,22 +564,9 @@ def _append_artifact_session(store: SqliteMessageStore, ordinal: int, session: P
     metadata["provider_session_aliases"] = session.provider_session_aliases
     metadata["created_at_provenance"] = session.created_at_provenance
     metadata["updated_at_provenance"] = session.updated_at_provenance
-    metadata["attachments"] = [
-        {
-            **attachment,
-            "message_position": source.message_position,
-            "message_variant_index": source.message_variant_index,
-            "owner_coordinate": (asdict(source.owner_coordinate) if source.owner_coordinate is not None else None),
-            "precomputed_blob": source.precomputed_blob,
-            "_prepared_inline_bytes": (
-                base64.b64encode(source.inline_bytes).decode("ascii") if source.inline_bytes is not None else None
-            ),
-        }
-        for attachment, source in zip(metadata["attachments"], session.attachments, strict=True)
-    ]
     session_id = archive_session_id(origin_from_provider(session.source_name).value, session.provider_session_id)
     conn.execute(
-        "INSERT INTO prepared_session VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO prepared_session VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             ordinal,
             session_id,
@@ -562,6 +575,8 @@ def _append_artifact_session(store: SqliteMessageStore, ordinal: int, session: P
             len(messages),
             events.session_ordinal,
             len(events),
+            attachments.session_ordinal,
+            len(attachments),
         ),
     )
 
@@ -813,19 +828,57 @@ def prepare_jsonl_blob(
             ):
                 session = None
             if session is not None:
-                if prepare_sessions is not None:
-                    selected = prepare_sessions([session])
-                    if len(selected) > 1:
-                        raise ValueError("ChatGPT object finalizer expanded one session")
-                    session = selected[0] if selected else None
-                elif prepare_session is not None:
-                    session = prepare_session(session)
+                connection = store.conn
+                connection.execute("SAVEPOINT chatgpt_prepared_sidecars")
+                next_attachment = store._next_attachment_ordinal
+                next_event = store._next_event_ordinal
+                try:
+                    attachments = store.new_attachment_sink()
+                    attachments.extend(session.attachments)
+                    events = store.new_event_sink()
+                    events.extend(session.session_events)
+                    session = session.model_copy(update={"attachments": attachments, "session_events": events})
+                    if prepare_sessions is not None:
+                        selected = prepare_sessions([session])
+                        if len(selected) > 1:
+                            raise ValueError("ChatGPT object finalizer expanded one session")
+                        session = selected[0] if selected else None
+                    elif prepare_session is not None:
+                        session = prepare_session(session)
+                except BaseException:
+                    connection.execute("ROLLBACK TO chatgpt_prepared_sidecars")
+                    connection.execute("RELEASE chatgpt_prepared_sidecars")
+                    store._next_attachment_ordinal = next_attachment
+                    store._next_event_ordinal = next_event
+                    raise
+                if session is None:
+                    connection.execute("ROLLBACK TO chatgpt_prepared_sidecars")
+                    store._next_attachment_ordinal = next_attachment
+                    store._next_event_ordinal = next_event
+                connection.execute("RELEASE chatgpt_prepared_sidecars")
             session_count = 0
             if session is not None:
                 session.content_hash = session_content_hash(session)
                 append_session_to_shard(shard_builder, session)
                 _append_artifact_session(store, session_count, session)
                 session_count += 1
+            else:
+                store.conn.execute("DELETE FROM prepared_message")
+                store.conn.execute("DELETE FROM prepared_event")
+                store.conn.execute("DELETE FROM prepared_attachment")
+            if session_count:
+                store.conn.execute(
+                    "DELETE FROM prepared_message WHERE session_ordinal NOT IN "
+                    "(SELECT message_ordinal FROM prepared_session)"
+                )
+                store.conn.execute(
+                    "DELETE FROM prepared_event WHERE session_ordinal NOT IN "
+                    "(SELECT event_ordinal FROM prepared_session)"
+                )
+                store.conn.execute(
+                    "DELETE FROM prepared_attachment WHERE session_ordinal NOT IN "
+                    "(SELECT attachment_ordinal FROM prepared_session)"
+                )
             store.conn.execute("DROP TABLE chatgpt_node")
             for table in (
                 "chatgpt_simple_node",

@@ -1696,13 +1696,13 @@ class ArchiveStore:
         source_path: str,
         acquired_at_ms: int,
     ) -> tuple[
-        dict[int, tuple[bytes | None, int, str]],
+        dict[Any, tuple[bytes | None, int, str]],
         tuple[ArchiveSourceBlobRef, ...],
     ]:
         """Prepare inline attachment bytes before their durable transaction."""
         if self._blob_publisher is None:
             return {}, ()
-        acquired: dict[int, tuple[bytes | None, int, str]] = {}
+        acquired: dict[Any, tuple[bytes | None, int, str]] = {}
         refs: list[ArchiveSourceBlobRef] = []
         for attachment in session.attachments:
             if self._inactive_candidate_durable_read_only:
@@ -1726,13 +1726,13 @@ class ArchiveStore:
                         "inactive candidate found attachment bytes that do not match the frozen blob identity: "
                         f"{hash_hex}"
                     )
-                acquired[id(attachment)] = (bytes.fromhex(hash_hex), size, "acquired")
+                acquired[attachment.acquisition_key] = (bytes.fromhex(hash_hex), size, "acquired")
                 continue
             if attachment.inline_bytes is None:
                 continue
             hash_hex, size = self._blob_publisher.write_from_bytes(attachment.inline_bytes)
             blob_hash = bytes.fromhex(hash_hex)
-            acquired[id(attachment)] = (blob_hash, size, "acquired")
+            acquired[attachment.acquisition_key] = (blob_hash, size, "acquired")
             refs.append(
                 ArchiveSourceBlobRef(
                     blob_hash=blob_hash,
@@ -1754,7 +1754,7 @@ class ArchiveStore:
         stage_timings_s: dict[str, float] | None,
         stage_timing_prefix: str,
         manage_transaction: bool,
-        preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
+        preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
         revision_authoritative: bool = False,
         bulk_fts: bool = False,
         bulk_build: bool = False,
@@ -2375,7 +2375,7 @@ class ArchiveStore:
         skip_already_applied: bool = False,
         prepared_by_raw_id: dict[str, PreparedRows | Future[PreparedRows]] | None = None,
         prepared_required_raw_ids: frozenset[str] = frozenset(),
-        preacquired_attachment_blobs_by_raw_id: Mapping[str, dict[int, tuple[bytes | None, int, str]]] | None = None,
+        preacquired_attachment_blobs_by_raw_id: Mapping[str, dict[Any, tuple[bytes | None, int, str]]] | None = None,
         preacquired_attachment_refs_by_raw_id: Mapping[str, tuple[ArchiveSourceBlobRef, ...]] | None = None,
         prepared_aggregate_session: ParsedSession | None = None,
         prepared_pending_session: ParsedSession | None = None,
@@ -2425,7 +2425,7 @@ class ArchiveStore:
         fresh_build: bool = False,
         fresh_build_batch: set[str] | None = None,
         defer_fts: bool = False,
-        preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
+        preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
         preacquired_attachment_refs: tuple[ArchiveSourceBlobRef, ...] | None = None,
         prepared_by_raw_id: Mapping[str, PreparedRows] | None = None,
         prepared_required_raw_ids: frozenset[str] = frozenset(),
@@ -2512,7 +2512,7 @@ class ArchiveStore:
         stage_timings_s: dict[str, float] | None,
         stage_timing_prefix: str,
         manage_transaction: bool,
-        preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]],
+        preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]],
         finalize_raw_parse: bool,
         revision_authoritative: bool = False,
         bulk_fts: bool = False,

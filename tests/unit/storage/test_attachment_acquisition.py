@@ -23,6 +23,7 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
 )
 from polylogue.sources.parsers.claude import parse_ai
+from polylogue.sources.prepared_message_sink import SqliteMessageStore
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -131,6 +132,37 @@ def test_precomputed_blob_attachment_is_stored_as_acquired(tmp_path: Path, monke
     assert row["byte_count"] == len(payload)
     assert bytes(row["blob_hash"]) == bytes.fromhex(blob_hash)
     assert store.read_all(blob_hash) == payload
+
+
+def test_prepared_attachment_preacquisition_survives_a_fresh_row_read(tmp_path: Path) -> None:
+    payload = b"prepared attachment bytes"
+    blob_store = BlobStore(tmp_path / "blob")
+    blob_hash, size = blob_store.write_from_bytes(payload)
+    prepared = SqliteMessageStore(tmp_path / "prepared.db")
+    try:
+        attachments = prepared.new_attachment_sink()
+        attachments.append(
+            ParsedAttachment(
+                provider_attachment_id="file-prepared",
+                message_provider_id="m0",
+                precomputed_blob=(blob_hash, size),
+            )
+        )
+        session = _session_with_attachment(attachments[0]).model_copy(update={"attachments": attachments})
+        acquisition_key = attachments[0].acquisition_key
+        assert acquisition_key == attachments[0].acquisition_key
+        conn = _connect(tmp_path / "index.db")
+        write_parsed_session_to_archive(
+            conn,
+            session,
+            preacquired_attachment_blobs={acquisition_key: (bytes.fromhex(blob_hash), size, "acquired")},
+        )
+        row = conn.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
+        assert bytes(row["blob_hash"]) == bytes.fromhex(blob_hash)
+        assert row["byte_count"] == size
+        assert row["acquisition_status"] == "acquired"
+    finally:
+        prepared.close()
 
 
 def test_low_level_writer_rejects_precomputed_blob_without_preacquisition(tmp_path: Path) -> None:

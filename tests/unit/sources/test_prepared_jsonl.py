@@ -21,16 +21,19 @@ from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.pipeline.ids import session_content_hash
+from polylogue.sources.assembly_chatgpt import ChatGPTAssemblySpec
 from polylogue.sources.decoder_json import claude_design_object_envelope, iter_grok_export_events
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
 from polylogue.sources.live.sidecar_resolution import FilesystemSidecarResolver
 from polylogue.sources.parsers import chatgpt, local_agent
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
+from polylogue.sources.parsers.chatgpt_sidecars import ChatGPTAssetIndex
 from polylogue.sources.prepared_jsonl import PreparedJsonl, _write_artifact, prepare_jsonl_blob
 from polylogue.sources.prepared_message_sink import (
     _ACTIVE_PARENT_LOOKUP_SQL,
     ChatGPTNodeMapping,
+    SqliteAttachmentSink,
     SqliteMessageSink,
     SqliteMessageStore,
     SqliteSessionEventSink,
@@ -131,14 +134,24 @@ def test_prepared_artifact_preserves_private_linkage_and_refuses_changed_seal(tm
     assert len(restored) == 1
     assert isinstance(restored[0].messages, SqliteMessageSink)
     assert isinstance(restored[0].session_events, SqliteSessionEventSink)
+    assert isinstance(restored[0].attachments, SqliteAttachmentSink)
     assert restored[0].messages[0].owner_coordinate == coordinate
     assert restored[0].messages[0].parent_message_position == 0
     assert restored[0].session_events[0].boundary_message_position == 0
     assert restored[0].attachments[0].owner_coordinate == coordinate
     assert restored[0].attachments[0].inline_bytes == b"\x00\xff"
     assert restored[0].attachments[0].precomputed_blob == ("a" * 64, 2)
-
+    first_attachment = restored[0].attachments[0]
+    second_attachment = restored[0].attachments[0]
+    assert first_attachment is not second_attachment
+    assert first_attachment.acquisition_key == second_attachment.acquisition_key
+    assert session_content_hash(restored[0]) == restored[0].content_hash
     assert artifact.sessions_path is not None
+    with sqlite3.connect(artifact.sessions_path) as conn:
+        metadata = json.loads(conn.execute("SELECT metadata_json FROM prepared_session").fetchone()[0])
+        assert "attachments" not in metadata
+        assert conn.execute("SELECT COUNT(*) FROM prepared_attachment").fetchone()[0] == 1
+
     os.chmod(artifact.sessions_path, 0o600)
     with sqlite3.connect(artifact.sessions_path) as conn:
         conn.execute("UPDATE artifact_seal SET enrichment_digest = ?", ("d" * 64,))
@@ -758,6 +771,7 @@ def test_hermes_snapshot_stream_uses_parser_future_type_priority(tmp_path: Path)
         event.model_dump(mode="json") for event in expected.session_events
     ]
     assert actual.content_hash == session_content_hash(expected)
+    assert session_content_hash(actual) == session_content_hash(expected)
     artifact.discard()
 
 
@@ -1960,6 +1974,84 @@ def test_retained_chatgpt_simple_mapping_replays_sealed_messages(tmp_path: Path)
     artifact.discard()
 
 
+def test_chatgpt_object_finalizer_receives_disk_sidecars_and_empty_result_cleans_rows(tmp_path: Path) -> None:
+    record = ChatGPTExportBuilder("carrier-callback").add_node("user", "Neutral prompt").build()
+    mapping = record["mapping"]
+    assert isinstance(mapping, dict)
+    node = next(iter(mapping.values()))
+    assert isinstance(node, dict)
+    message = node["message"]
+    assert isinstance(message, dict)
+    message["metadata"] = {"attachments": [{"id": "file-neutral", "name": "brief.txt"}]}
+    source = tmp_path / "chatgpt.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+    observed: list[tuple[bool, bool]] = []
+
+    def reject_after_observation(sessions: list[ParsedSession]) -> list[ParsedSession]:
+        session = sessions[0]
+        observed.append(
+            (
+                isinstance(session.attachments, SqliteAttachmentSink),
+                isinstance(session.session_events, SqliteSessionEventSink),
+            )
+        )
+        return []
+
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "scratch"),
+        prepare_sessions=reject_after_observation,
+    )
+    assert artifact.error is None
+    assert observed == [(True, True)]
+    assert list(artifact.iter_sessions()) == []
+    assert artifact.sessions_path is not None
+    with sqlite3.connect(artifact.sessions_path) as conn:
+        for table in ("prepared_session", "prepared_message", "prepared_event", "prepared_attachment"):
+            assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    artifact.discard()
+
+
+def test_chatgpt_object_finalizer_enriches_sealed_attachment_and_event_rows(tmp_path: Path) -> None:
+    record = ChatGPTExportBuilder("carrier-sidecar").add_node("user", "Neutral prompt").build()
+    mapping = record["mapping"]
+    assert isinstance(mapping, dict)
+    node = next(iter(mapping.values()))
+    assert isinstance(node, dict)
+    message = node["message"]
+    assert isinstance(message, dict)
+    message["metadata"] = {"attachments": [{"id": "file-neutral"}]}
+    source = tmp_path / "chatgpt.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+    index = ChatGPTAssetIndex.build(
+        library_files_payload=[], asset_file_names_payload={"file-neutral.dat": "brief.txt"}
+    )
+
+    def enrich(session: ParsedSession) -> ParsedSession:
+        assert isinstance(session.attachments, SqliteAttachmentSink)
+        return ChatGPTAssemblySpec().enrich_session(session, {"chatgpt_asset_index": index})
+
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "scratch"),
+        prepare_session=enrich,
+    )
+    assert artifact.error is None
+    [session] = artifact.iter_sessions()
+    assert [attachment.name for attachment in session.attachments] == ["brief.txt"]
+    assert [event.event_type for event in session.session_events] == ["chatgpt_asset_resolution"]
+    assert session_content_hash(session) == session.content_hash
+    artifact.discard()
+
+
 def test_chatgpt_missing_current_node_uses_collecting_parser(tmp_path: Path) -> None:
     record = ChatGPTExportBuilder("missing-current").add_node("user", "Neutral prompt").build()
     record["current_node"] = "missing-node"
@@ -2114,6 +2206,7 @@ def test_chatgpt_native_object_preparation_preserves_complete_parser_output(tmp_
         mode="json", exclude={"content_hash"}
     )
     assert actual.content_hash == session_content_hash(expected)
+    assert session_content_hash(actual) == session_content_hash(expected)
     artifact.discard()
 
 
