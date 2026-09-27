@@ -224,12 +224,14 @@ def _prove(root: Path, old: _Certificate | None) -> _Certificate:
             raise ValueError("raw-existence tier changed while opening authority")
         source_high, source_floor = _journal_state(conn, "main", _SOURCE_TRIGGERS)
         index_high, index_floor = _journal_state(conn, "index_tier", _INDEX_TRIGGERS)
-        if old is None or old.identity != identity:
+        # A certificate whose unconsumed journal rows were pruned (by this
+        # process's consumed-row owner, or a stricter one elsewhere) cannot be
+        # advanced incrementally; it is re-proven from scratch instead.
+        truncated = old is not None and (old.source_watermark < source_floor or old.index_watermark < index_floor)
+        if old is None or old.identity != identity or truncated:
             if _missing_reference(conn):
                 raise ValueError("active index raw is missing from source tier")
         else:
-            if old.source_watermark < source_floor or old.index_watermark < index_floor:
-                raise ValueError("raw-existence journal coverage was truncated")
             if old.source_watermark > source_high or old.index_watermark > index_high:
                 raise ValueError("raw-existence journal watermark regressed")
             changed = _changed_keys(conn, "main", old.source_watermark, source_high)
@@ -267,3 +269,18 @@ def raw_existence_block_reason(archive_root: Path) -> str | None:
         candidate = evidence.value
         _certificates[root] = candidate
         return None
+
+
+def consumed_watermarks(archive_root: Path) -> tuple[int, int] | None:
+    """The journal positions this process's healthy certificate has consumed.
+
+    Journal rows at or below them are no longer needed by this process. The
+    daemon's pruning stage deletes exactly those; a process whose certificate
+    lags re-proves from scratch rather than trusting a truncated journal.
+    """
+    root = archive_root.resolve()
+    with _lock:
+        certificate = _certificates.get(root) if _pid == os.getpid() else None
+    if certificate is None:
+        return None
+    return certificate.source_watermark, certificate.index_watermark

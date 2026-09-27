@@ -101,7 +101,13 @@ def test_head_replace_and_source_key_update_are_observed(tmp_path: Path) -> None
     assert "missing" in str(frontier_existence.raw_existence_block_reason(tmp_path))
 
 
-def test_rollback_does_not_publish_change_and_pruning_refuses(tmp_path: Path) -> None:
+def test_rollback_does_not_publish_change_and_pruning_reproves(tmp_path: Path) -> None:
+    """A truncated journal forces a full re-proof, never a trusted skip.
+
+    Anti-vacuity: advance the old certificate past the truncation (the
+    incremental branch) and the pruned re-pointing to an absent raw is never
+    examined, so admission reports healthy.
+    """
     initialize_active_archive_root(tmp_path)
     _raw(tmp_path, "present")
     _session(tmp_path, "present", 1)
@@ -110,16 +116,30 @@ def test_rollback_does_not_publish_change_and_pruning_refuses(tmp_path: Path) ->
         external.execute("DELETE FROM raw_sessions WHERE raw_id = 'present'")
         external.rollback()
     assert frontier_existence.raw_existence_block_reason(tmp_path) is None
-    # An unconsumed change (a real re-pointing, which the trigger journals) is
-    # pruned before the certificate reads it: coverage is truncated, so the
-    # certificate must refuse rather than trust its old proof.
-    _raw(tmp_path, "other")
+    # An unconsumed re-pointing to a raw that source.db lacks is journaled and
+    # then pruned before this process consumes it.
     with sqlite3.connect(tmp_path / "index.db") as external:
-        external.execute("UPDATE sessions SET raw_id = 'other' WHERE native_id = 'session-1'")
+        external.execute("UPDATE sessions SET raw_id = 'absent' WHERE native_id = 'session-1'")
         external.execute(
             "DELETE FROM raw_existence_changes WHERE sequence = (SELECT MAX(sequence) FROM raw_existence_changes)"
         )
-    assert "journal" in str(frontier_existence.raw_existence_block_reason(tmp_path))
+    assert "missing" in str(frontier_existence.raw_existence_block_reason(tmp_path))
+
+
+def test_consumed_watermarks_follow_the_healthy_certificate(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    assert frontier_existence.consumed_watermarks(tmp_path) is None
+    _raw(tmp_path, "present")
+    _session(tmp_path, "present", 1)
+    assert frontier_existence.raw_existence_block_reason(tmp_path) is None
+    source_mark, index_mark = frontier_existence.consumed_watermarks(tmp_path) or (-1, -1)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert index_mark == conn.execute("SELECT MAX(sequence) FROM raw_existence_changes").fetchone()[0]
+    assert source_mark >= 0
+    with sqlite3.connect(tmp_path / "source.db") as external:
+        external.execute("DELETE FROM raw_sessions WHERE raw_id = 'present'")
+    assert frontier_existence.raw_existence_block_reason(tmp_path) is not None
+    assert frontier_existence.consumed_watermarks(tmp_path) is None
 
 
 def test_fully_pruned_consumed_journal_retains_high_watermark(tmp_path: Path) -> None:
@@ -586,3 +606,66 @@ def test_selected_authority_change_during_read_refuses_same_page(
     monkeypatch.setattr(processor, "_blocked_source_paths", interleave)
     with pytest.raises(CursorAuthorityBlockedError, match="selected frontier authority changed"):
         processor.require_cursor_authority([selected])
+
+
+def test_prune_stage_deletes_only_consumed_journal_rows(tmp_path: Path) -> None:
+    """The daemon stage keeps both journals bounded by what admission consumed.
+
+    Anti-vacuity: drop the stage's ``sequence <= watermark`` bound and the
+    unconsumed row below is deleted too, so the next admission re-proves
+    from scratch and the final count assertion fails.
+    """
+    from polylogue.daemon.convergence_stages import make_raw_existence_journal_prune_stage
+
+    initialize_active_archive_root(tmp_path)
+    _raw(tmp_path, "present")
+    _session(tmp_path, "present", 1)
+    stage = make_raw_existence_journal_prune_stage(tmp_path / "index.db")
+    assert stage.check(tmp_path / "index.db") is False  # no certificate yet
+    assert frontier_existence.raw_existence_block_reason(tmp_path) is None
+    assert stage.check(tmp_path / "index.db") is True
+    assert stage.execute(tmp_path / "index.db") is True
+    assert stage.check(tmp_path / "index.db") is False
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_existence_changes").fetchone()[0] == 0
+    # A change the certificate has not consumed survives the prune.
+    _raw(tmp_path, "second")
+    _session(tmp_path, "second", 2)
+    assert stage.execute(tmp_path / "index.db") is True
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_existence_changes").fetchone()[0] == 1
+    assert frontier_existence.raw_existence_block_reason(tmp_path) is None
+
+
+def test_retired_symlink_alias_refuses_the_selected_real_path(tmp_path: Path) -> None:
+    """Refusal is matched through the canonical paths stored at acquisition.
+
+    Anti-vacuity: compare by re-resolving the stored alias instead, and once
+    the symlink is gone the alias resolves to itself, the refusal names only
+    the obsolete spelling, and the real path the watcher selects is admitted.
+    """
+    initialize_active_archive_root(tmp_path)
+    real = tmp_path / "real.jsonl"
+    alias = tmp_path / "alias.jsonl"
+    real.write_text("x" * 8, encoding="utf-8")
+    alias.symlink_to(real)
+    _raw(tmp_path, "aliased", path=alias, logical_key="codex:aliased")
+    _session(tmp_path, "aliased", 1)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute(
+            "INSERT INTO raw_revision_heads(logical_source_key, session_id, accepted_raw_id, "
+            "accepted_source_revision, accepted_content_hash, accepted_frontier_kind, accepted_frontier, "
+            "acquisition_generation, decided_at_ms) "
+            "VALUES ('codex:aliased', 'codex-session:session-1', 'aliased', 'aliased', ?, 'byte', 2, 0, 1)",
+            (bytes(32),),
+        )
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute(
+            "INSERT INTO ingest_cursor(source_path, canonical_source_path, byte_offset, updated_at_ms) "
+            "VALUES (?, ?, 5, 1)",
+            (str(alias), str(real.resolve())),
+        )
+    alias.unlink()
+    selected = raw_frontier_blocked_selected_paths(tmp_path, (real,))
+    assert selected.unattributed_reason is None
+    assert str(real.resolve()) in selected.source_paths

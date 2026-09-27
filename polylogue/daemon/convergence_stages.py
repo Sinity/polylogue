@@ -624,6 +624,95 @@ def make_hook_paste_enrichment_stage(db_path: Path) -> ConvergenceStage:
     )
 
 
+def make_raw_existence_journal_prune_stage(db_path: Path) -> ConvergenceStage:
+    """Delete raw-existence journal rows this daemon's certificate has consumed.
+
+    The source/index triggers append one changed key per raw deletion,
+    re-pointing or head advance, and live admission reads only the rows past
+    its certificate's watermark. Rows at or below that watermark have served
+    their purpose; without an owner deleting them the journals grow with every
+    ingest for the life of the archive. The prune trigger advances each tier's
+    ``retained_floor``, so a process whose certificate lags re-proves from
+    scratch instead of reading a truncated journal.
+    """
+
+    def _tiers() -> tuple[Path, Path]:
+        location = ArchiveLocation.resolve(db_path.parent)
+        return location.configured_tier("source").configured_path, location.active_index_path
+
+    def _has_consumed_rows(conn: sqlite3.Connection, watermark: int) -> bool:
+        if not _table_exists(conn, "raw_existence_changes"):
+            return False
+        return (
+            conn.execute("SELECT 1 FROM raw_existence_changes WHERE sequence <= ? LIMIT 1", (watermark,)).fetchone()
+            is not None
+        )
+
+    def check(_path: Path) -> bool:
+        from polylogue.storage.frontier_existence import consumed_watermarks
+
+        marks = consumed_watermarks(db_path.parent)
+        if marks is None:
+            return False
+        for tier_path, watermark in zip(_tiers(), marks, strict=True):
+            if not tier_path.exists():
+                continue
+            conn = open_readonly_connection(tier_path, validate_schema=False)
+            try:
+                if _has_consumed_rows(conn, watermark):
+                    return True
+            finally:
+                conn.close()
+        return False
+
+    def check_many(paths: Sequence[Path]) -> set[Path]:
+        if not paths:
+            return set()
+        return set(paths) if check(paths[0]) else set()
+
+    def execute(_path: Path) -> StageExecuteReturn:
+        return execute_many((_path,))
+
+    def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
+        from polylogue.storage.frontier_existence import consumed_watermarks
+
+        with span("daemon.stage.execute", stage="raw_existence_journal_prune", files=len(paths)) as work:
+            marks = consumed_watermarks(db_path.parent)
+            if marks is None:
+                work.empty(pruned=0, reason="no_healthy_certificate")
+                return True
+            pruned = 0
+            for tier_path, watermark in zip(_tiers(), marks, strict=True):
+                if not tier_path.exists():
+                    continue
+                conn = open_daemon_connection(tier_path, archive_root=db_path.parent, validate_schema=False)
+                try:
+                    if not _table_exists(conn, "raw_existence_changes"):
+                        continue
+                    conn.execute("BEGIN IMMEDIATE")
+                    pruned += conn.execute(
+                        "DELETE FROM raw_existence_changes WHERE sequence <= ?", (watermark,)
+                    ).rowcount
+                    conn.execute("COMMIT")
+                except Exception:
+                    if conn.in_transaction:
+                        conn.execute("ROLLBACK")
+                    raise
+                finally:
+                    conn.close()
+            work.ok(pruned=pruned)
+            return True
+
+    return ConvergenceStage(
+        name="raw_existence_journal_prune",
+        description="Delete raw-existence journal rows the live admission certificate has consumed",
+        check=check,
+        execute=execute,
+        check_many=check_many,
+        execute_many=execute_many,
+    )
+
+
 def make_default_convergence_stages(
     db_path: Path,
     *,
@@ -664,6 +753,7 @@ def make_default_convergence_stages(
             # polylogue-crwl6 AC6: the only production writer of the message-FTS
             # readiness binding the five status request paths compare against.
             make_fts_readiness_binding_stage(db_path),
+            make_raw_existence_journal_prune_stage(db_path),
             # Session-profile publication is no longer a generic stage.  The
             # daemon's typed session owner runs it through the derivation
             # kernel after ingest and from its no-hint periodic sweep.

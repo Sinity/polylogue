@@ -863,6 +863,7 @@ class CursorAheadSample:
     cursor_byte_offset: int
     accepted_frontier: int
     affected_head_count: int
+    canonical_source_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -881,6 +882,7 @@ class _OpsCursorAuthority:
     source_path: str
     byte_offset: int
     deferred_end_offset: int | None
+    canonical_source_path: str | None = None
 
     @property
     def is_deferred(self) -> bool:
@@ -1227,17 +1229,22 @@ def _raw_frontier_blocked_selected_paths(archive_root: Path, selected_paths: Seq
             component, logical_keys = expand_raw_membership_selection_sync(conn, sorted(raw_ids))
             component_set = set(component)
             paths_by_raw = _source_paths_for_raw_ids(conn, component_set)
-            component_paths = set(paths_by_raw.values())
+            canonical_by_raw = _canonical_paths_for_raw_ids(conn, component_set)
+            component_paths = set(paths_by_raw.values()) | set(canonical_by_raw.values())
 
             def paths_for_logical_key(key: str) -> set[str]:
+                # Every stored spelling: a refusal must match whichever path
+                # the watcher selects, including the canonical real path.
                 return {
-                    str(row[0])
+                    str(value)
                     for row in conn.execute(
-                        "SELECT source_path FROM raw_sessions WHERE logical_source_key = ? "
-                        "UNION SELECT r.source_path FROM raw_session_memberships m "
+                        "SELECT source_path, canonical_source_path FROM raw_sessions WHERE logical_source_key = ? "
+                        "UNION SELECT r.source_path, r.canonical_source_path FROM raw_session_memberships m "
                         "JOIN raw_sessions r ON r.raw_id = m.raw_id WHERE m.logical_source_key = ?",
                         (key, key),
                     )
+                    for value in row
+                    if value is not None
                 }
 
             heads: list[_IndexRawRevisionHead] = []
@@ -1326,7 +1333,7 @@ def _raw_frontier_blocked_selected_paths(archive_root: Path, selected_paths: Seq
                     sample_limit=len(component_paths) + len(spellings) + len(unique_heads) + 1,
                     ops_conn=ops,
                     source_paths=frozenset(component_paths | spellings),
-                    resolve_path_aliases=True,
+                    compare_canonical_paths=True,
                 )
             (
                 status,
@@ -1344,14 +1351,14 @@ def _raw_frontier_blocked_selected_paths(archive_root: Path, selected_paths: Seq
                 return RawFrontierBlockedPaths(frozenset(), cursor_reason)
             for ahead_sample in ahead:
                 refused.add(ahead_sample.source_path)
-                ahead_canonical = str(Path(ahead_sample.source_path).resolve())
+                ahead_canonical = ahead_sample.canonical_source_path or ahead_sample.source_path
+                refused.add(ahead_canonical)
                 ahead_keys = {
                     head.logical_source_key
                     for head in unique_heads
                     if head.accepted_frontier_kind == "byte"
                     and ahead_sample.cursor_byte_offset > head.accepted_frontier
-                    and (head_path := paths_by_raw.get(head.accepted_raw_id)) is not None
-                    and str(Path(head_path).resolve()) == ahead_canonical
+                    and canonical_by_raw.get(head.accepted_raw_id) == ahead_canonical
                 }
                 for key in ahead_keys or ({ahead_sample.logical_source_key} if ahead_sample.logical_source_key else ()):
                     refused.update(paths_for_logical_key(key))
@@ -1853,7 +1860,7 @@ def _check_cursor_ahead_of_accepted(
     ops_conn: sqlite3.Connection | None = None,
     ops_schema: str = "main",
     source_paths: frozenset[str] | None = None,
-    resolve_path_aliases: bool = False,
+    compare_canonical_paths: bool = False,
 ) -> tuple[
     RawFrontierIntegrityStatus,
     int,
@@ -1876,7 +1883,9 @@ def _check_cursor_ahead_of_accepted(
         return "unknown", 0, 0, 0, 0, (), 0, (), 0, str(exc)
 
     try:
-        source_path_by_raw_id = _source_paths_for_raw_ids(conn, {head.accepted_raw_id for head in heads})
+        head_raw_ids = {head.accepted_raw_id for head in heads}
+        source_path_by_raw_id = _source_paths_for_raw_ids(conn, head_raw_ids)
+        canonical_by_raw_id = _canonical_paths_for_raw_ids(conn, head_raw_ids) if compare_canonical_paths else {}
     except sqlite3.Error as exc:
         logger.warning("raw frontier integrity: source raw path lookup failed: %s", exc)
         return "unknown", 0, 0, 0, 0, (), 0, (), 0, f"source raw path lookup failed: {exc}"
@@ -1901,7 +1910,10 @@ def _check_cursor_ahead_of_accepted(
                         )
                     )
             continue
-        comparison_path = str(Path(source_path).resolve()) if resolve_path_aliases else source_path
+        # Compare the canonical path stored at acquisition. Re-resolving an
+        # obsolete spelling against today's filesystem names the wrong file
+        # once its symlink is removed or retargeted.
+        comparison_path = canonical_by_raw_id.get(head.accepted_raw_id, source_path)
         all_head_paths.add(comparison_path)
         if head.accepted_frontier_kind == "byte":
             byte_heads_by_path.setdefault(comparison_path, []).append(head)
@@ -1923,7 +1935,7 @@ def _check_cursor_ahead_of_accepted(
         return "unknown", 0, 0, 0, 0, (), 0, (), 0, f"terminal artifact authority is unreadable: {exc}"
     deferred_count = 0
     for path, cursor in cursor_map.items():
-        comparison_path = str(Path(path).resolve()) if resolve_path_aliases else path
+        comparison_path = (cursor.canonical_source_path or path) if compare_canonical_paths else path
         cursor_offset = cursor.byte_offset
         if cursor.is_deferred:
             # A deferred cursor is the positive proof of a safe incomplete
@@ -1974,6 +1986,7 @@ def _check_cursor_ahead_of_accepted(
                     cursor_byte_offset=cursor_offset,
                     accepted_frontier=representative.accepted_frontier,
                     affected_head_count=len(ahead_heads),
+                    canonical_source_path=cursor.canonical_source_path,
                 )
             )
 
@@ -2013,6 +2026,23 @@ def _source_paths_for_raw_ids(conn: sqlite3.Connection, raw_ids: set[str]) -> di
             f"SELECT raw_id, source_path FROM raw_sessions WHERE raw_id IN ({placeholders})", batch
         ).fetchall()
         for row in rows:
+            result[str(row[0])] = str(row[1])
+    return result
+
+
+def _canonical_paths_for_raw_ids(conn: sqlite3.Connection, raw_ids: set[str]) -> dict[str, str]:
+    """The canonical path each raw stored at acquisition (absent when unrecorded)."""
+    result: dict[str, str] = {}
+    pending = set(raw_ids)
+    while pending:
+        batch = tuple(sorted(pending)[:500])
+        pending.difference_update(batch)
+        placeholders = ", ".join("?" for _ in batch)
+        for row in conn.execute(
+            f"SELECT raw_id, canonical_source_path FROM raw_sessions "
+            f"WHERE raw_id IN ({placeholders}) AND canonical_source_path IS NOT NULL",
+            batch,
+        ):
             result[str(row[0])] = str(row[1])
     return result
 
@@ -2304,7 +2334,7 @@ def _ops_cursor_byte_offsets_from_present_connection(
     )
     rows = conn.execute(
         f"""
-        SELECT source_path, byte_offset, deferred_end_offset
+        SELECT source_path, byte_offset, deferred_end_offset, canonical_source_path
         FROM {schema}.ingest_cursor
         WHERE COALESCE(excluded, 0) = 0 AND byte_offset IS NOT NULL
         {path_filter}
@@ -2316,6 +2346,7 @@ def _ops_cursor_byte_offsets_from_present_connection(
             source_path=str(row[0]),
             byte_offset=int(row[1]),
             deferred_end_offset=int(row[2]) if row[2] is not None else None,
+            canonical_source_path=str(row[3]) if row[3] is not None else None,
         )
         for row in rows
         if row[1] is not None
