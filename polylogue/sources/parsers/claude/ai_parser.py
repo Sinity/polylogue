@@ -876,6 +876,56 @@ def _merge_session_attachments(
     return _merge_attachment_rows(attachments)
 
 
+def _compaction_summary_events(chat_messages: list[object]) -> list[ParsedSessionEvent]:
+    """One ``compaction`` event per chat message that carries claude.ai's compaction summary.
+
+    When claude.ai compacts a long conversation it stores the summary it
+    carries forward on the message where compaction happened
+    (``compaction_summary``: text blocks with start/stop timestamps). That
+    text is the context the model continued from, so it is kept as the same
+    ``compaction`` event the Claude Code and Codex parsers emit.
+    """
+    events: list[ParsedSessionEvent] = []
+    for item in chat_messages:
+        if not isinstance(item, Mapping):
+            continue
+        summary_blocks = item.get("compaction_summary")
+        if not isinstance(summary_blocks, list):
+            continue
+        texts: list[str] = []
+        start_timestamp: str | None = None
+        stop_timestamp: str | None = None
+        for block in summary_blocks:
+            if not isinstance(block, Mapping):
+                continue
+            text = block.get("text")
+            if isinstance(text, str) and text:
+                texts.append(text)
+            start = block.get("start_timestamp")
+            stop = block.get("stop_timestamp")
+            if start_timestamp is None and isinstance(start, str) and start:
+                start_timestamp = start
+            if isinstance(stop, str) and stop:
+                stop_timestamp = stop
+        if not texts:
+            continue
+        message_id = _first_identity_field(item, "uuid", "id", "message_id")
+        payload: dict[str, object] = {"summary": "\n\n".join(texts), "source": "claude-ai"}
+        if start_timestamp is not None:
+            payload["start_timestamp"] = start_timestamp
+        if stop_timestamp is not None:
+            payload["stop_timestamp"] = stop_timestamp
+        events.append(
+            ParsedSessionEvent(
+                event_type="compaction",
+                timestamp=stop_timestamp or start_timestamp or _session_timestamp(item, "created_at", "updated_at"),
+                source_message_provider_id=message_id,
+                payload=payload,
+            )
+        )
+    return events
+
+
 @parser_admission("claude_ai")
 def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     # memories.json records arrive tagged Provider.CLAUDE_AI too (bd
@@ -893,7 +943,16 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     created_at = _session_timestamp(payload, "created_at", "create_time", "timestamp")
     updated_at = _session_timestamp(payload, "updated_at", "update_time")
     session_model = _message_model_name(payload)
-    session_effort = _message_model_effort(payload)
+    raw_settings = payload.get("settings")
+    settings: Mapping[str, object] = raw_settings if isinstance(raw_settings, Mapping) else {}
+    settings_effort = settings.get("effort_level")
+    session_effort = _message_model_effort(payload) or (
+        settings_effort.strip() if isinstance(settings_effort, str) and settings_effort.strip() else None
+    )
+    session_thinking = _thinking_configuration(payload)
+    settings_thinking_mode = settings.get("thinking_mode")
+    if session_thinking is None and isinstance(settings_thinking_mode, str) and settings_thinking_mode.strip():
+        session_thinking = {"mode": settings_thinking_mode.strip()}
     active_leaf_message_provider_id = _first_identity_field(
         payload,
         "current_leaf_message_uuid",
@@ -908,7 +967,7 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
         chat_messages,
         session_model=session_model,
         session_effort=session_effort,
-        session_thinking_configuration=_thinking_configuration(payload),
+        session_thinking_configuration=session_thinking,
         session_created_at=created_at,
         session_updated_at=updated_at,
         active_leaf_message_provider_id=active_leaf_message_provider_id,
@@ -937,6 +996,8 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
                 payload={"summary": provider_summary},
             )
         )
+
+    session_events.extend(_compaction_summary_events(chat_messages))
 
     conversation_id = _first_identity_field(payload, "uuid", "id", "conversation_id", "conversationId")
     resolved_session_id = conversation_id or fallback_id

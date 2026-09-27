@@ -365,6 +365,7 @@ _NON_MESSAGE_SIDECAR_RECORD_TYPES = frozenset(
 # ``_ATTACHMENT_UNCLASSIFIED_EVENT_TYPE``.
 _MESSAGE_RECORD_TYPES = frozenset({"user", "assistant", "system", "summary"})
 _UNCLASSIFIED_RECORD_EVENT_TYPE = "claude_unclassified_record"
+_SYNTHETIC_MODEL_PLACEHOLDER = "<synthetic>"
 
 # record_type -> session_events.event_type for the sidecar types persisted
 # generically via ``_sidecar_evidence_payload``. ``progress``, ``ai-title``,
@@ -2393,6 +2394,45 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
                 payload={"advisor_model": raw_advisor_model.strip(), "summary": raw_advisor_model.strip()},
             )
         )
+    # A failed API call is recorded as an assistant record whose text is the
+    # harness's error message ("API Error: ...") under the placeholder model
+    # "<synthetic>". Keep the failure queryable as its own event; the message
+    # itself is re-attributed below so it never counts as model output.
+    if item.get("isApiErrorMessage") is True and record_type == "assistant":
+        api_error_payload: dict[str, object] = {"summary": "api_error"}
+        api_error_status = _optional_safe_int(item.get("apiErrorStatus"))
+        if api_error_status is not None:
+            api_error_payload["status"] = api_error_status
+        for source_key, payload_key in (("apiError", "error"), ("errorDetails", "details")):
+            value = item.get(source_key)
+            if isinstance(value, str) and value.strip():
+                api_error_payload[payload_key] = value
+        acc.session_events.append(
+            ParsedSessionEvent(
+                event_type="claude_api_error",
+                timestamp=timestamp,
+                source_message_provider_id=record_uuid or None,
+                payload=api_error_payload,
+            )
+        )
+    # A tool call the harness refused to run (a permission rule, auto mode, or
+    # the user rejecting it) returns an error-shaped tool_result; the denial
+    # kind distinguishes that refusal from a tool that ran and failed.
+    tool_denial_kind = item.get("toolDenialKind")
+    if isinstance(tool_denial_kind, str) and tool_denial_kind.strip():
+        denied_tool_ids = [
+            str(block.get("tool_use_id"))
+            for block in (message.get("content") if isinstance(message, dict) else None) or []
+            if isinstance(block, dict) and block.get("type") == "tool_result" and block.get("tool_use_id")
+        ]
+        acc.session_events.append(
+            ParsedSessionEvent(
+                event_type="claude_tool_denial",
+                timestamp=timestamp,
+                source_message_provider_id=record_uuid or None,
+                payload={"kind": tool_denial_kind.strip(), "tool_use_ids": denied_tool_ids, "summary": "tool_denial"},
+            )
+        )
     if item.get("isAbortedMidStream") is True and record_type == "assistant":
         acc.session_events.append(
             ParsedSessionEvent(
@@ -2450,7 +2490,14 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
         msg_usage = {}
     message_payload = message if isinstance(message, dict) else {}
     msg_model = _message_model_name(message_payload) or _message_model_name(item)
-    msg_effort = _message_model_effort(message_payload) or _message_model_effort(item)
+    # "<synthetic>" is Claude Code's placeholder for records the harness wrote
+    # itself (API error text, "No response requested."); no model produced them.
+    harness_synthetic = msg_model == _SYNTHETIC_MODEL_PLACEHOLDER
+    if harness_synthetic:
+        msg_model = None
+    msg_effort = (
+        _message_model_effort(message_payload) or _message_model_effort(item) or _string_field(item, "perTurnEffort")
+    )
     msg_duration_ms = _message_duration_ms(item)
     msg_stop_reason = _message_stop_reason(message_payload)
     resolved_role = reclassify_tool_result_envelope(envelope_role, content_blocks)
@@ -2470,6 +2517,8 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
         )
         if evidenced_origin is not None:
             material_origin = evidenced_origin
+    if harness_synthetic and resolved_role is Role.ASSISTANT:
+        material_origin = MaterialOrigin.RUNTIME_PROTOCOL
     if hook_context_text:
         # Hook-injected text is runtime-injected context by construction: a
         # hook, not a human and not the model, put it in the context window.

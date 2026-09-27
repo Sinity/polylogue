@@ -964,3 +964,43 @@ def test_claude_ai_catalog_parser_only_smoke() -> None:
         parsed = parse_ai(copy.deepcopy(payload), fallback_id=f"fb-{label}")
         assert parsed.source_name == "claude-ai", f"[{label}] wrong provider: {parsed.source_name}"
         assert parsed.messages, f"[{label}] parser produced no messages"
+
+
+def test_claude_ai_compaction_summary_persists_as_compaction_event() -> None:
+    """claude.ai's compaction summary is the context the model continued from.
+
+    Anti-vacuity: remove ``_compaction_summary_events`` from ``parse_ai`` and
+    the summary text is dropped.
+    """
+    payload = {
+        "uuid": "claude-compacted",
+        "name": "Long Session",
+        "settings": {"effort_level": "high", "thinking_mode": "extended"},
+        "chat_messages": [
+            {"uuid": "m1", "sender": "human", "text": "hi", "created_at": "2026-01-01T00:00:00Z"},
+            {
+                "uuid": "m2",
+                "sender": "assistant",
+                "text": "continuing",
+                "created_at": "2026-01-01T00:05:00Z",
+                "compaction_summary": [
+                    {
+                        "type": "text",
+                        "text": "Earlier we planned the parser work.",
+                        "start_timestamp": "2026-01-01T00:04:00Z",
+                        "stop_timestamp": "2026-01-01T00:04:30Z",
+                        "citations": [],
+                    }
+                ],
+            },
+        ],
+    }
+
+    session = parse_ai(payload, "fallback")
+
+    compactions = [event for event in session.session_events if event.event_type == "compaction"]
+    assert len(compactions) == 1
+    assert compactions[0].source_message_provider_id == "m2"
+    assert compactions[0].payload["summary"] == "Earlier we planned the parser work."
+    assert compactions[0].payload["stop_timestamp"] == "2026-01-01T00:04:30Z"
+    assert any(message.model_effort == "high" for message in session.messages)
