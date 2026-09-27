@@ -647,10 +647,15 @@ def prepare_jsonl_blob(
         if not is_stream and provider is Provider.CHATGPT and Path(source_path).name.lower().endswith(".json"):
             with source.open("rb") as handle:
                 read_result = read_chatgpt_mapping_object(handle, store.conn)
-            if read_result is not None and chatgpt._mapping_nodes_are_valid(read_result[1]):
+            if (
+                read_result is not None
+                and read_result[1].children_are_all_strings()
+                and chatgpt._mapping_nodes_are_valid(read_result[1].shallow_view())
+            ):
                 chatgpt_envelope, chatgpt_mapping = read_result
             else:
                 store.conn.execute("DROP TABLE chatgpt_node")
+                store.conn.execute("DROP TABLE chatgpt_child")
         if (
             not is_stream
             and provider is Provider.GEMINI_CLI
@@ -880,6 +885,7 @@ def prepare_jsonl_blob(
                     "(SELECT attachment_ordinal FROM prepared_session)"
                 )
             store.conn.execute("DROP TABLE chatgpt_node")
+            store.conn.execute("DROP TABLE chatgpt_child")
             for table in (
                 "chatgpt_simple_node",
                 "chatgpt_simple_sibling",

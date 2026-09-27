@@ -1816,6 +1816,61 @@ def test_chatgpt_mapping_object_spills_before_eof_with_bounded_reader(
     assert first_write and first_write[0] < len(source)
 
 
+def test_chatgpt_mapping_children_spill_preserves_duplicate_and_member_order(tmp_path: Path) -> None:
+    first = '{"id":"node","children":["old"]}'
+    second = '{"id":"node","children":["later", "first", "later"]}'
+    source = (
+        '{"conversation_id":"conversation", "current_node":"node", "create_time":1, '
+        f'"mapping":{{"node":{first},"node":{second}}}}}'
+    ).encode()
+    with sqlite3.connect(tmp_path / "nodes.db") as conn:
+        result = read_chatgpt_mapping_object(BytesIO(source), conn)
+        assert result is not None
+        mapping = result[1]
+        assert mapping.children_are_all_strings()
+        assert chatgpt._mapping_nodes_are_valid(mapping.shallow_view())
+        assert mapping.shallow_node("node") == {"id": "node", "children": []}
+        assert mapping["node"] == {"id": "node", "children": ["later", "first", "later"]}
+        assert list(mapping.iter_children("node")) == ["later", "first", "later"]
+        assert conn.execute("SELECT COUNT(*) FROM chatgpt_child").fetchone()[0] == 3
+
+
+def test_chatgpt_large_children_array_prepares_without_rebuilding_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = ChatGPTExportBuilder("large-children").add_node("user", "Prompt").add_node("assistant", "Answer").build()
+    mapping = record["mapping"]
+    assert isinstance(mapping, dict)
+    parent, child = mapping.values()
+    assert isinstance(parent, dict) and isinstance(child, dict)
+    child["parent"] = parent["id"]
+    parent["children"] = [f"absent-{index}" for index in range(20_000)] + [child["id"]]
+    record["current_node"] = child["id"]
+    expected = parse_payload(Provider.CHATGPT, [record], "fallback")[0]
+    source = tmp_path / "chatgpt.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+
+    def refuse_rebuild(_self: ChatGPTNodeMapping, _key: str) -> object:
+        raise AssertionError("large children array was rebuilt during the prepared path")
+
+    monkeypatch.setattr(ChatGPTNodeMapping, "__getitem__", refuse_rebuild)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "scratch"),
+    )
+    assert artifact.error is None
+    actual = artifact.load_sessions()[0]
+    assert [message.model_dump(mode="json") for message in actual.messages] == [
+        message.model_dump(mode="json") for message in expected.messages
+    ]
+    assert actual.content_hash == session_content_hash(expected)
+    artifact.discard()
+
+
 def test_chatgpt_mapping_object_preparation_matches_parser_and_duplicate_keys(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

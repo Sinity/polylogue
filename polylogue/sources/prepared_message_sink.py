@@ -637,22 +637,84 @@ class ChatGPTNodeMapping(Mapping[str, object]):
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
         conn.execute(
-            "CREATE TABLE chatgpt_node (node_key TEXT PRIMARY KEY, ordinal INTEGER NOT NULL UNIQUE, node_json TEXT NOT NULL)"
+            "CREATE TABLE chatgpt_node (node_key TEXT PRIMARY KEY, ordinal INTEGER NOT NULL UNIQUE, "
+            "node_json TEXT NOT NULL, child_ordinal INTEGER)"
+        )
+        conn.execute(
+            "CREATE TABLE chatgpt_child (node_ordinal INTEGER NOT NULL, item_ordinal INTEGER NOT NULL, "
+            "child_json TEXT NOT NULL, child_key TEXT, PRIMARY KEY (node_ordinal, item_ordinal)) WITHOUT ROWID"
         )
 
     def put(self, key: str, node: object, ordinal: int) -> None:
         encoded = json.dumps(node, ensure_ascii=False)
+        previous = self.conn.execute("SELECT child_ordinal FROM chatgpt_node WHERE node_key = ?", (key,)).fetchone()
+        if previous is not None and previous[0] is not None:
+            self.conn.execute("DELETE FROM chatgpt_child WHERE node_ordinal = ?", (previous[0],))
         self.conn.execute(
-            "INSERT INTO chatgpt_node VALUES (?, ?, ?) "
-            "ON CONFLICT(node_key) DO UPDATE SET node_json = excluded.node_json",
+            "INSERT INTO chatgpt_node VALUES (?, ?, ?, NULL) "
+            "ON CONFLICT(node_key) DO UPDATE SET node_json = excluded.node_json, child_ordinal = NULL",
             (key, ordinal, encoded),
         )
 
-    def __getitem__(self, key: str) -> object:
+    def put_child(self, node_ordinal: int, item_ordinal: int, child: object) -> None:
+        self.conn.execute(
+            "INSERT INTO chatgpt_child VALUES (?, ?, ?, ?)",
+            (
+                node_ordinal,
+                item_ordinal,
+                json.dumps(child, ensure_ascii=False),
+                child if isinstance(child, str) else None,
+            ),
+        )
+
+    def mark_children(self, key: str, ordinal: int) -> None:
+        self.conn.execute("UPDATE chatgpt_node SET child_ordinal = ? WHERE node_key = ?", (ordinal, key))
+
+    def shallow_node(self, key: str) -> object:
         row = self.conn.execute("SELECT node_json FROM chatgpt_node WHERE node_key = ?", (key,)).fetchone()
         if row is None:
             raise KeyError(key)
         return json.loads(row[0])
+
+    def children_are_strings(self, key: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM chatgpt_child WHERE node_ordinal = "
+            "(SELECT child_ordinal FROM chatgpt_node WHERE node_key = ?) AND child_key IS NULL LIMIT 1",
+            (key,),
+        ).fetchone()
+        return row is None
+
+    def children_are_all_strings(self) -> bool:
+        return self.conn.execute("SELECT 1 FROM chatgpt_child WHERE child_key IS NULL LIMIT 1").fetchone() is None
+
+    def shallow_view(self) -> Mapping[str, object]:
+        """Expose node shapes to the canonical validator without rebuilding child arrays."""
+        return _ShallowChatGPTMapping(self)
+
+    def iter_children(self, key: str) -> Iterator[str]:
+        for (child,) in self.conn.execute(
+            "SELECT child_key FROM chatgpt_child WHERE node_ordinal = "
+            "(SELECT child_ordinal FROM chatgpt_node WHERE node_key = ?) ORDER BY item_ordinal",
+            (key,),
+        ):
+            if child is not None:
+                yield child
+
+    def __getitem__(self, key: str) -> object:
+        row = self.conn.execute(
+            "SELECT node_json, child_ordinal FROM chatgpt_node WHERE node_key = ?", (key,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(key)
+        node = json.loads(row[0])
+        if row[1] is not None and isinstance(node, dict):
+            node["children"] = [
+                json.loads(child_json)
+                for (child_json,) in self.conn.execute(
+                    "SELECT child_json FROM chatgpt_child WHERE node_ordinal = ? ORDER BY item_ordinal", (row[1],)
+                )
+            ]
+        return node
 
     def __iter__(self) -> Iterator[str]:
         for (key,) in self.conn.execute("SELECT node_key FROM chatgpt_node ORDER BY ordinal"):
@@ -660,6 +722,26 @@ class ChatGPTNodeMapping(Mapping[str, object]):
 
     def __len__(self) -> int:
         return int(self.conn.execute("SELECT COUNT(*) FROM chatgpt_node").fetchone()[0])
+
+    def __contains__(self, key: object) -> bool:
+        return (
+            isinstance(key, str)
+            and self.conn.execute("SELECT 1 FROM chatgpt_node WHERE node_key = ?", (key,)).fetchone() is not None
+        )
+
+
+class _ShallowChatGPTMapping(Mapping[str, object]):
+    def __init__(self, mapping: ChatGPTNodeMapping) -> None:
+        self.mapping = mapping
+
+    def __getitem__(self, key: str) -> object:
+        return self.mapping.shallow_node(key)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.mapping)
+
+    def __len__(self) -> int:
+        return len(self.mapping)
 
 
 class _SingleChatGPTNode(Mapping[str, object]):
@@ -775,15 +857,15 @@ def prepare_simple_chatgpt_mapping(
         "sibling INTEGER NOT NULL, PRIMARY KEY (parent_key, child_key)) WITHOUT ROWID"
     )
     for ordinal, key in enumerate(mapping):
-        node = mapping[key]
+        node = mapping.shallow_node(key)
         if not _simple_chatgpt_node(key, node):
             return None
         assert isinstance(node, dict)
+        if not mapping.children_are_strings(key):
+            return None
         parent = node.get("parent")
         sibling_key = parent if isinstance(parent, str) and parent else ""
-        children = node.get("children", [])
-        assert isinstance(children, list)
-        for child_ordinal, child in enumerate(children):
+        for child_ordinal, child in enumerate(mapping.iter_children(key)):
             conn.execute(
                 "INSERT OR IGNORE INTO chatgpt_simple_child VALUES (?, ?, ?)",
                 (key, child, child_ordinal),
@@ -834,7 +916,7 @@ def prepare_simple_chatgpt_mapping(
     ledger.materialized(AdmissionUnit.OUTER_RECORD, 0, "conversation")
     default_model = chatgpt._string_value(envelope, "default_model_slug")
     for key in mapping:
-        node = mapping[key]
+        node = mapping.shallow_node(key)
         assert isinstance(node, dict)
         normalized, attachments = chatgpt.extract_messages_from_mapping(
             _SingleChatGPTNode(key, node),
@@ -951,8 +1033,15 @@ def read_chatgpt_mapping_object(
             node_start = next(events, None)
             if node_start is None:
                 raise ValueError("incomplete ChatGPT mapping node")
-            node = normalize_ijson_stdlib_numbers(_json_subtree(events, node_start[1], node_start[2]))
+            node: object
+            if node_start[1] == "start_map":
+                node, has_children = _read_chatgpt_node(events, mapping, ordinal, node_start[0])
+            else:
+                node = normalize_ijson_stdlib_numbers(_json_subtree(events, node_start[1], node_start[2]))
+                has_children = False
             mapping.put(node_key, node, ordinal)
+            if has_children:
+                mapping.mark_children(node_key, ordinal)
             ordinal += 1  # noqa: SIM113  (nested value events are not node ordinals)
         else:
             raise ValueError("incomplete ChatGPT mapping")
@@ -967,6 +1056,46 @@ def read_chatgpt_mapping_object(
         return None
     envelope["mapping"] = mapping
     return envelope, mapping
+
+
+def _read_chatgpt_node(
+    events: Iterator[tuple[str, str, object]], mapping: ChatGPTNodeMapping, ordinal: int, node_prefix: str
+) -> tuple[dict[str, object], bool]:
+    """Spill the direct children array while decoding the rest of one node."""
+    node: dict[str, object] = {}
+    has_children = False
+    for prefix, event, value in events:
+        if prefix == node_prefix and event == "end_map":
+            return node, has_children
+        if prefix != node_prefix or event != "map_key":
+            raise ValueError("invalid ChatGPT mapping node")
+        key = str(value)
+        start = next(events, None)
+        if start is None:
+            raise ValueError("incomplete ChatGPT mapping node")
+        if key != "children" or start[1] != "start_array":
+            node[key] = normalize_ijson_stdlib_numbers(_json_subtree(events, start[1], start[2]))
+            if key == "children":
+                mapping.conn.execute("DELETE FROM chatgpt_child WHERE node_ordinal = ?", (ordinal,))
+                has_children = False
+            continue
+        # A duplicate JSON member follows ordinary last-value-wins behavior.
+        # Its previous items are scratch only and can be removed immediately.
+        mapping.conn.execute("DELETE FROM chatgpt_child WHERE node_ordinal = ?", (ordinal,))
+        node[key] = []
+        has_children = True
+        child_ordinal = 0
+        for child_prefix, child_event, child_value in events:
+            if child_prefix == f"{node_prefix}.children" and child_event == "end_array":
+                break
+            if child_prefix != f"{node_prefix}.children.item":
+                raise ValueError("invalid ChatGPT children array")
+            child = normalize_ijson_stdlib_numbers(_json_subtree(events, child_event, child_value))
+            mapping.put_child(ordinal, child_ordinal, child)
+            child_ordinal += 1  # noqa: SIM113  (the array end event is not a child)
+        else:
+            raise ValueError("incomplete ChatGPT children array")
+    raise ValueError("incomplete ChatGPT mapping node")
 
 
 __all__ = [
