@@ -25,7 +25,7 @@ from polylogue.operations.raw_sessions.sessions import (
     SessionSource,
     StaleContinuationError,
 )
-from polylogue.operations.session_contracts import RawSearch
+from polylogue.operations.session_contracts import RawMemorySearch, RawSearch
 from polylogue.operations.session_reads import raw_operation, session_operation_response
 from polylogue.paths import state_home
 
@@ -382,3 +382,47 @@ def test_a_search_that_completes_in_one_page_retains_nothing(tmp_path: Path) -> 
     page = _search(_sources(root))
     assert page.continuation is None and page.outcome == "ok"
     assert _snapshot_files() == []
+
+
+def test_selected_empty_file_that_changes_before_its_turn_is_a_gap(tmp_path: Path) -> None:
+    """Anti-vacuity: treating offset 0 == size 0 as 'already scanned' skips the open and reports complete."""
+    root = tmp_path / "codex"
+    first_file = _write(root / "a.jsonl", "needle a\n", 2)
+    empty = _write(root / "empty.jsonl", "", 1)
+    sources = _sources(root)
+    first = _search(sources, scan_bytes=first_file.stat().st_size)
+    assert first.continuation is not None
+    empty.write_text("needle late\n")
+
+    second = _search(sources, continuation=first.continuation)
+    assert second.items == [] and second.outcome == "degraded"
+    assert any("codex:empty.jsonl" in gap and "changed after selection" in gap for gap in second.coverage.gaps)
+
+
+def test_memory_search_preserves_the_stale_continuation_code(tmp_path: Path) -> None:
+    root = tmp_path / "codex"
+    _write(root / "a.jsonl", "needle\n", 1)
+    sources = _sources(root)
+    key = hashlib.sha256(repr(SessionLogService(sources=sources).sources).encode()).digest()
+    legacy = OpaqueSessionCursor("polylogue-raw", key, "session-search").encode(
+        {"principal": "polylogue-raw", "provider": "codex", "query_sha256": "0" * 64, "source_revision": "0" * 64},
+        {"file": 0, "offset": 0, "line": 1, "line_start": 0},
+    )
+    request = RawMemorySearch(query="needle", origins=["codex-session"], source_cursors={"codex-session": legacy})
+    envelope = asyncio.run(session_operation_response(None, request, raw_sources=sources))
+    assert envelope.model_dump()["code"] == "stale_continuation"
+
+
+def test_snapshots_created_in_one_millisecond_never_evict_the_new_handle(
+    tmp_path: Path, frozen_clock: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: pruning after the write lets a random-handle tie evict the snapshot just created."""
+    monkeypatch.setattr(snapshot_store, "MAX_GLOBAL_SNAPSHOTS", 2)
+    root = tmp_path / "codex"
+    first_file = _write(root / "a.jsonl", "needle a\n", 2)
+    _write(root / "b.jsonl", "needle b\n", 1)
+    sources = _sources(root)
+    for _ in range(12):
+        token = _search(sources, scan_bytes=first_file.stat().st_size).continuation
+        assert _search(sources, continuation=token).outcome == "ok"
+        assert len(_snapshot_files()) <= 2

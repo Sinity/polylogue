@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .sessions import SessionError, SessionLogService
+from .sessions import SessionError, SessionLogService, StaleContinuationError
 from .sources import (
     LOCAL_AUTHORITY,
     UNAVAILABLE_SOURCES,
@@ -119,6 +119,9 @@ class MemoryService:
                     cursor_key=cursor_key,
                     scan_bytes=scan_bytes,
                 )
+            except StaleContinuationError:
+                # Typed: the caller must restart, which a generic memory error hides.
+                raise
             except SessionError as exc:
                 raise MemoryError(str(exc)) from exc
             sources.append(

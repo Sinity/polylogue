@@ -365,7 +365,9 @@ class SessionLogService:
         while state["file"] < len(files) and scanned < scan_bytes and page_full_state is None:
             path, observed = files[state["file"]]
             reference = self._reference(source, path)
-            if state["offset"] >= observed.st_size:
+            if state["offset"] and state["offset"] >= observed.st_size:
+                # Reached through a block this scan already validated. A file
+                # empty at selection still opens below: offset 0 proves nothing.
                 state = next_file(state)
                 continue
             try:

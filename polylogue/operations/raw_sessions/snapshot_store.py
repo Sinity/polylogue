@@ -137,7 +137,13 @@ class SnapshotStore:
             if modified_ms + SNAPSHOT_TTL_MS <= now_ms:
                 self._unlink(path)
 
-    def _prune(self, now_ms: int) -> None:
+    def _prune(self, now_ms: int, *, reserve: int = 0) -> None:
+        """Expire idle handles and keep at most ``MAX_GLOBAL_SNAPSHOTS - reserve``.
+
+        Creation prunes only before its write, reserving the new handle's
+        slot: names that tie on the millisecond sort by random handle, so a
+        prune after the write could evict the snapshot just created.
+        """
         self._sweep_orphaned_temporaries(now_ms)
         live = []
         for entry in self._entries():
@@ -146,7 +152,7 @@ class SnapshotStore:
             else:
                 live.append(entry)
         # Least recently used first, so the survivors are the handles in use.
-        for entry in live[: max(0, len(live) - MAX_GLOBAL_SNAPSHOTS)]:
+        for entry in live[: max(0, len(live) - (MAX_GLOBAL_SNAPSHOTS - reserve))]:
             self._unlink(entry[3])
 
     def create(
@@ -173,10 +179,9 @@ class SnapshotStore:
         if len(encoded) > MAX_SNAPSHOT_BYTES:
             raise ValueError("session search selected population exceeds snapshot capacity")
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        # Capacity is reserved before the new handle exists so it counts as the newest.
-        self._prune(now_ms)
+        # Reserve the new handle's slot; see _prune for why no prune follows the write.
+        self._prune(now_ms, reserve=1)
         atomic_replace(self.directory / f"{now_ms:013d}-{principal_key}-{handle}{_SUFFIX}", encoded, mode=0o600)
-        self._prune(now_ms)
         return SearchSnapshot(handle, self._decode_rows(binding.root, rows))
 
     @staticmethod

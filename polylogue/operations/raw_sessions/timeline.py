@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .page import CompactJSONPage
-from .sessions import OpaqueSessionCursor, SessionError, SessionLogService, _ObservedTimeline
+from .sessions import OpaqueSessionCursor, SessionError, SessionLogService, StaleContinuationError, _ObservedTimeline
 from .sources import (
     LOCAL_AUTHORITY,
     UNAVAILABLE_SOURCES,
@@ -152,6 +152,8 @@ class TimelineService:
                     reader = self.sessions.observe_timeline(provider, start_ns, end_ns, query)
                     readers[provider] = reader
                 result = reader.page(1, cursor=after, cursor_key=effective_cursor_key, scan_bytes=scan_bytes)
+            except StaleContinuationError:
+                raise
             except SessionError as exc:
                 raise TimelineError(str(exc)) from exc
             gaps.extend(f"{provider}: {gap}" for gap in result.get("gaps", ()))
