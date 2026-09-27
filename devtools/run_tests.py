@@ -73,6 +73,7 @@ from devtools.verify_runs import (
     append_verify_history,
     env_for_pytest_step,
     git_head,
+    git_worktree_content_sha256,
     prune_successful_verify_runs,
     pytest_command_worker_request,
 )
@@ -689,6 +690,18 @@ def main(argv: list[str] | None = None) -> int:
         run.record_execution_worktree(provenance)
         # Report what actually ran, not what was admitted at submission.
         identity = replace(identity, branch=provenance.get("git_branch"), head=provenance.get("git_head"))
+        # pytest may import files at any point of its run: content that moved
+        # after the slot identified it means no single tree was tested.
+        finished = checkout_identity(ROOT)
+        if (finished.branch, finished.head) != (identity.branch, identity.head) or git_worktree_content_sha256(
+            ROOT
+        ) != provenance.get("git_worktree_content_sha256"):
+            sys.stderr.write(
+                f"devtools test: the checkout moved during the run (tested {identity.describe()}, "
+                f"finished {finished.describe()}); the result is void\n"
+            )
+            rc = rc or 1
+            metadata = {**metadata, "diagnosis": "checkout_moved_during_run"}
     statistics: dict[str, Any] = cast(
         dict[str, Any], metadata.get("statistics") if isinstance(metadata.get("statistics"), dict) else {}
     )

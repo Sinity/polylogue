@@ -311,3 +311,41 @@ def test_slot_provenance_names_the_head_it_checked(tmp_path: Path) -> None:
     assert provenance is not None
     assert provenance["git_head"] == checkout_identity(root).head
     assert provenance["git_branch"] == "claude/change"
+
+
+def test_a_focused_run_whose_content_moves_during_pytest_is_void(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Anti-vacuity: publish the slot-start identity without an end-of-run
+    comparison and this edit-during-pytest run reports PASSED."""
+    from devtools import pytest_slot
+    from devtools.pytest_slot import SlotOutcome
+
+    root = _repository(tmp_path / "feature", "claude/change")
+    (root / ".gitignore").write_text(".cache/\n", encoding="utf-8")
+
+    def pytest_that_sees_an_edit(cmd: list[str], **kwargs: object) -> SlotOutcome:
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        provenance = pytest_slot._focused_worktree_provenance(str(root), env)
+        (root / "seed.txt").write_text("edited while pytest ran\n", encoding="utf-8")
+        report = Path(next(arg for arg in cmd if arg.startswith("--polylogue-report-file=")).split("=", 1)[1])
+        report.write_text(json.dumps({"tests": [{"nodeid": "seed_test.py", "outcome": "passed"}]}), encoding="utf-8")
+        Path(env["POLYLOGUE_PYTEST_SELECTION_PATH"]).write_text(json.dumps({"selected_count": 1}), encoding="utf-8")
+        Path(env["POLYLOGUE_PYTEST_SUMMARY_PATH"]).write_text(json.dumps({"exitstatus": 0}), encoding="utf-8")
+        events = Path(env["POLYLOGUE_PYTEST_EVENTS_DIR"])
+        events.mkdir()
+        (events / "gw0.jsonl").write_text(
+            json.dumps({"event": "collection_finished", "updated_at": "2026-01-01T00:00:00Z"}) + "\n", encoding="utf-8"
+        )
+        return SlotOutcome(returncode=0, slot="agentctl job 1", receipt={"worktree_provenance": provenance})
+
+    monkeypatch.setattr(run_tests, "ROOT", root)
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(run_tests, "assert_polylogue_matches_checkout", lambda *_a, **_k: None)
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _path: None)
+    monkeypatch.setattr(run_tests, "run_pytest", pytest_that_sees_an_edit)
+
+    assert run_tests.main(["seed_test.py"]) == 1
+    final = capsys.readouterr().err.strip().splitlines()[-1]
+    assert "diagnosis=checkout_moved_during_run" in final
