@@ -2078,7 +2078,8 @@ class CursorStore:
                 cleared = int(cursor.rowcount or 0)
                 conn.commit()
 
-        best_effort_cursor_write("archive ops convergence debt stage clear", write)
+        if not best_effort_cursor_write("archive ops convergence debt stage clear", write):
+            raise RuntimeError(f"{stage} convergence debt was not cleared: ops.db stayed locked")
         return cleared
 
     def list_convergence_debt(

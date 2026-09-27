@@ -214,3 +214,27 @@ def test_a_release_that_could_not_write_raises(archive: Path, monkeypatch: pytes
     monkeypatch.setattr(cursor_module, "best_effort_cursor_write", lambda _label, _write: False)
     with pytest.raises(RuntimeError, match="not released"):
         cursor.release_deferred_convergence_debt()
+
+
+def test_a_row_re_recorded_after_the_run_started_survives_the_ledger(archive: Path) -> None:
+    """Anti-vacuity: clearing the settled stage's rows per subject deletes the
+    row live ingest re-recorded after the archive-wide run started."""
+    cursor = CursorStore(archive / "index.db")
+    subject = str(archive / "sources" / "late.jsonl")
+    cursor.record_convergence_debt(stage="archive_wide", subject_type="source_path", subject_id=subject, error="x")
+    with sqlite3.connect(archive / "ops.db") as conn:
+        conn.execute("UPDATE convergence_debt SET updated_at_ms = 5000")
+        conn.commit()
+    [debt] = cursor.list_convergence_debt(limit=10)
+
+    class _Converged:
+        converged = True
+
+    retried = daemon_cli._record_convergence_debt_retries(
+        cursor,
+        [debt],
+        {("archive_wide", "source_path", subject): _Converged()},
+        {"archive_wide": 4000},
+    )
+    assert retried == 1
+    assert len(_rows(archive)) == 1

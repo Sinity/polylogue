@@ -1480,15 +1480,38 @@ def _record_convergence_debt_retries(
     from polylogue.sources.live.convergence_debt import is_deferred_stage_state
 
     retried = 0
+    # Stages settled here by one archive-wide clear. Their rows are owned by
+    # that clear's cutoff: clearing them again per row would delete a row
+    # re-recorded after the converging run started.
+    settled_stages: set[str] = set()
+    cleared_stages: set[str] = set()
     for stage_name, started_ms in (converged_whole_archive or {}).items():
-        cleared = cursor.clear_stage_convergence_debt(stage=stage_name, recorded_before_ms=started_ms)
-        emit(
-            "daemon.convergence_debt.stage_cleared",
-            outcome="ok",
-            stage=stage_name,
-            rows=cleared,
-        )
+        try:
+            cleared = cursor.clear_stage_convergence_debt(stage=stage_name, recorded_before_ms=started_ms)
+        except RuntimeError as exc:
+            emit(
+                "daemon.convergence_debt.stage_clear_failed",
+                level=WARNING,
+                outcome="degraded",
+                reason="stage_clear_not_written",
+                stage=stage_name,
+                error_detail=str(exc),
+            )
+        else:
+            emit(
+                "daemon.convergence_debt.stage_cleared",
+                outcome="ok",
+                stage=stage_name,
+                rows=cleared,
+            )
+            cleared_stages.add(stage_name)
+        settled_stages.add(stage_name)
     for debt in due_debt:
+        if debt.stage in settled_stages:
+            # Cleared above, or left for the next pass when the clear could
+            # not be written; either way not this row's per-subject outcome.
+            retried += debt.stage in cleared_stages
+            continue
         state = subject_states.get((debt.stage, debt.subject_type, debt.subject_id))
         if state is None:
             # The stage ran but returned no state for this subject: the row's

@@ -172,13 +172,27 @@ def _default_source_environment() -> tuple[tuple[str, str], ...]:
     (a site-config file, a new root override) cannot silently serve roots
     resolved under the previous configuration.
     """
-    return tuple(
+    from polylogue.config import _site_config_path, _user_config_path
+
+    environment = tuple(
         sorted(
             (name, value)
             for name, value in os.environ.items()
             if name == "HOME" or name.startswith(("POLYLOGUE_", "XDG_"))
         )
     )
+    # The selected config files are re-read on every resolution, so an
+    # in-place rewrite (a new [archive] root) must move the key too.
+    revisions: list[tuple[str, str]] = []
+    for path in (_site_config_path(), _user_config_path()):
+        if path is None:
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        revisions.append((f"config:{path}", f"{stat.st_mtime_ns}:{stat.st_size}:{stat.st_ino}"))
+    return environment + tuple(revisions)
 
 
 @lru_cache(maxsize=4)
