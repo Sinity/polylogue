@@ -701,11 +701,21 @@ class ColdBuildGeneration:
                 revision.extend((*unavailable(exc), -1))
             else:
                 revision.extend((metadata.st_ino, metadata.st_size, metadata.st_mtime_ns, metadata.st_mode))
+        # Pointer publication can fail on archive-root permissions. Its ctime
+        # also changes during ordinary daemon writes, so only watch identity
+        # and mode here to avoid retrying an unchanged blocked settlement.
+        try:
+            root_metadata = self.archive_root.stat()
+        except FileNotFoundError:
+            revision.extend((-1, -1, -1))
+        except OSError as exc:
+            revision.extend(unavailable(exc))
+        else:
+            revision.extend((0, root_metadata.st_ino, root_metadata.st_mode))
         # Receipt publication/unlink can fail on parent permissions even when
-        # the child file's own metadata does not move. Include pointer and
-        # receipt parents so restoring their access wakes blocked settlement.
+        # the child file's own metadata does not move. Their metadata changes
+        # wake a blocked settlement when access is restored.
         for directory in (
-            self.archive_root,
             self.archive_root / MAINTENANCE_STATE_DIRNAME / "production-source-baseline",
             self.generation_root,
         ):
