@@ -15,11 +15,12 @@ import io
 import json
 import re
 import secrets
+import sqlite3
 import tempfile
 import unicodedata
 from collections.abc import Iterator
-from decimal import Decimal
 from contextlib import closing
+from decimal import Decimal
 from functools import lru_cache
 from hashlib import sha256
 from math import isfinite
@@ -500,7 +501,9 @@ def _encode_spilled_text(raw: IO[bytes], sink: _Sink) -> None:
             if len(pending_text) * 4 > physical_value_limit():
                 # One unbroken composition sequence longer than a storable
                 # value: no split point exists to normalize it in windows.
-                raise ContentIdentityRefusal("combining character sequence", len(pending_text.encode("utf-8", "surrogatepass")))
+                raise ContentIdentityRefusal(
+                    "combining character sequence", len(pending_text.encode("utf-8", "surrogatepass"))
+                )
             if final:
                 if pending_raw:
                     raise _NotJsonError
@@ -512,6 +515,63 @@ def _encode_spilled_text(raw: IO[bytes], sink: _Sink) -> None:
         sink.update(b";")
 
 
+#: Object members kept in memory before an object's entries move to a scratch
+#: table for last-key-wins and ordering. A pacing bound only.
+_SPILL_OBJECT_ENTRIES = 100_000
+
+
+class _Entries:
+    """One object's members: raw key -> value digest, ``None`` for no identity.
+
+    A repeated key replaces the earlier member, as the in-memory decoder does.
+    Past :data:`_SPILL_OBJECT_ENTRIES` members they move to a scratch SQLite
+    table that also orders them, so an object's size costs no memory.
+    """
+
+    def __init__(self) -> None:
+        self._memory: dict[str, bytes | None] = {}
+        self._table: sqlite3.Connection | None = None
+
+    def __setitem__(self, key: str, digest: bytes | None) -> None:
+        if self._table is None:
+            self._memory[key] = digest
+            if len(self._memory) > _SPILL_OBJECT_ENTRIES:
+                self._table = sqlite3.connect("")
+                self._table.execute("PRAGMA journal_mode = OFF")
+                self._table.execute(
+                    "CREATE TABLE entries (key TEXT PRIMARY KEY, normalized TEXT NOT NULL, digest BLOB)"
+                )
+                self._table.executemany(
+                    "INSERT INTO entries VALUES (?, ?, ?)", ((k, nfc(k), d) for k, d in self._memory.items())
+                )
+                self._memory.clear()
+            return
+        self._table.execute("INSERT OR REPLACE INTO entries VALUES (?, ?, ?)", (key, nfc(key), digest))
+
+    def poisoned(self) -> bool:
+        if self._table is None:
+            return any(digest is None for digest in self._memory.values())
+        return self._table.execute("SELECT 1 FROM entries WHERE digest IS NULL LIMIT 1").fetchone() is not None
+
+    def encode(self, sink: _Sink) -> None:
+        if self._table is None:
+            _encode_object_entries([(nfc(key), digest) for key, digest in self._memory.items() if digest], sink)
+            return
+        count = self._table.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
+        sink.update(b"o%d;" % count)
+        # SQLite orders TEXT by UTF-8 bytes, which is Python's code-point
+        # order except for surrogates; the entries hold none that reach here.
+        for normalized, digest in self._table.execute(
+            "SELECT normalized, digest FROM entries ORDER BY normalized, digest"
+        ):
+            _encode_text(b"k", normalized, sink)
+            sink.update(digest)
+
+    def close(self) -> None:
+        if self._table is not None:
+            self._table.close()
+
+
 class _Frame:
     """One open container while the document streams."""
 
@@ -521,10 +581,7 @@ class _Frame:
         self.is_map = is_map
         #: Where this container's own encoding goes.
         self.outer = outer
-        #: Raw key -> value digest, or ``None`` for a member holding a value
-        #: with no identity. A repeated key replaces the earlier member, as
-        #: the in-memory decoder does, so only a surviving one counts.
-        self.entries: dict[str, bytes | None] = {}
+        self.entries = _Entries()
         self.key: str | None = None
         #: The hasher of the member value being read (objects only).
         self.value: _Sink | None = None
@@ -578,12 +635,13 @@ def _stream_identity(events: Iterator[tuple[str, object]], spills: _SpilledStrin
             stack.append(_Frame(is_map=False, outer=sink))
         elif event == "end_map":
             frame = stack.pop()
-            if any(digest is None for digest in frame.entries.values()):
-                finished_value(poisoned=True)
-                continue
-            _encode_object_entries(
-                [(nfc(key), digest) for key, digest in frame.entries.items() if digest is not None], frame.outer
-            )
+            try:
+                if frame.entries.poisoned():
+                    finished_value(poisoned=True)
+                    continue
+                frame.entries.encode(frame.outer)
+            finally:
+                frame.entries.close()
             finished_value()
         elif event == "end_array":
             frame = stack.pop()
