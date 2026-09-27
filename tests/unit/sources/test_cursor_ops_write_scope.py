@@ -196,6 +196,25 @@ def test_ops_batch_rolls_back_as_a_unit(store: CursorStore) -> None:
     assert _cursor_size(store, path) is None
 
 
+def test_ops_batch_holds_read_modify_writes_after_an_upsert(store: CursorStore) -> None:
+    """A group's cursor writes mix upserts and locked read-modify-writes.
+
+    Anti-vacuity: a read-modify-write that always issues ``BEGIN IMMEDIATE``
+    raises "cannot start a transaction within a transaction" once the batch's
+    first upsert has opened it (the published group then fails admission),
+    and one that commits its own upsert publishes the cursor mid-batch.
+    """
+    path = Path("/tmp/a.jsonl")
+    with store.ops_write_scope():
+        with store.ops_batch():
+            store.set(path, 10)
+            store.mark_failed(path)
+            assert _cursor_size(store, path) is None
+        assert _cursor_size(store, path) == 10
+    record = store.get_record(path)
+    assert record is not None and record.failure_count == 1
+
+
 def test_ops_batch_requires_a_scope(store: CursorStore) -> None:
     with pytest.raises(RuntimeError, match="ops_write_scope"):
         with store.ops_batch():
