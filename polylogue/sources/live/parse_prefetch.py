@@ -187,6 +187,15 @@ class LiveParsedEntry:
     shard_path: Path | None
 
 
+@dataclass(frozen=True, slots=True)
+class LiveEnrichmentEvidence:
+    """Picklable archive coordinates for worker-side retained enrichment."""
+
+    source_db_path: str
+    index_db_path: str
+    blob_root: str
+
+
 def live_parse_path_worker(
     provider_value: str,
     source_path: str,
@@ -195,7 +204,15 @@ def live_parse_path_worker(
     is_stream: bool,
     shard_directory: str,
     attempt_directory: str | None = None,
+    evidence: LiveEnrichmentEvidence | None = None,
 ) -> LivePathPreparation:
+    """Seal one live source with the same interpretation retained replay uses.
+
+    ``evidence`` names the archive's source/index databases and blob root.
+    With it, every admitted session is enriched from retained archive evidence
+    exactly as retained replay would enrich the same bytes. ``None`` is only
+    for callers with no archive (the stage then publishes parsed content).
+    """
     from polylogue.sources.dispatch import is_jsonl_source_path
     from polylogue.sources.live.batch_support import _detect_provider_from_path_sample, jsonl_complete_prefix_path
 
@@ -209,17 +226,38 @@ def live_parse_path_worker(
         else None
     )
     # Apply evidence filtering before sealing so publication can use the indexed sequence.
-    return prepare_jsonl_blob(
-        source_path,
-        source_path,
-        provider.value,
-        fallback_id,
-        is_stream=is_stream,
-        shard_directory=shard_directory,
-        attempt_directory=None if attempt_directory is None else Path(attempt_directory),
-        parse_prefix_size=parse_prefix_size,
-        prepare_session=lambda session: session,
-    )
+    if evidence is None:
+        return prepare_jsonl_blob(
+            source_path,
+            source_path,
+            provider.value,
+            fallback_id,
+            is_stream=is_stream,
+            shard_directory=shard_directory,
+            attempt_directory=None if attempt_directory is None else Path(attempt_directory),
+            parse_prefix_size=parse_prefix_size,
+            prepare_session=lambda session: session,
+        )
+    from polylogue.sources.revision_backfill import open_retained_session_enricher
+
+    with open_retained_session_enricher(
+        provider,
+        source_path=source_path,
+        source_db_path=evidence.source_db_path,
+        index_db_path=evidence.index_db_path,
+        blob_root=evidence.blob_root,
+    ) as enrich:
+        return prepare_jsonl_blob(
+            source_path,
+            source_path,
+            provider.value,
+            fallback_id,
+            is_stream=is_stream,
+            shard_directory=shard_directory,
+            attempt_directory=None if attempt_directory is None else Path(attempt_directory),
+            parse_prefix_size=parse_prefix_size,
+            prepare_session=enrich,
+        )
 
 
 def _discard_orphaned_shard(
@@ -475,6 +513,17 @@ class LiveParseStage:
                         None, None, None, "worker stop could not be verified; scratch cleanup is blocked", deferred=True
                     )
             return len(candidates)
+        evidence: LiveEnrichmentEvidence | None = None
+        if archive_root is not None:
+            from polylogue.storage.archive_identity import resolve_active_index_path
+
+            # The same coordinates the pinned read snapshot opens: workers
+            # read retained evidence from them, never from ambient sources.
+            evidence = LiveEnrichmentEvidence(
+                source_db_path=str(archive_root / "source.db"),
+                index_db_path=str(resolve_active_index_path(archive_root)),
+                blob_root=str(archive_root / "blob"),
+            )
         deadline = time.monotonic() + self._warm_timeout_seconds
         remaining = list(candidates)
         while remaining:
@@ -508,6 +557,7 @@ class LiveParseStage:
                         is_stream=is_stream,
                         shard_directory=str(self._attempt_root),
                         attempt_directory=str(attempt_directory),
+                        **({} if evidence is None else {"evidence": evidence}),
                     )
                 except Exception as exc:
                     if attempt_directory is not None:

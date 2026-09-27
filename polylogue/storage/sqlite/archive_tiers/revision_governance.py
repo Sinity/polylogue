@@ -3542,6 +3542,18 @@ def apply_raw_revision_replay(
             if len(composed_sessions) != 1:
                 raise RuntimeError("one logical revision chain did not compose to exactly one session")
             composed_session = composed_sessions[0]
+            if already_indexed_upto >= 0 and composed_session.title != aggregate_sessions[0].title:
+                # A tail write merges into the stored session, but title
+                # evidence is decided over the whole chain. Without this the
+                # newest chunk's own (weaker or equal) title replaced the
+                # chain winner a full replace would have stored.
+                composed_session = composed_session.model_copy(
+                    update={
+                        "title": aggregate_sessions[0].title,
+                        "title_source": aggregate_sessions[0].title_source,
+                        "title_ref": aggregate_sessions[0].title_ref,
+                    }
+                )
             # Preacquired blobs use the attachment's acquisition key. A
             # prepared carrier preserves that key across separate row reads.
             composed_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] = {}

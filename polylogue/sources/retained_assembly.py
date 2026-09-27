@@ -43,9 +43,12 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import threading
+from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import cast
+from typing import TypeVar, cast
 
 from polylogue.archive.artifact_taxonomy import ArtifactKind
 from polylogue.core.enums import Origin, Provider
@@ -152,6 +155,40 @@ def _read(blob_store: BlobStore, artifact: RetainedArtifact) -> bytes | None:
         return None
 
 
+_Parsed = TypeVar("_Parsed")
+#: Install-global sidecars (``history.jsonl``, session indexes) are shared by
+#: every session file of one install. Live intake enriches each file, so
+#: reparsing the same retained history per file makes a fresh build pay
+#: O(files x history bytes). A retained blob is content-addressed and
+#: immutable, so its parsed form is keyed by hash, parser and anchor path.
+_PARSED_RETAINED_ENTRIES = 4
+_parsed_retained_cache: OrderedDict[tuple[str, str, str, str], object] = OrderedDict()
+_parsed_retained_lock = threading.Lock()
+
+
+def _read_parsed(
+    blob_store: BlobStore,
+    artifact: RetainedArtifact,
+    kind: str,
+    parse: Callable[[bytes], _Parsed],
+) -> _Parsed | None:
+    key = (kind, str(blob_store.root), artifact.blob_hash, artifact.source_path)
+    with _parsed_retained_lock:
+        if key in _parsed_retained_cache:
+            _parsed_retained_cache.move_to_end(key)
+            return cast("_Parsed", _parsed_retained_cache[key])
+    payload = _read(blob_store, artifact)
+    if payload is None:
+        return None
+    parsed = parse(payload)
+    with _parsed_retained_lock:
+        _parsed_retained_cache[key] = parsed
+        _parsed_retained_cache.move_to_end(key)
+        while len(_parsed_retained_cache) > _PARSED_RETAINED_ENTRIES:
+            _parsed_retained_cache.popitem(last=False)
+    return parsed
+
+
 # --------------------------------------------------------------------------
 # Claude Code
 # --------------------------------------------------------------------------
@@ -195,13 +232,13 @@ def retained_claude_code_sidecars(
     )
     artifact = indexes.get(index_path)
     if artifact is not None:
-        payload = _read(blob_store, artifact)
-        if payload is not None:
-            from .parsers.claude.index import parse_sessions_index_bytes
+        from .parsers.claude.index import parse_sessions_index_bytes
 
-            entries: ClaudeCodeSessionIndex = parse_sessions_index_bytes(payload)
-            if entries:
-                resolved["session_index"] = entries
+        entries: ClaudeCodeSessionIndex | None = _read_parsed(
+            blob_store, artifact, "claude_code.session_index", parse_sessions_index_bytes
+        )
+        if entries:
+            resolved["session_index"] = entries
 
     histories = _select_retained(
         source_conn,
@@ -212,13 +249,16 @@ def retained_claude_code_sidecars(
     )
     artifact = histories.get(history_path)
     if artifact is not None:
-        payload = _read(blob_store, artifact)
-        if payload is not None:
-            from .parsers.claude.history import build_session_paste_index_bytes
+        from .parsers.claude.history import build_session_paste_index_bytes
 
-            pastes: ClaudeCodeHistoryPasteIndex = build_session_paste_index_bytes(payload, origin=history_path)
-            if pastes:
-                resolved["history_paste_index"] = pastes
+        pastes: ClaudeCodeHistoryPasteIndex | None = _read_parsed(
+            blob_store,
+            artifact,
+            "claude_code.history_paste_index",
+            lambda payload: build_session_paste_index_bytes(payload, origin=history_path),
+        )
+        if pastes:
+            resolved["history_paste_index"] = pastes
     return resolved
 
 
@@ -269,13 +309,11 @@ def retained_codex_sidecars(
     )
     artifact = indexes.get(index_path)
     if artifact is not None:
-        payload = _read(blob_store, artifact)
-        if payload is not None:
-            from .assembly_codex import parse_codex_session_index_bytes
+        from .assembly_codex import parse_codex_session_index_bytes
 
-            names = parse_codex_session_index_bytes(payload)
-            if names:
-                resolved["thread_names"] = names
+        names = _read_parsed(blob_store, artifact, "codex.session_index", parse_codex_session_index_bytes)
+        if names:
+            resolved["thread_names"] = names
 
     histories = _select_retained(
         source_conn,
@@ -286,13 +324,11 @@ def retained_codex_sidecars(
     )
     artifact = histories.get(history_path)
     if artifact is not None:
-        payload = _read(blob_store, artifact)
-        if payload is not None:
-            from .assembly_codex import parse_codex_history_bytes
+        from .assembly_codex import parse_codex_history_bytes
 
-            titles = parse_codex_history_bytes(payload)
-            if titles:
-                resolved["history_titles"] = titles
+        titles = _read_parsed(blob_store, artifact, "codex.history_titles", parse_codex_history_bytes)
+        if titles:
+            resolved["history_titles"] = titles
     return resolved
 
 

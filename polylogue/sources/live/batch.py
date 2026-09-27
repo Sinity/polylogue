@@ -201,6 +201,7 @@ from polylogue.sources.prepared_jsonl import PreparedJsonl, PreparedSessionSeque
 from polylogue.sources.prepared_message_sink import SqliteMessageSink
 from polylogue.sources.revision_backfill import (
     _declared_non_session_artifact_classification,
+    enrich_sessions_from_archive,
     parse_retained_raw_sessions,
     prepare_retained_jsonl_artifact,
 )
@@ -570,6 +571,24 @@ def _shard_prepared_by_raw_id(
     key = archive_session_id(origin_from_provider(session.source_name).value, session.provider_session_id)
     binding = bindings.get(key)
     return None if binding is None else {raw_id: binding}
+
+
+def _retained_chain_prepared(
+    archive: Any,
+    accepted_raw_ids: Sequence[str],
+    *,
+    current_raw_id: str,
+    retained: Mapping[str, PreparedLiveRetainedRaw] | None,
+) -> bool:
+    """Whether every older chain member has a current off-writer carrier."""
+    members = retained or {}
+    for raw_id in accepted_raw_ids:
+        if raw_id == current_raw_id:
+            continue
+        member = members.get(raw_id)
+        if member is None or not member.current(archive):
+            return False
+    return True
 
 
 def _live_parse_stage_candidates(paths: list[Path], *, fallback_provider: Provider) -> list[LiveParseCandidate]:
@@ -4515,6 +4534,10 @@ class LiveBatchProcessor:
                             provider=provider,
                             source_path=record.source_path,
                         )
+                        # A sealed path preparation was enriched in its
+                        # worker; this writer-side parse must publish the
+                        # same interpretation retained replay would.
+                        sessions = enrich_sessions_from_archive(archive, provider, record.source_path, sessions)
                     record_timings["full.provider_parse"] = record_timings.get("full.provider_parse", 0.0) + (
                         time.perf_counter() - t0
                     )
@@ -4619,12 +4642,24 @@ class LiveBatchProcessor:
                             )
                             plan = archive.classify_raw_revision_cohort_for_live_watch(logical_source_key)
                             if plan.accepted_raw_ids:
-                                if path_preparation is not None and len(plan.accepted_raw_ids) > 1:
+                                if (
+                                    path_preparation is not None
+                                    and len(plan.accepted_raw_ids) > 1
+                                    and not _retained_chain_prepared(
+                                        archive,
+                                        plan.accepted_raw_ids,
+                                        current_raw_id=source_raw_id,
+                                        retained=retained_preparations_by_raw_id,
+                                    )
+                                ):
                                     # This source-tier decision is durable. The
                                     # raw owner composes the exact accepted
                                     # chain from sealed worker artifacts on its
                                     # next pass; rebuilding old full sessions
                                     # here would defeat bounded preparation.
+                                    # When prewarm already sealed every older
+                                    # member, compose here so the current
+                                    # path's prepared write is consumed.
                                     result.deferred_raw_ids[_full_record_key(record)] = source_raw_id
                                     _accumulate_stage_timings(result.stage_timings_s, record_timings)
                                     continue
@@ -5014,6 +5049,7 @@ class LiveBatchProcessor:
         parsed_by_raw_id: dict[str, Any] = {}
         for raw_id in plan.accepted_raw_ids:
             member = (retained_preparations_by_raw_id or {}).get(raw_id)
+            sessions: Sequence[ParsedSession]
             if raw_id == current_raw_id and current_session is not None:
                 sessions = [current_session]
             elif member is not None:
@@ -5322,7 +5358,9 @@ class LiveBatchProcessor:
 
     @staticmethod
     def _parse_retained_raw_sessions(archive: Any, raw_id: str) -> list[Any]:
-        return parse_retained_raw_sessions(archive, raw_id)
+        sessions = parse_retained_raw_sessions(archive, raw_id)
+        provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
+        return enrich_sessions_from_archive(archive, provider, source_path, sessions)
 
     def _extract_zip_member_records(
         self,

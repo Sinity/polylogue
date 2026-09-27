@@ -156,6 +156,13 @@ sites:
     scope: "state_predicate"
     classification: producer_scoped_transaction
     reason: "derived_refresh_guard is the writer's own trigger-suppression flag: the same function inserts the named guard row before its session writes and deletes that exact guard_name afterwards (in delete_sessions, from a finally block). The subject is the one row this call created, not archive state"
+  - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
+    function: "apply_raw_revision_replay"
+    subject: "title"
+    kind: "read_path_substitution"
+    scope: "writing_module"
+    classification: producer_scoped_transaction
+    reason: "the replay writer composing the tail it is about to merge: the chain's title winner comes from the aggregate this same call merged from parsed chunks (the value a full replace would store and that aggregate_content_hash covers), copied onto the pending tail before write. Nothing stored is read back and substituted"
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
     function: "_prepared_message_context"
     subject: "branch_type"

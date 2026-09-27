@@ -133,8 +133,10 @@ def test_live_retained_and_owned_cold_routes_characterize_one_synthetic_input(tm
     Anti-vacuity: each arm must actually produce a successful live admission,
     a valid retained observation, or a promoted owned generation. Message,
     block, link, and terminal-state assertions prevent a vacuous comparison.
-    Session metadata and retained census assertions preserve the current
-    divergence as evidence until route unification changes the contract.
+    Session rows (title, content hash) must be identical across routes;
+    dropping retained enrichment from the live worker makes the live title
+    the native id again and turns this red. The retained membership census
+    remains a pinned, observed route delta.
     """
     source_root = tmp_path / "source"
     source_root.mkdir()
@@ -197,12 +199,10 @@ def test_live_retained_and_owned_cold_routes_characterize_one_synthetic_input(tm
     for relation in ("messages", "blocks", "links"):
         assert live[relation] == retained[relation] == cold[relation]
 
-    live_session = cast(tuple[tuple[object, ...], ...], live["sessions"])[0]
-    retained_session = cast(tuple[tuple[object, ...], ...], retained["sessions"])[0]
-    assert live_session[:3] == retained_session[:3]
-    assert live_session[3] == "route-characterization"
-    assert retained_session[3] == "synthetic route fixture"
-    assert live_session[4] != retained_session[4]
+    # One interpretation: live intake enriches from retained archive evidence
+    # exactly as retained replay does, so title and content hash agree.
+    assert live["sessions"] == retained["sessions"] == cold["sessions"]
+    assert cast(tuple[tuple[object, ...], ...], live["sessions"])[0][3] == "synthetic route fixture"
     assert live["raw_memberships"] == cold["raw_memberships"] == ()
     assert len(cast(tuple[object, ...], retained["raw_memberships"])) == 1
     assert live["membership_census"] == cold["membership_census"] == ()

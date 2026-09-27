@@ -23,7 +23,7 @@ from io import BytesIO
 from itertools import chain, islice
 from pathlib import Path
 from types import TracebackType
-from typing import BinaryIO, Final, Literal, Protocol, cast
+from typing import Any, BinaryIO, Final, Literal, Protocol, cast
 
 import ijson
 from ijson.common import ObjectBuilder
@@ -5091,6 +5091,114 @@ def _replay_enrichment_reads_index(provider: Provider) -> bool:
     return provider is Provider.CODEX
 
 
+class RetainedSessionEnricher:
+    """Apply retained assembly evidence to one session at a time.
+
+    Live intake, the writer's inline fallback and retained replay must publish
+    the same interpretation of the same bytes. Retained replay enriches every
+    parsed session from durable archive evidence (Codex thread titles, Claude
+    Code session index/history, ChatGPT asset maps); a route that skipped it
+    stored the native id as the title and a different content hash, and the
+    raw owner then accepted that output as current. Bundle exports share one
+    source-scoped evidence snapshot; other providers resolve evidence for the
+    session being enriched.
+    """
+
+    __slots__ = ("_blob_root", "_bundle", "_cached", "_index_conn", "_provider", "_source_conn", "_source_path")
+
+    def __init__(
+        self,
+        provider: Provider,
+        *,
+        source_path: str,
+        index_conn: sqlite3.Connection | None,
+        source_conn: sqlite3.Connection | None,
+        blob_root: Path | None,
+    ) -> None:
+        self._provider = provider
+        self._source_path = source_path
+        self._index_conn = index_conn
+        self._source_conn = source_conn
+        self._blob_root = blob_root
+        self._bundle = provider in BUNDLE_PROVIDERS and Path(source_path).name.lower().endswith(".json")
+        self._cached: SidecarData | None = None
+
+    def __call__(self, session: ParsedSession) -> ParsedSession:
+        from polylogue.sources.assembly import get_assembly_spec
+
+        spec = get_assembly_spec(self._provider)
+        if spec is None:
+            return session
+        if not self._bundle:
+            return _replay_safe_enrich_sessions(
+                provider=self._provider,
+                sessions=[session],
+                index_conn=self._index_conn,
+                source_conn=self._source_conn,
+                blob_root=self._blob_root,
+                source_path=self._source_path,
+            )[0]
+        if self._cached is None:
+            self._cached = _retained_enrichment_sidecar_data(
+                provider=self._provider,
+                sessions=(),
+                index_conn=self._index_conn,
+                source_conn=self._source_conn,
+                blob_root=self._blob_root,
+                source_path=self._source_path,
+            )
+        return spec.enrich_session(session, self._cached)
+
+    def enrich_all(self, sessions: Sequence[ParsedSession]) -> list[ParsedSession]:
+        return [self(session) for session in sessions]
+
+
+@contextmanager
+def open_retained_session_enricher(
+    provider: Provider,
+    *,
+    source_path: str,
+    source_db_path: str | Path,
+    index_db_path: str | Path,
+    blob_root: str | Path,
+) -> Iterator[RetainedSessionEnricher]:
+    """Open read-only evidence frames for a worker that has no archive handle.
+
+    An absent tier is ordinary absence (a source-only or not yet bootstrapped
+    archive): enrichment then counts the degradation and applies only the
+    parsed-content fallbacks, exactly as retained replay does without it.
+    """
+    with ExitStack() as stack:
+        connections: dict[ArchiveTier, sqlite3.Connection | None] = {}
+        for tier, path in ((ArchiveTier.SOURCE, source_db_path), (ArchiveTier.INDEX, index_db_path)):
+            if not Path(path).exists():
+                connections[tier] = None
+                continue
+            frame = stack.enter_context(read_frame(path, tier=tier, timeout_class="background-read"))
+            frame.connection.execute("BEGIN")
+            connections[tier] = frame.connection
+        yield RetainedSessionEnricher(
+            provider,
+            source_path=source_path,
+            index_conn=connections[ArchiveTier.INDEX],
+            source_conn=connections[ArchiveTier.SOURCE],
+            blob_root=Path(blob_root),
+        )
+
+
+def enrich_sessions_from_archive(
+    archive: Any, provider: Provider, source_path: str, sessions: Sequence[ParsedSession]
+) -> list[ParsedSession]:
+    """Enrich a writer-side parse from the archive's own retained evidence."""
+    return RetainedSessionEnricher(
+        provider,
+        source_path=source_path,
+        index_conn=getattr(archive, "index_connection", None),
+        source_conn=getattr(archive, "source_connection", None),
+        blob_root=Path(archive.archive_root) / "blob",
+    ).enrich_all(sessions)
+
+
 def _replay_safe_enrich_sessions(
     *,
     provider: Provider,
@@ -6703,6 +6811,7 @@ def _parse_stream_raw(
 __all__ = [
     "RAW_AUTHORITY_PARSER_FINGERPRINT",
     "RawParsePrefetchCache",
+    "RetainedSessionEnricher",
     "RawRevisionReplayResourceBlockedError",
     "RebuildDeadlineExceededError",
     "RevisionBackfillResult",
@@ -6710,6 +6819,8 @@ __all__ = [
     "backfill_historical_revision_evidence",
     "census_historical_revision_evidence",
     "census_parse_worker",
+    "enrich_sessions_from_archive",
+    "open_retained_session_enricher",
     "record_resource_blocked_revision_census",
     "require_current_parser_source_census",
     "uncensused_historical_revision_raw_ids",

@@ -343,6 +343,7 @@
     "polylogue/sources/live/metrics.py",
     "polylogue/sources/live/parse_prefetch.py",
     "polylogue/sources/live/production_baseline.py",
+    "polylogue/sources/live/retained_prefetch.py",
     "polylogue/sources/live/sidecar_resolution.py",
     "polylogue/sources/live/source_selection.py",
     "polylogue/sources/live/sqlite_locking.py",
