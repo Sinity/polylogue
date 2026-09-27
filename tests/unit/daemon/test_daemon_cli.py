@@ -5155,3 +5155,66 @@ async def test_an_orphaned_service_retains_archive_ownership_on_the_production_r
     # exists because the one thing shutdown must not do with a live child is
     # claim the process stopped cleanly.
     assert [record for record in events if record.get("event") == "daemon.stopped"] == []
+
+
+def test_narrowed_run_reports_present_but_unselected_default_sources(tmp_path: Path) -> None:
+    """A default source whose files exist but that the run does not select is visible.
+
+    Anti-vacuity: drop the ``unselected_default_sources`` recording in
+    ``run_command`` and the warning, the status line and the payload entry for
+    ``hooks`` all disappear while its files stay unacquired.
+    """
+    from polylogue.daemon.status import live_source_status_payload
+    from polylogue.daemon.watch_selection import active_watch_sources
+
+    (tmp_path / "codex").mkdir()
+    (tmp_path / "hooks").mkdir()
+    sources = (
+        WatchSource(name="codex", root=tmp_path / "codex"),
+        WatchSource(name="claude-code-hooks", root=tmp_path / "hooks"),
+        WatchSource(name="antigravity", root=tmp_path / "absent"),
+    )
+    observed: dict[str, object] = {}
+
+    def fake_asyncio_run(coroutine: object) -> None:
+        assert inspect.iscoroutine(coroutine)
+        coroutine.close()
+        active = active_watch_sources()
+        assert active is not None
+        observed["active"] = active
+        observed["live"] = live_source_status_payload(active)
+
+    with (
+        patch("polylogue.daemon.cli.default_sources", return_value=sources),
+        patch("polylogue.daemon.cli.asyncio.run", side_effect=fake_asyncio_run),
+    ):
+        result = CliRunner().invoke(main, ["run", "--default-source", "codex", "--no-browser-capture", "--no-api"])
+
+    assert result.exit_code == 0, result.output
+    assert f"default source claude-code-hooks ({tmp_path / 'hooks'}) exists but is not selected" in result.stderr
+    assert "antigravity" not in result.stderr
+    assert observed["active"] == (sources[0],)
+    live = cast(JSONDocument, observed["live"])
+    assert live["unselected_sources"] == [{"name": "claude-code-hooks", "root": str(tmp_path / "hooks")}]
+    assert active_watch_sources() is None
+
+
+def test_status_describes_the_running_selection_not_every_default(tmp_path: Path) -> None:
+    """Status reports the recorded selection while a daemon runs.
+
+    Anti-vacuity: fall back to ``default_sources()`` unconditionally in
+    ``_running_watch_sources`` and the unwatched default reappears as a live
+    source.
+    """
+    from polylogue.daemon.status import _running_watch_sources
+    from polylogue.daemon.watch_selection import clear_active_watch_sources, record_active_watch_sources
+
+    watched = (WatchSource(name="codex", root=tmp_path),)
+    unwatched = WatchSource(name="browser-capture", root=tmp_path / "spool")
+    with patch("polylogue.daemon.status.default_sources", return_value=(*watched, unwatched)):
+        assert _running_watch_sources() == (*watched, unwatched)
+        record_active_watch_sources(watched, unselected=(unwatched,))
+        try:
+            assert _running_watch_sources() == watched
+        finally:
+            clear_active_watch_sources()

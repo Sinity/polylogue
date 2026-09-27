@@ -710,8 +710,22 @@ class DaemonStatus(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _running_watch_sources() -> tuple[WatchSource, ...]:
+    """The running daemon's recorded selection, else the typed defaults."""
+    from polylogue.daemon.watch_selection import active_watch_sources
+
+    active = active_watch_sources()
+    return active if active is not None else default_sources()
+
+
 def live_source_status_payload(sources: tuple[WatchSource, ...]) -> JSONDocument:
-    """Return status for configured live-ingest roots."""
+    """Return status for configured live-ingest roots.
+
+    ``unselected_sources`` lists default sources whose files exist but that the
+    running daemon does not watch: material there is never acquired.
+    """
+    from polylogue.daemon.watch_selection import recorded_unselected_sources
+
     items = [
         {
             "name": source.name,
@@ -727,6 +741,9 @@ def live_source_status_payload(sources: tuple[WatchSource, ...]) -> JSONDocument
             "source_count": len(items),
             "existing_source_count": existing,
             "sources": items,
+            "unselected_sources": [
+                {"name": source.name, "root": str(source.root)} for source in recorded_unselected_sources()
+            ],
         }
     )
 
@@ -2971,7 +2988,7 @@ def build_daemon_status(
     default ``None`` -- a fresh per-call registry, correct for their pure
     -recompute contract.
     """
-    watch_sources = sources if sources is not None else default_sources()
+    watch_sources = sources if sources is not None else _running_watch_sources()
     effective_browser_capture_spool_path = (
         browser_capture_spool_path
         if browser_capture_spool_path is not None
@@ -3439,7 +3456,7 @@ def daemon_status_payload(
     """
     config_was_explicit = config is not None
 
-    watch_sources = sources if sources is not None else default_sources()
+    watch_sources = sources if sources is not None else _running_watch_sources()
 
     last_ingestion = None
     try:
@@ -3861,6 +3878,13 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                 if isinstance(source, dict):
                     state = "available" if source.get("exists") else "missing"
                     lines.append(f"  {source.get('name')}: {source.get('root')} ({state})")
+        unselected = live.get("unselected_sources", [])
+        if isinstance(unselected, list):
+            for source in unselected:
+                if isinstance(source, dict):
+                    lines.append(
+                        f"  {source.get('name')}: {source.get('root')} (present, not selected: never acquired)"
+                    )
     browser_capture = payload.get("browser_capture")
     if isinstance(browser_capture, dict):
         spool_state = "ready" if browser_capture.get("spool_ready") else "unavailable"

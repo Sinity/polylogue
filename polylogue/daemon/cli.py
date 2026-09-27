@@ -392,6 +392,7 @@ def _watch_sources_from_roots(
     hermes_root: Path | None = None,
     include_defaults: bool = True,
     default_source_names: tuple[str, ...] = (),
+    defaults: tuple[WatchSource, ...] | None = None,
 ) -> tuple[WatchSource, ...]:
     """Build typed default sources plus configured additional roots.
 
@@ -413,7 +414,9 @@ def _watch_sources_from_roots(
         else browser_capture_spool_root()
     ).resolve(strict=False)
 
-    sources = list(default_sources(hermes_root=hermes_root)) if include_defaults else []
+    if defaults is None and include_defaults:
+        defaults = default_sources(hermes_root=hermes_root)
+    sources = list(defaults or ()) if include_defaults else []
     if default_source_names:
         available = {source.name for source in sources}
         unknown = set(default_source_names) - available
@@ -3872,13 +3875,28 @@ def run_command(
         raise click.UsageError("--no-default-sources requires at least one --root")
     if no_default_sources and default_source_names:
         raise click.UsageError("--default-source cannot be used with --no-default-sources")
+    typed_defaults = default_sources(hermes_root=runtime.source_paths.hermes)
     sources = _watch_sources_from_roots(
         roots,
         browser_capture_spool_path=spool_path,
         hermes_root=runtime.source_paths.hermes,
         include_defaults=not no_default_sources,
         default_source_names=default_source_names,
+        defaults=typed_defaults,
     )
+    from polylogue.daemon.watch_selection import (
+        clear_active_watch_sources,
+        record_active_watch_sources,
+        unselected_default_sources,
+    )
+
+    unselected = unselected_default_sources(sources, typed_defaults)
+    record_active_watch_sources(sources, unselected=unselected)
+    for source in unselected:
+        # A narrowed selection that leaves out a source whose files exist
+        # means those files are never acquired; say so rather than stay silent.
+        emit("daemon.sources.unselected", level=WARNING, source_name=source.name, path=str(source.root))
+        click.echo(f"Warning: default source {source.name} ({source.root}) exists but is not selected.", err=True)
     components = []
     if enable_watch:
         components.append(f"watch={len(sources)} source(s)")
@@ -3919,6 +3937,7 @@ def run_command(
     except KeyboardInterrupt:
         click.echo("Stopping polylogued.", err=True)
     finally:
+        clear_active_watch_sources()
         # The CLI configured the process-global queued event sink. Drain it
         # after the daemon's final stop event; embedded callers of
         # run_daemon_services do not own that global sink.
