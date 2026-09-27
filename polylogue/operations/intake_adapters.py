@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import stat
 import threading
 import time
 from collections.abc import Awaitable, Callable, Iterator, Sequence
@@ -157,11 +158,25 @@ class FileIntakeAdapter(IntakeAdapter):
     def discovery_pending(self) -> bool:
         return self._fresh_walk is not None or bool(self._fresh_pending) or self._rescan_after_walk
 
+    @staticmethod
+    def _pending_path_is_live(path: Path) -> bool:
+        try:
+            return stat.S_ISREG(path.stat().st_mode)
+        except (FileNotFoundError, NotADirectoryError):
+            return False
+        except OSError:
+            # An inaccessible live file still needs its retryable admission.
+            return True
+
     def _discover_fresh_paths(self, limit: int) -> list[Path]:
         if limit <= 0:
             return []
         if self._after is not None:
             self._fresh_pending = [path for path in self._fresh_pending if str(path) > self._after]
+        # A vanished file is retryable when it disappears after discovery, but
+        # retaining that stale page forever prevents both later paths and a
+        # queued rescan from running. Recreated files return in a later scan.
+        self._fresh_pending = [path for path in self._fresh_pending if self._pending_path_is_live(path)]
         if self._fresh_pending:
             return self._fresh_pending[:limit]
         if self._fresh_exhausted:

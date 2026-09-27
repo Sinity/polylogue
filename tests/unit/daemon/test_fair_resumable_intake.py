@@ -379,6 +379,51 @@ async def test_file_discovery_retries_queued_rescan_after_walk_failure(tmp_path:
 
 
 @pytest.mark.asyncio
+async def test_vanished_pending_file_does_not_block_walk_or_queued_rescan(tmp_path: Path) -> None:
+    """Keeping a vanished retryable page pins both later files and the rescan."""
+    root = tmp_path / "source"
+    root.mkdir()
+    first = root / "a.json"
+    vanished = root / "z.json"
+    later = root / "zz.json"
+    for path in (first, vanished, later):
+        path.write_text("{}")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+
+    class HintingWatcher:
+        revision = 0
+
+        def intake_revision(self, _source: WatchSource) -> int:
+            return self.revision
+
+    watcher = HintingWatcher()
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    first_page = await adapter.discover(limit=1)
+    assert [item.payload for item in first_page] == [first]
+    await adapter.acknowledge(first_page[0])
+    vanished_page = await adapter.discover(limit=1)
+    assert [item.payload for item in vanished_page] == [vanished]
+    assert [item.payload for item in await adapter.discover(limit=1)] == [vanished]
+
+    vanished.unlink()
+    inserted = root / "0.json"
+    inserted.write_text("{}")
+    watcher.revision += 1
+    outcome = await adapter.admit_page(vanished_page)
+    assert outcome[vanished_page[0].item_id].outcome is AdmissionOutcome.RETRYABLE
+
+    later_page = await adapter.discover(limit=1)
+    assert [item.payload for item in later_page] == [later]
+    await adapter.acknowledge(later_page[0])
+    assert await adapter.discover(limit=1) == ()
+    rescan_page = await adapter.discover(limit=1)
+    assert [item.payload for item in rescan_page] == [inserted]
+
+
+@pytest.mark.asyncio
 async def test_exhausted_file_walk_recovers_a_missed_nested_change(tmp_path: Path) -> None:
     root = tmp_path / "source"
     nested = root / "a"
