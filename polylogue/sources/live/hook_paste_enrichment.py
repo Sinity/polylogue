@@ -29,6 +29,8 @@ from polylogue.core.enums import PasteBoundary
 from polylogue.core.hook_payload import hook_record_field, matched_reader_keys
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.logging import get_logger
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
 logger = get_logger(__name__)
@@ -69,7 +71,11 @@ def _iter_hook_paste_events(source_db: Path, session_ids: Iterable[str] | None =
     # A read failure on a durable tier is not a per-record condition and is not
     # swallowed into "this batch has no paste evidence": the caller treats an
     # enrichment failure as non-fatal and logs it.
-    connection = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+    connection = open_readonly_connection(
+        source_db,
+        tier=ArchiveTier.SOURCE,
+        timeout_class="background-read",
+    )
     try:
         if not _table_exists(connection, "raw_hook_events"):
             return []
