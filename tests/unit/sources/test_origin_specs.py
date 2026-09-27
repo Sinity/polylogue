@@ -1351,8 +1351,9 @@ def test_large_antigravity_export_is_recognized_by_streaming_envelope(tmp_path: 
 def test_hermes_jsonl_probe_reads_a_long_record_instead_of_skipping_it(tmp_path: Path) -> None:
     """A long leading JSONL record is classified, not skipped.
 
-    Anti-vacuity: reinstate the per-record byte skip and the long ATOF record
-    is dropped, leaving no ATOF record, so the file is ``unsupported``.
+    Anti-vacuity: reinstate the per-record byte skip and the long non-ATOF
+    record is dropped from the sample, so the second file is wrongly admitted.
+    Recognition applies the artifact route's all-record predicate.
     """
     from polylogue.core.enums import Provider
     from polylogue.sources.origin_specs import recognize_source_class
@@ -1366,12 +1367,21 @@ def test_hermes_jsonl_probe_reads_a_long_record_instead_of_skipping_it(tmp_path:
         "name": "event",
         "data": {"pad": "x" * (4 * 1024 * 1024)},
     }
-    candidate.write_text(json.dumps(record) + "\n" + json.dumps({"other": True}) + "\n", encoding="utf-8")
+    short = {key: value for key, value in record.items() if key != "data"} | {"uuid": "u-2"}
+    candidate.write_text(json.dumps(record) + "\n" + json.dumps(short) + "\n", encoding="utf-8")
 
     recognition = recognize_source_class(Provider.HERMES, candidate)
 
     assert recognition is not None
     assert recognition.source_class == "session"
+
+    # The long record is read, not skipped: when it is not ATOF, the file is
+    # refused even though the short record is.
+    record.pop("atof_version")
+    candidate.write_text(json.dumps(record) + "\n" + json.dumps(short) + "\n", encoding="utf-8")
+    refused = recognize_source_class(Provider.HERMES, candidate)
+    assert refused is not None
+    assert refused.source_class == "unsupported"
 
 
 def test_top_level_envelopes_keep_root_fields_and_placeholders() -> None:
