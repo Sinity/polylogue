@@ -417,6 +417,20 @@ def generic_message_object_envelope(handle: JsonReadable) -> dict[str, JsonValue
     stay on their provider parser route. The event pass also validates the
     complete JSON before a scratch artifact can be published.
     """
+    scalar_fields = {
+        "id",
+        "title",
+        "name",
+        "created_at",
+        "create_time",
+        "created",
+        "createdAt",
+        "updated_at",
+        "update_time",
+        "updated",
+        "updatedAt",
+        "modified",
+    }
     envelope: dict[str, JsonValue] = {}
     current_key: str | None = None
     message_arrays = 0
@@ -429,6 +443,8 @@ def generic_message_object_envelope(handle: JsonReadable) -> dict[str, JsonValue
                 current_key = str(value)
                 if current_key == "messages":
                     message_arrays += 1
+                elif current_key not in scalar_fields:
+                    return None
                 continue
             if prefix == "" and event == "end_map":
                 current_key = None

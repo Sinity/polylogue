@@ -551,26 +551,7 @@ def prepare_jsonl_blob(
             with source.open("rb") as handle:
                 candidate = generic_message_object_envelope(handle)
             asserted_id = candidate.get("id") if candidate is not None else None
-            generic_fields = {
-                "id",
-                "title",
-                "name",
-                "created_at",
-                "create_time",
-                "created",
-                "createdAt",
-                "updated_at",
-                "update_time",
-                "updated",
-                "updatedAt",
-                "modified",
-            }
-            if (
-                candidate is not None
-                and isinstance(asserted_id, str)
-                and asserted_id.strip()
-                and candidate.keys() <= generic_fields
-            ):
+            if candidate is not None and isinstance(asserted_id, str) and asserted_id.strip():
                 generic_envelope = candidate
         if generic_envelope is not None:
             _create_artifact_tables(store.conn)
