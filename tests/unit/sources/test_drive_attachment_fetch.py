@@ -165,19 +165,23 @@ def test_fetch_failure_leaves_attachment_honestly_unfetched() -> None:
     assert attachment.inline_bytes is None  # honest-unfetched: no synthetic bytes/hash
 
 
-def test_fetch_skips_oversize_attachment() -> None:
+def test_fetch_keeps_a_large_attachment() -> None:
+    """Downloaded bytes are kept whatever their size.
+
+    Anti-vacuity: reinstate a byte ceiling on the downloaded payload (the
+    removed 50 MiB cap) and the attachment is left unfetched.
+    """
     payload: JSONDocument = {"driveDocument": {"id": "att-huge"}}
+    data = b"x" * (51 * 1024 * 1024)
 
-    resolved, stats = fetch_live_drive_attachment_bytes(
-        payload,
-        lambda file_id: b"x" * 100,
-        max_attachment_bytes=10,
-    )
+    resolved, stats = fetch_live_drive_attachment_bytes(payload, lambda file_id: data)
 
-    assert stats.fetched_count == 0
-    assert stats.skipped_too_large_count == 1
+    assert stats.fetched_count == 1
+    assert stats.fetched_bytes == len(data)
     doc = _doc(_doc(resolved)["driveDocument"])
-    assert DRIVE_LIVE_FETCH_DATA_KEY not in doc
+    attachment = attachment_from_doc(doc, None)
+    assert attachment is not None
+    assert attachment.inline_bytes == data
 
 
 def test_fetch_does_not_touch_inline_or_file_data_or_youtube_fields() -> None:

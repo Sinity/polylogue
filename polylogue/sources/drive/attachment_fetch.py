@@ -18,7 +18,7 @@ publish-then-write path (`ingest_batch/_core.py`) already turns into a
 content-addressed blob with a true SHA-256 and `acquisition_status="acquired"`
 — zero changes needed downstream of the parser.
 
-Per-file fetch failures and oversize files are left unresolved: the attachment
+Per-file fetch failures are left unresolved: the attachment
 stays `upload_origin="drive"` with no `inline_bytes`, i.e. honestly unfetched.
 Nothing here fabricates a hash or a size for bytes it did not actually read.
 """
@@ -43,11 +43,9 @@ logger = get_logger(__name__)
 
 _LIVE_FETCH_FIELDS: frozenset[str] = frozenset({*DRIVE_DOC_FIELD_NAMES, *DRIVE_MEDIA_FIELD_NAMES})
 
+
 # Generous headroom over typical Drive/AI-Studio attachment sizes; a
 # pathological reference should not be allowed to balloon ingest memory.
-DEFAULT_MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
-
-
 @dataclass(slots=True)
 class DriveAttachmentFetchStats:
     """Outcome of one `fetch_live_drive_attachment_bytes` pass."""
@@ -55,7 +53,6 @@ class DriveAttachmentFetchStats:
     fetched_count: int = 0
     fetched_bytes: int = 0
     failed_count: int = 0
-    skipped_too_large_count: int = 0
     failures: list[str] = field(default_factory=list)
 
 
@@ -88,13 +85,7 @@ def _inject(doc: JSONValue, data_b64: str) -> JSONValue:
     return doc
 
 
-def _resolve_doc(
-    doc: JSONValue,
-    download_bytes: Callable[[str], bytes],
-    stats: DriveAttachmentFetchStats,
-    *,
-    max_bytes: int,
-) -> JSONValue:
+def _resolve_doc(doc: JSONValue, download_bytes: Callable[[str], bytes], stats: DriveAttachmentFetchStats) -> JSONValue:
     if isinstance(doc, dict) and DRIVE_LIVE_FETCH_DATA_KEY in doc:
         return doc
     file_id = _doc_file_id(doc)
@@ -106,15 +97,6 @@ def _resolve_doc(
         stats.failed_count += 1
         stats.failures.append(f"{file_id}: {exc}")
         logger.warning("Failed to fetch live Drive attachment %s: %s", file_id, exc)
-        return doc
-    if len(raw) > max_bytes:
-        stats.skipped_too_large_count += 1
-        logger.warning(
-            "Skipping live fetch for Drive attachment %s: %d bytes exceeds cap %d",
-            file_id,
-            len(raw),
-            max_bytes,
-        )
         return doc
     try:
         data_b64 = base64.b64encode(raw).decode("ascii")
@@ -128,42 +110,30 @@ def _resolve_doc(
 
 
 def _resolve_field_value(
-    value: JSONValue,
-    download_bytes: Callable[[str], bytes],
-    stats: DriveAttachmentFetchStats,
-    *,
-    max_bytes: int,
+    value: JSONValue, download_bytes: Callable[[str], bytes], stats: DriveAttachmentFetchStats
 ) -> JSONValue:
     if isinstance(value, list):
-        return [_resolve_doc(item, download_bytes, stats, max_bytes=max_bytes) for item in value]
-    return _resolve_doc(value, download_bytes, stats, max_bytes=max_bytes)
+        return [_resolve_doc(item, download_bytes, stats) for item in value]
+    return _resolve_doc(value, download_bytes, stats)
 
 
-def _walk(
-    node: JSONValue,
-    download_bytes: Callable[[str], bytes],
-    stats: DriveAttachmentFetchStats,
-    *,
-    max_bytes: int,
-) -> JSONValue:
+def _walk(node: JSONValue, download_bytes: Callable[[str], bytes], stats: DriveAttachmentFetchStats) -> JSONValue:
     if isinstance(node, dict):
         updated: dict[str, JSONValue] = {}
         for key, value in node.items():
             if key in _LIVE_FETCH_FIELDS:
-                updated[key] = _resolve_field_value(value, download_bytes, stats, max_bytes=max_bytes)
+                updated[key] = _resolve_field_value(value, download_bytes, stats)
             else:
-                updated[key] = _walk(value, download_bytes, stats, max_bytes=max_bytes)
+                updated[key] = _walk(value, download_bytes, stats)
         return updated
     if isinstance(node, list):
-        return [_walk(item, download_bytes, stats, max_bytes=max_bytes) for item in node]
+        return [_walk(item, download_bytes, stats) for item in node]
     return node
 
 
 def fetch_live_drive_attachment_bytes(
     payload: JSONValue,
     download_bytes: Callable[[str], bytes],
-    *,
-    max_attachment_bytes: int = DEFAULT_MAX_ATTACHMENT_BYTES,
 ) -> tuple[JSONValue, DriveAttachmentFetchStats]:
     """Resolve live Drive-hosted attachment references to inline bytes.
 
@@ -180,12 +150,11 @@ def fetch_live_drive_attachment_bytes(
     decides whether the rewritten payload is worth re-serializing.
     """
     stats = DriveAttachmentFetchStats()
-    resolved = _walk(payload, download_bytes, stats, max_bytes=max_attachment_bytes)
+    resolved = _walk(payload, download_bytes, stats)
     return resolved, stats
 
 
 __all__ = [
-    "DEFAULT_MAX_ATTACHMENT_BYTES",
     "DriveAttachmentFetchStats",
     "fetch_live_drive_attachment_bytes",
 ]

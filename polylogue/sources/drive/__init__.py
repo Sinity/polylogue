@@ -218,7 +218,7 @@ def _inject_live_drive_attachment_bytes(
 
     Returns ``(raw_bytes, False)`` unchanged when nothing was fetched (no
     Drive-hosted references found, all already resolved, or all
-    fetches failed/were oversize) so an ordinary session's raw bytes are
+    fetches failed) so an ordinary session's raw bytes are
     never needlessly re-serialized or re-cached.
     """
     try:
@@ -229,12 +229,11 @@ def _inject_live_drive_attachment_bytes(
     if stats.fetched_count == 0:
         return raw_bytes, False
     logger.info(
-        "Resolved %d live Drive attachment(s) for %s (%d bytes fetched, %d failed, %d oversize)",
+        "Resolved %d live Drive attachment(s) for %s (%d bytes fetched, %d failed)",
         stats.fetched_count,
         file_meta.name,
         stats.fetched_bytes,
         stats.failed_count,
-        stats.skipped_too_large_count,
     )
     return json.dumps(resolved, ensure_ascii=False).encode("utf-8"), True
 
@@ -314,7 +313,7 @@ def iter_drive_raw_data(
 
         # Run the live-attachment injector on EVERY read, cache hit or not:
         # a cache file written before this feature existed (or by a run where
-        # a Drive-hosted attachment failed/was oversize at the time) must
+        # a Drive-hosted attachment failed at the time) must
         # still get backfilled on the next pass, not silently skipped
         # forever just because the top-level document didn't need re-download.
         raw_bytes, mutated = _inject_live_drive_attachment_bytes(raw_bytes, drive_client, file_meta)
