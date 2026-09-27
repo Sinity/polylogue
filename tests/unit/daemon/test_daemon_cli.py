@@ -2673,6 +2673,13 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
     real_admit_page = FairIntakeDispatcher._admit_page
     real_ingest = LiveWatcher._ingest_files
     real_kernel = DaemonConverger.converge_derivations
+    real_promoted = ComposedSessionProfiles.converge_promoted
+
+    async def delayed_promoted(self: ComposedSessionProfiles) -> DerivationReport:
+        # The active pointer becomes readable before its profile pass finishes.
+        # Hold that real pass past the old one-second observation window.
+        await asyncio.sleep(1.25)
+        return await real_promoted(self)
 
     async def dispatch(self: FairIntakeDispatcher, **kwargs: Any) -> Any:
         intake_tasks.append(asyncio.current_task())
@@ -2787,6 +2794,8 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
             stack.enter_context(patch.object(FairIntakeDispatcher, "_admit_page", record_admit_page))
             stack.enter_context(patch.object(LiveWatcher, "_ingest_files", ingest))
             stack.enter_context(patch.object(DaemonConverger, "converge_derivations", kernel))
+            if browser:
+                stack.enter_context(patch.object(ComposedSessionProfiles, "converge_promoted", delayed_promoted))
             stack.enter_context(patch("watchfiles.awatch", watch_events))
             stack.enter_context(
                 patch(
@@ -2893,21 +2902,22 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
                     await asyncio.sleep(0.05)
                 else:
                     pytest.fail(f"index never converged to {expected_versions} message(s): {message_count()}")
-                # The profile row is sampled across the settle window rather
-                # than read once at the end. Publication and withdrawal are a
-                # cycle here: a replace drops the derived profile and the next
-                # convergence pass re-derives it, and this test deliberately
-                # stops driving the daemon once intake has completed, so which
-                # half of that cycle the archive is resting in at any instant
-                # is not a property of the canonical derivation. Measured:
-                # the browser case holds the row for ~250ms and then has it
-                # withdrawn by the quarantined competing snapshot's replace,
-                # while the claude case publishes it ~650ms in and keeps it --
-                # a single end-of-window read passes or fails on that timing
-                # alone. Requiring the row to have been published at all is
-                # the part this test actually owns: bypass the canonical
-                # profile kernel and it is never observed.
-                observed_profiles: list[list[tuple[str, ...]]] = []
+                # The active pointer exposes messages before the promotion
+                # callback has finished deriving profiles. Wait for that
+                # observable publication with its own deadline, then hold the
+                # message-count stability window. The browser profile may be
+                # withdrawn by the competing quarantined snapshot's replace,
+                # so retain every observed row rather than requiring it at
+                # the end. Bypassing the canonical kernel never satisfies the
+                # publication wait.
+                observed_profiles: list[list[tuple[str, ...]]] = [index_probe()[1]]
+                for _ in range(200):
+                    if [(session_id,)] in observed_profiles:
+                        break
+                    await asyncio.sleep(0.05)
+                    settled_count, profile_rows = index_probe()
+                    assert settled_count == expected_versions
+                    observed_profiles.append(profile_rows)
                 for _ in range(20):
                     await asyncio.sleep(0.05)
                     settled_count, profile_rows = index_probe()
