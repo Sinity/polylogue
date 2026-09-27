@@ -21,7 +21,7 @@ from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.pipeline.ids import session_content_hash
-from polylogue.sources.decoder_json import iter_grok_export_events
+from polylogue.sources.decoder_json import claude_design_object_envelope, iter_grok_export_events
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
 from polylogue.sources.parsers import chatgpt
@@ -253,6 +253,139 @@ def test_bundle_worker_does_not_construct_a_whole_document_record_list(
     )
     assert artifact.error is None
     assert sum(1 for _ in artifact.iter_sessions()) == 300
+
+
+def test_claude_design_object_stream_matches_direct_parser_and_shard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = {
+        "uuid": "design-session",
+        "project": {"uuid": "neutral-project"},
+        "title": "Neutral design",
+        "created_at": "2026-01-01T00:00:00Z",
+        "messages": [
+            {
+                "uuid": f"u-{index}",
+                "role": "user",
+                "content": {
+                    "role": "user",
+                    "content": f"Neutral prompt {index}",
+                    "authorAccountUuid": "neutral-account",
+                    "authorName": "Author",
+                    "timestamp": f"2026-01-01T00:00:{index % 60:02d}Z",
+                    "attachments": (
+                        [{"id": "neutral-attachment", "name": "brief.txt", "type": "text", "content": "Neutral brief"}]
+                        if index == 0
+                        else []
+                    ),
+                },
+            }
+            for index in range(300)
+        ]
+        + [
+            {
+                "uuid": "u-0",
+                "role": "assistant",
+                "content": {
+                    "role": "assistant",
+                    "content": "",
+                    "contentBlocks": [{"type": "text", "text": "Neutral answer"}],
+                    "turnChanges": {"reason": "complete"},
+                },
+            }
+        ],
+    }
+    source = tmp_path / "design-chat.json"
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    [expected] = parse_payload(Provider.CLAUDE_DESIGN, payload, "fallback")
+    expected.content_hash = session_content_hash(expected)
+    expected_shard = prepare_session_shard(tmp_path / "expected", [expected])
+
+    def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("whole-document decode or parse was used")
+
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
+    decoded = 0
+    first_written_after: int | None = None
+    original_items = ijson.items
+    original_append = SqliteMessageSink.append
+
+    def tracked_items(*args: object, **kwargs: object) -> object:
+        nonlocal decoded
+        for item in original_items(*args, **kwargs):
+            decoded += 1
+            yield item
+
+    def tracked_append(self: SqliteMessageSink, value: ParsedMessage) -> None:
+        nonlocal first_written_after
+        if first_written_after is None:
+            first_written_after = decoded
+        original_append(self, value)
+
+    monkeypatch.setattr(ijson, "items", tracked_items)
+    monkeypatch.setattr(SqliteMessageSink, "append", tracked_append)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CLAUDE_DESIGN.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+        classify_claude_design_object=lambda envelope, sample: envelope["project"] is None and len(sample) == 64,
+    )
+    assert artifact.error is None
+    assert artifact.positive_evidence_filtered
+    assert first_written_after == 65
+    [actual] = artifact.iter_sessions()
+    assert isinstance(actual.messages, SqliteMessageSink)
+    assert isinstance(actual.session_events, SqliteSessionEventSink)
+    assert actual.content_hash == expected.content_hash
+    assert actual.unit_accounting == expected.unit_accounting
+    assert (
+        actual.model_copy(
+            update={"messages": list(actual.messages), "session_events": list(actual.session_events)}
+        ).model_dump()
+        == expected.model_dump()
+    )
+    assert artifact.shard_path is not None
+    with sqlite3.connect(expected_shard.path) as baseline, sqlite3.connect(artifact.shard_path) as prepared:
+        for table in ("messages", "blocks", "shard_session"):
+            assert (
+                prepared.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+                == baseline.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+            )
+
+
+def test_claude_design_object_probe_keeps_future_wire_types_on_admission_route(tmp_path: Path) -> None:
+    content = {"role": "user", "content": "Neutral", "type": "future_turn"}
+    payload = {
+        "uuid": "design-session",
+        "project": {},
+        "messages": [{"role": "user", "content": content}],
+    }
+    assert claude_design_object_envelope(BytesIO(json.dumps(payload).encode())) is None
+    source = tmp_path / "future-design.json"
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CLAUDE_DESIGN.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert artifact.error is None
+    [actual] = artifact.iter_sessions()
+    [expected] = parse_payload(Provider.CLAUDE_DESIGN, payload, "fallback")
+    assert list(actual.session_events) == expected.session_events
+    assert actual.unit_accounting == expected.unit_accounting
+    content["type"] = "known_turn"
+    assert claude_design_object_envelope(BytesIO(json.dumps(payload).encode())) is not None
+    payload.update(
+        event_type="PreToolUse", session_id="hook-session", timestamp="2026-01-01T00:00:00Z", provider="codex"
+    )
+    assert claude_design_object_envelope(BytesIO(json.dumps(payload).encode())) is None
 
 
 @pytest.mark.parametrize("provider", [Provider.DRIVE, Provider.GEMINI, Provider.UNKNOWN])
@@ -1856,3 +1989,61 @@ def test_singleton_chatgpt_array_keeps_existing_parse_identity(tmp_path: Path) -
     assert [(session.provider_session_id, session.content_hash) for session in artifact.iter_sessions()] == [
         (session.provider_session_id, session.content_hash) for session in expected
     ]
+
+
+def test_retained_claude_design_object_uses_streamed_replay_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polylogue.sources.revision_backfill as revision_backfill
+
+    record = {
+        "uuid": "design-retained",
+        "project": {"uuid": "neutral-project"},
+        "messages": [
+            {
+                "uuid": f"u-{index}",
+                "role": "user",
+                "content": {
+                    "role": "user",
+                    "content": f"Neutral {index}",
+                    "authorAccountUuid": "neutral-account",
+                    "timestamp": f"2026-01-01T00:00:{index % 60:02d}Z",
+                },
+            }
+            for index in range(300)
+        ],
+    }
+    blob_root = tmp_path / "blob"
+    blob_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(record).encode())
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
+        with sqlite3.connect(path) as conn:
+            initialize_archive_tier(conn, tier)
+
+    def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("retained Design object decoded as a whole document")
+
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
+    artifact = revision_backfill.prepare_retained_jsonl_artifact(
+        "synthetic-raw",
+        Provider.CLAUDE_DESIGN.value,
+        blob_hash,
+        str(tmp_path / "design_chats" / "session.json"),
+        "full",
+        None,
+        str(blob_root),
+        str(source_db),
+        str(index_db),
+        str(tmp_path / "prepared"),
+        "2025-01-02T03:04:05Z",
+    )
+    assert artifact.error is None
+    assert artifact.positive_evidence_filtered
+    [actual] = artifact.iter_sessions()
+    assert actual.provider_session_id == "design-retained"
+    assert len(actual.messages) == 300
+    assert len(actual.session_events) == 300
+    assert actual.created_at == "2026-01-01T00:00:00+00:00"
+    assert actual.updated_at == "2026-01-01T00:00:59+00:00"

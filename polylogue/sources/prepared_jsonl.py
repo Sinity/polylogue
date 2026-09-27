@@ -26,6 +26,7 @@ from polylogue.core.sources import origin_from_provider
 from polylogue.logging import WARNING, emit
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import (
+    claude_design_object_envelope,
     generic_message_object_envelope,
     grok_export_item_count,
     hermes_snapshot_envelope,
@@ -53,6 +54,7 @@ from polylogue.sources.parsers import (
     local_agent,
 )
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.parsers.claude.ai_parser import parse_design_stream
 from polylogue.sources.prepared_message_sink import (
     ChatGPTNodeMapping,
     SqliteMessageSink,
@@ -551,6 +553,7 @@ def prepare_jsonl_blob(
     classify_generic_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
     classify_hermes_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
     classify_chatgpt_object: Callable[[dict[str, object]], bool] | None = None,
+    classify_claude_design_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
     attempt_directory: Path | None = None,
 ) -> PreparedJsonl:
     """Parse and seal one source without transferring a parsed tree over IPC."""
@@ -575,6 +578,7 @@ def prepare_jsonl_blob(
         stream_prefix: str | None = None
         generic_envelope: dict[str, JSONValue] | None = None
         hermes_envelope: dict[str, JSONValue] | None = None
+        design_envelope: dict[str, JSONValue] | None = None
         chatgpt_envelope: dict[str, object] | None = None
         chatgpt_mapping: ChatGPTNodeMapping | None = None
         grok_count: int | None = None
@@ -648,6 +652,16 @@ def prepare_jsonl_blob(
             asserted_id = candidate.get("id") if candidate is not None else None
             if candidate is not None and isinstance(asserted_id, str) and asserted_id.strip():
                 generic_envelope = candidate
+        if (
+            not is_stream
+            and provider is Provider.CLAUDE_DESIGN
+            and (prepare_sessions is None or classify_claude_design_object is not None)
+            and (prepare_records is None or classify_claude_design_object is not None)
+            and Path(source_path).name.lower().endswith(".json")
+            and stream_prefix is None
+        ):
+            with source.open("rb") as handle:
+                design_envelope = claude_design_object_envelope(handle)
         if chatgpt_envelope is not None:
             assert chatgpt_mapping is not None
             _create_artifact_tables(store.conn)
@@ -789,6 +803,60 @@ def prepare_jsonl_blob(
                     selected = prepare_sessions([session])
                     if len(selected) > 1:
                         raise ValueError("generic object finalizer expanded one session")
+                    session = selected[0] if selected else None
+                elif prepare_session is not None:
+                    session = prepare_session(session)
+            else:
+                session = None
+            if session is not None:
+                session.content_hash = session_content_hash(session)
+                append_session_to_shard(shard_builder, session)
+                _append_artifact_session(store, session_count, session)
+                session_count += 1
+            after_hash = _source_digest(source)
+            if before_hash != after_hash:
+                raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
+            enrichment_digest, enrichment_index_path = (
+                preparation_dependency() if preparation_dependency is not None else (None, None)
+            )
+            _seal_artifact(store.conn, after_hash, session_count, enrichment_digest, enrichment_index_path)
+            store.conn.commit()
+            shard_path = shard_builder.seal().path
+            shard_builder = None
+        elif design_envelope is not None:
+            _create_artifact_tables(store.conn)
+            shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
+            design_admitted = True
+            if classify_claude_design_object is not None:
+                with source.open("rb") as handle:
+                    sample = tuple(
+                        islice(
+                            (
+                                cast(JSONValue, normalize_ijson_stdlib_numbers(item))
+                                for item in ijson.items(handle, "messages.item")
+                            ),
+                            64,
+                        )
+                    )
+                design_admitted = classify_claude_design_object(design_envelope, sample)
+            session = None
+            if design_admitted:
+                with source.open("rb") as handle:
+                    session = parse_design_stream(
+                        design_envelope,
+                        (normalize_ijson_stdlib_numbers(item) for item in ijson.items(handle, "messages.item")),
+                        fallback_id,
+                        message_sink=store.new_sink(),
+                        event_sink=store.new_event_sink(),
+                    )
+            session_count = 0
+            if session is not None and require_positive_conversational_evidence(
+                [session], provider=provider, source_path=source_path
+            ):
+                if prepare_sessions is not None:
+                    selected = prepare_sessions([session])
+                    if len(selected) > 1:
+                        raise ValueError("Claude Design object finalizer expanded one session")
                     session = selected[0] if selected else None
                 elif prepare_session is not None:
                     session = prepare_session(session)
@@ -1003,6 +1071,7 @@ def prepare_jsonl_blob(
             or chatgpt_envelope is not None
             or generic_envelope is not None
             or hermes_envelope is not None
+            or design_envelope is not None
             or (grok_count is not None and classify_grok_export is not None)
             or (prepare_sessions is None and prepare_session is not None),
             attempt_directory=attempt_directory,

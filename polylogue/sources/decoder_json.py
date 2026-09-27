@@ -481,6 +481,68 @@ def generic_message_object_envelope(handle: JsonReadable) -> dict[str, JsonValue
     return envelope if message_arrays == 1 else None
 
 
+def claude_design_object_envelope(handle: JsonReadable) -> dict[str, JsonValue] | None:
+    """Prove a single Design chat and retain only fields used outside messages.
+
+    Future-shaped records stay on the ordinary admission route so its typed
+    unknown event and accounting remain authoritative.
+    """
+    scalar_fields = {"uuid", "id", "title", "name", "is_temporary", "created_at", "updated_at"}
+    # These can make the retained artifact taxonomy choose a non-session
+    # document before it considers conversational message evidence.
+    taxonomy_markers = {"event_type", "session_id", "timestamp", "provider", "kind", "issue_id", "extra"}
+    envelope: dict[str, JsonValue] = {}
+    current_key: str | None = None
+    message_arrays = 0
+    has_project = False
+    chat_messages_array = False
+    future_shape = False
+    try:
+        events = ijson.parse(handle)
+        if next(events, None) != ("", "start_map", None):
+            return None
+        for prefix, event, value in events:
+            if (
+                event == "string"
+                and prefix.rsplit(".", 1)[-1] in {"type", "content_type", "kind", "record_type"}
+                and isinstance(value, str)
+                and (
+                    value.startswith(("future_", "unknown_", "unsupported_"))
+                    or value in {"future", "unknown", "unsupported"}
+                )
+            ):
+                future_shape = True
+            if prefix == "" and event == "map_key":
+                current_key = str(value)
+                if current_key in taxonomy_markers:
+                    return None
+                if current_key == "messages":
+                    message_arrays += 1
+                elif current_key == "project":
+                    has_project = True
+                continue
+            if prefix == "chat_messages" and event == "start_array":
+                chat_messages_array = True
+            if current_key is None or prefix != current_key:
+                continue
+            if current_key == "messages":
+                if event not in {"start_array", "end_array"}:
+                    return None
+            elif current_key in scalar_fields:
+                if event in {"start_array", "start_map"}:
+                    return None
+                if event in {"string", "number", "boolean", "null"}:
+                    envelope[current_key] = cast(JsonValue, normalize_ijson_stdlib_numbers(value))
+    except ijson.common.JSONError:
+        return None
+    finally:
+        handle.seek(0)
+    if message_arrays != 1 or not has_project or chat_messages_array or future_shape:
+        return None
+    envelope["project"] = None
+    return envelope
+
+
 @dataclass(slots=True)
 class _FutureTypeFrame:
     """The first future type in one JSON container, in parser traversal order."""
