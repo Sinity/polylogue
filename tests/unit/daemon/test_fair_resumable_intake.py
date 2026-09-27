@@ -21,10 +21,11 @@ from typing import Any, cast
 
 import pytest
 
-# Bound before any test monkeypatches ``storage.derived.raw.RawObservationDerivation``:
-# ``operations.raw_observation_derivation`` reads ``RawObservationDerivation.recipe_version``
-# at module scope, so a first import that happens under a patched fake class raises
-# AttributeError. Which test imports it first depends on the pytest-randomly seed.
+# Raw-discovery tests patch ``RawObservationDerivation`` where
+# ``make_raw_observation_derivation`` reads it: the name bound in
+# ``operations.raw_observation_derivation``. That module reads
+# ``RawObservationDerivation.recipe_version`` at import, so it is imported here,
+# before any test can patch the class it binds.
 import polylogue.operations.raw_observation_derivation as _raw_observation_derivation  # noqa: F401
 from polylogue.core.enums import Provider
 from polylogue.daemon.derivation import DerivationFrame
@@ -1474,7 +1475,9 @@ def test_raw_discovery_bounds_valid_prefix_and_resumes_after_it(
         def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
             return {key: "valid" if key == valid else "missing" for key in keys}
 
-    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationDerivation", FakeRawObservationDerivation)
+    monkeypatch.setattr(
+        "polylogue.operations.raw_observation_derivation.RawObservationDerivation", FakeRawObservationDerivation
+    )
     discovery = RawMaterializationDiscovery(tmp_path)
 
     assert discovery.discover_pending_raw_ids(1) == ()
@@ -1527,7 +1530,9 @@ async def test_raw_discovery_moves_past_a_cooled_down_poison_in_the_fair_dispatc
         def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
             return {key: "valid" if key == valid else "missing" for key in keys}
 
-    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationDerivation", FakeRawObservationDerivation)
+    monkeypatch.setattr(
+        "polylogue.operations.raw_observation_derivation.RawObservationDerivation", FakeRawObservationDerivation
+    )
     admitted: list[str] = []
 
     async def admit(raw_id: str) -> AdmissionResult:
@@ -1603,7 +1608,9 @@ def test_raw_discovery_resets_only_for_a_new_generation_binding(
         "polylogue.operations.raw_observation_derivation.raw_observation_frame",
         lambda _archive_root: next(frames),
     )
-    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationDerivation", FakeRawObservationDerivation)
+    monkeypatch.setattr(
+        "polylogue.operations.raw_observation_derivation.RawObservationDerivation", FakeRawObservationDerivation
+    )
     discovery = RawMaterializationDiscovery(tmp_path)
 
     assert discovery.discover_pending_raw_ids(1)[0][0] == first
@@ -1653,7 +1660,9 @@ def test_raw_discovery_cursor_stays_behind_ids_the_dispatcher_never_admitted(
         def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
             return {key: "valid" if key in materialized else "missing" for key in keys}
 
-    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationDerivation", FakeRawObservationDerivation)
+    monkeypatch.setattr(
+        "polylogue.operations.raw_observation_derivation.RawObservationDerivation", FakeRawObservationDerivation
+    )
     discovery = RawMaterializationDiscovery(tmp_path)
 
     assert [raw_id for raw_id, _cost in discovery.discover_pending_raw_ids(8)] == ["a", "b", "c"]
@@ -1732,7 +1741,9 @@ def test_raw_discovery_second_idle_pass_stays_one_page_at_large_scope(
         def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
             return dict.fromkeys(keys, "valid")
 
-    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationDerivation", FakeRawObservationDerivation)
+    monkeypatch.setattr(
+        "polylogue.operations.raw_observation_derivation.RawObservationDerivation", FakeRawObservationDerivation
+    )
     discovery = RawMaterializationDiscovery(tmp_path)
 
     assert discovery.discover_pending_raw_ids(32) == ()
@@ -2310,7 +2321,9 @@ def test_raw_discovery_sweep_advances_under_a_sustained_arrival_rate(
             # are outstanding, which is exactly the starvation condition.
             return {key: "valid" if key.startswith("page") else "missing" for key in keys}
 
-    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationDerivation", FakeRawObservationDerivation)
+    monkeypatch.setattr(
+        "polylogue.operations.raw_observation_derivation.RawObservationDerivation", FakeRawObservationDerivation
+    )
     discovery = RawMaterializationDiscovery(tmp_path)
 
     assert discovery.discover_pending_raw_ids(4) == ()
