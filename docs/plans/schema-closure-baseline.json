@@ -435,6 +435,7 @@
     "polylogue/storage/embeddings/models.py",
     "polylogue/storage/embeddings/sql.py",
     "polylogue/storage/embeddings/support.py",
+    "polylogue/storage/frontier_existence.py",
     "polylogue/storage/fts/derivation.py",
     "polylogue/storage/fts/fts_lifecycle.py",
     "polylogue/storage/fts/pl_fold.py",

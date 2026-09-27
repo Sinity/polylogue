@@ -33,6 +33,8 @@ SOURCE_HAND_WRITTEN_DDL_REASONS: dict[str, str] = dict.fromkeys(
         "source_item_raw_members",
         "source_item_member_dispositions",
         "raw_sessions",
+        "raw_existence_changes",
+        "raw_existence_journal_control",
         "raw_container_coordinates",
         "raw_capture_observations",
         "raw_session_memberships",
@@ -442,6 +444,7 @@ CREATE TABLE IF NOT EXISTS raw_sessions (
     capture_mode            TEXT,
     native_id               TEXT,
     source_path             TEXT NOT NULL,
+    canonical_source_path   TEXT,
     source_index            INTEGER NOT NULL DEFAULT 0,
     blob_hash               BLOB NOT NULL CHECK(length(blob_hash) = 32),
     blob_size               INTEGER NOT NULL CHECK(blob_size >= 0),
@@ -475,6 +478,26 @@ CREATE TABLE IF NOT EXISTS raw_sessions (
     ,content_identity       TEXT CHECK(content_identity IS NULL OR length(content_identity) = 64)
 ) STRICT;
 
+-- This journal is part of the fresh-v1 admission contract. A source deletion
+-- records the old key in the same transaction, including external writers.
+CREATE TABLE IF NOT EXISTS raw_existence_changes (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    raw_id TEXT NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS raw_existence_journal_control (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    retained_floor INTEGER NOT NULL DEFAULT 0 CHECK(retained_floor >= 0)
+) STRICT;
+INSERT OR IGNORE INTO raw_existence_journal_control(singleton) VALUES (1);
+CREATE TRIGGER IF NOT EXISTS raw_existence_delete AFTER DELETE ON raw_sessions
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_key_change AFTER UPDATE OF raw_id ON raw_sessions
+WHEN OLD.raw_id != NEW.raw_id
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_journal_prune AFTER DELETE ON raw_existence_changes
+BEGIN UPDATE raw_existence_journal_control
+     SET retained_floor = max(retained_floor, OLD.sequence) WHERE singleton = 1; END;
+
 CREATE TABLE IF NOT EXISTS raw_container_coordinates (
     raw_id             TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
     coordinate_format  TEXT NOT NULL CHECK(coordinate_format = 'zip-v2'),
@@ -498,6 +521,14 @@ WHERE native_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_raw_sessions_source_path
 ON raw_sessions(source_path, source_index);
+
+CREATE INDEX IF NOT EXISTS idx_raw_sessions_canonical_source_path
+ON raw_sessions(canonical_source_path)
+WHERE canonical_source_path IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_raw_sessions_missing_canonical_path
+ON raw_sessions(raw_id)
+WHERE canonical_source_path IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_raw_sessions_parse_ready
 ON raw_sessions(raw_id)

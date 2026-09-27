@@ -310,6 +310,13 @@
     ]
   },
   {
+    "file": "polylogue/storage/frontier_existence.py",
+    "tiers": [
+      "index",
+      "source"
+    ]
+  },
+  {
     "file": "polylogue/storage/fts/derivation.py",
     "tiers": [
       "index"

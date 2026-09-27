@@ -9,6 +9,7 @@ cursor fields (byte offsets, fingerprints, record counts) the daemon manages.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -58,16 +59,17 @@ async def upsert_source_file_cursor(
     """Upsert the stat columns of one ``ingest_cursor`` row."""
     await conn.execute(
         """
-        INSERT INTO ingest_cursor (source_path, st_dev, st_ino, stat_size, mtime_ns, updated_at_ms)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO ingest_cursor (source_path, canonical_source_path, st_dev, st_ino, stat_size, mtime_ns, updated_at_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_path) DO UPDATE SET
+            canonical_source_path = EXCLUDED.canonical_source_path,
             st_dev = COALESCE(EXCLUDED.st_dev, ingest_cursor.st_dev),
             st_ino = COALESCE(EXCLUDED.st_ino, ingest_cursor.st_ino),
             stat_size = COALESCE(EXCLUDED.stat_size, ingest_cursor.stat_size),
             mtime_ns = COALESCE(EXCLUDED.mtime_ns, ingest_cursor.mtime_ns),
             updated_at_ms = EXCLUDED.updated_at_ms
         """,
-        (source_path, st_dev, st_ino, st_size, mtime_ns, _now_ms()),
+        (source_path, str(Path(source_path).resolve()), st_dev, st_ino, st_size, mtime_ns, _now_ms()),
     )
     if transaction_depth == 0:
         await conn.commit()

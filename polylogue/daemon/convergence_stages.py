@@ -30,6 +30,7 @@ from polylogue.operations.raw_authority_verdict_cache import (
     find_raw_authority_verdict_cache_work,
     warm_raw_authority_verdict_cache,
 )
+from polylogue.operations.raw_existence_journal import make_raw_existence_journal_prune_stage
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.connection_profile import (
@@ -683,6 +684,7 @@ def make_default_convergence_stages(
             # polylogue-crwl6 AC6: the only production writer of the message-FTS
             # readiness binding the five status request paths compare against.
             make_fts_readiness_binding_stage(db_path),
+            make_raw_existence_journal_prune_stage(db_path),
             # Session-profile publication is no longer a generic stage.  The
             # daemon's typed session owner runs it through the derivation
             # kernel after ingest and from its no-hint periodic sweep.

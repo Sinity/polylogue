@@ -649,6 +649,32 @@ CREATE TABLE IF NOT EXISTS sessions (
     {TABLE_SPECS["sessions"].ddl_body}
 ) STRICT;
 
+-- Transactional changed-key evidence for the process-local live admission
+-- certificate. Every new index reference is recorded, regardless of writer.
+CREATE TABLE IF NOT EXISTS raw_existence_changes (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    raw_id TEXT NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS raw_existence_journal_control (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    retained_floor INTEGER NOT NULL DEFAULT 0 CHECK(retained_floor >= 0)
+) STRICT;
+INSERT OR IGNORE INTO raw_existence_journal_control(singleton) VALUES (1);
+CREATE TRIGGER IF NOT EXISTS raw_existence_session_insert AFTER INSERT ON sessions
+WHEN NEW.raw_id IS NOT NULL
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_session_update AFTER UPDATE OF raw_id ON sessions
+WHEN NEW.raw_id IS NOT NULL AND NEW.raw_id IS NOT OLD.raw_id
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_head_insert AFTER INSERT ON raw_revision_heads
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.accepted_raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_head_update AFTER UPDATE OF accepted_raw_id ON raw_revision_heads
+WHEN NEW.accepted_raw_id IS NOT OLD.accepted_raw_id
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.accepted_raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_journal_prune AFTER DELETE ON raw_existence_changes
+BEGIN UPDATE raw_existence_journal_control
+     SET retained_floor = max(retained_floor, OLD.sequence) WHERE singleton = 1; END;
+
 CREATE INDEX IF NOT EXISTS idx_sessions_origin_sort
 ON sessions(origin, sort_key_ms DESC);
 
@@ -687,6 +713,9 @@ WHERE root_session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_raw_id
 ON sessions(raw_id)
 WHERE raw_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_raw_revision_heads_accepted_raw_id
+ON raw_revision_heads(accepted_raw_id);
 
 -- polylogue-crwl6: the session-counter domain's input binding, colocated with
 -- the ``sessions`` row that *is* its output relation. A present row states
