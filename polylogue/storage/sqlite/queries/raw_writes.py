@@ -57,8 +57,12 @@ async def execute_raw_admission_plan_async(
         if request.capture_mode is not None
         else None
     )
-    if request.policy_snapshot is not None:
-        request.policy_snapshot.assert_admissible(request.blob_hash, source_path=request.source_path)
+    if request.policy_snapshot is not None and not request.policy_snapshot.allows(request.blob_hash):
+        # Raise the excision error the ingest orchestrators catch: the base
+        # policy error would abort the whole batch instead of skipping one file.
+        from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
+
+        raise ContentExcisedError(blob_hash=request.blob_hash, source_path=request.source_path)
     # Before coordinate-sensitive raw ids, normal acquisition used the blob
     # hash itself as its raw id.  Reuse that legacy row only when it proves the
     # same coordinate and bytes; a different coordinate must retain the new

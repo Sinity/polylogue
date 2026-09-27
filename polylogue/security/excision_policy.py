@@ -66,9 +66,6 @@ class ExcisionPolicySnapshot:
     def allows(self, blob_hash: bytes) -> bool:
         return blob_hash not in self.removed_hashes
 
-    def assert_admissible(self, blob_hash: bytes, *, source_path: str) -> None:
-        if not self.allows(blob_hash):
-            raise ExcisionPolicyError(f"content at {source_path!r} is excluded by excision policy {self.digest}")
 
 
 def _generation(conn: sqlite3.Connection, table: str, column: str, default: int = 0) -> int:
