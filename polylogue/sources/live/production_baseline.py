@@ -58,6 +58,15 @@ _RETRYABLE_READ_ERRNOS = frozenset(
 )
 
 
+def _retryable_read_fault(exc: Exception) -> bool:
+    sqlite_code = getattr(exc, "sqlite_errorcode", None)
+    return (isinstance(exc, OSError) and exc.errno in _RETRYABLE_READ_ERRNOS) or (
+        isinstance(exc, sqlite3.Error)
+        and isinstance(sqlite_code, int)
+        and sqlite_code & 0xFF in {sqlite3.SQLITE_IOERR, sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+    )
+
+
 class ProductionBaselineError(RuntimeError):
     """The build cannot prove its discovered source revisions were retained."""
 
@@ -416,7 +425,8 @@ def _archive_members(
                         )
                     )
             except (OSError, UnicodeError, ValueError, ZipBombError, zipfile.BadZipFile) as exc:
-                fault(info, f"archive_member_unreadable:{exc}")
+                reason = "revision_io_unavailable" if _retryable_read_fault(exc) else "archive_member_unreadable"
+                fault(info, f"{reason}:{exc}")
                 continue
     return tuple(members)
 
@@ -521,13 +531,7 @@ def capture_production_source_baseline(
                     continue
                 revision, material_bytes = _revision(path, cancelled=cancelled)
             except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as exc:
-                sqlite_code = getattr(exc, "sqlite_errorcode", None)
-                retryable_io = (isinstance(exc, OSError) and exc.errno in _RETRYABLE_READ_ERRNOS) or (
-                    isinstance(exc, sqlite3.Error)
-                    and isinstance(sqlite_code, int)
-                    and sqlite_code & 0xFF in {sqlite3.SQLITE_IOERR, sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
-                )
-                reason = "revision_io_unavailable" if retryable_io else "revision_unreadable"
+                reason = "revision_io_unavailable" if _retryable_read_fault(exc) else "revision_unreadable"
                 decisions.append(SourceDecision(source_name, str(path), "fault", f"{reason}:{exc}"))
                 continue
         else:

@@ -90,6 +90,34 @@ def test_only_typed_io_revision_fault_is_retryable(tmp_path: Path, monkeypatch: 
     assert not isinstance(failure.value, ProductionBaselineReadUnavailableError)
 
 
+@pytest.mark.parametrize("fault", [OSError(errno.EIO, "member read failed"), ValueError("invalid member")])
+def test_zip_member_fault_preserves_typed_retry_classification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: Exception
+) -> None:
+    from polylogue.sources.live import production_baseline
+
+    root = tmp_path / "account"
+    root.mkdir()
+    bundle = root / "export.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("conversations.json", b"[]")
+
+    def unreadable_member(*_args: object, **_kwargs: object) -> None:
+        raise fault
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(production_baseline, "replay_zip_entry_acquisition_payloads", unreadable_member)
+        baseline = capture_production_source_baseline(
+            (WatchSource("account", root, suffixes=(".zip",)),), operation_id="zip-fault"
+        )
+    member_faults = [row for row in baseline.decisions if row.disposition == "fault"]
+    assert len(member_faults) == 1
+    assert member_faults[0].path == f"{bundle}:conversations.json"
+    with pytest.raises(ProductionBaselineError) as failure:
+        baseline.verify(tmp_path / "source.db")
+    assert isinstance(failure.value, ProductionBaselineReadUnavailableError) == isinstance(fault, OSError)
+
+
 def test_baseline_uses_typed_acceptance_before_cursor_and_requires_retained_revision(tmp_path: Path) -> None:
     root = tmp_path / "account"
     root.mkdir()

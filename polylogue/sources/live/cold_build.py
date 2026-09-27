@@ -702,9 +702,10 @@ class ColdBuildGeneration:
             else:
                 revision.extend((metadata.st_ino, metadata.st_size, metadata.st_mtime_ns, metadata.st_mode))
         # Receipt publication/unlink can fail on parent permissions even when
-        # the child file's own metadata does not move. Include the two owned
-        # directories so restoring their access wakes a blocked settlement.
+        # the child file's own metadata does not move. Include pointer and
+        # receipt parents so restoring their access wakes blocked settlement.
         for directory in (
+            self.archive_root,
             self.archive_root / MAINTENANCE_STATE_DIRNAME / "production-source-baseline",
             self.generation_root,
         ):

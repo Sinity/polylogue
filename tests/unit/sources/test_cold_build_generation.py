@@ -182,6 +182,39 @@ def test_pointer_swapped_before_metadata_failure_recovers_once(
     assert promotions == 1
 
 
+def test_pointer_parent_fsync_must_succeed_before_promotion_tail(
+    tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.sources.live.production_baseline import load_pending_production_baseline
+    from polylogue.storage import index_generation
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    _ingest(tmp_path, root, "one.jsonl", "pointer-fsync")
+    original_fsync = index_generation._fsync_directory
+    failures = 0
+
+    def fail_pointer_parent_twice(path: Path) -> None:
+        nonlocal failures
+        if path == tmp_path and failures < 2:
+            failures += 1
+            raise OSError(errno.ENOSPC, "pointer directory fsync unavailable")
+        original_fsync(path)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(index_generation, "_fsync_directory", fail_pointer_parent_twice)
+        with pytest.raises(OSError) as failure:
+            cold_build.promote()
+    assert failure.value.errno == errno.ENOSPC
+    assert failures == 2
+    assert cold_build.promoted
+    assert cold_build._store.load(cold_build.generation_id).state == "promoting"
+    assert load_pending_production_baseline(tmp_path) is not None
+    assert cold_build.promote().state == "active"
+    assert cold_build.publication_complete
+    assert load_pending_production_baseline(tmp_path) is None
+
+
 def test_restart_completes_pointer_swapped_cold_promotion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from polylogue.sources.live.production_baseline import load_pending_production_baseline
     from polylogue.storage.index_generation import IndexGenerationStore
@@ -401,6 +434,7 @@ def test_blocked_settlement_revision_tracks_receipt_parent_permission_repair(
     tmp_path: Path, cold_build: ColdBuildGeneration
 ) -> None:
     directories = (
+        tmp_path,
         tmp_path / MAINTENANCE_STATE_DIRNAME / "production-source-baseline",
         cold_build.generation_root,
     )

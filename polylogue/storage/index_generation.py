@@ -1257,6 +1257,10 @@ class IndexGenerationStore:
         if pointer_target != expected_target:
             raise RuntimeError("cannot complete promotion recovery for a non-active generation")
         self._validate_retention_ownership()
+        # A prior attempt may have swapped the pointer but failed to fsync its
+        # parent. Prove the pointer durable before active metadata or receipt
+        # cleanup can complete.
+        _fsync_directory(pointer.parent)
         recovered = IndexGeneration(
             **{
                 **asdict(generation),
