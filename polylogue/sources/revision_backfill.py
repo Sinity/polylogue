@@ -116,7 +116,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     prepare_session_shard,
 )
 from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError, discard_session_shard
-from polylogue.storage.sqlite.connection_profile import ReadFrame, read_frame
+from polylogue.storage.sqlite.connection_profile import ReadContinuation, ReadFrame, read_frame
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
 _LOGGER = _polylogue_logging.get_logger(__name__)
@@ -2340,9 +2340,9 @@ def require_current_parser_source_census(
     """Require phase-2 parser receipts before allocating an index candidate."""
     stale_raw_ids: list[str] = []
     recorded_logical_keys: dict[str, tuple[str, ...]] = {}
-    selections: tuple[tuple[str, ...] | None, ...]
+    selections: tuple[tuple[str, ...] | None, ...] | None
     if selected_raw_ids is None:
-        selections = (None,)
+        selections = None
     else:
         selections = tuple(
             tuple(selected_raw_ids[offset : offset + 500]) for offset in range(0, len(selected_raw_ids), 500)
@@ -2350,11 +2350,9 @@ def require_current_parser_source_census(
     with read_frame(
         archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
     ) as source_frame:
-        source_conn = source_frame.connection
-        for selection in selections:
-            where = "" if selection is None else f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
-            params: tuple[object, ...] = () if selection is None else selection
-            rows = source_conn.execute(
+        for selection in _current_source_raw_id_selections(source_frame, selections):
+            where = f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
+            rows = source_frame.stream(
                 f"""
                 SELECT r.raw_id, c.parser_fingerprint, c.status, c.logical_keys_json
                 FROM raw_sessions AS r
@@ -2362,7 +2360,7 @@ def require_current_parser_source_census(
                 {where}
                 ORDER BY r.raw_id
                 """,
-                params,
+                selection,
             )
             for raw_id_value, fingerprint, status, logical_keys_json in rows:
                 raw_id = str(raw_id_value)
@@ -2390,16 +2388,15 @@ def require_current_parser_source_census(
     with read_frame(
         archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
     ) as source_frame:
-        source_conn = source_frame.connection
-        for selection in selections:
-            where = "" if selection is None else f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
+        for selection in _current_source_raw_id_selections(source_frame, selections):
+            where = f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
             params = (
                 RAW_AUTHORITY_PARSER_FINGERPRINT,
                 RAW_AUTHORITY_PARSER_FINGERPRINT,
                 RawRevisionAuthority.BYTE_PROVEN.value,
-                *(() if selection is None else selection),
+                *selection,
             )
-            rows = source_conn.execute(
+            rows = source_frame.stream(
                 f"""
                 SELECT r.raw_id, r.logical_source_key, r.revision_kind, r.source_index, m.logical_source_key,
                        EXISTS(SELECT 1 FROM raw_artifacts AS a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0),
@@ -2513,18 +2510,16 @@ def require_current_parser_source_census(
     with read_frame(
         archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
     ) as source_frame:
-        source_conn = source_frame.connection
-        for selection in selections:
-            where = "" if selection is None else f"WHERE raw_id IN ({','.join('?' for _ in selection)})"
-            params = () if selection is None else selection
-            rows = source_conn.execute(
+        for selection in _current_source_raw_id_selections(source_frame, selections):
+            where = f"WHERE raw_id IN ({','.join('?' for _ in selection)})"
+            rows = source_frame.stream(
                 f"""
                 SELECT raw_id, logical_source_key, revision_kind, revision_authority,
                        source_index, predecessor_raw_id, baseline_raw_id
                 FROM raw_sessions {where}
                 ORDER BY raw_id
                 """,
-                params,
+                selection,
             )
             for raw_id_value, logical_key, revision_kind, authority, source_index, predecessor_id, baseline_id in rows:
                 authority_rows[str(raw_id_value)] = (
@@ -2613,13 +2608,12 @@ def require_current_parser_source_census(
     with read_frame(
         archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
     ) as source_frame:
-        source_conn = source_frame.connection
-        for selection in selections:
-            authority_where = "" if selection is None else f"AND r.raw_id IN ({','.join('?' for _ in selection)})"
-            authority_params: tuple[object, ...] = () if selection is None else selection
+        for selection in _current_source_raw_id_selections(source_frame, selections):
+            authority_where = f"AND r.raw_id IN ({','.join('?' for _ in selection)})"
+            authority_params: tuple[object, ...] = selection
             unresolved_raw_ids.extend(
                 str(row[0])
-                for row in source_conn.execute(
+                for row in source_frame.stream(
                     f"""
                     SELECT DISTINCT r.raw_id
                     FROM raw_sessions AS r
@@ -2654,6 +2648,66 @@ def require_current_parser_source_census(
             f"{len(unresolved_raw_ids)} raw(s) remain quarantined or undecided (sample: {sample})"
         )
     return recorded_logical_keys
+
+
+_CURRENT_SOURCE_CENSUS_PAGE_SIZE = 500
+
+
+def _current_source_raw_id_selections(
+    source_frame: ReadFrame,
+    selections: tuple[tuple[str, ...] | None, ...] | None,
+) -> Iterator[tuple[str, ...]]:
+    """Yield bounded raw-id selections, rebinding between pages as needed."""
+    if selections is not None:
+        continuation: ReadContinuation | None = None
+        for selection in selections:
+            if not selection:
+                continue
+            if continuation is not None:
+                source_frame.resume(continuation)
+            continuation = source_frame.bind(
+                ReadContinuation(
+                    position=selection[-1],
+                    # Explicit selections are an immutable caller-owned page;
+                    # unlike archive enumeration, a missing selected raw is
+                    # still a valid empty result rather than a stale cursor.
+                    anchor_sql="SELECT ?",
+                    anchor_params=(selection[-1],),
+                )
+            )
+            yield selection
+        return
+
+    continuation = None
+    after_raw_id: str | None = None
+    while True:
+        if continuation is not None:
+            source_frame.resume(continuation)
+            after_raw_id = str(continuation.position)
+        params: tuple[object, ...] = (
+            (_CURRENT_SOURCE_CENSUS_PAGE_SIZE,)
+            if after_raw_id is None
+            else (after_raw_id, _CURRENT_SOURCE_CENSUS_PAGE_SIZE)
+        )
+        where = "" if after_raw_id is None else "WHERE raw_id > ?"
+        raw_ids = tuple(
+            str(row[0])
+            for row in source_frame.stream(
+                f"SELECT raw_id FROM raw_sessions {where} ORDER BY raw_id LIMIT ?",
+                params,
+            )
+        )
+        if not raw_ids:
+            return
+        after_raw_id = raw_ids[-1]
+        continuation = source_frame.bind(
+            ReadContinuation(
+                position=after_raw_id,
+                anchor_sql="SELECT raw_id FROM raw_sessions WHERE raw_id = ?",
+                anchor_params=(after_raw_id,),
+            )
+        )
+        yield raw_ids
 
 
 def _logical_keys_for_raw_ids(archive: ArchiveStore, raw_ids: Set[str]) -> set[str]:

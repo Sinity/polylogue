@@ -20,6 +20,7 @@ from polylogue.archive.ingest_flags import (
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.core.errors import SchemaSkew
+from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.pipeline.parsed_tree_size import estimate_parsed_tree_bytes
 from polylogue.sources import revision_backfill
 from polylogue.sources.decoders import _iter_json_stream
@@ -53,7 +54,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.storage.sqlite.connection_profile import ReadFrameCancelledError
+from polylogue.storage.sqlite.connection_profile import ReadFrame, ReadFrameCancelledError
 from polylogue.storage.sqlite.runtime_indexes import DEFERRED_SECONDARY_INDEX_NAMES
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.revision_backfill_benchmark import (
@@ -150,6 +151,71 @@ def test_revision_backfill_profile_preserves_stale_source_tier_diagnostic(tmp_pa
 
     with pytest.raises(SchemaSkew, match="source schema skew"):
         revision_backfill._expand_frozen_revision_link_selection(root, [])
+
+
+def test_current_parser_source_census_rebinds_between_bounded_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: Any
+) -> None:
+    """The archive-wide census releases each page and resumes after frame expiry."""
+    root = tmp_path / "archive"
+    bootstrap_archive_root(root)
+    raw_ids: list[str] = []
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        for index in range(2):
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=b"not valid codex jsonl",
+                source_path=f"synthetic/census-{index}.jsonl",
+                acquired_at_ms=index + 1,
+            )
+            raw_ids.append(raw_id)
+            archive.record_raw_failure_evidence(
+                raw_id,
+                provider=Provider.CODEX,
+                source_path=f"synthetic/census-{index}.jsonl",
+                source_index=0,
+                acquired_at_ms=index + 1,
+                kind=RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
+            )
+            archive.mark_raw_parse_failed(
+                raw_id,
+                provider=Provider.CODEX,
+                error=ValueError("synthetic terminal corrupt source"),
+                preserve_existing_failure_evidence=True,
+            )
+            with archive._ensure_source_conn():
+                archive_revision_governance.record_current_parser_source_census(
+                    archive._ensure_source_conn(), raw_id, parser_sessions=()
+                )
+
+    monkeypatch.setattr(revision_backfill, "_CURRENT_SOURCE_CENSUS_PAGE_SIZE", 1)
+    real_read_frame = cast(Any, revision_backfill).read_frame
+    frames: list[ReadFrame] = []
+
+    @contextmanager
+    def capture_frames(path: str | Path, **kwargs: Any) -> Iterator[ReadFrame]:
+        with real_read_frame(path, **kwargs) as frame:
+            frames.append(frame)
+            yield frame
+
+    real_stream = ReadFrame.stream
+    aged = False
+
+    def expire_after_first_census_page(frame: ReadFrame, sql: str, parameters: Any = ()) -> Iterator[sqlite3.Row]:
+        nonlocal aged
+        yield from real_stream(frame, sql, parameters)
+        if not aged and "LEFT JOIN raw_authority_parser_census" in sql:
+            aged = True
+            frozen_clock.advance(301)
+
+    monkeypatch.setattr(revision_backfill, "read_frame", capture_frames)
+    monkeypatch.setattr(ReadFrame, "stream", expire_after_first_census_page)
+
+    result = revision_backfill.require_current_parser_source_census(root)
+
+    assert result == dict.fromkeys(raw_ids, ())
+    assert aged
+    assert frames and frames[0].epoch >= 1
 
 
 def _chatgpt_session(native_id: str, *texts: str) -> dict[str, object]:
