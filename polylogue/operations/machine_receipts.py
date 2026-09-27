@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from typing import Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -208,9 +209,34 @@ class IngestRefusalPageHistoricalReceipt(_Receipt):
     refusals: list[IngestRefusedMembershipHistorical] = Field(min_length=1, max_length=MAX_PAGE_ITEMS)
 
 
-def ingest_refusal_pages_digest(pages: list[IngestRefusalPageHistoricalReceipt]) -> str:
-    payload = [page.model_dump(mode="json") for page in pages]
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+class IngestRefusalPagesDigest:
+    """Canonical digest of an ordered refusal page sequence, one page at a time.
+
+    Equal to the SHA-256 of the canonical JSON array of the pages, so a
+    builder can persist each page and forget it.
+    """
+
+    def __init__(self) -> None:
+        self._hasher = hashlib.sha256(b"[")
+        self._pages = 0
+
+    def update(self, page: IngestRefusalPageHistoricalReceipt) -> None:
+        if self._pages:
+            self._hasher.update(b",")
+        self._hasher.update(json.dumps(page.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode())
+        self._pages += 1
+
+    def hexdigest(self) -> str:
+        final = self._hasher.copy()
+        final.update(b"]")
+        return final.hexdigest()
+
+
+def ingest_refusal_pages_digest(pages: Iterable[IngestRefusalPageHistoricalReceipt]) -> str:
+    digest = IngestRefusalPagesDigest()
+    for page in pages:
+        digest.update(page)
+    return digest.hexdigest()
 
 
 class IngestTerminalSummaryHistorical(_Receipt):
@@ -445,5 +471,6 @@ __all__ = [
     "decode_machine_receipt",
     "encode_machine_receipt",
     "ingest_input_pages_digest",
+    "IngestRefusalPagesDigest",
     "ingest_refusal_pages_digest",
 ]

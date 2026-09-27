@@ -42,12 +42,12 @@ from polylogue.operations.machine_receipts import (
     IngestInputRawPageHistoricalReceipt,
     IngestInsightPageHistoricalReceipt,
     IngestRefusalPageHistoricalReceipt,
+    IngestRefusalPagesDigest,
     IngestRefusedMembershipHistorical,
     IngestTerminalSummaryHistorical,
     InsightTargetHistoricalReceipt,
     ingest_input_raw_pages_digest,
     ingest_insight_pages_digest,
-    ingest_refusal_pages_digest,
     ingest_terminal_outcome,
     ingest_unconverged_error,
 )
@@ -1056,28 +1056,30 @@ class IngestExecution:
                     for key, raw_id, reason in refusal_cursor
                 ]
             else:
-                refusal_pages: list[IngestRefusalPageHistoricalReceipt] = []
+                # Each page is persisted as it is built and folded into the
+                # digest, so memory holds one page, not every refusal.
+                refusal_digest = IngestRefusalPagesDigest()
+                refusal_page_count = 0
                 while refusal_rows := refusal_cursor.fetchmany(MAX_PAGE_ITEMS):
-                    refusal_pages.append(
-                        IngestRefusalPageHistoricalReceipt(
-                            ordinal=len(refusal_pages),
-                            refusals=[
-                                IngestRefusedMembershipHistorical(
-                                    logical_source_key=str(key), raw_id=str(raw_id), reason=str(reason)
-                                )
-                                for key, raw_id, reason in refusal_rows
-                            ],
-                        )
+                    refusal_page = IngestRefusalPageHistoricalReceipt(
+                        ordinal=refusal_page_count,
+                        refusals=[
+                            IngestRefusedMembershipHistorical(
+                                logical_source_key=str(key), raw_id=str(raw_id), reason=str(reason)
+                            )
+                            for key, raw_id, reason in refusal_rows
+                        ],
                     )
-                for refusal_page in refusal_pages:
 
                     def persist_refusal_page(page: IngestRefusalPageHistoricalReceipt = refusal_page) -> None:
                         self.audit.append_ingest_refusal_page(operation_id, page)
 
                     await self.runtime.write_phase("ingest.refusal_page", persist_refusal_page)
+                    refusal_digest.update(refusal_page)
+                    refusal_page_count += 1
                 self.refusal_pages_ref = operation_id
-                self.refusal_page_count = len(refusal_pages)
-                self.refusal_pages_digest = ingest_refusal_pages_digest(refusal_pages)
+                self.refusal_page_count = refusal_page_count
+                self.refusal_pages_digest = refusal_digest.hexdigest()
             if self.changed_session_count <= MAX_INLINE_INGEST_SESSION_IDS:
                 self.inline_session_ids = [
                     str(row[0]) for row in state.execute("SELECT session_id FROM changed_sessions ORDER BY session_id")

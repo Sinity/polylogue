@@ -467,3 +467,25 @@ def test_await_state_of_a_degraded_ingest_satisfies_the_control_result_contract(
                 "error": {"code": "ingest_convergence_pending", "retryable": True},
             },
         )
+
+
+def test_refusal_page_digest_streams_to_the_canonical_array_digest() -> None:
+    """The incremental digest equals the digest of the canonical page array.
+
+    Anti-vacuity: drop the separator or the closing bracket from the streamed
+    form and the two digests differ.
+    """
+    import hashlib
+    import json
+
+    from polylogue.operations.machine_receipts import IngestRefusalPageHistoricalReceipt, IngestRefusalPagesDigest
+
+    pages = [
+        IngestRefusalPageHistoricalReceipt(ordinal=ordinal, refusals=[_refusal(ordinal * 2), _refusal(ordinal * 2 + 1)])
+        for ordinal in range(3)
+    ]
+    streamed = IngestRefusalPagesDigest()
+    for page in pages:
+        streamed.update(page)
+    canonical = json.dumps([page.model_dump(mode="json") for page in pages], sort_keys=True, separators=(",", ":"))
+    assert streamed.hexdigest() == hashlib.sha256(canonical.encode()).hexdigest()

@@ -3059,7 +3059,8 @@ def test_ingest_refusal_pages_resolve_every_named_refusal(tmp_path: Path) -> Non
     )
     authorization = executor.authorize_bound(binding, preview, _principal())
     started = executor.begin_bound(binding, preview, authorization, object())
-    assert started.operation_id is not None
+    operation_id = started.operation_id
+    assert operation_id is not None
     refusals = [
         IngestRefusedMembershipHistorical(
             logical_source_key=f"codex-session:{index:05d}", raw_id=f"raw:{index:05d}", reason="did not parse"
@@ -3071,15 +3072,15 @@ def test_ingest_refusal_pages_resolve_every_named_refusal(tmp_path: Path) -> Non
         IngestRefusalPageHistoricalReceipt(ordinal=1, refusals=refusals[MAX_PAGE_ITEMS:]),
     ]
     for page in pages:
-        audit.append_ingest_refusal_page(started.operation_id, page)
-    audit.append_ingest_refusal_page(started.operation_id, pages[1])
+        audit.append_ingest_refusal_page(operation_id, page)
+    audit.append_ingest_refusal_page(operation_id, pages[1])
 
     def receipt(digest: str) -> IngestHistoricalReceiptV2:
         return IngestHistoricalReceiptV2(
             source_generation_id="generation:fixture",
             final_sequence=1,
             input_count=1,
-            input_pages_ref=started.operation_id,
+            input_pages_ref=operation_id,
             input_page_count=1,
             input_pages_digest="0" * 64,
             summary=IngestTerminalSummaryHistorical(
@@ -3089,7 +3090,7 @@ def test_ingest_refusal_pages_resolve_every_named_refusal(tmp_path: Path) -> Non
                 unresolved_raw_count=0,
                 profile_targets_observed=0,
                 refused_membership_count=len(refusals),
-                refused_membership_pages_ref=started.operation_id,
+                refused_membership_pages_ref=operation_id,
                 refused_membership_page_count=len(pages),
                 refused_memberships_digest=digest,
             ),
@@ -3100,5 +3101,5 @@ def test_ingest_refusal_pages_resolve_every_named_refusal(tmp_path: Path) -> Non
         audit.resolve_ingest_refusals(receipt("a" * 64))
     with pytest.raises(ValueError, match="conflicts with durable page"):
         audit.append_ingest_refusal_page(
-            started.operation_id, IngestRefusalPageHistoricalReceipt(ordinal=1, refusals=refusals[:1])
+            operation_id, IngestRefusalPageHistoricalReceipt(ordinal=1, refusals=refusals[:1])
         )
