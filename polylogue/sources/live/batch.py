@@ -6247,7 +6247,13 @@ class LiveBatchProcessor:
             # so the ordinary blob-GC owner collects them; routing them into
             # retention debt would file work under the wrong owner and leave a
             # row that no retention pass can ever clear.
-            logger.warning("live.watcher: raw snapshot compaction errors: %s", "; ".join(errors[:3]))
+            emit(
+                "live.watcher.raw_retention.blob_unlink_failed",
+                level=WARNING,
+                outcome="degraded",
+                error_count=len(errors),
+                error_detail="; ".join(errors[:3]),
+            )
         # A bound that truncates silently reports a finished answer it did not
         # compute. Name the bound in the debt row instead.
         self._record_raw_retention_outcome(
