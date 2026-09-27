@@ -39,7 +39,9 @@ live file.
 from __future__ import annotations
 
 import sqlite3
-from contextlib import closing
+from codecs import getincrementaldecoder
+from collections.abc import Iterator
+from contextlib import ExitStack, closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeAlias
@@ -373,28 +375,17 @@ class CodexStateSnapshot:
     spawn_edges: tuple[CodexSpawnEdge, ...]
 
 
-#: Declared bounds on reading one Codex state export.
-#:
-#: A state database is an untrusted provider artifact: nothing about its
-#: shape bounds its row count or the size of a single generated text, and
-#: every row read here becomes a durable blob plus material rows. An
-#: unbounded read is therefore both an OOM surface and a durable
-#: amplification surface, and because materialization precedes terminal
-#: parse marking it retriggers on every restart (polylogue-xrba4).
-#:
-#: These are declared caps, not heuristics: whatever they decline is named
-#: in a :class:`CodexStateReadBound`, so a bounded read stays
-#: distinguishable from an export that never held those rows.
+#: Bounded preview limit for the legacy ``parse_codex_*_db`` helpers.
 CODEX_STATE_MAX_ROWS = 10_000
 
-#: Per-text clip, in characters. Clipping happens in SQL (``substr``) so a
-#: multi-gigabyte ``raw_memory`` is never loaded into the process at all.
-#: Characters, not bytes, because a byte-wise clip can split a UTF-8
-#: sequence; the true byte size is accounted separately by the caller.
+#: Default keyset page for complete state materialization.
+CODEX_STATE_PAGE_ROWS = 256
+
+#: Text chunk size in characters. Complete materialization fetches every
+#: chunk by SQL ``substr``; legacy parser previews still clip at this size.
 CODEX_STATE_MAX_TEXT_CHARS = 64_000
 
-#: Aggregate cap, in bytes, over one export's materialized payloads. Enforced
-#: by the materializer, which knows the encoded payload size.
+#: Byte window for a materialization commit, not a total export limit.
 CODEX_STATE_MAX_AGGREGATE_BYTES = 64 * 1024 * 1024
 
 
@@ -468,6 +459,180 @@ class CodexMemoryRecord:
     usage_count: int | None
     has_rollout_slug: bool
     selected_for_phase2: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CodexStatePart:
+    """One bounded, addressable projection of a state row or text field."""
+
+    thread_id: str
+    item_id: str
+    part_kind: str
+    payload: dict[str, object]
+
+
+def _iter_blob_text_chunks(blob: sqlite3.Blob, chunk_chars: int) -> Iterator[str]:
+    """Decode a SQLite TEXT value incrementally, including embedded NULs."""
+    decoder = getincrementaldecoder("utf-8")()
+    pending = ""
+    emitted = False
+    while raw := blob.read(64 * 1024):
+        pending += decoder.decode(raw)
+        while len(pending) >= chunk_chars:
+            yield pending[:chunk_chars]
+            emitted = True
+            pending = pending[chunk_chars:]
+    pending += decoder.decode(b"", final=True)
+    if pending or not emitted:
+        yield pending
+
+
+def _blob_text_length_chars(blob: sqlite3.Blob) -> int:
+    """Count characters with bounded reads; SQLite length(TEXT) stops at NUL."""
+    decoder = getincrementaldecoder("utf-8")()
+    count = 0
+    while raw := blob.read(64 * 1024):
+        count += len(decoder.decode(raw))
+    count += len(decoder.decode(b"", final=True))
+    blob.seek(0)
+    return count
+
+
+def iter_codex_state_parts(
+    path: Path,
+    *,
+    state_kind: Literal["goals", "memories"],
+    page_size: int = CODEX_STATE_PAGE_ROWS,
+    text_chars: int = CODEX_STATE_MAX_TEXT_CHARS,
+    immutable: bool = False,
+) -> Iterator[CodexStatePart]:
+    """Read every valid state row in keyset pages and every text field in chunks.
+
+    The retained logical export is immutable. ``rowid`` is only an internal
+    traversal key; thread and item ids remain the public material coordinates.
+    """
+    if page_size < 1 or text_chars < 1:
+        raise ValueError("page_size and text_chars must be positive")
+    table = "thread_goals" if state_kind == "goals" else "stage1_outputs"
+    fields = ("objective",) if state_kind == "goals" else ("raw_memory", "rollout_summary")
+    with closing(_connect_readonly(path, immutable=immutable)) as conn:
+        conn.row_factory = sqlite3.Row
+        columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+        after_rowid: int | None = None
+        while True:
+            # A page carries metadata only. Even one provider-generated
+            # multi-gigabyte field never enters Python at once.
+            metadata = (
+                (
+                    "thread_id",
+                    "goal_id",
+                    "status",
+                    "token_budget",
+                    "tokens_used",
+                    "time_used_seconds",
+                    "created_at_ms",
+                    "updated_at_ms",
+                )
+                if state_kind == "goals"
+                else ("thread_id", "source_updated_at", "generated_at", "usage_count", "selected_for_phase2")
+            )
+            select = ["rowid AS source_rowid", *(name for name in metadata if name in columns)]
+            if state_kind == "memories" and "rollout_slug" in columns:
+                select.append(
+                    "(rollout_slug IS NOT NULL AND length(CAST(rollout_slug AS BLOB)) > 0) AS has_rollout_slug"
+                )
+            for field in fields:
+                select.append(f"({field} IS NULL) AS null_{field}" if field in columns else f"1 AS null_{field}")
+            where = "" if after_rowid is None else " WHERE rowid > ?"
+            params = (*((after_rowid,) if after_rowid is not None else ()), page_size)
+            rows = conn.execute(
+                f"SELECT {', '.join(select)} FROM {table}{where} ORDER BY rowid LIMIT ?",
+                params,
+            ).fetchall()
+            if not rows:
+                break
+            for row in rows:
+                source_rowid = int(row["source_rowid"])
+                thread_id = _row_str(row, "thread_id")
+                item_id = _row_str(row, "goal_id") if state_kind == "goals" and "goal_id" in columns else thread_id
+                if not thread_id or not item_id:
+                    yield CodexStatePart(thread_id, item_id, "invalid", {"source_rowid": source_rowid})
+                    continue
+                with ExitStack() as stack:
+                    chunks: dict[str, Iterator[str]] = {}
+                    first: dict[str, str] = {}
+                    following: dict[str, str | None] = {}
+                    char_lengths: dict[str, int] = {}
+                    for field in fields:
+                        if field in columns and not _row_int(row, f"null_{field}"):
+                            blob = stack.enter_context(conn.blobopen(table, field, source_rowid, readonly=True))
+                            if len(blob) > text_chars:
+                                char_lengths[field] = _blob_text_length_chars(blob)
+                            chunks[field] = _iter_blob_text_chunks(blob, text_chars)
+                        else:
+                            chunks[field] = iter(("",))
+                        first[field] = next(chunks[field])
+                        following[field] = next(chunks[field], None)
+                    if state_kind == "goals":
+                        payload: dict[str, object] = {
+                            "thread_id": thread_id,
+                            "goal_id": item_id,
+                            "objective": first["objective"],
+                            "status": _row_str(row, "status") if "status" in columns else "",
+                            "token_budget": _row_opt_int(row, "token_budget") if "token_budget" in columns else None,
+                            "tokens_used": _row_int(row, "tokens_used") if "tokens_used" in columns else 0,
+                            "time_used_seconds": _row_int(row, "time_used_seconds")
+                            if "time_used_seconds" in columns
+                            else 0,
+                            "created_at_ms": _row_int(row, "created_at_ms") if "created_at_ms" in columns else 0,
+                            "updated_at_ms": _row_int(row, "updated_at_ms") if "updated_at_ms" in columns else 0,
+                            "provider": "codex",
+                            "generated": False,
+                        }
+                    else:
+                        payload = {
+                            "thread_id": thread_id,
+                            "raw_memory": first["raw_memory"],
+                            "rollout_summary": first["rollout_summary"],
+                            "source_updated_at_ms": _row_int(row, "source_updated_at"),
+                            "generated_at_ms": _row_int(row, "generated_at"),
+                            "usage_count": _row_opt_int(row, "usage_count"),
+                            "has_rollout_slug": bool(_row_int(row, "has_rollout_slug"))
+                            if "rollout_slug" in columns
+                            else False,
+                            "selected_for_phase2": bool(_row_int(row, "selected_for_phase2")),
+                            "provider": "codex",
+                            "generated": True,
+                        }
+                    if any(chunk is not None for chunk in following.values()):
+                        payload["text_continuation"] = {
+                            field: {"length_chars": char_lengths[field], "chunk_chars": text_chars}
+                            for field, chunk in following.items()
+                            if chunk is not None
+                        }
+                    yield CodexStatePart(thread_id, item_id, "record", payload)
+                    for field, chunk in following.items():
+                        offset = len(first[field])
+                        while chunk is not None:
+                            successor = next(chunks[field], None)
+                            yield CodexStatePart(
+                                thread_id,
+                                f"{item_id}:{source_rowid}:{field}:{offset}",
+                                "text_chunk",
+                                {
+                                    "record_type": state_kind,
+                                    "thread_id": thread_id,
+                                    "item_id": item_id,
+                                    "field": field,
+                                    "offset_chars": offset,
+                                    "text": chunk,
+                                    "final": successor is None,
+                                    "provider": "codex",
+                                },
+                            )
+                            offset += len(chunk)
+                            chunk = successor
+            after_rowid = int(rows[-1]["source_rowid"])
 
 
 def _row_str(row: sqlite3.Row, key: str, default: str = "") -> str:
@@ -684,6 +849,7 @@ __all__ = [
     "CODEX_STATE_DB_MARKER",
     "CODEX_STATE_MAX_AGGREGATE_BYTES",
     "CODEX_STATE_MAX_ROWS",
+    "CODEX_STATE_PAGE_ROWS",
     "CODEX_STATE_MAX_TEXT_CHARS",
     "CODEX_STATE_FIDELITY",
     "CODEX_STATE_TABLE_FIDELITY",
@@ -695,6 +861,7 @@ __all__ = [
     "CodexStateDbClassification",
     "CodexStateTableClassification",
     "CodexStateReadBound",
+    "CodexStatePart",
     "CodexStateSnapshot",
     "CodexTableDisposition",
     "CodexThreadGoal",
@@ -707,4 +874,5 @@ __all__ = [
     "parse_codex_goals_db",
     "parse_codex_memories_db",
     "parse_codex_state_db",
+    "iter_codex_state_parts",
 ]
