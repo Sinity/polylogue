@@ -18,10 +18,12 @@ from __future__ import annotations
 import hashlib
 import json as _stdlib_json
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from json.encoder import encode_basestring as _encode_key
+from json.encoder import encode_basestring_ascii as _encode_ascii_key
 from math import isfinite
-from typing import Final, Literal
+from typing import Final, Literal, cast
 
 from polylogue.core.json import dumps_bytes
 
@@ -206,18 +208,62 @@ def canonical_bytes(value: object, profile: DigestProfile) -> bytes:
     ).encode("utf-8")
 
 
+#: Container levels :func:`stdlib_chunks` frames itself before handing each
+#: member to the C encoder whole. Two levels cover the large payloads hashed
+#: here (a session tree's item arrays, a batch of message payloads) while each
+#: encoded chunk stays one item's size.
+_STREAM_FRAME_DEPTH: Final = 2
+
+_STDLIB_ENCODERS: Final = {
+    ensure_ascii: _stdlib_json.JSONEncoder(sort_keys=True, separators=(",", ":"), ensure_ascii=ensure_ascii)
+    for ensure_ascii in (False, True)
+}
+
+
+def stdlib_chunks(value: object, *, ensure_ascii: bool, depth: int = _STREAM_FRAME_DEPTH) -> Iterator[str]:
+    """Yield the stdlib canonical JSON text of *value* in item-sized chunks.
+
+    The concatenation is byte-identical to ``JSONEncoder(sort_keys=True,
+    separators=(",", ":"))`` output. ``JSONEncoder.iterencode`` streams through
+    the pure-Python encoder, which costs about four times the C encoder that
+    only a one-shot ``encode`` reaches. This frames the outer ``depth``
+    container levels here and encodes every member with the C encoder, so
+    digesting a large tree neither pays the Python encoder nor materializes
+    the whole document as one string. A dict with any non-``str`` key is
+    encoded whole, because the encoder's key coercion and ordering apply.
+    """
+    encoder = _STDLIB_ENCODERS[ensure_ascii]
+    cls = type(value)
+    if depth <= 0 or not (cls is dict or cls is list or cls is tuple):
+        yield encoder.encode(value)
+        return
+    if cls is dict:
+        mapping = cast(dict[object, object], value)
+        if not all(type(key) is str for key in mapping):
+            yield encoder.encode(value)
+            return
+        quote = _encode_ascii_key if ensure_ascii else _encode_key
+        yield "{"
+        for index, key in enumerate(sorted(cast(dict[str, object], mapping))):
+            yield ("," if index else "") + quote(key) + ":"
+            yield from stdlib_chunks(mapping[key], ensure_ascii=ensure_ascii, depth=depth - 1)
+        yield "}"
+        return
+    yield "["
+    for index, item in enumerate(cast(list[object] | tuple[object, ...], value)):
+        if index:
+            yield ","
+        yield from stdlib_chunks(item, ensure_ascii=ensure_ascii, depth=depth - 1)
+    yield "]"
+
+
 def digest(value: object, profile: DigestProfile) -> str:
     """Return the SHA-256 hex digest of *value*'s canonical bytes under *profile*."""
     if profile.encoder == "core-json":
         return profile.digest_prefix + hashlib.sha256(canonical_bytes(value, profile)).hexdigest()
     prepared = value if _passthrough(profile) else _prepared(value, profile)
-    encoder = _stdlib_json.JSONEncoder(
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=profile.ensure_ascii,
-    )
     hasher = hashlib.sha256()
-    for chunk in encoder.iterencode(prepared):
+    for chunk in stdlib_chunks(prepared, ensure_ascii=profile.ensure_ascii):
         hasher.update(chunk.encode("utf-8"))
     return profile.digest_prefix + hasher.hexdigest()
 
@@ -261,5 +307,6 @@ __all__ = [
     "digest",
     "nfc",
     "normalized",
+    "stdlib_chunks",
     "profile_for",
 ]

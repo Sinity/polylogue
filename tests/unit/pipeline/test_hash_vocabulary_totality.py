@@ -205,3 +205,77 @@ def test_previously_hashable_payloads_keep_their_digest(payload: object) -> None
         "None": "641924dd2a7bb104",
     }[repr(payload)]
     assert hash_payload(_normalize_nested_for_hash(payload)).startswith(expected)
+
+
+def test_fast_walk_matches_the_declared_walk_over_mixed_payloads() -> None:
+    """The concrete-type fast walk lowers exactly as the declared walk does.
+
+    Anti-vacuity: skipping NFC on ``dict`` keys or string values in the fast
+    walk, or passing a ``set``/``Decimal``/``bytes`` leaf through unlowered,
+    makes the lowered values differ.
+    """
+    import random
+    from collections.abc import Mapping as MappingABC
+    from enum import IntEnum
+
+    from polylogue.pipeline.ids import _normalize_declared_for_hash
+
+    class Level(IntEnum):
+        HIGH = 2
+
+    class Frozen(MappingABC[str, object]):
+        def __init__(self, data: dict[str, object]) -> None:
+            self._data = data
+
+        def __getitem__(self, key: str) -> object:
+            return self._data[key]
+
+        def __iter__(self):  # type: ignore[no-untyped-def]
+            return iter(self._data)
+
+        def __len__(self) -> int:
+            return len(self._data)
+
+    leaves: list[object] = [
+        "",
+        "plain",
+        "café",
+        None,
+        0,
+        -1.5e-9,
+        True,
+        Level.HIGH,
+        Role.USER,
+        Decimal("2.5"),
+        b"\x00",
+        date(2024, 1, 2),
+        frozenset({"b", "a"}),
+    ]
+    rng = random.Random(11)
+
+    def tree(depth: int) -> object:
+        if depth == 0:
+            return rng.choice(leaves)
+        shape = rng.randrange(4)
+        children = {f"k{index}́" if index % 2 else f"k{index}": tree(depth - 1) for index in range(3)}
+        if shape == 0:
+            return children
+        if shape == 1:
+            return Frozen(children)
+        if shape == 2:
+            return tuple(children.values())
+        return list(children.values())
+
+    for _ in range(300):
+        payload = tree(4)
+        assert _normalize_nested_for_hash(payload) == _normalize_declared_for_hash(payload, path="payload")
+        assert hash_payload(_normalize_nested_for_hash(payload)) == hash_payload(
+            _normalize_declared_for_hash(payload, path="payload")
+        )
+
+
+def test_fast_walk_still_names_the_path_of_a_refused_value() -> None:
+    """Anti-vacuity: re-raising the fast walk's internal signal loses the path."""
+    with pytest.raises(UnhashablePayloadValueError) as caught:
+        _normalize_nested_for_hash({"outer": {"inner": [1, {"leaf": object()}]}})
+    assert "payload.outer.inner[].leaf" in str(caught.value)

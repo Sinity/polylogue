@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time
 from decimal import Decimal
 from enum import Enum
+from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeAlias, TypeVar, cast, overload
 
@@ -201,17 +202,26 @@ def bound_session_content_hash(convo: ParsedSession) -> ContentHash | None:
 
 
 def _hash_field_value(value: object) -> JSONValue:
+    cls = type(value)
+    if cls is str or value is None or cls is int or cls is bool or cls is float:
+        # Plain scalars carry neither ``model_dump`` nor a nested container.
+        return cast(JSONValue, _normalize_nested_for_hash(value))
     if hasattr(value, "model_dump"):
         value = value.model_dump(mode="json")
     elif isinstance(value, list):
         value = [item.model_dump(mode="json") if hasattr(item, "model_dump") else item for item in value]
-    if isinstance(value, Mapping):
+    if isinstance(value, Mapping) and type(value) is not dict:
         value = dict(value)
     return cast(JSONValue, _normalize_nested_for_hash(value))
 
 
+@cache
+def _sorted_hash_fields(fields: frozenset[str]) -> tuple[str, ...]:
+    return tuple(sorted(fields))
+
+
 def _model_hash_payload(model: object, fields: frozenset[str]) -> dict[str, JSONValue]:
-    return {field: _hash_field_value(getattr(model, field)) for field in sorted(fields)}
+    return {field: _hash_field_value(getattr(model, field)) for field in _sorted_hash_fields(fields)}
 
 
 # Sentinel values to distinguish None from empty in hash computations
@@ -518,24 +528,65 @@ def _normalize_nested_for_hash(value: object, *, path: str = "payload") -> objec
     written to an archive in the first place. ``Decimal`` is the one type that
     already hashed successfully, and its lowering is unchanged.
     """
+    try:
+        return _normalize_plain_for_hash(value)
+    except _OutsidePlainVocabularyError:
+        # Re-walk with field paths, so an unhashable value is refused by name.
+        return _normalize_declared_for_hash(value, path=path)
+
+
+class _OutsidePlainVocabularyError(Exception):
+    """Internal signal: the path-free fast walk met a value it cannot lower."""
+
+
+def _normalize_plain_for_hash(value: object) -> object:
+    """Path-free walk of :func:`_normalize_nested_for_hash` over concrete types.
+
+    Parser payloads are overwhelmingly plain ``dict``/``list``/``str``/number
+    trees. Checking the concrete builtins first skips the ABC ``isinstance``
+    chain and the per-node field-path string, which only an error message ever
+    reads. Numbers are matched by exact type because an ``IntEnum`` lowers to
+    its value; every other type is lowered by the declared walk, so the output
+    is identical by construction.
+    """
+    if value is None:
+        return _NULL_SENTINEL
+    if isinstance(value, str):
+        return _EMPTY_SENTINEL if value == "" else nfc(value)
+    if isinstance(value, dict):
+        return {
+            (nfc(key) if isinstance(key, str) else key): _normalize_plain_for_hash(item) for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_normalize_plain_for_hash(item) for item in value]
+    cls = type(value)
+    if cls is int or cls is float or cls is bool:
+        return value
+    try:
+        return _normalize_declared_for_hash(value, path="payload")
+    except UnhashablePayloadValueError:
+        raise _OutsidePlainVocabularyError from None
+
+
+def _normalize_declared_for_hash(value: object, *, path: str) -> object:
     if value is None:
         return _NULL_SENTINEL
     if isinstance(value, str):
         return _EMPTY_SENTINEL if value == "" else nfc(value)
     if isinstance(value, Mapping):
         return {
-            nfc(key) if isinstance(key, str) else key: _normalize_nested_for_hash(item, path=f"{path}.{key}")
+            nfc(key) if isinstance(key, str) else key: _normalize_declared_for_hash(item, path=f"{path}.{key}")
             for key, item in value.items()
         }
     if isinstance(value, (list, tuple)):
-        return [_normalize_nested_for_hash(item, path=f"{path}[]") for item in value]
+        return [_normalize_declared_for_hash(item, path=f"{path}[]") for item in value]
     if isinstance(value, (set, frozenset)):
         return sorted(
-            (_normalize_nested_for_hash(item, path=f"{path}{{}}") for item in value),
+            (_normalize_declared_for_hash(item, path=f"{path}{{}}") for item in value),
             key=_canonical_sort_key,
         )
     if isinstance(value, Enum):
-        return _normalize_nested_for_hash(value.value, path=path)
+        return _normalize_declared_for_hash(value.value, path=path)
     if isinstance(value, Decimal):
         return float(value)
     if isinstance(value, (bytes, bytearray, memoryview)):
@@ -700,12 +751,17 @@ def _message_hash_payload(message: ParsedMessage, message_id: str) -> dict[str, 
 
 def _message_payload(message: ParsedMessage, fields: frozenset[str]) -> dict[str, JSONValue]:
     """Build a message payload with the requested semantic field boundary."""
-    payload = _model_hash_payload(message, fields - {"blocks", "provider_message_id"})
+    payload = _model_hash_payload(message, _message_scalar_fields(fields))
     if message.blocks and not _is_redundant_text_only_block(message):
         payload["blocks"] = [_content_block_payload(b) for b in message.blocks]
     else:
         payload["blocks"] = _EMPTY_SENTINEL
     return payload
+
+
+@cache
+def _message_scalar_fields(fields: frozenset[str]) -> frozenset[str]:
+    return fields - {"blocks", "provider_message_id"}
 
 
 def _message_semantic_payload(message: ParsedMessage) -> dict[str, JSONValue]:
@@ -1561,8 +1617,7 @@ def _stream_session_tree_hash(convo: ParsedSession) -> str:
     digest = hashlib.sha256()
 
     def write(value: object) -> None:
-        for chunk in encoder.iterencode(value):
-            digest.update(chunk.encode("utf-8"))
+        digest.update(encoder.encode(value).encode("utf-8"))
 
     def literal(value: str) -> None:
         digest.update(value.encode("ascii"))
