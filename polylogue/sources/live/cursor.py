@@ -767,8 +767,11 @@ class CursorStore:
         )
 
     def _write_cursor_record_to_ops(self, record: CursorRecord) -> None:
+        # ``_connect_ops`` owns the commit (and defers it to an enclosing
+        # ``ops_batch``); a commit inside the upsert would publish each
+        # cursor of a batch on its own.
         with self._connect_ops() as conn:
-            self._write_cursor_record_on_conn(conn, record)
+            self._write_cursor_record_on_conn(conn, record, manage_transaction=False)
 
     def _sync_cursor_record_to_ops(self, record: CursorRecord) -> bool:
         def write() -> None:

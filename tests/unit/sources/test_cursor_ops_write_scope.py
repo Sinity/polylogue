@@ -168,33 +168,32 @@ def test_scope_refuses_an_unleased_entrant(store: CursorStore) -> None:
                 pass
 
 
-def _attempt_phase(store: CursorStore, attempt_id: str) -> str | None:
+def _cursor_size(store: CursorStore, path: Path) -> int | None:
     with sqlite3.connect(store._ops_db_path) as conn:
-        row = conn.execute("SELECT phase FROM ingest_attempts WHERE attempt_id = ?", (attempt_id,)).fetchone()
-    return None if row is None else str(row[0])
+        row = conn.execute("SELECT stat_size FROM ingest_cursor WHERE source_path = ?", (str(path),)).fetchone()
+    return None if row is None else int(row[0])
 
 
 def test_ops_batch_commits_its_writes_once_at_the_end(store: CursorStore) -> None:
-    """Anti-vacuity: a per-write commit makes the first update visible to
+    """Anti-vacuity: a per-write commit makes the first cursor visible to
     another connection before the batch ends."""
-    attempt_id = store.begin_ingest_attempt(paths=[Path("/tmp/a.jsonl")], input_bytes=1, queued_file_count=1)
+    first, second = Path("/tmp/a.jsonl"), Path("/tmp/b.jsonl")
     with store.ops_write_scope():
         with store.ops_batch():
-            store.update_ingest_attempt(attempt_id, phase="first")
-            assert _attempt_phase(store, attempt_id) != "first"
-            store.update_ingest_attempt(attempt_id, phase="second")
-        assert _attempt_phase(store, attempt_id) == "second"
+            store.set(first, 10)
+            assert _cursor_size(store, first) is None
+            store.set(second, 20)
+        assert (_cursor_size(store, first), _cursor_size(store, second)) == (10, 20)
 
 
 def test_ops_batch_rolls_back_as_a_unit(store: CursorStore) -> None:
-    """Anti-vacuity: committing inside the batch leaves "first" behind."""
-    attempt_id = store.begin_ingest_attempt(paths=[Path("/tmp/a.jsonl")], input_bytes=1, queued_file_count=1)
-    before = _attempt_phase(store, attempt_id)
+    """Anti-vacuity: committing inside the batch leaves the first cursor behind."""
+    path = Path("/tmp/a.jsonl")
     with pytest.raises(RuntimeError, match="cursor write failed"):
         with store.ops_write_scope(), store.ops_batch():
-            store.update_ingest_attempt(attempt_id, phase="first")
+            store.set(path, 10)
             raise RuntimeError("cursor write failed")
-    assert _attempt_phase(store, attempt_id) == before
+    assert _cursor_size(store, path) is None
 
 
 def test_ops_batch_requires_a_scope(store: CursorStore) -> None:
