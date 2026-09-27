@@ -5384,6 +5384,7 @@ class LiveBatchProcessor:
                                 file_mtime=file_mtime,
                                 provider_hint=entry_provider_hint,
                                 blob_store=blob_store,
+                                bound_provider=bound_location_provider(fallback_provider),
                             ),
                         ):
                             if raw_data.blob_hash is None:
@@ -5428,6 +5429,16 @@ class LiveBatchProcessor:
                             )
                     except ZipBombError as exc:
                         logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
+                    except ForeignOriginContentError as exc:
+                        # A refused member is named on its own; admissible
+                        # siblings in the archive are still acquired.
+                        emit(
+                            "live.ingest.zip_member_refused",
+                            level=WARNING,
+                            outcome="refused",
+                            source_path=f"{path}:{info.filename}",
+                            reason=f"{exc.code}: {exc}",
+                        )
         except (zipfile.BadZipFile, OSError) as exc:
             # Members stream into the archive's blob staging: a full or
             # read-only archive is not a property of this ZIP, and reporting

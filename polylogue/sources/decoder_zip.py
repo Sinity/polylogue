@@ -266,6 +266,7 @@ def process_zip(
     from .cursor import _ParseContext
     from .dispatch import GROUP_PROVIDERS, ForeignOriginContentError, bound_location_provider
     from .emitter import _SessionEmitter
+    from .origin_specs import path_declaration_refuses_session
 
     resolved_sidecar_data: SidecarData = sidecar_data if sidecar_data is not None else {}
 
@@ -284,6 +285,9 @@ def process_zip(
             path_classification = classify_artifact_path(name, provider=entry_provider_hint)
             session_artifact: ArtifactClassification | None = None
             if path_classification is not None and not path_classification.parse_as_session:
+                if path_declaration_refuses_session(entry_provider_hint, name):
+                    # Declared raw-only evidence is never probed for sessions.
+                    continue
                 session_artifact = zip_entry_session_artifact(zf, info, provider=entry_provider_hint)
                 if session_artifact is None:
                     continue

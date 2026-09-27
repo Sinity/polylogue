@@ -8,6 +8,7 @@ import time
 import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from itertools import islice
 from pathlib import Path
 from typing import IO, TypeAlias
 
@@ -39,7 +40,7 @@ from polylogue.storage.cursor_state import CursorStatePayload
 
 from . import decoders as _decoders
 from .decoders import _zip_entry_provider_hint
-from .dispatch import GROUP_PROVIDERS, detect_provider, detect_provider_from_raw_bytes_evidence
+from .dispatch import GROUP_PROVIDERS, bound_location_provider, detect_provider, detect_provider_from_raw_bytes_evidence
 from .parsers.base import RawSessionData
 from .sqlite_snapshot import is_sqlite_path, original_sqlite_source_path, snapshot_sqlite_to_blob
 
@@ -391,6 +392,8 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
     that decided it, and elapsed detect-stage time -- the per-file
     observability trail that was previously missing entirely.
     """
+    from polylogue.sources.origin_specs import path_declaration_refuses_session
+
     # Deferred import: ``polylogue.sources.live`` (package ``__init__``) pulls
     # in ``batch.py``, which imports this module at module level -- a
     # module-level import here would be circular (same hazard documented on
@@ -420,6 +423,18 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
             detection_evidence = "sqlite_snapshot.snapshot_sqlite_to_blob (Hermes sqlite state/sidecar)"
     else:
         if context.retained_blob is None:
+            if bound_location_provider(context.provider_hint) is not None and not path_declaration_refuses_session(
+                context.provider_hint, context.path
+            ):
+                # Validate from the source path before streaming, so a refused
+                # file never enters the pending publication batch.
+                with context.path.open("rb") as source_handle:
+                    detect_provider_from_raw_bytes_evidence(
+                        source_handle.read(_DETECTION_PREFIX_SIZE),
+                        context.path.name,
+                        context.provider_hint,
+                        truncated_tail_ok=True,
+                    )
             blob_hash, blob_size = stream_path_to_blob(
                 context.blob_store,
                 context.path,
@@ -431,8 +446,6 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
             # byte read below comes from the retained content-addressed input.
             blob_hash, blob_size = context.retained_blob.sha256, context.retained_blob.size_bytes
         prefix = context.blob_store.read_prefix(blob_hash, _DETECTION_PREFIX_SIZE)
-        from polylogue.sources.origin_specs import path_declaration_refuses_session
-
         with stage_timings.stage("detect"):
             if path_declaration_refuses_session(context.provider_hint, context.path):
                 # Declared raw-only evidence (a prompt log, a sidecar) is
@@ -822,9 +835,17 @@ def iter_zip_entry_raw_data(
     # exact bytes rather than decoding it as a JSON payload to split. Export
     # assets are arbitrary binary (polylogue-ximhz), so the split route's
     # UTF-8 decode would fail the whole archive read, not just the member.
-    if entry_provider_hint in GROUP_PROVIDERS or path_declaration_refuses_session(
-        entry_provider_hint, context.entry.filename
-    ):
+    if path_declaration_refuses_session(entry_provider_hint, context.entry.filename):
+        yield _stream_preserved_zip_entry(zf, context, provider_hint=entry_provider_hint)
+        return
+    if entry_provider_hint in GROUP_PROVIDERS:
+        if context.bound_provider is not None:
+            # Preserved grouped members skip the splitter, so validate a
+            # bounded record sample against the archive location first.
+            with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
+                sample = list(islice(_decoders._iter_json_stream(handle, context.entry.filename), 32))
+            if sample:
+                detect_provider(sample, expected=context.bound_provider)
         yield _stream_preserved_zip_entry(zf, context, provider_hint=entry_provider_hint)
         return
 
