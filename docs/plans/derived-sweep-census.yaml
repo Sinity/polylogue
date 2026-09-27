@@ -193,6 +193,13 @@ sites:
     reason: "the unbound read the census paired with this function's writes is `SELECT 1 FROM sessions LIMIT 1` at write.py:1356 -- the fresh_build emptiness precondition, which raises AssertionError('fresh_build requires an empty archive generation') and selects no rewrite subject at all. Every row this function writes is the session it was handed. The census over-reports here by construction, as its module docstring states"
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
     function: "_materialize_inherited_prefix"
+    subject: "attachment_refs"
+    kind: "state_selected_subject"
+    scope: "no_where"
+    classification: producer_scoped_transaction
+    reason: "the attachment_refs read joins the refs this same call just copied into the child through the per-child TEMP plan (plan.new_id = message_id), to refresh the counts of exactly those attachments inside the parent write (polylogue-gy2yu). It selects no stale derived row for repair"
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_materialize_inherited_prefix"
     subject: "messages"
     kind: "state_selected_subject"
     scope: "no_where"
