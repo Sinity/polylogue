@@ -520,6 +520,10 @@ def _encode_spilled_text(raw: IO[bytes], sink: _Sink) -> None:
 _SPILL_OBJECT_ENTRIES = 100_000
 
 
+def _entry_row(key: str, digest: bytes | None) -> tuple[bytes, bytes, bytes | None]:
+    return (key.encode("utf-8", "surrogatepass"), nfc(key).encode("utf-8", "surrogatepass"), digest)
+
+
 class _Entries:
     """One object's members: raw key -> value digest, ``None`` for no identity.
 
@@ -539,14 +543,14 @@ class _Entries:
                 self._table = sqlite3.connect("")
                 self._table.execute("PRAGMA journal_mode = OFF")
                 self._table.execute(
-                    "CREATE TABLE entries (key TEXT PRIMARY KEY, normalized TEXT NOT NULL, digest BLOB)"
+                    "CREATE TABLE entries (key BLOB PRIMARY KEY, normalized BLOB NOT NULL, digest BLOB)"
                 )
                 self._table.executemany(
-                    "INSERT INTO entries VALUES (?, ?, ?)", ((k, nfc(k), d) for k, d in self._memory.items())
+                    "INSERT INTO entries VALUES (?, ?, ?)", (_entry_row(k, d) for k, d in self._memory.items())
                 )
                 self._memory.clear()
             return
-        self._table.execute("INSERT OR REPLACE INTO entries VALUES (?, ?, ?)", (key, nfc(key), digest))
+        self._table.execute("INSERT OR REPLACE INTO entries VALUES (?, ?, ?)", _entry_row(key, digest))
 
     def poisoned(self) -> bool:
         if self._table is None:
@@ -559,12 +563,12 @@ class _Entries:
             return
         count = self._table.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
         sink.update(b"o%d;" % count)
-        # SQLite orders TEXT by UTF-8 bytes, which is Python's code-point
-        # order except for surrogates; the entries hold none that reach here.
+        # Keys are stored as UTF-8 (surrogates passed through), whose byte
+        # order is code-point order, so this matches the in-memory sort.
         for normalized, digest in self._table.execute(
             "SELECT normalized, digest FROM entries ORDER BY normalized, digest"
         ):
-            _encode_text(b"k", normalized, sink)
+            _encode_text(b"k", bytes(normalized).decode("utf-8", "surrogatepass"), sink)
             sink.update(digest)
 
     def close(self) -> None:

@@ -203,3 +203,52 @@ def test_a_long_backslash_run_scans_in_linear_time() -> None:
     started = time.perf_counter()
     payload_content_identity(payload)
     assert time.perf_counter() - started < 20
+
+
+def test_a_large_object_orders_members_through_scratch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: order or de-duplicate spilled members differently from the
+    in-memory path and the identity diverges from the decoder."""
+    from polylogue.core import content_identity
+
+    monkeypatch.setattr(content_identity, "_SPILL_OBJECT_ENTRIES", 4)
+    value = {f"k{index % 7}́" if index % 3 else f"z{index}": index for index in range(40)}
+    payload = json.dumps(value).encode() + b""
+    duplicated = b'{"b":1,"a":2,"c":3,"d":4,"e":5,"a":9,"f":1e400,"f":6}'
+    assert payload_content_identity(payload) == _decoded_identity(payload)
+    assert payload_content_identity(duplicated) == _decoded_identity(duplicated)
+
+
+def test_an_invalid_escape_is_rejected_before_the_rest_of_a_spilled_string(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anti-vacuity: carry the invalid escape to end of input and the whole
+    suffix is held in memory; here it only has to resolve like the decoder."""
+    from polylogue.core import content_identity
+
+    monkeypatch.setattr(content_identity, "_SPILL_STRING_BYTES", 64)
+    monkeypatch.setattr(content_identity, "_STREAM_READ_BYTES", 128)
+    payload = b'["' + b"a" * 100 + b"\\x" + b"b" * 5000 + b'"]'
+    assert payload_content_identity(payload) == sha256(payload).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("payload", "token"),
+    [
+        (b'{"n": ' + b"1" * 64 + b"}", "number token"),
+        (b'{"' + b"k" * 200 + b'": 1}', "object key"),
+        (b'["a' + "́".encode() * 40 + b'"]', "combining character sequence"),
+    ],
+)
+def test_a_token_beyond_the_physical_value_limit_is_refused_by_name(
+    payload: bytes, token: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: fall back to a byte digest or hash the token anyway and
+    no ``ContentIdentityRefusal`` is raised."""
+    from polylogue.core import content_identity
+
+    monkeypatch.setattr(content_identity, "_SPILL_STRING_BYTES", 16)
+    monkeypatch.setattr(content_identity, "_STREAM_READ_BYTES", 8)
+    monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 32)
+    with pytest.raises(content_identity.ContentIdentityRefusal) as refusal:
+        payload_content_identity(payload)
+    assert refusal.value.token == token
