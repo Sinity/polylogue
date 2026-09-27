@@ -42,6 +42,7 @@ from polylogue.storage.raw_authority import (
     raw_replay_application_receipt_from_connection,
     validate_raw_replay_application_receipt,
 )
+from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
 
 if TYPE_CHECKING:
@@ -145,11 +146,11 @@ class RawObservationDerivation:
     @contextmanager
     def _read(self) -> Iterator[sqlite3.Connection]:
         source = self.archive_root / "source.db"
-        conn = sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=5.0)
+        conn = open_readonly_connection(source, timeout_class="background-read", validate_schema=False)
         try:
             conn.row_factory = sqlite3.Row
             index = ArchiveLocation.resolve(self.archive_root).active_index_path
-            conn.execute("ATTACH DATABASE ? AS index_tier", (f"file:{index}?mode=ro",))
+            attach_readonly_database(conn, index, alias="index_tier")
             conn.execute("BEGIN")
             yield conn
         finally:

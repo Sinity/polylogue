@@ -1136,6 +1136,7 @@ def open_readonly_connection(
     validate_schema: bool = True,
     profile: SQLiteConnectionProfile = READ_CONNECTION_PROFILE,
     timeout_class: str = "interactive-read",
+    check_same_thread: bool = True,
 ) -> sqlite3.Connection:
     """Open a read-only SQLite connection with canonical read pragmas applied.
 
@@ -1161,6 +1162,9 @@ def open_readonly_connection(
     ``validate_schema=False`` is reserved for diagnostic readers that need to
     inspect a tier before reporting its schema mismatch. It does not change the
     read-only connection profile or grant write access.
+
+    ``check_same_thread=False`` is reserved for a cached handle whose caller
+    already serializes access and may close it from a different thread.
     """
     if profile.role != "read" or not profile.query_only:
         raise ValueError("open_readonly_connection requires a query-only read profile")
@@ -1191,7 +1195,7 @@ def open_readonly_connection(
         if descriptor_uri is None:
             raise RuntimeError(f"cannot open selected SQLite database through a descriptor-bound path: {path}")
         database_uri = descriptor_uri
-    conn = connect_measured(database_uri, uri=True, timeout=timeout)
+    conn = connect_measured(database_uri, uri=True, timeout=timeout, check_same_thread=check_same_thread)
     try:
         if validate_schema:
             _assert_schema_supported(conn, path, tier)

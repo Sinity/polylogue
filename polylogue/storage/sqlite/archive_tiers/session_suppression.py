@@ -45,6 +45,7 @@ from pathlib import Path
 
 from polylogue.core.enums import AssertionKind
 from polylogue.logging import WARNING, emit
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 __all__ = [
     "SuppressionRefusal",
@@ -231,7 +232,9 @@ def _cached_user_connection(path: Path) -> sqlite3.Connection:
         if cached is not None:
             return cached
         try:
-            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0, check_same_thread=False)
+            conn = open_readonly_connection(
+                path, validate_schema=False, timeout_class="interactive-read", check_same_thread=False
+            )
         except sqlite3.Error as exc:
             raise SuppressionTierUnreadableError(
                 f"cannot open the durable user tier at {path} to check session suppressions: {exc}"

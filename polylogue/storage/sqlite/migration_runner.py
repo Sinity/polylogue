@@ -1389,7 +1389,14 @@ def _validate_source_continuity_rebind_delta(
     """
 
     try:
-        with closing(sqlite3.connect(f"{live_path.resolve(strict=True).as_uri()}?mode=ro", uri=True)) as connection:
+        with closing(
+            open_readonly_connection(
+                live_path.resolve(strict=True),
+                tier=ArchiveTier.SOURCE,
+                validate_schema=False,
+                timeout_class="offline-bulk",
+            )
+        ) as connection:
             connection.execute(
                 "ATTACH DATABASE ? AS backup_source",
                 (f"{backup_path.resolve(strict=True).as_uri()}?mode=ro&immutable=1",),
