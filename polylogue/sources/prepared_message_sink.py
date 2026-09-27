@@ -15,7 +15,7 @@ from urllib.parse import quote
 import ijson
 
 from polylogue.sources.decoder_json import _json_subtree, normalize_ijson_stdlib_numbers
-from polylogue.sources.parsers.base import ParsedMessage, ParsedSessionEvent
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession, ParsedSessionEvent
 
 _ACTIVE_PARENT_LOOKUP_SQL = (
     "SELECT parent_id FROM prepared_message INDEXED BY prepared_message_provider "
@@ -530,6 +530,261 @@ class ChatGPTNodeMapping(Mapping[str, object]):
 
     def __len__(self) -> int:
         return int(self.conn.execute("SELECT COUNT(*) FROM chatgpt_node").fetchone()[0])
+
+
+class _SingleChatGPTNode(Mapping[str, object]):
+    """Expose one node to the canonical normalizer without collecting its peers."""
+
+    def __init__(self, key: str, node: dict[str, object]) -> None:
+        self.key = key
+        self.node = node
+
+    def __getitem__(self, key: str) -> object:
+        if key != self.key:
+            raise KeyError(key)
+        return self.node
+
+    def __iter__(self) -> Iterator[str]:
+        yield self.key
+
+    def __len__(self) -> int:
+        return 1
+
+
+def _simple_chatgpt_node(key: str, node: object) -> bool:
+    """A deliberately small shape with no attachment, timing, or event carriers."""
+    if not isinstance(node, dict) or set(node) - {"id", "parent", "children", "message"}:
+        return False
+    if node.get("id") != key or not isinstance(node.get("parent"), (str, type(None))):
+        return False
+    children = node.get("children", [])
+    if not isinstance(children, list) or not all(isinstance(child, str) for child in children):
+        return False
+    message = node.get("message")
+    if not isinstance(message, dict) or set(message) - {
+        "id",
+        "author",
+        "create_time",
+        "update_time",
+        "content",
+        "metadata",
+        "status",
+        "end_turn",
+        "weight",
+        "recipient",
+    }:
+        return False
+    if not isinstance(message.get("id"), str) or not message["id"]:
+        return False
+    author = message.get("author")
+    if not isinstance(author, dict) or set(author) - {"role", "name", "metadata"}:
+        return False
+    if author.get("role") not in {"user", "assistant"} or author.get("metadata", {}) != {}:
+        return False
+    if not isinstance(author.get("name"), (str, type(None))):
+        return False
+    if message.get("metadata", {}) != {}:
+        return False
+    if not isinstance(message.get("create_time"), (int, float, type(None))):
+        return False
+    if not isinstance(message.get("update_time"), (int, float, type(None))):
+        return False
+    if not isinstance(message.get("status"), (str, type(None))):
+        return False
+    if not isinstance(message.get("end_turn"), (bool, type(None))):
+        return False
+    if message.get("recipient") not in (None, "all"):
+        return False
+    if message.get("weight", 1) != 1:
+        return False
+    content = message.get("content")
+    if not isinstance(content, dict) or set(content) != {"content_type", "parts"}:
+        return False
+    parts = content.get("parts")
+    if isinstance(parts, list) and any(isinstance(part, str) and "sandbox:" in part for part in parts):
+        # The canonical normalizer reports truncated sandbox-link evidence.
+        # These links also create attachments, so they must go directly to
+        # the collecting fallback without a speculative emitting pass.
+        return False
+    return (
+        content.get("content_type") == "text"
+        and isinstance(parts, list)
+        and bool(parts)
+        and all(isinstance(part, str) for part in parts)
+        and any(part for part in parts)
+    )
+
+
+def prepare_simple_chatgpt_mapping(
+    envelope: dict[str, object], mapping: ChatGPTNodeMapping, store: SqliteMessageStore, fallback_id: str
+) -> ParsedSession | None:
+    """Spill a conservative text-only ChatGPT mapping into the ordinary sink.
+
+    Return None for any shape that requires the full parser. The initial scan
+    changes only scratch tables; a fallback can ignore them safely.
+    """
+    from polylogue.sources.parsers import chatgpt
+    from polylogue.sources.parsers.base import AdmissionLedger, AdmissionUnit
+
+    if any(
+        key != "mapping" and not isinstance(value, (str, int, float, bool, type(None)))
+        for key, value in envelope.items()
+    ):
+        return None
+    current_node = envelope.get("current_node")
+    if not isinstance(current_node, str) or not current_node or current_node not in mapping:
+        return None
+    conn = store.conn
+    conn.execute(
+        "CREATE TABLE chatgpt_simple_node (node_key TEXT PRIMARY KEY, ordinal INTEGER NOT NULL, "
+        "parent_key TEXT, sibling INTEGER NOT NULL, timestamp REAL, message_id TEXT NOT NULL UNIQUE)"
+    )
+    conn.execute("CREATE TABLE chatgpt_simple_sibling (parent_key TEXT PRIMARY KEY, next_ordinal INTEGER NOT NULL)")
+    conn.execute(
+        "CREATE TABLE chatgpt_simple_child (parent_key TEXT NOT NULL, child_key TEXT NOT NULL, "
+        "sibling INTEGER NOT NULL, PRIMARY KEY (parent_key, child_key)) WITHOUT ROWID"
+    )
+    for ordinal, key in enumerate(mapping):
+        node = mapping[key]
+        if not _simple_chatgpt_node(key, node):
+            return None
+        assert isinstance(node, dict)
+        parent = node.get("parent")
+        sibling_key = parent if isinstance(parent, str) and parent else ""
+        children = node.get("children", [])
+        assert isinstance(children, list)
+        for child_ordinal, child in enumerate(children):
+            conn.execute(
+                "INSERT OR IGNORE INTO chatgpt_simple_child VALUES (?, ?, ?)",
+                (key, child, child_ordinal),
+            )
+        row = conn.execute(
+            "SELECT next_ordinal FROM chatgpt_simple_sibling WHERE parent_key = ?", (sibling_key,)
+        ).fetchone()
+        sibling = row[0] if row else 0
+        conn.execute(
+            "INSERT INTO chatgpt_simple_sibling VALUES (?, 1) "
+            "ON CONFLICT(parent_key) DO UPDATE SET next_ordinal = next_ordinal + 1",
+            (sibling_key,),
+        )
+        message = node["message"]
+        assert isinstance(message, dict)
+        if conn.execute("SELECT 1 FROM chatgpt_simple_node WHERE message_id = ?", (message["id"],)).fetchone():
+            return None
+        conn.execute(
+            "INSERT INTO chatgpt_simple_node VALUES (?, ?, ?, ?, ?, ?)",
+            (key, ordinal, parent, sibling, chatgpt._coerce_float(message.get("create_time")), message["id"]),
+        )
+
+    # The full parser treats a missing current node as no active path. Keep
+    # cycle detection in SQLite rather than a set proportional to path depth.
+    conn.execute("CREATE TABLE chatgpt_simple_active (node_key TEXT PRIMARY KEY, depth INTEGER NOT NULL)")
+    current = envelope.get("current_node")
+    depth = 0
+    while isinstance(current, str):
+        row = conn.execute("SELECT parent_key FROM chatgpt_simple_node WHERE node_key = ?", (current,)).fetchone()
+        if row is None or conn.execute("SELECT 1 FROM chatgpt_simple_active WHERE node_key = ?", (current,)).fetchone():
+            break
+        conn.execute("INSERT INTO chatgpt_simple_active VALUES (?, ?)", (current, depth))
+        depth += 1
+        current = row[0]
+    leaf_row = conn.execute("SELECT node_key FROM chatgpt_simple_active ORDER BY depth LIMIT 1").fetchone()
+    active_leaf_node = leaf_row[0] if leaf_row else None
+    has_active_path = depth > 0
+    has_timestamp = (
+        conn.execute("SELECT 1 FROM chatgpt_simple_node WHERE timestamp IS NOT NULL LIMIT 1").fetchone() is not None
+    )
+    conn.execute(
+        "CREATE TABLE chatgpt_simple_message (node_key TEXT PRIMARY KEY, ordinal INTEGER NOT NULL, "
+        "timestamp REAL, message_json TEXT NOT NULL, provider_id TEXT NOT NULL, parent_key TEXT)"
+    )
+    conn.execute("CREATE INDEX chatgpt_simple_provider ON chatgpt_simple_message(provider_id)")
+    ledger = AdmissionLedger()
+    ledger.expect(AdmissionUnit.OUTER_RECORD, 1)
+    ledger.materialized(AdmissionUnit.OUTER_RECORD, 0, "conversation")
+    default_model = chatgpt._string_value(envelope, "default_model_slug")
+    for key in mapping:
+        node = mapping[key]
+        assert isinstance(node, dict)
+        normalized, attachments = chatgpt.extract_messages_from_mapping(
+            _SingleChatGPTNode(key, node),
+            default_model_slug=default_model,
+        )
+        if len(normalized) != 1 or attachments:
+            return None
+        message = normalized[0]
+        row = conn.execute(
+            "SELECT ordinal, parent_key, sibling, timestamp FROM chatgpt_simple_node WHERE node_key = ?", (key,)
+        ).fetchone()
+        assert row is not None
+        ordinal, parent_key, sibling, timestamp = row
+        if parent_key:
+            declared = conn.execute(
+                "SELECT sibling FROM chatgpt_simple_child WHERE parent_key = ? AND child_key = ?",
+                (parent_key, key),
+            ).fetchone()
+            if declared is not None:
+                sibling = declared[0]
+        message = message.model_copy(
+            update={
+                "position": ordinal,
+                "branch_index": sibling if parent_key else 0,
+                "variant_index": sibling if parent_key else 0,
+                "is_active_path": (
+                    conn.execute("SELECT 1 FROM chatgpt_simple_active WHERE node_key = ?", (key,)).fetchone()
+                    is not None
+                    if has_active_path
+                    else None
+                ),
+                "is_active_leaf": key == active_leaf_node if active_leaf_node is not None else None,
+                "parent_message_provider_id": parent_key or None,
+            }
+        )
+        conn.execute(
+            "INSERT INTO chatgpt_simple_message VALUES (?, ?, ?, ?, ?, ?)",
+            (key, ordinal, timestamp, _message_json(message), message.provider_message_id, parent_key),
+        )
+        content = node["message"]["content"]
+        parts = content["parts"]
+        ledger.expect(AdmissionUnit.MESSAGE, 1)
+        ledger.materialized(AdmissionUnit.MESSAGE, ordinal, key)
+        ledger.expect(AdmissionUnit.PART, len(parts))
+        for _ in parts:
+            ledger.materialized(AdmissionUnit.PART, ledger.next_ordinal(AdmissionUnit.PART), "text")
+        ledger.expect(AdmissionUnit.BLOCK, len(message.blocks))
+        for block in message.blocks:
+            ledger.materialized(AdmissionUnit.BLOCK, ledger.next_ordinal(AdmissionUnit.BLOCK), block.type.value)
+
+    sink = store.new_sink()
+    order = "ORDER BY timestamp IS NULL, timestamp, ordinal" if has_timestamp else "ORDER BY ordinal"
+    for _node_key, encoded, parent_key in conn.execute(
+        f"SELECT node_key, message_json, parent_key FROM chatgpt_simple_message {order}"
+    ):
+        message = ParsedMessage.model_validate_json(encoded)
+        if parent_key:
+            owner = conn.execute(
+                "SELECT provider_id FROM chatgpt_simple_message WHERE node_key = ?", (parent_key,)
+            ).fetchone()
+            if owner is None:
+                owner = conn.execute(
+                    "SELECT provider_id FROM chatgpt_simple_message WHERE provider_id = ? LIMIT 1", (parent_key,)
+                ).fetchone()
+            message = message.model_copy(update={"parent_message_provider_id": owner[0] if owner else None})
+        sink.append(message)
+    shell = chatgpt.parse({**envelope, "mapping": {}}, fallback_id)
+    return shell.model_copy(
+        update={
+            "messages": sink,
+            "active_leaf_message_provider_id": (
+                conn.execute(
+                    "SELECT provider_id FROM chatgpt_simple_message WHERE node_key = ?", (active_leaf_node,)
+                ).fetchone()[0]
+                if active_leaf_node is not None
+                else None
+            ),
+            "unit_accounting": ledger.close(),
+        }
+    )
 
 
 def read_chatgpt_mapping_object(

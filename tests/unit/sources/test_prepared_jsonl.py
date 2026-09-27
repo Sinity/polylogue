@@ -6,7 +6,7 @@ import json
 import os
 import shutil
 import sqlite3
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
@@ -24,6 +24,7 @@ from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import iter_grok_export_events
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+from polylogue.sources.parsers import chatgpt
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.sources.prepared_jsonl import PreparedJsonl, _write_artifact, prepare_jsonl_blob
 from polylogue.sources.prepared_message_sink import (
@@ -1458,6 +1459,249 @@ def test_chatgpt_mapping_object_preparation_matches_parser_and_duplicate_keys(
         attachment.model_dump(mode="json") for attachment in expected.attachments
     ]
     assert actual.content_hash == session_content_hash(expected)
+    artifact.discard()
+
+
+def test_chatgpt_simple_mapping_normalizes_one_node_at_a_time_with_parser_parity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = ChatGPTExportBuilder("simple-spill").add_node("user", "First").add_node("assistant", "Second").build()
+    mapping = record["mapping"]
+    assert isinstance(mapping, dict)
+    first, second = mapping.values()
+    assert isinstance(first, dict) and isinstance(second, dict)
+    second["parent"] = first["id"]
+    # Non-monotonic timestamps exercise the parser's ordering contract after
+    # scratch sorting; the parent edge exercises branch and active-path state.
+    second_message = second["message"]
+    first_message = first["message"]
+    assert isinstance(second_message, dict) and isinstance(first_message, dict)
+    first_message.update(
+        {"update_time": 2.0, "status": "finished_successfully", "end_turn": True, "weight": 1.0, "recipient": "all"}
+    )
+    second_message.update(
+        {"update_time": 3.0, "status": "finished_successfully", "end_turn": True, "weight": 1.0, "recipient": "all"}
+    )
+    second_message["author"] = {"role": "assistant", "name": "assistant", "metadata": {}}
+    second_message["create_time"] = 1.0
+    for index in range(300):
+        node_id = f"extra-{index}"
+        mapping[node_id] = {
+            "id": node_id,
+            "parent": first["id"],
+            "message": {
+                "id": node_id,
+                "author": {"role": "assistant"},
+                "create_time": float(index + 3),
+                "content": {"content_type": "text", "parts": [f"Neutral answer {index}"]},
+            },
+        }
+    record["current_node"] = "extra-299"
+    first["children"] = ["extra-1", "extra-0"]  # declared order overrides their mapping order
+    expected = parse_payload(Provider.CHATGPT, [record], "fallback")[0]
+    source = tmp_path / "chatgpt.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+
+    normalized_sizes: list[int] = []
+    original = chatgpt.extract_messages_from_mapping
+
+    def observe(mapping: Mapping[str, object], *args: object, **kwargs: object) -> object:
+        normalized_sizes.append(len(mapping))
+        assert len(mapping) <= 1
+        return original(mapping, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(chatgpt, "extract_messages_from_mapping", observe)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "scratch"),
+    )
+    assert artifact.error is None
+    assert len(normalized_sizes) == len(mapping) + 1  # includes the empty envelope shell
+    actual = artifact.load_sessions()[0]
+    assert [item.model_dump(mode="json") for item in actual.messages] == [
+        item.model_dump(mode="json") for item in expected.messages
+    ]
+    assert [event.model_dump(mode="json") for event in actual.session_events] == [
+        event.model_dump(mode="json") for event in expected.session_events
+    ]
+    assert actual.unit_accounting == expected.unit_accounting
+    assert actual.active_leaf_message_provider_id == expected.active_leaf_message_provider_id
+    assert actual.content_hash == session_content_hash(expected)
+    artifact.discard()
+
+
+def test_retained_chatgpt_simple_mapping_replays_sealed_messages(tmp_path: Path) -> None:
+    import polylogue.sources.revision_backfill as revision_backfill
+
+    record = (
+        ChatGPTExportBuilder("retained-simple")
+        .add_node("user", "Neutral prompt")
+        .add_node("assistant", "Neutral answer")
+        .build()
+    )
+    payload = json.dumps(record).encode()
+    blob_root = tmp_path / "blob"
+    blob_hash, _size = BlobStore(blob_root).write_from_bytes(payload)
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
+        with sqlite3.connect(path) as conn:
+            initialize_archive_tier(conn, tier)
+    artifact = revision_backfill.prepare_retained_jsonl_artifact(
+        "synthetic-raw",
+        Provider.CHATGPT.value,
+        blob_hash,
+        str(tmp_path / "snapshot.json"),
+        "full",
+        None,
+        str(blob_root),
+        str(source_db),
+        str(index_db),
+        str(tmp_path / "prepared"),
+        "2025-01-02T03:04:05Z",
+    )
+    assert artifact.error is None
+    sessions = list(artifact.session_sequence())
+    assert len(sessions) == 1
+    assert isinstance(sessions[0].messages, SqliteMessageSink)
+    assert [message.text for message in sessions[0].messages] == ["Neutral prompt", "Neutral answer"]
+    assert sessions[0].content_hash == session_content_hash(sessions[0])
+    artifact.discard()
+
+
+def test_chatgpt_missing_current_node_uses_collecting_parser(tmp_path: Path) -> None:
+    record = ChatGPTExportBuilder("missing-current").add_node("user", "Neutral prompt").build()
+    record["current_node"] = "missing-node"
+    expected = parse_payload(Provider.CHATGPT, [record], "fallback")[0]
+    source = tmp_path / "chatgpt.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "scratch"),
+    )
+    assert artifact.error is None
+    actual = artifact.load_sessions()[0]
+    assert [message.model_dump(mode="json") for message in actual.messages] == [
+        message.model_dump(mode="json") for message in expected.messages
+    ]
+    assert actual.content_hash == session_content_hash(expected)
+    artifact.discard()
+
+
+@pytest.mark.parametrize("default_model_slug", [123, ""])
+def test_chatgpt_simple_mapping_matches_default_model_coercion(tmp_path: Path, default_model_slug: object) -> None:
+    record = ChatGPTExportBuilder("model-coercion").add_node("assistant", "Neutral answer").build()
+    record["default_model_slug"] = default_model_slug
+    expected = parse_payload(Provider.CHATGPT, [record], "fallback")[0]
+    source = tmp_path / "chatgpt.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "scratch"),
+    )
+    assert artifact.error is None
+    actual = artifact.load_sessions()[0]
+    assert [message.model_name for message in actual.messages] == [message.model_name for message in expected.messages]
+    assert actual.content_hash == session_content_hash(expected)
+    artifact.discard()
+
+
+def test_chatgpt_simple_mapping_preserves_empty_parent_key_on_active_path(tmp_path: Path) -> None:
+    record = ChatGPTExportBuilder("empty-parent").add_node("user", "First").add_node("assistant", "Second").build()
+    mapping = record["mapping"]
+    assert isinstance(mapping, dict)
+    first, second = mapping.values()
+    assert isinstance(first, dict) and isinstance(second, dict)
+    first["id"] = ""
+    first_message = first["message"]
+    assert isinstance(first_message, dict)
+    first_message["id"] = "parent-message"
+    second["parent"] = ""
+    record["mapping"] = {"": first, "node-2": second}
+    expected = parse_payload(Provider.CHATGPT, [record], "fallback")[0]
+    source = tmp_path / "chatgpt.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "scratch"),
+    )
+    assert artifact.error is None
+    actual = artifact.load_sessions()[0]
+    assert [message.is_active_path for message in actual.messages] == [
+        message.is_active_path for message in expected.messages
+    ]
+    assert actual.content_hash == session_content_hash(expected)
+    artifact.discard()
+
+
+def test_chatgpt_empty_current_node_uses_collecting_parser(tmp_path: Path) -> None:
+    record = ChatGPTExportBuilder("empty-current").add_node("user", "Neutral prompt").build()
+    mapping = record["mapping"]
+    assert isinstance(mapping, dict)
+    node = next(iter(mapping.values()))
+    assert isinstance(node, dict)
+    node["id"] = ""
+    record["mapping"] = {"": node}
+    record["current_node"] = ""
+    expected = parse_payload(Provider.CHATGPT, [record], "fallback")[0]
+    source = tmp_path / "chatgpt.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "scratch"),
+    )
+    assert artifact.error is None
+    actual = artifact.load_sessions()[0]
+    assert [message.is_active_path for message in actual.messages] == [
+        message.is_active_path for message in expected.messages
+    ]
+    assert actual.active_leaf_message_provider_id == expected.active_leaf_message_provider_id
+    assert actual.content_hash == session_content_hash(expected)
+    artifact.discard()
+
+
+def test_chatgpt_sandbox_fallback_emits_truncation_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    links = " ".join(f"sandbox:/mnt/data/file-{index}.txt" for index in range(513))
+    record = ChatGPTExportBuilder("sandbox-links").add_node("assistant", links).build()
+    source = tmp_path / "chatgpt.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+    emitted: list[str] = []
+
+    def observe(event: str, **_kwargs: object) -> None:
+        emitted.append(event)
+
+    monkeypatch.setattr(chatgpt, "emit", observe)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "scratch"),
+    )
+    assert artifact.error is None
+    assert emitted.count("sources.chatgpt.sandbox_links_bounded") == 1
+    assert len(artifact.load_sessions()[0].attachments) == 512
     artifact.discard()
 
 
