@@ -26,6 +26,13 @@ def test_mypy_command_isolated_by_checkout(tmp_path: Path) -> None:
     assert gate.mypy_command(root=tmp_path) == [str(tmp_path / ".venv/bin/python"), "-m", "devtools.mypy_gate"]
 
 
+def _stamped_seed(shared: Path) -> None:
+    """A complete shared cache for the default inputs."""
+    shared.mkdir(parents=True)
+    (shared / "seed.db").write_text("seed", encoding="utf-8")
+    (shared / mypy_gate._STAMP).write_text(mypy_gate._input_key([]), encoding="utf-8")
+
+
 def _stub_checker(lane: Path, body: str) -> None:
     checker = lane / ".venv" / "bin" / "mypy"
     checker.parent.mkdir(parents=True, exist_ok=True)
@@ -44,8 +51,7 @@ def test_gate_checks_on_its_checkout_cache_and_publishes_it(monkeypatch: pytest.
     common.mkdir()
     monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
     shared = common / "polylogue-mypy" / "cache"
-    shared.mkdir(parents=True)
-    (shared / "seed.db").write_text("seed", encoding="utf-8")
+    _stamped_seed(shared)
     # mypy exits 1 on type errors with a complete cache; that cache is published.
     _stub_checker(tmp_path, 'echo "$2" > "$2/checked-by"\nexit 1\n')
 
@@ -55,6 +61,7 @@ def test_gate_checks_on_its_checkout_cache_and_publishes_it(monkeypatch: pytest.
     assert (local / "seed.db").read_text(encoding="utf-8") == "seed"
     assert (local / "checked-by").read_text(encoding="utf-8").strip() == str(local)
     assert (shared / "checked-by").is_file()
+    assert mypy_gate._is_complete(local, mypy_gate._input_key([]))
 
 
 def test_a_crashed_check_does_not_publish_its_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -63,14 +70,69 @@ def test_a_crashed_check_does_not_publish_its_cache(monkeypatch: pytest.MonkeyPa
     common.mkdir()
     monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
     shared = common / "polylogue-mypy" / "cache"
-    shared.mkdir(parents=True)
-    (shared / "seed.db").write_text("seed", encoding="utf-8")
+    _stamped_seed(shared)
     _stub_checker(tmp_path, 'echo partial > "$2/partial"\nexit 2\n')
 
     assert mypy_gate.main(["--root", str(tmp_path)]) == 2
 
     assert not (shared / "partial").exists()
     assert (shared / "seed.db").is_file()
+    # The crashed checkout's own cache is not complete either: the next run re-checks.
+    assert not mypy_gate._is_complete(tmp_path / ".cache" / "mypy", mypy_gate._input_key([]))
+
+
+def test_an_unstamped_shared_cache_is_not_a_seed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A partial or differently configured cache is cold, not warm.
+
+    Anti-vacuity: treat any non-empty directory as warm and the checkout seeds
+    from the partial cache, so ``partial.db`` reaches the checkout.
+    """
+    common = tmp_path / ".git"
+    common.mkdir()
+    monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
+    shared = common / "polylogue-mypy" / "cache"
+    shared.mkdir(parents=True)
+    (shared / "partial.db").write_text("interrupted", encoding="utf-8")
+    (shared / mypy_gate._STAMP).write_text(mypy_gate._input_key(["--python-version", "3.12"]), encoding="utf-8")
+    _stub_checker(tmp_path, "exit 0\n")
+
+    assert mypy_gate.main(["--root", str(tmp_path)]) == 0
+
+    assert not (tmp_path / ".cache" / "mypy" / "partial.db").exists()
+
+
+def test_seeding_preserves_cache_file_timestamps(tmp_path: Path) -> None:
+    """mypy's filesystem cache rejects a data file whose mtime moved.
+
+    Anti-vacuity: drop ``--preserve=timestamps`` from the copy and the seeded
+    file carries the copy time.
+    """
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    data = shared / "module.data.json"
+    data.write_text("{}", encoding="utf-8")
+    os.utime(data, ns=(1_000_000_000_000_000_000, 1_000_000_000_000_000_000))
+    local = tmp_path / "checkout" / ".cache" / "mypy"
+
+    mypy_gate._seed(local, shared)
+
+    assert (local / "module.data.json").stat().st_mtime_ns == 1_000_000_000_000_000_000
+
+
+def test_two_gates_in_one_checkout_do_not_share_a_running_cache(tmp_path: Path) -> None:
+    """Gates in the same checkout take turns on its cache.
+
+    Anti-vacuity: drop the checkout-local lock and both stubs hold the cache at
+    once, so one exits 9.
+    """
+    lane = _worktrees(tmp_path, 1)[0]
+    _stamped_seed(lane / ".git" / "polylogue-mypy" / "cache")
+    _stub_checker(
+        lane,
+        'if ! mkdir "$2/busy" 2>/dev/null; then exit 9; fi\nsleep 0.5\nrmdir "$2/busy"\nexit 0\n',
+    )
+
+    _run_lanes([lane, lane])
 
 
 def _worktrees(tmp_path: Path, count: int) -> list[Path]:
@@ -125,8 +187,7 @@ def test_warm_sibling_worktrees_check_side_by_side(tmp_path: Path) -> None:
     """
     lanes = _worktrees(tmp_path, 3)
     shared = lanes[0] / ".git" / "polylogue-mypy" / "cache"
-    shared.mkdir(parents=True)
-    (shared / "seed.db").write_text("seed", encoding="utf-8")
+    _stamped_seed(shared)
     observed = tmp_path / "observed"
     observed.mkdir()
     for index, lane in enumerate(lanes):

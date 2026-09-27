@@ -13,6 +13,13 @@ never cold. The one cold case left is a repository with no shared cache yet.
 That run holds the lock while it checks, so concurrent siblings wait for it
 and then seed from its result, and at most one cold scan runs.
 
+A cache counts as warm only when it carries a completion stamp keyed to the
+effective inputs (mypy's version and the passthrough arguments), written after
+a run that left a complete cache; a partial, interrupted or differently
+configured cache is cold. Each checkout's own seed-check-publish lifecycle is
+serialized by a checkout-local lock, so two gates in one checkout never write
+the same cache at once.
+
 The shared cache was also self-defeating. Sibling worktrees hold different
 source, so each locked run rewrote the entries the previous sibling had just
 written, and every run re-analysed the divergence while its siblings queued
@@ -27,6 +34,9 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import hashlib
+import importlib.metadata
+import json
 import os
 import shutil
 import subprocess
@@ -37,6 +47,8 @@ from pathlib import Path
 #: mypy exits 0 (clean) or 1 (type errors) with a complete cache; anything
 #: else is a crash or a usage error and may leave a partial one.
 _CACHE_COMPLETE_EXITS = frozenset({0, 1})
+#: Written inside a cache after a run that left it complete.
+_STAMP = ".polylogue-complete"
 
 
 def _git_common_dir(root: Path) -> Path:
@@ -66,14 +78,32 @@ def _locked(lock_path: Path) -> Iterator[None]:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
-def _has_cache(path: Path) -> bool:
-    return path.is_dir() and any(path.iterdir())
+def _input_key(mypy_args: list[str]) -> str:
+    """Digest of what decides whether a cache can be reused."""
+    try:
+        version = importlib.metadata.version("mypy")
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown"
+    return hashlib.sha256(json.dumps([version, mypy_args]).encode("utf-8")).hexdigest()
+
+
+def _is_complete(path: Path, key: str) -> bool:
+    try:
+        return (path / _STAMP).read_text(encoding="utf-8") == key
+    except OSError:
+        return False
 
 
 def _copy_tree(source: Path, target: Path) -> None:
-    """Copy *source* to the absent *target*, sharing extents where the filesystem can."""
+    """Copy *source* to the absent *target*, sharing extents where the filesystem can.
+
+    Timestamps are preserved: mypy's filesystem cache rejects an entry whose
+    data file's mtime differs from the one its metadata recorded.
+    """
     completed = subprocess.run(
-        ["cp", "-R", "--reflink=auto", "--", str(source), str(target)], capture_output=True, check=False
+        ["cp", "-R", "--reflink=auto", "--preserve=timestamps", "--", str(source), str(target)],
+        capture_output=True,
+        check=False,
     )
     if completed.returncode != 0:
         shutil.rmtree(target, ignore_errors=True)
@@ -102,8 +132,14 @@ def _publish(local: Path, shared: Path) -> None:
     shutil.rmtree(retired, ignore_errors=True)
 
 
-def _run_mypy(mypy: Path, cache: Path, root: Path, mypy_args: list[str]) -> int:
-    return subprocess.run([str(mypy), "--cache-dir", str(cache), *mypy_args], cwd=root, check=False).returncode
+def _check(mypy: Path, cache: Path, root: Path, mypy_args: list[str], key: str) -> int:
+    """Run mypy on *cache*, stamping it complete only after a run that left it so."""
+    cache.mkdir(parents=True, exist_ok=True)
+    (cache / _STAMP).unlink(missing_ok=True)
+    returncode = subprocess.run([str(mypy), "--cache-dir", str(cache), *mypy_args], cwd=root, check=False).returncode
+    if returncode in _CACHE_COMPLETE_EXITS:
+        (cache / _STAMP).write_text(key, encoding="utf-8")
+    return returncode
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -121,25 +157,29 @@ def main(argv: list[str] | None = None) -> int:
         print(f"mypy gate: missing {mypy}", file=sys.stderr)
         return 127
 
-    if not _has_cache(local):
-        with _locked(lock_path):
-            if _has_cache(shared):
-                _seed(local, shared)
-            else:
-                # No sibling has a cache yet: this is the one cold scan. It
-                # runs under the lock so concurrent siblings wait and seed
-                # from its result instead of scanning cold beside it.
-                local.mkdir(parents=True, exist_ok=True)
-                returncode = _run_mypy(mypy, local, root, mypy_args)
-                if returncode in _CACHE_COMPLETE_EXITS:
-                    _publish(local, shared)
-                return returncode
+    key = _input_key(mypy_args)
+    local.parent.mkdir(parents=True, exist_ok=True)
+    # Lock order is always checkout, then shared, so the two cannot deadlock.
+    with _locked(local.parent / "mypy.lock"):
+        if not _is_complete(local, key):
+            with _locked(lock_path):
+                if _is_complete(shared, key):
+                    _seed(local, shared)
+                else:
+                    # No sibling has a usable cache: this is the one cold
+                    # scan. It runs under the shared lock so concurrent
+                    # siblings wait and seed from its result instead of
+                    # scanning cold beside it.
+                    returncode = _check(mypy, local, root, mypy_args, key)
+                    if returncode in _CACHE_COMPLETE_EXITS:
+                        _publish(local, shared)
+                    return returncode
 
-    returncode = _run_mypy(mypy, local, root, mypy_args)
-    if returncode in _CACHE_COMPLETE_EXITS:
-        with _locked(lock_path):
-            _publish(local, shared)
-    return returncode
+        returncode = _check(mypy, local, root, mypy_args, key)
+        if returncode in _CACHE_COMPLETE_EXITS:
+            with _locked(lock_path):
+                _publish(local, shared)
+        return returncode
 
 
 if __name__ == "__main__":
