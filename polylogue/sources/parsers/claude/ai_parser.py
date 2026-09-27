@@ -912,25 +912,29 @@ def _compaction_summary_events(chat_messages: list[object], kept_message_ids: se
     apply, and placing a summary message into claude.ai's branched message tree
     (variant and attachment-owner coordinates) is not done here.
     """
-    # One event per surviving message: normalize_chat_messages collapses
-    # duplicate records of one native id to the richest revision, so a summary
-    # on a superseded duplicate must not produce a second event.
-    # An ID-less record is its own message (the normalizer keeps it under a
-    # content-derived identity), so it is keyed by its list index instead.
+    # One event per retained message. normalize_chat_messages keeps a repeated
+    # native id as separate messages under occurrence-suffixed evidence keys,
+    # so each occurrence keeps its own summary; keying by native id alone
+    # would collapse them. An ID-less record is its own message (the
+    # normalizer keeps it under a content-derived identity), so it is keyed by
+    # its list index instead.
     by_message: dict[str | int, tuple[str | None, Mapping[str, object], tuple[str, str | None, str | None]]] = {}
+    occurrences: dict[str, int] = {}
     for index, item in enumerate(chat_messages):
         if not isinstance(item, Mapping):
             continue
+        message_id = _first_identity_field(item, "uuid", "id", "message_id", "messageId", "provider_message_id")
+        occurrence = 0
+        if message_id is not None:
+            occurrence = occurrences.get(message_id, 0)
+            occurrences[message_id] = occurrence + 1
         found = _compaction_summary_text(item)
         if found is None:
             continue
-        message_id = _first_identity_field(item, "uuid", "id", "message_id", "messageId", "provider_message_id")
         if message_id is not None and message_id not in kept_message_ids:
             continue
-        key: str | int = message_id if message_id is not None else index
-        current = by_message.get(key)
-        if current is None or len(found[0]) > len(current[2][0]):
-            by_message[key] = (message_id, item, found)
+        key: str | int = f"{message_id}:occurrence:{occurrence}" if message_id is not None else index
+        by_message[key] = (message_id, item, found)
     events: list[ParsedSessionEvent] = []
     for message_id, item, found in by_message.values():
         summary_text, start_timestamp, stop_timestamp = found

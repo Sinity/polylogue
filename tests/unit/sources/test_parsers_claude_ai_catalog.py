@@ -970,7 +970,8 @@ def test_claude_ai_compaction_summary_persists_as_event() -> None:
     """claude.ai's compaction summary is the context the model continued from.
 
     Anti-vacuity: remove ``_compaction_summary_events`` from ``parse_ai`` and
-    the summary text is dropped.
+    the summary text is dropped; key events by native id alone and one of the
+    two retained ``m2`` messages loses its summary.
     """
     payload = {
         "uuid": "claude-compacted",
@@ -1005,12 +1006,17 @@ def test_claude_ai_compaction_summary_persists_as_event() -> None:
 
     session = parse_ai(payload, "fallback")
 
-    # A duplicate record of m2 yields one summary event, the richest revision's.
+    # The normalizer keeps a repeated native id as separate messages
+    # (occurrence-suffixed evidence keys), so each keeps its own summary.
+    assert [message.provider_message_id for message in session.messages].count("m2") == 2
     summaries = [event for event in session.session_events if event.event_type == "claude_ai_compaction_summary"]
-    assert len(summaries) == 1
-    assert summaries[0].source_message_provider_id == "m2"
-    assert summaries[0].payload["summary"] == "Earlier we planned the parser work."
-    assert summaries[0].payload["stop_timestamp"] == "2026-01-01T00:04:30Z"
+    assert {event.source_message_provider_id for event in summaries} == {"m2"}
+    assert sorted(event.payload["summary"] for event in summaries) == [
+        "Earlier we planned the parser work.",
+        "Earlier.",
+    ]
+    richest = next(event for event in summaries if event.payload["summary"] == "Earlier we planned the parser work.")
+    assert richest.payload["stop_timestamp"] == "2026-01-01T00:04:30Z"
     assert any(message.model_effort == "high" for message in session.messages)
 
 
