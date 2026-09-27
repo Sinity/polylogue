@@ -453,6 +453,34 @@ async def test_unavailable_source_root_keeps_pending_file_retryable(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_root_outage_keeps_failed_sibling_after_later_ack(tmp_path: Path) -> None:
+    root = tmp_path / "source"
+    root.mkdir()
+    failed, accepted = (root / name for name in ("a.json", "b.json"))
+    failed.write_text("{}")
+    accepted.write_text("{}")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+    watcher = SimpleNamespace(intake_revision=lambda _source: 0)
+    now = [0.0]
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+        clock=lambda: now[0],
+    )
+    page = await adapter.discover(limit=2)
+    assert [item.payload for item in page] == [failed, accepted]
+    await adapter.acknowledge(page[1])
+
+    parked = tmp_path / "parked"
+    root.rename(parked)
+    with pytest.raises(WalkRefusedError, match="source root"):
+        await adapter.discover(limit=2)
+    parked.rename(root)
+    retry = await adapter.discover(limit=2)
+    assert [item.payload for item in retry] == [failed]
+
+
+@pytest.mark.asyncio
 async def test_live_retryable_pending_file_yields_to_queued_rescan(tmp_path: Path) -> None:
     """An unacknowledged live page must not pin a newer file before its cursor."""
     root = tmp_path / "source"
@@ -739,6 +767,24 @@ async def test_mixed_fresh_page_keeps_failed_sibling_retryable(tmp_path: Path, v
     assert failed in watcher.admitted
 
 
+@pytest.mark.asyncio
+async def test_fresh_ack_clears_obsolete_local_retry_debt(tmp_path: Path) -> None:
+    carrier = tmp_path / "capture.json"
+    carrier.write_text("{}")
+    source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
+    watcher = SimpleNamespace(intake_revision=lambda _source: 0)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+        clock=lambda: 0.0,
+    )
+    adapter._fresh_retry_debt[carrier] = 5.0
+    page = await adapter.discover(limit=1)
+    assert [item.payload for item in page] == [carrier]
+    await adapter.acknowledge(page[0])
+    assert adapter.retry_due_in_s is None
+
+
 def test_symlink_alias_releases_local_retry_debt(tmp_path: Path) -> None:
     root = tmp_path / "source"
     root.mkdir()
@@ -762,6 +808,32 @@ def test_symlink_alias_releases_local_retry_debt(tmp_path: Path) -> None:
     assert adapter._due_retry_paths(2) == []
     assert alias not in adapter._fresh_retry_debt
     assert adapter.retry_due_in_s is None
+
+
+def test_inaccessible_nested_carrier_keeps_local_retry_debt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "source"
+    root.mkdir()
+    nested = root / "nested" / "capture.json"
+    nested.parent.mkdir()
+    nested.write_text("{}")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+    watcher = SimpleNamespace(intake_revision=lambda _source: 0)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+        clock=lambda: 5.0,
+    )
+    adapter._fresh_retry_debt[nested] = 5.0
+    original_lstat = Path.lstat
+
+    def inaccessible_lstat(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+        if path == nested:
+            raise PermissionError(path)
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", inaccessible_lstat)
+    assert adapter._due_retry_paths(1) == [nested]
+    assert adapter.retry_due_in_s == 5.0
 
 
 @pytest.mark.asyncio
@@ -815,6 +887,17 @@ async def test_partially_planned_local_retry_rotates_past_poison(tmp_path: Path)
         if healthy in watcher.admitted:
             break
     assert healthy in watcher.admitted
+
+
+@pytest.mark.asyncio
+async def test_multiplex_ownership_does_not_keep_released_pages() -> None:
+    source = FakeAdapter("configured_local", ["file-0"])
+    multiplex = MultiplexIntakeAdapter((source,))
+    for index in range(300):
+        source.pending = [f"file-{index}"]
+        page = await multiplex.discover(limit=1)
+        assert [item.item_id for item in page] == [f"file-{index}"]
+        assert len(multiplex._by_item) == 1
 
 
 @pytest.mark.asyncio

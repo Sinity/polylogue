@@ -117,6 +117,7 @@ class FileIntakeAdapter(IntakeAdapter):
         self._fresh_pending: list[Path] = []
         self._fresh_page_paths: tuple[Path, ...] = ()
         self._fresh_page_pending = False
+        self._root_refused_pending = False
         self._retry_state_lock = threading.Lock()
         self._fresh_retry_debt: dict[Path, float] = {}
         self._overflow_rescan_due_at: float | None = None
@@ -160,6 +161,7 @@ class FileIntakeAdapter(IntakeAdapter):
         self._fresh_pending.clear()
         self._fresh_page_paths = ()
         self._fresh_page_pending = False
+        self._root_refused_pending = False
         self._fresh_exhausted = False
         self._fresh_exhausted_at = None
         self._rescan_after_walk = False
@@ -209,11 +211,15 @@ class FileIntakeAdapter(IntakeAdapter):
         if not self.source.root.is_dir():
             # A missing mount is a refusal, not the disappearance of every
             # pending carrier. Keep the page for a later retry.
-            self._fresh_page_pending = False
+            self._root_refused_pending = True
             raise WalkRefusedError(
                 "intake discovery could not read a source root",
                 [WalkFault(self.source.root, "source root is unavailable")],
             )
+        if self._root_refused_pending:
+            self._root_refused_pending = False
+            if self._fresh_page_pending:
+                return list(self._fresh_page_paths[:limit])
         if self._fresh_page_pending:
             # Nothing from this page reached acknowledgement. Advance the
             # current walk; retry these paths without rewalking the source.
@@ -441,7 +447,17 @@ class FileIntakeAdapter(IntakeAdapter):
                 continue
             if not self.source.root.is_dir():
                 break
-            if not self._pending_path_is_live(path) or not self._owns_retry_path(path):
+            try:
+                mode = path.lstat().st_mode
+            except (FileNotFoundError, NotADirectoryError):
+                stale_local.append(path)
+                continue
+            except OSError:
+                # Nested permissions can obscure a retained carrier without
+                # proving that it vanished or changed ownership.
+                due_local.append(path)
+                continue
+            if not stat.S_ISREG(mode) or not self._owns_retry_path(path):
                 stale_local.append(path)
                 continue
             due_local.append(path)
@@ -759,6 +775,8 @@ class FileIntakeAdapter(IntakeAdapter):
             return
         payload = item.payload
         if isinstance(payload, (str, Path)):
+            with self._retry_state_lock:
+                self._fresh_retry_debt.pop(Path(payload), None)
             if Path(payload) in self._fresh_page_paths:
                 self._fresh_page_paths = tuple(path for path in self._fresh_page_paths if path != Path(payload))
                 self._fresh_page_pending = bool(self._fresh_page_paths)
@@ -870,6 +888,9 @@ class MultiplexIntakeAdapter(IntakeAdapter):
     async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
         if limit <= 0:
             return ()
+        # Ownership is needed only between this page's discovery and its
+        # admission/acknowledgement; prior unacknowledged pages are rediscovered.
+        self._by_item.clear()
         adapters = self.schedulable_adapters()
         if not adapters:
             return ()
