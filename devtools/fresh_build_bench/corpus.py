@@ -42,6 +42,20 @@ ORIGIN_PREFIXES: Final[tuple[tuple[str, str], ...]] = (
 )
 
 
+_CHECKOUT = Path(__file__).resolve().parents[2]
+
+
+def refuse_inside_checkout(path: Path, what: str) -> None:
+    """Refuse a corpus, work or scratch path inside this checkout.
+
+    They hold copies of real transcripts and archives built from them; a
+    tracked tree is public.
+    """
+    resolved = path.resolve()
+    if resolved == _CHECKOUT or _CHECKOUT in resolved.parents:
+        raise ValueError(f"{what} must be outside the checkout ({_CHECKOUT}): {path}")
+
+
 def origin_for(relative: str) -> str:
     for prefix, origin in ORIGIN_PREFIXES:
         if relative.startswith(prefix):
@@ -72,8 +86,8 @@ def corpus_digest(files: Iterable[CorpusFile]) -> str:
     return digest.hexdigest()
 
 
-def seal(root: Path, *, kind: str, parameters: dict[str, Any]) -> dict[str, Any]:
-    """Hash every file under ``home/`` and ``exports/`` and write the manifest."""
+def _hash_tree(root: Path) -> list[CorpusFile]:
+    """Every file under ``home/`` and ``exports/`` with its current bytes."""
     files: list[CorpusFile] = []
     for top in ("home", "exports"):
         base = root / top
@@ -85,6 +99,13 @@ def seal(root: Path, *, kind: str, parameters: dict[str, Any]) -> dict[str, Any]
                 relative = path.relative_to(root).as_posix()
                 files.append(CorpusFile(relative, path.stat().st_size, _sha256(path), origin_for(relative)))
     files.sort(key=lambda entry: entry.path)
+    return files
+
+
+def seal(root: Path, *, kind: str, parameters: dict[str, Any]) -> dict[str, Any]:
+    """Hash every file under ``home/`` and ``exports/`` and write the manifest."""
+    root.mkdir(parents=True, exist_ok=True)
+    files = _hash_tree(root)
     by_origin: dict[str, dict[str, int]] = defaultdict(lambda: {"files": 0, "bytes": 0})
     for item in files:
         by_origin[item.origin]["files"] += 1
@@ -111,14 +132,24 @@ def load_manifest(root: Path) -> dict[str, Any]:
 
 
 def verify_manifest(root: Path, manifest: dict[str, Any]) -> None:
-    """Refuse a corpus whose bytes no longer match its seal."""
-    files = []
-    for relative, size, sha256, origin in manifest["files"]:
-        path = root / relative
-        if path.stat().st_size != size:
+    """Refuse a corpus whose bytes no longer match its seal.
+
+    Every file is re-hashed and the tree re-listed, so an edit that keeps a
+    file's size, or a file added after sealing, is refused too.
+    """
+    sealed = {row[0]: (row[1], row[2]) for row in manifest["files"]}
+    current = _hash_tree(root)
+    present = {item.path: (item.bytes, item.sha256) for item in current}
+    if added := sorted(set(present) - set(sealed)):
+        raise ValueError(f"corpus has files added since sealing: {', '.join(added[:5])}")
+    if missing := sorted(set(sealed) - set(present)):
+        raise ValueError(f"corpus lost files since sealing: {', '.join(missing[:5])}")
+    for relative, (size, sha256) in sealed.items():
+        if present[relative][0] != size:
             raise ValueError(f"corpus file changed size since sealing: {relative}")
-        files.append(CorpusFile(relative, size, sha256, origin))
-    if corpus_digest(files) != manifest["digest"]:
+        if present[relative][1] != sha256:
+            raise ValueError(f"corpus file changed content since sealing: {relative}")
+    if corpus_digest(current) != manifest["digest"]:
         raise ValueError("corpus manifest digest does not match its file list")
 
 
@@ -247,13 +278,18 @@ def corpus_from_files(out: Path, files: Sequence[Path], *, home: Path) -> dict[s
     """
     if out.exists() and any(out.iterdir()):
         raise ValueError(f"corpus directory must be absent or empty: {out}")
-    roots = [source.root.resolve() for source in default_sample_sources(home)]
+    sources = [(source.root.resolve(), source.suffixes) for source in default_sample_sources(home)]
     home = home.resolve()
     for file in files:
         resolved = file.resolve(strict=True)
-        if not any(root in resolved.parents for root in roots):
+        admitted = [suffixes for root, suffixes in sources if root in resolved.parents]
+        if not admitted:
             raise ValueError(f"{file} is not under a default source root of {home}")
+        # The watcher cursors only its declared transcript suffixes; any other
+        # file would never be admitted, and the build could not go terminal.
+        if resolved.suffix.lower() not in admitted[0]:
+            raise ValueError(f"{file} is not a transcript its source root admits ({', '.join(admitted[0])})")
         destination = out / "home" / resolved.relative_to(home)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(resolved, destination)
-    return seal(out, kind="sample", parameters={"selection": "explicit", "files": len(files)})
+    return seal(out, kind="files", parameters={"selection": "explicit", "files": len(files)})

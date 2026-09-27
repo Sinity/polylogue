@@ -1690,12 +1690,11 @@ class LiveBatchProcessor:
                     )
                 excluded_by_path.update(full_result.excluded)
                 detection_fallbacks_by_path.update(full_result.detection_fallbacks)
-                logger.info(
-                    "live.watcher: batch ingested %s — %d in %.1fs (%.1f/s)",
-                    source_name,
-                    len(full_result.succeeded),
-                    parse_elapsed,
-                    len(full_result.succeeded) / max(parse_elapsed, 0.01),
+                emit(
+                    "live.ingest.source_group",
+                    source_name=source_name,
+                    files=len(full_result.succeeded),
+                    duration_ms=parse_elapsed * 1000,
                 )
                 if full_result.write_hold_exhausted:
                     # The cursors above are durable now, so ending the unit

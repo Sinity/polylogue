@@ -9,13 +9,29 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from devtools.fresh_build_bench.corpus import SampleSource, load_manifest, sample_real, seal, verify_manifest
+from devtools.fresh_build_bench.corpus import (
+    SampleSource,
+    corpus_from_files,
+    load_manifest,
+    sample_real,
+    seal,
+    verify_manifest,
+)
 from devtools.fresh_build_bench.profile_report import thread_group_label
-from devtools.fresh_build_bench.report import analyse_batches, analyse_events, evaluate_budgets, projection
-from devtools.fresh_build_bench.run import REQUIRED_READINESS_DOMAINS, Observation
+from devtools.fresh_build_bench.report import (
+    _derive_dependents,
+    _ts,
+    analyse_batches,
+    analyse_events,
+    compare,
+    evaluate_budgets,
+    projection,
+)
+from devtools.fresh_build_bench.run import REQUIRED_READINESS_DOMAINS, Observation, RunConfig, _daemon_env
 from devtools.fresh_build_bench.sampler import thread_group
 
 
@@ -34,11 +50,7 @@ def test_event_reduction_scopes_intake_and_writer_share_to_promotion(tmp_path: P
                 _event("02.000", "daemon.cold_build.preparation"),
                 _event("10.000", "live.ingest.chunk", files=2, bytes=100, duration_ms=5000),
                 _event("10.000", "daemon.writer.released", actor="watcher.live_ingest.full", hold_ms=4000, queued=1),
-                _event(
-                    "12.000",
-                    "stdlib.record",
-                    error_detail="live.watcher: batch ingested codex — 2 in 5.0s (0.4/s)",
-                ),
+                _event("12.000", "live.ingest.source_group", source_name="codex", files=2, duration_ms=5000),
                 _event("20.000", "live.ingest.chunk", files=1, bytes=50, duration_ms=2000),
                 _event("20.000", "daemon.cold_build.generation_promoted"),
                 _event("50.000", "live.ingest.chunk", files=1, bytes=10, duration_ms=1000),
@@ -133,6 +145,112 @@ def test_seal_detects_a_changed_file(tmp_path: Path) -> None:
     transcript.write_text('{"type":"session_meta","extra":1}\n', encoding="utf-8")
     with pytest.raises(ValueError, match="changed size"):
         verify_manifest(corpus, load_manifest(corpus))
+
+
+def test_seal_detects_a_same_size_edit_and_an_added_file(tmp_path: Path) -> None:
+    """Anti-vacuity: checking sizes only, or only the sealed file list,
+    accepts both corpora."""
+    corpus = tmp_path / "corpus"
+    transcript = corpus / "home" / ".codex" / "sessions" / "rollout-a.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text('{"type":"session_meta"}\n', encoding="utf-8")
+    seal(corpus, kind="sample", parameters={})
+    transcript.write_text('{"type":"session_mete"}\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="changed content"):
+        verify_manifest(corpus, load_manifest(corpus))
+    transcript.write_text('{"type":"session_meta"}\n', encoding="utf-8")
+    (transcript.parent / "rollout-b.jsonl").write_text("{}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="added since sealing"):
+        verify_manifest(corpus, load_manifest(corpus))
+
+
+def test_explicit_corpus_admits_only_watched_transcripts(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    sessions = home / ".codex" / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / "rollout.jsonl").write_text("{}\n", encoding="utf-8")
+    (sessions / "large.bin").write_bytes(b"x")
+    with pytest.raises(ValueError, match="not a transcript"):
+        corpus_from_files(tmp_path / "bad", [sessions / "large.bin"], home=home)
+    manifest = corpus_from_files(tmp_path / "good", [sessions / "rollout.jsonl"], home=home)
+    assert manifest["kind"] == "files"
+
+
+def test_a_sample_that_draws_nothing_still_seals(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    (root / "one.jsonl").write_bytes(b"x" * 1000)
+    sources = (SampleSource("codex", root, "home/.codex/sessions", (".jsonl",)),)
+    for seed in range(20):
+        manifest = sample_real(tmp_path / f"s{seed}", seed=seed, fraction=0.01, sources=sources)
+        assert manifest["file_count"] in {0, 1}
+
+
+def test_event_timestamps_are_utc() -> None:
+    assert _ts("1970-01-01T00:00:10.000000Z") == 10.0
+
+
+def _receipt(**overrides: object) -> dict[str, Any]:
+    receipt: dict[str, Any] = {
+        "label": "r",
+        "outcome": "terminal",
+        "candidate": {"git_sha": "0" * 40},
+        "corpus": {"digest": "c", "total_bytes": 10 << 20, "file_count": 10},
+        "config": {"digest": "k"},
+        "timing_s": {"promotion": 10.0, "terminal": 20.0},
+        "process_tree": {"rss_peak_bytes": 1 << 30},
+        "checks": {"promoted": True},
+        "budgets": {"promotion_s": {"limit": 15.0}},
+        "stages": {},
+        "throughput": {},
+        "output_fingerprint": {"digest": "same", "tables": {}},
+    }
+    receipt.update(overrides)
+    return receipt
+
+
+def test_dependent_fields_follow_the_milestones() -> None:
+    """Anti-vacuity: keeping throughput, budgets or qualification from an
+    earlier promotion time leaves them at 1.0 MiB/s and qualified."""
+    receipt = _receipt()
+    _derive_dependents(receipt)
+    assert receipt["throughput"]["mib_per_s_to_promotion"] == 1.0
+    assert receipt["qualified"] is True
+    receipt["timing_s"]["promotion"] = 20.0
+    _derive_dependents(receipt)
+    assert receipt["throughput"]["mib_per_s_to_promotion"] == 0.5
+    assert receipt["timing_s"]["derived_after_promotion"] == 0.0
+    assert receipt["budgets"]["promotion_s"]["pass"] is False
+    assert receipt["qualified"] is False
+
+
+def test_compare_refuses_different_configs_and_unqualified_runs() -> None:
+    """Anti-vacuity: checking only the corpus digest reports IDENTICAL for
+    runs made under different configurations."""
+    before = _receipt(qualified=True)
+    ok, text = compare(before, _receipt(qualified=True))
+    assert ok and "IDENTICAL" in text
+    ok, text = compare(before, _receipt(qualified=True, config={"digest": "profiled"}))
+    assert not ok and "IDENTICAL" not in text
+    unqualified = _receipt(qualified=False, outcome="settle_timeout")
+    ok, _text = compare(before, unqualified)
+    assert not ok
+    ok, text = compare(before, unqualified, allow_unqualified=True)
+    assert ok and "WARNING" in text and "IDENTICAL" in text
+
+
+def test_overrides_cannot_redirect_the_isolated_archive(tmp_path: Path) -> None:
+    config = RunConfig(
+        corpus=tmp_path,
+        work=tmp_path,
+        candidate=tmp_path,
+        python="python",
+        label="override",
+        extra_env=(("POLYLOGUE_ARCHIVE_ROOT", "/elsewhere"),),
+    )
+    paths = {name: tmp_path / name for name in ("home", "xdg", "tmp", "archive", "config", "events", "stacks")}
+    with pytest.raises(ValueError, match="driver-owned"):
+        _daemon_env(config, paths)
 
 
 def test_sample_is_seeded_and_keeps_session_units_together(tmp_path: Path) -> None:

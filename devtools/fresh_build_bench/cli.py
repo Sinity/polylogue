@@ -22,15 +22,14 @@ import json
 import sys
 from pathlib import Path
 
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+from devtools.fresh_build_bench.corpus import refuse_inside_checkout
 
 
 def _refuse_repo_path(path: Path, what: str) -> None:
-    resolved = path.resolve()
-    if resolved == _repo_root() or _repo_root() in resolved.parents:
-        raise SystemExit(f"{what} must live outside the checkout (it holds archives and possibly private data)")
+    try:
+        refuse_inside_checkout(path, what)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -58,7 +57,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--corpus", type=Path, required=True)
     run.add_argument("--work", type=Path, required=True, help="empty directory for the archive, logs and receipt")
     run.add_argument("--label", default="run")
-    run.add_argument("--candidate", type=Path, default=_repo_root())
+    run.add_argument("--candidate", type=Path, default=Path(__file__).resolve().parents[2])
     run.add_argument("--python", default=sys.executable)
     run.add_argument("--profile", action="store_true", help="run the in-daemon stack sampler")
     run.add_argument("--profile-interval", type=float, default=0.01)
@@ -85,6 +84,11 @@ def _parser() -> argparse.ArgumentParser:
     compare = commands.add_parser("compare", help="compare two receipts")
     compare.add_argument("before", type=Path)
     compare.add_argument("after", type=Path)
+    compare.add_argument(
+        "--allow-unqualified",
+        action="store_true",
+        help="compare runs that did not qualify (e.g. promoted but derived phase unsettled)",
+    )
 
     components = commands.add_parser("components", help="time one production stage over a corpus", add_help=False)
     components.add_argument("rest", nargs=argparse.REMAINDER)
@@ -173,8 +177,9 @@ def main(argv: list[str] | None = None) -> int:
 
         before = json.loads(args.before.read_text(encoding="utf-8"))
         after = json.loads(args.after.read_text(encoding="utf-8"))
-        print(compare(before, after))
-        return 0
+        admissible, text = compare(before, after, allow_unqualified=args.allow_unqualified)
+        print(text)
+        return 0 if admissible else 1
     if args.command == "components":
         from devtools.fresh_build_bench.components import main as components_main
 

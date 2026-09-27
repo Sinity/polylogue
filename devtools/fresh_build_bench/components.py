@@ -28,13 +28,14 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from devtools.fresh_build_bench.corpus import load_manifest
+from devtools.fresh_build_bench.corpus import load_manifest, refuse_inside_checkout, verify_manifest
 
 _PROVIDER_BY_ORIGIN = {"claude-code": "claude-code", "codex": "codex", "gemini-cli": "gemini-cli"}
 
 
 def _corpus_files(corpus: Path, origins: Iterable[str] | None, limit: int | None) -> list[tuple[Path, str, int]]:
     manifest = load_manifest(corpus)
+    verify_manifest(corpus, manifest)
     wanted = set(origins) if origins else None
     files = [
         (corpus / relative, origin, size)
@@ -156,6 +157,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--origin", action="append", default=None)
     parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args(argv)
+    # Blob and parse output are byte copies of (possibly private) corpus files.
+    refuse_inside_checkout(args.scratch, "--scratch")
     args.scratch.mkdir(parents=True, exist_ok=True)
     bench = bench_parse if args.component == "parse" else bench_blob
     result = bench(args.corpus, args.scratch, workers=args.workers, origins=args.origin, limit=args.limit)

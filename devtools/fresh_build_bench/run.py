@@ -413,6 +413,10 @@ def _daemon_env(config: RunConfig, paths: dict[str, Path]) -> dict[str, str]:
     else:
         env["POLYLOGUE_BENCH_STACKS"] = "0"
         env["POLYLOGUE_BENCH_STACK_INTERVAL_S"] = "0.05"
+    # An override may tune the daemon, never redirect what the driver
+    # isolates or measures (archive root, config, logs, sampler).
+    if owned := sorted(key for key, _value in config.extra_env if key in env):
+        raise ValueError(f"--env may not override driver-owned variables: {', '.join(owned)}")
     env.update(dict(config.extra_env))
     return env
 
@@ -555,6 +559,12 @@ def run_build(config: RunConfig, *, progress: Callable[[str], None] = print) -> 
             signal.signal(sig, handler)
     finished = time.monotonic()
     final = observe(paths["archive"], started)
+    # Lazy imports run whatever the candidate tree holds when they execute; a
+    # checkout or commit during the build makes the recorded SHA a guess.
+    identity["unchanged_during_run"] = candidate_identity(config.candidate) == {
+        "git_sha": identity["git_sha"],
+        "dirty": identity["dirty"],
+    }
     receipt = build_receipt(
         config=config,
         manifest=manifest,
@@ -562,7 +572,6 @@ def run_build(config: RunConfig, *, progress: Callable[[str], None] = print) -> 
         identity=identity,
         environment=env_summary,
         command=command,
-        daemon_env=daemon_env,
         started_wall=started_wall,
         wall_s=finished - started,
         outcome=outcome,

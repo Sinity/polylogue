@@ -16,7 +16,7 @@ import re
 import sqlite3
 from collections import Counter, defaultdict
 from contextlib import closing
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
@@ -38,7 +38,8 @@ _TS_FORMAT: Final = "%Y-%m-%dT%H:%M:%S.%fZ"
 
 
 def _ts(value: str) -> float:
-    return datetime.strptime(value, _TS_FORMAT).timestamp()
+    # The trailing ``Z`` is UTC; a naive parse would read it as local time.
+    return datetime.strptime(value, _TS_FORMAT).replace(tzinfo=UTC).timestamp()
 
 
 def _bucket(stage: str) -> str:
@@ -57,9 +58,6 @@ def _percentile(values: list[float], fraction: float) -> float:
 
 # ---------------------------------------------------------------------------
 # event log
-
-
-_SOURCE_GROUP: Final = re.compile(r"batch ingested (\S+) — (\d+) in ([0-9.]+)s")
 
 
 def analyse_events(path: Path) -> dict[str, Any]:
@@ -122,11 +120,6 @@ def analyse_events(path: Path) -> dict[str, Any]:
             entry["groups"] += 1
             entry["files"] += int(event.get("files") or 0)
             entry["seconds"] += float(event.get("duration_ms") or 0) / 1000
-        elif name == "stdlib.record" and (match := _SOURCE_GROUP.search(str(event.get("error_detail") or ""))):
-            entry = by_source[match.group(1)]
-            entry["groups"] += 1
-            entry["files"] += int(match.group(2))
-            entry["seconds"] += float(match.group(3))
         elif name == "daemon.cold_build.preparation":
             preparation.append(rel(event))
         elif name == "daemon.cold_build.generation_created":
@@ -455,6 +448,38 @@ def config_digest(config: Any) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
+def _derive_dependents(receipt: dict[str, Any]) -> None:
+    """Recompute every field derived from the timing and the process tree.
+
+    One place, so a refreshed receipt cannot keep a throughput, budget or
+    qualification computed from a milestone it has since replaced.
+    """
+    timing = receipt["timing_s"]
+    promoted, terminal_at = timing.get("promotion"), timing.get("terminal")
+    total_mib = receipt["corpus"]["total_bytes"] / 2**20
+    timing["derived_after_promotion"] = (
+        round(terminal_at - promoted, 3) if terminal_at is not None and promoted is not None else None
+    )
+    receipt["throughput"] = {
+        "mib_per_s_to_promotion": round(total_mib / promoted, 3) if promoted else None,
+        "mib_per_s_to_terminal": round(total_mib / terminal_at, 3) if terminal_at else None,
+        "files_per_s_to_promotion": round(receipt["corpus"]["file_count"] / promoted, 3) if promoted else None,
+    }
+    rss = (receipt.get("process_tree") or {}).get("rss_peak_bytes")
+    budgets = evaluate_budgets(
+        {name: row["limit"] for name, row in (receipt.get("budgets") or {}).items()},
+        {"rss_peak_mib": rss / 2**20 if rss else None, "promotion_s": promoted, "terminal_s": terminal_at},
+    )
+    receipt["budgets"] = budgets
+    # A qualified build finished, satisfied every terminal check and stayed
+    # inside every asserted budget.
+    receipt["qualified"] = (
+        receipt["outcome"] == "terminal"
+        and all(receipt["checks"].values())
+        and all(row["pass"] for row in budgets.values())
+    )
+
+
 def build_receipt(
     *,
     config: Any,
@@ -463,7 +488,6 @@ def build_receipt(
     identity: dict[str, Any],
     environment: dict[str, Any],
     command: list[str],
-    daemon_env: dict[str, str],
     started_wall: float,
     wall_s: float,
     outcome: str,
@@ -495,15 +519,8 @@ def build_receipt(
         "readiness_complete": final.readiness_complete,
         "fts_exact": census.get("messages_fts_rows") is not None
         and census.get("messages_fts_rows") == census.get("fts_indexable_rows"),
+        "candidate_unchanged": identity["unchanged_during_run"],
     }
-    budgets = evaluate_budgets(
-        dict(config.budgets),
-        {
-            "rss_peak_mib": tree["rss_peak_bytes"] / 2**20 if tree.get("rss_peak_bytes") else None,
-            "promotion_s": promoted,
-            "terminal_s": terminal_at,
-        },
-    )
     receipt: dict[str, Any] = {
         "format": RECEIPT_FORMAT,
         "label": config.label,
@@ -514,9 +531,7 @@ def build_receipt(
             "digest": config_digest(config),
             "argv": command[3:],
             "profile": config.profile,
-            "overrides": sorted(
-                key for key in daemon_env if key.startswith("POLYLOGUE_") and key not in _DRIVER_OWNED_ENV
-            ),
+            "overrides": sorted(key for key, _value in config.extra_env),
         },
         "corpus": {
             "path": str(config.corpus),
@@ -535,15 +550,7 @@ def build_receipt(
             "first_chunk_done": milestones.get("first_chunk_done_s"),
             "last_chunk_done": milestones.get("last_chunk_done_s"),
             "preparation_done": milestones.get("preparation_done_s"),
-            "derived_after_promotion": round(terminal_at - promoted, 3)
-            if terminal_at is not None and promoted is not None
-            else None,
             "shutdown": round(shutdown_s, 3),
-        },
-        "throughput": {
-            "mib_per_s_to_promotion": round(total_bytes / 2**20 / promoted, 3) if promoted else None,
-            "mib_per_s_to_terminal": round(total_bytes / 2**20 / terminal_at, 3) if terminal_at else None,
-            "files_per_s_to_promotion": round(manifest["file_count"] / promoted, 3) if promoted else None,
         },
         "stages": batches,
         "writer": events.get("writer"),
@@ -557,10 +564,7 @@ def build_receipt(
         ),
         "process_tree": tree,
         "checks": checks,
-        "budgets": budgets,
-        # A qualified build finished, satisfied every terminal check and
-        # stayed inside every asserted budget.
-        "qualified": outcome == "terminal" and all(checks.values()) and all(row["pass"] for row in budgets.values()),
+        "budgets": {name: {"limit": limit} for name, limit in sorted(dict(config.budgets).items())},
         "final_observation": {
             key: getattr(final, key)
             for key in (
@@ -588,6 +592,7 @@ def build_receipt(
         "progress": _progress_timeline(observations),
         "started_at_unix": round(started_wall, 3),
     }
+    _derive_dependents(receipt)
     if paths["stacks"].exists():
         document = json.loads(paths["stacks"].read_text(encoding="utf-8"))
         receipt["thread_cpu_s"] = thread_cpu_summary(document)
@@ -605,19 +610,6 @@ def build_receipt(
             "ingest_writer_leaf_kind_cpu_s": writer_summary["leaf_kind_cpu_s"],
         }
     return receipt
-
-
-_DRIVER_OWNED_ENV: Final = frozenset(
-    {
-        "POLYLOGUE_ARCHIVE_ROOT",
-        "POLYLOGUE_SINEX_MODE",
-        "POLYLOGUE_LOG_FORMAT",
-        "POLYLOGUE_LOG_FILE",
-        "POLYLOGUE_BENCH_STACK_SAMPLES",
-        "POLYLOGUE_BENCH_STACK_INTERVAL_S",
-        "POLYLOGUE_CONFIG",
-    }
-)
 
 
 # ---------------------------------------------------------------------------
@@ -711,10 +703,31 @@ def render(receipt: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def compare(before: dict[str, Any], after: dict[str, Any]) -> str:
-    lines = []
+def comparability_problems(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    """Why two receipts' numbers or outputs may not be set side by side."""
+    problems = []
     if before["corpus"]["digest"] != after["corpus"]["digest"]:
-        lines.append("WARNING: different corpora; numbers are not comparable")
+        problems.append("different corpora")
+    if before["config"]["digest"] != after["config"]["digest"]:
+        problems.append("different run configurations (profile, overrides or budgets)")
+    for side, receipt in (("before", before), ("after", after)):
+        if not receipt.get("qualified"):
+            problems.append(f"{side} run is not qualified (outcome {receipt.get('outcome')})")
+    return problems
+
+
+def compare(before: dict[str, Any], after: dict[str, Any], *, allow_unqualified: bool = False) -> tuple[bool, str]:
+    """Render the deltas; the flag says whether the comparison is admissible.
+
+    Different corpora or configurations are never admissible. An unqualified
+    run is admissible only when asked for (``allow_unqualified``), for
+    example to read a promoted index's output digests from a build whose
+    derived phase did not settle; the verdict line says so.
+    """
+    problems = comparability_problems(before, after)
+    blocking = [problem for problem in problems if "not qualified" not in problem or not allow_unqualified]
+    lines = [f"NOT COMPARABLE: {problem}" for problem in blocking]
+    lines += [f"WARNING: {problem}" for problem in problems if problem not in blocking]
     lines.append(
         f"before {before['label']} {before['candidate']['git_sha'][:12]}  ->  after {after['label']}"
         f" {after['candidate']['git_sha'][:12]}"
@@ -742,7 +755,9 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> str:
     for key in sorted(set(a_buckets) | set(b_buckets)):
         row(f"stage.{key}", a_buckets.get(key), b_buckets.get(key))
     a_fp, b_fp = before.get("output_fingerprint"), after.get("output_fingerprint")
-    if a_fp and b_fp:
+    if blocking:
+        lines.append("output: not compared (receipts are not comparable)")
+    elif a_fp and b_fp:
         if a_fp["digest"] == b_fp["digest"]:
             lines.append("output: IDENTICAL (per-table digests match)")
         else:
@@ -753,7 +768,7 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> str:
                     lines.append(f"    {table}: {left} != {right}")
     else:
         lines.append("output: not compared (fingerprint missing)")
-    return "\n".join(lines)
+    return not blocking, "\n".join(lines)
 
 
 def refresh(receipt_path: Path) -> dict[str, Any]:
@@ -761,8 +776,9 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
 
     The event log and ops ledger are the evidence; the receipt is a view of
     them. Refreshing lets a finished run be read with a newer report without
-    rerunning the build. Identity, environment, timing and the output
-    fingerprint are kept as recorded.
+    rerunning the build. Identity, environment, the terminal time and the
+    output fingerprint are kept as recorded; everything derived from the
+    re-read milestones is recomputed.
     """
     from devtools.fresh_build_bench.corpus import load_manifest
 
@@ -781,6 +797,7 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
             "preparation_done": milestones.get("preparation_done_s"),
         }
     )
+    _derive_dependents(receipt)
     corpus_path = receipt["corpus"].get("path")
     if corpus_path and Path(corpus_path, "manifest.json").exists():
         manifest = load_manifest(Path(corpus_path))
