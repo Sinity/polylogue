@@ -55,10 +55,13 @@ ReadSnapshot = Callable[[Path], AbstractContextManager[PreparedReadSnapshot]]
 
 _DEFAULT_WORKER_COUNT_FLOOR = 1
 _DEFAULT_PROCESS_WORKER_CAP = 8
-#: Warms a prefetched result may wait to be claimed before it is dropped.
-#: Prefetch looks ahead about two pages, so a claimed guess is warmed within
-#: two or three; anything older is a path selection skipped.
-_SPECULATIVE_WARM_LIFETIME = 4
+#: Stage calls (warms and prefetches) a prefetched result may wait to be
+#: claimed before it is dropped. Prefetch looks ahead about two pages and each
+#: page costs one prefetch and one warm, so a claimed guess is warmed within
+#: four or six; anything older is a path selection skipped. Counting
+#: prefetches too keeps a walk that only prefetches (every file skipped after
+#: cursor reconciliation) from accumulating results.
+_SPECULATIVE_LIFETIME_CALLS = 8
 _DEFAULT_WARM_TIMEOUT_SECONDS = 60.0
 
 # The dispatcher's per-pass byte budget already caps one admitted page at
@@ -420,10 +423,10 @@ class LiveParseStage:
         #: with the warm count at submission. A prefetch is a guess about what
         #: a later batch will ingest; selection may skip the path (an
         #: unchanged file whose cursor is restored from the archive), so an
-        #: unclaimed guess is dropped after ``_SPECULATIVE_WARM_LIFETIME``
-        #: warms rather than held, with its scratch, until shutdown.
+        #: unclaimed guess is dropped after ``_SPECULATIVE_LIFETIME_CALLS``
+        #: stage calls rather than held, with its scratch, until shutdown.
         self._speculative: dict[str, int] = {}
-        self._warm_count = 0
+        self._stage_calls = 0
         self._path_sizes: dict[str, int] = {}
         self._path_attempt_dirs: dict[str, Path] = {}
         self._path_inflight_bytes = 0
@@ -497,7 +500,7 @@ class LiveParseStage:
         """
         if self._shard_directory is None:
             return 0
-        self._warm_count += 1
+        self._stage_calls += 1
         for source_path, _provider, _is_stream in candidates:
             if self._speculative.pop(source_path, None) is None:
                 continue
@@ -566,7 +569,7 @@ class LiveParseStage:
     def _drop_stale_speculation(self) -> None:
         """Discard prefetched results no warm claimed within their lifetime."""
         for source_path, submitted_at in tuple(self._speculative.items()):
-            if self._warm_count - submitted_at < _SPECULATIVE_WARM_LIFETIME:
+            if self._stage_calls - submitted_at < _SPECULATIVE_LIFETIME_CALLS:
                 continue
             if source_path in self._path_futures:
                 # Still running: its result is dropped when a later warm
@@ -590,11 +593,13 @@ class LiveParseStage:
         """
         if self._shard_directory is None or self._cleanup_blocked or self._closing:
             return 0
+        self._stage_calls += 1
         before = set(self._path_futures)
         self._submit_path_candidates(list(candidates), speculative=True)
         submitted = [path for path in self._path_futures if path not in before]
         for source_path in submitted:
-            self._speculative[source_path] = self._warm_count
+            self._speculative[source_path] = self._stage_calls
+        self._drop_stale_speculation()
         return len(submitted)
 
     def _submit_path_candidates(
@@ -770,7 +775,7 @@ class LiveParseStage:
             return
         expired = (
             source_path in self._speculative
-            and self._warm_count - self._speculative[source_path] >= _SPECULATIVE_WARM_LIFETIME
+            and self._stage_calls - self._speculative[source_path] >= _SPECULATIVE_LIFETIME_CALLS
         )
         self._path_futures.pop(source_path, None)
         self._path_inflight_bytes -= self._path_sizes.pop(source_path, 0)

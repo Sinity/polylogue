@@ -1061,13 +1061,32 @@ def test_unclaimed_prefetch_is_dropped_with_its_scratch(tmp_path: Path) -> None:
     stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
     try:
         assert stage.prefetch_paths([(str(skipped), Provider.CODEX, True)]) == 1
-        for _ in range(parse_prefetch._SPECULATIVE_WARM_LIFETIME):
+        for _ in range(parse_prefetch._SPECULATIVE_LIFETIME_CALLS):
             stage.warm_paths([(str(claimed), Provider.CODEX, True)])
             stage.pop_path(str(claimed), blob_hash="")
         assert str(skipped) not in stage._path_results
         assert str(skipped) not in stage._path_futures
         attempts = tmp_path / "parse-shards" / ".live-parse-attempts"
         assert [path for path in attempts.iterdir() if path.name.startswith("attempt-")] == []
+    finally:
+        stage.shutdown()
+
+
+def test_a_prefetch_only_walk_does_not_accumulate_results(tmp_path: Path) -> None:
+    """Every file of a walk may be skipped after cursor reconciliation, so no
+    warm ever runs. Anti-vacuity: aging speculation only on warms keeps every
+    prefetched result (and its sealed scratch) until shutdown."""
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    paths = _write_fixture_corpus(tmp_path / "sessions", count=parse_prefetch._SPECULATIVE_LIFETIME_CALLS + 4)
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    try:
+        for path in paths:
+            stage.prefetch_paths([(str(path), Provider.CODEX, True)])
+            for future in tuple(stage._path_futures.values()):
+                future.result(timeout=30)
+        held = len(stage._path_results) + len(stage._path_futures)
+        assert held <= parse_prefetch._SPECULATIVE_LIFETIME_CALLS
     finally:
         stage.shutdown()
 
