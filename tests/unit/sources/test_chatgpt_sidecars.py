@@ -10,11 +10,87 @@ whenever both name the same id.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from pathlib import Path
+
+import pytest
+
+from polylogue.core.enums import Provider
+from polylogue.sources.assembly_chatgpt import ChatGPTAssemblySpec
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedSession, ParsedSessionEvent
 from polylogue.sources.parsers.chatgpt_sidecars import (
     ChatGPTAssetIndex,
     parse_asset_file_names,
     parse_library_files,
 )
+from polylogue.sources.prepared_message_sink import SqliteMessageStore
+
+
+def test_sidecar_enrichment_updates_prepared_rows_without_collecting(tmp_path: Path) -> None:
+    store = SqliteMessageStore(tmp_path / "prepared.db")
+    try:
+        attachments = store.new_attachment_sink()
+        events = store.new_event_sink()
+        attachments.extend(
+            ParsedAttachment(provider_attachment_id=f"file-{index}", message_provider_id=f"message-{index}")
+            for index in range(3)
+        )
+        session = ParsedSession(source_name=Provider.CHATGPT, provider_session_id="conversation", messages=[])
+        session = session.model_copy(update={"attachments": attachments, "session_events": events})
+        index = ChatGPTAssetIndex.build(
+            library_files_payload=[],
+            asset_file_names_payload={f"file-{index}.dat": f"asset-{index}.png" for index in range(3)},
+        )
+        returned = ChatGPTAssemblySpec().enrich_session(session, {"chatgpt_asset_index": index})
+        assert returned is session
+        assert [attachment.name for attachment in attachments] == [f"asset-{index}.png" for index in range(3)]
+        assert [event.event_type for event in events] == ["chatgpt_asset_resolution"] * 3
+    finally:
+        store.close()
+
+
+def test_sidecar_enrichment_rolls_back_prepared_rows_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.sources import assembly_chatgpt
+
+    store = SqliteMessageStore(tmp_path / "prepared.db")
+    try:
+        attachments = store.new_attachment_sink()
+        events = store.new_event_sink()
+        attachments.extend(
+            ParsedAttachment(provider_attachment_id=f"file-{index}", message_provider_id=f"message-{index}")
+            for index in range(2)
+        )
+        session = ParsedSession(source_name=Provider.CHATGPT, provider_session_id="conversation", messages=[])
+        session = session.model_copy(update={"attachments": attachments, "session_events": events})
+        index = ChatGPTAssetIndex.build(
+            library_files_payload=[],
+            asset_file_names_payload={"file-0.dat": "asset.png"},
+        )
+        original = assembly_chatgpt._resolve_attachment
+        seen = 0
+
+        def failing_resolver(
+            attachment: ParsedAttachment,
+            asset_index: ChatGPTAssetIndex,
+            *,
+            thread_id: str,
+            asset_blobs: Mapping[str, tuple[str, int]],
+        ) -> tuple[ParsedAttachment, ParsedSessionEvent | None]:
+            nonlocal seen
+            seen += 1
+            if seen == 2:
+                raise ValueError("injected sidecar failure")
+            return original(attachment, asset_index, thread_id=thread_id, asset_blobs=asset_blobs)
+
+        monkeypatch.setattr(assembly_chatgpt, "_resolve_attachment", failing_resolver)
+        with pytest.raises(ValueError, match="injected sidecar failure"):
+            ChatGPTAssemblySpec().enrich_session(session, {"chatgpt_asset_index": index})
+        assert [attachment.name for attachment in attachments] == [None, None]
+        assert len(events) == 0
+    finally:
+        store.close()
 
 
 def _library_entry(

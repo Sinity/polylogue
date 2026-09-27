@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import sqlite3
 import uuid
@@ -15,7 +16,7 @@ from urllib.parse import quote
 import ijson
 
 from polylogue.sources.decoder_json import _json_subtree, normalize_ijson_stdlib_numbers
-from polylogue.sources.parsers.base import ParsedMessage, ParsedSession, ParsedSessionEvent
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
 
 _ACTIVE_PARENT_LOOKUP_SQL = (
     "SELECT parent_id FROM prepared_message INDEXED BY prepared_message_provider "
@@ -38,6 +39,28 @@ def _event_json(value: ParsedSessionEvent) -> str:
     payload = value.model_dump(mode="json")
     payload["boundary_message_position"] = value.boundary_message_position
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _attachment_json(value: ParsedAttachment) -> str:
+    payload = value.model_dump(mode="json")
+    payload["message_position"] = value.message_position
+    payload["message_variant_index"] = value.message_variant_index
+    payload["owner_coordinate"] = asdict(value.owner_coordinate) if value.owner_coordinate is not None else None
+    payload["precomputed_blob"] = value.precomputed_blob
+    payload["_prepared_inline_bytes"] = (
+        base64.b64encode(value.inline_bytes).decode("ascii") if value.inline_bytes is not None else None
+    )
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _decode_attachment(encoded: str, path: Path, session_ordinal: int, attachment_ordinal: int) -> ParsedAttachment:
+    payload = json.loads(encoded)
+    inline = payload.pop("_prepared_inline_bytes", None)
+    if inline is not None:
+        payload["inline_bytes"] = base64.b64decode(inline, validate=True)
+    return ParsedAttachment.model_validate(payload).model_copy(
+        update={"prepared_carrier_key": (str(path), session_ordinal, attachment_ordinal)}
+    )
 
 
 class SqliteMessageSink(MutableSequence[ParsedMessage]):
@@ -312,6 +335,104 @@ class SqliteProviderMessageIds(Set[str | None]):
         return all(value in other for value in self)
 
 
+class SqliteAttachmentSink(MutableSequence[ParsedAttachment]):
+    """Ordered attachments retained in the same sealed carrier as messages."""
+
+    def __init__(
+        self,
+        path: Path,
+        session_ordinal: int,
+        *,
+        writer: sqlite3.Connection | None = None,
+        count: int = 0,
+    ) -> None:
+        self.path = path
+        self.session_ordinal = session_ordinal
+        self._writer = writer
+        self._count = count
+
+    def __len__(self) -> int:
+        return self._count
+
+    def _ordinal(self, index: int) -> int:
+        ordinal = index + self._count if index < 0 else index
+        if ordinal < 0 or ordinal >= self._count:
+            raise IndexError(index)
+        return ordinal
+
+    @overload
+    def __getitem__(self, index: int) -> ParsedAttachment: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[ParsedAttachment]: ...
+
+    def __getitem__(self, index: int | slice) -> ParsedAttachment | list[ParsedAttachment]:
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(self._count))]
+        ordinal = self._ordinal(index)
+        if self._writer is not None:
+            row = self._writer.execute(
+                "SELECT attachment_json FROM prepared_attachment WHERE session_ordinal = ? AND attachment_ordinal = ?",
+                (self.session_ordinal, ordinal),
+            ).fetchone()
+        else:
+            with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
+                row = conn.execute(
+                    "SELECT attachment_json FROM prepared_attachment WHERE session_ordinal = ? AND attachment_ordinal = ?",
+                    (self.session_ordinal, ordinal),
+                ).fetchone()
+        if row is None:
+            raise ValueError("prepared attachment row disappeared")
+        return _decode_attachment(row[0], self.path, self.session_ordinal, ordinal)
+
+    @overload
+    def __setitem__(self, index: int, value: ParsedAttachment) -> None: ...
+
+    @overload
+    def __setitem__(self, index: slice, value: Iterable[ParsedAttachment]) -> None: ...
+
+    def __setitem__(self, index: int | slice, value: ParsedAttachment | Iterable[ParsedAttachment]) -> None:
+        if self._writer is None:
+            raise TypeError("sealed prepared attachments are immutable")
+        if isinstance(index, slice) or not isinstance(value, ParsedAttachment):
+            raise TypeError("prepared attachment replacement needs one attachment")
+        self._writer.execute(
+            "UPDATE prepared_attachment SET attachment_json = ? WHERE session_ordinal = ? AND attachment_ordinal = ?",
+            (_attachment_json(value), self.session_ordinal, self._ordinal(index)),
+        )
+
+    def __delitem__(self, index: int | slice) -> None:
+        raise TypeError("prepared attachments cannot be deleted")
+
+    def insert(self, index: int, value: ParsedAttachment) -> None:
+        if self._writer is None:
+            raise TypeError("sealed prepared attachments are immutable")
+        if index != self._count:
+            raise TypeError("prepared attachments can only be appended")
+        self._writer.execute(
+            "INSERT INTO prepared_attachment VALUES (?, ?, ?)",
+            (self.session_ordinal, self._count, _attachment_json(value)),
+        )
+        self._count += 1
+
+    def __iter__(self) -> Iterator[ParsedAttachment]:
+        if self._writer is not None:
+            rows = self._writer.execute(
+                "SELECT attachment_ordinal, attachment_json FROM prepared_attachment WHERE session_ordinal = ? ORDER BY attachment_ordinal",
+                (self.session_ordinal,),
+            )
+            for ordinal, encoded in rows:
+                yield _decode_attachment(encoded, self.path, self.session_ordinal, ordinal)
+            return
+        with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
+            rows = conn.execute(
+                "SELECT attachment_ordinal, attachment_json FROM prepared_attachment WHERE session_ordinal = ? ORDER BY attachment_ordinal",
+                (self.session_ordinal,),
+            )
+            for ordinal, encoded in rows:
+                yield _decode_attachment(encoded, self.path, self.session_ordinal, ordinal)
+
+
 class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
     """One session's semantic events with disk-backed deterministic ordering."""
 
@@ -483,9 +604,13 @@ class SqliteMessageStore:
         self.conn.execute(
             "CREATE TABLE prepared_event (session_ordinal INTEGER NOT NULL, event_ordinal INTEGER NOT NULL, timestamp TEXT, event_type TEXT NOT NULL, event_json TEXT NOT NULL, sort_tier INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (session_ordinal, event_ordinal)) WITHOUT ROWID"
         )
+        self.conn.execute(
+            "CREATE TABLE prepared_attachment (session_ordinal INTEGER NOT NULL, attachment_ordinal INTEGER NOT NULL, attachment_json TEXT NOT NULL, PRIMARY KEY (session_ordinal, attachment_ordinal)) WITHOUT ROWID"
+        )
         self.conn.execute("BEGIN IMMEDIATE")
         self._next_session_ordinal = 0
         self._next_event_ordinal = 0
+        self._next_attachment_ordinal = 0
 
     def new_sink(self) -> SqliteMessageSink:
         sink = SqliteMessageSink(self.path, self._next_session_ordinal, writer=self.conn)
@@ -495,6 +620,11 @@ class SqliteMessageStore:
     def new_event_sink(self) -> SqliteSessionEventSink:
         sink = SqliteSessionEventSink(self.path, self._next_event_ordinal, writer=self.conn)
         self._next_event_ordinal += 1
+        return sink
+
+    def new_attachment_sink(self) -> SqliteAttachmentSink:
+        sink = SqliteAttachmentSink(self.path, self._next_attachment_ordinal, writer=self.conn)
+        self._next_attachment_ordinal += 1
         return sink
 
     def close(self) -> None:
@@ -842,6 +972,7 @@ def read_chatgpt_mapping_object(
 __all__ = [
     "SqliteMessageSink",
     "SqliteMessageStore",
+    "SqliteAttachmentSink",
     "SqliteSessionEventSink",
     "ChatGPTNodeMapping",
     "read_chatgpt_mapping_object",

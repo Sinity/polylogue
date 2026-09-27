@@ -39,6 +39,7 @@ from polylogue.storage.blob_store import BlobStore
 from .assembly import SidecarData
 from .parsers.base import ParsedAttachment, ParsedSession, ParsedSessionEvent
 from .parsers.chatgpt_sidecars import ChatGPTAssetIndex, _normalize_file_id
+from .prepared_message_sink import SqliteAttachmentSink, SqliteSessionEventSink
 
 logger = get_logger(__name__)
 
@@ -298,6 +299,36 @@ class ChatGPTAssemblySpec:
             return conv
         if index is None:
             index = ChatGPTAssetIndex.empty()
+
+        if isinstance(conv.attachments, SqliteAttachmentSink):
+            attachments = conv.attachments
+            events = conv.session_events
+            if (
+                attachments._writer is None
+                or not isinstance(events, SqliteSessionEventSink)
+                or events._writer is not attachments._writer
+            ):
+                raise TypeError("ChatGPT sidecar enrichment requires one writable prepared carrier")
+            conn = attachments._writer
+            savepoint = "chatgpt_sidecar_enrichment"
+            event_count = len(events)
+            conn.execute(f"SAVEPOINT {savepoint}")
+            try:
+                for position, attachment in enumerate(attachments):
+                    resolved, event = _resolve_attachment(
+                        attachment, index, thread_id=conv.provider_session_id, asset_blobs=asset_blobs
+                    )
+                    if resolved is not attachment:
+                        attachments[position] = resolved
+                    if event is not None:
+                        events.append(event)
+            except BaseException:
+                conn.execute(f"ROLLBACK TO {savepoint}")
+                conn.execute(f"RELEASE {savepoint}")
+                events._count = event_count
+                raise
+            conn.execute(f"RELEASE {savepoint}")
+            return conv
 
         new_attachments: list[ParsedAttachment] = []
         new_events: list[ParsedSessionEvent] = []

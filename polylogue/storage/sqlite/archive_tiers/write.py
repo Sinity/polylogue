@@ -1395,7 +1395,7 @@ def write_parsed_session_to_archive(
     stage_timings_s: dict[str, float] | None = None,
     stage_timing_prefix: str = "append",
     signature_cache: _SignatureCacheLike | None = None,
-    preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
+    preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
     manage_transaction: bool = True,
     bulk_fts: bool = False,
     bulk_build: bool = False,
@@ -5925,7 +5925,7 @@ def _write_attachments(
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
     refresh_attachment_ids: Iterable[str] | None = None,
-    preacquired_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
+    preacquired_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
     owner_resolution: MessageOwnerResolution | None = None,
 ) -> tuple[tuple[str, AttachmentOwnerResolutionReason], ...]:
     attachments = tuple(attachments)
@@ -5966,8 +5966,8 @@ def _write_attachments(
         owner_resolution=owner_resolution,
         wanted_owner_keys=wanted_owner_keys,
     )
-    attachment_positions: dict[int, int] = {}
-    resolved_message_ids: dict[int, str] = {}
+    attachment_positions: dict[object, int] = {}
+    resolved_message_ids: dict[object, str] = {}
     attachments_by_message: defaultdict[str, list[ParsedAttachment]] = defaultdict(list)
     unresolved: dict[str, AttachmentOwnerResolutionReason] = {}
     for attachment in attachments:
@@ -5980,7 +5980,7 @@ def _write_attachments(
             continue
         message_id = by_owner_key.get(owner_key) if owner_key is not None else None
         if message_id is not None:
-            resolved_message_ids[id(attachment)] = message_id
+            resolved_message_ids[attachment.acquisition_key] = message_id
             attachments_by_message[message_id].append(attachment)
         else:
             unresolved[_attachment_id(session_id, attachment)] = AttachmentOwnerResolutionReason.PROVIDER_NEVER_LINKED
@@ -6003,7 +6003,7 @@ def _write_attachments(
     touched_attachment_ids: set[str] = set()
     for attachment in attachments:
         attachment_id = _attachment_id(session_id, attachment)
-        message_id = resolved_message_ids.get(id(attachment))
+        message_id = resolved_message_ids.get(attachment.acquisition_key)
         if message_id is None:
             # An attachment carrying inline or precomputed bytes whose owner
             # is absent from this ingest cannot be represented by a reachable
@@ -6025,7 +6025,7 @@ def _write_attachments(
             )
         touched_attachment_ids.add(attachment_id)
         _write_attachment_row(conn, attachment_id, attachment, preacquired_blobs)
-        ref_position = attachment_positions[id(attachment)]
+        ref_position = attachment_positions[attachment.acquisition_key]
         ref_id = f"{message_id}:attachment:{ref_position}"
         # Bulk rebuilds may suspend FK enforcement. Mirror REPLACE's cascade
         # explicitly so identifiers from an older projection cannot survive.
@@ -6088,10 +6088,10 @@ def _write_attachment_row(
     conn: sqlite3.Connection,
     attachment_id: str,
     attachment: ParsedAttachment,
-    preacquired_blobs: dict[int, tuple[bytes | None, int, str]] | None,
+    preacquired_blobs: dict[Any, tuple[bytes | None, int, str]] | None,
 ) -> None:
     """Upsert the attachment's identity and bytes, leaving refs to the caller."""
-    acquired_blob = (preacquired_blobs or {}).get(id(attachment))
+    acquired_blob = (preacquired_blobs or {}).get(attachment.acquisition_key)
     blob_hash, byte_count, acquisition_status = (
         acquired_blob if acquired_blob is not None else _acquire_attachment_blob(conn, attachment)
     )
@@ -11729,7 +11729,7 @@ def _attachment_reference_positions(
     attachments: Iterable[ParsedAttachment],
     *,
     occupied_positions: Iterable[int] = (),
-) -> dict[int, int]:
+) -> dict[object, int]:
     """Return stable per-object reference positions without silent collisions.
 
     The historical four-byte position remains the primary identity so ordinary
@@ -11749,7 +11749,7 @@ def _attachment_reference_positions(
         groups[_attachment_position(equivalent_attachments[0])].append((attachment_id, equivalent_attachments))
 
     occupied = {int(position) for position in occupied_positions}
-    assigned: dict[int, int] = {}
+    assigned: dict[object, int] = {}
     for base_position, identity_group in sorted(groups.items()):
         for collision_index, (attachment_id, equivalent_attachments) in enumerate(sorted(identity_group)):
             if collision_index == 0 and base_position not in occupied:
@@ -11763,7 +11763,7 @@ def _attachment_reference_positions(
                     position = (position + 1) & ((1 << 63) - 1)
             occupied.add(position)
             for attachment in equivalent_attachments:
-                assigned[id(attachment)] = position
+                assigned[attachment.acquisition_key] = position
     return assigned
 
 

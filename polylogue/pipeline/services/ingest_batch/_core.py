@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, cast
 
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
@@ -871,7 +871,7 @@ class _DriveRevisionGovernanceAdapter:
         *,
         source_path: str,
         acquired_at_ms: int,
-    ) -> tuple[dict[int, tuple[bytes | None, int, str]], tuple[ArchiveSourceBlobRef, ...]]:
+    ) -> tuple[dict[Any, tuple[bytes | None, int, str]], tuple[ArchiveSourceBlobRef, ...]]:
         raise NotImplementedError(
             "_DriveRevisionGovernanceAdapter is used only for bind_raw_revision/"
             "classify_raw_revision_cohort, which never call this"
@@ -1395,7 +1395,7 @@ def _write_session(
         counts["skipped_sessions"] = 1
         return False, counts
 
-    preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None
+    preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None
     publication_receipts: list[tuple[str, bytes]] = []
     if blob_publisher is not None:
         preacquired_attachment_blobs = {}
@@ -1405,7 +1405,7 @@ def _write_session(
             hash_hex, size = blob_publisher.write_from_bytes(attachment.inline_bytes)
             receipt_id = blob_publisher.receipt_id(hash_hex)
             blob_hash = bytes.fromhex(hash_hex)
-            preacquired_attachment_blobs[id(attachment)] = (blob_hash, size, "acquired")
+            preacquired_attachment_blobs[attachment.acquisition_key] = (blob_hash, size, "acquired")
             if receipt_id is not None:
                 publication_receipts.append((receipt_id, blob_hash))
         session_to_write, sidecar_blob_counts = _preacquire_sidecar_blobs(
@@ -1425,7 +1425,7 @@ def _write_session(
         if preacquired_attachment_blobs is None:
             preacquired_attachment_blobs = {}
         hash_hex, size = attachment.precomputed_blob
-        preacquired_attachment_blobs[id(attachment)] = (bytes.fromhex(hash_hex), size, "acquired")
+        preacquired_attachment_blobs[attachment.acquisition_key] = (bytes.fromhex(hash_hex), size, "acquired")
 
     prepared_write = payload.prepared_write
     if prepared_write is None and isinstance(session_to_write.messages, SqliteMessageSink):

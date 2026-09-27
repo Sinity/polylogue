@@ -292,7 +292,7 @@ class RawRevisionGovernanceHost(Protocol):
         source_path: str,
         acquired_at_ms: int,
     ) -> tuple[
-        dict[int, tuple[bytes | None, int, str]],
+        dict[Any, tuple[bytes | None, int, str]],
         tuple[ArchiveSourceBlobRef, ...],
     ]: ...
 
@@ -399,7 +399,7 @@ def _write_parsed_precedence_result(
     stage_timings_s: dict[str, float] | None,
     stage_timing_prefix: str,
     manage_transaction: bool,
-    preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
+    preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
     revision_authoritative: bool = False,
     bulk_fts: bool = False,
     bulk_build: bool = False,
@@ -3259,7 +3259,7 @@ def apply_raw_revision_replay(
     skip_already_applied: bool = False,
     prepared_by_raw_id: dict[str, PreparedRows | Future[PreparedRows]] | None = None,
     prepared_required_raw_ids: frozenset[str] = frozenset(),
-    preacquired_attachment_blobs_by_raw_id: Mapping[str, dict[int, tuple[bytes | None, int, str]]] | None = None,
+    preacquired_attachment_blobs_by_raw_id: Mapping[str, dict[Any, tuple[bytes | None, int, str]]] | None = None,
     preacquired_attachment_refs_by_raw_id: Mapping[str, tuple[ArchiveSourceBlobRef, ...]] | None = None,
     prepared_aggregate_session: ParsedSession | None = None,
     prepared_pending_session: ParsedSession | None = None,
@@ -3363,7 +3363,7 @@ def apply_raw_revision_replay(
     )
     if prepared_aggregate_content_hash is not None and len(prepared_aggregate_content_hash) != 32:
         raise PreparedSessionWriteRefusedError("prepared aggregate content hash is invalid")
-    attachments_by_raw_id: dict[str, dict[int, tuple[bytes | None, int, str]]] = {}
+    attachments_by_raw_id: dict[str, dict[Any, tuple[bytes | None, int, str]]] = {}
     attachment_refs_by_raw_id: dict[str, tuple[ArchiveSourceBlobRef, ...]] = {}
     for raw_id in plan.accepted_raw_ids:
         if preacquired_attachment_blobs_by_raw_id is not None:
@@ -3488,10 +3488,9 @@ def apply_raw_revision_replay(
             if len(composed_sessions) != 1:
                 raise RuntimeError("one logical revision chain did not compose to exactly one session")
             composed_session = composed_sessions[0]
-            # Preacquired blobs are keyed by attachment object identity and
-            # the composed session carries the chunks' own attachment
-            # objects, so the per-chunk maps compose by union.
-            composed_attachment_blobs: dict[int, tuple[bytes | None, int, str]] = {}
+            # Preacquired blobs use the attachment's acquisition key. A
+            # prepared carrier preserves that key across separate row reads.
+            composed_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] = {}
             for raw_id in pending_raw_ids:
                 composed_attachment_blobs.update(attachments_by_raw_id[raw_id])
             # The chain's newest accepted raw carries the composed write:
@@ -3754,7 +3753,7 @@ def apply_raw_membership_classification(
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
     defer_fts: bool = False,
-    preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
+    preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
     preacquired_attachment_refs: tuple[ArchiveSourceBlobRef, ...] | None = None,
     prepared_by_raw_id: Mapping[str, PreparedRows] | None = None,
     prepared_required_raw_ids: frozenset[str] = frozenset(),
@@ -4461,7 +4460,7 @@ def _index_parsed_for_retained_raw(
     stage_timings_s: dict[str, float] | None,
     stage_timing_prefix: str,
     manage_transaction: bool,
-    preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]],
+    preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]],
     finalize_raw_parse: bool,
     revision_authoritative: bool = False,
     bulk_fts: bool = False,

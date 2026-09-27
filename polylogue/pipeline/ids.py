@@ -1571,25 +1571,59 @@ def _stream_session_tree_hash(convo: ParsedSession) -> str:
     # JSONEncoder. Item encoding is delegated to that encoder as well.
     literal('{"attachments":[')
     if convo.attachments:
-        attachments_payload: list[dict[str, JSONValue]] = []
-        with disk_message_owner_resolution(convo.messages) as resolution:
-            for attachment in convo.attachments:
-                try:
-                    owner_anchor = attachment_message_owner_key(attachment, resolution)
-                except MessageOwnerAmbiguityError:
-                    owner_anchor = None
-                attachments_payload.append(_attachment_hash_payload(attachment, message_owner_anchor=owner_anchor))
-        attachments_payload.sort(
-            key=lambda item: (
-                str(item.get("message_id") or ""),
-                str(item.get("id") or ""),
-                str(item.get("name") or ""),
+        if hasattr(convo.attachments, "path"):
+            directory = Path(convo.attachments.path).parent
+            with (
+                tempfile.TemporaryDirectory(prefix="polylogue-attachment-hash-", dir=directory) as scratch,
+                closing(sqlite3.connect(Path(scratch) / "sort.db")) as conn,
+            ):
+                conn.execute(
+                    "CREATE TABLE attachment_hash (ordinal INTEGER PRIMARY KEY, owner TEXT NOT NULL, "
+                    "native_id TEXT NOT NULL, name TEXT NOT NULL, payload TEXT NOT NULL)"
+                )
+                with disk_message_owner_resolution(convo.messages) as resolution:
+                    for ordinal, attachment in enumerate(convo.attachments):
+                        try:
+                            owner_anchor = attachment_message_owner_key(attachment, resolution)
+                        except MessageOwnerAmbiguityError:
+                            owner_anchor = None
+                        payload = _attachment_hash_payload(attachment, message_owner_anchor=owner_anchor)
+                        conn.execute(
+                            "INSERT INTO attachment_hash VALUES (?, ?, ?, ?, ?)",
+                            (
+                                ordinal,
+                                str(payload.get("message_id") or ""),
+                                str(payload.get("id") or ""),
+                                str(payload.get("name") or ""),
+                                json.dumps(payload, ensure_ascii=False),
+                            ),
+                        )
+                for index, (encoded,) in enumerate(
+                    conn.execute("SELECT payload FROM attachment_hash ORDER BY owner, native_id, name, ordinal")
+                ):
+                    if index:
+                        literal(",")
+                    write(json.loads(encoded))
+        else:
+            attachments_payload: list[dict[str, JSONValue]] = []
+            with disk_message_owner_resolution(convo.messages) as resolution:
+                for attachment in convo.attachments:
+                    try:
+                        owner_anchor = attachment_message_owner_key(attachment, resolution)
+                    except MessageOwnerAmbiguityError:
+                        owner_anchor = None
+                    attachments_payload.append(_attachment_hash_payload(attachment, message_owner_anchor=owner_anchor))
+            attachments_payload.sort(
+                key=lambda item: (
+                    str(item.get("message_id") or ""),
+                    str(item.get("id") or ""),
+                    str(item.get("name") or ""),
+                )
             )
-        )
-        for index, payload in enumerate(attachments_payload):
-            if index:
-                literal(",")
-            write(payload)
+            for index, payload in enumerate(attachments_payload):
+                if index:
+                    literal(",")
+                write(payload)
     literal('],"created_at":')
     write(_normalize_for_hash(convo.created_at))
     literal(',"messages":[')
@@ -1627,7 +1661,7 @@ def session_content_hash(convo: ParsedSession) -> ContentHash:
     ``_EXCLUDED_FIELDS``; parsed fields may not silently fall through.
     """
     validate_semantic_hash_partition()
-    if hasattr(convo.messages, "path") or hasattr(convo.session_events, "path"):
+    if hasattr(convo.messages, "path") or hasattr(convo.session_events, "path") or hasattr(convo.attachments, "path"):
         return ContentHash(_stream_session_tree_hash(convo))
     messages_payload, attachments_payload, session_events_payload = _session_hash_components(
         convo, tolerate_ambiguous_attachment_owners=True

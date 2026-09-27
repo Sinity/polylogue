@@ -7,7 +7,16 @@ from bisect import bisect_right
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, Field, ValidationInfo, field_serializer, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    Field,
+    FieldSerializationInfo,
+    ValidationInfo,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
@@ -538,6 +547,11 @@ class ParsedAttachment(BaseModel):
     # that already happened, so ingestion must record it without re-hashing.
     # Excluded from serialization/repr; not a stored field.
     precomputed_blob: tuple[str, int] | None = Field(default=None, exclude=True, repr=False)
+    prepared_carrier_key: tuple[str, int, int] | None = Field(default=None, exclude=True, repr=False)
+
+    @property
+    def acquisition_key(self) -> object:
+        return self.prepared_carrier_key if self.prepared_carrier_key is not None else id(self)
 
     @field_validator("path")
     @classmethod
@@ -655,6 +669,13 @@ class ParsedSession(BaseModel):
     unit_accounting: ParseAccounting | None = Field(default=None, exclude=True, repr=False)
     active_leaf_message_provider_id: str | None = None
     attachments: list[ParsedAttachment] = Field(default_factory=list)
+
+    @field_serializer("attachments")
+    def serialize_attachments(
+        self, value: list[ParsedAttachment], info: FieldSerializationInfo
+    ) -> list[dict[str, object]]:
+        return [attachment.model_dump(mode=info.mode) for attachment in value]
+
     session_events: list[ParsedSessionEvent] = Field(default_factory=list)
     parent_session_provider_id: str | None = None
     # The parent-session message a provider record names as this session's
