@@ -1078,14 +1078,18 @@ class FacetsResult(_OperationResult):
 
 class IngestResult(_OperationResult):
     source_generation_id: str = Field(min_length=1)
-    outcome: OperationStatus
+    #: ``degraded``: rows committed, derived convergence did not finish; the
+    #: receipt's recorded convergence decides which, never the caller.
+    outcome: Literal["completed", "degraded"]
     sequence: int = Field(ge=0)
     historical_receipt: IngestTerminalReceipt
 
     @model_validator(mode="after")
     def binds_terminal_receipt(self) -> IngestResult:
-        if self.outcome is not OperationStatus.COMPLETED:
-            raise ValueError("ingest terminal result must be completed")
+        from polylogue.operations.machine_receipts import ingest_terminal_outcome
+
+        if self.outcome != ingest_terminal_outcome(self.historical_receipt):
+            raise ValueError("ingest terminal outcome disagrees with its receipt's recorded convergence")
         if self.source_generation_id != self.historical_receipt.source_generation_id:
             raise ValueError("ingest result and historical receipt disagree on source generation")
         if self.sequence != self.historical_receipt.final_sequence:

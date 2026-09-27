@@ -48,6 +48,7 @@ from polylogue.operations.machine_receipts import (
     ingest_input_raw_pages_digest,
     ingest_insight_pages_digest,
     ingest_terminal_outcome,
+    ingest_unconverged_error,
 )
 from polylogue.operations.mutation_transaction import (
     MutationPreview,
@@ -1125,24 +1126,6 @@ class IngestExecution:
             await self.runtime.write_phase("ingest.stop", stop)
 
 
-def ingest_unconverged_error(history: IngestHistoricalReceipt | IngestHistoricalReceiptV2) -> dict[str, object]:
-    summary = getattr(history, "summary", None)
-    source_complete = bool(getattr(summary, "source_complete", False))
-    return {
-        "code": "ingest_convergence_pending",
-        "detail": (
-            "ingest committed its rows, but "
-            + ("profile and insight convergence" if source_complete else "source admission")
-            + " did not finish; the daemon's convergence continues it"
-        ),
-        "retryable": True,
-        "data": {
-            "source_complete": source_complete,
-            "profile_convergence_complete": getattr(summary, "profile_convergence_complete", None),
-        },
-    }
-
-
 async def execute_ingest_operation(
     request: DaemonOperationRequest, context: OperationContext
 ) -> DaemonOperationEnvelope:
@@ -1158,7 +1141,8 @@ async def execute_ingest_operation(
             if state["outcome"] in {"completed", "degraded"} and isinstance(restored, dict):
                 from polylogue.operations.machine_receipts import decode_machine_receipt
 
-                history = decode_machine_receipt(restored)
+                # The durable state wraps the receipt; decode the receipt itself.
+                history = decode_machine_receipt(restored.get("historical_receipt"))
                 if not isinstance(history, (IngestHistoricalReceipt, IngestHistoricalReceiptV2)):
                     raise ValueError("completed ingest has another historical receipt kind")
                 outcome = ingest_terminal_outcome(history)

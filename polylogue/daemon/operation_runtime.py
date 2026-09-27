@@ -11,7 +11,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import monotonic, time
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext, QueryTimeoutError
 from polylogue.daemon.execution import (
@@ -453,7 +453,13 @@ class DaemonOperationRuntime:
                     outcome="rejected",
                     error={"code": "request_identity_conflict", "retryable": False},
                 ).to_dict()
-            if durable is not None and durable["outcome"] in {"completed", "failed", "cancelled", "interrupted"}:
+            if durable is not None and durable["outcome"] in {
+                "completed",
+                "degraded",
+                "failed",
+                "cancelled",
+                "interrupted",
+            }:
                 # Initial generation/recipe preconditions were checked at
                 # acceptance. A historical terminal receipt does not reopen
                 # index/source or become false after ordinary reconvergence.
@@ -465,6 +471,7 @@ class DaemonOperationRuntime:
                     outcome=str(durable["outcome"]),
                     reference=record,
                     result=durable.get("result", durable),
+                    error=cast("dict[str, object] | None", durable.get("error")),
                 ).to_dict()
             # A durable non-terminal record is the recovery authority after a
             # daemon restart.  Re-enqueuing the request here would create a
@@ -793,7 +800,8 @@ class DaemonOperationRuntime:
                         parts = audit.machine_parts(binding)
                         if any(part["operation_id"] is None for part in parts) or (
                             record["artifact_kind"] == "source-generation"
-                            and machine_request_state(audit, record)["outcome"] not in {"completed", "failed"}
+                            and machine_request_state(audit, record)["outcome"]
+                            not in {"completed", "degraded", "failed"}
                         ):
                             audit.stop_machine_batch(binding, "cancelled")
 

@@ -13,6 +13,7 @@ from polylogue.operations.machine_receipts import (
     decode_machine_receipt,
     encode_machine_receipt,
     ingest_terminal_outcome,
+    ingest_unconverged_error,
 )
 
 _RICH_HISTORICAL_RECEIPT_OPERATIONS = frozenset({"ingest", "maintenance.insights.rebuild"})
@@ -172,6 +173,7 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
     ):
         outcome = "cancelled" if record["stop_reason"] == "cancelled" else "interrupted"
     result: dict[str, object] | None = None
+    error: dict[str, object] | None = None
     if kind == "source-generation" and len(attempted) == 1 and attempted[0]["outcome"] == "completed":
         receipt = attempted[0]["receipt"]
         if isinstance(receipt, dict) and receipt.get("kind") in {"ingest/v1", "ingest/v2"}:
@@ -183,6 +185,10 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
             # outcome the executing request returned.
             if outcome == "completed":
                 outcome = ingest_terminal_outcome(history)
+                if outcome == "degraded":
+                    # Carried in the durable state so operation.await reports
+                    # the same typed, retryable error the executing request did.
+                    error = ingest_unconverged_error(history)
             result = {
                 "source_generation_id": receipt["source_generation_id"],
                 "outcome": outcome,
@@ -209,5 +215,6 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
         "not_attempted": unattempted,
         "parts": attempted,
         **({"result": result} if result is not None else {}),
+        **({"error": error} if error is not None else {}),
         "stop_reason": record.get("stop_reason"),
     }

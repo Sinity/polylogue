@@ -379,6 +379,24 @@ def ingest_terminal_outcome(history: IngestHistoricalReceipt | IngestHistoricalR
     return "degraded" if converged is False else "completed"
 
 
+def ingest_unconverged_error(history: IngestHistoricalReceipt | IngestHistoricalReceiptV2) -> dict[str, object]:
+    summary = getattr(history, "summary", None)
+    source_complete = bool(getattr(summary, "source_complete", False))
+    return {
+        "code": "ingest_convergence_pending",
+        "detail": (
+            "ingest committed its rows, but "
+            + ("profile and insight convergence" if source_complete else "source admission")
+            + " did not finish; the daemon's convergence continues it"
+        ),
+        "retryable": True,
+        "data": {
+            "source_complete": source_complete,
+            "profile_convergence_complete": getattr(summary, "profile_convergence_complete", None),
+        },
+    }
+
+
 def encode_machine_receipt(receipt: MachineHistoricalReceipt) -> dict[str, object]:
     """Return the sole JSON representation accepted by audit persistence."""
 
@@ -405,6 +423,7 @@ def decode_machine_receipt(raw: object) -> MachineHistoricalReceipt:
 
 __all__ = [
     "ingest_terminal_outcome",
+    "ingest_unconverged_error",
     "IngestHistoricalReceipt",
     "IngestHistoricalReceiptV2",
     "IngestTerminalReceipt",

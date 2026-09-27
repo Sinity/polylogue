@@ -322,3 +322,46 @@ def test_ingest_terminal_outcome_is_completed_only_when_converged(
     )
 
     assert ingest_terminal_outcome(decode_machine_receipt(history.model_dump(mode="json"))) == outcome  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("profile_convergence_complete", [True, False])
+def test_ingest_result_contract_binds_its_outcome_to_the_receipt(profile_convergence_complete: bool) -> None:
+    """The declared ingest result admits ``degraded`` only when the receipt records it.
+
+    Anti-vacuity: restoring the completed-only validator rejects the degraded
+    row; dropping the receipt binding accepts the mismatched outcome.
+    """
+    from polylogue.operations.daemon_protocol import OperationResultContractError, validate_operation_result
+    from polylogue.operations.machine_receipts import ingest_terminal_outcome
+
+    item = IngestInputHistoricalReceipt(
+        source_item_id="source-item:fixture",
+        logical_coordinate="fixture.json",
+        denominator=1,
+        raw_ids=["raw:complete"],
+    )
+    history = IngestHistoricalReceipt(
+        source_generation_id="generation:fixture",
+        final_sequence=1,
+        input_count=1,
+        input_pages=[IngestInputPageHistoricalReceipt.from_items(0, [item])],
+        summary=IngestTerminalSummaryHistorical(
+            enumeration_complete=True,
+            source_complete=True,
+            confirmed_raw_count=1,
+            unresolved_raw_count=0,
+            profile_targets_observed=0,
+            profile_convergence_complete=profile_convergence_complete,
+        ),
+    )
+    outcome = ingest_terminal_outcome(history)
+    payload = {
+        "source_generation_id": "generation:fixture",
+        "sequence": 1,
+        "historical_receipt": history.model_dump(mode="json"),
+    }
+
+    validate_operation_result("ingest", {**payload, "outcome": outcome})
+    wrong = "completed" if outcome == "degraded" else "degraded"
+    with pytest.raises(OperationResultContractError, match="recorded convergence"):
+        validate_operation_result("ingest", {**payload, "outcome": wrong})
