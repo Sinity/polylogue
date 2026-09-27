@@ -256,8 +256,7 @@ async def test_truncated_page_is_degraded_and_never_complete(workspace_env: dict
     assert topology is not None
 
     envelope = topology_public_envelope(topology)
-    if envelope["nodes_complete"]:
-        pytest.skip("engine returned a complete page; bounding is exercised below")
+    assert not envelope["nodes_complete"], "a width-4 chain under node_limit=2 must truncate"
     assert TOPOLOGY_GAP_TRUNCATED in topology.degraded_gaps()
     assert _outcome(envelope)["state"] == "degraded"
     assert envelope["continuation"] is not None

@@ -1863,7 +1863,7 @@ def test_chatgpt_large_children_array_prepares_without_rebuilding_it(
         shard_directory=str(tmp_path / "scratch"),
     )
     assert artifact.error is None
-    actual = artifact.load_sessions()[0]
+    actual = list(artifact.iter_sessions())[0]
     assert [message.model_dump(mode="json") for message in actual.messages] == [
         message.model_dump(mode="json") for message in expected.messages
     ]
@@ -1904,7 +1904,7 @@ def test_chatgpt_mapping_object_preparation_matches_parser_and_duplicate_keys(
         shard_directory=str(tmp_path / "scratch"),
     )
     assert artifact.error is None
-    actual = artifact.load_sessions()[0]
+    actual = list(artifact.iter_sessions())[0]
     assert [message.model_dump(mode="json") for message in actual.messages] == [
         message.model_dump(mode="json") for message in expected.messages
     ]
@@ -1977,7 +1977,7 @@ def test_chatgpt_simple_mapping_normalizes_one_node_at_a_time_with_parser_parity
     )
     assert artifact.error is None
     assert len(normalized_sizes) == len(mapping) + 1  # includes the empty envelope shell
-    actual = artifact.load_sessions()[0]
+    actual = list(artifact.iter_sessions())[0]
     assert [item.model_dump(mode="json") for item in actual.messages] == [
         item.model_dump(mode="json") for item in expected.messages
     ]
@@ -2122,7 +2122,7 @@ def test_chatgpt_missing_current_node_uses_collecting_parser(tmp_path: Path) -> 
         shard_directory=str(tmp_path / "scratch"),
     )
     assert artifact.error is None
-    actual = artifact.load_sessions()[0]
+    actual = list(artifact.iter_sessions())[0]
     assert [message.model_dump(mode="json") for message in actual.messages] == [
         message.model_dump(mode="json") for message in expected.messages
     ]
@@ -2146,7 +2146,7 @@ def test_chatgpt_simple_mapping_matches_default_model_coercion(tmp_path: Path, d
         shard_directory=str(tmp_path / "scratch"),
     )
     assert artifact.error is None
-    actual = artifact.load_sessions()[0]
+    actual = list(artifact.iter_sessions())[0]
     assert [message.model_name for message in actual.messages] == [message.model_name for message in expected.messages]
     assert actual.content_hash == session_content_hash(expected)
     artifact.discard()
@@ -2176,7 +2176,7 @@ def test_chatgpt_simple_mapping_preserves_empty_parent_key_on_active_path(tmp_pa
         shard_directory=str(tmp_path / "scratch"),
     )
     assert artifact.error is None
-    actual = artifact.load_sessions()[0]
+    actual = list(artifact.iter_sessions())[0]
     assert [message.is_active_path for message in actual.messages] == [
         message.is_active_path for message in expected.messages
     ]
@@ -2205,7 +2205,7 @@ def test_chatgpt_empty_current_node_uses_collecting_parser(tmp_path: Path) -> No
         shard_directory=str(tmp_path / "scratch"),
     )
     assert artifact.error is None
-    actual = artifact.load_sessions()[0]
+    actual = list(artifact.iter_sessions())[0]
     assert [message.is_active_path for message in actual.messages] == [
         message.is_active_path for message in expected.messages
     ]
@@ -2235,7 +2235,7 @@ def test_chatgpt_sandbox_fallback_emits_truncation_once(tmp_path: Path, monkeypa
     )
     assert artifact.error is None
     assert emitted.count("sources.chatgpt.sandbox_links_bounded") == 1
-    assert len(artifact.load_sessions()[0].attachments) == 512
+    assert len(list(artifact.iter_sessions())[0].attachments) == 512
     artifact.discard()
 
 
@@ -2253,7 +2253,7 @@ def test_chatgpt_native_object_preparation_preserves_complete_parser_output(tmp_
         shard_directory=str(tmp_path / "scratch"),
     )
     assert artifact.error is None
-    actual = artifact.load_sessions()[0]
+    actual = list(artifact.iter_sessions())[0]
     collected = actual.model_copy(
         update={"messages": list(actual.messages), "session_events": list(actual.session_events)}
     )

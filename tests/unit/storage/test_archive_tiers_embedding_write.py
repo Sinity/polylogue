@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import Origin
-from polylogue.storage.embeddings.materialization import _record_archive_embedding_success
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.embedding_write import (
     ArchiveEmbeddingFailure,
@@ -39,7 +38,7 @@ def _connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def test_archive_tiers_embedding_writer_upserts_vector_meta_and_status(tmp_path: Path) -> None:
+def test_archive_tiers_embedding_writer_upserts_vector_meta(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "embeddings.db")
     session_id = "codex-session:codex-embedding"
     message_id = f"{session_id}:m1"
@@ -65,24 +64,6 @@ def test_archive_tiers_embedding_writer_upserts_vector_meta_and_status(tmp_path:
     )
     assert conn.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM message_embedding_refs").fetchone()[0] == 1
-
-    # The per-message vector upsert intentionally does NOT touch
-    # ``embedding_status``; that row is materialized by the session-level
-    # orchestrator after a session's messages are embedded. Exercise that
-    # seam directly to confirm the status row reflects the embedded session.
-    _record_archive_embedding_success(
-        conn,
-        session_id=session_id,
-        origin="codex-session",
-        message_count=1,
-    )
-    status = read_embedding_status(conn, session_id)
-    assert status.session_id == session_id
-    assert status.origin == "codex-session"
-    assert status.message_count_embedded == 1
-    assert status.needs_reindex is False
-    assert status.error_message is None
-    assert isinstance(status.last_embedded_at_ms, int)
 
 
 def test_archive_tiers_embedding_writer_batches_message_upserts(tmp_path: Path) -> None:

@@ -63,12 +63,6 @@ def test_escape_fts5_query_strips_or_quotes_format_chars(char_name: str, char: s
         conn.execute("INSERT INTO t (content) VALUES ('test query data')")
         conn.commit()
         conn.execute("SELECT content FROM t WHERE t MATCH ?", (escaped,)).fetchall()
-    except sqlite3.OperationalError as e:
-        msg = str(e).lower()
-        if "fts5" in msg or "syntax" in msg or "parse" in msg or "malformed" in msg:
-            pytest.fail(
-                f"FTS5 syntax error for {char_name} (U+{ord(char):04X}): escaped={escaped!r}, query={query!r}: {e}"
-            )
     finally:
         conn.close()
 
@@ -89,26 +83,22 @@ def test_escape_fts5_query_strips_or_quotes_format_chars(char_name: str, char: s
     ],
 )
 def test_escape_fts5_query_cjk_and_unicode(query: str) -> None:
-    """CJK and Unicode queries should be FTS5-safe."""
+    """A CJK or accented query escapes to a MATCH that finds its own text.
+
+    Anti-vacuity: an escape that splits or mangles these scripts (so the
+    insert-time and query-time tokenization disagree) returns no row, and
+    any FTS5 syntax error propagates instead of being swallowed.
+    """
     escaped = escape_fts5_query(query)
-    assert isinstance(escaped, str)
-    assert len(escaped) > 0
 
     conn = sqlite3.connect(":memory:")
     try:
         conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS t USING fts5(content)")
         conn.execute("INSERT INTO t (content) VALUES (?)", (query,))
-        conn.commit()
         results = conn.execute("SELECT content FROM t WHERE t MATCH ?", (escaped,)).fetchall()
-        # The query should find its own content — verification that tokenization
-        # matches between insert and query.
-        assert len(results) >= 0  # at minimum, no syntax error
-    except sqlite3.OperationalError as e:
-        msg = str(e).lower()
-        if "fts5" in msg or "syntax" in msg or "parse" in msg or "malformed" in msg:
-            pytest.fail(f"FTS5 syntax error for CJK query {query!r}: escaped={escaped!r}: {e}")
     finally:
         conn.close()
+    assert results == [(query,)]
 
 
 # ── extract_match_terms: CJK token mismatch ───────────────────────────
@@ -440,9 +430,5 @@ def test_escape_fts5_query_regression_safety(query: str) -> None:
         conn.execute("INSERT INTO t (content) VALUES ('test content for searching')")
         conn.commit()
         conn.execute("SELECT content FROM t WHERE t MATCH ?", (escaped,)).fetchall()
-    except sqlite3.OperationalError as e:
-        msg = str(e).lower()
-        if "fts5" in msg or "syntax" in msg or "parse" in msg or "malformed" in msg:
-            pytest.fail(f"FTS5 syntax error for {query!r}: escaped={escaped!r}: {e}")
     finally:
         conn.close()

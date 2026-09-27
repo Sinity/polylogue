@@ -447,16 +447,10 @@ async def test_path_worker_publishes_prepared_rows_from_captured_blob(
 ) -> None:
     import polylogue.sources.live.batch as batch
     import polylogue.storage.sqlite.archive_tiers.write as archive_tier_write
-    from polylogue.sources.prepared_jsonl import PreparedJsonl
 
     paths = _write_fixture_corpus(tmp_path / "sessions", count=1)
     await _ingest(tmp_path / "baseline", paths, parse_stage=None)
     monkeypatch.setattr(batch, "_STREAMING_FULL_INGEST_BYTES", 1)
-    monkeypatch.setattr(
-        PreparedJsonl,
-        "load_sessions",
-        lambda _self: pytest.fail("the writer reconstructed a complete prepared JSONL cohort"),
-    )
     copied = 0
     original_copy = archive_tier_write.copy_shard_session_rows
 
@@ -482,7 +476,6 @@ async def test_json_document_uses_prepared_rows_and_preserves_detected_origin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import polylogue.storage.sqlite.archive_tiers.write as archive_tier_write
-    from polylogue.sources.prepared_jsonl import PreparedJsonl
 
     source = tmp_path / "inbox" / "session.json"
     source.parent.mkdir()
@@ -530,11 +523,6 @@ async def test_json_document_uses_prepared_rows_and_preserves_detected_origin(
         assert result.ingested_session_count == 1
 
     await ingest(tmp_path / "baseline", None)
-    monkeypatch.setattr(
-        PreparedJsonl,
-        "load_sessions",
-        lambda _self: pytest.fail("the writer reconstructed a complete prepared JSON cohort"),
-    )
     monkeypatch.setattr(archive_tier_write, "copy_shard_session_rows", count_copy)
     stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "shards")
     try:

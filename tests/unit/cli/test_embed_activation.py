@@ -29,7 +29,6 @@ from polylogue.cli.commands.embed import (
     embed_command,
 )
 from polylogue.cli.root_request import RootModeRequest
-from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.embeddings.preflight import (
     PreflightReport,
     effective_cost_cap,
@@ -459,10 +458,6 @@ class TestBackfillCommand:
         with (
             _patch_preflight(report),
             patch(
-                "polylogue.cli.commands.embed._active_archive_location",
-                return_value=ArchiveLocation.resolve(index_db.parent),
-            ),
-            patch(
                 "polylogue.storage.search_providers.create_vector_provider",
                 return_value=fake_provider,
             ),
@@ -495,10 +490,6 @@ class TestBackfillCommand:
         initialize_archive_database(index_db, ArchiveTier.INDEX)
         with (
             patch("polylogue.cli.commands.embed._build_preflight_report", fake_preflight),
-            patch(
-                "polylogue.cli.commands.embed._active_archive_location",
-                return_value=ArchiveLocation.resolve(index_db.parent),
-            ),
             patch("polylogue.storage.search_providers.create_vector_provider", return_value=MagicMock()),
             patch(
                 "polylogue.storage.embeddings.materialization.select_pending_archive_session_window",
@@ -552,10 +543,6 @@ class TestBackfillCommand:
         )
         with (
             _patch_preflight(_make_report(pending_sessions=1, pending_messages=2, max_messages=2)),
-            patch(
-                "polylogue.cli.commands.embed._active_archive_location",
-                return_value=ArchiveLocation.resolve(index_db.parent),
-            ),
             patch("polylogue.storage.search_providers.create_vector_provider", return_value=fake_provider),
             patch(
                 "polylogue.storage.embeddings.materialization.select_pending_archive_session_window",
@@ -587,10 +574,6 @@ class TestBackfillCommand:
         pending = [PendingSession(session_id="codex-session:v1", title="v1", message_count=2)]
         with (
             _patch_preflight(_make_report(pending_sessions=1, pending_messages=2, max_messages=2)),
-            patch(
-                "polylogue.cli.commands.embed._active_archive_location",
-                return_value=ArchiveLocation.resolve(index_db.parent),
-            ),
             patch("polylogue.storage.search_providers.create_vector_provider", return_value=MagicMock()),
             patch(
                 "polylogue.storage.embeddings.materialization.select_pending_archive_session_window",
@@ -668,10 +651,6 @@ class TestBackfillCommand:
         ]
         with (
             _patch_preflight(_make_report()),
-            patch(
-                "polylogue.cli.commands.embed._active_archive_location",
-                return_value=ArchiveLocation.resolve(index_db.parent),
-            ),
             patch("polylogue.storage.search_providers.create_vector_provider", return_value=MagicMock()),
             patch(
                 "polylogue.storage.embeddings.materialization.select_pending_archive_session_window",
@@ -717,10 +696,6 @@ class TestBackfillCommand:
         ]
         with (
             _patch_preflight(_make_report()),
-            patch(
-                "polylogue.cli.commands.embed._active_archive_location",
-                return_value=ArchiveLocation.resolve(index_db.parent),
-            ),
             patch("polylogue.storage.search_providers.create_vector_provider", return_value=MagicMock()),
             patch(
                 "polylogue.storage.embeddings.materialization.select_pending_archive_session_window",
@@ -766,10 +741,6 @@ class TestBackfillCommand:
         ]
         with (
             _patch_preflight(_make_report(max_cost_usd=0.00005)),
-            patch(
-                "polylogue.cli.commands.embed._active_archive_location",
-                return_value=ArchiveLocation.resolve(index_db.parent),
-            ),
             patch("polylogue.storage.search_providers.create_vector_provider", return_value=MagicMock()),
             patch(
                 "polylogue.storage.embeddings.materialization.select_pending_archive_session_window",
@@ -1030,10 +1001,6 @@ class TestBackfillRebuildOrdering:
 
         with (
             _patch_preflight(report),
-            patch(
-                "polylogue.cli.commands.embed._active_archive_location",
-                return_value=ArchiveLocation.resolve(index_db.parent),
-            ),
             # The provider failing to construct is the abort this guards.
             patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
             patch(

@@ -313,46 +313,6 @@ def _id_with_origin(identifier_attr: str) -> InsightAccessor:
     return accessor
 
 
-def _list_preview(name: str, limit: int = 3) -> InsightAccessor:
-    """Accessor showing the first N items of a tuple/list attribute."""
-
-    def accessor(item: ArchiveInsightModel) -> str:
-        values = getattr(item, name, None)
-        if isinstance(values, (list, tuple)):
-            preview = ", ".join(str(value) for value in values[:limit])
-            return preview or "-"
-        return _stringify(values)
-
-    return accessor
-
-
-def _formatted_float(name: str, *, precision: int = 1, default: str = "-") -> InsightAccessor:
-    """Accessor rendering a numeric attribute with fixed precision."""
-
-    def accessor(item: ArchiveInsightModel) -> str:
-        value = getattr(item, name, None)
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
-            return default
-        return f"{float(value):.{precision}f}"
-
-    return accessor
-
-
-def _count_with_percentage(count_attr: str, percentage_attr: str) -> InsightAccessor:
-    """Accessor rendering ``count (pct%)`` pairs from sibling attributes."""
-
-    def accessor(item: ArchiveInsightModel) -> str:
-        count = getattr(item, count_attr, None)
-        percentage = getattr(item, percentage_attr, None)
-        if not isinstance(count, int) or isinstance(count, bool):
-            return "-"
-        if not isinstance(percentage, (int, float)) or isinstance(percentage, bool):
-            return str(count)
-        return f"{count} ({float(percentage):.1f}%)"
-
-    return accessor
-
-
 INSIGHT_REGISTRY: dict[str, InsightType] = {}
 
 

@@ -349,10 +349,6 @@ class PreparedJsonl:
                     }
                 )
 
-    def load_sessions(self) -> list[ParsedSession]:
-        """Compatibility adapter for publication callers that consume a cohort."""
-        return list(self.iter_sessions())
-
     def session_sequence(self) -> PreparedSessionSequence:
         """Expose a sealed cohort without retaining its parsed sessions in Python."""
         if self.sessions_path is None:

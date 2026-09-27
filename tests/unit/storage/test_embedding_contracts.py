@@ -1484,8 +1484,8 @@ def _failure_lifecycle_state(embeddings_db: Path, failure_id: str) -> str:
 def test_archive_success_outcomes_resolve_open_failures(tmp_path: Path) -> None:
     """Every terminal success outcome clears prior failure debt.
 
-    Anti-vacuity: dropping resolve_open_embedding_failures_for_session from
-    _record_archive_embedding_success leaves both failures active, so a session
+    Anti-vacuity: dropping the failure resolution from the attempt-success
+    finalizers in embedding_write leaves both failures active, so a session
     that later embeds (or turns out to have nothing embeddable) reports phantom
     current debt forever.
     """
