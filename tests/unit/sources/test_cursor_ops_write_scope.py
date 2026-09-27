@@ -166,3 +166,38 @@ def test_scope_refuses_an_unleased_entrant(store: CursorStore) -> None:
         with write_lease("test-writer"):
             with store.ops_write_scope():
                 pass
+
+
+def _attempt_phase(store: CursorStore, attempt_id: str) -> str | None:
+    with sqlite3.connect(store._ops_db_path) as conn:
+        row = conn.execute("SELECT phase FROM ingest_attempts WHERE attempt_id = ?", (attempt_id,)).fetchone()
+    return None if row is None else str(row[0])
+
+
+def test_ops_batch_commits_its_writes_once_at_the_end(store: CursorStore) -> None:
+    """Anti-vacuity: a per-write commit makes the first update visible to
+    another connection before the batch ends."""
+    attempt_id = store.begin_ingest_attempt(paths=[Path("/tmp/a.jsonl")], input_bytes=1, queued_file_count=1)
+    with store.ops_write_scope():
+        with store.ops_batch():
+            store.update_ingest_attempt(attempt_id, phase="first")
+            assert _attempt_phase(store, attempt_id) != "first"
+            store.update_ingest_attempt(attempt_id, phase="second")
+        assert _attempt_phase(store, attempt_id) == "second"
+
+
+def test_ops_batch_rolls_back_as_a_unit(store: CursorStore) -> None:
+    """Anti-vacuity: committing inside the batch leaves "first" behind."""
+    attempt_id = store.begin_ingest_attempt(paths=[Path("/tmp/a.jsonl")], input_bytes=1, queued_file_count=1)
+    before = _attempt_phase(store, attempt_id)
+    with pytest.raises(RuntimeError, match="cursor write failed"):
+        with store.ops_write_scope(), store.ops_batch():
+            store.update_ingest_attempt(attempt_id, phase="first")
+            raise RuntimeError("cursor write failed")
+    assert _attempt_phase(store, attempt_id) == before
+
+
+def test_ops_batch_requires_a_scope(store: CursorStore) -> None:
+    with pytest.raises(RuntimeError, match="ops_write_scope"):
+        with store.ops_batch():
+            pass

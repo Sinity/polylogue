@@ -432,6 +432,7 @@ class CursorStore:
         state.conn = conn
         state.depth = 1
         state.pending = []
+        state.batched = False
         try:
             yield
         finally:
@@ -450,6 +451,39 @@ class CursorStore:
                 conn.close()
 
     @contextmanager
+    def ops_batch(self) -> Iterator[None]:
+        """Commit every ops write inside this block once, at its end.
+
+        Only valid inside :meth:`ops_write_scope`. A batch of cursor advances
+        for one published group is one unit: the index and source commits it
+        follows are already durable, and a crash before the batch commits
+        leaves every cursor behind, so those files are re-ingested, which is
+        idempotent by content hash. A failure inside the batch rolls the whole
+        batch back and propagates, exactly as the first failing write would.
+        """
+        state = self._ops_scope
+        conn = cast(sqlite3.Connection | None, getattr(state, "conn", None))
+        if conn is None:
+            raise RuntimeError("ops_batch requires an enclosing ops_write_scope")
+        if getattr(state, "batched", False):
+            yield
+            return
+        state.batched = True
+        try:
+            yield
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            state.batched = False
+        if conn.in_transaction:
+            pending = state.pending
+            if pending:
+                state.pending = []
+                _insert_stage_events(conn, pending)
+            conn.commit()
+
+    @contextmanager
     def _connect_ops(self) -> Iterator[sqlite3.Connection]:
         held = cast(sqlite3.Connection | None, getattr(self._ops_scope, "conn", None))
         if held is None:
@@ -466,6 +500,9 @@ class CursorStore:
             held.rollback()
             raise
         else:
+            if getattr(self._ops_scope, "batched", False):
+                # The enclosing ``ops_batch`` owns the one commit.
+                return
             # Buffered telemetry rides this operation's commit rather than
             # taking one of its own, and is written before it so a reader never
             # sees a finished attempt whose events are still buffered. A block

@@ -1446,22 +1446,33 @@ class LiveBatchProcessor:
                             self._record_convergence_outcomes,
                             outcome_items,
                         )
-                    for path in full_result.succeeded:
+                    # One admission and one ops commit for the group's
+                    # cursors: per-file admissions cost a writer round trip
+                    # and an ops commit each, most of the group's ops time.
+                    cursor_writes = await self._run_ops_write(
+                        "cursor_full",
+                        self._record_full_cursors,
+                        [
+                            (
+                                path,
+                                {
+                                    "raw_fingerprint": full_result.raw_fingerprints.get(path),
+                                    "raw_byte_size": full_result.raw_byte_sizes.get(path),
+                                    "frontier_byte_size": full_result.raw_frontier_sizes.get(path),
+                                    "source_name": full_result.raw_source_names.get(path),
+                                    "source_revision": full_result.raw_source_revisions.get(path),
+                                    "source_fingerprint": full_result.raw_source_fingerprints.get(path),
+                                    "captured_content_hash": full_result.captured_content_hashes.get(path),
+                                    "captured_file_observation": full_result.captured_file_observations.get(path),
+                                },
+                            )
+                            for path in full_result.succeeded
+                        ],
+                    )
+                    for path, (read_bytes, stale) in zip(full_result.succeeded, cursor_writes, strict=True):
                         succeeded_paths.add(path)
-                        cursor_fingerprint_read_bytes += await self._run_ops_write(
-                            "cursor_full",
-                            self._record_full_cursor,
-                            path,
-                            raw_fingerprint=full_result.raw_fingerprints.get(path),
-                            raw_byte_size=full_result.raw_byte_sizes.get(path),
-                            frontier_byte_size=full_result.raw_frontier_sizes.get(path),
-                            source_name=full_result.raw_source_names.get(path),
-                            source_revision=full_result.raw_source_revisions.get(path),
-                            source_fingerprint=full_result.raw_source_fingerprints.get(path),
-                            captured_content_hash=full_result.captured_content_hashes.get(path),
-                            captured_file_observation=full_result.captured_file_observations.get(path),
-                        )
-                        if self._last_cursor_write_stale:
+                        cursor_fingerprint_read_bytes += read_bytes
+                        if stale:
                             stale_cursor_write_count += 1
                 for path in full_result.failed:
                     failed_paths.append(str(path))
@@ -1919,6 +1930,19 @@ class LiveBatchProcessor:
                 raise
             logger.warning("live.watcher: skipped failed-cursor bookkeeping for %s: %s", path, exc)
         return stat.st_size
+
+    def _record_full_cursors(self, items: Sequence[tuple[Path, dict[str, Any]]]) -> list[tuple[int, bool]]:
+        """Record several full-ingest cursors in one ops transaction.
+
+        Returns each path's fingerprint read bytes and whether its write was
+        stale, in order.
+        """
+        results: list[tuple[int, bool]] = []
+        with self._cursor.ops_batch():
+            for path, kwargs in items:
+                read_bytes = self._record_full_cursor(path, **kwargs)
+                results.append((read_bytes, self._last_cursor_write_stale))
+        return results
 
     def _record_full_cursor(
         self,
