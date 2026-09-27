@@ -38,7 +38,7 @@ MAX_GAP_ENTRIES = 16
 # v1 bound its scope to a digest of the whole enumerated population, so any
 # unrelated append invalidated it. v2 names a retained population snapshot.
 SNAPSHOT_CURSOR_VERSION = 2
-_SEARCH_STATE_KEYS = frozenset({"file", "offset", "line", "line_start", "skipped"})
+_SEARCH_STATE_KEYS = frozenset({"file", "offset", "line", "line_start", "after", "skipped"})
 
 
 class OpaqueSessionCursor:
@@ -352,11 +352,12 @@ class SessionLogService:
         scanned = 0
         gaps = _Gaps()
         rows: builtins.list[dict[str, Any]] = []
-        resume_after_last: dict[str, int] | None = None
         page_full_state: dict[str, int] | None = None
 
         def next_file(current: dict[str, int], *, skipped: bool = False) -> dict[str, int]:
             moved = {**current, "file": current["file"] + 1, "offset": 0, "line": 1, "line_start": 0}
+            if "after" in moved:
+                moved["after"] = 0
             if skipped and "skipped" in moved:
                 moved["skipped"] += 1
             return moved
@@ -390,23 +391,28 @@ class SessionLogService:
                 index = 0
                 found = False
                 block_state = state
-                block_resume = resume_after_last
+                # End of the last match accepted from this block. A full page
+                # resumes at this block's start and skips through it, so the
+                # continuation never re-enters an earlier, fully scanned file.
+                accepted_end = 0
                 while len(data) == remaining:
                     index = combined.find(query_bytes, index)
                     if index < 0:
                         break
                     absolute = combined_start + index
                     end = absolute + len(query_bytes)
-                    # Matches wholly in the replay tail were already returned.
-                    if end <= state["offset"]:
+                    # Matches wholly in the replay tail, or accepted before a
+                    # continuation resumed inside this block, were already returned.
+                    if end <= state["offset"] or end <= state.get("after", 0):
                         index += len(query_bytes)
                         continue
                     if len(rows) >= limit:
-                        # Do not consume this match: the continuation replay window
-                        # makes it the first candidate on the next page.
-                        # A file overview has already consumed the accepted file.
-                        # A match stream instead resumes after its last match.
-                        page_full_state = dict(state if one_per_file else (resume_after_last or state))
+                        # Do not consume this match: the next page rescans this
+                        # block and it is the first candidate there. A match
+                        # stream skips what this block already returned.
+                        page_full_state = dict(state)
+                        if not one_per_file and "after" in page_full_state:
+                            page_full_state["after"] = max(state.get("after", 0), accepted_end)
                         break
                     line, line_start = self._line_for_match(state, combined, index, len(tail))
                     offset, text = self._snippet(handle, line_start, absolute, len(query_bytes))
@@ -420,8 +426,7 @@ class SessionLogService:
                         }
                     )
                     found = True
-                    resume_after_last = dict(state)
-                    self._advance_line(resume_after_last, data[: max(0, end - state["offset"])])
+                    accepted_end = end
                     if one_per_file:
                         break
                     index += len(query_bytes)
@@ -429,7 +434,6 @@ class SessionLogService:
                     # A concurrent write or shrink raced this read; nothing from
                     # this block is evidence of the selected observation.
                     del rows[rows_before:]
-                    resume_after_last = block_resume
                     page_full_state = None
                     gaps.add(reference, "selected file changed while it was being searched; not searched")
                     state = next_file(block_state, skipped=True)
@@ -441,6 +445,8 @@ class SessionLogService:
                 state = next_file(state)
                 continue
             self._advance_line(state, data)
+            if "after" in state:
+                state["after"] = 0
             if state["offset"] >= observed.st_size:
                 state = next_file(state)
         final_state = page_full_state if page_full_state is not None else state
@@ -506,7 +512,7 @@ class SessionLogService:
                 files = [(path, path.stat(follow_symlinks=False))]
             else:
                 files = self._files(source)
-            state = {"file": 0, "offset": 0, "line": 1, "line_start": 0, "skipped": 0}
+            state = {"file": 0, "offset": 0, "line": 1, "line_start": 0, "after": 0, "skipped": 0}
         prior_skipped = state["skipped"]
         issue_gaps: builtins.list[str] = []
 

@@ -268,29 +268,95 @@ def test_snapshot_expiry_is_a_degraded_outcome(tmp_path: Path, frozen_clock: Any
     assert _snapshot_files() == []
 
 
-def test_capacity_evicts_oldest_handles_per_principal_and_globally(
+def test_production_callers_share_one_global_lru_capacity(
     tmp_path: Path, frozen_clock: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Every production caller reaches the store through ``raw_operation`` with one scope.
+
+    Anti-vacuity: a per-principal cap of 4 (the former design) evicts the
+    first of these six production-route continuations; a creation-time TTL
+    or FIFO order evicts the handle that was just used instead of the idle one.
+    """
     root = tmp_path / "codex"
     first_file = _write(root / "a.jsonl", "needle a\n", 2)
     _write(root / "b.jsonl", "needle b\n", 1)
     sources = _sources(root)
     tokens = []
-    for _ in range(snapshot_store.MAX_PRINCIPAL_SNAPSHOTS + 1):
+    for _ in range(6):
         tokens.append(_search(sources, scan_bytes=first_file.stat().st_size).continuation)
         frozen_clock.advance(1)
-    assert len(_snapshot_files()) == snapshot_store.MAX_PRINCIPAL_SNAPSHOTS
-    evicted = _search(sources, continuation=tokens[0])
-    assert evicted.outcome == "degraded" and any("evicted" in gap for gap in evicted.coverage.gaps)
-    assert [item.reference for item in _search(sources, continuation=tokens[-1]).items] == ["codex:b.jsonl"]
+    assert len(_snapshot_files()) == 6
+    for token in tokens:
+        assert [item.reference for item in _search(sources, continuation=token).items] == ["codex:b.jsonl"]
 
     monkeypatch.setattr(snapshot_store, "MAX_GLOBAL_SNAPSHOTS", 2)
-    other = SessionLogService(sources=sources, scope="another-principal")
-    key = b"k" * 32
-    for _ in range(2):
-        frozen_clock.advance(1)
-        other.search("codex", "needle", 1, scan_bytes=first_file.stat().st_size, cursor_key=key)
+    frozen_clock.advance(1)
+    # Using the oldest handle makes it the most recently used survivor.
+    assert _search(sources, continuation=tokens[0]).outcome == "ok"
+    frozen_clock.advance(1)
+    newest = _search(sources, scan_bytes=first_file.stat().st_size).continuation
     assert len(_snapshot_files()) == 2
+    assert _search(sources, continuation=tokens[0]).outcome == "ok"
+    assert _search(sources, continuation=newest).outcome == "ok"
+    evicted = _search(sources, continuation=tokens[1])
+    assert evicted.outcome == "degraded" and any("evicted" in gap for gap in evicted.coverage.gaps)
+
+
+def test_ttl_slides_from_last_use_and_orphaned_temporaries_are_swept(tmp_path: Path, frozen_clock: Any) -> None:
+    root = tmp_path / "codex"
+    first_file = _write(root / "a.jsonl", "needle a\n", 2)
+    _write(root / "b.jsonl", "needle b\n", 1)
+    sources = _sources(root)
+    token = _search(sources, scan_bytes=first_file.stat().st_size).continuation
+    directory = state_home() / "raw-session-search"
+    orphan = directory / ".crashed.json.abc.tmp"
+    orphan.write_bytes(b"{}")
+    os.utime(orphan, (frozen_clock.time(), frozen_clock.time()))
+
+    ttl_s = snapshot_store.SNAPSHOT_TTL_MS / 1000
+    for _ in range(3):
+        frozen_clock.advance(ttl_s * 0.75)
+        assert _search(sources, continuation=token).outcome == "ok"
+    # The orphan is older than a TTL; the next write sweeps it.
+    _search(sources, scan_bytes=first_file.stat().st_size)
+    assert not orphan.exists()
+    frozen_clock.advance(ttl_s + 1)
+    assert _search(sources, continuation=token).outcome == "degraded"
+
+
+def test_full_page_resumes_at_the_unreturned_match_not_an_earlier_scanned_file(tmp_path: Path) -> None:
+    """A completed file that changes after the page is not a gap on the next page.
+
+    Anti-vacuity: rewinding the continuation to just after the last accepted
+    match (inside live.jsonl) makes the next page reopen the changed file and
+    report it as a gap.
+    """
+    root = tmp_path / "codex"
+    live = _write(root / "live.jsonl", "needle live\nrest\n", 2)
+    _write(root / "old.jsonl", "needle\n", 1)
+    sources = _sources(root)
+    first = _search(sources, limit=1)
+    assert [item.reference for item in first.items] == ["codex:live.jsonl"]
+    assert first.continuation is not None
+    with live.open("a") as handle:
+        handle.write("appended\n")
+
+    second = _search(sources, limit=1, continuation=first.continuation)
+    assert [item.reference for item in second.items] == ["codex:old.jsonl"]
+    assert second.outcome == "ok" and second.coverage.gaps == [] and second.continuation is None
+
+
+def test_full_page_inside_one_file_resumes_without_duplicates(tmp_path: Path) -> None:
+    root = tmp_path / "codex"
+    _write(root / "a.jsonl", "needle 1\nneedle 2\nneedle 3\n", 1)
+    sources = _sources(root)
+    seen: list[tuple[int | None, str | None]] = []
+    page = _search(sources, limit=1)
+    seen.extend((item.line, item.text) for item in page.items)
+    while page.continuation is not None:
+        page = _search(sources, limit=1, continuation=page.continuation)
+        seen.extend((item.line, item.text) for item in page.items)
+    assert [line for line, _ in seen] == [1, 2, 3]
 
 
 def test_snapshot_survives_restart_and_retains_no_session_content(tmp_path: Path) -> None:

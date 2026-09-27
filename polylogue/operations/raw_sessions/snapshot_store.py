@@ -10,10 +10,15 @@ relative paths plus the stat identity observed at selection, and never any
 session content. It is not an archive tier: raw search reads provider files,
 not the archive, and runs from CLI, MCP and daemon processes alike, so
 routing it through the archive writer would add a writer to processes that
-own none. Files are written atomically and bounded by a TTL and by
-per-principal and global capacity; they survive process restart until they
-expire or are evicted, after which a resume is reported as a typed degraded
-outcome rather than silently restarting the scan.
+own none. Files are written atomically and bounded by a TTL that slides
+from last use and by one global capacity; they survive process restart
+until they expire or are evicted, after which a resume is reported as a
+typed degraded outcome rather than silently restarting the scan.
+
+There is no per-principal cap: every production caller reaches this store
+through ``raw_operation`` with the same service scope, so a per-principal
+cap would be a smaller host-wide cap, not isolation between callers. The
+signed token and the stored binding still tie each handle to its scope.
 """
 
 from __future__ import annotations
@@ -31,7 +36,6 @@ from typing import Any
 from polylogue.core.durable_fs import atomic_replace
 
 SNAPSHOT_TTL_MS = 60 * 60 * 1000
-MAX_PRINCIPAL_SNAPSHOTS = 4
 MAX_GLOBAL_SNAPSHOTS = 64
 MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
 _SUFFIX = ".json"
@@ -96,7 +100,7 @@ class SnapshotStore:
         self.directory = directory
 
     def _entries(self) -> list[tuple[int, str, str, Path]]:
-        """(created_ms, principal_key, handle, path) parsed from file names only."""
+        """(last_used_ms, principal_key, handle, path) parsed from file names only."""
         try:
             names = os.listdir(self.directory)
         except FileNotFoundError:
@@ -116,19 +120,32 @@ class SnapshotStore:
     def _unlink(path: Path) -> None:
         path.unlink(missing_ok=True)
 
-    def _prune(self, now_ms: int, principal_key: str) -> None:
-        entries = self._entries()
+    def _sweep_orphaned_temporaries(self, now_ms: int) -> None:
+        """Remove write temporaries a crashed writer left behind for a full TTL."""
+        try:
+            names = os.listdir(self.directory)
+        except FileNotFoundError:
+            return
+        for name in names:
+            if not name.endswith(".tmp"):
+                continue
+            path = self.directory / name
+            try:
+                modified_ms = path.stat().st_mtime_ns // 1_000_000
+            except FileNotFoundError:
+                continue
+            if modified_ms + SNAPSHOT_TTL_MS <= now_ms:
+                self._unlink(path)
+
+    def _prune(self, now_ms: int) -> None:
+        self._sweep_orphaned_temporaries(now_ms)
         live = []
-        for entry in entries:
+        for entry in self._entries():
             if entry[0] + SNAPSHOT_TTL_MS <= now_ms:
                 self._unlink(entry[3])
             else:
                 live.append(entry)
-        # Oldest first, so the survivors of each cap are the newest handles.
-        mine = [entry for entry in live if entry[1] == principal_key]
-        for entry in mine[: max(0, len(mine) - MAX_PRINCIPAL_SNAPSHOTS)]:
-            self._unlink(entry[3])
-            live.remove(entry)
+        # Least recently used first, so the survivors are the handles in use.
         for entry in live[: max(0, len(live) - MAX_GLOBAL_SNAPSHOTS)]:
             self._unlink(entry[3])
 
@@ -157,9 +174,9 @@ class SnapshotStore:
             raise ValueError("session search selected population exceeds snapshot capacity")
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         # Capacity is reserved before the new handle exists so it counts as the newest.
-        self._prune(now_ms, principal_key)
+        self._prune(now_ms)
         atomic_replace(self.directory / f"{now_ms:013d}-{principal_key}-{handle}{_SUFFIX}", encoded, mode=0o600)
-        self._prune(now_ms, principal_key)
+        self._prune(now_ms)
         return SearchSnapshot(handle, self._decode_rows(binding.root, rows))
 
     @staticmethod
@@ -174,10 +191,10 @@ class SnapshotStore:
             raise SnapshotUnavailableError("session continuation snapshot is malformed")
         now_ms = _now_ms()
         principal_key = _principal_key(binding.principal)
-        for created_ms, key, entry_handle, path in self._entries():
+        for last_used_ms, key, entry_handle, path in self._entries():
             if entry_handle != handle or key != principal_key:
                 continue
-            if created_ms + SNAPSHOT_TTL_MS <= now_ms:
+            if last_used_ms + SNAPSHOT_TTL_MS <= now_ms:
                 self._unlink(path)
                 break
             try:
@@ -186,5 +203,11 @@ class SnapshotStore:
                 break
             if not isinstance(body, dict) or body.get("v") != 1 or body.get("binding") != binding.as_json():
                 raise SnapshotUnavailableError("session continuation does not match its original search scope")
+            # The TTL slides from last use: the name carries the timestamp,
+            # and a rename is atomic, so a concurrent reader sees one name.
+            try:
+                path.rename(self.directory / f"{now_ms:013d}-{key}-{entry_handle}{_SUFFIX}")
+            except FileNotFoundError:
+                break
             return SearchSnapshot(handle, self._decode_rows(binding.root, body["files"]))
         raise SnapshotUnavailableError("session continuation expired or was evicted; restart the search")
