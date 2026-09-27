@@ -447,7 +447,9 @@ class SessionLogService:
                 state = next_file(state)
                 continue
             self._advance_line(state, data)
-            if "after" in state:
+            if state.get("after", 0) and state["offset"] >= state["after"]:
+                # Only once the scan has passed every returned match; a short
+                # resumed budget may stop inside the block.
                 state["after"] = 0
             if state["offset"] >= observed.st_size:
                 state = next_file(state)
@@ -526,7 +528,9 @@ class SessionLogService:
                 # Only a search that actually continues retains its population.
                 try:
                     snapshot_handle = self._snapshots.create(binding, files).handle
-                except (OSError, ValueError) as exc:
+                except OSError as exc:
+                    # A physical failure (disk, permissions) to retain the
+                    # population: this page stays valid; only resuming is lost.
                     issue_gaps.append(f"continuation unavailable: {exc}")
                     return None
             return OpaqueSessionCursor(self.scope, cursor_key, purpose).encode(
@@ -545,6 +549,33 @@ class SessionLogService:
             "next_cursor": result["next_cursor"],
             "gaps": gaps,
         }
+
+    def carry_withheld(
+        self,
+        cursor: str,
+        *,
+        cursor_key: bytes,
+        provider: str,
+        query: str,
+        reference: str | None,
+        withheld: int,
+    ) -> str:
+        """Re-sign a search continuation so matches withheld at emission stay counted.
+
+        Emission-time withholding happens after the scanner issued its token;
+        without this the final page of the continuation would report complete
+        coverage although a selected file was never represented.
+        """
+        scope = {
+            "principal": self.scope,
+            "provider": provider,
+            "query_sha256": hashlib.sha256(query.encode("utf-8")).hexdigest(),
+            "reference": reference,
+        }
+        codec = OpaqueSessionCursor(self.scope, cursor_key, "session-search")
+        handle, state = codec.decode_snapshot(cursor, scope)
+        state = {**state, "skipped": int(state["skipped"]) + withheld}
+        return codec.encode({**scope, "snapshot": handle}, state, version=SNAPSHOT_CURSOR_VERSION)
 
     def timeline(
         self,

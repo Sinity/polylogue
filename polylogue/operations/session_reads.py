@@ -403,6 +403,7 @@ def raw_operation(
 
     observations = []
     emission_gaps: list[str] = []
+    withheld: dict[str, int] = {}
     for row in rows:
         reference = row.get("reference") or row["object_reference"]
         try:
@@ -410,11 +411,13 @@ def raw_operation(
             info = path.stat()
         except (SessionError, OSError):
             emission_gaps.append(f"{reference}: selected file disappeared between scan and emission; match withheld")
+            withheld[reference.partition(":")[0]] = withheld.get(reference.partition(":")[0], 0) + 1
             continue
         expected = row["source_observation"]
         if tuple(expected) != (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns):
             # The match was read from an observation this file no longer has.
             emission_gaps.append(f"{reference}: selected file changed between scan and emission; match withheld")
+            withheld[reference.partition(":")[0]] = withheld.get(reference.partition(":")[0], 0) + 1
             continue
         observations.append(
             RawObservation(
@@ -442,6 +445,26 @@ def raw_operation(
         gaps.append(result["reason"])
     gaps.extend(result.get("gaps", ()))
     gaps.extend(emission_gaps)
+    # Search continuations carry a running skipped count; fold withheld
+    # matches into it so the continuation's final page stays degraded. List
+    # and timeline continuations bind the exact observation, so the changed
+    # file already makes their next page a typed stale refusal.
+    if withheld and isinstance(request, RawSearch) and result.get("next_cursor"):
+        result["next_cursor"] = service.carry_withheld(
+            result["next_cursor"],
+            cursor_key=key,
+            provider=_provider(request.origin),
+            query=request.query,
+            reference=request.reference,
+            withheld=sum(withheld.values()),
+        )
+    if withheld and isinstance(request, RawMemorySearch) and result.get("next_cursors"):
+        for provider, count in withheld.items():
+            token = result["next_cursors"].get(provider)
+            if token:
+                result["next_cursors"][provider] = service.carry_withheld(
+                    token, cursor_key=key, provider=provider, query=request.query, reference=None, withheld=count
+                )
     return RawPage(
         items=observations,
         sources=sources_out,

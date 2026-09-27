@@ -23,6 +23,7 @@ signed token and the stored binding still tie each handle to its scope.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -37,7 +38,6 @@ from polylogue.core.durable_fs import atomic_replace
 
 SNAPSHOT_TTL_MS = 60 * 60 * 1000
 MAX_GLOBAL_SNAPSHOTS = 64
-MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
 _SUFFIX = ".json"
 
 
@@ -176,8 +176,6 @@ class SnapshotStore:
         principal_key = _principal_key(binding.principal)
         body = {"v": 1, "binding": binding.as_json(), "created_at_ms": now_ms, "files": rows}
         encoded = json.dumps(body, separators=(",", ":")).encode()
-        if len(encoded) > MAX_SNAPSHOT_BYTES:
-            raise ValueError("session search selected population exceeds snapshot capacity")
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         # Reserve the new handle's slot; see _prune for why no prune follows the write.
         self._prune(now_ms, reserve=1)
@@ -196,23 +194,34 @@ class SnapshotStore:
             raise SnapshotUnavailableError("session continuation snapshot is malformed")
         now_ms = _now_ms()
         principal_key = _principal_key(binding.principal)
-        for last_used_ms, key, entry_handle, path in self._entries():
-            if entry_handle != handle or key != principal_key:
-                continue
+        # A concurrent resume of the same handle may rename it between our
+        # listing and our read; that is a refreshed snapshot, not an eviction,
+        # so look it up again under its new name.
+        # Each retry follows a rename some other resume completed, so the loop
+        # ends when the handle is found, expired, or gone -- not at a count.
+        while True:
+            entry = next(
+                (row for row in self._entries() if row[2] == handle and row[1] == principal_key),
+                None,
+            )
+            if entry is None:
+                break
+            last_used_ms, key, entry_handle, path = entry
             if last_used_ms + SNAPSHOT_TTL_MS <= now_ms:
                 self._unlink(path)
                 break
             try:
                 body = json.loads(path.read_bytes())
+            except FileNotFoundError:
+                continue
             except (OSError, ValueError):
                 break
             if not isinstance(body, dict) or body.get("v") != 1 or body.get("binding") != binding.as_json():
                 raise SnapshotUnavailableError("session continuation does not match its original search scope")
-            # The TTL slides from last use: the name carries the timestamp,
-            # and a rename is atomic, so a concurrent reader sees one name.
-            try:
+            # The TTL slides from last use: the name carries the timestamp and
+            # a rename is atomic. Losing the rename to a concurrent resume
+            # means that resume refreshed it; the contents are the same.
+            with contextlib.suppress(FileNotFoundError):
                 path.rename(self.directory / f"{now_ms:013d}-{key}-{entry_handle}{_SUFFIX}")
-            except FileNotFoundError:
-                break
             return SearchSnapshot(handle, self._decode_rows(binding.root, body["files"]))
         raise SnapshotUnavailableError("session continuation expired or was evicted; restart the search")

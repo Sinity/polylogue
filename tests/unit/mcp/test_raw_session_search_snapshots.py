@@ -25,7 +25,7 @@ from polylogue.operations.raw_sessions.sessions import (
     SessionSource,
     StaleContinuationError,
 )
-from polylogue.operations.session_contracts import RawMemorySearch, RawSearch
+from polylogue.operations.session_contracts import RawMemorySearch, RawSearch, RawTimeline
 from polylogue.operations.session_reads import raw_operation, session_operation_response
 from polylogue.paths import state_home
 
@@ -426,3 +426,84 @@ def test_snapshots_created_in_one_millisecond_never_evict_the_new_handle(
         token = _search(sources, scan_bytes=first_file.stat().st_size).continuation
         assert _search(sources, continuation=token).outcome == "ok"
         assert len(_snapshot_files()) <= 2
+
+
+def test_timeline_fanout_preserves_the_stale_continuation_code(tmp_path: Path) -> None:
+    root = tmp_path / "codex"
+    for index in range(3):
+        _write(root / f"s{index}.jsonl", f"needle {index}\n", index + 1)
+    sources = _sources(root)
+    first = raw_operation(RawTimeline(origins=["codex-session"], limit=1), sources=sources)
+    assert first.continuation is not None
+    with (root / "s0.jsonl").open("a") as handle:
+        handle.write("changed\n")
+    request = RawTimeline(origins=["codex-session"], limit=1, continuation=first.continuation)
+    envelope = asyncio.run(session_operation_response(None, request, raw_sources=sources))
+    assert envelope.model_dump()["code"] == "stale_continuation"
+
+
+def test_match_withheld_at_emission_keeps_the_continuation_degraded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: a page-local emission gap lets the final page report complete."""
+    root = tmp_path / "codex"
+    first_file = _write(root / "a.jsonl", "needle a\n", 3)
+    _write(root / "b.jsonl", "needle b\n", 2)
+    _write(root / "c.jsonl", "needle c\n", 1)
+    sources = _sources(root)
+    original = SessionLogService.search
+    calls = {"n": 0}
+
+    def search_then_append_once(self: SessionLogService, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        result = original(self, *args, **kwargs)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            with first_file.open("a") as handle:
+                handle.write("appended\n")
+        return result
+
+    monkeypatch.setattr(SessionLogService, "search", search_then_append_once)
+    first = _search(sources, scan_bytes=first_file.stat().st_size)
+    assert first.items == [] and first.continuation is not None
+    final = _search(sources, continuation=first.continuation)
+    assert [item.reference for item in final.items] == ["codex:b.jsonl", "codex:c.jsonl"]
+    assert final.continuation is None and final.outcome == "degraded"
+    assert any("1 selected files were skipped on earlier pages" in gap for gap in final.coverage.gaps)
+
+
+def test_short_resumed_budget_keeps_the_returned_match_high_water_mark(tmp_path: Path) -> None:
+    """Anti-vacuity: clearing ``after`` at every block end re-emits match 1 via the replay tail."""
+    root = tmp_path / "codex"
+    _write(root / "a.jsonl", "needle 1\nneedle 2\nneedle 3\n", 1)
+    sources = _sources(root)
+    page = _search(sources, limit=1)
+    lines = [item.line for item in page.items]
+    for _ in range(100):
+        if page.continuation is None:
+            break
+        page = _search(sources, limit=1, scan_bytes=4, continuation=page.continuation)
+        lines.extend(item.line for item in page.items)
+    assert lines == [1, 2, 3]
+
+
+def test_concurrent_touch_of_one_handle_is_not_an_eviction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "codex"
+    first_file = _write(root / "a.jsonl", "needle a\n", 2)
+    _write(root / "b.jsonl", "needle b\n", 1)
+    sources = _sources(root)
+    token = _search(sources, scan_bytes=first_file.stat().st_size).continuation
+    original = snapshot_store.SnapshotStore._entries
+    raced = {"done": False}
+
+    def entries_then_concurrent_touch(self: snapshot_store.SnapshotStore) -> list[tuple[int, str, str, Path]]:
+        rows = original(self)
+        if not raced["done"] and rows:
+            raced["done"] = True
+            last_used, key, handle, path = rows[0]
+            path.rename(path.with_name(f"{last_used + 1:013d}-{key}-{handle}.json"))
+        return rows
+
+    monkeypatch.setattr(snapshot_store.SnapshotStore, "_entries", entries_then_concurrent_touch)
+    resumed = _search(sources, continuation=token)
+    assert raced["done"] and resumed.outcome == "ok"
+    assert [item.reference for item in resumed.items] == ["codex:b.jsonl"]
