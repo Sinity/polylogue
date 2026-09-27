@@ -149,6 +149,9 @@ def _fields() -> dict[str, FieldKind]:
         "tool_outcome",
         "state",
         "phase",
+        # Bounded policy description emitted when the ingest dispatcher enters
+        # its cold-build path (for example, cold_backlog(files<=256, ...)).
+        "shape",
         "backend",
         "logger",
         "effect",
@@ -226,6 +229,8 @@ def _fields() -> dict[str, FieldKind]:
         "bytes_before",
         "bytes_after",
         "busy_pages",
+        "checkpoint_busy_pages",
+        "checkpoint_log_pages",
         "checkpointed_pages",
         # fan-out sizes a daemon pass reports about itself.
         "tiers",
@@ -290,6 +295,9 @@ def _fields() -> dict[str, FieldKind]:
         "enabled",
         "available",
         "more_pending",
+        # Cold-build decisions carried by live.ingest.cold_build_shape_engaged.
+        "fresh_build",
+        "owned_generation",
     )
 
     add("path", *sorted(LOCAL_ONLY_FIELDS))

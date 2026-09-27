@@ -3631,7 +3631,7 @@ class LiveBatchProcessor:
                 emit(
                     "live.ingest.cold_build_shape_engaged",
                     outcome="ok",
-                    reason="index generation is empty",
+                    reason="index_generation_empty",
                     shape=batch_shape.reason,
                     fresh_build=batch_shape.fresh_build,
                     owned_generation=owned_generation,
@@ -4547,7 +4547,7 @@ class LiveBatchProcessor:
                     emit(
                         "live.ingest.cold_build_shape_released",
                         outcome="ok",
-                        reason="pass complete; cold-build shape surrendered with the connection",
+                        reason="pass_complete",
                         sessions=len(result.session_ids),
                         checkpoint_busy_pages=busy_pages,
                         checkpoint_log_pages=log_pages,
@@ -4557,7 +4557,7 @@ class LiveBatchProcessor:
                     emit(
                         "live.ingest.cold_build_shape_released",
                         outcome="ok",
-                        reason="pass complete; cold-build shape surrendered with the connection",
+                        reason="pass_complete",
                         sessions=len(result.session_ids),
                     )
         # The loop checks before each later record, but a one-record pass has
