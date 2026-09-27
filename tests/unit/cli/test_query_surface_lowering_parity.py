@@ -149,27 +149,16 @@ def test_root_request_and_daemon_reads_lower_identically(terms: tuple[str, ...],
     assert cli_spec == daemon_spec
 
 
-def test_cli_and_daemon_query_selection_pass_through_read_request(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Both executable adapters use the canonical read request after DSL lowering."""
+def test_cli_daemon_and_full_read_request_share_selection() -> None:
+    """The light CLI selection agrees with the full read request selection."""
 
-    from polylogue.surfaces.read_contract import ReadRequest
-
-    seen: list[SessionQuerySpec] = []
-    normalize = ReadRequest.normalize
-
-    def recording_normalize(params: dict[str, object], *, preset: str | None = None) -> ReadRequest:
-        result = normalize(params, preset=preset)
-        seen.append(result.selection)
-        return result
-
-    monkeypatch.setattr(ReadRequest, "normalize", staticmethod(recording_normalize))
     params: dict[str, object] = {"query": ("repo:polylogue", "typed_only:true"), "limit": 7}
 
     cli = RootModeRequest.from_params(params).query_spec()
     daemon = _cli_query_spec(params)
+    full_request = cli_read_request(params)
 
-    assert seen == [cli, daemon]
-    assert cli == daemon
+    assert cli == daemon == full_request.selection
     assert cli.repo_names == ("polylogue",)
     assert cli.typed_only is True
 

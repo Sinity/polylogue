@@ -116,16 +116,24 @@ def lower_cli_query_params(params: Mapping[str, object]) -> tuple[dict[str, obje
     return normalized, expression_from_query_terms(terms)
 
 
-def cli_read_request(params: Mapping[str, object], *, preset: str = "summary") -> ReadRequest:
-    """Lower CLI-shaped query intent into the shared read contract."""
+def _cli_read_selection(params: Mapping[str, object]) -> tuple[dict[str, object], SessionQuerySpec]:
+    """Lower CLI-shaped intent to its selection without loading render models."""
 
     from polylogue.archive.query.expression import compile_expression_into
     from polylogue.archive.query.spec import SessionQuerySpec
-    from polylogue.surfaces.read_contract import ReadRequest
 
     normalized, expression = lower_cli_query_params(params)
     base = SessionQuerySpec.from_params(normalized)
     selection = compile_expression_into(expression, base) if expression else base
+    return normalized, selection
+
+
+def cli_read_request(params: Mapping[str, object], *, preset: str = "summary") -> ReadRequest:
+    """Lower CLI-shaped query intent into the shared read contract."""
+
+    from polylogue.surfaces.read_contract import ReadRequest
+
+    normalized, selection = _cli_read_selection(params)
     # The same normalized map also carries projection and render controls.
     # Passing selection alone made this shared request silently revert those
     # controls to preset defaults even though the CLI had accepted them.
@@ -133,6 +141,6 @@ def cli_read_request(params: Mapping[str, object], *, preset: str = "summary") -
 
 
 def cli_query_spec(params: Mapping[str, object]) -> SessionQuerySpec:
-    """Expose the shared read request's selection to existing query owners."""
+    """Expose CLI selection without loading the full read/render model graph."""
 
-    return cli_read_request(params).selection
+    return _cli_read_selection(params)[1]
