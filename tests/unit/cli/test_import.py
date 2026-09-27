@@ -532,6 +532,9 @@ def test_import_demo_wait_with_overlays_seeds_after_convergence(
     [
         ({"outcome": "indeterminate"}, "still the daemon's work"),
         ({"outcome": "failed", "error": {"code": "ingest_failed", "detail": "parser refused"}}, "parser refused"),
+        # Committed rows whose profile/insight convergence stopped on a
+        # retryable target: refused, not verified early (#5639 review).
+        ({"outcome": "degraded"}, "did not finish converging"),
     ],
 )
 def test_import_demo_wait_never_verifies_an_unfinished_ingest(

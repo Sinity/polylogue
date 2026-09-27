@@ -275,3 +275,50 @@ def test_zip_like_input_raw_attribution_crosses_inline_threshold_without_loss(
     assert replayed.input_pages[0].items[0].raw_id_count == 4
     with pytest.raises(ValueError, match="pages disagree"):
         IngestInputHistoricalReceipt.model_validate({**item.model_dump(mode="json"), "raw_id_count": 5})
+
+
+@pytest.mark.parametrize(
+    ("source_complete", "profile_convergence_complete", "outcome"),
+    [
+        (True, True, "completed"),
+        # Committed rows whose profile/insight convergence stopped on a
+        # retryable target: the ingest is not done (#5639 review).
+        (True, False, "degraded"),
+        (False, True, "degraded"),
+        # Written before the fact was recorded: unknowable, left as it was.
+        (True, None, "completed"),
+    ],
+)
+def test_ingest_terminal_outcome_is_completed_only_when_converged(
+    source_complete: bool, profile_convergence_complete: bool | None, outcome: str
+) -> None:
+    """An ingest whose derived convergence stopped is ``degraded``, not ``completed``.
+
+    Anti-vacuity: returning ``completed`` unconditionally from
+    ``ingest_terminal_outcome`` (the previous behaviour of
+    ``execute_ingest_operation``) turns both degraded rows red.
+    """
+    from polylogue.operations.machine_receipts import ingest_terminal_outcome
+
+    item = IngestInputHistoricalReceipt(
+        source_item_id="source-item:fixture",
+        logical_coordinate="fixture.json",
+        denominator=1,
+        raw_ids=["raw:complete"],
+    )
+    history = IngestHistoricalReceipt(
+        source_generation_id="generation:fixture",
+        final_sequence=1,
+        input_count=1,
+        input_pages=[IngestInputPageHistoricalReceipt.from_items(0, [item])],
+        summary=IngestTerminalSummaryHistorical(
+            enumeration_complete=True,
+            source_complete=source_complete,
+            confirmed_raw_count=1,
+            unresolved_raw_count=0,
+            profile_targets_observed=0,
+            profile_convergence_complete=profile_convergence_complete,
+        ),
+    )
+
+    assert ingest_terminal_outcome(decode_machine_receipt(history.model_dump(mode="json"))) == outcome  # type: ignore[arg-type]

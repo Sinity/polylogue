@@ -7,7 +7,13 @@ import math
 
 from polylogue.operations.audit import AuditRepository, MachineRequestBinding
 from polylogue.operations.daemon_protocol import AcceptedOperationReference
-from polylogue.operations.machine_receipts import encode_machine_receipt
+from polylogue.operations.machine_receipts import (
+    IngestHistoricalReceipt,
+    IngestHistoricalReceiptV2,
+    decode_machine_receipt,
+    encode_machine_receipt,
+    ingest_terminal_outcome,
+)
 
 _RICH_HISTORICAL_RECEIPT_OPERATIONS = frozenset({"ingest", "maintenance.insights.rebuild"})
 
@@ -169,9 +175,17 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
     if kind == "source-generation" and len(attempted) == 1 and attempted[0]["outcome"] == "completed":
         receipt = attempted[0]["receipt"]
         if isinstance(receipt, dict) and receipt.get("kind") in {"ingest/v1", "ingest/v2"}:
+            history = decode_machine_receipt(receipt)
+            if not isinstance(history, (IngestHistoricalReceipt, IngestHistoricalReceiptV2)):
+                raise ValueError("source-generation run carries a non-ingest historical receipt")
+            # The run committed; whether it also converged is the receipt's
+            # own recorded fact, so an awaited ingest reads the same terminal
+            # outcome the executing request returned.
+            if outcome == "completed":
+                outcome = ingest_terminal_outcome(history)
             result = {
                 "source_generation_id": receipt["source_generation_id"],
-                "outcome": "completed",
+                "outcome": outcome,
                 "sequence": receipt["final_sequence"],
                 "historical_receipt": receipt,
             }

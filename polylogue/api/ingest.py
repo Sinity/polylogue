@@ -79,7 +79,9 @@ class PolylogueIngestMixin:
                 raise IngestDaemonRequiredError(
                     f"start `polylogued run` for {root} and submit the accepted `ingest` operation"
                 )
-            if envelope.get("outcome") != "completed":
+            # ``degraded`` committed every row this result reports; only the
+            # derived convergence after it stopped, and the receipt says so.
+            if envelope.get("outcome") not in {"completed", "degraded"}:
                 raise RuntimeError(f"daemon ingest did not complete: {envelope.get('outcome')}")
             body = envelope.get("result")
             if not isinstance(body, dict):
@@ -128,6 +130,7 @@ class PolylogueIngestMixin:
                     "messages": message_count,
                     "changed_sessions": changed_sessions,
                     "failed_raw_count": int(summary.get("unresolved_raw_count", 0)),
+                    "converged": envelope.get("outcome") == "completed",
                 }
             )
         return result

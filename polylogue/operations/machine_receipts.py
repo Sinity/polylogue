@@ -225,6 +225,19 @@ class IngestTerminalSummaryHistorical(_Receipt):
     processed_message_count: int = Field(default=0, ge=0)
     changed_session_count: int = Field(default=0, ge=0)
     changed_message_count: int = Field(default=0, ge=0)
+    # Whether every session this generation proved was carried through profile
+    # and insight convergence. ``None`` only on receipts written before the
+    # fact was recorded. A committed ingest whose convergence stopped on a
+    # retryable target is ``degraded``, never ``completed`` (polylogue-5639
+    # review): its rows are durable, its derived readiness is not.
+    profile_convergence_complete: bool | None = None
+
+    @property
+    def converged(self) -> bool | None:
+        """Whether the ingest's source and derived convergence both finished."""
+        if self.profile_convergence_complete is None:
+            return None
+        return self.source_complete and self.profile_convergence_complete
 
     @model_validator(mode="after")
     def valid_parse_projection(self) -> IngestTerminalSummaryHistorical:
@@ -353,6 +366,19 @@ IngestTerminalReceipt: TypeAlias = IngestHistoricalReceipt | IngestHistoricalRec
 MachineHistoricalReceipt: TypeAlias = InsightPartHistoricalReceipt | IngestTerminalReceipt
 
 
+def ingest_terminal_outcome(history: IngestHistoricalReceipt | IngestHistoricalReceiptV2) -> str:
+    """``completed`` only when the committed ingest also finished converging.
+
+    The ingest's rows are durable either way. When source enumeration refused
+    members or profile convergence stopped on a retryable target, the daemon's
+    ordinary convergence owns the rest, and the terminal outcome says so
+    instead of certifying readiness it did not reach.
+    """
+    summary = getattr(history, "summary", None)
+    converged = getattr(summary, "converged", None)
+    return "degraded" if converged is False else "completed"
+
+
 def encode_machine_receipt(receipt: MachineHistoricalReceipt) -> dict[str, object]:
     """Return the sole JSON representation accepted by audit persistence."""
 
@@ -378,6 +404,7 @@ def decode_machine_receipt(raw: object) -> MachineHistoricalReceipt:
 
 
 __all__ = [
+    "ingest_terminal_outcome",
     "IngestHistoricalReceipt",
     "IngestHistoricalReceiptV2",
     "IngestTerminalReceipt",
