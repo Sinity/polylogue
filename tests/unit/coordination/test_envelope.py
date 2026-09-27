@@ -19,6 +19,8 @@ from polylogue.coordination.envelope import (
     build_coordination_envelope,
 )
 from polylogue.coordination.payloads import AgentCoordinationPayload
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def _seed_coordination_archive(index: Path) -> None:
@@ -593,6 +595,22 @@ def test_coordination_tree_reports_its_own_truncation(
     assert len(tree.nodes) == 1
     assert tree.nodes_complete is False
     assert tree.truncated_node_count > 0
+
+
+def test_coordination_user_version_probe_reports_stale_durable_schema(tmp_path: Path) -> None:
+    """The diagnostic reads a tier version before deciding whether it is stale.
+
+    Anti-vacuity: restoring normal schema validation on this diagnostic opener
+    raises before the stored version can be returned.
+    """
+    user_db = tmp_path / "user.db"
+    stale_version = 0
+    assert stale_version < ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]
+    with sqlite3.connect(user_db) as writer:
+        writer.execute("CREATE TABLE assertions (assertion_id TEXT PRIMARY KEY)")
+        writer.execute(f"PRAGMA user_version = {stale_version}")
+
+    assert envelope._sqlite_user_version(user_db) == stale_version
 
 
 def test_coordination_envelope_degrades_without_archive_tables(

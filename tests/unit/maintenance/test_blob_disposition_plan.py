@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
 from io import BytesIO
 from pathlib import Path
 from typing import cast
@@ -29,6 +30,7 @@ from polylogue.maintenance.blob_disposition import (
     RawSourceFileProver,
     RestorationDestination,
     SourceProofMode,
+    _open_ro,
     append_successors_by_hash,
     build_disposition_context,
     codex_state_logical_export_hashes,
@@ -316,6 +318,26 @@ def test_reference_union_covers_every_durable_relation(tmp_path: Path) -> None:
 
     hashes = referenced_blob_hashes(db)
     assert hashes == {bytes([index] * 32).hex() for index in range(5)}
+
+
+def test_blob_disposition_reader_preserves_evidence_and_rejects_writes(tmp_path: Path) -> None:
+    """The production reference reader stays usable and cannot mutate its tier.
+
+    Anti-vacuity: opening read-write would let the attempted evidence edit
+    succeed, while losing the read profile would break the expected union.
+    """
+    db = _empty_source_db(tmp_path / "source.db")
+    retained_hash = bytes.fromhex("ab" * 32)
+    with sqlite3.connect(db) as writer:
+        writer.execute("INSERT INTO blob_refs (blob_hash, ref_type) VALUES (?, 'session')", (retained_hash,))
+
+    assert referenced_blob_hashes(db) == {retained_hash.hex()}
+    with closing(_open_ro(db)) as reader:
+        assert reader.execute("SELECT lower(hex(blob_hash)) FROM blob_refs").fetchall() == [(retained_hash.hex(),)]
+        with pytest.raises(sqlite3.DatabaseError, match="not authorized|readonly"):
+            reader.execute("INSERT INTO blob_refs (blob_hash, ref_type) VALUES (?, 'blocked')", (bytes(32),))
+
+    assert referenced_blob_hashes(db) == {retained_hash.hex()}
 
 
 def test_unreadable_reference_relation_fails_instead_of_reporting_zero(tmp_path: Path) -> None:
