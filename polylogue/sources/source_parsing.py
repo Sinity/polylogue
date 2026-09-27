@@ -22,7 +22,12 @@ from . import decoders as _decoders
 from .cursor import _log_source_iteration_summary, _ParseContext, _record_cursor_failure
 from .decoders import _process_zip
 from .dispatch import GROUP_PROVIDERS as _GROUP_PROVIDERS
-from .dispatch import ForeignOriginContentError, bound_location_provider, is_jsonl_source_path
+from .dispatch import (
+    ForeignOriginContentError,
+    bound_location_provider,
+    detect_provider_from_raw_bytes_evidence,
+    is_jsonl_source_path,
+)
 from .emitter import _SessionEmitter
 from .origin_specs import SourceClassRecognition, artifact_rule_for_path, recognize_source_class
 from .parsers import antigravity, hermes_identity, hermes_state, hermes_verification
@@ -241,6 +246,30 @@ def _antigravity_source_root(path: Path) -> Path:
     return path.parent.parent
 
 
+def _refuse_foreign_fact_document(path: Path, provider_hint: Provider) -> None:
+    """Refuse a foreign document at a non-session path before it is skipped.
+
+    Fact documents are parsed as their location's evidence, so another
+    origin's shape there is refused with a typed code; only ``raw-only``
+    bytes are classified by location alone.
+    """
+    from .origin_specs import path_declaration_refuses_session
+
+    if (
+        bound_location_provider(provider_hint) is None
+        or path.suffix.lower() not in (".json", ".jsonl", ".ndjson")
+        or path_declaration_refuses_session(provider_hint, path)
+    ):
+        return
+    with path.open("rb") as handle:
+        prefix = handle.read(_FACT_VALIDATION_PREFIX_BYTES)
+    detect_provider_from_raw_bytes_evidence(prefix, path.name, provider_hint, truncated_tail_ok=True)
+
+
+#: Bounded prefix used to validate a fact document at a bound location.
+_FACT_VALIDATION_PREFIX_BYTES = 8192
+
+
 def parse_one_source_path(
     path_str: str,
     *,
@@ -313,6 +342,7 @@ def parse_one_source_path(
         and source_class.source_class != "session"
         and not _decoded_session_admits_path_rule(path, provider=provider_hint, recognition=source_class)
     ):
+        _refuse_foreign_fact_document(path, provider_hint)
         logger.info(
             "source_candidate_not_admitted",
             source_path=str(path),

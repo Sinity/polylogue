@@ -29,6 +29,7 @@ from polylogue.sources.decoder_zip import (
     is_declared_artifact_path,
     provider_detection_path,
 )
+from polylogue.sources.dispatch import ForeignOriginContentError, bound_location_provider
 from polylogue.sources.live.discovery import _source_path_steps
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.source_acquisition_components import (
@@ -428,6 +429,7 @@ def _archive_members(
                     None,
                     entry_provider,
                     None,  # type: ignore[arg-type]
+                    bound_provider=bound_location_provider(provider),
                 )
                 for payload in replay_zip_entry_acquisition_payloads(archive, context):
                     _check_observation_cancelled(cancelled)
@@ -445,6 +447,10 @@ def _archive_members(
                     )
                     if progress is not None:
                         progress("baseline_hash", revisions=1, hashed_bytes=len(payload.payload_bytes))
+            except ForeignOriginContentError as exc:
+                # The live acquisition refuses this member; the baseline must
+                # not expect a raw row for it.
+                excluded(info, f"{exc.code}:{exc.found.value}")
             except (OSError, UnicodeError, ValueError, ZipBombError, zipfile.BadZipFile) as exc:
                 reason = "revision_io_unavailable" if _retryable_read_fault(exc) else "archive_member_unreadable"
                 fault(info, f"{reason}:{exc}")

@@ -732,9 +732,10 @@ def replay_zip_entry_acquisition_payloads(
     from polylogue.sources.origin_specs import path_declaration_refuses_session
 
     entry_provider_hint = _zip_entry_provider_hint(context.entry.filename, context.provider_hint)
-    if entry_provider_hint in GROUP_PROVIDERS or path_declaration_refuses_session(
-        entry_provider_hint, context.entry.filename
-    ):
+    raw_only = path_declaration_refuses_session(entry_provider_hint, context.entry.filename)
+    if entry_provider_hint in GROUP_PROVIDERS or raw_only:
+        if not raw_only:
+            validate_bound_grouped_zip_member(zf, context)
         with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
             payload_bytes = handle.read()
             identity, skipped_reason = _bounded_payload_identity_info(payload_bytes)
@@ -823,6 +824,22 @@ def sniff_zip_provider(
     return ranked[0][0]
 
 
+def validate_bound_grouped_zip_member(zf: zipfile.ZipFile, context: ZipEntryReadContext) -> None:
+    """Refuse a grouped member whose records belong to another origin.
+
+    Grouped members are preserved whole and skip the splitter, so a bounded
+    record sample is validated against the archive's location binding before
+    any byte is published. Acquisition, replay and one-shot parsing share this
+    check so they agree on which members are admitted.
+    """
+    if context.bound_provider is None:
+        return
+    with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
+        sample = list(islice(_decoders._iter_json_stream(handle, context.entry.filename), 32))
+    if sample:
+        detect_provider(sample, expected=context.bound_provider)
+
+
 def iter_zip_entry_raw_data(
     zf: zipfile.ZipFile,
     context: ZipEntryReadContext,
@@ -839,13 +856,7 @@ def iter_zip_entry_raw_data(
         yield _stream_preserved_zip_entry(zf, context, provider_hint=entry_provider_hint)
         return
     if entry_provider_hint in GROUP_PROVIDERS:
-        if context.bound_provider is not None:
-            # Preserved grouped members skip the splitter, so validate a
-            # bounded record sample against the archive location first.
-            with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
-                sample = list(islice(_decoders._iter_json_stream(handle, context.entry.filename), 32))
-            if sample:
-                detect_provider(sample, expected=context.bound_provider)
+        validate_bound_grouped_zip_member(zf, context)
         yield _stream_preserved_zip_entry(zf, context, provider_hint=entry_provider_hint)
         return
 
@@ -885,6 +896,7 @@ __all__ = [
     "observe_acquisition",
     "raw_data_record",
     "read_plain_source_file",
+    "validate_bound_grouped_zip_member",
     "stream_preserved_zip_entry_raw_data",
     "stream_fileobj_to_blob",
     "stream_path_to_blob",

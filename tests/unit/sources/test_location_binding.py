@@ -304,3 +304,65 @@ def test_one_shot_acquisition_refuses_grouped_foreign_zip_members(tmp_path: Path
     )
     assert [item.source_path for item in items] == [f"{archive}:b-claude.jsonl"]
     assert "foreign_origin_content" in str(cursor_state["failed_files"])
+
+
+def test_baseline_replay_agrees_with_live_zip_refusal(tmp_path: Path) -> None:
+    """Replay must refuse the members live acquisition refuses.
+
+    The production baseline replays ZIP members to predict raw rows. If it
+    accepts a member the live path refuses, verification waits forever for a
+    row that can never exist.
+
+    Anti-vacuity: replaying without the location binding yields the Codex
+    member as an accepted payload.
+    """
+    import zipfile
+
+    from polylogue.config import Source
+    from polylogue.sources.source_acquisition_components import (
+        ZipEntryReadContext,
+        replay_zip_entry_acquisition_payloads,
+    )
+
+    archive = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("a-codex.jsonl", _jsonl(_CODEX_ROLLOUT))
+    with zipfile.ZipFile(archive) as zf:
+        info = zf.infolist()[0]
+        context = ZipEntryReadContext(
+            Source(name="claude-code", path=tmp_path),
+            archive,
+            info,
+            None,
+            Provider.CLAUDE_CODE,
+            None,  # type: ignore[arg-type]
+            bound_provider=Provider.CLAUDE_CODE,
+        )
+        with pytest.raises(ForeignOriginContentError):
+            list(replay_zip_entry_acquisition_payloads(zf, context))
+
+
+def test_one_shot_fact_path_refuses_foreign_document(tmp_path: Path) -> None:
+    """A foreign document at a non-session fact path is refused, not skipped.
+
+    Anti-vacuity: without the fact-path check the Codex-shaped workflow
+    document is silently skipped with no recorded refusal.
+    """
+    from polylogue.sources.origin_specs import artifact_rule_for_path
+
+    workflows = tmp_path / ".claude" / "projects" / "proj" / "workflows"
+    workflows.mkdir(parents=True)
+    document = workflows / "wf-1.json"
+    document.write_text(json.dumps(_CODEX_ROLLOUT), encoding="utf-8")
+    rule = artifact_rule_for_path(Provider.CLAUDE_CODE, str(document))
+    assert rule is not None and rule.parse_policy == "fact"
+    with pytest.raises(ForeignOriginContentError):
+        list(
+            parse_one_source_path(
+                str(document),
+                file_mtime=None,
+                source_name="claude-code",
+                sidecar_data={},
+                capture_raw=False,
+            )
+        )

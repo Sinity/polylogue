@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import zipfile
 from collections.abc import Callable, Collection, Iterable
+from itertools import islice
 from pathlib import Path
 
 from polylogue.archive.artifact_taxonomy import ArtifactClassification, classify_artifact_path
@@ -264,7 +265,8 @@ def process_zip(
     from polylogue.storage.blob_publication import flush_blob_publications, publication_receipt_id
 
     from .cursor import _ParseContext
-    from .dispatch import GROUP_PROVIDERS, ForeignOriginContentError, bound_location_provider
+    from .decoders import _iter_json_stream
+    from .dispatch import GROUP_PROVIDERS, ForeignOriginContentError, bound_location_provider, detect_provider
     from .emitter import _SessionEmitter
     from .origin_specs import path_declaration_refuses_session
 
@@ -307,6 +309,15 @@ def process_zip(
             emitter = _SessionEmitter(ctx)
             precomputed_raw: RawSessionData | None = None
             try:
+                if entry_should_group and ctx.bound_provider is not None:
+                    # A grouped member is published whole before the emitter
+                    # sees its records, so validate it against the archive's
+                    # location first; a refused member never reaches the blob
+                    # store.
+                    with open_bounded_zip_entry(zf, info) as handle:
+                        sample = list(islice(_iter_json_stream(handle, name), 32))
+                    if sample:
+                        detect_provider(sample, expected=ctx.bound_provider)
                 if capture_raw and entry_should_group:
                     # ``open_bounded_zip_entry`` enforces a hard real-byte
                     # ceiling during decompression, independent of the
