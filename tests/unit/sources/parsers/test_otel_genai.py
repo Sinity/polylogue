@@ -152,6 +152,20 @@ def test_otel_genai_assigns_span_usage_to_one_assistant_output() -> None:
     assert not any(event.event_type == "message_usage" for event in session.session_events)
 
 
+def test_otel_genai_token_bearing_output_names_its_model() -> None:
+    """Usage rollups aggregate by model, so the token-bearing message carries one.
+
+    Anti-vacuity: drop ``model_name`` from ``_messages_for_span`` and the
+    assistant output's tokens join no model's usage.
+    """
+    session = parse_payload(Provider.OTEL_GENAI, _payload(), "ignored-file-stem")[0]
+    token_bearing = [message for message in session.messages if message.output_tokens is not None]
+
+    assert token_bearing
+    assert {message.model_name for message in token_bearing} == {"gpt-4.1-mini"}
+    assert all(message.model_name is None for message in session.messages if ":input:" in message.provider_message_id)
+
+
 def test_duplicate_span_copies_normalize_once_in_any_wire_order() -> None:
     payload = _payload()
     chat = _spans(payload)[1]

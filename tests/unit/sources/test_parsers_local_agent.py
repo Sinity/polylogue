@@ -905,6 +905,39 @@ def test_hermes_state_db_retains_empty_rows_and_their_state(tmp_path: Path) -> N
     assert session_content_hash(state_changed) != session_content_hash(child)
 
 
+def test_hermes_state_db_reparents_a_child_of_an_empty_continuation(tmp_path: Path) -> None:
+    """A child of a message-less continuation points at a kept ancestor.
+
+    Admission and the writer drop empty sessions, so the child must not name
+    the empty one. Anti-vacuity: drop the re-parenting in
+    ``_without_unreferenced_empty_sessions`` and ``hermes-tail`` names the
+    dropped ``hermes-middle``, an edge no stored session can resolve.
+    """
+    db_path = tmp_path / "state.db"
+    _write_hermes_state_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE sessions SET end_reason = 'compression' WHERE id = 'hermes-root'")
+        conn.executemany(
+            "INSERT INTO sessions (id, model, parent_session_id, started_at, ended_at, end_reason) VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                ("hermes-middle", "nous-hermes-test", "hermes-root", 1_775_000_200.0, 1_775_000_210.0, "compression"),
+                ("hermes-tail", "nous-hermes-test", "hermes-middle", 1_775_000_300.0, 1_775_000_310.0, "completed"),
+            ],
+        )
+        conn.execute(
+            "INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+            ("hermes-tail", "user", "continue after compression", 1_775_000_301.0),
+        )
+
+    sessions = {session.provider_session_id: session for session in hermes_state.parse_state_db(db_path)}
+    tail = next(session for native_id, session in sessions.items() if native_id.startswith("hermes-tail@"))
+    root = next(session for native_id, session in sessions.items() if native_id.startswith("hermes-root@"))
+
+    assert not any(native_id.startswith("hermes-middle@") for native_id in sessions)
+    assert tail.parent_session_provider_id == root.provider_session_id
+    assert tail.branch_point_provider_message_id == root.messages[-1].provider_message_id
+
+
 def test_hermes_state_db_later_repository_capability_is_optional(tmp_path: Path) -> None:
     db_path = tmp_path / "state.db"
     _write_hermes_state_db(db_path)

@@ -704,10 +704,14 @@ def parse_project(payload: Mapping[str, object], fallback_id: str) -> ParsedSess
     reported content, and because it is re-derived on every export exactly
     like conversation content -- rebuildable, not a durable user assertion.
 
-    Material origin is ``HUMAN_AUTHORED``: the user wrote the prompt template
-    and chose and supplied the documents. ``GENERATED_CONTEXT_PACK`` is the
+    The prompt template is ``HUMAN_AUTHORED``: the user wrote it. An uploaded
+    document is standing ``CONTEXT`` (``RUNTIME_CONTEXT``): the export proves
+    the user supplied it, not that the user wrote it (a vendor manual or a
+    public specification), so it must not count toward authored-user words.
+    ``UNKNOWN`` would not hold: the chat-export user channel upgrades an
+    unknown user message to ``HUMAN_AUTHORED``. ``GENERATED_CONTEXT_PACK`` is the
     marker for *provider*-generated bundles (``memories.json``) and would
-    misattribute this material.
+    misattribute either.
 
     ``provider_session_id`` is ``project:<uuid>``, so re-importing a later
     export batch updates the same session in place.
@@ -753,8 +757,8 @@ def parse_project(payload: Mapping[str, object], fallback_id: str) -> ParsedSess
                 timestamp=normalize_timestamp(doc.get("created_at"))
                 if isinstance(doc.get("created_at"), str)
                 else None,
-                material_origin=MaterialOrigin.HUMAN_AUTHORED,
-                message_type=MessageType.MESSAGE,
+                material_origin=MaterialOrigin.RUNTIME_CONTEXT,
+                message_type=MessageType.CONTEXT,
                 blocks=[
                     ParsedContentBlock(
                         type=BlockType.DOCUMENT,

@@ -232,6 +232,12 @@ def _messages_for_span(span: dict[str, object], attrs: dict[str, object], trace_
     messages: list[ParsedMessage] = []
     usage = _usage_counts(attrs)
     usage_attached = False
+    # The model that produced the output: model usage rollups aggregate
+    # message tokens by ``model_name``, so a token-bearing message without one
+    # contributes nothing to usage or cost.
+    span_model = optional_string(attrs.get("gen_ai.response.model")) or optional_string(
+        attrs.get("gen_ai.request.model")
+    )
     for field, direction, default_role in (
         ("gen_ai.input.messages", "input", Role.USER),
         ("gen_ai.output.messages", "output", Role.ASSISTANT),
@@ -251,6 +257,7 @@ def _messages_for_span(span: dict[str, object], attrs: dict[str, object], trace_
                     input_tokens=usage[0] if carries_usage else None,
                     output_tokens=usage[1] if carries_usage else None,
                     cache_read_tokens=usage[2] if carries_usage else None,
+                    model_name=span_model if direction == "output" and role is Role.ASSISTANT else None,
                 )
             )
             if carries_usage:

@@ -41,6 +41,7 @@ approximation.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -300,6 +301,9 @@ def retained_codex_sidecars(
 # --------------------------------------------------------------------------
 
 
+_ZIP_MEMBER_SEPARATOR = re.compile(r"\.zip:", re.IGNORECASE)
+
+
 def chatgpt_export_scope(session_source_path: str) -> str | None:
     """Return the coordinate prefix of the export a shard is a member of.
 
@@ -311,9 +315,11 @@ def chatgpt_export_scope(session_source_path: str) -> str | None:
     """
     if not session_source_path:
         return None
-    head, separator, _member = session_source_path.partition(".zip:")
-    if separator:
-        return f"{head}.zip:"
+    # The archive suffix is matched case-insensitively (``first.ZIP:``) on the
+    # original string, so the scope keeps the path's own spelling and offsets.
+    match = _ZIP_MEMBER_SEPARATOR.search(session_source_path)
+    if match is not None:
+        return session_source_path[: match.end()]
     parent = Path(session_source_path).parent
     if str(parent) in {"", "."}:
         return None

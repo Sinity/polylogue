@@ -246,9 +246,14 @@ def test_claude_project_export_is_detected_and_dispatched_from_parse_ai() -> Non
         "Second document body.",
         "First document body.",
     ]
-    # The user wrote the template and supplied the documents;
-    # GENERATED_CONTEXT_PACK marks provider-generated bundles.
-    assert all(message.material_origin is MaterialOrigin.HUMAN_AUTHORED for message in session.messages)
+    # The user wrote the template; an uploaded document proves only that the
+    # user supplied it (anti-vacuity: restore HUMAN_AUTHORED on documents and
+    # third-party manuals inflate authored-user words).
+    assert [message.material_origin for message in session.messages] == [
+        MaterialOrigin.HUMAN_AUTHORED,
+        MaterialOrigin.RUNTIME_CONTEXT,
+        MaterialOrigin.RUNTIME_CONTEXT,
+    ]
     assert session.messages[1].blocks[0].metadata == {"doc_uuid": "doc-b", "filename": "schema-notes.md"}
     assert session.active_leaf_message_provider_id == "doc:doc-a"
     assert session.messages[-1].is_active_leaf is True
