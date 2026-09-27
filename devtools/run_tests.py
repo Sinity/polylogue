@@ -467,6 +467,9 @@ def _run(
             env=env,
             root=ROOT,
             runner=runner,
+            first_provenance=(
+                outcome.receipt.get("worktree_provenance") if isinstance(outcome.receipt, dict) else None
+            ),
         )
         if returncode == 1
         else None

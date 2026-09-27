@@ -643,6 +643,9 @@ def _run(
                 env=env,
                 root=ROOT,
                 runner=runner,
+                first_provenance=(
+                    metadata_receipt.get("worktree_provenance") if isinstance(metadata_receipt, dict) else None
+                ),
             )
             if completed.returncode == 1
             else None
@@ -1140,6 +1143,16 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         if isinstance(provenance, Mapping):
             # The receipt and verdict name what pytest executed, not what was admitted.
             run.record_execution_worktree(provenance)
+    # The static gates read the checkout directly, with no slot to re-check it:
+    # a checkout whose branch or HEAD moved while they ran proves nothing.
+    finished_identity = checkout_identity(ROOT)
+    checkout_moved = (finished_identity.branch, finished_identity.head) != (identity.branch, identity.head)
+    if checkout_moved:
+        sys.stderr.write(
+            f"verify: the checkout moved during the run (started {identity.describe()}, "
+            f"finished {finished_identity.describe()}); the result is void\n"
+        )
+        exit_code = exit_code or 1
     aggregate = _aggregate_pytest_results(
         results,
         expected_step_count=sum(label.startswith("pytest") for label, _command in steps),
@@ -1151,6 +1164,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         (str(result["diagnosis"]) for result in results if result["exit"] != 0 and result.get("blocking", True)),
         None,
     )
+    if checkout_moved:
+        diagnosis = "checkout_moved_during_run"
     payload = _finish_and_record_verification(
         run=run,
         exit_code=exit_code,

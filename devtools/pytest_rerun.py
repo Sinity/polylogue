@@ -83,8 +83,13 @@ def rerun_failed_once(
     env: Mapping[str, str],
     root: Path,
     runner: str = "managed",
+    first_provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Rerun exactly the failed tests once, alone and unselected.
+
+    ``first_provenance`` is the worktree identity the failing run executed.
+    A rerun that executed different content or another branch adjudicates
+    nothing: its pass would clear a failure of content it never ran.
 
     ``report_path`` is the just-finished run's JSON report; it is patched in
     place when a failure clears, so the caller's downstream statistics read
@@ -130,6 +135,20 @@ def rerun_failed_once(
     except PytestSlotUnavailableError as exc:
         sys.stderr.write(f"\n  rerun could not acquire the pytest slot: {exc}\n")
         return {"attempted": failed, "still_failed": failed, "flaky": [], "rerun_report": None, "rerun_exit": 125}
+    rerun_receipt = getattr(rerun_completed, "receipt", None)
+    rerun_provenance = rerun_receipt.get("worktree_provenance") if isinstance(rerun_receipt, Mapping) else None
+    if isinstance(first_provenance, Mapping) and isinstance(rerun_provenance, Mapping):
+        identity_keys = ("git_head", "git_branch", "git_worktree_content_sha256")
+        if any(first_provenance.get(key) != rerun_provenance.get(key) for key in identity_keys):
+            sys.stderr.write("\n  rerun ran different worktree content; the failures stand\n")
+            return {
+                "attempted": failed,
+                "still_failed": failed,
+                "flaky": [],
+                "rerun_report": None,
+                "rerun_exit": rerun_completed.returncode,
+                "content_moved": True,
+            }
     second = read_json(rerun_report)
     if not isinstance(second, Mapping) or rerun_completed.returncode not in (0, 1):
         # No report, or pytest itself did not finish cleanly (exit 3 is an

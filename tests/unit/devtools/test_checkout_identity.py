@@ -192,3 +192,71 @@ def test_verify_pytest_steps_ask_the_slot_to_recheck_the_branch(
     verify._run("pytest selected", ["pytest"], run=run, runner="managed")
 
     assert captured[WORKTREE_PROVENANCE_ENV] == "1"
+
+
+def test_a_checkout_that_moves_during_verification_voids_the_result(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Static gates have no slot to re-check the branch, so the run checks at its end.
+
+    Anti-vacuity: drop the end-of-run identity comparison and the switch to
+    ``master`` below leaves a passing quick run.
+    """
+    from devtools import verify as verify_module
+
+    root = _repository(tmp_path / "feature", "claude/change")
+    history: dict[str, object] = {}
+
+    def gate_that_switches_branch(
+        label: str, command: list[str], *, run: object, runner: str
+    ) -> tuple[int, float, dict[str, object]]:
+        del label, command, run, runner
+        subprocess.run(["git", "switch", "-q", "master"], cwd=root, check=True)
+        return 0, 0.0, {"diagnosis": "gate_passed"}
+
+    monkeypatch.setattr(verify_module, "ROOT", root)
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(verify_module, "assert_polylogue_matches_checkout", lambda *_a, **_k: None)
+    monkeypatch.setattr(verify_module, "build_verify_steps", lambda **_kwargs: [("gate only", ["true"])])
+    monkeypatch.setattr(verify_module, "_run", gate_that_switches_branch)
+    monkeypatch.setattr(verify_module, "append_verify_history", lambda payload: history.update(payload))
+
+    assert verify_module._main(["--quick"]) == 1
+    assert history["diagnosis"] == "checkout_moved_during_run"
+    assert "the checkout moved during the run" in capsys.readouterr().err
+
+
+def test_a_rerun_of_different_content_clears_no_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A flaky-rerun pass counts only for the content the failing run executed.
+
+    Anti-vacuity: drop the provenance comparison in ``rerun_failed_once`` and
+    the rerun's pass on edited content turns the failed test green.
+    """
+    from devtools.pytest_rerun import rerun_failed_once
+    from devtools.pytest_slot import SlotOutcome
+
+    report_path = tmp_path / "pytest-report.json"
+    report_path.write_text(
+        json.dumps({"exitcode": 1, "tests": [{"nodeid": "tests/test_a.py::test_x", "outcome": "failed"}]}),
+        encoding="utf-8",
+    )
+    first = {"git_head": "a" * 40, "git_branch": "claude/change", "git_worktree_content_sha256": "before"}
+
+    def rerun_on_edited_content(cmd: list[str], **_kwargs: object) -> SlotOutcome:
+        rerun_report = Path(next(arg for arg in cmd if arg.startswith("--polylogue-report-file=")).split("=", 1)[1])
+        rerun_report.write_text(
+            json.dumps({"tests": [{"nodeid": "tests/test_a.py::test_x", "outcome": "passed"}]}), encoding="utf-8"
+        )
+        edited = {**first, "git_worktree_content_sha256": "after"}
+        return SlotOutcome(returncode=0, slot="held", receipt={"worktree_provenance": edited})
+
+    monkeypatch.setattr("devtools.pytest_rerun.venv_python", lambda root: "python")
+    monkeypatch.setattr("devtools.pytest_rerun.run_pytest", rerun_on_edited_content)
+    step_dir = tmp_path / "step"
+    step_dir.mkdir()
+
+    rerun = rerun_failed_once(report_path=report_path, step_dir=step_dir, env={}, root=tmp_path, first_provenance=first)
+
+    assert rerun is not None
+    assert rerun["still_failed"] == ["tests/test_a.py::test_x"]
+    assert rerun["content_moved"] is True
