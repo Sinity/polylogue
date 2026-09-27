@@ -20,6 +20,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
 __all__ = [
+    "CHARGE_PROFILE_ENV",
+    "FOCUSED_CHARGE",
+    "FOCUSED_MAX_WORKERS",
+    "charge_profile_for",
     "CGROUP_PROCESS_PATH",
     "CGROUP_ROOT",
     "CONTROLLER_PEAK_MIB",
@@ -370,6 +374,33 @@ def width_within(budget_mib: float, *, profile: ChargeProfile = MEASURED_CHARGE)
 #: bounds below narrow only a slice that is already occupied.
 CORPUS_MAX_WORKERS = width_within(PYTEST_SLICE_MEMORY_HIGH_MIB)
 
+#: A focused selection's worker is not a corpus worker: it runs a bounded
+#: selection, so its peak is set by what that selection imports and builds,
+#: not by what 15,000 executed tests accumulate. Measured 2026-09-27 over 106
+#: single-process focused runs (collection and tests in one process): peak
+#: RSS p50 285 MiB, p99 553 MiB, max 988 MiB. A worker is charged the observed
+#: maximum; the controller, which only collects, the p50.
+FOCUSED_WORKER_PEAK_MIB: Final = 1000
+FOCUSED_CONTROLLER_PEAK_MIB: Final = 300
+FOCUSED_CHARGE: Final = ChargeProfile(
+    worker_anon_mib=FOCUSED_WORKER_PEAK_MIB,
+    worker_cache_mib=WORKER_PEAK_CACHE_MIB,
+    controller_mib=FOCUSED_CONTROLLER_PEAK_MIB,
+)
+#: The widest a focused selection runs: xdist start-up and per-worker
+#: collection stop paying for themselves past this on a bounded selection.
+FOCUSED_MAX_WORKERS: Final = 4
+#: Set by ``devtools test`` so the slot sizes its width with
+#: :data:`FOCUSED_CHARGE` instead of the corpus model.
+CHARGE_PROFILE_ENV: Final = "POLYLOGUE_PYTEST_CHARGE_PROFILE"
+
+
+def charge_profile_for(env: Mapping[str, str]) -> tuple[ChargeProfile, int]:
+    """The charge profile and width ceiling a launch declared, corpus by default."""
+    if env.get(CHARGE_PROFILE_ENV) == "focused":
+        return FOCUSED_CHARGE, FOCUSED_MAX_WORKERS
+    return MEASURED_CHARGE, CORPUS_MAX_WORKERS
+
 
 def corroborate_profile(
     memory: Mapping[str, Any] | None,
@@ -595,6 +626,8 @@ def memory_bounded_worker_cap(
     meminfo: Path = Path("/proc/meminfo"),
     process_cgroup: Path = CGROUP_PROCESS_PATH,
     cgroup_root: Path = CGROUP_ROOT,
+    profile: ChargeProfile = MEASURED_CHARGE,
+    max_workers: int | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """The widest run this job's pytest cgroup may hold right now.
 
@@ -619,10 +652,11 @@ def memory_bounded_worker_cap(
     declared to allow, so falling back to it keeps the same budget answering
     the question when its live enforcement cannot be read.
     """
+    ceiling = CORPUS_MAX_WORKERS if max_workers is None else max_workers
     host = available_memory_mib(meminfo=meminfo)
     cgroup = pytest_slot_available_mib(process_cgroup=process_cgroup, root=cgroup_root)
     if cgroup is None:
-        workers = max(1, min(requested, CORPUS_MAX_WORKERS))
+        workers = max(1, min(requested, ceiling))
         return workers, {
             "basis": "declared_budget",
             "available_mib": PYTEST_SLICE_MEMORY_HIGH_MIB,
@@ -630,17 +664,15 @@ def memory_bounded_worker_cap(
             "cgroup_available_mib": None,
             "headroom_owner": "sinnix agentctl-pytest.slice MemoryHigh",
             "controller_peak_mib": CONTROLLER_PEAK_MIB,
-            "worker_peak_anon_mib": round(
-                MEASURED_CHARGE.worker_anon_for_tests(MEASURED_CHARGE.tests_per_worker(workers)), 1
-            ),
+            "worker_peak_anon_mib": round(profile.worker_anon_for_tests(profile.tests_per_worker(workers)), 1),
             "worker_peak_cache_mib": WORKER_PEAK_CACHE_MIB,
-            "worker_peak_charge_mib": round(MEASURED_CHARGE.worker_charge_for_workers(workers), 1),
+            "worker_peak_charge_mib": round(profile.worker_charge_for_workers(workers), 1),
             "workers": workers,
             "requested_workers": requested,
             "narrowed": workers < requested,
-            **MEASURED_CHARGE.admission_estimate(workers, PYTEST_SLICE_MEMORY_HIGH_MIB),
+            **profile.admission_estimate(workers, PYTEST_SLICE_MEMORY_HIGH_MIB),
         }
-    workers = max(1, min(requested, width_within(cgroup)))
+    workers = max(1, min(requested, ceiling, width_within(cgroup, profile=profile)))
     return workers, {
         "basis": "cgroup_budget",
         "available_mib": cgroup,
@@ -648,15 +680,13 @@ def memory_bounded_worker_cap(
         "cgroup_available_mib": cgroup,
         "headroom_owner": "sinnix agentctl-pytest.slice MemoryHigh",
         "controller_peak_mib": CONTROLLER_PEAK_MIB,
-        "worker_peak_anon_mib": round(
-            MEASURED_CHARGE.worker_anon_for_tests(MEASURED_CHARGE.tests_per_worker(workers)), 1
-        ),
+        "worker_peak_anon_mib": round(profile.worker_anon_for_tests(profile.tests_per_worker(workers)), 1),
         "worker_peak_cache_mib": WORKER_PEAK_CACHE_MIB,
-        "worker_peak_charge_mib": round(MEASURED_CHARGE.worker_charge_for_workers(workers), 1),
+        "worker_peak_charge_mib": round(profile.worker_charge_for_workers(workers), 1),
         "workers": workers,
         "requested_workers": requested,
         "narrowed": workers < requested,
-        **MEASURED_CHARGE.admission_estimate(workers, cgroup),
+        **profile.admission_estimate(workers, cgroup),
     }
 
 
@@ -666,6 +696,8 @@ def resize_worker_argument(
     meminfo: Path = Path("/proc/meminfo"),
     process_cgroup: Path = CGROUP_PROCESS_PATH,
     cgroup_root: Path = CGROUP_ROOT,
+    profile: ChargeProfile = MEASURED_CHARGE,
+    max_workers: int | None = None,
 ) -> tuple[list[str], dict[str, Any] | None]:
     """Narrow an ``-n <count>`` xdist argument to what memory allows.
 
@@ -697,7 +729,12 @@ def resize_worker_argument(
         return argv, None
     effective_requested = requested if requested is not None and requested > 1 else 1
     workers, basis = memory_bounded_worker_cap(
-        requested=effective_requested, meminfo=meminfo, process_cgroup=process_cgroup, cgroup_root=cgroup_root
+        requested=effective_requested,
+        meminfo=meminfo,
+        process_cgroup=process_cgroup,
+        cgroup_root=cgroup_root,
+        profile=profile,
+        max_workers=max_workers,
     )
     if index is None or effective_requested <= 1 or not basis.get("narrowed"):
         return argv, basis

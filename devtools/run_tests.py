@@ -69,6 +69,7 @@ from devtools.verify_runs import (
     prune_successful_verify_runs,
     pytest_command_worker_request,
 )
+from devtools.worker_memory import CHARGE_PROFILE_ENV, FOCUSED_MAX_WORKERS
 
 ROOT = Path(__file__).resolve().parent.parent
 PYTEST_REPORT_DIR = Path(".cache/verify")
@@ -400,15 +401,41 @@ def _has_worker_flag(selection: list[str]) -> bool:
     return any(arg.startswith(("-n", "--numprocesses")) for arg in selection)
 
 
-def _worker_args(selection: list[str]) -> list[str]:
-    """Default focused runs to a single process; honor an explicit override.
+#: A selection naming at least this many test modules runs under xdist.
+#: Measured 2026-09-27 over 212 focused receipts: runs above 300 tests were
+#: 13% of runs and 60% of pool time; their median selection named 16 modules.
+#: A handful of modules runs faster in one process than xdist can start.
+LARGE_SELECTION_MODULES = 8
 
-    An ambient worker setting belongs to broad verification, not an inner-loop
-    selection. The runner that owns the requested pool narrows an explicit
-    request using its live cgroup budget.
+
+def _selected_test_modules(selection: list[str]) -> int:
+    """How many test modules the selection names, directories expanded."""
+    count = 0
+    for argument in _certain_selections(selection):
+        if argument.startswith("-"):
+            continue
+        target = Path(argument.split("::", 1)[0])
+        target = target if target.is_absolute() else ROOT / target
+        if target.is_dir():
+            count += sum(1 for path in target.rglob("test_*.py") if path.is_file())
+        elif target.is_file():
+            count += 1
+    return count
+
+
+def _worker_args(selection: list[str]) -> list[str]:
+    """Run a large selection under xdist; keep a small one in one process.
+
+    An explicit ``-n`` is the caller's and is honored. An ambient worker
+    setting belongs to broad verification, not an inner-loop selection. The
+    slot narrows the width to its live cgroup budget under the focused charge
+    profile, so a busy pool runs a large selection narrower, never over its
+    ceiling.
     """
     if _has_worker_flag(selection):
         return []
+    if _selected_test_modules(selection) >= LARGE_SELECTION_MODULES:
+        return ["-n", str(FOCUSED_MAX_WORKERS)]
     return []
 
 
@@ -434,7 +461,7 @@ def build_pytest_cmd(selection: list[str], *, report_path: Path = PYTEST_REPORT_
         *devtools_plugin_args(testmon=False),
         "-p",
         SUITE_COST_PLUGIN_NAME,
-        *managed_plugin_args(testmon=False, xdist=_has_worker_flag(selection)),
+        *managed_plugin_args(testmon=False, xdist=_has_worker_flag(selection) or bool(worker_args)),
         CLEAR_CONFIGURED_ADDOPTS,
         report_file_argument(report_path),
         *collection_args,
@@ -450,7 +477,10 @@ def focused_pytest_env(*, run: VerifyRun, artifacts: PytestStepArtifacts) -> dic
     Focused runs deliberately do not load testmon. They must not create a
     scratch graph, mutate the corpus graph, or load testmon's retention hook.
     """
-    return env_for_pytest_step(dict(os.environ), run=run, artifacts=artifacts, testmon=False)
+    env = env_for_pytest_step(dict(os.environ), run=run, artifacts=artifacts, testmon=False)
+    # Sized as a focused selection, not as a share of the whole corpus.
+    env[CHARGE_PROFILE_ENV] = "focused"
+    return env
 
 
 def _selection_targets_benchmarks(selection: list[str]) -> bool:

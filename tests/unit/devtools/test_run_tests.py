@@ -51,7 +51,7 @@ def _write_passing_evidence(root: Path, run: VerifyRun) -> None:
 
 
 def test_build_pytest_cmd_defaults_to_single_process() -> None:
-    cmd = run_tests.build_pytest_cmd(["tests/unit/pipeline"])
+    cmd = run_tests.build_pytest_cmd(["tests/unit/devtools/test_run_tests.py"])
     assert cmd[:5] == [
         str(run_tests.ROOT / ".venv/bin/python"),
         "-m",
@@ -59,7 +59,7 @@ def test_build_pytest_cmd_defaults_to_single_process() -> None:
         "-p",
         "devtools.pytest_progress_plugin",
     ]
-    assert "tests/unit/pipeline" in cmd
+    assert "tests/unit/devtools/test_run_tests.py" in cmd
     assert "-n" not in cmd
 
 
@@ -70,7 +70,7 @@ def test_build_pytest_cmd_uses_the_managed_plugin_contract() -> None:
     command and the first slice comparison fails; reorder the two blocks and
     the second does.
     """
-    cmd = run_tests.build_pytest_cmd(["tests/unit/pipeline"])
+    cmd = run_tests.build_pytest_cmd(["tests/unit/devtools/test_run_tests.py"])
 
     focused_plugins = devtools_plugin_args(testmon=False)
     devtools_start = cmd.index(focused_plugins[0])
@@ -127,8 +127,36 @@ def test_build_pytest_cmd_forwards_exactly_one_xdist_worker_request(
 
 def test_build_pytest_cmd_ignores_workers_env_for_focused_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "8")
-    cmd = run_tests.build_pytest_cmd(["tests/unit"])
+    cmd = run_tests.build_pytest_cmd(["tests/unit/devtools/test_run_tests.py"])
     assert "-n" not in cmd
+    large = run_tests.build_pytest_cmd(["tests/unit"])
+    assert large[large.index("-n") + 1] == str(run_tests.FOCUSED_MAX_WORKERS)
+
+
+def test_a_large_selection_runs_under_xdist_and_a_small_one_does_not() -> None:
+    """Width follows the selection's module count, never an ambient setting.
+
+    Anti-vacuity: return ``[]`` unconditionally from ``_worker_args`` and the
+    large selection runs in one process; drop the module threshold and the
+    single file is spread over workers.
+    """
+    small = run_tests.build_pytest_cmd(["tests/unit/devtools/test_run_tests.py", "tests/unit/devtools/test_verify.py"])
+    assert "-n" not in small
+    assert "xdist" not in small
+
+    large = run_tests.build_pytest_cmd(["tests/unit/devtools"])
+    assert large[large.index("-n") + 1] == str(run_tests.FOCUSED_MAX_WORKERS)
+    assert "xdist" in large
+    assert "--dist=loadgroup" in large
+
+
+def test_focused_environment_declares_the_focused_charge_profile(tmp_path: Path) -> None:
+    run = VerifyRun(tier="focused-test", argv=["tests"], git_head="head", root=tmp_path)
+    artifacts = run.start_step(label="pytest focused", cmd=["pytest"])
+
+    environment = run_tests.focused_pytest_env(run=run, artifacts=artifacts)
+
+    assert environment[run_tests.CHARGE_PROFILE_ENV] == "focused"
 
 
 def test_build_pytest_cmd_preserves_explicit_xdist_distribution() -> None:

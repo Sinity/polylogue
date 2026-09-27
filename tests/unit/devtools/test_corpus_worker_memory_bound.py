@@ -1072,3 +1072,38 @@ def test_the_width_gate_catches_a_zero_default() -> None:
     assert zeroed is not None and "0 workers" in zeroed
     assert worker_default_refusal(["-n", str(CORPUS_MAX_WORKERS)]) is not None
     assert worker_default_refusal(["--dist=loadgroup", "-n", str(CORPUS_MAX_WORKERS)]) is None
+
+
+def test_a_focused_selection_is_sized_by_its_own_charge_not_the_corpus_model(tmp_path: Path) -> None:
+    """A focused ``-n 4`` fits a slice the corpus model would narrow to one worker.
+
+    Anti-vacuity: size the focused request with ``MEASURED_CHARGE`` (drop the
+    ``profile`` argument) and the same 4.5 GiB of headroom narrows it to a
+    single worker; drop ``max_workers`` and an idle slice widens it past the
+    focused ceiling.
+    """
+    from devtools.worker_memory import FOCUSED_CHARGE, FOCUSED_MAX_WORKERS
+
+    paths = _pytest_slice(tmp_path, current_mib=PYTEST_SLICE_HIGH_MIB - 4608)
+    meminfo = _meminfo(tmp_path, available_mib=12000)
+
+    argv, basis = resize_worker_argument(
+        ["pytest", "-n", "4"],
+        meminfo=meminfo,
+        process_cgroup=paths.process_cgroup,
+        cgroup_root=paths.cgroup_root,
+        profile=FOCUSED_CHARGE,
+        max_workers=FOCUSED_MAX_WORKERS,
+    )
+    assert basis is not None
+    assert basis["workers"] == 4
+    assert argv == ["pytest", "-n", "4"]
+
+    _corpus_argv, corpus_basis = resize_worker_argument(
+        ["pytest", "-n", "4"],
+        meminfo=meminfo,
+        process_cgroup=paths.process_cgroup,
+        cgroup_root=paths.cgroup_root,
+    )
+    assert corpus_basis is not None
+    assert corpus_basis["workers"] < 4

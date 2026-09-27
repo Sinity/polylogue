@@ -44,7 +44,7 @@ from typing import IO, Any, Final
 from devtools.agent_env import PYTEST_POOL, PYTEST_POOLS, inside_pytest_pool
 from devtools.cloud_sentinels import cloud_sentinel_declined
 from devtools.pytest_memory import ProcessGroupMemorySampler
-from devtools.worker_memory import corroborate_profile, resize_worker_argument
+from devtools.worker_memory import ChargeProfile, charge_profile_for, corroborate_profile, resize_worker_argument
 
 __all__ = [
     "BASETEMP_ROOT_ENV",
@@ -905,6 +905,7 @@ def _slot_receipt(
     exit_code: int | None = None,
     log_path: Path | None = None,
     extra: Mapping[str, Any] | None = None,
+    profile: ChargeProfile | None = None,
 ) -> dict[str, Any]:
     """The run's durable result: how wide it ran, and what it took to run that wide.
 
@@ -934,7 +935,9 @@ def _slot_receipt(
         receipt["sizing"] = dict(sizing)
     if memory is not None:
         receipt["memory"] = dict(memory)
-    corroboration = corroborate_profile(memory, sizing)
+    corroboration = (
+        corroborate_profile(memory, sizing) if profile is None else corroborate_profile(memory, sizing, profile=profile)
+    )
     if corroboration is not None:
         receipt["corroboration"] = corroboration
     if extra is not None:
@@ -1021,7 +1024,8 @@ def _run_held(
     """
     started = time.monotonic()
     worktree_provenance = _focused_worktree_provenance(cwd, env)
-    command, sizing = resize_worker_argument(list(argv))
+    profile, max_workers = charge_profile_for(env)
+    command, sizing = resize_worker_argument(list(argv), profile=profile, max_workers=max_workers)
     note = _sizing_note(sizing)
     if note is not None:
         sys.stderr.write(note + "\n")
@@ -1091,6 +1095,7 @@ def _run_held(
         memory = sampler.stop()
     return returncode, _slot_receipt(
         status="success" if returncode == 0 else "failed",
+        profile=profile,
         exit_code=returncode,
         elapsed_s=time.monotonic() - started,
         sizing=sizing,
@@ -1311,7 +1316,8 @@ def _run_launch(launch_path: Path) -> int:
     # The width is chosen here rather than where the command was built: a run
     # can sit in this queue for hours, and what matters is the memory this job
     # may take when its workers start.
-    command, sizing = resize_worker_argument(list(launch["argv"]))
+    profile, max_workers = charge_profile_for(environment)
+    command, sizing = resize_worker_argument(list(launch["argv"]), profile=profile, max_workers=max_workers)
     _persist_telemetry_seed(telemetry_path, sizing=sizing, progress=progress)
     note = _sizing_note(sizing)
     with open(log_path, "wb") as log:
@@ -1352,6 +1358,7 @@ def _run_launch(launch_path: Path) -> int:
         _rerun_failures_in_slot(environment, cwd=launch["working_directory"], log_path=log_path)
     receipt = _slot_receipt(
         status="success" if returncode == 0 else "failed",
+        profile=profile,
         exit_code=returncode,
         elapsed_s=time.monotonic() - started,
         sizing=sizing,
