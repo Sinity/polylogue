@@ -280,11 +280,14 @@ justification. Declarations sharing a family id must agree on all five.
 `polylogue/declarations/models.py:22-41`, including the difference report used
 in refusals. The registry refuses a mismatched family member at registration
 time (`polylogue/declarations/registry.py:64-78`), which means any route that
-builds a registry fails — including the bindings gate. The interview and its
+builds a registry fails — including the bindings check. The interview and its
 two refusals are `devtools/scaffold.py:36-48` and
 `devtools/scaffold.py:519-527`.
 
-**Owning gate**: `declaration-bindings`
+**Owning check**: the live test
+`tests/unit/devtools/test_declaration_binding_registries.py`, run through
+`devtools test`; the `declaration-bindings` gate was folded into it
+(polylogue-j325x).
 
 **Observable failure**: two things that differ in authority or durability end
 up in one family, so a read that is safe for one becomes a claim the other
