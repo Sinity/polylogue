@@ -434,32 +434,31 @@ def _force_has_paste(workspace: ReaderWorkspace, message_ids: tuple[str, ...]) -
 
 
 def _seed_reader_user_state(workspace: ReaderWorkspace) -> None:
-    """Seed marks, annotation, and a saved view through archive write paths."""
-    import asyncio
+    """Seed marks, annotation, and a saved view through the user-tier writers.
 
-    from polylogue.api import Polylogue
+    The public facade submits these writes to a resident daemon, which this
+    reader fixture does not run, so the fixture seeds the stored state through
+    the same user-tier writers the daemon's actuators call.
+    """
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_saved_view
+    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_annotation, upsert_mark, upsert_saved_view
 
     root = workspace.archive_root
-
-    async def _seed() -> None:
-        async with Polylogue(archive_root=root, db_path=root / "index.db") as poly:
-            await poly.add_mark(READER_C1, "star")
-            await poly.add_mark(READER_C1, "pin")
-            await poly.save_annotation(
-                "reader-ann-c1",
-                READER_C1,
-                "This session anchors the MK3 reader evidence.",
-            )
-
-    asyncio.run(_seed())
 
     user_db = root / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
     user_conn = sqlite3.connect(user_db)
     try:
+        upsert_mark(user_conn, "session", READER_C1, "star")
+        upsert_mark(user_conn, "session", READER_C1, "pin")
+        upsert_annotation(
+            user_conn,
+            "session",
+            READER_C1,
+            "This session anchors the MK3 reader evidence.",
+            annotation_id="reader-ann-c1",
+        )
         upsert_saved_view(
             user_conn,
             "Claude Code reader fixtures",

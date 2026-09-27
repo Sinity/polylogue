@@ -601,10 +601,12 @@ def test_gemini_cli_schema_fields_survive_dispatch_with_human_authored_override(
         "input_tokens": 12,
         "output_tokens": 5,
         "cached_input_tokens": 8,
-        "cache_write_tokens": 0,
         "reasoning_output_tokens": 3,
         "total_tokens": 30,
     }
+    # Gemini's wire reports no cache-write counter: the lane is unknown and
+    # omitted, never a measured zero (polylogue-qgyuj).
+    assert "cache_write_tokens" not in usage_by_message["cli-assistant-native"]["last_token_usage"]
     assert usage_by_message["cli-assistant-native"]["tool_output_tokens"] == 2
 
 

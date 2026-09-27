@@ -142,6 +142,11 @@ class OriginFixture:
     # For session-ID stability test, we re-call parse_fn a second time and
     # compare; this is always exercised unless parse_fn requires a tmp_path.
     skip_stability: bool = False
+    #: The provider session id the parser must produce, when it is not the
+    #: acquisition fallback id: an origin whose wire carries no native session
+    #: id derives one from content, and pinning it catches identity drift that
+    #: would re-key every stored session of that origin.
+    expected_provider_session_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -715,6 +720,9 @@ ORIGIN_FIXTURES: list[OriginFixture] = [
         label="grok-export",
         provider=Provider.GROK,
         session_id="grok-session-reg-1",
+        # Grok exports carry no native conversation id, so the parser derives a
+        # content identity rather than adopting the fallback (polylogue-31zag).
+        expected_provider_session_id="conversation-ba70fc4a84b83608f3c3a184",
         min_messages=2,
         expected_origin=Origin.GROK_EXPORT,
         looks_like_fn=grok_looks_like,
@@ -853,9 +861,10 @@ def test_origin_contract(fixture: OriginFixture) -> None:
     )
 
     # --- 4. Session ID -------------------------------------------------
-    assert session.provider_session_id == fixture.session_id, (
+    expected_session_id = fixture.expected_provider_session_id or fixture.session_id
+    assert session.provider_session_id == expected_session_id, (
         f"[{fixture.label}] provider_session_id mismatch: "
-        f"expected {fixture.session_id!r}, got {session.provider_session_id!r}"
+        f"expected {expected_session_id!r}, got {session.provider_session_id!r}"
     )
 
     # --- 5. Session ID stability (re-parse produces the same ID) -------
@@ -1003,7 +1012,7 @@ def test_advertised_origin_shapes_dispatch_to_expected_provider_and_origin(fixtu
     assert session.source_name is expected_dispatch_provider, (
         f"[{fixture.label}] dispatch source_name={session.source_name!r}, expected {expected_dispatch_provider!r}"
     )
-    assert session.provider_session_id == fixture.session_id
+    assert session.provider_session_id == (fixture.expected_provider_session_id or fixture.session_id)
     assert origin_from_provider(session.source_name) is fixture.expected_origin
 
 

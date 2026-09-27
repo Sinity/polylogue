@@ -686,9 +686,9 @@ def test_read_help_groups_options_by_ownership(cli_runner: CliRunner) -> None:
     assert "Projection:" in result.output
     assert "Delivery and format:" in result.output
     assert "Cardinality and pagination:" in result.output
-    assert "Context-image projection:" in result.output
-    assert "Context and neighbor views:" not in result.output
-    assert "Correlation view:" not in result.output
+    # View-specific options render under one declaration-driven heading
+    # (``read_view_option_names``); only the selected view's options appear.
+    assert "View options:" in result.output
     assert "Other options:" in result.output
     assert "--views" in result.output
     assert "--render" in result.output

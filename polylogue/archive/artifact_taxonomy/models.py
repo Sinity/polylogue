@@ -87,6 +87,11 @@ class ArtifactKind(StrEnum):
     # individual events are materialized out of those retained bytes into
     # ``raw_hook_events``, never persisted per event at capture time.
     HOOK_EVENT_CARRIER = "hook_event_carrier"
+    # polylogue-6d7fx: a prompt template a skill ships (the Hermes agent
+    # checkout's ``optional-skills/**/templates/``). Message-shaped by
+    # construction, so only its path rule separates it from a transcript;
+    # it is retained as raw bytes and never becomes a session.
+    SKILL_ASSET = "skill_asset"
     # polylogue-hbtj2: a raw payload whose magic bytes are a recognized
     # binary container with no dedicated, content-verified session parser
     # for this exact shape -- refused as session content at the earliest

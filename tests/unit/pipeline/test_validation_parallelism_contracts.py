@@ -55,10 +55,17 @@ def _write_blob(blob_root: Path, payload: bytes) -> str:
 
 
 def _claude_payload(title: str = "hello") -> bytes:
-    """Produce a tiny well-formed Claude web export payload."""
+    """Produce a tiny Claude web export payload the current schema accepts.
+
+    ``summary`` and ``account`` are required by the current package; without
+    them schema selection falls back to a historical schema after one
+    rejected probe, which is a second validation pass by construction.
+    """
     body = {
         "uuid": f"conv-{title}",
         "name": title,
+        "summary": "",
+        "account": {"uuid": "account-fixture"},
         "created_at": "2026-01-01T00:00:00Z",
         "updated_at": "2026-01-01T00:00:00Z",
         "chat_messages": [

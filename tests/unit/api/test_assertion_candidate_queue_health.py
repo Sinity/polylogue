@@ -424,12 +424,15 @@ def test_scheduler_receipt_freshness_uses_explicit_runtime_projection(
     reset_periodic_status_component_registry()
     try:
         registry = periodic_status_component_registry()
+        # Compact status excludes the queue by default; this law is about
+        # which configuration answers when the queue is requested.
         status_payload = daemon_status_payload(
             config=config,
             sources=(),
             include_raw_replay_backlog=False,
             include_exact_raw_materialization_readiness=False,
             include_archive_debt=False,
+            include_assertion_candidate_queue=True,
             registry=registry,
         )
     finally:

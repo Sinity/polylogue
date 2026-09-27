@@ -210,7 +210,15 @@ def test_resource_probe_peak_is_the_interval(tmp_path: Path) -> None:
     candidate.mkdir()
     (candidate / "index.db").write_bytes(b"index")
 
-    released = bytearray(256 * 1024 * 1024)
+    # The allocation must raise the process's lifetime mark by 256 MB, so it
+    # is sized from the gap between the current resident set and the mark an
+    # earlier test in the same worker may already have set; a fixed 256 MB can
+    # land entirely below that mark, leaving nothing for the probe to exclude.
+    from tests.infra.retention_probe import read_memory_kib
+
+    before = read_memory_kib()
+    headroom_bytes = max(before["VmHWM"] - before["VmRSS"], 0) * 1024
+    released = bytearray(headroom_bytes + 256 * 1024 * 1024)
     for offset in range(0, len(released), 4096):
         released[offset] = 1
     lifetime_mark_bytes = max(resource_module.getrusage(resource_module.RUSAGE_SELF).ru_maxrss, 0) * 1024
