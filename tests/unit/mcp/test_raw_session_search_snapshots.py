@@ -846,3 +846,40 @@ def test_transient_snapshot_directory_probe_failure_is_retryable(
     request = RawSearch(origin="codex-session", query="needle", continuation=token)
     envelope = asyncio.run(session_operation_response(None, request, raw_sources=sources))
     assert envelope.model_dump()["code"] == "retryable"
+
+
+def test_memory_fanout_ends_when_a_providers_snapshot_was_evicted(tmp_path: Path) -> None:
+    """Anti-vacuity: keeping the surviving provider's cursor lets a later page finish 'ok' without the evicted one."""
+    claude = tmp_path / "claude"
+    _write(claude / "a.jsonl", "x" * 64 + "needle claude\n", 1)
+    codex = tmp_path / "codex"
+    _write(codex / "c.jsonl", "x" * 64 + "needle codex\n", 1)
+    sources = (SessionSource("claude-code", claude), SessionSource("codex", codex))
+    request = RawMemorySearch(query="needle", limit=5, scan_bytes=8)
+    first = raw_operation(request, sources=sources)
+    assert first.source_cursors and all(first.source_cursors.values())
+    for snapshot in _snapshot_files():
+        if zlib.decompress(snapshot.read_bytes()).find(b'"provider":"claude-code"') >= 0:
+            snapshot.unlink()
+    second = raw_operation(request.model_copy(update={"source_cursors": first.source_cursors}), sources=sources)
+    assert second.outcome == "degraded"
+    assert not any((second.source_cursors or {}).values())
+    assert any("expired or was evicted" in gap for gap in second.coverage.gaps)
+
+
+def test_non_utf8_filename_reference_is_searchable_and_resumable(tmp_path: Path) -> None:
+    """Anti-vacuity: a strict UTF-8 digest raises UnicodeEncodeError on a reference the service itself returned.
+
+    Driven through the service: the public request model rejects lone
+    surrogates before reaching it.
+    """
+    root = tmp_path / "codex"
+    root.mkdir()
+    _write(root / os.fsdecode(b"\xff.jsonl"), "x" * 64 + "needle\n", 1)
+    service = SessionLogService(sources=_sources(root))
+    (row,) = service.inventory("codex")
+    key = b"k" * 32
+    first = service.search("codex", "needle", reference=row["reference"], scan_bytes=8, cursor_key=key)
+    assert first["next_cursor"] is not None
+    resumed = service.search("codex", "needle", reference=row["reference"], cursor=first["next_cursor"], cursor_key=key)
+    assert [match["reference"] for match in resumed["matches"]] == [row["reference"]]

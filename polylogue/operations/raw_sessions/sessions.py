@@ -531,7 +531,7 @@ class SessionLogService:
         # one file never resumes over another population. It is bound by
         # digest: an exact path of any valid length stays in the private
         # snapshot binding, not in the size-bounded token.
-        reference_sha256 = hashlib.sha256(reference.encode()).hexdigest() if reference is not None else None
+        reference_sha256 = hashlib.sha256(os.fsencode(reference)).hexdigest() if reference is not None else None
         scope = {
             "principal": self.scope,
             "provider": provider,
@@ -572,6 +572,8 @@ class SessionLogService:
                     # The retained counts went with the snapshot; the gap says so.
                     "skipped_earlier": 0,
                     "skipped_now": 0,
+                    # Unscanned files of this population are now unreachable.
+                    "continuation_lost": True,
                 }
         else:
             if reference is not None:

@@ -160,7 +160,7 @@ class MemoryService:
             )
             gaps.extend(f"{provider}: {gap}" for gap in result.get("gaps", ()))
             next_cursors[provider] = result["next_cursor"]
-            if result["truncated"] and result["next_cursor"] is None:
+            if result.get("continuation_lost") or (result["truncated"] and result["next_cursor"] is None):
                 continuation_lost = True
             earlier_skips += result["skipped_earlier"]
             if result["next_cursor"] is None and result["skipped_earlier"] + result["skipped_now"]:
