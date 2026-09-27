@@ -901,76 +901,41 @@ def _compaction_summary_text(item: Mapping[str, object]) -> tuple[str, str | Non
     return "\n\n".join(texts), start_timestamp, stop_timestamp
 
 
-def _apply_compaction_summaries(
-    chat_messages: list[object],
-    messages: list[ParsedMessage],
-) -> tuple[list[ParsedMessage], list[ParsedSessionEvent]]:
-    """Materialize claude.ai compaction summaries the way Claude Code's are.
+def _compaction_summary_events(chat_messages: list[object]) -> list[ParsedSessionEvent]:
+    """One ``claude_ai_compaction_summary`` event per message carrying claude.ai's summary.
 
     When claude.ai compacts a conversation it stores the summary it carries
-    forward on the message where compaction took effect
-    (``compaction_summary``: text blocks with start/stop timestamps). That
-    summary is the context the model continued from. It becomes a SUMMARY
-    message placed just before that message, plus a ``compaction`` event whose
-    boundaries cover the turns it replaced, so effective-context reads return
-    the summary instead of the superseded turns.
+    forward on the message where compaction took effect (``compaction_summary``:
+    text blocks with start/stop timestamps). The text is kept, keyed to that
+    message. It is deliberately not a ``compaction`` event: those carry
+    boundaries and a materialized summary message that effective-context reads
+    apply, and placing a summary message into claude.ai's branched message tree
+    (variant and attachment-owner coordinates) is not done here.
     """
-    summaries: dict[str, tuple[str, str | None, str | None]] = {}
+    events: list[ParsedSessionEvent] = []
     for item in chat_messages:
         if not isinstance(item, Mapping):
             continue
-        message_id = _first_identity_field(item, "uuid", "id", "message_id")
         found = _compaction_summary_text(item)
-        if message_id and found is not None:
-            summaries[message_id] = found
-    if not summaries:
-        return messages, []
-    ordered = sorted(messages, key=lambda message: message.position)
-    result: list[ParsedMessage] = []
-    events: list[ParsedSessionEvent] = []
-    shift = 0
-    previous_boundary_end = -1
-    for message in ordered:
-        found = summaries.get(message.provider_message_id) if message.provider_message_id else None
-        if found is not None:
-            summary_text, start_timestamp, stop_timestamp = found
-            summary_position = message.position + shift
-            boundary_end = summary_position - 1
-            timestamp = stop_timestamp or start_timestamp or message.timestamp
-            payload: dict[str, object] = {"summary": summary_text, "source": "claude-ai"}
-            if start_timestamp is not None:
-                payload["start_timestamp"] = start_timestamp
-            if stop_timestamp is not None:
-                payload["stop_timestamp"] = stop_timestamp
-            events.append(
-                ParsedSessionEvent(
-                    event_type="compaction",
-                    timestamp=timestamp,
-                    source_message_provider_id=message.provider_message_id,
-                    payload=payload,
-                    boundary_start_position=previous_boundary_end + 1,
-                    boundary_end_position=boundary_end,
-                    boundary_message_position=summary_position,
-                )
+        if found is None:
+            continue
+        summary_text, start_timestamp, stop_timestamp = found
+        payload: dict[str, object] = {"summary": summary_text}
+        if start_timestamp is not None:
+            payload["start_timestamp"] = start_timestamp
+        if stop_timestamp is not None:
+            payload["stop_timestamp"] = stop_timestamp
+        events.append(
+            ParsedSessionEvent(
+                event_type="claude_ai_compaction_summary",
+                timestamp=stop_timestamp or start_timestamp or _session_timestamp(item, "created_at", "updated_at"),
+                source_message_provider_id=_first_identity_field(
+                    item, "uuid", "id", "message_id", "messageId", "provider_message_id"
+                ),
+                payload=payload,
             )
-            result.append(
-                ParsedMessage(
-                    provider_message_id="",
-                    role=Role.SYSTEM,
-                    text=summary_text,
-                    timestamp=timestamp,
-                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text=summary_text)],
-                    message_type=MessageType.SUMMARY,
-                    position=summary_position,
-                    variant_index=0,
-                    is_active_path=True,
-                    is_active_leaf=False,
-                )
-            )
-            shift += 1
-            previous_boundary_end = boundary_end
-        result.append(message.model_copy(update={"position": message.position + shift}) if shift else message)
-    return result, events
+        )
+    return events
 
 
 @parser_admission("claude_ai")
@@ -1044,8 +1009,7 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
             )
         )
 
-    session_messages, compaction_events = _apply_compaction_summaries(chat_messages, list(normalized.messages))
-    session_events.extend(compaction_events)
+    session_events.extend(_compaction_summary_events(chat_messages))
 
     conversation_id = _first_identity_field(payload, "uuid", "id", "conversation_id", "conversationId")
     resolved_session_id = conversation_id or fallback_id
@@ -1061,7 +1025,7 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
         session_kind=_session_kind(payload),
         created_at=created_at,
         updated_at=updated_at,
-        messages=session_messages,
+        messages=normalized.messages,
         active_leaf_message_provider_id=normalized.active_leaf_message_provider_id,
         attachments=_merge_session_attachments(normalized.attachments, payload),
         session_events=session_events,

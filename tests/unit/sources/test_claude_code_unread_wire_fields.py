@@ -857,6 +857,7 @@ def test_api_error_record_is_harness_protocol_with_a_linked_event() -> None:
                 "sessionId": "sess-api-error",
                 "isApiErrorMessage": True,
                 "apiErrorStatus": 429,
+                "apiErrorIsTransient": True,
                 "errorDetails": "rate limited",
                 "message": {
                     "role": "assistant",
@@ -876,6 +877,7 @@ def test_api_error_record_is_harness_protocol_with_a_linked_event() -> None:
     assert events[0].source_message_provider_id == "a-api-error"
     assert events[0].payload["status"] == 429
     assert events[0].payload["details"] == "rate limited"
+    assert events[0].payload["transient"] is True
 
 
 def test_tool_denial_kind_is_kept_beside_the_error_result() -> None:

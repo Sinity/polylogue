@@ -2403,6 +2403,8 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
         api_error_status = _optional_safe_int(item.get("apiErrorStatus"))
         if api_error_status is not None:
             api_error_payload["status"] = api_error_status
+        if isinstance(item.get("apiErrorIsTransient"), bool):
+            api_error_payload["transient"] = item["apiErrorIsTransient"]
         for source_key, payload_key in (("apiError", "error"), ("errorDetails", "details")):
             value = item.get(source_key)
             if isinstance(value, str) and value.strip():
