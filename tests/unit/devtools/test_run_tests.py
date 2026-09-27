@@ -1187,3 +1187,17 @@ def test_a_reused_receipt_is_emitted_as_json_when_asked(
 
     assert run_tests.main(["tests/unit/devtools/test_run_tests.py", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["run_id"] == "r1"
+
+
+@pytest.mark.parametrize("flag", ["--lf", "--last-failed", "--ff", "--sw", "--lfnf=all"])
+def test_stateful_selectors_are_never_answered_from_a_receipt(tmp_path: Path, flag: str) -> None:
+    """``--lf`` selects from pytest's mutable cache, so identical argv is not identical work.
+
+    Anti-vacuity: drop the stateful-selector refusal and the matching receipt
+    below is returned.
+    """
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py", flag]
+    _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
+
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None

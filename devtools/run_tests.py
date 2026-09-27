@@ -240,6 +240,27 @@ def _parse_rerun(selection: list[str]) -> tuple[bool, list[str]]:
 _EXECUTION_ENV_PREFIXES = ("HYPOTHESIS_", "PYTEST_", "POLYLOGUE_")
 
 
+#: Selectors whose meaning depends on pytest's mutable cache (last-failed,
+#: failed-first, stepwise, new-first): the same argv selects different tests
+#: from run to run, so no earlier receipt can answer for it.
+_STATEFUL_SELECTORS = frozenset(
+    {
+        "--lf",
+        "--last-failed",
+        "--ff",
+        "--failed-first",
+        "--nf",
+        "--new-first",
+        "--sw",
+        "--stepwise",
+        "--sw-skip",
+        "--stepwise-skip",
+        "--lfnf",
+        "--last-failed-no-failures",
+    }
+)
+
+
 def execution_environment_key(environ: Mapping[str, str]) -> str:
     """A digest of the caller's execution-affecting environment."""
     import hashlib
@@ -259,7 +280,10 @@ def reusable_green_receipt(
     tests over the same bytes with the same interpreter, so its receipt
     answers the question and the pool admission is skipped.
     """
-    if content_sha256 is None:
+    if content_sha256 is None or any(
+        argument in _STATEFUL_SELECTORS or argument.startswith(tuple(f"{flag}=" for flag in _STATEFUL_SELECTORS))
+        for argument in selection
+    ):
         return None
     runs_root = root / ".cache" / "verify" / "runs"
     try:
