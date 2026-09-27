@@ -729,3 +729,68 @@ def test_memory_fanout_reuses_one_completion_snapshot_across_pages(tmp_path: Pat
     assert len(references) == 5 and len(set(references)) == 5
     assert max(counts) <= 2
     assert any("1 selected files were skipped on earlier pages" in gap for gap in page.coverage.gaps)
+
+
+def test_memory_fanout_refuses_to_continue_when_it_cannot_retain_owed_skips(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: recording the failed completion token as a finished source lets the terminal page forget the skip."""
+    claude = tmp_path / "claude"
+    locked = _write(claude / "a.jsonl", "needle locked\n", 2)
+    _write(claude / "b.jsonl", "needle claude\n", 1)
+    codex = tmp_path / "codex"
+    _write(codex / "c.jsonl", "needle codex\n", 1)
+    sources = (SessionSource("claude-code", claude), SessionSource("codex", codex))
+    monkeypatch.setattr(SessionLogService, "completed_skips_token", lambda *_args, **_kwargs: None)
+    locked.chmod(0)
+    try:
+        page = raw_operation(RawMemorySearch(query="needle", limit=1), sources=sources)
+    finally:
+        locked.chmod(0o600)
+    assert page.outcome == "degraded"
+    assert not any((page.source_cursors or {}).values())
+    assert any("continuation unavailable" in gap and "restart the search" in gap for gap in page.coverage.gaps)
+
+
+def test_transient_snapshot_read_failure_is_retryable_with_the_same_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: treating EIO like a missing snapshot returns a terminal 'expired' page and loses the continuation."""
+    import errno
+
+    root = tmp_path / "codex"
+    first_file = _write(root / "a.jsonl", "needle a\n", 2)
+    _write(root / "b.jsonl", "needle b\n", 1)
+    sources = _sources(root)
+    token = _search(sources, scan_bytes=first_file.stat().st_size).continuation
+    real_read = Path.read_bytes
+
+    def failing_read(self: Path) -> bytes:
+        if self.suffix == ".snapshot":
+            raise OSError(errno.EIO, "Input/output error")
+        return real_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", failing_read)
+    request = RawSearch(origin="codex-session", query="needle", continuation=token)
+    envelope = asyncio.run(session_operation_response(None, request, raw_sources=sources))
+    assert envelope.model_dump()["code"] == "retryable"
+    monkeypatch.setattr(Path, "read_bytes", real_read)
+    assert [item.reference for item in _search(sources, continuation=token).items] == ["codex:b.jsonl"]
+
+
+def test_timeline_head_held_in_the_continuation_reports_its_enumerated_observation(tmp_path: Path) -> None:
+    root = tmp_path / "codex"
+    _write(root / "new.jsonl", "a\n", 2)
+    held = _write(root / "old.jsonl", "b\n", 1)
+    before = held.stat()
+    sources = _sources(root)
+    first = raw_operation(RawTimeline(origins=["codex-session"], limit=1), sources=sources)
+    assert [item.reference for item in first.items] == ["codex:new.jsonl"]
+    with held.open("a") as handle:
+        handle.write("appended\n")
+    second = raw_operation(
+        RawTimeline(origins=["codex-session"], limit=1, continuation=first.continuation), sources=sources
+    )
+    assert [(item.reference, item.bytes, item.mtime_ns) for item in second.items] == [
+        ("codex:old.jsonl", before.st_size, before.st_mtime_ns)
+    ]

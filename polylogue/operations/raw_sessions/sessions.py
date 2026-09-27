@@ -18,11 +18,22 @@ from typing import Any, BinaryIO, NoReturn
 from polylogue.paths import state_home
 
 from .page import CompactJSONPage
-from .snapshot_store import SnapshotBinding, SnapshotStore, SnapshotUnavailableError
+from .snapshot_store import (
+    SnapshotBinding,
+    SnapshotStore,
+    SnapshotTemporarilyUnavailableError,
+    SnapshotUnavailableError,
+)
 
 
 class SessionError(ValueError):
     code = "session_read_failed"
+
+
+class RetryableSessionError(SessionError):
+    """A transient system failure; the same request or continuation can be retried."""
+
+    code = "retryable"
 
 
 class StaleContinuationError(SessionError):
@@ -541,6 +552,15 @@ class SessionLogService:
                 raise SessionError("session continuation cursor is malformed")
             try:
                 files = self._snapshots.load(snapshot_handle, binding).files
+            except SnapshotTemporarilyUnavailableError as exc:
+                raise RetryableSessionError(
+                    f"session continuation snapshot is temporarily unreadable ({exc}); retry the same continuation"
+                ) from exc
+            except OSError as exc:
+                # The store lock itself failed to open (for example EMFILE).
+                raise RetryableSessionError(
+                    f"session continuation snapshot is temporarily unreadable ({exc}); retry the same continuation"
+                ) from exc
             except SnapshotUnavailableError as exc:
                 return {
                     "provider": provider,

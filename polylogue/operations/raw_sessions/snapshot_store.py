@@ -86,6 +86,10 @@ class SnapshotBinding:
         }
 
 
+class SnapshotTemporarilyUnavailableError(RuntimeError):
+    """The snapshot exists but could not be read now; retry the same continuation."""
+
+
 class SnapshotUnavailableError(LookupError):
     """The handle expired, was evicted, or never belonged to this scope."""
 
@@ -235,8 +239,14 @@ class SnapshotStore:
                 else:
                     try:
                         body = json.loads(zlib.decompress(path.read_bytes()))
-                    except (OSError, ValueError, zlib.error):
+                    except FileNotFoundError:
                         body = None
+                    except (ValueError, zlib.error):
+                        body = None
+                    except OSError as exc:
+                        # Descriptor exhaustion or an I/O error says nothing
+                        # about the snapshot; the same token can succeed later.
+                        raise SnapshotTemporarilyUnavailableError(str(exc)) from exc
                     if body is not None:
                         if not isinstance(body, dict) or body.get("v") != 1 or body.get("binding") != binding.as_json():
                             raise SnapshotUnavailableError(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .sessions import SessionError, SessionLogService, StaleContinuationError
+from .sessions import SessionError, SessionLogService
 from .sources import (
     LOCAL_AUTHORITY,
     UNAVAILABLE_SOURCES,
@@ -127,10 +127,11 @@ class MemoryService:
                     scan_bytes=scan_bytes,
                     summarize_skipped=False,
                 )
-            except StaleContinuationError:
-                # Typed: the caller must restart, which a generic memory error hides.
-                raise
             except SessionError as exc:
+                if type(exc) is not SessionError:
+                    # Typed outcomes (stale, retryable) must reach the caller
+                    # with their code; a generic wrapper would hide them.
+                    raise
                 raise MemoryError(str(exc)) from exc
             sources.append(
                 {
@@ -169,9 +170,19 @@ class MemoryService:
             # A finished provider's skips must survive to the fan-out's terminal
             # page, which a ``None`` slot would forget.
             for provider, owed in owed_skips.items():
-                next_cursors[provider] = reusable.get(provider) or self.sessions.completed_skips_token(
+                token = reusable.get(provider) or self.sessions.completed_skips_token(
                     provider, query, owed, cursor_key=cursor_key
                 )
+                if token is None:
+                    # The count cannot be retained (for example ENOSPC). A
+                    # continuation that would forget it is worse than none.
+                    gaps.append(
+                        f"{provider}: continuation unavailable: its {owed} skipped files could not be retained; "
+                        "restart the search"
+                    )
+                    next_cursors = dict.fromkeys(next_cursors)
+                    break
+                next_cursors[provider] = token
         elif not truncated and earlier_skips:
             gaps.append(f"{earlier_skips} selected files were skipped on earlier pages of this continuation")
         return {
