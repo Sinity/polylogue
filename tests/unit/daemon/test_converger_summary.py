@@ -40,7 +40,10 @@ class _SelectedAdapter:
         self.computed: list[str] = []
 
     def selected_part_facts(self, frame: object, session_id: str) -> _Facts:
-        return _Facts(present=session_id != "gone", status="missing")
+        facts = _Facts(present=session_id != "gone", status="missing")
+        if session_id == "gone":
+            facts.profiles = 1  # an orphaned profile the excess target retires
+        return facts
 
     def selected_frame_is_current(self, frame: object) -> bool:
         return True
