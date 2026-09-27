@@ -70,3 +70,39 @@ async def test_failed_raw_persist_withholds_the_source_cursor(
         assert second.acquired == 1
     finally:
         await backend.close()
+
+
+def test_a_colon_named_failure_does_not_withhold_its_prefix_sibling(tmp_path: Path) -> None:
+    """``run.jsonl`` and ``run.jsonl:1/session.jsonl`` are different files; a
+    failure of the second must leave the first's cursor alone. Anti-vacuity:
+    indexing every colon prefix withholds ``run.jsonl`` as if it were the
+    failed file's ZIP container."""
+    import asyncio
+
+    from polylogue.config import Source as ConfigSource
+
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    plain = source_dir / "run.jsonl"
+    colon = source_dir / "run.jsonl:1" / "session.jsonl"
+    colon.parent.mkdir()
+    for path in (plain, colon):
+        path.write_text("{}\n", encoding="utf-8")
+
+    saved: list[str] = []
+
+    class _Repository:
+        async def upsert_source_file_cursor(self, path: str, **_stat: object) -> None:
+            saved.append(path)
+
+    service = AcquisitionService.__new__(AcquisitionService)
+    service.repository = _Repository()  # type: ignore[assignment]
+    cursor_state = {"failed_files": [{"path": str(colon), "error": "OSError"}]}
+    asyncio.run(
+        service._persist_source_cursors(
+            ConfigSource(name="claude-code", path=source_dir),
+            cursor_state=cursor_state,  # type: ignore[arg-type]
+        )
+    )
+    assert str(plain) in saved
+    assert str(colon) not in saved

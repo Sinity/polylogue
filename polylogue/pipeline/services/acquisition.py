@@ -109,21 +109,31 @@ class AcquisitionService:
             return
         # A failure names a physical file or a ZIP member as ``<file>:<member>``,
         # and a POSIX path may itself contain ``:``, so the first colon is not
-        # the boundary. Index every file a failure could name -- the whole
-        # string and each prefix ending before a ``:`` -- so the per-file check
-        # is one set lookup however many files failed.
+        # the boundary. Resolve each failure against the real source files once;
+        # the per-file check is then one set lookup however many files failed.
+        source_paths = list(_resolve_source_paths(source))
+        source_keys = {str(path) for path in source_paths}
         failed_paths: set[str] = set()
         failed_everything = False
         if cursor_state:
             for failure in cursor_state.get("failed_files", []):
                 raw_path = str(failure["path"])
-                failed_paths.add(raw_path)
-                failed_paths.update(raw_path[:index] for index, char in enumerate(raw_path) if char == ":")
+                if raw_path in source_keys:
+                    # A real file whose own name contains ``:``; its prefixes
+                    # are other files that did not fail.
+                    failed_paths.add(raw_path)
+                    continue
+                # A member coordinate: its container is the longest prefix,
+                # ending before a ``:``, that is a real source file.
+                containers = [raw_path[:index] for index, char in enumerate(raw_path) if char == ":"]
+                container = next((prefix for prefix in reversed(containers) if prefix in source_keys), None)
+                if container is not None:
+                    failed_paths.add(container)
             # An unscoped failure means the pass did not prove any path safe
             # to skip.  Do not turn a failed persistence/read pass into a
             # successful stat cursor for every file in the source.
             failed_everything = bool(cursor_state.get("error_count"))
-        for file_path in _resolve_source_paths(source):
+        for file_path in source_paths:
             if failed_everything or str(file_path) in failed_paths:
                 continue
             try:

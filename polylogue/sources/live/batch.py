@@ -73,6 +73,7 @@ from polylogue.core.stage_admission import admit_stage_write
 from polylogue.core.storage_faults import (
     ARCHIVE_SIDE_FAULTS,
     CAPACITY_FAULTS,
+    StorageFaultKind,
     raise_if_storage_fault,
     storage_fault_kind,
 )
@@ -717,6 +718,48 @@ class _ArchiveFullWriteResult:
     write_hold_exhausted: bool = False
 
 
+def _snapshot_fault_kinds(exc: BaseException) -> frozenset[StorageFaultKind]:
+    """The storage faults a SQLite source export may escape with.
+
+    The export first allocates its staging file in the archive, so an
+    ``OSError`` raised directly is archive-side (capacity or read-only). A
+    SQLite error translated to ``OSError`` may come from opening the source
+    database itself, where only a full archive is unambiguous.
+    """
+    if isinstance(exc.__cause__, sqlite3.Error):
+        return CAPACITY_FAULTS
+    return ARCHIVE_SIDE_FAULTS
+
+
+def _release_unwritten_publication_receipts(source_db_path: Path, records: Sequence[RawSessionRecord]) -> None:
+    """Release the blob reservations of records a storage fault left unwritten.
+
+    Best effort against storage that just failed: the first release the
+    storage refuses is reported and ends the attempt, and the fault that
+    caused it is still the one propagated.
+    """
+    from polylogue.storage.blob_publication import release_refused_publication_receipt
+
+    for record in records:
+        try:
+            release_refused_publication_receipt(
+                source_db_path,
+                record.blob_publication_receipt_id,
+                record.blob_hash or record.raw_id,
+            )
+        except Exception as exc:
+            emit(
+                "live.ingest.publication_release_failed",
+                level=ERROR,
+                outcome="error",
+                reason="storage_fault",
+                raw_id=record.raw_id,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
+            return
+
+
 @dataclass(slots=True)
 class _OpenIngestAttempt:
     """The ``ingest_attempts`` row one ``_ingest_files`` call opened, until it is finished.
@@ -732,6 +775,8 @@ class _OpenIngestAttempt:
     attempt_id: str | None = None
     #: Whether the start write returned, so the row is known to exist.
     started: bool = False
+    #: Whether the final close was submitted (it may complete detached).
+    finishing: bool = False
     finished: bool = False
     scope: ExitStack = field(default_factory=ExitStack)
 
@@ -1008,7 +1053,13 @@ class LiveBatchProcessor:
                         # exists only if that write was already admitted (the
                         # coordinator then finishes it detached); a queued
                         # start never commits. Say which case was observed.
-                        reason="cancelled" if attempt.started else "cancelled_before_start_confirmed",
+                        reason=(
+                            "cancelled_during_finish"
+                            if attempt.finishing
+                            else "cancelled"
+                            if attempt.started
+                            else "cancelled_before_start_confirmed"
+                        ),
                         attempt_id=attempt.attempt_id,
                     )
                 raise
@@ -1844,6 +1895,10 @@ class LiveBatchProcessor:
                 evidence_ref="batch:per_item_failure_aggregate",
                 diagnostic=f"{len(retry_paths)} source item(s) failed without a batch-level exception",
             )
+        if open_attempt is not None:
+            # A cancellation from here on may race a close the coordinator
+            # finishes detached; the cancellation event says so.
+            open_attempt.finishing = True
         await self._run_ops_write(
             "attempt_finish",
             self._cursor.finish_ingest_attempt,
@@ -3201,7 +3256,7 @@ class LiveBatchProcessor:
                         raise
                     # The export stages into the archive's blob area; a full
                     # archive is not this database's failure.
-                    raise_if_storage_fault(error, kinds=CAPACITY_FAULTS)
+                    raise_if_storage_fault(error, kinds=_snapshot_fault_kinds(error))
                     logger.exception("antigravity: trajectory SQLite acquisition failed: %s", path)
                     failed.append(path)
                     continue
@@ -3253,7 +3308,7 @@ class LiveBatchProcessor:
                     # full archive refuses it for every database alike. A
                     # read-only or corrupt report can come from the source
                     # database itself, which stays this file's failure.
-                    raise_if_storage_fault(exc, kinds=CAPACITY_FAULTS)
+                    raise_if_storage_fault(exc, kinds=_snapshot_fault_kinds(exc))
                     failed.append(path)
                     continue
                 source_payload_read_bytes += blob_size
@@ -3317,7 +3372,7 @@ class LiveBatchProcessor:
                     # full archive refuses it for every database alike. A
                     # read-only or corrupt report can come from the source
                     # database itself, which stays this file's failure.
-                    raise_if_storage_fault(exc, kinds=CAPACITY_FAULTS)
+                    raise_if_storage_fault(exc, kinds=_snapshot_fault_kinds(exc))
                     failed.append(path)
                     continue
                 source_payload_read_bytes += blob_size
@@ -4767,6 +4822,14 @@ class LiveBatchProcessor:
                                     error_type=type(reset_exc).__name__,
                                     error_detail=str(reset_exc),
                                 )
+                        # The flush already reserved receipts for this record
+                        # and the ones after it; nothing will consume them
+                        # now, and a retry reserves new ones, so each outage
+                        # retry would strand another GC-immune reservation.
+                        _release_unwritten_publication_receipts(
+                            archive.source_db_path,
+                            records[record_index:] if source_raw_id is None else records[record_index + 1 :],
+                        )
                         raise_if_storage_fault(exc)
                     if provider is not None and source_raw_id is not None:
                         preserve_existing_failure_evidence = False
