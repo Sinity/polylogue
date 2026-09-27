@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from polylogue.operations.intake_adapters import DaemonIntakeService
+import pytest
+
+from polylogue.operations.intake_adapters import ColdBuildSettlement, DaemonIntakeService
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cold_build import ColdBuildGeneration, active_index_generation_is_empty
 
@@ -28,6 +31,9 @@ class _ScriptedDispatcher:
         result = self._script[self.calls] if self.calls < len(self._script) else _Pass(False)
         self.calls += 1
         return result
+
+    def schedulable_classes(self) -> tuple[()]:
+        return ()
 
 
 async def _run_passes(script: list[_Pass], fired: list[int]) -> _ScriptedDispatcher:
@@ -168,29 +174,63 @@ def test_durable_pending_retry_blocks_promotion_after_quiescent_pass() -> None:
     assert asyncio.run(scenario()) == [3]
 
 
-def test_failed_promotion_keeps_callback_for_retry() -> None:
-    """A failed readiness pass leaves the same candidate eligible to settle."""
+@pytest.mark.uses_real_clock("the service retry is due on the asyncio monotonic clock")
+def test_retryable_settlement_retries_in_the_same_service() -> None:
+    """An escaped callback or old one-shot cleanup makes this test red."""
 
     async def scenario() -> int:
         dispatcher = _ScriptedDispatcher([_Pass(True), _Pass(False), _Pass(False)])
         calls = 0
 
-        def drained() -> None:
+        def drained() -> ColdBuildSettlement:
             nonlocal calls
             calls += 1
             if calls == 1:
-                raise RuntimeError("readiness failed")
+                return ColdBuildSettlement("retryable", "sqlite_busy", calls, time.monotonic() + 0.05)
+            return ColdBuildSettlement("complete", attempts=calls)
 
         service = DaemonIntakeService(cast(Any, dispatcher), idle_delay_s=0.05, on_backlog_drained=drained)
-        try:
-            await service.run()
-        except RuntimeError:
-            pass
-        else:
-            raise AssertionError("readiness failure was swallowed")
-        assert service._on_backlog_drained is drained
         task = asyncio.create_task(service.run())
         try:
+            async with asyncio.timeout(1):
+                while calls < 2:
+                    await asyncio.sleep(0.01)
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        return calls
+
+    assert asyncio.run(scenario()) == 2
+
+
+def test_blocked_settlement_waits_for_new_source_revision() -> None:
+    async def scenario() -> int:
+        dispatcher = _ScriptedDispatcher([_Pass(True), _Pass(False)])
+        revision = 0
+        calls = 0
+
+        def drained() -> ColdBuildSettlement:
+            nonlocal calls
+            calls += 1
+            return ColdBuildSettlement("blocked", "source_integrity", calls)
+
+        service = DaemonIntakeService(
+            cast(Any, dispatcher),
+            idle_delay_s=0.05,
+            on_backlog_drained=drained,
+            settlement_revision=lambda: (revision,),
+        )
+        task = asyncio.create_task(service.run())
+        try:
+            async with asyncio.timeout(1):
+                while calls < 1:
+                    await asyncio.sleep(0.01)
+            await asyncio.sleep(0.16)
+            assert calls == 1
+            revision += 1
             async with asyncio.timeout(1):
                 while calls < 2:
                     await asyncio.sleep(0.01)

@@ -235,11 +235,18 @@ def publish_pending_production_baseline(archive_root: Path, baseline: Production
         atomic_replace_receipt(directory_fd, _PENDING_FILE, _json(baseline.as_dict()))
 
 
-def clear_pending_production_baseline(archive_root: Path, baseline: ProductionSourceBaseline) -> None:
+def clear_pending_production_baseline(
+    archive_root: Path, baseline: ProductionSourceBaseline, *, allow_missing: bool = False
+) -> None:
     with existing_maintenance_receipt_directory(archive_root, _PENDING_DIR) as directory_fd:
         if directory_fd is None:
             raise ProductionBaselineError("pending production source baseline disappeared before promotion")
         raw = read_optional_receipt(directory_fd, _PENDING_FILE)
+        if raw is None and allow_missing:
+            # An earlier unlink may have succeeded before its directory fsync
+            # failed. Re-establish that durability boundary on reconciliation.
+            os.fsync(directory_fd)
+            return
         if raw is None or ProductionSourceBaseline.from_dict(json.loads(raw)).digest != baseline.digest:
             raise ProductionBaselineError("pending production source baseline changed before promotion")
         os.unlink(_PENDING_FILE, dir_fd=directory_fd)

@@ -11,7 +11,9 @@ pass, writing its index rows into a generation created by
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
+import os
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -100,6 +102,151 @@ def _ingest(archive_root: Path, root: Path, name: str, native_id: str) -> None:
     (root / name).write_bytes(_codex_session(native_id, native_id))
     metrics = asyncio.run(_processor(archive_root, root).ingest_files([root / name], emit_event=False))
     assert metrics.succeeded_file_count == 1, metrics
+
+
+@pytest.mark.parametrize("after_unlink", [False, True])
+def test_receipt_tail_reconciles_active_generation_without_repromotion(
+    tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch, after_unlink: bool
+) -> None:
+    from polylogue.sources.live import production_baseline
+    from polylogue.storage.index_generation import IndexGenerationStore
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    _ingest(tmp_path, root, "one.jsonl", "receipt-tail")
+    original_clear = production_baseline.clear_pending_production_baseline
+    original_promote = IndexGenerationStore.promote
+    promotions = 0
+    clears = 0
+
+    def count_promote(self: IndexGenerationStore, generation: Any) -> Any:
+        nonlocal promotions
+        promotions += 1
+        return original_promote(self, generation)
+
+    def fail_clear_once(archive_root: Path, baseline: Any, *, allow_missing: bool = False) -> None:
+        nonlocal clears
+        clears += 1
+        if clears == 1:
+            if after_unlink:
+                original_clear(archive_root, baseline)
+            raise OSError(errno.EBUSY, "receipt cleanup interrupted")
+        original_clear(archive_root, baseline, allow_missing=allow_missing)
+
+    monkeypatch.setattr(IndexGenerationStore, "promote", count_promote)
+    monkeypatch.setattr(production_baseline, "clear_pending_production_baseline", fail_clear_once)
+    with pytest.raises(OSError, match="receipt cleanup interrupted"):
+        cold_build.promote()
+    assert cold_build.settled
+    assert not cold_build.publication_complete
+    assert _active_session_count(tmp_path) == 1
+    assert cold_build.promote().generation_id == cold_build.generation_id
+    assert cold_build.publication_complete
+    assert promotions == 1
+    assert clears == 2
+
+
+def test_pointer_swapped_before_metadata_failure_recovers_once(
+    tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.index_generation import IndexGenerationStore
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    _ingest(tmp_path, root, "one.jsonl", "pointer-tail")
+    original_write = IndexGenerationStore._write
+    original_promote = IndexGenerationStore.promote
+    writes_failed = 0
+    promotions = 0
+
+    def fail_active_write_once(self: IndexGenerationStore, generation: Any) -> None:
+        nonlocal writes_failed
+        if generation.generation_id == cold_build.generation_id and generation.state == "active" and not writes_failed:
+            writes_failed += 1
+            raise OSError(errno.EBUSY, "active metadata temporarily busy")
+        original_write(self, generation)
+
+    def count_promote(self: IndexGenerationStore, generation: Any) -> Any:
+        nonlocal promotions
+        promotions += 1
+        return original_promote(self, generation)
+
+    monkeypatch.setattr(IndexGenerationStore, "_write", fail_active_write_once)
+    monkeypatch.setattr(IndexGenerationStore, "promote", count_promote)
+    assert cold_build.promote().state == "active"
+    assert cold_build.publication_complete
+    assert _active_session_count(tmp_path) == 1
+    assert writes_failed == 1
+    assert promotions == 1
+
+
+def test_blocked_settlement_revision_tracks_receipt_and_source_evidence(
+    tmp_path: Path, cold_build: ColdBuildGeneration
+) -> None:
+    from polylogue.storage.archive_identity import MAINTENANCE_STATE_DIRNAME
+
+    initial = cold_build.settlement_evidence_revision()
+    receipt = tmp_path / MAINTENANCE_STATE_DIRNAME / "production-source-baseline" / "pending.json"
+    old_mtime = receipt.stat().st_mtime_ns
+    os.utime(receipt, ns=(old_mtime, old_mtime + 1_000_000))
+    changed = cold_build.settlement_evidence_revision()
+    assert changed != initial
+    source_db = tmp_path / "source.db"
+    old_mtime = source_db.stat().st_mtime_ns
+    os.utime(source_db, ns=(old_mtime, old_mtime + 1_000_000))
+    assert cold_build.settlement_evidence_revision() != changed
+    repaired_root = tmp_path / "repaired-source"
+    source = WatchSource("repaired", repaired_root, required=True)
+    missing = cold_build.settlement_evidence_revision((source,))
+    repaired_root.mkdir()
+    assert cold_build.settlement_evidence_revision((source,)) != missing
+
+
+def test_blocked_settlement_revision_survives_unavailable_evidence(
+    tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.archive_identity import MAINTENANCE_STATE_DIRNAME
+
+    receipt = tmp_path / MAINTENANCE_STATE_DIRNAME / "production-source-baseline" / "pending.json"
+    original_stat = Path.stat
+    error: OSError | None = PermissionError(errno.EACCES, "receipt unavailable")
+
+    class OtherPermissionError(PermissionError):
+        pass
+
+    def stat_with_fault(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+        if path == receipt and error is not None:
+            raise error
+        return original_stat(path, *args, **kwargs)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(Path, "stat", stat_with_fault)
+        unavailable = cold_build.settlement_evidence_revision()
+        assert cold_build.settlement_evidence_revision() == unavailable
+        error = OtherPermissionError(errno.EACCES, "receipt unavailable")
+        assert cold_build.settlement_evidence_revision() != unavailable
+        error = OSError(errno.EIO, "receipt unavailable")
+        assert cold_build.settlement_evidence_revision() != unavailable
+        error = None
+        assert cold_build.settlement_evidence_revision() != unavailable
+
+    cold_build.settlement_reason = "capacity_unavailable"
+    original_statvfs = os.statvfs
+    capacity_error: OSError | None = PermissionError(errno.EACCES, "capacity unavailable")
+
+    def statvfs_with_fault(path: os.PathLike[str] | str) -> os.statvfs_result:
+        if capacity_error is not None:
+            raise capacity_error
+        return original_statvfs(path)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(os, "statvfs", statvfs_with_fault)
+        unavailable = cold_build.settlement_evidence_revision()
+        assert cold_build.settlement_evidence_revision() == unavailable
+        capacity_error = OSError(errno.EIO, "capacity unavailable")
+        assert cold_build.settlement_evidence_revision() != unavailable
+        capacity_error = None
+        assert cold_build.settlement_evidence_revision() != unavailable
 
 
 def test_the_live_pass_writes_into_the_owned_generation_not_the_active_one(
@@ -522,6 +669,68 @@ def test_required_missing_source_blocks_promotion(tmp_path: Path) -> None:
             generation.promote()
     finally:
         generation.discard()
+
+
+def test_faulted_baseline_refresh_retains_prior_accepted_revisions(tmp_path: Path) -> None:
+    from polylogue.sources.live.production_baseline import load_pending_production_baseline
+
+    archive = _fresh_archive_root(tmp_path)
+    first_root = tmp_path / "first"
+    first_root.mkdir()
+    first = first_root / "first.jsonl"
+    first.write_bytes(_codex_session("first", "first"))
+    second_root = tmp_path / "second"
+    sources = (
+        WatchSource("codex", first_root, suffixes=(".jsonl",), required=True),
+        WatchSource("codex", second_root, suffixes=(".jsonl",), required=True),
+    )
+    generation = ColdBuildGeneration.begin(archive, reason="test", sources=sources)
+    register_cold_build_generation(generation)
+    try:
+        assert any(row.disposition == "fault" for row in generation.source_baseline.decisions)
+        assert (
+            asyncio.run(_processor(archive, first_root).ingest_files([first], emit_event=False)).succeeded_file_count
+            == 1
+        )
+        first.unlink()
+        second_root.mkdir()
+        second = second_root / "second.jsonl"
+        second.write_bytes(_codex_session("second", "second"))
+        assert (
+            asyncio.run(_processor(archive, second_root).ingest_files([second], emit_event=False)).succeeded_file_count
+            == 1
+        )
+
+        assert generation.refresh_faulted_baseline(sources)
+        assert not generation.refresh_faulted_baseline(sources)
+        assert not any(row.disposition == "fault" for row in generation.source_baseline.decisions)
+        assert {row.path for row in generation.source_baseline.accepted} == {str(first), str(second)}
+        pending = load_pending_production_baseline(archive)
+        assert pending is not None and pending.digest == generation.source_baseline.digest
+        bound = json.loads((generation.generation_root / "source-baseline.json").read_text())
+        assert bound["baseline"]["digest"] == pending.digest
+        assert generation.promote().state == "active"
+        assert _active_session_count(archive) == 2
+    finally:
+        clear_cold_build_generation()
+        if not generation.settled:
+            generation.discard()
+
+
+def test_next_build_reclaims_abandoned_inactive_candidate_before_capacity(tmp_path: Path) -> None:
+    archive = _fresh_archive_root(tmp_path)
+    sources = (WatchSource("fixture", tmp_path / "absent-source"),)
+    abandoned = ColdBuildGeneration.begin(archive, reason="first", sources=sources)
+    abandoned_root = abandoned.generation_root
+    assert abandoned_root.exists()
+
+    replacement = ColdBuildGeneration.begin(archive, reason="restart", sources=sources)
+    try:
+        assert not abandoned_root.exists()
+        assert replacement.generation_root.exists()
+        assert replacement.generation_id != abandoned.generation_id
+    finally:
+        replacement.discard()
 
 
 def test_discarded_generation_carries_deleted_source_into_retry(tmp_path: Path) -> None:

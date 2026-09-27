@@ -9,6 +9,7 @@ focused tests.
 from polylogue.operations.intake_adapters import (
     CallbackIntakeAdapter,
     ColdBuildGeneration,
+    ColdBuildSettlement,
     DaemonIntakeContext,
     DaemonIntakeService,
     FileIntakeAdapter,
@@ -17,6 +18,7 @@ from polylogue.operations.intake_adapters import (
     SubUnitHaltPolicy,
     active_index_generation_is_empty,
     build_intake_adapters,
+    classify_cold_build_settlement_failure,
     clear_cold_build_generation,
     discover_pending_raw_ids,
     register_cold_build_generation,
@@ -24,6 +26,7 @@ from polylogue.operations.intake_adapters import (
 
 __all__ = [
     "ColdBuildGeneration",
+    "ColdBuildSettlement",
     "DaemonIntakeContext",
     "DaemonIntakeService",
     "FileIntakeAdapter",
@@ -34,6 +37,7 @@ __all__ = [
     "discover_pending_raw_ids",
     "CallbackIntakeAdapter",
     "build_intake_adapters",
+    "classify_cold_build_settlement_failure",
     "clear_cold_build_generation",
     "register_cold_build_generation",
 ]
