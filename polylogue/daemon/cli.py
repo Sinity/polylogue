@@ -970,7 +970,17 @@ async def _periodic_convergence_check(
     async def once() -> None:
         await _retry_convergence_debt_once(db)
         if raw_retention_callback is not None:
-            await raw_retention_callback()
+            try:
+                await raw_retention_callback()
+            except Exception as exc:
+                emit(
+                    "daemon.raw_retention.retry_failed",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="retention_retry_failed",
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
         await fts_owner.converge()
         if session_profile_callback is not None:
             await session_profile_callback(None)

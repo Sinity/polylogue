@@ -6220,32 +6220,39 @@ class LiveBatchProcessor:
                         deferred=False,
                     )
                     return
-                result = compact_paths_superseded_raw_snapshots(
-                    conn,
-                    scoped_paths,
-                    limit_per_path=RAW_RETENTION_LIMIT_PER_PATH,
-                    # A recorded backlog can predate this watcher process.
-                    # The active-index authority still decides which raw ids
-                    # are eligible, so use the full recorded path history on
-                    # its retry instead of declaring older work complete.
-                    min_acquired_at=None if backlog_paths else self._raw_compaction_min_acquired_at,
-                    protected_raw_ids=retention_authority.protected_raw_ids,
-                    eligible_raw_ids=retention_authority.eligible_raw_ids,
-                    index_conn=index_conn,
-                )
+                backlog_set = set(backlog_paths)
+                current_paths = [path for path in scoped_paths if path not in backlog_set]
+                results = [
+                    compact_paths_superseded_raw_snapshots(
+                        conn,
+                        selected_paths,
+                        limit_per_path=RAW_RETENTION_LIMIT_PER_PATH,
+                        # Only recorded backlog may predate this watcher.
+                        min_acquired_at=min_acquired_at,
+                        protected_raw_ids=retention_authority.protected_raw_ids,
+                        eligible_raw_ids=retention_authority.eligible_raw_ids,
+                        index_conn=index_conn,
+                    )
+                    for selected_paths, min_acquired_at in (
+                        (current_paths, self._raw_compaction_min_acquired_at),
+                        (backlog_paths, None),
+                    )
+                    if selected_paths
+                ]
         finally:
             lease.close()
-        if result.errors:
+        errors = tuple(error for result in results for error in result.errors)
+        if errors:
             # Blob-unlink errors only. Their subjects are already unreferenced,
             # so the ordinary blob-GC owner collects them; routing them into
             # retention debt would file work under the wrong owner and leave a
             # row that no retention pass can ever clear.
-            logger.warning("live.watcher: raw snapshot compaction errors: %s", "; ".join(result.errors[:3]))
+            logger.warning("live.watcher: raw snapshot compaction errors: %s", "; ".join(errors[:3]))
         # A bound that truncates silently reports a finished answer it did not
         # compute. Name the bound in the debt row instead.
         self._record_raw_retention_outcome(
             scoped_paths,
-            residual={Path(path) for path in result.residual_source_paths},
+            residual={Path(path) for result in results for path in result.residual_source_paths},
             error=(
                 f"raw retention bounded at {RAW_RETENTION_LIMIT_PER_PATH} superseded snapshots "
                 "per source path per pass; backlog retained"

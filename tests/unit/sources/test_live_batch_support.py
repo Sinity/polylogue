@@ -9061,6 +9061,43 @@ def test_raw_retention_retries_promoted_backlog_after_watcher_restart(
     assert _retention_debt(restarted._cursor) == []
 
 
+def test_raw_retention_backlog_does_not_widen_unrelated_batch_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Historical retention applies only to the path carrying recorded debt."""
+    from polylogue.sources.live import cold_build
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    bootstrap_archive_root(tmp_path)
+    root = tmp_path / "sessions"
+    root.mkdir()
+    current_path = root / "current.jsonl"
+    backlog_path = root / "backlog.jsonl"
+    for path in (current_path, backlog_path):
+        path.write_text("{}\n", encoding="utf-8")
+    first = _retention_processor(tmp_path, root)
+    old_current = _seed_superseded_raw_snapshots(first, tmp_path / "source.db", current_path, count=2, prefix=100)
+    old_backlog = _seed_superseded_raw_snapshots(first, tmp_path / "source.db", backlog_path, count=2, prefix=200)
+    monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root: object())
+    first._compact_superseded_raw_snapshots([backlog_path])
+    monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root: None)
+    _grant_full_retention_authority(monkeypatch, [*old_current, *old_backlog])
+    with closing(sqlite3.connect(tmp_path / "ops.db")) as conn:
+        conn.execute(
+            "UPDATE convergence_debt SET next_retry_at = ? WHERE stage = ?",
+            ("2000-01-01T00:00:00+00:00", RAW_RETENTION_STAGE),
+        )
+        conn.commit()
+    restarted = _retention_processor(tmp_path, root)
+    restarted._raw_compaction_min_acquired_at = "9999-01-01T00:00:00+00:00"
+    restarted._compact_superseded_raw_snapshots([current_path])
+
+    with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+        counts = dict(conn.execute("SELECT source_path, COUNT(*) FROM raw_sessions GROUP BY source_path"))
+    assert counts == {str(current_path): 3, str(backlog_path): 1}
+    assert _retention_debt(restarted._cursor) == []
+
+
 def test_deferred_cursor_records_when_the_tail_cannot_be_reopened(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

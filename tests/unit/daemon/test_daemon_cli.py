@@ -702,9 +702,11 @@ def test_periodic_wal_checkpoint_targets_archive_root_tiers(
     ]
 
 
+@pytest.mark.parametrize("raw_failure", (False, True))
 def test_periodic_convergence_check_waits_for_watcher_registration(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    raw_failure: bool,
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
 
@@ -731,6 +733,8 @@ def test_periodic_convergence_check_waits_for_watcher_registration(
 
     async def fake_raw_retention() -> None:
         raw_retention_calls.append(None)
+        if raw_failure:
+            raise sqlite3.OperationalError("retention unavailable")
 
     async def exercise() -> None:
         watcher_registered = asyncio.Event()
@@ -760,12 +764,15 @@ def test_periodic_convergence_check_waits_for_watcher_registration(
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    asyncio.run(exercise())
+    with capture() as records:
+        asyncio.run(exercise())
 
     assert drains == [db]
     assert fts_scopes == [None]
     assert profile_scopes == [None]
     assert raw_retention_calls == [None]
+    failures = [record for record in records if record["event"] == "daemon.raw_retention.retry_failed"]
+    assert len(failures) == int(raw_failure)
 
 
 def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -> None:
