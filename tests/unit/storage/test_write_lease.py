@@ -741,6 +741,54 @@ def test_a_granted_thread_may_bind_and_write() -> None:
         assert threading.get_ident() in lease.authorized_threads()
 
 
+def test_a_reused_thread_ident_does_not_inherit_a_retired_workers_authority() -> None:
+    """Authority belongs to the bound thread object, not its reusable ident.
+
+    OS thread idents are recycled once a thread exits. A granted worker that
+    finishes during a long hold leaves its ident in ``bound_thread_ids``; a
+    later inheriting thread that receives the same ident used to pass
+    ``require_write_lease`` without any grant (polylogue-1oa7o residual 3).
+
+    Anti-vacuity: restore the ident-only membership check in
+    ``require_write_lease`` and the impostor below is admitted.
+    """
+    from unittest.mock import patch
+
+    from polylogue.storage.sqlite.write_lease import bind_write_lease_thread, grant_write_lease_thread
+
+    observed: dict[str, object] = {}
+
+    with arm_write_lease_enforcement(), write_lease("daemon.writer") as lease:
+        grant = grant_write_lease_thread()
+
+        def granted() -> None:
+            bind_write_lease_thread(grant)
+            observed["retired_ident"] = threading.get_ident()
+
+        retired = threading.Thread(target=granted, name="retired-granted-worker")
+        retired.start()
+        retired.join()
+        retired_ident = observed["retired_ident"]
+        assert retired_ident in lease.authorized_threads()
+
+        def impostor() -> None:
+            with patch.object(threading, "get_ident", return_value=retired_ident):
+                try:
+                    require_write_lease("write from a thread that reused a retired ident")
+                except UnleasedWriteError:
+                    observed["outcome"] = "refused"
+                else:
+                    observed["outcome"] = "admitted"
+                finally:
+                    threading._active.pop(retired_ident, None)  # type: ignore[attr-defined]
+
+        thread = threading.Thread(target=impostor, name="ident-reuse-impostor")
+        thread.start()
+        thread.join()
+
+    assert observed["outcome"] == "refused"
+
+
 def test_a_grant_authorizes_exactly_one_thread() -> None:
     from polylogue.storage.sqlite.write_lease import bind_write_lease_thread, grant_write_lease_thread
 

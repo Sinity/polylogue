@@ -1090,7 +1090,10 @@ defense-in-depth and never proves a publisher is dead.
 1. **Candidate and namespace check.** Enumerate only a readable blob
    namespace and retain its `st_dev`/`st_ino` identity for the prospective
    generation. An unreadable root or shard blocks the pass. A pending intent
-   may resume only when that same namespace identity is still mounted.
+   may resume only when that same namespace identity is still mounted. An
+   intent whose namespace marker has changed can never execute, so the next
+   pass terminalizes it with no unlink (its members are recorded `failed`)
+   and plans afresh from current referents; no operator step is involved.
 2. **Current referents and reservations.** Resolve every current source owner,
    source `blob_refs` referent, rekeyable legacy hook owner, and active index
    attachment under the canonical descriptor. Resolve publication reservations

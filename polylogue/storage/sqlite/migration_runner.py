@@ -1264,110 +1264,6 @@ def validate_full_evidence_backup_for_adopted_audit_restore(
     return manifest_path, receipt_path
 
 
-def _authenticated_backup_audit_semantic_sha256(backup_manifest: Path, *, audit_path: Path) -> str:
-    """Read the pre-migration audit digest from a receipt-authenticated backup image."""
-
-    manifest_path = _backup_manifest_path(backup_manifest)
-    if not manifest_path.exists() and not manifest_path.is_symlink():
-        raise MigrationError(f"pre-continuity binding requires an existing backup manifest; missing {manifest_path}")
-    backup_root = manifest_path.parent
-    _require_real_backup_directory(backup_root, label="backup root")
-    _require_regular_backup_artifact(manifest_path, backup_root=backup_root, label="backup manifest")
-    manifest = _load_json(manifest_path, label="manifest")
-    if manifest.get("format") != "polylogue-backup-v1" or "audit.db" not in _json_str_list(
-        manifest.get("included_tiers")
-    ):
-        raise MigrationError("pre-continuity binding requires a backup containing audit.db")
-    receipt_path = _receipt_path(manifest_path)
-    _require_regular_backup_artifact(receipt_path, backup_root=backup_root, label="backup verification receipt")
-    receipt = _load_json(receipt_path, label="verification receipt")
-    if receipt.get("format") != VERIFICATION_RECEIPT_FORMAT or receipt.get("verdict") != "success":
-        raise MigrationError("pre-continuity binding requires a successful backup verification receipt")
-    try:
-        verify_verification_receipt(receipt, tier="audit", live_tier_path=audit_path)
-    except BackupAttestationError as exc:
-        raise MigrationError(f"pre-continuity binding backup authentication failed: {exc}") from exc
-    artifact_inventory = _cached_backup_artifact_inventory(backup_root)
-    file_evidence = {str(item["path"]): item for item in artifact_inventory if item.get("type") == "file"}
-    manifest_evidence = file_evidence.get("manifest.json", {})
-    if _json_int(receipt.get("manifest_size_bytes")) != _json_int(manifest_evidence.get("size_bytes")):
-        raise MigrationError("pre-continuity binding receipt does not match manifest size")
-    if receipt.get("manifest_sha256") != manifest_evidence.get("sha256"):
-        raise MigrationError("pre-continuity binding receipt does not match manifest bytes")
-    if receipt.get("artifact_inventory") != artifact_inventory:
-        raise MigrationError("pre-continuity binding receipt does not match the closed artifact inventory")
-    artifacts = _validated_receipt_artifacts(
-        backup_root,
-        manifest,
-        receipt,
-        target_tier="audit",
-        live_tier_path=None,
-        file_evidence=file_evidence,
-    )
-    if "audit" not in artifacts:
-        raise MigrationError("pre-continuity binding backup does not contain an audit artifact")
-    _validate_blob_inventory(backup_root, manifest, receipt, file_evidence=file_evidence)
-    from polylogue.storage.sqlite.audit_continuity import audit_semantic_sha256
-
-    return audit_semantic_sha256(backup_root / "audit.db")
-
-
-def _bind_populated_precontinuity_audit(conn: sqlite3.Connection, *, backup_manifest: Path | None) -> None:
-    """Bind a legacy populated audit journal once both published schema halves exist."""
-
-    archive_root = _connection_main_path(conn).parent
-    # Durable tier migrations also run against deliberately partial archives:
-    # source-only repair images, user-tier fixtures, and train scratch roots.
-    # Pre-continuity binding is meaningful only after both halves exist.  A
-    # present-but-invalid pair still reaches the verified coordinator below
-    # and fails closed; absence is a legitimate non-applicable state here.
-    entries: dict[str, os.stat_result | None] = {}
-    for name in ("source.db", "audit.db"):
-        path = archive_root / name
-        try:
-            metadata = path.lstat()
-        except FileNotFoundError:
-            entries[name] = None
-            continue
-        except OSError as exc:
-            raise MigrationError(f"cannot inspect pre-continuity {name}: {path}") from exc
-        if not stat.S_ISREG(metadata.st_mode):
-            raise MigrationError(f"invalid pre-continuity {name} entry: {path}")
-        entries[name] = metadata
-    if entries["source.db"] is None or entries["audit.db"] is None:
-        return
-    from polylogue.storage.sqlite.audit_continuity import (
-        AuditContinuityCoordinator,
-        AuditContinuityError,
-        audit_semantic_sha256,
-    )
-
-    coordinator = AuditContinuityCoordinator(archive_root)
-    try:
-        if not coordinator.needs_precontinuity_binding():
-            return
-    except AuditContinuityError as exc:
-        raise MigrationError("cannot inspect pre-continuity audit binding state") from exc
-    if backup_manifest is None:
-        raise MigrationError("populated pre-continuity audit journal requires a verified backup for continuity binding")
-    audit_path = archive_root / "audit.db"
-    expected = _authenticated_backup_audit_semantic_sha256(backup_manifest, audit_path=audit_path)
-    try:
-        actual = audit_semantic_sha256(audit_path)
-    except AuditContinuityError as exc:
-        raise MigrationError("cannot hash populated audit journal for continuity binding") from exc
-    if actual != expected:
-        raise MigrationError("populated audit journal differs from its authenticated pre-migration backup")
-    try:
-        coordinator.bind_precontinuity_audit(
-            mutation_id=f"precontinuity-audit:{expected}",
-            now_ms=int(time.time() * 1000),
-            audit_semantic_sha256=expected,
-        )
-    except AuditContinuityError as exc:
-        raise MigrationError("cannot bind populated pre-continuity audit journal") from exc
-
-
 def _validate_source_continuity_rebind_delta(
     backup_path: Path,
     live_path: Path,
@@ -1611,7 +1507,6 @@ def migrate_archive_tier(
     # computed here is re-derived from a fresh read once the lock is held.
     precheck_version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
     if precheck_version == target_version:
-        _bind_populated_precontinuity_audit(conn, backup_manifest=backup_manifest)
         return MigrationResult(
             tier=tier,
             from_version=precheck_version,
@@ -1779,7 +1674,6 @@ def migrate_archive_tier(
         conn.commit()
         if foreign_keys_were_on:
             conn.execute("PRAGMA foreign_keys = ON")
-    _bind_populated_precontinuity_audit(conn, backup_manifest=backup_manifest)
     return MigrationResult(
         tier=tier,
         from_version=start_version,
@@ -1812,6 +1706,25 @@ class DurableFailureClassification(StrEnum):
 
 class DurableChangeTrainError(MigrationError):
     """Raised when durable change-train authority or evidence is invalid."""
+
+
+class DurableTierNewerThanRuntimeError(DurableChangeTrainError):
+    """A durable tier stands at a schema version this runtime cannot read.
+
+    Only a newer Polylogue release can have written it. Opening it is refused
+    outright rather than parked: every durable reader and writer would be
+    operating on a schema it does not know (polylogue-w6nrl).
+    """
+
+    def __init__(self, tier: ArchiveTier, *, live_version: int, runtime_version: int) -> None:
+        super().__init__(
+            f"{tier.value}.db is at schema v{live_version}, newer than this runtime supports "
+            f"(v{runtime_version}); install the Polylogue release that wrote it. "
+            "Do not move the database aside."
+        )
+        self.tier = tier
+        self.live_version = live_version
+        self.runtime_version = runtime_version
 
 
 class DurableChangeTrainApplyError(DurableChangeTrainError):
@@ -4284,6 +4197,7 @@ __all__ = [
     "DurableChangeTrain",
     "DurableChangeTrainApplyError",
     "DurableChangeTrainError",
+    "DurableTierNewerThanRuntimeError",
     "DurableChangeTrainRecoveryError",
     "DurableChangeTrainState",
     "DurableDatabaseEvidence",

@@ -566,3 +566,61 @@ def test_repair_message_fts_defers_to_a_caller_transaction(test_conn: sqlite3.Co
     assert test_conn.in_transaction
     for session_id in session_ids:
         assert session_partition_is_valid_sync(test_conn, session_id)
+
+
+def test_in_transaction_partition_replace_never_hashes_the_partition_input(
+    test_conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inside one transaction a replace reads each partition's text zero times.
+
+    ``input_for`` reads and hashes every block's ``search_text``. Its only use
+    in a replace is to detect drift between a read outside the transaction and
+    the write inside it; a batch repair holds one transaction across both, so
+    the rebuild route computed it twice per session for no evidence
+    (polylogue-av5j1). The replaced rows are still exactly valid.
+
+    Anti-vacuity: route ``replace_fts_partition_sync`` back through
+    ``publish_partition(conn, adapter.input_for(...))`` and the count becomes
+    two per session.
+    """
+    restore_fts_triggers_sync(test_conn)
+    session_ids = _seed_repair_batch(test_conn, 3)
+    for session_id in session_ids:
+        test_conn.execute(
+            "UPDATE messages_fts_identity SET source_hash = ? WHERE block_id LIKE ?",
+            (b"drift" + b"\x00" * 27, f"{session_id}:%"),
+        )
+    test_conn.commit()
+
+    calls: list[str] = []
+    real_input_for = FtsDerivationAdapter.input_for
+
+    def counting_input_for(self: FtsDerivationAdapter, conn: sqlite3.Connection, key: str):  # type: ignore[no-untyped-def]
+        calls.append(key)
+        return real_input_for(self, conn, key)
+
+    monkeypatch.setattr(FtsDerivationAdapter, "input_for", counting_input_for)
+    repair_message_fts_index_sync(test_conn, session_ids, record_exact_snapshot=False)
+    monkeypatch.undo()
+
+    assert calls == []
+    for session_id in session_ids:
+        assert session_partition_is_valid_sync(test_conn, session_id)
+
+
+def test_partition_replace_outside_a_transaction_still_revalidates(test_conn: sqlite3.Connection) -> None:
+    """A replace computed outside a transaction still refuses a drifted input.
+
+    Anti-vacuity: dropping the ``current != computed`` check from
+    ``publish_partition`` publishes the stale projection and returns True.
+    """
+    restore_fts_triggers_sync(test_conn)
+    session_ids = _seed_repair_batch(test_conn, 1)
+    test_conn.commit()
+    adapter = FtsDerivationAdapter()
+    stale = adapter.input_for(test_conn, session_ids[0])
+    test_conn.execute("UPDATE blocks SET text = 'drifted after the read' WHERE session_id = ?", (session_ids[0],))
+    test_conn.commit()
+
+    assert adapter.publish_partition(test_conn, stale) is False
+    assert not test_conn.in_transaction

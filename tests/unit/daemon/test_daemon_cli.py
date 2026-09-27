@@ -1783,11 +1783,11 @@ def test_run_daemon_services_parks_operation_recovery_on_audit_schema_mismatch(
     # kept running but no longer produced the condition it names. Derive the
     # skew from the declaration instead.
     #
-    # The skew is deliberately backward. A FORWARD audit version is refused
-    # earlier and on purpose by the durable change train's forward-admission
-    # check ("lacks released train evidence"), which is a different contract
-    # from the one under test here; a backward version is the plain
-    # version-mismatch this startup gate exists to park.
+    # The skew is deliberately backward. A FORWARD audit version is a typed
+    # startup refusal (see
+    # test_forward_versioned_durable_tier_is_a_typed_startup_refusal), a
+    # different contract from the one under test here; a backward version is
+    # the plain version-mismatch this startup gate exists to park.
     mismatched_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT] - 1
     with sqlite3.connect(archive_root_path / "audit.db") as conn:
         conn.execute(f"PRAGMA user_version = {mismatched_version}")
@@ -1817,6 +1817,58 @@ def test_run_daemon_services_parks_operation_recovery_on_audit_schema_mismatch(
         )
 
     recover_mock.assert_not_called()
+
+
+def test_forward_versioned_durable_tier_is_a_typed_startup_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-w6nrl: a durable tier newer than the runtime refuses startup cleanly.
+
+    Forward skew means a newer release wrote the tier, so the daemon must not
+    start at all -- but as a typed refusal the ``run`` command reports with an
+    actionable message and exit 1, not as an untyped train-evidence error
+    escaping through the shutdown path.
+
+    Anti-vacuity: deleting the newer-than-runtime check in startup
+    reconciliation makes the service raise the generic "lacks released train evidence" error (not
+    the typed one), and deleting the ``DurableChangeTrainError`` mapping in
+    ``run_command`` makes the CLI exit with an unhandled exception.
+    """
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.migration_runner import DurableTierNewerThanRuntimeError
+
+    archive_root_path = tmp_path / "archive"
+    initialize_active_archive_root(archive_root_path)
+    forward_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT] + 1
+    with sqlite3.connect(archive_root_path / "audit.db") as conn:
+        conn.execute(f"PRAGMA user_version = {forward_version}")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root_path))
+
+    with pytest.raises(DurableTierNewerThanRuntimeError) as refused:
+        asyncio.run(
+            asyncio.wait_for(
+                daemon_cli.run_daemon_services(
+                    sources=(WatchSource(name="codex", root=archive_root_path),),
+                    enable_watch=True,
+                    enable_browser_capture=False,
+                    browser_capture_host="127.0.0.1",
+                    browser_capture_port=8765,
+                    browser_capture_spool_path=None,
+                ),
+                timeout=5.0,
+            )
+        )
+    assert refused.value.tier is ArchiveTier.AUDIT
+    assert refused.value.live_version == forward_version
+
+    monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "absent.toml"))
+    result = CliRunner().invoke(main, ["run", "--no-watch", "--no-browser-capture"])
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert "newer than this runtime supports" in result.output
 
 
 def test_daemon_cleanup_failure_retains_rebuild_exclusion_until_process_exit(

@@ -308,6 +308,19 @@ _SOURCE_ADOPTION_FLOOR = DURABLE_MIGRATION_ADOPTION_FLOORS[ArchiveTier.SOURCE]
 # must sit above the floor, or sidecar discovery refuses them before the
 # behavior under test runs.
 _NEXT_SOURCE_SLOT = _SOURCE_ADOPTION_FLOOR + 1
+#: Fresh v1 (#5551) ships every durable tier at its adoption floor, so a
+#: bootstrap marker grants nothing and no tier has a numbered slot to project
+#: away. The tests below that need a real, shipped above-floor schema cannot
+#: construct one until a durable migration ships; they reactivate on their
+#: own when one does.
+_NO_SHIPPED_DURABLE_SLOT = all(
+    ARCHIVE_VERSION_BY_TIER[tier] <= DURABLE_MIGRATION_ADOPTION_FLOORS[tier]
+    for tier in DURABLE_MIGRATION_ADOPTION_FLOORS
+)
+_needs_shipped_durable_slot = pytest.mark.skipif(
+    _NO_SHIPPED_DURABLE_SLOT,
+    reason="no durable tier ships a numbered migration above its adoption floor (fresh v1), so the premise is unconstructible",
+)
 _NEXT_SOURCE_SQL_NAME = f"{_NEXT_SOURCE_SLOT:03d}_future_items.sql"
 _NEXT_SOURCE_SIDECAR_NAME = f"{_NEXT_SOURCE_SLOT:03d}.train.json"
 
@@ -1267,6 +1280,11 @@ def test_startup_checks_chain_when_manifest_directory_is_missing(
             yield connection
 
     monkeypatch.setattr(durable_change_train_module, "_open_existing_tier", fake_open_tier)
+    # A runtime that itself declares the slot: without it the live version is
+    # simply newer than the runtime, a different (typed) refusal.
+    versions = dict(ARCHIVE_VERSION_BY_TIER)
+    versions[ArchiveTier.SOURCE] = _NEXT_SOURCE_SLOT
+    monkeypatch.setattr(migration_runner, "ARCHIVE_VERSION_BY_TIER", versions)
 
     with pytest.raises(DurableChangeTrainError, match="lacks released train evidence"):
         durable_change_train_module._reconcile_durable_change_train_startup_locked(tmp_path)
@@ -1660,41 +1678,6 @@ def test_adopted_audit_restore_rejects_an_unrelated_higher_promoted_source_head(
                 directory_fd=owner.directory_fd,
                 stopped_daemon_check=lambda: "proof:test-daemon-stopped",
             )
-
-
-@pytest.mark.parametrize(
-    ("entry_name", "entry_kind"),
-    (
-        ("audit.db", "directory"),
-        ("audit.db", "dangling_symlink"),
-        ("source.db", "symlink"),
-    ),
-)
-def test_precontinuity_binding_rejects_invalid_present_archive_entries(
-    tmp_path: Path, entry_name: str, entry_kind: str
-) -> None:
-    """Only truly absent durable entries can leave pre-continuity binding in standby."""
-
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-
-    initialize_active_archive_root(tmp_path)
-    source_path = tmp_path / "source.db"
-    entry_path = tmp_path / entry_name
-    with closing(sqlite3.connect(source_path)) as source:
-        if entry_kind == "directory":
-            entry_path.unlink()
-            entry_path.mkdir()
-        elif entry_kind == "dangling_symlink":
-            entry_path.unlink()
-            entry_path.symlink_to(tmp_path / "missing-audit.db")
-        else:
-            external = tmp_path.parent / "external-source.db"
-            external.write_bytes(entry_path.read_bytes())
-            entry_path.unlink()
-            entry_path.symlink_to(external)
-
-        with pytest.raises(MigrationError, match="invalid pre-continuity"):
-            migration_runner._bind_populated_precontinuity_audit(source, backup_manifest=None)
 
 
 def test_adopted_audit_restore_replaces_stale_operation_staging_after_crash(
@@ -2760,6 +2743,7 @@ def test_pre_marker_current_archive_is_adopted_once(tmp_path: Path) -> None:
     assert marker.is_file()
 
 
+@_needs_shipped_durable_slot
 def test_missing_train_directory_denies_the_floor(tmp_path: Path) -> None:
     """Losing the train state denies the chain floor on the reconciliation route.
 
@@ -2861,6 +2845,7 @@ def test_fresh_bootstrap_archive_opens_after_its_root_is_moved(tmp_path: Path) -
     assert reconcile_durable_change_train_startup(moved) == ()
 
 
+@_needs_shipped_durable_slot
 def test_fresh_bootstrap_marker_is_refused_in_an_archive_it_does_not_describe(tmp_path: Path) -> None:
     """One archive's bootstrap authority cannot be transplanted into another.
 
@@ -2924,6 +2909,7 @@ def _skew_live_tier(archive_root: Path, tier: ArchiveTier) -> int:
     return skewed
 
 
+@_needs_shipped_durable_slot
 def test_fresh_bootstrap_marker_grants_nothing_for_skew(tmp_path: Path) -> None:
     """A tier standing at a different version must park, not fail startup.
 
@@ -2951,43 +2937,114 @@ def test_fresh_bootstrap_marker_grants_nothing_for_skew(tmp_path: Path) -> None:
     assert granted[_CORROBORATING_TIER] == ARCHIVE_VERSION_BY_TIER[_CORROBORATING_TIER]
 
 
-def test_legacy_sealed_marker_grants_nothing_for_skew(tmp_path: Path) -> None:
-    """The legacy seal proves ownership, not that a skewed tier is current.
+@_needs_shipped_durable_slot
+def test_legacy_identity_seal_is_not_ownership_proof(tmp_path: Path) -> None:
+    """A marker's legacy path-and-inode seal proves nothing (polylogue-zukcl).
 
-    Markers written by earlier revisions carry a path-and-inode
-    ``durable_identity_digest``. Matching it establishes the marker is this
-    archive's own -- so nothing is transplanted -- but a tier standing at a
-    different ``user_version`` still grants nothing, exactly as it does for a
-    marker carrying no seal.
+    Markers written by earlier revisions carried a ``durable_identity_digest``
+    over the archive root path and durable inodes. Honouring a matching seal
+    short-circuited the content proof: it refused a tier that a released train
+    had legitimately migrated away from its bootstrap version, and it would
+    admit a transplanted marker re-sealed to its recipient. Ownership is now
+    proved from durable content only, so the seal is inert.
 
-    Anti-vacuity: restoring the unconditional ``return set()`` in the legacy
-    branch makes this fail with the skewed tier present in the granted
-    versions. Verified by reverting, not by asserting. The second assertion
-    pins the opposite direction, where the seal stops granting anything at all.
+    Anti-vacuity: restoring the seal short-circuit in
+    ``_assert_fresh_durable_bootstrap_is_own`` makes the recipient open and
+    inherit the donor's chain floor instead of raising.
     """
+    import hashlib
+
     from polylogue.storage.archive_identity import ArchiveIdentity
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-    initialize_active_archive_root(tmp_path)
-    manifest_root = tmp_path / ".maintenance-state" / "durable-change-trains"
-    marker = manifest_root / ".bootstrap"
+    donor = tmp_path / "donor"
+    recipient = tmp_path / "recipient"
+    initialize_active_archive_root(donor)
+    initialize_active_archive_root(recipient)
 
+    relative = Path(".maintenance-state") / "durable-change-trains" / ".bootstrap"
+    (recipient / relative).unlink()
+    with closing(sqlite3.connect(recipient / "source.db")) as connection:
+        connection.execute("CREATE INDEX idx_transplanted_marker_probe ON raw_sessions(raw_id)")
+        connection.commit()
+
+    identity = ArchiveIdentity.resolve(recipient.resolve())
+    payload = json.loads((donor / relative).read_text(encoding="utf-8"))
+    payload["durable_identity_digest"] = hashlib.sha256(
+        json.dumps(
+            {"configured_root": str(identity.configured_root.absolute()), "durable_id": identity.durable_id},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    payload.pop("marker_digest", None)
+    payload["marker_digest"] = durable_change_train_module._bootstrap_marker_digest(payload)
+    (recipient / relative).write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(DurableChangeTrainError, match="not this archive's own source bootstrap evidence"):
+        reconcile_durable_change_train_startup(recipient)
+
+
+def test_durable_tier_ahead_of_runtime_is_refused_before_recovery(tmp_path: Path) -> None:
+    """A tier above the runtime's declared version is a typed refusal (polylogue-w6nrl).
+
+    Only a newer release can have written it, so no chain of this runtime's
+    trains can admit it; startup reconciliation names the tier and both
+    versions instead of reporting missing train evidence.
+
+    Anti-vacuity: deleting the newer-than-runtime check from startup
+    reconciliation surfaces the generic forward-admission error ("lacks
+    released train evidence") instead of the typed refusal.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.migration_runner import DurableTierNewerThanRuntimeError
+
+    initialize_active_archive_root(tmp_path)
+    runtime_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]
+    with closing(sqlite3.connect(tmp_path / "user.db")) as connection:
+        connection.execute(f"PRAGMA user_version = {runtime_version + 1}")
+        connection.commit()
+
+    with pytest.raises(DurableTierNewerThanRuntimeError, match="newer than this runtime supports") as refused:
+        reconcile_durable_change_train_startup(tmp_path)
+
+    assert refused.value.tier is ArchiveTier.USER
+    assert (refused.value.live_version, refused.value.runtime_version) == (runtime_version + 1, runtime_version)
+
+
+def test_newer_release_archive_is_refused_by_version_not_as_a_foreign_marker(tmp_path: Path) -> None:
+    """A newer release's fresh archive names the version skew (#5655 review).
+
+    Its bootstrap marker records the newer version and the live tier carries
+    the newer schema. The marker's ownership proof can only rebuild this
+    runtime's DDL, so checked first it refused the archive as "not this
+    archive's own bootstrap evidence" and the typed refusal was unreachable.
+
+    Anti-vacuity: move ``_refuse_durable_tiers_newer_than_runtime`` after
+    ``_fresh_durable_bootstrap_versions`` and this raises the generic
+    ownership error instead.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.migration_runner import DurableTierNewerThanRuntimeError
+
+    initialize_active_archive_root(tmp_path)
+    newer = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE] + 1
+    with closing(sqlite3.connect(tmp_path / "source.db")) as connection:
+        connection.execute("CREATE TABLE newer_release_additive_table (id INTEGER PRIMARY KEY)")
+        connection.execute(f"PRAGMA user_version = {newer}")
+        connection.commit()
+    marker = tmp_path / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
     payload = json.loads(marker.read_text(encoding="utf-8"))
-    payload["durable_identity_digest"] = durable_change_train_module._durable_identity_digest(
-        ArchiveIdentity.resolve(tmp_path)
-    )
+    payload["versions"]["source"] = newer
     payload.pop("marker_digest", None)
     payload["marker_digest"] = durable_change_train_module._bootstrap_marker_digest(payload)
     marker.write_text(json.dumps(payload), encoding="utf-8")
 
-    _skew_live_tier(tmp_path, _SKEWABLE_TIER)
-
-    granted = durable_change_train_module._fresh_durable_bootstrap_versions(tmp_path, manifest_root)
-
-    assert _SKEWABLE_TIER not in granted
-    assert granted[_CORROBORATING_TIER] == ARCHIVE_VERSION_BY_TIER[_CORROBORATING_TIER]
+    with pytest.raises(DurableTierNewerThanRuntimeError, match="newer than this runtime supports"):
+        reconcile_durable_change_train_startup(tmp_path)
 
 
+@_needs_shipped_durable_slot
 def test_fresh_bootstrap_marker_is_retired_once_it_grants_nothing(tmp_path: Path) -> None:
     """The marker is removed as soon as it stops carrying authority.
 
@@ -3273,6 +3330,7 @@ def _source_inventory_refs_at(target: int) -> set[str]:
     return {item.object_ref for item in inventory.objects}
 
 
+@_needs_shipped_durable_slot
 def test_source_inventory_projects_away_future_objects() -> None:
     """Historical parity keeps objects at the target and removes later additions.
 
@@ -4292,51 +4350,6 @@ def test_audit_adoption_refuses_a_receipt_from_a_different_archive(
         _rebind_audit_adoption_after_durable_rewrite(
             recipient_root, sealed_digest=sealed, proof_ref="proof:durable-change-train:source"
         )
-
-
-def test_durable_change_train_execution_carries_the_bootstrap_seal(
-    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A durable rewrite does not strand a fresh archive's own bootstrap marker.
-
-    The marker seals the same inode identity the adoption receipt does, so the
-    first released migration of a directly bootstrapped archive would otherwise
-    make every later startup reconcile refuse it.
-
-    Anti-vacuity: removing the re-seal from ``execute_durable_change_train``
-    raises ``fresh durable bootstrap marker durable identity mismatch`` from
-    ``reconcile_durable_change_train_startup``.
-    """
-    import polylogue.operations.durable_change_train as operations_durable_change_train
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-
-    archive_root = workspace_env["archive_root"]
-    initialize_active_archive_root(archive_root)
-    marker = archive_root / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
-    assert marker.is_file()
-    sealed_versions = json.loads(marker.read_text(encoding="utf-8"))["versions"]
-
-    def rewrite_instead_of_migrating(root: Path, _tier: ArchiveTier, **_kwargs: object) -> object:
-        _rewrite_durable_tier_file(root / "source.db")
-        return SimpleNamespace(train=None, migration_result=None)
-
-    monkeypatch.setattr(
-        operations_durable_change_train,
-        "_execute_durable_change_train",
-        rewrite_instead_of_migrating,
-    )
-    operations_durable_change_train.execute_durable_change_train(
-        archive_root,
-        ArchiveTier.SOURCE,
-        backup_manifest=None,
-        daemon_stopped_evidence_ref="proof:daemon-stopped",
-        single_writer_evidence_ref="proof:archive-ownership-lock",
-        release_archive_ownership=lambda: None,
-    )
-
-    assert reconcile_durable_change_train_startup(archive_root) == ()
-    # The marker's authority is the recorded bootstrap versions, not its seal.
-    assert json.loads(marker.read_text(encoding="utf-8"))["versions"] == sealed_versions
 
 
 def test_a_manifest_written_before_the_projected_digest_still_verifies() -> None:

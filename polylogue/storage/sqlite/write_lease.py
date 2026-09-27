@@ -28,6 +28,7 @@ import asyncio
 import contextvars
 import threading
 import time
+import weakref
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -179,17 +180,40 @@ class WriteLease:
     #: and the previous check-then-assign on a bare ``set`` was unsynchronized
     #: (polylogue-1oa7o residual 4).
     _bind_guard: threading.Lock = field(default_factory=threading.Lock)
+    #: The ``threading.Thread`` behind each authorized ident. OS thread idents
+    #: are reused once a thread exits, so an ident alone would admit a later
+    #: inheriting thread that happened to receive a retired worker's ident
+    #: (polylogue-1oa7o residual 3). Authority is the thread object; the ident
+    #: is only its lookup key.
+    _thread_refs: dict[int, weakref.ReferenceType[threading.Thread]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # Leases are constructed on their owning thread.
+        if self.owner_thread_id == threading.get_ident():
+            self._thread_refs[self.owner_thread_id] = weakref.ref(threading.current_thread())
 
     def authorize_thread(self, thread_id: int) -> None:
-        """Add ``thread_id`` to the authorized set under the lease's guard."""
+        """Authorize the calling thread, which ``thread_id`` must identify."""
+        if thread_id != threading.get_ident():
+            raise UnleasedWriteError("a write lease thread authorizes only itself")
         with self._bind_guard:
             if self.bound_thread_ids is None:
                 self.bound_thread_ids = {self.owner_thread_id}
             self.bound_thread_ids.add(thread_id)
+            self._thread_refs[thread_id] = weakref.ref(threading.current_thread())
 
     def authorized_threads(self) -> frozenset[int]:
         with self._bind_guard:
             return frozenset(self.bound_thread_ids or {self.owner_thread_id})
+
+    def current_thread_is_authorized(self) -> bool:
+        """Whether the calling thread -- this thread object, not a reused ident -- is bound."""
+        thread_id = threading.get_ident()
+        with self._bind_guard:
+            if thread_id not in (self.bound_thread_ids or {self.owner_thread_id}):
+                return False
+            bound = self._thread_refs.get(thread_id)
+        return bound is not None and bound() is threading.current_thread()
 
     @property
     def held_seconds(self) -> float:
@@ -259,12 +283,10 @@ def require_write_lease(purpose: str, *, archive_root: str | Path | None = None)
     lease = _ACTIVE.get()
     if lease is not None:
         task_id = _current_task_id()
-        thread_id = threading.get_ident()
-        allowed_threads = lease.authorized_threads()
         if task_id is not None:
             if task_id != lease.owner_task_id:
                 raise UnleasedWriteError(f"{purpose} uses a write lease inherited by a child task")
-        elif thread_id not in allowed_threads:
+        elif not lease.current_thread_is_authorized():
             raise UnleasedWriteError(f"{purpose} uses a write lease from an unauthorized thread")
         if archive_root is not None and lease.archive_root is not None:
             expected = Path(archive_root).resolve()

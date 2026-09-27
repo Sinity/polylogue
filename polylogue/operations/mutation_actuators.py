@@ -538,84 +538,6 @@ class FilesystemResetActuator(_FailClosedRecovery):
 
 
 # ---------------------------------------------------------------------------
-# Pending blob-GC generation abandonment
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class PendingBlobGCGenerationAbandonArgs:
-    """Exact disposition request for one namespace-bound GC intent."""
-
-    archive_root: Path
-    generation_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class PendingBlobGCGenerationAbandonActuator(_FailClosedRecovery):
-    """Terminalize a blocked GC intent without touching blob namespace bytes.
-
-    This used to open each of ``prepare``/``apply`` with an offline-writer
-    ownership check that refused whenever a daemon write lease was held or a
-    live ``polylogued`` pidfile existed.  That precondition was written for the
-    era when ``ops maintenance gc-recover --abandon`` opened the source tier in
-    the CLI's own process.  ``maintenance.blob-gc.recover`` is now declared
-    ``DaemonAuthority.WRITE`` / ``DaemonFallback.NEVER``, so the only caller is
-    :func:`polylogue.operations.daemon_mutations.maintenance_blob_gc_recover`
-    running inside the resident daemon -- exactly the state the guard refused.
-    The two preconditions had no common satisfiable point, which made the
-    operation unexecutable in every daemon state.  Exclusion is the daemon
-    write coordinator's, which serializes this against every other archive
-    writer in the process that owns the tier.
-    """
-
-    operation: str = "mutate-abandon-pending-blob-gc-generation"
-    destructive_class: DestructiveClass = "reset"
-    required_confirmation: ConfirmationStrength = "confirm_flag"
-
-    def prepare(self, args: PendingBlobGCGenerationAbandonArgs) -> MutationPlan:
-        from polylogue.storage.blob_gc import inspect_gc_generation_abandonment
-
-        state = inspect_gc_generation_abandonment(args.archive_root / "source.db", args.generation_id)
-        return build_plan(
-            operation=self.operation,
-            destructive_class=self.destructive_class,
-            target_refs=(make_target_ref("source", f"gc-generation:{state.generation_id}"),),
-            affected_tiers=("source", "audit"),
-            reversible=False,
-            context={
-                "generation_id": state.generation_id,
-                "namespace_marker": state.namespace_marker,
-                "pending_member_count": state.pending_member_count,
-                "completed": state.completed,
-            },
-        )
-
-    def apply(self, plan: MutationPlan, args: PendingBlobGCGenerationAbandonArgs) -> MutationReceipt:
-        from polylogue.storage.blob_gc import _abandon_pending_gc_generation
-
-        adjudication = _abandon_pending_gc_generation(
-            args.archive_root / "source.db", args.generation_id, confirmed=True
-        )
-        return MutationReceipt(
-            operation=self.operation,
-            plan_hash=plan.plan_hash,
-            status="applied" if adjudication.abandoned_members else "already_satisfied",
-            target_refs=plan.target_refs,
-            affected_count=adjudication.abandoned_members,
-            detail=None if adjudication.abandoned_members else "generation_already_terminal",
-            receipt_ref=None,
-            applied_at=plan.prepared_at,
-            domain_receipt={
-                "generation_id": adjudication.generation_id,
-                "abandoned_members": adjudication.abandoned_members,
-                "completed": adjudication.completed,
-                "blob_effect": "none",
-                "namespace_rebound": False,
-            },
-        )
-
-
-# ---------------------------------------------------------------------------
 # Blob publication receipt abandonment
 # ---------------------------------------------------------------------------
 
@@ -2606,8 +2528,6 @@ __all__ = [
     "MetadataDeleteArgs",
     "MetadataSetActuator",
     "MetadataSetArgs",
-    "PendingBlobGCGenerationAbandonActuator",
-    "PendingBlobGCGenerationAbandonArgs",
     "RecallPackDeleteActuator",
     "RecallPackDeleteArgs",
     "RecallPackSaveActuator",

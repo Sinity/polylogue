@@ -65,7 +65,6 @@ def test_typed_daemon_error_does_not_fall_through_to_direct_execution() -> None:
         "mutation.identity-reset",
         "mutation.raw-authority-blocker.resolve",
         "maintenance.reset",
-        "maintenance.blob-gc.recover",
         "mutation.session.tag",
     ],
 )

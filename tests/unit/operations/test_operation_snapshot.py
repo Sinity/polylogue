@@ -128,7 +128,6 @@ def test_unseeded_audit_continuity_degrades_an_operation_read(tmp_path: Path) ->
 
     bootstrap_archive_root(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as source:
-        assert source.execute("PRAGMA user_version").fetchone()[0] >= 32
         source.execute("DROP TABLE audit_continuity_control")
 
     # The read path underneath really does raise the non-Pending class.
