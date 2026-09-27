@@ -2831,6 +2831,24 @@ def reconcile_durable_change_train_startup(
         )
 
 
+def _runtime_durable_version(tier: ArchiveTier) -> int:
+    return cast(dict[ArchiveTier, int], vars(_migration_runner)["ARCHIVE_VERSION_BY_TIER"])[tier]
+
+
+def _refuse_durable_tiers_newer_than_runtime(archive_root: Path, *, recovering: set[ArchiveTier]) -> None:
+    """Raise the typed refusal for a durable tier a newer release wrote."""
+    for tier in DURABLE_MIGRATION_ADOPTION_FLOORS:
+        tier_path = archive_root / f"{tier.value}.db"
+        if tier in recovering or not tier_path.is_file():
+            continue
+        with _open_existing_tier(tier_path) as live:
+            live_version = int(live.execute("PRAGMA user_version").fetchone()[0] or 0)
+        if live_version > _runtime_durable_version(tier):
+            raise DurableTierNewerThanRuntimeError(
+                tier, live_version=live_version, runtime_version=_runtime_durable_version(tier)
+            )
+
+
 def _reconcile_durable_change_train_startup_locked(
     archive_root: Path,
     *,
@@ -2849,6 +2867,19 @@ def _reconcile_durable_change_train_startup_locked(
     manifests_by_tier: dict[ArchiveTier, dict[int, DurableChangeTrain]] = {}
     validated_tiers: set[ArchiveTier] = set()
     manifest_paths = _durable_train_manifest_paths(manifest_root)
+    # Before the bootstrap marker is corroborated: a newer release's marker
+    # records versions whose schema this runtime cannot reconstruct, so the
+    # ownership proof would refuse it as foreign instead of naming the skew.
+    # A tier with an unreleased train is left to the recovery below, whose
+    # failure classification is the stronger refusal.
+    _refuse_durable_tiers_newer_than_runtime(
+        archive_root,
+        recovering={
+            train.tier
+            for train in map(load_durable_change_train_manifest, manifest_paths)
+            if train.state is not DurableChangeTrainState.RELEASED
+        },
+    )
     fresh_bootstrap_versions = _fresh_durable_bootstrap_versions(archive_root, manifest_root)
     _retire_corroborated_fresh_durable_bootstrap_marker(manifest_root, fresh_bootstrap_versions)
     chain_floor_versions = _durable_chain_floor_versions(archive_root, manifest_root)
@@ -2911,7 +2942,7 @@ def _reconcile_durable_change_train_startup_locked(
             continue
         with _open_existing_tier(tier_path) as live:
             current_version = int(live.execute("PRAGMA user_version").fetchone()[0] or 0)
-        runtime_version = cast(dict[ArchiveTier, int], vars(_migration_runner)["ARCHIVE_VERSION_BY_TIER"])[tier]
+        runtime_version = _runtime_durable_version(tier)
         if current_version > runtime_version:
             # Only a newer release can have written this tier. No chain of
             # this runtime's trains can admit it, so say that plainly rather

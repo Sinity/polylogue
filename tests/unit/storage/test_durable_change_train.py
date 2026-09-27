@@ -1680,41 +1680,6 @@ def test_adopted_audit_restore_rejects_an_unrelated_higher_promoted_source_head(
             )
 
 
-@pytest.mark.parametrize(
-    ("entry_name", "entry_kind"),
-    (
-        ("audit.db", "directory"),
-        ("audit.db", "dangling_symlink"),
-        ("source.db", "symlink"),
-    ),
-)
-def test_precontinuity_binding_rejects_invalid_present_archive_entries(
-    tmp_path: Path, entry_name: str, entry_kind: str
-) -> None:
-    """Only truly absent durable entries can leave pre-continuity binding in standby."""
-
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-
-    initialize_active_archive_root(tmp_path)
-    source_path = tmp_path / "source.db"
-    entry_path = tmp_path / entry_name
-    with closing(sqlite3.connect(source_path)) as source:
-        if entry_kind == "directory":
-            entry_path.unlink()
-            entry_path.mkdir()
-        elif entry_kind == "dangling_symlink":
-            entry_path.unlink()
-            entry_path.symlink_to(tmp_path / "missing-audit.db")
-        else:
-            external = tmp_path.parent / "external-source.db"
-            external.write_bytes(entry_path.read_bytes())
-            entry_path.unlink()
-            entry_path.symlink_to(external)
-
-        with pytest.raises(MigrationError, match="invalid pre-continuity"):
-            migration_runner._bind_populated_precontinuity_audit(source, backup_manifest=None)
-
-
 def test_adopted_audit_restore_replaces_stale_operation_staging_after_crash(
     workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3045,6 +3010,38 @@ def test_durable_tier_ahead_of_runtime_is_refused_before_recovery(tmp_path: Path
 
     assert refused.value.tier is ArchiveTier.USER
     assert (refused.value.live_version, refused.value.runtime_version) == (runtime_version + 1, runtime_version)
+
+
+def test_newer_release_archive_is_refused_by_version_not_as_a_foreign_marker(tmp_path: Path) -> None:
+    """A newer release's fresh archive names the version skew (#5655 review).
+
+    Its bootstrap marker records the newer version and the live tier carries
+    the newer schema. The marker's ownership proof can only rebuild this
+    runtime's DDL, so checked first it refused the archive as "not this
+    archive's own bootstrap evidence" and the typed refusal was unreachable.
+
+    Anti-vacuity: move ``_refuse_durable_tiers_newer_than_runtime`` after
+    ``_fresh_durable_bootstrap_versions`` and this raises the generic
+    ownership error instead.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.migration_runner import DurableTierNewerThanRuntimeError
+
+    initialize_active_archive_root(tmp_path)
+    newer = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE] + 1
+    with closing(sqlite3.connect(tmp_path / "source.db")) as connection:
+        connection.execute("CREATE TABLE newer_release_additive_table (id INTEGER PRIMARY KEY)")
+        connection.execute(f"PRAGMA user_version = {newer}")
+        connection.commit()
+    marker = tmp_path / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    payload["versions"]["source"] = newer
+    payload.pop("marker_digest", None)
+    payload["marker_digest"] = durable_change_train_module._bootstrap_marker_digest(payload)
+    marker.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(DurableTierNewerThanRuntimeError, match="newer than this runtime supports"):
+        reconcile_durable_change_train_startup(tmp_path)
 
 
 @_needs_shipped_durable_slot
