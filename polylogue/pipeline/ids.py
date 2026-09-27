@@ -507,7 +507,9 @@ def _normalize_nested_for_hash(value: object, *, path: str = "payload") -> objec
       *not* a tagged wrapper: which container a parser chose for a member list
       is an implementation detail, and a parser normalizing ``{"a", "b"}`` to
       ``["a", "b"]`` must not move every affected ``content_identity``.
-    - ``Decimal``: ``float``, the same lowering ``core/json.py`` declares for
+    - ``Decimal``: ``float`` when the float round-trips exactly, else its exact
+      decimal text, so precision beyond a float never merges two values. The
+      float case is the same lowering ``core/json.py`` declares for
       a JSON parser's ``Decimal`` (``_lower_decimals``, ``_default_encoder``).
       The ``QUERY`` digest profile ``hash_payload`` uses reaches stdlib
       ``json.dumps`` with no ``default`` hook at all, so a ``Decimal`` in
@@ -589,7 +591,11 @@ def _normalize_declared_for_hash(value: object, *, path: str) -> object:
     if isinstance(value, Enum):
         return _normalize_declared_for_hash(value.value, path=path)
     if isinstance(value, Decimal):
-        return float(value)
+        # A Decimal that survives the float round trip hashes as that float
+        # (unchanged identity); one that does not keeps its exact text, so two
+        # values differing beyond float precision cannot share a fallback id.
+        as_float = float(value)
+        return as_float if Decimal(as_float) == value else str(value)
     if isinstance(value, (bytes, bytearray, memoryview)):
         return bytes(value).hex()
     if isinstance(value, (datetime, date, time)):

@@ -18,9 +18,8 @@ from pathlib import Path
 
 from polylogue.config import Source
 from polylogue.core.content_identity import STRUCTURAL_IDENTITY_MAX_BYTES, bounded_payload_content_identity
-from polylogue.core.enums import Origin, Provider
+from polylogue.core.enums import Provider
 from polylogue.core.raw_coordinates import MemberAddressingMode
-from polylogue.core.sources import provider_from_origin
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
     replay_zip_entry_acquisition_payloads,
@@ -221,7 +220,10 @@ def zip_reacquisition_payload(
             if candidates is None:
                 provider = Provider.from_string(str(row.get("capture_mode") or ""))
                 if provider is Provider.UNKNOWN:
-                    provider = provider_from_origin(Origin.from_string(str(row.get("origin") or "")))
+                    # The public origin is not injective onto providers
+                    # (AI Studio/Drive), so it can never stand in for the
+                    # recorded capture mode: leave the reference unproven.
+                    return None, "replay_provider_unrecorded"
                 context = ZipEntryReadContext(
                     source=Source(name=provider.value, path=zip_path.parent),
                     zip_path=zip_path,

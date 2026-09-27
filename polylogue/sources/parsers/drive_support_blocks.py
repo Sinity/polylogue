@@ -102,6 +102,11 @@ def parsed_blocks_from_meta(blocks: object) -> list[ParsedContentBlock]:
         language = block.get("language")
         metadata_out: dict[str, object] = {}
         for key, value in metadata.items():
+            # Thought signatures are provider attestations re-issued on every
+            # replay; like Claude's thinking `signature` they stay out of the
+            # hashed block payload (they travel as session-event evidence).
+            if key in _THOUGHT_SIGNATURE_KEYS:
+                continue
             metadata_out[key] = value
         if isinstance(language, str) and language:
             metadata_out.setdefault("language", language)
@@ -151,6 +156,7 @@ def parsed_blocks_from_meta(blocks: object) -> list[ParsedContentBlock]:
 # them is not already available in typed form elsewhere. Re-audit if a
 # future corpus pass finds a divergent value in one of those wrapper dicts.
 _GEMINI_THINKING_EVIDENCE_KEYS = frozenset({"thinkingBudget", "thoughtSignatures"})
+_THOUGHT_SIGNATURE_KEYS = frozenset({"thoughtSignatures", "thoughtSignature"})
 
 
 def session_events_from_meta_blocks(
