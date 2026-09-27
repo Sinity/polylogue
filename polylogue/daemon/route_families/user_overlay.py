@@ -429,6 +429,12 @@ def handle_post(handler: Any, path: list[str], params: dict[str, list[str]]) -> 
         ):
             handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
+        from polylogue.archive.query.spec import SessionQuerySpec
+
+        # A malformed query is the caller's request error (QuerySpecError is a
+        # 400 with its field), not a failed daemon operation; the handler
+        # repeats this check as the write boundary.
+        SessionQuerySpec.from_params(cast("dict[str, object]", payload["query"]), strict=True)
     elif name == "user.recall_pack.save":
         body = payload.get("payload", {})
         if (

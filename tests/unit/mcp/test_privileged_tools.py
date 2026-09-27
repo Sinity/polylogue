@@ -16,6 +16,8 @@ given one explicitly, which would otherwise clobber the seeded ones.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
@@ -51,6 +53,33 @@ def _seed_archive(archive_root: Path) -> str:
                 ],
             ),
         )
+
+
+@contextmanager
+def _daemon_owned_archive(archive_root: Path) -> Iterator[str]:
+    """Seed ``archive_root`` and serve it through a real resident operation stack.
+
+    Public archive mutations are daemon-owned (#5550): the facade submits a
+    declared operation to ``polylogued run`` and refuses with
+    ``FacadeDaemonRequiredError`` when none answers. The write, run and
+    confirm-gate tests here therefore run against the production operation
+    stack on the archive's own socket, so the executor they observe is the
+    daemon's, reached through the same route an MCP client uses.
+    """
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from tests.infra.daemon_operations import running_daemon_operations
+
+    seeded: list[str] = []
+    with (
+        patch("polylogue.daemon.api_auth.resolve_api_auth_token", return_value=None),
+        running_daemon_operations(
+            archive_root,
+            seed_archive=lambda root: seeded.append(_seed_archive(root)),
+            socket_path=daemon_socket_path(archive_root),
+        ),
+        installed_runtime_services(archive_root),
+    ):
+        yield seeded[0]
 
 
 def _seed_paged_archive(archive_root: Path, *, count: int = 7) -> list[str]:
@@ -135,11 +164,10 @@ class TestWriteTool:
         from polylogue.mcp.server import build_server
 
         archive_root = tmp_path / "archive"
-        session_id = _seed_archive(archive_root)
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with installed_runtime_services(archive_root):
+        with _daemon_owned_archive(archive_root) as session_id:
             added = json.loads(
                 await invoke_surface_async(write_fn, operation="add_tag", session_id=session_id, tag="reviewed")
             )
@@ -173,11 +201,10 @@ class TestWriteTool:
         from polylogue.mcp.server import build_server
 
         archive_root = tmp_path / "archive"
-        session_id = _seed_archive(archive_root)
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with installed_runtime_services(archive_root):
+        with _daemon_owned_archive(archive_root) as session_id:
             result = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -253,11 +280,10 @@ class TestWriteTool:
         from polylogue.mcp.server import build_server
 
         archive_root = tmp_path / "archive"
-        _seed_archive(archive_root)
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with installed_runtime_services(archive_root):
+        with _daemon_owned_archive(archive_root) as _session_id:
             saved = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -293,11 +319,10 @@ class TestWriteToolConfirmGates:
         from polylogue.mcp.server import build_server
 
         archive_root = tmp_path / "archive"
-        session_id = _seed_archive(archive_root)
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with installed_runtime_services(archive_root):
+        with _daemon_owned_archive(archive_root) as session_id:
             added = json.loads(
                 await invoke_surface_async(write_fn, operation="add_tag", session_id=session_id, tag="reviewed")
             )
@@ -325,11 +350,10 @@ class TestWriteToolConfirmGates:
         from polylogue.mcp.server import build_server
 
         archive_root = tmp_path / "archive"
-        session_id = _seed_archive(archive_root)
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with installed_runtime_services(archive_root):
+        with _daemon_owned_archive(archive_root) as session_id:
             added = json.loads(
                 await invoke_surface_async(
                     write_fn, operation="add_mark", session_id=session_id, fields={"mark_type": "star"}
@@ -362,11 +386,10 @@ class TestWriteToolConfirmGates:
         from polylogue.mcp.server import build_server
 
         archive_root = tmp_path / "archive"
-        session_id = _seed_archive(archive_root)
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with installed_runtime_services(archive_root):
+        with _daemon_owned_archive(archive_root) as session_id:
             set_result = json.loads(
                 await invoke_surface_async(
                     write_fn, operation="set_metadata", session_id=session_id, key="note", value="keep"
@@ -393,11 +416,10 @@ class TestWriteToolConfirmGates:
         from polylogue.mcp.server import build_server
 
         archive_root = tmp_path / "archive"
-        session_id = _seed_archive(archive_root)
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with installed_runtime_services(archive_root):
+        with _daemon_owned_archive(archive_root) as session_id:
             saved = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -430,11 +452,10 @@ class TestWriteToolConfirmGates:
         from polylogue.mcp.server import build_server
 
         archive_root = tmp_path / "archive"
-        _seed_archive(archive_root)
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with installed_runtime_services(archive_root):
+        with _daemon_owned_archive(archive_root) as _session_id:
             saved = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -456,11 +477,10 @@ class TestWriteToolConfirmGates:
         from polylogue.mcp.server import build_server
 
         archive_root = tmp_path / "archive"
-        _seed_archive(archive_root)
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with installed_runtime_services(archive_root):
+        with _daemon_owned_archive(archive_root) as _session_id:
             saved = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -493,11 +513,10 @@ class TestWriteToolConfirmGates:
         from polylogue.mcp.server import build_server
 
         archive_root = tmp_path / "archive"
-        _seed_archive(archive_root)
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with installed_runtime_services(archive_root):
+        with _daemon_owned_archive(archive_root) as _session_id:
             saved = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -698,16 +717,15 @@ class TestWriteToolRoutesThroughOperationExecutor:
         from polylogue.operations.mutation_transaction import OperationExecutor
 
         archive_root = tmp_path / "archive"
-        session_id = _seed_archive(archive_root)
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        # bulk_tag_sessions needs a real session_ids list resolved at test
-        # time (the fixture only knows its id after seeding).
-        if op_kwargs.get("session_ids", "__unset__") is None:
-            op_kwargs = {**op_kwargs, "session_ids": [session_id]}
+        with _daemon_owned_archive(archive_root) as session_id:
+            # bulk_tag_sessions needs a real session_ids list resolved at test
+            # time (the fixture only knows its id after seeding).
+            if op_kwargs.get("session_ids", "__unset__") is None:
+                op_kwargs = {**op_kwargs, "session_ids": [session_id]}
 
-        with installed_runtime_services(archive_root):
             for setup_call in setup:
                 setup_result = json.loads(await invoke_surface_async(write_fn, session_id=session_id, **setup_call))
                 assert setup_result.get("is_error") is not True, setup_result
@@ -764,7 +782,6 @@ class TestWriteToolRoutesThroughOperationExecutor:
         from polylogue.operations.mutation_transaction import OperationExecutor
 
         archive_root = tmp_path / "archive"
-        session_id = _seed_archive(archive_root)
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
@@ -775,7 +792,7 @@ class TestWriteToolRoutesThroughOperationExecutor:
 
         monkeypatch.setattr(OperationExecutor, "execute", boom)
 
-        with installed_runtime_services(archive_root):
+        with _daemon_owned_archive(archive_root) as session_id:
             result = json.loads(
                 await invoke_surface_async(write_fn, operation="add_tag", session_id=session_id, tag="reviewed")
             )
@@ -805,7 +822,6 @@ class TestWriteToolRoutesThroughOperationExecutor:
         from polylogue.operations.mutation_transaction import OperationExecutor
 
         archive_root = tmp_path / "archive"
-        _seed_archive(archive_root)
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
@@ -816,7 +832,7 @@ class TestWriteToolRoutesThroughOperationExecutor:
 
         monkeypatch.setattr(OperationExecutor, "execute", boom)
 
-        with installed_runtime_services(archive_root):
+        with _daemon_owned_archive(archive_root) as _session_id:
             result = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -955,12 +971,11 @@ class TestRunTool:
         from polylogue.mcp.server import build_server
 
         archive_root = tmp_path / "archive"
-        _seed_archive(archive_root)
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
         run_fn = server._tool_manager._tools["run"].fn
 
-        with installed_runtime_services(archive_root):
+        with _daemon_owned_archive(archive_root) as _session_id:
             saved = json.loads(
                 await invoke_surface_async(
                     write_fn,

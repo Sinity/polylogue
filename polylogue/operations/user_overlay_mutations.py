@@ -108,12 +108,10 @@ def _execute(
         if resolved_target is not None and target is None:
             target = resolved_target
         binding = runtime_operation_binding(actuator)
-        preview = executor.prepare_bound_for_archive(
-            binding, args, context.principal, archive_root=context.archive_root
-        )
-        authorization = executor.authorize_bound(
-            binding, preview, context.principal, confirmation_strength="bound_token"
-        )
+        # User overlays are the API's operation family (no CLI route).
+        principal = context.principal.on_surface("api")
+        preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=context.archive_root)
+        authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
         receipt = executor.execute_bound(binding, preview, authorization, args)
     if receipt.status in {"blocked", "unknown"}:
         raise ValueError(receipt.detail or f"{actuator.operation} did not apply")

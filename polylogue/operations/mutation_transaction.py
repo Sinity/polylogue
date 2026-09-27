@@ -178,6 +178,18 @@ class MutationPrincipal:
         if any(not capability for capability in self.capabilities):
             raise ValueError("mutation principal capabilities must not contain empty values")
 
+    def on_surface(self, surface: PrincipalSurface) -> MutationPrincipal:
+        """Return this identity acting through the public surface that owns an operation.
+
+        The daemon derives a principal from its transport, and every machine
+        protocol peer is labelled ``cli``. An operation family that belongs to
+        one public surface -- the ``user.*`` overlay and ``mutation.facade.*``
+        products are the Python/HTTP API's, with no CLI route -- executes under
+        that surface, so its actuators' surface allowlists are checked against
+        the surface the operation serves rather than the socket it arrived on.
+        """
+        return replace(self, surface=surface)
+
 
 @dataclass(frozen=True, slots=True)
 class TargetAuthorityPolicy:
