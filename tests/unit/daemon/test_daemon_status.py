@@ -132,6 +132,82 @@ def test_status_snapshot_serves_cached_payload_without_rebuilding_status(monkeyp
     assert "queued_actors" in writer
 
 
+def test_status_snapshot_refresh_failure_keeps_last_good_evidence_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.daemon.status_snapshot import snapshot_state_for_metrics
+
+    clock = {"now": 100.0}
+    response: dict[str, str] = {"kind": "failure"}
+
+    def collect(**_kwargs: object) -> JSONDocument:
+        if response["kind"] == "failure":
+            raise RuntimeError("controlled collector failure")
+        if response["kind"] == "failure-empty":
+            raise RuntimeError()
+        return {"ok": True, "checked_at": response["kind"]}
+
+    monkeypatch.setattr("polylogue.daemon.status_snapshot.time.monotonic", lambda: clock["now"])
+    monkeypatch.setattr("polylogue.daemon.status_snapshot._status_frame", lambda: "stable-frame")
+    monkeypatch.setattr(
+        "polylogue.daemon.status_snapshot._minimal_status_payload",
+        lambda **_kwargs: {"ok": False, "checked_at": "minimal"},
+    )
+    monkeypatch.setattr("polylogue.daemon.status.daemon_status_payload", collect)
+    monkeypatch.setattr("polylogue.daemon.status.periodic_status_component_registry", lambda: None)
+
+    refresh_status_snapshot()
+    unavailable = cast(dict[str, Any], get_status_snapshot_payload()["status_snapshot"])
+    unavailable_freshness = cast(dict[str, Any], cast(dict[str, Any], unavailable["state_evidence"])["freshness"])
+    assert unavailable["state"] == "unavailable"
+    assert unavailable["refresh_error"] == "controlled collector failure"
+    assert unavailable_freshness["state"] == "unavailable"
+    assert unavailable_freshness["cause"] == "rich-status-refresh-failed"
+    assert snapshot_state_for_metrics()["state"] == "unavailable"
+
+    clock["now"] = 105.0
+    response["kind"] = "rich-first"
+    refresh_status_snapshot()
+    first = cast(dict[str, Any], get_status_snapshot_payload()["status_snapshot"])
+    assert first["state"] == "fresh"
+    assert first["refresh_error"] is None
+
+    clock["now"] = 108.0
+    response["kind"] = "failure"
+    refresh_status_snapshot()
+    stale_payload = get_status_snapshot_payload()
+    stale = cast(dict[str, Any], stale_payload["status_snapshot"])
+    stale_freshness = cast(dict[str, Any], cast(dict[str, Any], stale["state_evidence"])["freshness"])
+    assert stale_payload["checked_at"] == "rich-first"
+    assert stale["state"] == "stale"
+    assert stale["captured_at"] == first["captured_at"]
+    assert stale["age_s"] == 3.0
+    assert stale["refresh_error"] == "controlled collector failure"
+    assert stale_freshness["state"] == "stale"
+    assert stale_freshness["cause"] == "rich-status-refresh-failed"
+    assert snapshot_state_for_metrics()["state"] == "stale"
+
+    clock["now"] = 109.0
+    response["kind"] = "failure-empty"
+    refresh_status_snapshot()
+    empty_error_payload = get_status_snapshot_payload()
+    assert empty_error_payload["checked_at"] == "rich-first"
+    empty_error = cast(dict[str, Any], empty_error_payload["status_snapshot"])
+    assert empty_error["state"] == "stale"
+    assert empty_error["refresh_error"] == "RuntimeError"
+    assert snapshot_state_for_metrics()["state"] == "stale"
+
+    clock["now"] = 110.0
+    response["kind"] = "rich-recovered"
+    refresh_status_snapshot()
+    recovered_payload = get_status_snapshot_payload()
+    recovered = cast(dict[str, Any], recovered_payload["status_snapshot"])
+    assert recovered_payload["checked_at"] == "rich-recovered"
+    assert recovered["state"] == "fresh"
+    assert recovered["refresh_error"] is None
+    assert snapshot_state_for_metrics()["state"] == "fresh"
+
+
 def test_status_snapshot_unreadable_frame_never_certifies_fresh(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -3306,7 +3382,7 @@ class _PinnedArchiveStub:
     operation_schema_versions: dict[str, int] = {}
 
 
-def _daemon_payload_for_verdict_variant(variant: str) -> dict[str, object]:
+def _daemon_payload_for_verdict_variant(variant: str, *, collecting_status_snapshot: bool = False) -> dict[str, object]:
     """Build the real daemon status payload with exactly one operand perturbed."""
     frontier = _proven_healthy_frontier()
     if variant == "frontier_violated":
@@ -3359,7 +3435,17 @@ def _daemon_payload_for_verdict_variant(variant: str) -> dict[str, object]:
         patch("polylogue.daemon.status.periodic_loop_payload", return_value={"loops": []}),
         patch("polylogue.daemon.status_snapshot.snapshot_state_for_metrics", return_value=snapshot),
     ):
-        return cast(dict[str, object], daemon_status_payload(sources=()))
+        return cast(
+            dict[str, object],
+            daemon_status_payload(sources=(), collecting_status_snapshot=collecting_status_snapshot),
+        )
+
+
+def test_status_refresh_verdict_ignores_previous_stale_frame() -> None:
+    assert _daemon_payload_for_verdict_variant("stale_snapshot")["ok"] is False
+    refreshing = _daemon_payload_for_verdict_variant("stale_snapshot", collecting_status_snapshot=True)
+    assert refreshing["ok"] is True
+    assert cast(dict[str, object], refreshing["status_snapshot"])["state"] == "refreshing"
 
 
 @pytest.mark.parametrize(
