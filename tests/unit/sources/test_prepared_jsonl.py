@@ -557,6 +557,7 @@ def test_retained_grok_streams_responses_with_replay_parity(tmp_path: Path, monk
         "extra": "not-a-Beads-map",
         "type": "export",
         "version": "v1",
+        "mapping": "metadata",
     }
     fallback_timestamp = "2025-01-02T03:04:05Z"
     source_path = str(tmp_path / "prod-grok-backend.json")
@@ -691,6 +692,28 @@ def test_retained_grok_streams_responses_with_replay_parity(tmp_path: Path, monk
         (session.provider_session_id, session.content_hash) for session in expected
     ]
     beads_artifact.discard()
+
+    messages_record = {key: value for key, value in record.items() if key not in {"type", "version"}}
+    messages_record["messages"] = [{"role": "user", "content": "Root metadata"}]
+    messages_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(messages_record).encode("utf-8"))
+    messages_artifact = revision_backfill.prepare_retained_jsonl_artifact(
+        "synthetic-grok-messages-overlap",
+        Provider.GROK.value,
+        messages_hash,
+        str(tmp_path / "analysis" / "prod-grok-backend.json"),
+        "full",
+        None,
+        str(blob_root),
+        str(source_db),
+        str(index_db),
+        str(tmp_path / "messages-prepared"),
+        fallback_timestamp,
+    )
+    assert messages_artifact.error is None
+    assert [(session.provider_session_id, session.content_hash) for session in messages_artifact.iter_sessions()] == [
+        (session.provider_session_id, session.content_hash) for session in expected
+    ]
+    messages_artifact.discard()
 
 
 def test_retained_grok_corrupt_suffix_leaves_no_publishable_artifact(tmp_path: Path) -> None:

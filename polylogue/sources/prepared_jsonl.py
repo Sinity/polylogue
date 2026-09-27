@@ -560,7 +560,7 @@ def prepare_jsonl_blob(
         stream_prefix: str | None = None
         generic_envelope: dict[str, JSONValue] | None = None
         grok_count: int | None = None
-        grok_record_marker = False
+        grok_positive_marker = False
         # Cohort callbacks may inspect or rewrite the entire parse result.
         # The direct worker route can publish independent bundle members.
         if (
@@ -577,14 +577,14 @@ def prepare_jsonl_blob(
                 grok_probe_conn.execute("INSERT INTO grok_member_valid VALUES (?, ?)", (index, int(valid)))
 
             def record_grok_marker(found: bool) -> None:
-                nonlocal grok_record_marker
-                grok_record_marker = found
+                nonlocal grok_positive_marker
+                grok_positive_marker = found
 
             with source.open("rb") as handle:
                 grok_count = grok_export_item_count(
                     handle,
                     on_item=record_grok_member,
-                    on_record_marker=record_grok_marker if classify_grok_export is not None else None,
+                    on_positive_marker=record_grok_marker if classify_grok_export is not None else None,
                 )
             if grok_count is None:
                 store.conn.execute("DROP TABLE grok_member_valid")
@@ -643,7 +643,7 @@ def prepare_jsonl_blob(
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(directory / f"shard-{uuid.uuid4().hex}.db")
             grok_admitted = (
-                classify_grok_export(grok_count, grok_record_marker) if classify_grok_export is not None else True
+                classify_grok_export(grok_count, grok_positive_marker) if classify_grok_export is not None else True
             )
             grok_member_conn = store.conn
 

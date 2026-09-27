@@ -484,7 +484,7 @@ def grok_export_item_count(
     handle: JsonReadable,
     *,
     on_item: Callable[[int, bool], None] | None = None,
-    on_record_marker: Callable[[bool], None] | None = None,
+    on_positive_marker: Callable[[bool], None] | None = None,
 ) -> int | None:
     """Validate a Grok object and report each member's shape without decoding it."""
     count = 0
@@ -497,6 +497,10 @@ def grok_export_item_count(
     valid_members = 0
     taxonomy_keys: set[str] = set()
     taxonomy_values: dict[str, bool] = {}
+    root_field_count = 0
+    messages_array = False
+    messages_items = 0
+    messages_positive = False
     recordish_keys = {"record_type", "sessionId", "parentUuid", "message", "payload", "tool_name", "tool_input"}
     envelope_keys = {"uuid", "sessionId", "parentUuid", "message", "payload", "cwd", "version"}
     provenance_keys = {"file", "source_file", "source_path", "transcript", "session_file"}
@@ -521,6 +525,10 @@ def grok_export_item_count(
             "source",
             "cascadeId",
             "markdown",
+            "session",
+            "parent",
+            "child",
+            "conversation",
         }
     )
 
@@ -549,10 +557,15 @@ def grok_export_item_count(
                 # future wire types; retain that exact path for such exports.
                 return None
             if prefix == "" and event == "map_key":
+                root_field_count = min(root_field_count + 1, 17)
                 if value in {"sessions", "polylogue_capture_kind"}:
                     return None
                 if value == "conversations":
                     keys += 1
+                elif value == "messages":
+                    messages_array = False
+                    messages_items = 0
+                    messages_positive = False
                 elif value in taxonomy_fields:
                     taxonomy_keys.add(value)
                     taxonomy_values[value] = False
@@ -563,8 +576,29 @@ def grok_export_item_count(
                     taxonomy_values[prefix] = value.lower().endswith((".jsonl", ".jsonl.txt", ".ndjson", ".json"))
                 elif prefix in content_keys:
                     taxonomy_values[prefix] = bool(value)
-                elif prefix in required_string_keys:
+                elif prefix == "source":
+                    taxonomy_values[prefix] = value == "antigravity_language_server"
+                elif prefix in {"cascadeId", "markdown"} or prefix in required_string_keys:
                     taxonomy_values[prefix] = True
+            elif prefix in taxonomy_keys and event == "start_map":
+                if prefix in {"mapping", "chunkedPrompt"}:
+                    taxonomy_values[prefix] = True
+            elif prefix in taxonomy_keys and event == "start_array":
+                if prefix in {"chat_messages", "chunks"}:
+                    taxonomy_values[prefix] = True
+            elif prefix == "messages" and event == "start_array":
+                messages_array = True
+            elif prefix == "messages.item" and event in {
+                "start_map",
+                "start_array",
+                "string",
+                "number",
+                "boolean",
+                "null",
+            }:
+                messages_items += 1
+            elif prefix == "messages.item" and event == "map_key" and messages_items <= 12:
+                messages_positive = messages_positive or value in {"role", "content", "text", "parts", "author"}
             elif prefix == "conversations" and event == "start_array":
                 arrays += 1
             elif prefix == "conversations.item" and event in {
@@ -604,17 +638,26 @@ def grok_export_item_count(
         and any(taxonomy_values.get(key, False) for key in content_keys)
     ):
         return None
-    if taxonomy_keys.intersection(recordish_keys) or (
-        "role" in taxonomy_keys and taxonomy_keys.intersection({"content", "text"})
-    ):
-        return None
-    if (
-        taxonomy_keys.intersection({"mapping", "chat_messages", "chunkedPrompt", "chunks"})
-        or {"source", "cascadeId", "markdown"} <= taxonomy_keys
-    ):
-        return None
-    if on_record_marker is not None:
-        on_record_marker("type" in taxonomy_keys and bool(taxonomy_keys.intersection(envelope_keys)))
+    has_envelope = bool(taxonomy_keys.intersection(envelope_keys))
+    relationship_index = {"session", "parent", "child", "type", "timestamp"} <= taxonomy_keys or {
+        "conversation",
+        "parent",
+        "child",
+        "type",
+        "timestamp",
+    } <= taxonomy_keys
+    record_marker = bool(
+        taxonomy_keys.intersection(recordish_keys)
+        or ("type" in taxonomy_keys and has_envelope)
+        or ("role" in taxonomy_keys and taxonomy_keys.intersection({"content", "text"}) and root_field_count <= 16)
+    ) and not (relationship_index and not has_envelope)
+    session_marker = (
+        any(taxonomy_values.get(key, False) for key in ("mapping", "chat_messages", "chunkedPrompt", "chunks"))
+        or (messages_array and messages_positive)
+        or all(taxonomy_values.get(key, False) for key in ("source", "cascadeId", "markdown"))
+    )
+    if on_positive_marker is not None:
+        on_positive_marker(bool(record_marker or session_marker))
     return count if keys == arrays == 1 and (count == 0 or valid_members > 0) else None
 
 
