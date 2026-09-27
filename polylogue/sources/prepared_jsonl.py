@@ -16,16 +16,24 @@ from pathlib import Path
 from typing import BinaryIO, overload
 from urllib.parse import quote
 
+import ijson
+
 from polylogue.core.enums import Provider
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.ids import session_content_hash
-from polylogue.sources.decoder_json import iter_json_container_records, json_record_container
+from polylogue.sources.decoder_json import (
+    generic_message_object_envelope,
+    iter_json_container_records,
+    json_record_container,
+    normalize_ijson_stdlib_numbers,
+)
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import (
     BUNDLE_PROVIDERS,
     iter_bundle_record_sessions,
+    parse_generic_messages_stream,
     parse_payload,
     parse_stream_payload,
     require_positive_conversational_evidence,
@@ -523,6 +531,7 @@ def prepare_jsonl_blob(
         store = SqliteMessageStore(sessions_path)
         before_hash = _source_digest(source)
         stream_prefix: str | None = None
+        generic_envelope: dict[str, JSONValue] | None = None
         # Cohort callbacks may inspect or rewrite the entire parse result.
         # The direct worker route can publish independent bundle members.
         if (
@@ -533,7 +542,50 @@ def prepare_jsonl_blob(
         ):
             with source.open("rb") as handle:
                 stream_prefix = json_record_container(handle)
-        if stream_prefix is not None:
+        if (
+            not is_stream
+            and provider in {Provider.DRIVE, Provider.GEMINI, Provider.UNKNOWN}
+            and prepare_sessions is None
+            and prepare_records is None
+            and Path(source_path).name.lower().endswith(".json")
+        ):
+            with source.open("rb") as handle:
+                candidate = generic_message_object_envelope(handle)
+            asserted_id = candidate.get("id") if candidate is not None else None
+            if candidate is not None and isinstance(asserted_id, str) and asserted_id.strip():
+                generic_envelope = candidate
+        if generic_envelope is not None:
+            _create_artifact_tables(store.conn)
+            shard_builder = SessionShardBuilder(directory / f"shard-{uuid.uuid4().hex}.db")
+            with source.open("rb") as handle:
+                session = parse_generic_messages_stream(
+                    provider,
+                    generic_envelope,
+                    (normalize_ijson_stdlib_numbers(item) for item in ijson.items(handle, "messages.item")),
+                    fallback_id,
+                    message_sink=store.new_sink(),
+                )
+            session_count = 0
+            if session is not None and require_positive_conversational_evidence(
+                [session], provider=provider, source_path=source_path
+            ):
+                if prepare_session is not None:
+                    session = prepare_session(session)
+                session.content_hash = session_content_hash(session)
+                append_session_to_shard(shard_builder, session)
+                _append_artifact_session(store, session_count, session)
+                session_count += 1
+            after_hash = _source_digest(source)
+            if before_hash != after_hash:
+                raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
+            enrichment_digest, enrichment_index_path = (
+                preparation_dependency() if preparation_dependency is not None else (None, None)
+            )
+            _seal_artifact(store.conn, after_hash, session_count, enrichment_digest, enrichment_index_path)
+            store.conn.commit()
+            shard_path = shard_builder.seal().path
+            shard_builder = None
+        elif stream_prefix is not None:
 
             def bundle_records() -> Iterator[JSONValue]:
                 with source.open("rb") as handle:
@@ -644,6 +696,7 @@ def prepare_jsonl_blob(
             parsed_prefix_size=parse_prefix_size,
             resolved_provider=provider,
             positive_evidence_filtered=stream_prefix is not None
+            or generic_envelope is not None
             or (prepare_sessions is None and prepare_session is not None),
         )
         sealed = True

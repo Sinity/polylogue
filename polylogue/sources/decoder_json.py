@@ -6,6 +6,7 @@ import io
 import json
 import re
 from collections.abc import Iterable
+from decimal import Decimal
 from typing import IO, Protocol, TypeAlias, TypeGuard, cast
 
 import ijson
@@ -30,6 +31,19 @@ ENCODING_GUESSES: tuple[str, ...] = (
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = dict[str, "JsonValue"] | list["JsonValue"] | JsonScalar
 JsonReadable: TypeAlias = IO[bytes]
+
+
+def normalize_ijson_stdlib_numbers(value: object) -> object:
+    """Match ``json.load`` numbers while retaining only one decoded record."""
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            value[index] = normalize_ijson_stdlib_numbers(item)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            value[key] = normalize_ijson_stdlib_numbers(item)
+    return value
 
 
 class LoggerLike(Protocol):
@@ -408,6 +422,62 @@ def json_record_container(handle: JsonReadable) -> str | None:
     finally:
         handle.seek(0)
     return None
+
+
+def generic_message_object_envelope(handle: JsonReadable) -> dict[str, JsonValue] | None:
+    """Read a simple object envelope while leaving its message array on disk.
+
+    Other nested root fields may carry provider semantics, so those documents
+    stay on their provider parser route. The event pass also validates the
+    complete JSON before a scratch artifact can be published.
+    """
+    scalar_fields = {
+        "id",
+        "title",
+        "name",
+        "created_at",
+        "create_time",
+        "created",
+        "createdAt",
+        "updated_at",
+        "update_time",
+        "updated",
+        "updatedAt",
+        "modified",
+    }
+    envelope: dict[str, JsonValue] = {}
+    current_key: str | None = None
+    message_arrays = 0
+    try:
+        events = ijson.parse(handle)
+        if next(events, None) != ("", "start_map", None):
+            return None
+        for prefix, event, value in events:
+            if prefix == "" and event == "map_key":
+                current_key = str(value)
+                if current_key == "messages":
+                    message_arrays += 1
+                elif current_key not in scalar_fields:
+                    return None
+                continue
+            if prefix == "" and event == "end_map":
+                current_key = None
+                continue
+            if current_key is None or prefix != current_key:
+                continue
+            if current_key == "messages" and event == "start_array":
+                continue
+            if event in {"start_array", "start_map"}:
+                return None
+            if event in {"string", "number", "boolean", "null"}:
+                if current_key == "messages":
+                    return None
+                envelope[current_key] = cast(JsonValue, normalize_ijson_stdlib_numbers(value))
+    except ijson.common.JSONError:
+        return None
+    finally:
+        handle.seek(0)
+    return envelope if message_arrays == 1 else None
 
 
 def iter_json_container_records(handle: JsonReadable, prefix: str) -> Iterable[JsonValue]:

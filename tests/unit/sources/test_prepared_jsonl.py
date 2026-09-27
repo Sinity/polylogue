@@ -10,6 +10,7 @@ from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 
+import ijson
 import pytest
 
 from polylogue.core.enums import Provider, Role
@@ -17,7 +18,7 @@ from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoders import _iter_json_stream
-from polylogue.sources.dispatch import parse_payload
+from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.sources.prepared_jsonl import PreparedJsonl, _write_artifact, prepare_jsonl_blob
 from polylogue.sources.prepared_message_sink import (
@@ -246,6 +247,102 @@ def test_bundle_worker_does_not_construct_a_whole_document_record_list(
     assert sum(1 for _ in artifact.iter_sessions()) == 300
 
 
+@pytest.mark.parametrize("provider", [Provider.DRIVE, Provider.GEMINI, Provider.UNKNOWN])
+def test_generic_single_object_stream_matches_parser_with_duplicate_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: Provider
+) -> None:
+    record = {
+        "id": "generic-session",
+        "name": "Neutral session",
+        "createdAt": "2025-01-01T00:00:00Z",
+        "messages": [
+            *({"id": "repeated", "role": "user", "text": f"Neutral prompt {index}"} for index in range(400)),
+            {"id": 1e20, "role": "assistant", "text": "Numeric ID answer", "timestamp": 1.25},
+            {"id": 10**30, "role": "user", "text": "Large integer ID prompt"},
+        ],
+    }
+    source = tmp_path / "session.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+    [expected] = parse_payload(provider, record, "fallback")
+    expected.content_hash = session_content_hash(expected)
+    expected_shard = prepare_session_shard(tmp_path / "expected", [expected])
+
+    def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("generic object decoded as a whole document")
+
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.decoder_json.json.load", refuse_whole_document)
+    decoded = 0
+    first_appended_after: int | None = None
+    original_items = ijson.items
+    original_append = SqliteMessageSink.append
+
+    def tracked_items(*args: object, **kwargs: object) -> object:
+        nonlocal decoded
+        for item in original_items(*args, **kwargs):
+            decoded += 1
+            yield item
+
+    def tracked_append(self: SqliteMessageSink, value: ParsedMessage) -> None:
+        nonlocal first_appended_after
+        if first_appended_after is None:
+            first_appended_after = decoded
+        original_append(self, value)
+
+    monkeypatch.setattr(ijson, "items", tracked_items)
+    monkeypatch.setattr(SqliteMessageSink, "append", tracked_append)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        provider.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert artifact.error is None
+    assert first_appended_after == 1
+    [actual] = artifact.iter_sessions()
+    assert (actual.provider_session_id, actual.title, actual.created_at, actual.content_hash) == (
+        expected.provider_session_id,
+        expected.title,
+        expected.created_at,
+        expected.content_hash,
+    )
+    assert [message.provider_message_id for message in actual.messages] == [
+        *(["repeated"] * 400),
+        "1e+20",
+        str(10**30),
+    ]
+    assert artifact.shard_path is not None
+    with sqlite3.connect(expected_shard.path) as baseline, sqlite3.connect(artifact.shard_path) as prepared:
+        for table in ("messages", "blocks", "shard_session"):
+            assert (
+                prepared.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+                == baseline.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+            )
+
+
+def test_generic_single_object_stream_discards_corrupt_suffix(tmp_path: Path) -> None:
+    source = tmp_path / "damaged.json"
+    source.write_text(
+        '{"id":"generic-session","messages":[{"role":"user","text":"A neutral prompt"}]} trailing',
+        encoding="utf-8",
+    )
+    directory = tmp_path / "prepared"
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.DRIVE.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(directory),
+    )
+    assert artifact.error is not None
+    assert artifact.sessions_path is None
+    assert list(directory.glob("*.db")) == []
+
+
 def test_chatgpt_bundle_worker_keeps_original_positions_after_skipped_siblings(tmp_path: Path) -> None:
     records = [
         {"unrelated": "sibling"},
@@ -258,6 +355,7 @@ def test_chatgpt_bundle_worker_keeps_original_positions_after_skipped_siblings(t
     expected = parse_payload(
         Provider.CHATGPT, list(_iter_json_stream(BytesIO(source.read_bytes()), source.name)), "fallback"
     )
+    expected = require_positive_conversational_evidence(expected, provider=Provider.CHATGPT, source_path=str(source))
     for session in expected:
         session.content_hash = session_content_hash(session)
     artifact = prepare_jsonl_blob(
