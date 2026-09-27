@@ -281,6 +281,7 @@ class SessionProfileConvergenceOwner(DerivationConvergenceOwner):
                     adapter_recipe=recipe_version,
                     stop_requested=stop_requested,
                     admission=admission,
+                    barrier=self._converger._derivation_barrier,
                 )
             ),
             admission_class="incremental-background",
@@ -400,6 +401,7 @@ def _converge_selected_session_parts_sync(
     adapter_recipe: str,
     stop_requested: Callable[[], str | None],
     admission: _DerivationAdmission,
+    barrier: PublicationBarrier | None = None,
 ) -> tuple[SelectedSessionOutcome, ...]:
     """Compute and certify only sealed session targets on the shared worker.
 
@@ -453,6 +455,20 @@ def _converge_selected_session_parts_sync(
         if _selected_satisfied(target, before):
             outcomes.append(_selected_outcome(target, "already_satisfied", before))
             continue
+        # A required target derives from the session's content, so it waits
+        # for the primary publication barrier exactly as a recurring pass
+        # does; an excess target only retires output and is never held.
+        if barrier is not None and target.expected == "required":
+            try:
+                waiting = target.session_id in barrier((target.session_id,))
+            except Exception as exc:
+                outcomes.append(
+                    _selected_outcome(target, "pending", before, reason=f"publication barrier unreadable: {exc}")
+                )
+                continue
+            if waiting:
+                outcomes.append(_selected_outcome(target, "pending", before, reason="awaits primary publication"))
+                continue
         try:
             if adapter.quiet(frame, target.session_id):
                 outcomes.append(_selected_outcome(target, "pending", before, reason="quiet"))
@@ -1458,15 +1474,14 @@ class DaemonConverger:
     def summary(self) -> dict[str, int]:
         """Return counts of files by convergence state.
 
-        Each file lands in exactly one bucket. A file that failed once and
-        later converged is converged: ``error_count`` is history, not state.
+        Each file lands in exactly one bucket, decided by its current stage
+        states. ``error_count`` is history: a file that failed once and later
+        converged is converged, and one now retrying is in progress.
         """
         total = len(self._file_states)
         converged = sum(1 for s in self._file_states.values() if s.converged)
         failed = sum(
-            1
-            for s in self._file_states.values()
-            if not s.converged and (s.error_count > 0 or StageState.FAILED in s.stages.values())
+            1 for s in self._file_states.values() if not s.converged and StageState.FAILED in s.stages.values()
         )
         return {
             "total": total,
