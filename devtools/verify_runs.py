@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from devtools.agent_env import runtime_env
+from devtools.checkout_identity import checkout_identity
 from devtools.pytest_evidence import evaluate_pytest_evidence
 from devtools.pytest_suite_cost_plugin import (
     RUN_RECEIPT_NAME as SUITE_COST_RUN_RECEIPT_NAME,
@@ -304,6 +305,9 @@ class VerifyRun:
             "tier": tier,
             "argv": list(argv),
             "git_head": git_head,
+            # A cited receipt names what it tested: a run on the default
+            # branch tested the base, not a change (devtools/checkout_identity.py).
+            "git_branch": checkout_identity(self.root).branch,
             "git_dirty": git_dirty(self.root),
             "started_at": utc_now(),
             "status": "running",

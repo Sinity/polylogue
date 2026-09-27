@@ -20,6 +20,13 @@ from typing import Any
 
 from devtools.agent_env import refuse_verify_tier, runtime_env
 from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
+from devtools.checkout_identity import (
+    ON_DEFAULT_BRANCH_FLAG,
+    REFUSAL_DIAGNOSIS,
+    REFUSAL_EXIT,
+    checkout_identity,
+    default_branch_refusal,
+)
 from devtools.cloud_sentinels import cloud_sentinel_declined
 from devtools.gate import quick_gates
 from devtools.pytest_invocation import (
@@ -773,7 +780,14 @@ def _write_verdict_line(payload: Mapping[str, Any], *, stream: Any) -> None:
     named = f" diagnosis={diagnosis}" if diagnosis else ""
     artifact_dir = payload.get("artifact_dir")
     receipt = f" receipt={Path(str(artifact_dir)) / 'run.json'}" if artifact_dir else ""
-    stream.write(f"\nverify: {verdict} exit={exit_code}{named}{receipt}\n")
+    # The checkout this run tested, so the line that is cited says what it proves.
+    head = payload.get("git_head")
+    tested = (
+        f" checkout={ROOT.resolve()} branch={payload.get('git_branch') or '(detached)'} head={str(head)[:12]}"
+        if head
+        else ""
+    )
+    stream.write(f"\nverify: {verdict} exit={exit_code}{named}{receipt}{tested}\n")
 
 
 def _emit_affected_admission_refusal(*, graph: Any, decision: AffectedAdmission, stream: Any | None = None) -> None:
@@ -965,8 +979,33 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--hypothesis-profile", help="profile passed to pytest; overrides HYPOTHESIS_PROFILE")
     parser.add_argument("--runner", choices=("managed", "isolated"), default="managed")
+    parser.add_argument(
+        ON_DEFAULT_BRANCH_FLAG,
+        dest="on_default_branch",
+        action="store_true",
+        help="run on the default branch deliberately (a base comparison, or the hosted gate on a push)",
+    )
     args = parser.parse_args(argv)
     _anchor_verification_paths()
+    identity = checkout_identity(ROOT)
+    branch_refusal = default_branch_refusal(identity, command="devtools verify", allowed=args.on_default_branch)
+    if branch_refusal is not None:
+        if args.json:
+            json.dump(
+                {
+                    "kind": "polylogue.verification-refusal",
+                    "status": "refused",
+                    "diagnosis": REFUSAL_DIAGNOSIS,
+                    "message": branch_refusal,
+                    "exit_code": REFUSAL_EXIT,
+                },
+                sys.stdout,
+            )
+            sys.stdout.write("\n")
+        else:
+            sys.stderr.write(branch_refusal + "\n")
+        return REFUSAL_EXIT
+    sys.stderr.write(f"verify: {identity.describe()}\n")
     # Before this run writes its own ``running`` receipt, give a terminal state
     # to any earlier one whose process is gone. A verification killed outright
     # runs no handler of its own, so the next reader is the only thing that can

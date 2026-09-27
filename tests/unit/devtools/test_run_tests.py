@@ -804,7 +804,9 @@ def test_every_run_names_the_receipt_it_wrote(
 
     final = capsys.readouterr().err.strip().splitlines()[-1]
     assert final.startswith("devtools test: PASSED exit=0 diagnosis=pytest_passed receipt=")
-    receipt = tmp_path / final.split("receipt=", 1)[1].strip()
+    receipt = tmp_path / final.split("receipt=", 1)[1].split()[0]
+    # The line names the checkout it tested, so a cited receipt is self-identifying.
+    assert " checkout=" in final and " branch=" in final and " head=" in final
     assert receipt.is_file()
     recorded = json.loads(receipt.read_text(encoding="utf-8"))
     assert recorded["exit_code"] == 0

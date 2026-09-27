@@ -34,6 +34,12 @@ from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
 )
+from devtools.checkout_identity import (
+    ON_DEFAULT_BRANCH_FLAG,
+    REFUSAL_EXIT,
+    checkout_identity,
+    default_branch_refusal,
+)
 from devtools.pytest_invocation import (
     CLEAR_CONFIGURED_ADDOPTS,
     IGNORED_COLLECTION_ARGS,
@@ -549,8 +555,16 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if outlier_count is not None:
         return print_outliers(outlier_count)
+    on_default_branch = ON_DEFAULT_BRANCH_FLAG in selection
+    selection = [arg for arg in selection if arg != ON_DEFAULT_BRANCH_FLAG]
     selection = _normalize_selection_paths(selection, invocation_directory=invocation_directory)
     _anchor_test_paths()
+    identity = checkout_identity(ROOT)
+    refusal = default_branch_refusal(identity, command="devtools test", allowed=on_default_branch)
+    if refusal is not None:
+        sys.stderr.write(refusal + "\n")
+        return REFUSAL_EXIT
+    sys.stderr.write(f"devtools test: {identity.describe()}\n")
     try:
         assert_polylogue_matches_checkout(ROOT, context="devtools test")
     except CheckoutImportMismatchError as exc:
@@ -712,7 +726,7 @@ def main(argv: list[str] | None = None) -> int:
     receipt = run.relative_run_dir / "run.json"
     sys.stderr.write(
         f"\ndevtools test: {'PASSED' if rc == 0 else 'FAILED'} exit={rc} "
-        f"diagnosis={metadata.get('diagnosis') or 'unknown'} receipt={receipt}\n"
+        f"diagnosis={metadata.get('diagnosis') or 'unknown'} receipt={receipt} {identity.describe()}\n"
     )
     # The rest of the artifacts are reference material, not a result. Printing
     # them after every green run trains the reader to skip the tail of the
