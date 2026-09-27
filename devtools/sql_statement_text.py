@@ -36,6 +36,8 @@ import ast
 import re
 from collections.abc import Mapping
 
+from devtools.ast_cache import walk_module
+
 __all__ = [
     "HOLE",
     "SQL_EXECUTION_METHODS",
@@ -183,6 +185,10 @@ def _literal_string_sequence(expression: ast.AST, values: Mapping[str, tuple[str
     return ()
 
 
+#: The only node shapes :func:`string_values` binds a name from.
+_BINDING_NODES = (ast.Assign, ast.AnnAssign, ast.For, ast.AsyncFor)
+
+
 def string_values(tree: ast.Module) -> dict[str, tuple[str, ...]]:
     """Resolve string-valued names to the *union* of what they can hold.
 
@@ -204,8 +210,9 @@ def string_values(tree: ast.Module) -> dict[str, tuple[str, ...]]:
         merged = tuple(dict.fromkeys(values.get(name, ()) + resolved))
         values[name] = merged[:_VALUE_LIMIT]
 
+    bindings = [node for node in walk_module(tree) if isinstance(node, _BINDING_NODES)]
     for _ in range(3):
-        for node in ast.walk(tree):
+        for node in bindings:
             if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
                 name = node.targets[0].id
                 record(name, statement_texts(node.value, values))
