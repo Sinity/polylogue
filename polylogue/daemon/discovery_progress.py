@@ -154,7 +154,11 @@ def active_discovery_payload() -> dict[str, object] | None:
             "current_path": None,
             "discovery_pending": True,
             "discovery_age_s": round(max(0.0, now - min(state.started for state in candidates)), 3),
-            "discovery_last_advanced_age_s": round(max(0.0, now - min(state.last_advanced for state in candidates)), 3),
+            # This field describes the aggregate walk population (as do the
+            # counters below), so any advancing walk proves recent progress.
+            # Using the oldest timestamp made one stale pending walk mask
+            # progress from every active walk.
+            "discovery_last_advanced_age_s": round(max(0.0, now - max(state.last_advanced for state in candidates)), 3),
             "discovery_inspected_count": sum(state.inspected for state in candidates),
             "discovery_accepted_count": sum(state.accepted for state in candidates),
             "discovery_rejected_count": sum(state.rejected for state in candidates),

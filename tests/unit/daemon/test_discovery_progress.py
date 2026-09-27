@@ -15,6 +15,7 @@ from polylogue.daemon.discovery_progress import (
     advance_discovery,
     begin_discovery,
     end_discovery,
+    overlay_active_discovery,
     reset_discovery_progress,
 )
 from polylogue.daemon.status_snapshot import (
@@ -130,6 +131,28 @@ def test_pending_source_contributes_while_another_source_runs() -> None:
         finally:
             end_discovery(second)
     finally:
+        reset_discovery_progress()
+
+
+def test_aggregate_last_advance_age_uses_most_recent_walk(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = 0.0
+    monkeypatch.setattr("polylogue.daemon.discovery_progress.time.monotonic", lambda: now)
+    first = begin_discovery("stale-pending")
+    end_discovery(first, pending=True)
+    now = 10.0
+    second = begin_discovery("active")
+    now = 12.0
+    advance_discovery(second, inspected=1)
+    now = 15.0
+    try:
+        status = overlay_active_discovery({"catchup": {}})
+        catchup = status["catchup"]
+        assert isinstance(catchup, dict)
+        assert catchup["discovery_inspected_count"] == 1
+        assert catchup["discovery_counter_scope"] == "all_active_and_pending_walks"
+        assert catchup["discovery_last_advanced_age_s"] == 3.0
+    finally:
+        end_discovery(second)
         reset_discovery_progress()
 
 
