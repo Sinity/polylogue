@@ -22,6 +22,7 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_
 from polylogue.storage.sqlite.archive_tiers.index_convergence import apply_index_benign_ddl_convergence
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.audit_leaf import AuditLeafError, assert_verified_audit_leaf
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 # Kept locally so schema metadata can import the bootstrap module while the
@@ -268,7 +269,7 @@ def _restore_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, require
             if not loaded:
                 return False
         with contextlib.closing(
-            sqlite3.connect(f"{prototype.resolve(strict=True).as_uri()}?mode=ro", uri=True)
+            open_readonly_connection(prototype.resolve(strict=True), immutable=True, validate_schema=False)
         ) as source:
             source.backup(conn)
         stored = int(conn.execute("PRAGMA user_version").fetchone()[0])

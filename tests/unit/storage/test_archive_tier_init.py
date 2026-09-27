@@ -15,6 +15,7 @@ from polylogue.storage.sqlite.archive_tiers.archive_init import (
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 
 def _fake_initialize_archive_database(path: Path, tier: object) -> None:
@@ -221,11 +222,11 @@ def test_tier_prototype_is_atomically_published_and_restored_read_only(
         assert staging.parent == prototype.parent
         assert not staging.exists()
 
-        connect_spy = Mock(wraps=sqlite3.connect)
-        monkeypatch.setattr(sqlite3, "connect", connect_spy)
+        read_spy = Mock(wraps=open_readonly_connection)
+        monkeypatch.setattr("polylogue.storage.sqlite.archive_tiers.bootstrap.open_readonly_connection", read_spy)
         bootstrap.initialize_archive_database(tmp_path / "second.db", ArchiveTier.INDEX)
 
-        connect_spy.assert_any_call(prototype.resolve().as_uri() + "?mode=ro", uri=True)
+        read_spy.assert_any_call(prototype.resolve(strict=True), immutable=True, validate_schema=False)
     finally:
         bootstrap._TIER_PROTOTYPES.clear()
 

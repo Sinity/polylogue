@@ -30,7 +30,7 @@ from polylogue.storage.archive_identity import (
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import DEFAULT_ARCHIVE_PAGE_SIZE, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import descriptor_alias_path
+from polylogue.storage.sqlite.connection_profile import descriptor_alias_path, open_readonly_connection
 from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 #: Durable and disposable archive members an index generation reaches by
@@ -1272,7 +1272,9 @@ def _open_source_snapshot(archive_root: Path) -> Iterator[sqlite3.Connection]:
         alias = descriptor_alias_path(fd)
         if alias is None:
             raise RuntimeError(f"no validated descriptor alias for source snapshot: {path}")
-        with closing(sqlite3.connect(f"file:{alias}?mode=ro", uri=True)) as conn:
+        with closing(
+            open_readonly_connection(path, opened_main_fd=fd, timeout_class="background-read", validate_schema=False)
+        ) as conn:
             yield conn
     finally:
         os.close(fd)

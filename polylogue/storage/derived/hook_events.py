@@ -41,6 +41,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     CarrierHookEvent,
     hook_carrier_coordinate,
 )
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 HOOK_EVENTS_DOMAIN = "hook_events"
 
@@ -132,7 +133,7 @@ class HookEventsDerivation:
     @contextmanager
     def _read(self) -> Iterator[sqlite3.Connection]:
         source = self.archive_root / "source.db"
-        conn = sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=5.0)
+        conn = open_readonly_connection(source, timeout_class="background-read", validate_schema=False)
         try:
             conn.row_factory = sqlite3.Row
             yield conn

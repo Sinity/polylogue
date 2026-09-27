@@ -1136,6 +1136,7 @@ def open_readonly_connection(
     validate_schema: bool = True,
     profile: SQLiteConnectionProfile = READ_CONNECTION_PROFILE,
     timeout_class: str = "interactive-read",
+    check_same_thread: bool = True,
 ) -> sqlite3.Connection:
     """Open a read-only SQLite connection with canonical read pragmas applied.
 
@@ -1161,6 +1162,9 @@ def open_readonly_connection(
     ``validate_schema=False`` is reserved for diagnostic readers that need to
     inspect a tier before reporting its schema mismatch. It does not change the
     read-only connection profile or grant write access.
+
+    ``check_same_thread=False`` is reserved for a cached handle whose caller
+    already serializes access and may close it from a different thread.
     """
     if profile.role != "read" or not profile.query_only:
         raise ValueError("open_readonly_connection requires a query-only read profile")
@@ -1191,7 +1195,7 @@ def open_readonly_connection(
         if descriptor_uri is None:
             raise RuntimeError(f"cannot open selected SQLite database through a descriptor-bound path: {path}")
         database_uri = descriptor_uri
-    conn = connect_measured(database_uri, uri=True, timeout=timeout)
+    conn = connect_measured(database_uri, uri=True, timeout=timeout, check_same_thread=check_same_thread)
     try:
         if validate_schema:
             _assert_schema_supported(conn, path, tier)
@@ -1273,13 +1277,25 @@ def _authorize_read_operation(
     return sqlite3.SQLITE_DENY
 
 
-def attach_readonly_database(conn: sqlite3.Connection, path: str | Path, *, alias: str) -> None:
-    """Attach a second read-only tier to a profiled reader."""
+def attach_readonly_database(
+    conn: sqlite3.Connection,
+    path: str | Path,
+    *,
+    alias: str,
+    immutable: bool = False,
+) -> None:
+    """Attach a second read-only database to a profiled reader.
+
+    SQLite's authorizer receives a NULL filename while preparing a
+    parameterized ATTACH, so this tightly scoped helper temporarily removes
+    it for the single ATTACH statement. ``query_only`` remains enabled, and
+    the attached URI is always opened read-only.
+    """
     if conn.execute("PRAGMA query_only").fetchone()[0] != 1:
         raise ValueError("read-only attachment requires a query-only connection")
     if re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", alias) is None:
         raise ValueError(f"invalid SQLite attachment alias: {alias!r}")
-    uri = f"file:{quote(str(path))}?mode=ro"
+    uri = f"file:{quote(str(path))}?mode=ro" + ("&immutable=1" if immutable else "")
     conn.set_authorizer(None)
     try:
         conn.execute(f"ATTACH DATABASE ? AS {alias}", (uri,))

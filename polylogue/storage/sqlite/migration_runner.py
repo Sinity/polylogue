@@ -31,7 +31,7 @@ from polylogue.storage.backup_attestation import (
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.source import RETIRED_SOURCE_SCHEMA_OBJECTS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 DURABLE_MIGRATION_TIERS: frozenset[ArchiveTier] = frozenset({ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT})
@@ -1389,10 +1389,19 @@ def _validate_source_continuity_rebind_delta(
     """
 
     try:
-        with closing(sqlite3.connect(f"{live_path.resolve(strict=True).as_uri()}?mode=ro", uri=True)) as connection:
-            connection.execute(
-                "ATTACH DATABASE ? AS backup_source",
-                (f"{backup_path.resolve(strict=True).as_uri()}?mode=ro&immutable=1",),
+        with closing(
+            open_readonly_connection(
+                live_path.resolve(strict=True),
+                tier=ArchiveTier.SOURCE,
+                validate_schema=False,
+                timeout_class="offline-bulk",
+            )
+        ) as connection:
+            attach_readonly_database(
+                connection,
+                backup_path.resolve(strict=True),
+                alias="backup_source",
+                immutable=True,
             )
             control = connection.execute(
                 "SELECT pending_mutation_id, pending_payload_json, pending_payload_sha256 "
