@@ -8,6 +8,8 @@ from pathlib import Path
 
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.storage.archive_identity import resolve_active_index_path
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 
 
 def convergence_debt_retry_delay_s(failure_count: int, *, error: str | None) -> int:
@@ -58,9 +60,11 @@ def _archive_convergence_debt_source_path_from_root(archive_root: Path, session_
     if not index_db.exists() or not source_db.exists():
         return None
     try:
-        conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+        conn = open_readonly_connection(
+            index_db, tier=ArchiveTier.INDEX, validate_schema=False, timeout_class="background-read"
+        )
         try:
-            conn.execute("ATTACH DATABASE ? AS source_tier", (str(source_db),))
+            attach_readonly_database(conn, source_db, alias="source_tier")
             row = conn.execute(
                 """
                 SELECT r.source_path

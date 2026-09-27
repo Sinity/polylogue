@@ -271,7 +271,7 @@ def test_expired_frame_rebinds_before_resuming(index_db: Path, monkeypatch: pyte
 def test_one_shot_diagnostic_read_is_readonly_and_releases_its_connection(index_db: Path) -> None:
     """A diagnostic probe cannot become a hidden long-lived or writable reader."""
     with one_shot_diagnostic_read(index_db) as conn:
-        with pytest.raises(sqlite3.OperationalError, match="readonly|read.only"):
+        with pytest.raises(sqlite3.DatabaseError, match="not authorized|readonly|read.only"):
             conn.execute("INSERT INTO rows_ VALUES (99, 'injected')")
         assert conn.execute("SELECT count(*) FROM rows_").fetchone()[0] == 10
 
@@ -316,7 +316,7 @@ def test_migrated_readers_refuse_writes_at_the_database_boundary(index_db: Path,
     for label, opener in _migrated_readers(index_db):
         conn = opener()
         try:
-            with pytest.raises(sqlite3.OperationalError, match="readonly|read.only"):
+            with pytest.raises(sqlite3.DatabaseError, match="not authorized|readonly|read.only"):
                 conn.execute(statement)
             assert conn.execute("SELECT count(*) FROM rows_").fetchone()[0] == 10, label
         finally:
@@ -336,10 +336,10 @@ def test_migrated_readers_cannot_write_through_an_attached_database(index_db: Pa
         reader = opener()
         try:
             reader.execute("ATTACH DATABASE ? AS sibling", (str(sibling),))
-            with pytest.raises(sqlite3.OperationalError, match="readonly|read.only"):
+            with pytest.raises(sqlite3.DatabaseError, match="not authorized|readonly|read.only"):
                 reader.execute("INSERT INTO sibling.target VALUES ('injected')")
-        except sqlite3.OperationalError as exc:  # an ATTACH the profile refuses outright is also correct
-            assert "readonly" in str(exc) or "read-only" in str(exc), label
+        except sqlite3.DatabaseError as exc:  # an ATTACH the profile refuses outright is also correct
+            assert any(reason in str(exc) for reason in ("not authorized", "readonly", "read-only")), label
         finally:
             reader.close()
 

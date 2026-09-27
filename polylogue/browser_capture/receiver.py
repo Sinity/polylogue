@@ -48,6 +48,7 @@ from polylogue.paths import (
     browser_capture_spool_root,
 )
 from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 logger = get_logger(__name__)
 
@@ -492,9 +493,10 @@ def _session_update_evidence_ms(envelope: BrowserCaptureEnvelope) -> int | None:
 def _open_readonly_sqlite(path: Path) -> sqlite3.Connection | None:
     if not path.exists():
         return None
-    uri = f"file:{path.as_posix()}?mode=ro"
     try:
-        conn = sqlite3.connect(uri, uri=True)
+        # Column-tolerant diagnostic lookups: the caller inspects whatever
+        # schema is present, so tier schema validation stays off here.
+        conn = open_readonly_connection(path, validate_schema=False)
     except sqlite3.Error:
         return None
     conn.row_factory = sqlite3.Row

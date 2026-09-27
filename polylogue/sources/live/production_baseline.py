@@ -39,6 +39,8 @@ from polylogue.sources.source_acquisition_components import (
 from polylogue.sources.sqlite_snapshot import is_sqlite_path, sqlite_member_revision_and_size
 from polylogue.sources.walk_faults import WalkRefusedError
 from polylogue.storage.archive_identity import MAINTENANCE_STATE_DIRNAME
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 _PENDING_DIR = "production-source-baseline"
 _PENDING_FILE = "pending.json"
@@ -226,7 +228,9 @@ class ProductionSourceBaseline:
 
 def unretained_source_decisions(baseline: ProductionSourceBaseline, source_db: Path) -> tuple[SourceDecision, ...]:
     """Accepted coordinates absent from the durable raw-session ledger."""
-    conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+    conn = open_readonly_connection(
+        source_db, tier=ArchiveTier.SOURCE, validate_schema=False, timeout_class="background-read"
+    )
     try:
         retained = {
             (

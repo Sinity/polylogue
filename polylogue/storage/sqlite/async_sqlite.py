@@ -16,6 +16,7 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from pathlib import Path
+from urllib.parse import quote
 
 import aiosqlite
 
@@ -32,6 +33,7 @@ from polylogue.storage.sqlite.connection_profile import (
     READ_CONNECTION_PRAGMA_STATEMENTS,
     READ_DB_TIMEOUT,
     WRITE_CONNECTION_PROFILE,
+    _authorize_read_operation,
     write_connection_pragma_statements,
 )
 from polylogue.storage.sqlite.queries import (
@@ -62,8 +64,13 @@ _SIBLING_TIER_ATTACHMENTS: tuple[tuple[str, str], ...] = (
 )
 
 
-async def _attach_sibling_tiers(conn: aiosqlite.Connection) -> None:
-    """Attach sibling archive tiers to an ``index.db`` connection (idempotent)."""
+async def _attach_sibling_tiers(conn: aiosqlite.Connection, *, read_only: bool = False) -> None:
+    """Attach sibling archive tiers to an ``index.db`` connection (idempotent).
+
+    A reader attaches each sibling through a ``mode=ro`` URI, so the read
+    profile's authorizer and ``query_only`` are not the only barrier between
+    a reader and a writable durable tier.
+    """
     cursor = await conn.execute("PRAGMA database_list")
     rows = list(await cursor.fetchall())
     main_path: str | None = None
@@ -87,7 +94,8 @@ async def _attach_sibling_tiers(conn: aiosqlite.Connection) -> None:
             continue
         sibling = root / filename
         if sibling.exists():
-            await conn.execute(f"ATTACH DATABASE ? AS {schema_name}", (str(sibling),))
+            target = f"file:{quote(str(sibling))}?mode=ro" if read_only else str(sibling)
+            await conn.execute(f"ATTACH DATABASE ? AS {schema_name}", (target,))
 
 
 async def configure_connection(conn: aiosqlite.Connection) -> None:
@@ -108,8 +116,11 @@ async def configure_read_connection(conn: aiosqlite.Connection) -> None:
     """Apply read-safe settings without mutating database-wide state."""
     conn.row_factory = aiosqlite.Row
     await _apply_pragma_statements_async(conn, READ_CONNECTION_PRAGMA_STATEMENTS)
-    await _attach_sibling_tiers(conn)
+    await _attach_sibling_tiers(conn, read_only=True)
     await conn.create_function("pl_fold", 1, pl_fold, deterministic=True)
+    # The same DB-boundary authorizer as the synchronous read profile: a
+    # reader cannot re-enable writes, attach a writable file or mutate schema.
+    await conn.set_authorizer(_authorize_read_operation)
 
 
 async def _read_schema_ready(backend: SQLiteBackend) -> bool:

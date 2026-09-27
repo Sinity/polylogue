@@ -119,17 +119,12 @@ def _open_archive_insight_write_connection(db_path: Path, *, archive_root: Path)
     root.  The caller therefore supplies the admitted root rather than
     deriving it from the generation path.
     """
-    conn = open_daemon_connection(
+    return open_daemon_connection(
         db_path,
         timeout=_ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS / 1000,
+        busy_timeout_ms=_ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS,
         archive_root=archive_root,
     )
-    try:
-        conn.execute(f"PRAGMA busy_timeout = {_ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS}")
-    except BaseException:
-        conn.close()
-        raise
-    return conn
 
 
 # ── Stage: Claude Workflow evidence ──────────────────────────────

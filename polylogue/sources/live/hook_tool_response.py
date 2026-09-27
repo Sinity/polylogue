@@ -36,6 +36,8 @@ from pathlib import Path
 from polylogue.core.enums import BlockType
 from polylogue.logging import get_logger
 from polylogue.sources.parsers.base_models import ParsedSession, ParsedSessionEvent
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 logger = get_logger(__name__)
 
@@ -208,7 +210,9 @@ def resolve_hook_tool_responses(
     if not source_db.exists():
         return {}
     try:
-        conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=5.0)
+        conn = open_readonly_connection(
+            source_db, tier=ArchiveTier.SOURCE, validate_schema=False, timeout=5.0, timeout_class="background-read"
+        )
     except sqlite3.Error as exc:
         logger.debug("Failed to open source.db for hook tool responses: %s", exc)
         return {}

@@ -312,8 +312,7 @@ def release_refused_publication_receipt(
     if publication_id is None or blob_hash is None:
         return False
     require_write_lease(f"blob publication refusal({source_db_path})", archive_root=source_db_path.parent)
-    conn = sqlite3.connect(source_db_path, timeout=30.0)
-    conn.execute("PRAGMA busy_timeout = 30000")
+    conn = open_source_tier_write_connection(source_db_path, archive_root=source_db_path.parent)
     try:
         conn.execute("BEGIN IMMEDIATE")
         cursor = conn.execute(
@@ -475,7 +474,7 @@ def reconcile_blob_publication_reservations(
             unresolved += 1
     if clear_ids:
         require_write_lease(f"blob publication reconciliation({source_db_path})", archive_root=source_db_path.parent)
-        conn = sqlite3.connect(source_db_path)
+        conn = open_source_tier_write_connection(source_db_path, archive_root=source_db_path.parent)
         try:
             conn.execute("BEGIN IMMEDIATE")
             conn.executemany(
@@ -550,7 +549,7 @@ def abandon_blob_publication_receipts(
 
         resolved_index = index_db_path or ArchiveLocation.resolve(source_db_path.parent).active_index_path
         require_write_lease(f"blob publication abandonment({source_db_path})", archive_root=source_db_path.parent)
-        source_conn = sqlite3.connect(source_db_path)
+        source_conn = open_source_tier_write_connection(source_db_path, archive_root=source_db_path.parent)
         index_conn: sqlite3.Connection | None = None
         abandoned: list[str] = []
         skipped_referenced = 0
