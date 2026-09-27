@@ -66,6 +66,24 @@ def test_archive_debt_blocks_a_lost_durable_tier_and_keeps_fresh_roots_actionabl
     assert [action.command for action in derived.actions] == [("polylogued", "run")]
 
 
+def test_archive_debt_keeps_a_resumable_bootstrap_actionable(tmp_path: Path) -> None:
+    """A pending bootstrap intent makes missing durable tiers the daemon's to finish.
+
+    Anti-vacuity: ignore ``.bootstrap.pending`` in ``lost_durable_tiers`` and
+    ``user`` is reported ``blocked`` with no action.
+    """
+    _write_tier_version(tmp_path / ARCHIVE_TIER_SPECS[ArchiveTier.SOURCE].filename, 1)
+    ledger = tmp_path / ".maintenance-state" / "durable-change-trains"
+    ledger.mkdir(parents=True)
+    (ledger / ".bootstrap.pending").write_text("{}", encoding="utf-8")
+
+    by_ref = {row.debt_ref: row for row in archive_debt_list(archive_root=tmp_path, kinds=("archive-tier",)).rows}
+
+    resumable = by_ref["debt:archive-tier:user:missing"]
+    assert resumable.status == "actionable"
+    assert [action.command for action in resumable.actions] == [("polylogued", "run")]
+
+
 def test_archive_debt_filters_rows_by_status(tmp_path: Path) -> None:
     actionable = archive_debt_list(archive_root=tmp_path, kinds=("archive-tier",), statuses=("actionable",))
     blocked = archive_debt_list(archive_root=tmp_path, kinds=("archive-tier",), statuses=("blocked",))

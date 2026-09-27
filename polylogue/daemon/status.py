@@ -91,6 +91,7 @@ from polylogue.storage.archive_readiness import (
     RawMaterializationAssessment,
     RawMaterializationAssessmentState,
     assess_raw_materialization,
+    lost_durable_tiers,
     probe_archive_tier,
     raw_materialization_readiness_snapshot,
 )
@@ -490,6 +491,7 @@ class ArchiveStorageStatus(BaseModel):
     schema_mismatches: list[str] = Field(default_factory=list)
     present_tiers: list[str] = Field(default_factory=list)
     missing_tiers: list[str] = Field(default_factory=list)
+    lost_durable_tiers: list[str] = Field(default_factory=list)
     unreadable_tiers: list[str] = Field(default_factory=list)
     tiers: list[ArchiveTierStatus] = Field(default_factory=list)
     identity: dict[str, object] = Field(default_factory=dict)
@@ -906,6 +908,7 @@ def _archive_storage_info() -> ArchiveStorageStatus:
         schema_mismatches=schema_mismatches,
         present_tiers=present_tiers,
         missing_tiers=missing_tiers,
+        lost_durable_tiers=[tier.value for tier in lost_durable_tiers(root)],
         unreadable_tiers=unreadable_tiers,
         tiers=tiers,
         identity=identity.as_dict(unit="polylogued.service"),
@@ -2468,10 +2471,16 @@ def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentR
         and state is CapabilityReadinessState.STALE
     ):
         caveats += ("materialization_pending",)
+    if storage.lost_durable_tiers:
+        caveats += (f"lost_durable_tiers:{','.join(storage.lost_durable_tiers)}",)
     repair_hint = None
-    if state is not CapabilityReadinessState.READY:
-        # Opening the archive creates a fresh root and any missing derived tier;
-        # a lost durable tier is refused there, never recreated.
+    if storage.lost_durable_tiers:
+        # Opening the archive refuses a lost durable tier and never recreates
+        # it, so starting the daemon cannot discharge this state.
+        repair_hint = "restore the archive root from a verified backup"
+    elif state is not CapabilityReadinessState.READY:
+        # Opening the archive creates a fresh root, resumes a pending
+        # bootstrap, and creates missing derived tiers.
         repair_hint = "polylogued run"
     return ComponentReadiness(
         component="archive_storage",

@@ -37,6 +37,30 @@ logger = get_logger(__name__)
 ArchiveTierVersionStatus = Literal["ok", "missing", "mismatch", "invalid"]
 
 
+_DURABLE_TIERS: tuple[ArchiveTier, ...] = (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT)
+
+
+def lost_durable_tiers(archive_root: Path) -> tuple[ArchiveTier, ...]:
+    """Return the durable tiers an established archive lost outside Polylogue.
+
+    Bootstrap creates every durable tier together under one pending intent,
+    and opening the archive refuses a durable tier missing beside a surviving
+    one rather than recreating it. A fresh root (no durable tier), a pending
+    bootstrap intent, and an ``audit.db`` whose adoption receipt lets startup
+    republish it are all recoverable by opening the archive, so none of them
+    is lost.
+    """
+    ledger = archive_root / ".maintenance-state" / "durable-change-trains"
+    if (ledger / ".bootstrap.pending").is_file():
+        return ()
+    missing = tuple(tier for tier in _DURABLE_TIERS if not (archive_root / f"{tier.value}.db").exists())
+    if len(missing) == len(_DURABLE_TIERS):
+        return ()
+    if ArchiveTier.AUDIT in missing and (ledger / "audit-adoption.json").is_file():
+        missing = tuple(tier for tier in missing if tier is not ArchiveTier.AUDIT)
+    return missing
+
+
 @dataclass(frozen=True, slots=True)
 class ArchiveTierProbe:
     """One archive tier file's existence/size/schema-version facts.
@@ -1967,6 +1991,7 @@ __all__ = [
     "RawMaterializationAssessment",
     "RawMaterializationAssessmentState",
     "assess_raw_materialization",
+    "lost_durable_tiers",
     "archive_readiness_status",
     "archive_readiness_status_from_connections",
     "missing_source_raw_session_evidence",

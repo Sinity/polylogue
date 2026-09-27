@@ -1721,6 +1721,40 @@ def test_archive_storage_info_reads_durable_tiers_from_configured_root_for_index
     assert storage.missing_tiers == ["audit"]
 
 
+def test_lost_durable_tier_hint_names_restore_not_daemon_start(tmp_path: Path) -> None:
+    """A durable tier lost from an established root is not sent to ``polylogued run``.
+
+    Opening the archive refuses that state, so the daemon cannot discharge it.
+    Anti-vacuity: drop the ``lost_durable_tiers`` branch in
+    ``_component_from_archive_storage`` and the hint reverts to
+    ``polylogued run``; drop the pending-intent check in
+    ``lost_durable_tiers`` and the resumable bootstrap below is reported lost.
+    """
+    for name in ("source.db", "user.db", "index.db"):
+        (tmp_path / name).write_bytes(b"")
+
+    with (
+        patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
+    ):
+        lost = status_module._archive_storage_info()
+    assert lost.lost_durable_tiers == ["audit"]
+    component = status_module._component_from_archive_storage(lost)
+    assert component.repair_hint == "restore the archive root from a verified backup"
+    assert "lost_durable_tiers:audit" in component.caveats
+
+    ledger = tmp_path / ".maintenance-state" / "durable-change-trains"
+    ledger.mkdir(parents=True)
+    (ledger / ".bootstrap.pending").write_text("{}", encoding="utf-8")
+    with (
+        patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
+    ):
+        resumable = status_module._archive_storage_info()
+    assert resumable.lost_durable_tiers == []
+    assert status_module._component_from_archive_storage(resumable).repair_hint == "polylogued run"
+
+
 def test_build_daemon_status_downgrades_archive_ready_for_raw_materialization_debt(tmp_path: Path) -> None:
     storage = status_module.ArchiveStorageStatus(
         active_store="archive_file_set",

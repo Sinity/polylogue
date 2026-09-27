@@ -107,19 +107,18 @@ def _include(kind: ArchiveDebtKind, selected: set[str] | None) -> bool:
 
 
 def _tier_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]:
-    from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
+    from polylogue.storage.archive_readiness import lost_durable_tiers
 
     rows: list[ArchiveDebtRowPayload] = []
-    # Bootstrap creates every durable tier together, so a durable tier missing
-    # beside a surviving one was lost outside Polylogue. Opening the archive
-    # refuses that state rather than recreating the tier; only a fresh root
-    # (no durable tier at all) or a missing derived tier is the daemon's to fix.
-    established = any((archive_root / ARCHIVE_TIER_SPECS[tier].filename).exists() for tier in DURABLE_MIGRATION_TIERS)
+    # Opening the archive refuses a lost durable tier rather than recreating
+    # it, so only a fresh root, a resumable bootstrap, or a missing derived
+    # tier is the daemon's to fix.
+    lost = lost_durable_tiers(archive_root)
     for tier, spec in ARCHIVE_TIER_SPECS.items():
         path = archive_root / spec.filename
         subject_ref = f"archive-tier:{tier.value}"
         if not path.exists():
-            lost_durable = established and tier in DURABLE_MIGRATION_TIERS
+            lost_durable = tier in lost
             rows.append(
                 ArchiveDebtRowPayload(
                     debt_ref=f"debt:archive-tier:{tier.value}:missing",
