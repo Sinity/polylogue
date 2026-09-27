@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 import time
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
@@ -1331,6 +1332,41 @@ async def test_existing_session_preparation_uses_controlled_pinned_snapshot(tmp_
         assert len(prepared.prepared_writes) == 1
         assert prepared.prepared_writes[0].session_id == "codex-session:session-0"
         prepared.discard()
+    finally:
+        stage.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_existing_session_preparation_overlaps_paths_and_seals_selected_rows(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    paths = _write_fixture_corpus(tmp_path / "sessions", count=2)
+    await _ingest(archive_root, paths, parse_stage=None)
+    for index, path in enumerate(paths):
+        path.write_bytes(
+            _codex_session_bytes(
+                f"session-{index}",
+                (("user", f"revised question {index}"), ("assistant", f"revised answer {index}")),
+            ).replace(b"2026-07-19T00:00:00Z", b"2026-07-20T00:00:00Z")
+        )
+    rendezvous = threading.Barrier(2, timeout=10)
+
+    def concurrent_read(root: Path) -> AbstractContextManager[PinnedOperationRead]:
+        rendezvous.wait()
+        return open_operation_read(root)
+
+    stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards")
+    try:
+        candidates = [(str(path), Provider.CODEX, True) for path in paths]
+        assert stage.warm_paths(candidates, archive_root=archive_root, read_snapshot=concurrent_read) == 2
+        for index, path in enumerate(paths):
+            prepared = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+            assert prepared is not None and not prepared.deferred
+            assert len(prepared.prepared_writes) == 1
+            write = prepared.prepared_writes[0]
+            assert write.session_id == f"codex-session:session-{index}"
+            assert any(f"revised question {index}" in row for row in write.rows.block_rows)
+            assert any(f"revised answer {index}" in row for row in write.rows.block_rows)
+            prepared.discard()
     finally:
         stage.shutdown()
 
