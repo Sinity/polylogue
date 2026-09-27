@@ -2752,7 +2752,7 @@ def _custom_gpt_event(
 @parser_admission("chatgpt")
 def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     mapping = payload.get("mapping") or {}
-    if not isinstance(mapping, dict):
+    if not isinstance(mapping, Mapping):
         mapping = {}
     derived_current_node: str | None = None
     if not mapping and looks_like_shared_decode(payload):

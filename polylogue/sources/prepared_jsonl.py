@@ -42,12 +42,13 @@ from polylogue.sources.dispatch import (
     parse_stream_payload,
     require_positive_conversational_evidence,
 )
-from polylogue.sources.parsers import browser_capture, grok
+from polylogue.sources.parsers import browser_capture, chatgpt, grok
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.prepared_message_sink import (
     SqliteMessageSink,
     SqliteMessageStore,
     SqliteSessionEventSink,
+    read_chatgpt_mapping_object,
 )
 from polylogue.sources.sidecar_evidence import SidecarResolver
 from polylogue.storage.sqlite.archive_tiers.write import (
@@ -537,6 +538,7 @@ def prepare_jsonl_blob(
     prepare_records: Callable[[Iterable[JSONValue]], Iterable[JSONValue]] | None = None,
     classify_grok_export: Callable[[int, bool], bool] | None = None,
     classify_generic_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
+    classify_chatgpt_object: Callable[[dict[str, object]], bool] | None = None,
     attempt_directory: Path | None = None,
 ) -> PreparedJsonl:
     """Parse and seal one source without transferring a parsed tree over IPC."""
@@ -560,8 +562,16 @@ def prepare_jsonl_blob(
         before_hash = _source_digest(source)
         stream_prefix: str | None = None
         generic_envelope: dict[str, JSONValue] | None = None
+        chatgpt_envelope: dict[str, object] | None = None
         grok_count: int | None = None
         grok_positive_marker = False
+        if not is_stream and provider is Provider.CHATGPT and Path(source_path).name.lower().endswith(".json"):
+            with source.open("rb") as handle:
+                read_result = read_chatgpt_mapping_object(handle, store.conn)
+            if read_result is not None and chatgpt._mapping_nodes_are_valid(read_result[1]):
+                chatgpt_envelope, _mapping = read_result
+            else:
+                store.conn.execute("DROP TABLE chatgpt_node")
         # Cohort callbacks may inspect or rewrite the entire parse result.
         # The direct worker route can publish independent bundle members.
         if (
@@ -609,7 +619,45 @@ def prepare_jsonl_blob(
             asserted_id = candidate.get("id") if candidate is not None else None
             if candidate is not None and isinstance(asserted_id, str) and asserted_id.strip():
                 generic_envelope = candidate
-        if generic_envelope is not None:
+        if chatgpt_envelope is not None:
+            _create_artifact_tables(store.conn)
+            shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
+            chatgpt_admitted = (
+                classify_chatgpt_object(chatgpt_envelope) if classify_chatgpt_object is not None else True
+            )
+            session: ParsedSession | None = (
+                chatgpt.parse(chatgpt_envelope, f"{fallback_id}-0") if chatgpt_admitted else None
+            )
+            if session is not None and not require_positive_conversational_evidence(
+                [session], provider=provider, source_path=source_path
+            ):
+                session = None
+            if session is not None:
+                if prepare_sessions is not None:
+                    selected = prepare_sessions([session])
+                    if len(selected) > 1:
+                        raise ValueError("ChatGPT object finalizer expanded one session")
+                    session = selected[0] if selected else None
+                elif prepare_session is not None:
+                    session = prepare_session(session)
+            session_count = 0
+            if session is not None:
+                session.content_hash = session_content_hash(session)
+                append_session_to_shard(shard_builder, session)
+                _append_artifact_session(store, session_count, session)
+                session_count += 1
+            store.conn.execute("DROP TABLE chatgpt_node")
+            after_hash = _source_digest(source)
+            if before_hash != after_hash:
+                raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
+            enrichment_digest, enrichment_index_path = (
+                preparation_dependency() if preparation_dependency is not None else (None, None)
+            )
+            _seal_artifact(store.conn, after_hash, session_count, enrichment_digest, enrichment_index_path)
+            store.conn.commit()
+            shard_path = shard_builder.seal().path
+            shard_builder = None
+        elif generic_envelope is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
             generic_admitted = True
@@ -854,6 +902,7 @@ def prepare_jsonl_blob(
             parsed_prefix_size=parse_prefix_size,
             resolved_provider=provider,
             positive_evidence_filtered=stream_prefix is not None
+            or chatgpt_envelope is not None
             or generic_envelope is not None
             or (grok_count is not None and classify_grok_export is not None)
             or (prepare_sessions is None and prepare_session is not None),

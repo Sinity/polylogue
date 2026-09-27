@@ -1093,6 +1093,13 @@ def prepare_retained_jsonl_artifact(
                 witness: JSONValue = {**envelope, "messages": list(messages)}
                 return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
 
+            def classify_chatgpt_object(envelope: dict[str, object]) -> bool:
+                mapping = envelope["mapping"]
+                assert isinstance(mapping, Mapping)
+                sample_mapping = dict(islice(mapping.items(), 64))
+                witness = {**envelope, "mapping": sample_mapping}
+                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
+
             artifact = prepare_jsonl_blob(
                 str(blob_path),
                 source_path,
@@ -1110,6 +1117,7 @@ def prepare_retained_jsonl_artifact(
                 prepare_records=classify_records,
                 classify_grok_export=classify_grok_export if stream_grok else None,
                 classify_generic_object=classify_generic_object,
+                classify_chatgpt_object=classify_chatgpt_object,
                 preparation_dependency=lambda: (
                     _retained_dependency_digest(
                         evidence_digest,

@@ -9,9 +9,12 @@ from collections.abc import Iterable, Iterator, Mapping, MutableSequence, Set
 from contextlib import closing, contextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import overload
+from typing import BinaryIO, overload
 from urllib.parse import quote
 
+import ijson
+
+from polylogue.sources.decoder_json import _json_subtree, normalize_ijson_stdlib_numbers
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSessionEvent
 
 _ACTIVE_PARENT_LOOKUP_SQL = (
@@ -498,4 +501,93 @@ class SqliteMessageStore:
         self.conn.close()
 
 
-__all__ = ["SqliteMessageSink", "SqliteMessageStore", "SqliteSessionEventSink"]
+class ChatGPTNodeMapping(Mapping[str, object]):
+    """Keep node bytes, insertion order, and duplicate-key resolution in scratch."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+        conn.execute(
+            "CREATE TABLE chatgpt_node (node_key TEXT PRIMARY KEY, ordinal INTEGER NOT NULL UNIQUE, node_json TEXT NOT NULL)"
+        )
+
+    def put(self, key: str, node: object, ordinal: int) -> None:
+        encoded = json.dumps(node, ensure_ascii=False)
+        self.conn.execute(
+            "INSERT INTO chatgpt_node VALUES (?, ?, ?) "
+            "ON CONFLICT(node_key) DO UPDATE SET node_json = excluded.node_json",
+            (key, ordinal, encoded),
+        )
+
+    def __getitem__(self, key: str) -> object:
+        row = self.conn.execute("SELECT node_json FROM chatgpt_node WHERE node_key = ?", (key,)).fetchone()
+        if row is None:
+            raise KeyError(key)
+        return json.loads(row[0])
+
+    def __iter__(self) -> Iterator[str]:
+        for (key,) in self.conn.execute("SELECT node_key FROM chatgpt_node ORDER BY ordinal"):
+            yield key
+
+    def __len__(self) -> int:
+        return int(self.conn.execute("SELECT COUNT(*) FROM chatgpt_node").fetchone()[0])
+
+
+def read_chatgpt_mapping_object(
+    handle: BinaryIO, conn: sqlite3.Connection
+) -> tuple[dict[str, object], ChatGPTNodeMapping] | None:
+    """Consume a complete native object while writing each mapping node immediately."""
+    events = iter(ijson.parse(handle))
+    mapping = ChatGPTNodeMapping(conn)
+    if next(events, None) != ("", "start_map", None):
+        return None
+    envelope: dict[str, object] = {}
+    mapping_count = 0
+    for prefix, event, value in events:
+        if prefix != "" or event != "map_key":
+            continue
+        key = str(value)
+        next_event = next(events, None)
+        if next_event is None:
+            raise ValueError("incomplete ChatGPT object")
+        child_prefix, child_event, child_value = next_event
+        if key != "mapping" or child_event != "start_map":
+            envelope[key] = normalize_ijson_stdlib_numbers(_json_subtree(events, child_event, child_value))
+            continue
+        mapping_count += 1
+        if mapping_count != 1:
+            return None
+        ordinal = 0
+        for node_prefix, node_event, node_value in events:
+            if node_prefix == "mapping" and node_event == "end_map":
+                break
+            if node_prefix != "mapping" or node_event != "map_key":
+                raise ValueError("invalid ChatGPT mapping structure")
+            node_key = str(node_value)
+            node_start = next(events, None)
+            if node_start is None:
+                raise ValueError("incomplete ChatGPT mapping node")
+            node = normalize_ijson_stdlib_numbers(_json_subtree(events, node_start[1], node_start[2]))
+            mapping.put(node_key, node, ordinal)
+            ordinal += 1  # noqa: SIM113  (nested value events are not node ordinals)
+        else:
+            raise ValueError("incomplete ChatGPT mapping")
+    if (
+        mapping_count != 1
+        or not mapping
+        or not isinstance(envelope.get("current_node"), str)
+        or not isinstance(envelope.get("create_time"), (int, float))
+        or not isinstance(envelope.get("conversation_id"), str)
+        and not isinstance(envelope.get("id"), str)
+    ):
+        return None
+    envelope["mapping"] = mapping
+    return envelope, mapping
+
+
+__all__ = [
+    "SqliteMessageSink",
+    "SqliteMessageStore",
+    "SqliteSessionEventSink",
+    "ChatGPTNodeMapping",
+    "read_chatgpt_mapping_object",
+]

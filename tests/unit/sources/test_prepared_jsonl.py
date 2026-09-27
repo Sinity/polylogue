@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
-from typing import IO
+from typing import IO, BinaryIO
 
 import ijson
 import pytest
@@ -27,9 +27,11 @@ from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, Pars
 from polylogue.sources.prepared_jsonl import PreparedJsonl, _write_artifact, prepare_jsonl_blob
 from polylogue.sources.prepared_message_sink import (
     _ACTIVE_PARENT_LOOKUP_SQL,
+    ChatGPTNodeMapping,
     SqliteMessageSink,
     SqliteMessageStore,
     SqliteSessionEventSink,
+    read_chatgpt_mapping_object,
 )
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -1090,6 +1092,165 @@ def test_retained_top_level_chatgpt_object_keeps_fallback_and_sidecar_evidence(
     assert evidence_providers == [Provider.CHATGPT]
     assert artifact.enrichment_digest is not None
     artifact.discard()
+
+
+def test_chatgpt_mapping_object_spills_before_eof_with_bounded_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = ChatGPTExportBuilder("bounded-mapping").add_node("user", "A neutral prompt").build()
+    source_mapping = record["mapping"]
+    assert isinstance(source_mapping, dict)
+    node = next(iter(source_mapping.values()))
+    record["mapping"] = {f"node-{index}": node for index in range(3000)}
+    source = json.dumps(record).encode()
+
+    class BoundedReader(BytesIO):
+        def read(self, size: int | None = -1) -> bytes:
+            assert size is not None and 0 <= size <= 128 * 1024
+            return super().read(size)
+
+    handle = BoundedReader(source)
+    first_write: list[int] = []
+    original_put = ChatGPTNodeMapping.put
+
+    def observe_put(mapping: ChatGPTNodeMapping, key: str, value: object, ordinal: int) -> None:
+        if not first_write:
+            first_write.append(handle.tell())
+        original_put(mapping, key, value, ordinal)
+
+    monkeypatch.setattr(ChatGPTNodeMapping, "put", observe_put)
+    with sqlite3.connect(tmp_path / "nodes.db") as conn:
+        result = read_chatgpt_mapping_object(handle, conn)
+        assert result is not None
+        assert len(result[1]) == 3000
+        assert conn.execute("SELECT COUNT(*) FROM chatgpt_node").fetchone()[0] == 3000
+    assert first_write and first_write[0] < len(source)
+
+
+def test_chatgpt_mapping_object_preparation_matches_parser_and_duplicate_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = (
+        ChatGPTExportBuilder("mapping-parity")
+        .add_node("user", "A neutral prompt")
+        .add_node("assistant", "A neutral answer")
+        .build()
+    )
+    mapping = record["mapping"]
+    assert isinstance(mapping, dict)
+    first_key = next(iter(mapping))
+    duplicate = json.dumps(mapping[first_key])
+    source = tmp_path / "chatgpt.json"
+    encoded = json.dumps(record)
+    marker = json.dumps(first_key) + ": " + duplicate
+    encoded = encoded.replace(marker, marker + ", " + marker, 1)
+    source.write_text(encoded, encoding="utf-8")
+    expected = parse_payload(Provider.CHATGPT, [json.loads(encoded)], "fallback")[0]
+
+    def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("ChatGPT object decoded as a whole document")
+
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "scratch"),
+    )
+    assert artifact.error is None
+    actual = artifact.load_sessions()[0]
+    assert [message.model_dump(mode="json") for message in actual.messages] == [
+        message.model_dump(mode="json") for message in expected.messages
+    ]
+    assert [event.model_dump(mode="json") for event in actual.session_events] == [
+        event.model_dump(mode="json") for event in expected.session_events
+    ]
+    assert [attachment.model_dump(mode="json") for attachment in actual.attachments] == [
+        attachment.model_dump(mode="json") for attachment in expected.attachments
+    ]
+    assert actual.content_hash == session_content_hash(expected)
+    artifact.discard()
+
+
+def test_chatgpt_native_object_preparation_preserves_complete_parser_output(tmp_path: Path) -> None:
+    fixture = Path("tests/fixtures/chatgpt/native-conversation-v1.json")
+    source = tmp_path / "conversation.json"
+    source.write_bytes(fixture.read_bytes())
+    expected = parse_payload(Provider.CHATGPT, [json.loads(source.read_bytes())], "fallback")[0]
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "scratch"),
+    )
+    assert artifact.error is None
+    actual = artifact.load_sessions()[0]
+    collected = actual.model_copy(
+        update={"messages": list(actual.messages), "session_events": list(actual.session_events)}
+    )
+    assert collected.model_dump(mode="json", exclude={"content_hash"}) == expected.model_dump(
+        mode="json", exclude={"content_hash"}
+    )
+    assert actual.content_hash == session_content_hash(expected)
+    artifact.discard()
+
+
+def test_chatgpt_mapping_object_corrupt_suffix_discards_scratch(tmp_path: Path) -> None:
+    record = ChatGPTExportBuilder("mapping-corrupt").add_node("user", "A neutral prompt").build()
+    source = tmp_path / "chatgpt.json"
+    source.write_text(json.dumps(record) + " trailing", encoding="utf-8")
+    directory = tmp_path / "scratch"
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(directory),
+    )
+    assert artifact.error is not None
+    assert artifact.sessions_path is None
+    assert list(directory.glob("*.db")) == []
+
+
+@pytest.mark.parametrize("failure", ["mutation", "parser"])
+def test_chatgpt_mapping_object_failure_discards_scratch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    record = ChatGPTExportBuilder("mapping-failure").add_node("user", "A neutral prompt").build()
+    source = tmp_path / "chatgpt.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+    directory = tmp_path / "scratch"
+    if failure == "mutation":
+        original = read_chatgpt_mapping_object
+
+        def mutate_after_read(handle: BinaryIO, conn: sqlite3.Connection) -> object:
+            result = original(handle, conn)
+            source.write_text(json.dumps(record) + " ", encoding="utf-8")
+            return result
+
+        monkeypatch.setattr("polylogue.sources.prepared_jsonl.read_chatgpt_mapping_object", mutate_after_read)
+    else:
+
+        def fail_parser(*_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("synthetic parse worker failure")
+
+        monkeypatch.setattr("polylogue.sources.prepared_jsonl.chatgpt.parse", fail_parser)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(directory),
+    )
+    assert artifact.error is not None
+    assert artifact.sessions_path is None
+    assert list(directory.glob("*.db")) == []
 
 
 def test_bundle_worker_discards_partial_artifact_on_corrupt_suffix(tmp_path: Path) -> None:
