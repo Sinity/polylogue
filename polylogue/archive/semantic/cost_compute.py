@@ -17,7 +17,7 @@ from polylogue.archive.semantic.pricing import (
 )
 from polylogue.archive.semantic.subscription_pricing import compute_credit_cost, credits_to_usd, get_credit_rate
 from polylogue.archive.semantic.tokenizer import TOKENIZER_VERSION, estimate_tokens_from_words_split
-from polylogue.core.enums import Role
+from polylogue.core.enums import MaterialOrigin, Role
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Session
@@ -373,6 +373,10 @@ def _per_model_from_messages(
         if tokens is not None and getattr(tokens, "billable_tokens", 0) > 0:
             per_model[key] = _add_provider_reported_tokens(per_model[key], tokens, model_name)
         elif word_count > 0:
+            if getattr(message, "material_origin", None) == MaterialOrigin.RUNTIME_PROTOCOL:
+                # Harness-written protocol text (e.g. an API-error notice in an
+                # assistant envelope) was neither sent to nor produced by a model.
+                continue
             is_assistant_turn = getattr(message, "role", None) == Role.ASSISTANT
             est = estimate_tokens_from_words_split(
                 input_words=0 if is_assistant_turn else word_count,

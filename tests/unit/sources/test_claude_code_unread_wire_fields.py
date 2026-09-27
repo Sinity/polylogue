@@ -870,6 +870,7 @@ def test_api_error_record_is_harness_protocol_with_a_linked_event() -> None:
     message = parsed.messages[0]
     assert message.material_origin is MaterialOrigin.RUNTIME_PROTOCOL
     assert message.model_name is None
+    assert "<synthetic>" not in (parsed.models_used or [])
     events = [event for event in parsed.session_events if event.event_type == "claude_api_error"]
     assert len(events) == 1
     assert events[0].source_message_provider_id == "a-api-error"

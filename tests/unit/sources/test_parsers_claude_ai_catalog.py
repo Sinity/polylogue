@@ -1003,4 +1003,13 @@ def test_claude_ai_compaction_summary_persists_as_compaction_event() -> None:
     assert compactions[0].source_message_provider_id == "m2"
     assert compactions[0].payload["summary"] == "Earlier we planned the parser work."
     assert compactions[0].payload["stop_timestamp"] == "2026-01-01T00:04:30Z"
+    # The summary is materialized before the message it took effect on, and the
+    # boundary covers the superseded turn, so effective-context reads use it.
+    by_position = sorted(session.messages, key=lambda message: message.position)
+    assert [message.position for message in by_position] == [0, 1, 2]
+    assert by_position[1].text == "Earlier we planned the parser work."
+    assert by_position[2].provider_message_id == "m2"
+    assert compactions[0].boundary_start_position == 0
+    assert compactions[0].boundary_end_position == 0
+    assert compactions[0].boundary_message_position == 1
     assert any(message.model_effort == "high" for message in session.messages)

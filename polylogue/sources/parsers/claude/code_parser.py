@@ -2638,7 +2638,7 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
     if isinstance(cwd, str):
         acc.cwds.add(cwd)
     model_name = message_payload.get("model")
-    if isinstance(model_name, str):
+    if isinstance(model_name, str) and model_name != _SYNTHETIC_MODEL_PLACEHOLDER:
         acc.models.add(model_name)
 
 

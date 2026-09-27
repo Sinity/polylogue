@@ -428,3 +428,27 @@ def test_message_fallback_stays_reported_when_every_lane_was_captured() -> None:
     (breakdown,) = summary.per_model
     assert breakdown.confidence == "reported"
     assert summary.cost_confidence == "reported"
+
+
+def test_runtime_protocol_text_in_an_assistant_envelope_is_not_estimated_output() -> None:
+    """Harness-written text (an API-error notice) is not model output.
+
+    Anti-vacuity: drop the RUNTIME_PROTOCOL skip in ``_per_model_from_messages``
+    and the error notice's words are estimated as output tokens.
+    """
+    session = make_conv(
+        id="claude-code-api-error-session",
+        provider="claude-code",
+        messages=[
+            make_msg(
+                id="m1",
+                role="assistant",
+                text="API Error: 429 rate limited, please retry after some time has passed",
+                material_origin="runtime_protocol",
+            ),
+        ],
+    )
+
+    per_model = _per_model_from_messages(session)
+
+    assert all(breakdown.output_tokens == 0 for breakdown in per_model.values())
