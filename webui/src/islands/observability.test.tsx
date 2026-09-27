@@ -187,6 +187,28 @@ describe('ObservabilityIsland', () => {
     vi.useRealTimers();
   });
 
+  it('shows cold-build preparation counts before the first intake page', async () => {
+    const transport: ClientTransport = {
+      request: async <TResponse,>(request: ClientRequest): Promise<TResponse> => {
+        if (request.path === '/api/webui/observability') throw new Error('unexpected insight request');
+        return {
+          status_snapshot: { state: 'fresh', age_s: 0.1, captured_at: '2026-09-27T10:00:00Z', frame: 'frame-a', current_frame: 'frame-a', frame_changed: false },
+          status_components: [],
+          catchup: {
+            mode: 'cold_build_preparing', current_phase: 'baseline_hash', current_source: null,
+            preparation_inspected_count: 432, preparation_revision_count: 65, preparation_hashed_bytes: 9876,
+            preparation_age_s: 12.5, last_advanced_age_s: 0.4, planned_raw_revision_count: null, eta_s: null,
+          },
+        } as TResponse;
+      },
+    };
+    const view = render(<ObservabilityIsland initial={{ ...payload, insights: [], insights_loaded: false }} client={new PolylogueClient(transport)} ensureCredential={async () => undefined} />);
+    expect(await screen.findByText('Phase: baseline_hash · source: Unknown')).toBeInTheDocument();
+    expect(screen.getByText('432')).toHaveAttribute('data-preparation', 'inspected');
+    expect(screen.getByText('65')).toHaveAttribute('data-preparation', 'revisions');
+    view.unmount();
+  });
+
   it('keeps only one polling timer chain after manual refresh', async () => {
     vi.useFakeTimers();
     const pending: Array<{ resolve: (value: unknown) => void; signal: AbortSignal | undefined }> = [];

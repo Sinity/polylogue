@@ -214,3 +214,124 @@ async def test_cancelled_discovery_keeps_worker_progress_until_walk_finishes(
         finally:
             reset_discovery_progress()
     assert [item.payload for item in result] == [accepted]
+
+
+def test_cold_build_preparation_is_visible_before_the_first_intake_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dropping the progress callback from ``ColdBuildGeneration.begin`` makes this red.
+
+    The real baseline walk and revision hashing report through the daemon's
+    preparation state; status observed mid-preparation carries the phase and
+    counts, and the finished preparation stops describing the current phase.
+    """
+    import io
+    import json
+
+    from polylogue.daemon.discovery_progress import (
+        advance_cold_build_preparation,
+        begin_cold_build_preparation,
+        end_cold_build_preparation,
+    )
+    from polylogue.logging import add_sink, make_stream_sink, remove_sink
+    from polylogue.sources.live.cold_build import ColdBuildGeneration
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    payloads = [b'{"one": 1}\n', b'{"second": "session"}\n']
+    for index, payload in enumerate(payloads):
+        (source_root / f"session-{index}.jsonl").write_bytes(payload)
+    source = WatchSource(name="codex", root=source_root, suffixes=(".jsonl",))
+    observed: dict[str, dict[str, Any]] = {}
+
+    def observing_progress(phase: str, **counts: int) -> None:
+        advance_cold_build_preparation(phase, **counts)
+        if phase not in observed:
+            observed[phase] = cast(dict[str, Any], active_discovery_payload())
+
+    monkeypatch.setattr("polylogue.daemon.status_snapshot._status_frame", lambda: None)
+    refresh_status_snapshot(payload={"catchup": {"mode": "idle"}})
+    stream = io.StringIO()
+    sink = add_sink(make_stream_sink(stream, fmt="json"))
+    begin_cold_build_preparation()
+    try:
+        ColdBuildGeneration.begin(archive, reason="test", sources=(source,), progress=observing_progress)
+        during = cast(dict[str, Any], get_status_snapshot_payload()["catchup"])
+    finally:
+        end_cold_build_preparation()
+        remove_sink(sink)
+    try:
+        after = cast(dict[str, Any], get_status_snapshot_payload()["catchup"])
+    finally:
+        reset_status_snapshot()
+        reset_discovery_progress()
+
+    assert list(observed)[:2] == ["baseline_walk", "baseline_hash"]
+    assert "capacity_projection" in observed and list(observed)[-1] == "generation_create"
+    hashed = observed["capacity_projection"]
+    assert hashed["mode"] == "cold_build_preparing"
+    assert hashed["current_phase"] == "capacity_projection"
+    assert hashed["preparation_inspected_count"] >= len(payloads)
+    assert hashed["preparation_revision_count"] == len(payloads)
+    assert hashed["preparation_hashed_bytes"] == sum(len(payload) for payload in payloads)
+    assert hashed["planned_file_count"] is None and hashed["eta_s"] is None
+    assert during["mode"] == "cold_build_preparing"
+    assert during["current_phase"] == "generation_create"
+    assert during["last_advanced_age_s"] >= 0
+    assert after["mode"] == "idle"
+    records = [json.loads(line) for line in stream.getvalue().splitlines()]
+    assert not [record for record in records if record["event"] == "log.field_rejected"]
+    phases = [record["phase"] for record in records if record["event"] == "daemon.cold_build.preparation"]
+    assert phases[0] == "baseline_walk" and phases[-1] == "prepared"
+    assert {"capacity_projection", "generation_create"} <= set(phases)
+    final = [record for record in records if record["event"] == "daemon.cold_build.preparation"][-1]
+    assert final["files"] == len(payloads)
+    assert final["bytes"] == sum(len(payload) for payload in payloads)
+
+
+def test_failed_cold_build_preparation_ends_with_error_and_clears_phase() -> None:
+    from polylogue.daemon.discovery_progress import (
+        advance_cold_build_preparation,
+        begin_cold_build_preparation,
+        end_cold_build_preparation,
+    )
+
+    begin_cold_build_preparation()
+    try:
+        advance_cold_build_preparation("baseline_walk", inspected=4)
+        progress = active_discovery_payload()
+        assert progress is not None
+        assert progress["preparation_inspected_count"] == 4
+    finally:
+        end_cold_build_preparation(failed=True)
+    try:
+        assert active_discovery_payload() is None
+        # Counts after the owner ended are not work the current build did.
+        advance_cold_build_preparation("baseline_walk", inspected=1)
+        assert active_discovery_payload() is None
+    finally:
+        reset_discovery_progress()
+
+
+def test_status_lines_name_cold_build_preparation() -> None:
+    from polylogue.daemon.catchup_status import format_catchup_status_lines
+
+    lines = format_catchup_status_lines(
+        {
+            "mode": "cold_build_preparing",
+            "current_phase": "baseline_hash",
+            "preparation_inspected_count": 9,
+            "preparation_revision_count": 4,
+            "preparation_hashed_bytes": 512,
+            "preparation_age_s": 3.0,
+            "preparation_phase_age_s": 1.0,
+            "last_advanced_age_s": 0.25,
+        }
+    )
+    preparing = [line for line in lines if "cold build preparing" in line]
+    assert preparing == [
+        "  cold build preparing: phase=baseline_hash inspected=9 revisions=4 hashed=512 bytes "
+        "age=3.0s phase_age=1.0s last_advance=0.25s planned=unknown"
+    ]

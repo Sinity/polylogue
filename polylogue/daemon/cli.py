@@ -2905,13 +2905,29 @@ async def _run_daemon_services_under_active_writer_lease(
                     )
                     cold_build_requested = cold_build_index or active_generation_empty
                     if cold_build_requested:
-                        cold_build = await write_coordinator.run_sync(
-                            "daemon.cold_build.begin",
-                            ColdBuildGeneration.begin,
-                            archive_root_path,
-                            reason="explicit cold build" if cold_build_index else "empty active index generation",
-                            sources=sources,
+                        from polylogue.daemon.discovery_progress import (
+                            advance_cold_build_preparation,
+                            begin_cold_build_preparation,
+                            end_cold_build_preparation,
                         )
+
+                        # Baseline enumeration and hashing happen inside this
+                        # one writer call, before any intake page exists;
+                        # status reports its phase and counts meanwhile.
+                        begin_cold_build_preparation()
+                        try:
+                            cold_build = await write_coordinator.run_sync(
+                                "daemon.cold_build.begin",
+                                ColdBuildGeneration.begin,
+                                archive_root_path,
+                                reason="explicit cold build" if cold_build_index else "empty active index generation",
+                                sources=sources,
+                                progress=advance_cold_build_preparation,
+                            )
+                        except BaseException:
+                            end_cold_build_preparation(failed=True)
+                            raise
+                        end_cold_build_preparation()
                         register_cold_build_generation(cold_build)
                         from polylogue.daemon.catchup_status import set_cold_build_progress_provider
 

@@ -61,7 +61,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 if TYPE_CHECKING:
-    from polylogue.sources.live.production_baseline import ProductionSourceBaseline
+    from polylogue.sources.live.production_baseline import BaselineProgress, ProductionSourceBaseline
     from polylogue.sources.live.watcher import WatchSource
 
 
@@ -472,8 +472,14 @@ class ColdBuildGeneration:
         reason: str,
         sources: tuple[WatchSource, ...],
         owner_id: str | None = None,
+        progress: BaselineProgress | None = None,
     ) -> ColdBuildGeneration:
         """Create the inactive generation this build will fill.
+
+        ``progress`` hears each preparation phase (baseline walk and hashing,
+        capacity projection, source snapshot, generation creation) as it
+        starts, so the caller can report the time before the first intake
+        page instead of an idle status.
 
         Captures the production discovery denominator and checks free space before the generation
         directory exists. A cold build is the whole index again on disk beside the one
@@ -520,11 +526,18 @@ class ColdBuildGeneration:
         # production denominator. Never require a new manual freeze.
         if wanted_source_receipt_is_published(archive_root):
             _read_wanted_source_receipt(archive_root)
+
+        def phase(name: str) -> None:
+            if progress is not None:
+                progress(name)
+
+        phase("baseline_walk")
         baseline = merge_pending_production_baseline(
-            capture_production_source_baseline(sources, operation_id=operation_id),
+            capture_production_source_baseline(sources, operation_id=operation_id, progress=progress),
             load_pending_production_baseline(archive_root),
         )
         publish_pending_production_baseline(archive_root, baseline)
+        phase("capacity_projection")
         blob_block_bytes, source_db_block_bytes = evidence_allocation_block_bytes(archive_root)
         prospective_material_bytes, prospective_retained_allocation_bytes, prospective_source_db_allocation_bytes = (
             unretained_source_material(baseline, archive_root / "source.db", blob_block_bytes, source_db_block_bytes)
@@ -558,7 +571,9 @@ class ColdBuildGeneration:
             raise
         snapshot = ""
         if (archive_root / "source.db").exists():
+            phase("source_snapshot")
             snapshot = rebuild_source_evidence_snapshot(archive_root)
+        phase("generation_create")
         generation = store.create(owner_id=owner_id or _cold_build_owner_id(), source_snapshot=snapshot)
         baseline_path = Path(generation.index_path).parent / "source-baseline.json"
         with baseline_path.open("x", encoding="utf-8") as stream:
@@ -575,7 +590,8 @@ class ColdBuildGeneration:
             outcome="ok",
             generation_id=generation.generation_id,
             owner_id=generation.owner_id,
-            page_size=generation.page_size,
+            # ``limit`` is the declared count field for a page bound.
+            limit=generation.page_size,
             reason=reason,
             operation_id=operation_id,
         )

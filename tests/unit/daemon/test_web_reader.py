@@ -3963,3 +3963,31 @@ def test_full_session_read_route_aborts_when_the_client_disconnects(workspace_en
     payload = handler._do_archive_get_session(archive_root, session_id)
     assert isinstance(payload, dict)
     assert payload["message_count"] == 1
+
+
+def test_observability_monitor_renders_cold_build_preparation_only_while_preparing() -> None:
+    """Dropping the preparation section leaves the pre-first-page interval unexplained."""
+    from polylogue.daemon.webui import _render_build_monitor
+
+    preparing = _render_build_monitor(
+        {
+            "mode": "cold_build_preparing",
+            "current_phase": "baseline_hash",
+            "preparation_inspected_count": 1234,
+            "preparation_revision_count": 56,
+            "preparation_hashed_bytes": 7890,
+            "preparation_age_s": 4.5,
+            "last_advanced_age_s": 0.5,
+            "planned_raw_revision_count": None,
+            "eta_s": None,
+        },
+        {"state": "fresh", "age_s": 0.2},
+    )
+    assert 'data-monitor-phase="baseline_hash"' in preparing
+    assert '<dd data-preparation="inspected">1,234</dd>' in preparing
+    assert '<dd data-preparation="revisions">56</dd>' in preparing
+    assert "7,890" in preparing
+    assert "Unknown / unknown" in preparing
+
+    ingesting = _render_build_monitor({"mode": "catching_up", "current_phase": "parse"}, {"state": "fresh"})
+    assert "data-preparation" not in ingesting

@@ -438,14 +438,30 @@ def _archive_members(
     return tuple(members)
 
 
+BaselineProgress = Callable[..., None]
+"""``progress(phase, *, inspected=0, revisions=0, hashed_bytes=0)``: cheap counters, no I/O."""
+
+
 def capture_production_source_baseline(
-    sources: tuple[WatchSource, ...], *, operation_id: str, cancelled: Callable[[], bool] | None = None
+    sources: tuple[WatchSource, ...],
+    *,
+    operation_id: str,
+    cancelled: Callable[[], bool] | None = None,
+    progress: BaselineProgress | None = None,
 ) -> ProductionSourceBaseline:
     """Observe the exact typed sources through the same walker as file intake.
 
     This call runs before any intake cursor filtering. The baseline is immutable;
     files that arrive after this observation are outside this build's denominator.
+    ``progress`` receives walk and hashing counts as they happen, so a caller
+    can report this pre-intake interval without re-walking anything.
     """
+
+    def inspected() -> None:
+        _check_observation_cancelled(cancelled)
+        if progress is not None:
+            progress("baseline_walk", inspected=1)
+
     if not sources:
         raise ProductionBaselineError("cold build has no effective watch sources")
     signature = hashlib.sha256(
@@ -490,7 +506,7 @@ def capture_production_source_baseline(
                 sources,
                 after=None,
                 on_disposition=record,
-                on_inspected=lambda: _check_observation_cancelled(cancelled),
+                on_inspected=inspected,
             ):
                 _check_observation_cancelled(cancelled)
         except WalkRefusedError as exc:
@@ -542,8 +558,17 @@ def capture_production_source_baseline(
                     members = _archive_members(path, source_name, cancelled=cancelled)
                     decisions.append(SourceDecision(source_name, str(path), "excluded", "expanded_to_members"))
                     decisions.extend(members)
+                    if progress is not None:
+                        accepted_members = [member for member in members if member.disposition == "accepted"]
+                        progress(
+                            "baseline_hash",
+                            revisions=len(accepted_members),
+                            hashed_bytes=sum(member.material_bytes or 0 for member in accepted_members),
+                        )
                     continue
                 revision, material_bytes = _revision(path, cancelled=cancelled)
+                if progress is not None:
+                    progress("baseline_hash", revisions=1, hashed_bytes=material_bytes)
             except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as exc:
                 reason = "revision_io_unavailable" if _retryable_read_fault(exc) else "revision_unreadable"
                 decisions.append(SourceDecision(source_name, str(path), "fault", f"{reason}:{exc}"))

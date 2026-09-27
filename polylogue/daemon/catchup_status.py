@@ -75,6 +75,14 @@ class CatchupStatus(BaseModel):
     discovery_active_walk_count: int = 0
     discovery_pending_walk_count: int = 0
     discovery_counter_scope: str | None = None
+    #: Cold-build work before the first intake page: baseline walk and
+    #: hashing, capacity projection, source snapshot, generation creation.
+    #: ``current_phase`` names the step; these count what it has done.
+    preparation_age_s: float | None = None
+    preparation_phase_age_s: float | None = None
+    preparation_inspected_count: int | None = None
+    preparation_revision_count: int | None = None
+    preparation_hashed_bytes: int | None = None
     queued_file_count: int = 0
     needed_file_count: int = 0
     skipped_file_count: int = 0
@@ -286,6 +294,18 @@ def format_catchup_status_lines(payload: object) -> list[str]:
             f"phase={phase} source={payload.get('current_source') or '-'} "
             f"source_read={payload.get('source_payload_read_bytes', 0)} bytes "
             f"cursor_read={payload.get('cursor_fingerprint_read_bytes', 0)} bytes"
+        )
+    if payload.get("mode") == "cold_build_preparing":
+        lines.append(
+            "  cold build preparing: "
+            f"phase={payload.get('current_phase') or '-'} "
+            f"inspected={payload.get('preparation_inspected_count')} "
+            f"revisions={payload.get('preparation_revision_count')} "
+            f"hashed={payload.get('preparation_hashed_bytes')} bytes "
+            f"age={payload.get('preparation_age_s')}s "
+            f"phase_age={payload.get('preparation_phase_age_s')}s "
+            f"last_advance={payload.get('last_advanced_age_s')}s "
+            "planned=unknown"
         )
     if payload.get("discovery_pending") is True:
         lines.append(
