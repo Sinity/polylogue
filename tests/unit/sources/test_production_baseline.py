@@ -5,9 +5,11 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import os
 import sqlite3
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -116,6 +118,67 @@ def test_zip_member_fault_preserves_typed_retry_classification(
     with pytest.raises(ProductionBaselineError) as failure:
         baseline.verify(tmp_path / "source.db")
     assert isinstance(failure.value, ProductionBaselineReadUnavailableError) == isinstance(fault, OSError)
+
+
+def test_directory_walk_io_fault_retries_and_resolves_after_walk_recovers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.sources.live import discovery, production_baseline
+
+    root = tmp_path / "account"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+    member = nested / "one.json"
+    member.write_bytes(b"{}")
+    source = (WatchSource("account", root, suffixes=(".json",)),)
+    original_scandir = os.scandir
+
+    def fail_nested(path: os.PathLike[str] | str) -> Any:
+        if Path(path) == nested:
+            raise OSError(errno.EIO, "nested directory temporarily unreadable")
+        return original_scandir(path)
+
+    def walk_with_failure(*args: Any, **kwargs: Any) -> Any:
+        return discovery._source_path_steps(*args, scandir=fail_nested, **kwargs)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(production_baseline, "_source_path_steps", walk_with_failure)
+        unavailable = capture_production_source_baseline(source, operation_id="walk-fault")
+    with pytest.raises(ProductionBaselineReadUnavailableError):
+        unavailable.verify(tmp_path / "source.db")
+
+    recovered = capture_production_source_baseline(source, operation_id="walk-fault")
+    merged = merge_pending_production_baseline(recovered, unavailable)
+    assert not any(row.disposition == "fault" for row in merged.decisions)
+    merged.verify(_source_db(tmp_path / "source.db", ((str(member), hashlib.sha256(b"{}").hexdigest()),)))
+
+
+def test_recovered_zip_open_clears_its_archive_level_fault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.sources.live import production_baseline
+
+    root = tmp_path / "account"
+    root.mkdir()
+    bundle = root / "export.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("conversations.json", b"[]")
+    source = (WatchSource("account", root, suffixes=(".zip",)),)
+
+    def unreadable_archive(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EIO, "archive open temporarily failed")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(production_baseline, "_archive_members", unreadable_archive)
+        unavailable = capture_production_source_baseline(source, operation_id="zip-open")
+    assert not any(row.reason == "expanded_to_members" for row in unavailable.decisions)
+    with pytest.raises(ProductionBaselineReadUnavailableError):
+        unavailable.verify(tmp_path / "source.db")
+
+    recovered = capture_production_source_baseline(source, operation_id="zip-open")
+    merged = merge_pending_production_baseline(recovered, unavailable)
+    assert not any(row.disposition == "fault" for row in merged.decisions)
+    merged.verify(
+        _source_db(tmp_path / "source.db", ((f"{bundle}:conversations.json", hashlib.sha256(b"[]").hexdigest()),))
+    )
 
 
 def test_baseline_uses_typed_acceptance_before_cursor_and_requires_retained_revision(tmp_path: Path) -> None:

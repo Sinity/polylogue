@@ -338,7 +338,7 @@ def merge_pending_production_baseline(
         elif row.disposition == "fault":
             replacement = current_by_coordinate.get((row.source, row.path))
             resolved = replacement is not None and replacement.disposition in {"accepted", "alias"}
-            if row.reason == "absent_root" and replacement is not None and replacement.reason == "available_root":
+            if replacement is not None and replacement.reason in {"available_root", "expanded_to_members"}:
                 resolved = True
             if not resolved:
                 key = (row.source, row.path, row.disposition, row.source_index, row.revision)
@@ -487,7 +487,13 @@ def capture_production_source_baseline(
             ):
                 _check_observation_cancelled(cancelled)
         except WalkRefusedError as exc:
-            decisions.append(SourceDecision(source.name, str(source.root), "fault", str(exc)))
+            cause = exc.__cause__
+            reason = (
+                f"revision_io_unavailable:{exc}"
+                if isinstance(cause, Exception) and _retryable_read_fault(cause)
+                else str(exc)
+            )
+            decisions.append(SourceDecision(source.name, str(source.root), "fault", reason))
             continue
     accepted_real = {
         str(path.resolve())
@@ -526,8 +532,9 @@ def capture_production_source_baseline(
         if disposition == "accepted":
             try:
                 if path.suffix.lower() == ".zip":
+                    members = _archive_members(path, source_name, cancelled=cancelled)
                     decisions.append(SourceDecision(source_name, str(path), "excluded", "expanded_to_members"))
-                    decisions.extend(_archive_members(path, source_name, cancelled=cancelled))
+                    decisions.extend(members)
                     continue
                 revision, material_bytes = _revision(path, cancelled=cancelled)
             except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as exc:

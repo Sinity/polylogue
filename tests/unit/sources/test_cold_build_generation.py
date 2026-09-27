@@ -450,6 +450,22 @@ def test_blocked_settlement_revision_tracks_receipt_parent_permission_repair(
         assert cold_build.settlement_evidence_revision() != unavailable
 
 
+def test_settlement_owned_directory_writes_do_not_change_external_revision(
+    tmp_path: Path, cold_build: ColdBuildGeneration
+) -> None:
+    directories = (
+        tmp_path / MAINTENANCE_STATE_DIRNAME / "production-source-baseline",
+        cold_build.generation_root,
+    )
+    unchanged = cold_build.settlement_external_revision()
+    for directory in directories:
+        marker = directory / "owned-write.tmp"
+        marker.write_bytes(b"settlement")
+        assert cold_build.settlement_external_revision() == unchanged
+        marker.unlink()
+        assert cold_build.settlement_external_revision() == unchanged
+
+
 def test_blocked_settlement_revision_survives_unavailable_evidence(
     tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch
 ) -> None:

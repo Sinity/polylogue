@@ -713,8 +713,8 @@ class ColdBuildGeneration:
         else:
             revision.extend((0, root_metadata.st_ino, root_metadata.st_mode))
         # Receipt publication/unlink can fail on parent permissions even when
-        # the child file's own metadata does not move. Their metadata changes
-        # wake a blocked settlement when access is restored.
+        # the child file's own metadata does not move. Watch identity and mode;
+        # settlement's own file writes also move directory ctime and mtime.
         for directory in (
             self.archive_root / MAINTENANCE_STATE_DIRNAME / "production-source-baseline",
             self.generation_root,
@@ -722,11 +722,11 @@ class ColdBuildGeneration:
             try:
                 metadata = directory.stat()
             except FileNotFoundError:
-                revision.extend((-1, -1, -1, -1))
+                revision.extend((-1, -1, -1))
             except OSError as exc:
-                revision.extend((*unavailable(exc), -1))
+                revision.extend(unavailable(exc))
             else:
-                revision.extend((metadata.st_ino, metadata.st_mode, metadata.st_ctime_ns, metadata.st_mtime_ns))
+                revision.extend((0, metadata.st_ino, metadata.st_mode))
         if self.settlement_reason == "capacity_unavailable":
             try:
                 space = os.statvfs(self.archive_root)
