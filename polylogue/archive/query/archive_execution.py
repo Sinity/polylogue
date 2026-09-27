@@ -13,7 +13,7 @@ does not push down.
 from __future__ import annotations
 
 import builtins
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, TypeVar
 
 from polylogue.archive.hydration import archive_envelope_to_session, archive_summary_to_domain
@@ -149,6 +149,36 @@ def _semantic_hits(
     )
 
 
+def _ranked_window(plan: SessionQueryPlan) -> bool:
+    """Whether results are ordered by a vector rank SQL cannot express."""
+    return (
+        plan.similar_text is not None
+        or plan.similar_session_id is not None
+        or plan.retrieval_lane in {"semantic", "hybrid"}
+    )
+
+
+def _sort_owned_here(plan: SessionQueryPlan) -> bool:
+    """Whether filtered candidates still need ordering after the fetch.
+
+    SQL already ordered every lexical and structured result, and filtering
+    preserves that order, so those are used as fetched. Only a vector-ranked
+    route with an explicit sort is ordered in Python; one with no sort keeps
+    its rank order.
+    """
+    return _ranked_window(plan) and plan.sort is not None
+
+
+def order_query_summaries(plan: SessionQueryPlan, candidates: list[SessionSummary]) -> list[SessionSummary]:
+    """Order filtered summaries fetched by :func:`_archive_summaries`."""
+    return plan._sort_summaries(candidates) if _sort_owned_here(plan) else candidates
+
+
+def order_query_sessions(plan: SessionQueryPlan, candidates: list[Session]) -> list[Session]:
+    """Order filtered sessions fetched by :func:`_archive_summaries`."""
+    return plan._sort_sessions(candidates) if _sort_owned_here(plan) else candidates
+
+
 def _archive_summaries(
     plan: SessionQueryPlan,
     archive: ArchiveStore,
@@ -156,10 +186,21 @@ def _archive_summaries(
     config: Config | None,
     archive_root: Path,
     default_limit: int,
+    keep: Callable[[list[ArchiveSessionSummary]], list[ArchiveSessionSummary]] | None = None,
 ) -> list[ArchiveSessionSummary]:
+    """Fetch the candidate rows for ``plan`` in the archive's SQL order.
+
+    SQL is the one ordering authority for lexical and structured queries:
+    callers do not re-sort these rows. That is what makes a post-filtered
+    page exact without reading the whole archive -- ``keep`` applies the
+    residual filters to each fetched batch, and fetching stops as soon as
+    ``offset + limit`` rows have passed them, since no later row can precede
+    one already kept (polylogue-6xrab, polylogue-ztm1t).
+    """
     filter_kwargs = plan_filter_kwargs(plan)
     limit = _fetch_limit(plan, default=default_limit)
     post_filter_fetch = plan.has_post_filters() and plan.limit is not None
+    wanted = None if plan.limit is None or plan.sample is not None else plan.offset + plan.limit
     sort = plan.sort
     reverse = plan.reverse
 
@@ -192,8 +233,16 @@ def _archive_summaries(
 
     query_text = _plan_text_query(plan)
     if query_text is not None:
-        hits: list[ArchiveSessionSearchHit] = []
-        fetch_offset = 0 if post_filter_fetch else plan.offset
+        if not post_filter_fetch:
+            return _summaries_from_hits(
+                archive,
+                archive.search_summaries(
+                    query_text, limit=limit, offset=plan.offset, sort=sort, reverse=reverse, **filter_kwargs
+                ),
+            )
+        kept_hits: list[ArchiveSessionSummary] = []
+        seen: set[str] = set()
+        fetch_offset = 0
         while True:
             batch = archive.search_summaries(
                 query_text,
@@ -203,11 +252,14 @@ def _archive_summaries(
                 reverse=reverse,
                 **filter_kwargs,
             )
-            hits.extend(batch)
-            if not post_filter_fetch or len(batch) < limit:
+            fresh = [hit for hit in batch if hit.session_id not in seen]
+            seen.update(hit.session_id for hit in fresh)
+            rows = _summaries_from_hits(archive, fresh)
+            kept_hits.extend(keep(rows) if keep is not None else rows)
+            if len(batch) < limit or (keep is not None and wanted is not None and len(kept_hits) >= wanted):
                 break
             fetch_offset += len(batch)
-        return _summaries_from_hits(archive, hits)
+        return kept_hits
 
     if not post_filter_fetch:
         return archive.list_summaries(
@@ -229,8 +281,8 @@ def _archive_summaries(
             sample=False,
             **filter_kwargs,
         )
-        summaries.extend(summary_batch)
-        if len(summary_batch) < limit:
+        summaries.extend(keep(summary_batch) if keep is not None else summary_batch)
+        if len(summary_batch) < limit or (keep is not None and wanted is not None and len(summaries) >= wanted):
             break
         fetch_offset += len(summary_batch)
     return summaries
@@ -310,15 +362,10 @@ async def list_summaries_archive(
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
     with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
 ) -> builtins.list[SessionSummary]:
-    rank_first = bool(
-        plan.sort is None
-        and (
-            plan.fts_terms
-            or plan.similar_text is not None
-            or plan.similar_session_id is not None
-            or plan.retrieval_lane in {"semantic", "hybrid"}
-        )
-    )
+    def keep_matching(rows: list[ArchiveSessionSummary]) -> list[ArchiveSessionSummary]:
+        by_id = {row.session_id: row for row in rows}
+        matching = plan._apply_common_filters([archive_summary_to_domain(row) for row in rows], sql_pushed=True)
+        return [by_id[str(summary.id)] for summary in matching]
 
     def read(archive: ArchiveStore) -> list[SessionSummary]:
         archive_rows = _archive_summaries(
@@ -327,6 +374,7 @@ async def list_summaries_archive(
             config=config,
             archive_root=archive_root,
             default_limit=default_limit,
+            keep=keep_matching if plan.has_post_filters() else None,
         )
         summaries = _attach_units_to_domain(
             [archive_summary_to_domain(summary) for summary in archive_rows],
@@ -348,16 +396,13 @@ async def list_summaries_archive(
         workload_class="scan" if plan.limit is None or plan.limit > 1000 else "interactive",
     )
     filtered = plan._apply_common_filters(summaries, sql_pushed=True)
-    ordered = filtered if rank_first else plan._sort_summaries(filtered)
-    # SQL owns ordinary lexical and structured windows. Ranked routes fetch
-    # an unwindowed candidate prefix, so filters and rank-preserving
+    # SQL orders every lexical and structured result. Only a vector-ranked
+    # route with an explicit sort is ordered here. Ranked routes fetch an
+    # unwindowed candidate prefix, so filters and rank-preserving
     # deduplication precede one final page cut. Hybrid's lexical fallback
     # follows that same rule.
-    ranked_window = (
-        plan.similar_text is not None
-        or plan.similar_session_id is not None
-        or plan.retrieval_lane in {"semantic", "hybrid"}
-    )
+    ranked_window = _ranked_window(plan)
+    ordered = order_query_summaries(plan, filtered)
     if (plan.has_post_filters() or ranked_window) and plan.offset:
         ordered = ordered[plan.offset :]
     return plan._finalize(ordered)
@@ -373,15 +418,13 @@ async def list_archive(
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
     with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
 ) -> builtins.list[Session]:
-    rank_first = bool(
-        plan.sort is None
-        and (
-            plan.fts_terms
-            or plan.similar_text is not None
-            or plan.similar_session_id is not None
-            or plan.retrieval_lane in {"semantic", "hybrid"}
-        )
-    )
+    def keep_matching(archive: ArchiveStore) -> Callable[[list[ArchiveSessionSummary]], list[ArchiveSessionSummary]]:
+        def keep(rows: list[ArchiveSessionSummary]) -> list[ArchiveSessionSummary]:
+            by_id = {row.session_id: row for row in rows}
+            sessions = [archive_envelope_to_session(archive.read_session(row.session_id)) for row in rows]
+            return [by_id[str(session.id)] for session in plan._apply_full_filters(sessions, sql_pushed=True)]
+
+        return keep
 
     def read(archive: ArchiveStore) -> list[Session]:
         archive_rows = _archive_summaries(
@@ -390,6 +433,7 @@ async def list_archive(
             config=config,
             archive_root=archive_root,
             default_limit=default_limit,
+            keep=keep_matching(archive) if plan.has_post_filters() else None,
         )
         sessions = _attach_units_to_domain(
             [
@@ -418,12 +462,8 @@ async def list_archive(
         workload_class="scan" if plan.limit is None or plan.limit > 1000 else "interactive",
     )
     filtered = plan._apply_full_filters(sessions, sql_pushed=True)
-    ordered = filtered if rank_first else plan._sort_sessions(filtered)
-    ranked_window = (
-        plan.similar_text is not None
-        or plan.similar_session_id is not None
-        or plan.retrieval_lane in {"semantic", "hybrid"}
-    )
+    ranked_window = _ranked_window(plan)
+    ordered = order_query_sessions(plan, filtered)
     if (plan.has_post_filters() or ranked_window) and plan.offset:
         ordered = ordered[plan.offset :]
     return plan._finalize(ordered)

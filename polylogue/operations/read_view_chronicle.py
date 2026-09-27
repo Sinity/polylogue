@@ -141,7 +141,7 @@ def _select_summaries(
     """Run query candidates through the plan's filters, order and page cut."""
 
     from polylogue.archive.hydration import archive_envelope_to_session
-    from polylogue.archive.query.archive_execution import _archive_summaries
+    from polylogue.archive.query.archive_execution import _archive_summaries, order_query_summaries
 
     params_raw = payload.get("params", {})
     if not isinstance(params_raw, Mapping):
@@ -182,16 +182,7 @@ def _select_summaries(
     else:
         candidates = plan._apply_common_filters(summaries, sql_pushed=True)
 
-    rank_first = bool(
-        plan.sort is None
-        and (
-            plan.fts_terms
-            or plan.similar_text
-            or plan.similar_session_id
-            or plan.retrieval_lane in {"semantic", "hybrid"}
-        )
-    )
-    ordered = candidates if rank_first else plan._sort_summaries(candidates)
+    ordered = order_query_summaries(plan, candidates)
     ranked = bool(plan.similar_text or plan.similar_session_id or plan.retrieval_lane in {"semantic", "hybrid"})
     if (plan.has_post_filters() or ranked) and plan.offset:
         ordered = ordered[plan.offset :]

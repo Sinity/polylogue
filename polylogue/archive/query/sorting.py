@@ -84,7 +84,8 @@ def sort_summaries(
     summaries: list[SessionSummary],
 ) -> list[SessionSummary]:
     dt_min = datetime.min.replace(tzinfo=timezone.utc)
-    return sort_generic(plan, summaries, lambda summary: summary.updated_at or dt_min)
+    # Mirrors SQL's ``sort_key_ms = COALESCE(updated_at_ms, created_at_ms)``.
+    return sort_generic(plan, summaries, lambda summary: summary.updated_at or summary.created_at or dt_min)
 
 
 def finalize_results(
