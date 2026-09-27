@@ -335,7 +335,14 @@ Sink = Callable[[Event], None]
 _sinks: list[Sink] = []
 _sinks_lock = threading.Lock()
 _sync_sink_failures = 0
-_retired_sink_totals = {"delivered": 0, "dropped": 0, "failures": 0, "undrained": 0}
+_retired_sink_totals = {
+    "delivered": 0,
+    "dropped": 0,
+    "failures": 0,
+    "undrained": 0,
+    "backpressure": 0,
+    "priority_evictions": 0,
+}
 FIELD_MAX_CHARS = 256
 EVENT_MAX_FIELDS = 32
 EVENT_MAX_BYTES = 4096
@@ -770,12 +777,15 @@ class _QueuedSink:
         self._condition = threading.Condition()
         self._closing = False
         self.dropped = 0
+        self.backpressure = 0
+        self.priority_evictions = 0
         self.failures = 0
         self.delivered = 0
         self.undrained = 0
         self.high_water = 0
         self._dirty = False
         self._in_flight = False
+        self._flush_requested = False
         self._worker = threading.Thread(target=self._run, name="polylogue-diagnostic-sink", daemon=True)
         self._worker.start()
 
@@ -785,28 +795,34 @@ class _QueuedSink:
                 self.dropped += 1
                 return
             if len(self._pending) >= self._capacity:
-                if record.get("level") in {"error", "warning"}:
-                    victim = next(
-                        (item for item in self._pending if item.get("level") not in {"error", "warning"}),
-                        None,
-                    )
-                    if victim is not None:
-                        self._pending.remove(victim)
-                    else:
-                        self.dropped += 1
-                        return
-                else:
+                self.backpressure += 1
+                priority = self._priority(record)
+                victim = next((item for item in self._pending if self._priority(item) < priority), None)
+                if victim is None:
                     self.dropped += 1
                     return
+                self._pending.remove(victim)
                 self.dropped += 1
+                self.priority_evictions += 1
             self._pending.append(dict(record))
             self.high_water = max(self.high_water, len(self._pending))
             self._condition.notify()
 
+    @staticmethod
+    def _priority(record: Event) -> int:
+        event = record.get("event")
+        if record.get("level") == "error":
+            return 2
+        if isinstance(event, str) and event.endswith((".error", ".failed", ".stop", ".end")):
+            return 2
+        if isinstance(event, str) and event.endswith(".ok"):
+            return 1
+        return 1 if record.get("level") == "warning" else 0
+
     def _run(self) -> None:
         while True:
             with self._condition:
-                if not self._pending and not self._closing:
+                if not self._pending and not self._closing and not self._flush_requested:
                     self._condition.wait(timeout=0.5)
                 if not self._pending:
                     if self._closing:
@@ -824,16 +840,20 @@ class _QueuedSink:
                 with self._condition:
                     self.failures += 1
                     self._in_flight = False
+                    self._condition.notify_all()
             else:
                 with self._condition:
                     self.delivered += 1
                     self._dirty = True
                     self._in_flight = False
+                    self._condition.notify_all()
         self._flush()
 
     def _flush(self) -> None:
         with self._condition:
             if not self._dirty:
+                self._flush_requested = False
+                self._condition.notify_all()
                 return
             self._dirty = False
         try:
@@ -843,6 +863,23 @@ class _QueuedSink:
         except Exception:
             with self._condition:
                 self.failures += 1
+        finally:
+            with self._condition:
+                self._flush_requested = False
+                self._condition.notify_all()
+
+    def flush(self, *, timeout_s: float) -> bool:
+        deadline = time.monotonic() + max(timeout_s, 0.0)
+        with self._condition:
+            failures_before = self.failures
+            self._flush_requested = True
+            self._condition.notify_all()
+            while self._pending or self._in_flight or self._flush_requested:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._condition.wait(timeout=remaining)
+            return self.failures == failures_before == 0
 
     def close(self, *, timeout_s: float = 0.25) -> None:
         with self._condition:
@@ -868,6 +905,8 @@ class _QueuedSink:
             return {
                 "queued": len(self._pending),
                 "dropped": self.dropped,
+                "backpressure": self.backpressure,
+                "priority_evictions": self.priority_evictions,
                 "failures": self.failures,
                 "delivered": self.delivered,
                 "undrained": self.undrained,
@@ -950,6 +989,13 @@ def shutdown_events(*, timeout_s: float = 0.25) -> dict[str, int]:
     return diagnostic_snapshot()
 
 
+def flush_events(*, timeout_s: float = 0.25) -> bool:
+    """Request a configured-stream flush, waiting at most ``timeout_s``."""
+    with _sinks_lock:
+        sink = _default_sink
+    return sink.flush(timeout_s=timeout_s) if isinstance(sink, _QueuedSink) else True
+
+
 class _StdlibBridge(logging.Handler):
     """Route surviving ``logging.getLogger`` records into the event stream.
 
@@ -986,7 +1032,16 @@ def diagnostic_snapshot() -> dict[str, int]:
     result = (
         sink.snapshot()
         if isinstance(sink, _QueuedSink)
-        else {"queued": 0, "dropped": 0, "failures": 0, "delivered": 0, "undrained": 0, "high_water": 0}
+        else {
+            "queued": 0,
+            "dropped": 0,
+            "failures": 0,
+            "delivered": 0,
+            "undrained": 0,
+            "high_water": 0,
+            "backpressure": 0,
+            "priority_evictions": 0,
+        }
     )
     result["failures"] += sync_failures
     for key, value in retired.items():

@@ -1257,6 +1257,20 @@ def _emit_diagnostic_metrics(lines: list[str]) -> None:
         metric_type="gauge",
         samples=[(None, diagnostic["queued"])],
     )
+    _emit_metric(
+        lines,
+        name="polylogue_diagnostic_backpressure_total",
+        help_text="Configured diagnostic queue admissions attempted while full.",
+        metric_type="counter",
+        samples=[(None, diagnostic.get("backpressure", 0))],
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_diagnostic_priority_evictions_total",
+        help_text="Queued diagnostic records displaced by terminal or higher-severity events.",
+        metric_type="counter",
+        samples=[(None, diagnostic.get("priority_evictions", 0))],
+    )
 
 
 def _emit_io_metrics(lines: list[str]) -> None:
