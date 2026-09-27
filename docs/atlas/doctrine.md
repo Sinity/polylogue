@@ -101,18 +101,13 @@ connection opener in the surface packages.
 
 **Observable failure**: a surface reads the archive with no admission, no
 snapshot pin, no cancellation and no receipt, and its answer cannot say which
-archive revision produced it. The realistic silent form is not a new module —
-it is a declared writer that loses its explicit `read_only=False` and becomes
-an uncontrolled read while its census row still reads "writer"; the gate names
-that `controlled_read_writer_is_not_explicit`. An undeclared open is
-`controlled_read_site_undeclared` and is reported by `file:line`.
+archive revision produced it. The realistic silent form is a writer that loses
+its explicit `read_only=False` and becomes an uncontrolled read.
 
-**Change procedure**: a new archive open is declared in the census with a
-classification and a reason in the same change that adds it. A new
-*read-boundary owner* is a policy edit to `read_boundary_owners`, reviewed as
-such, because otherwise a new uncontrolled read could license itself by
-claiming to be the boundary. A licensed writer that is wrong in the long run
-carries a `debt` field rather than a silent pass.
+**Change procedure**: a new direct archive open is justified in review as one
+of the three kinds, in the change that adds it; no census records it. Adding a
+read-boundary owner is a design decision reviewed as such, because otherwise a
+new uncontrolled read could license itself by claiming to be the boundary.
 
 ## Doctrine: finding provenance
 
