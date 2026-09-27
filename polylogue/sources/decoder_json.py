@@ -6,6 +6,7 @@ import io
 import json
 import re
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import IO, Protocol, TypeAlias, TypeGuard, cast
 
@@ -480,11 +481,38 @@ def generic_message_object_envelope(handle: JsonReadable) -> dict[str, JsonValue
     return envelope if message_arrays == 1 else None
 
 
+@dataclass(slots=True)
+class _FutureTypeFrame:
+    """The first future type in one JSON container, in parser traversal order."""
+
+    kind: str
+    key: str | None = None
+    own_types: dict[str, str | None] = field(default_factory=dict)
+    first_child: str | None = None
+
+    def selected(self) -> str | None:
+        if self.kind == "map":
+            for key in ("type", "content_type", "kind", "record_type"):
+                if value := self.own_types.get(key):
+                    return value
+        return self.first_child
+
+
+def _future_wire_type(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    if value.startswith(("future_", "unknown_", "unsupported_")) or value in {"future", "unknown", "unsupported"}:
+        return value
+    return None
+
+
 def hermes_snapshot_envelope(handle: JsonReadable) -> dict[str, JsonValue] | None:
     """Validate a Hermes snapshot while leaving its messages outside the envelope.
 
-    Only fields read by the snapshot parser are retained. A second pass reads
-    the tool catalog, which is one semantic event in the existing contract.
+    Only fields read by the snapshot parser are retained. Taxonomy-sensitive
+    root fields keep their type, presence, and transcript-suffix evidence in
+    a bounded witness rather than their possibly giant string values. A second
+    pass reads the tool catalog, one semantic event in the existing contract.
     """
     scalar_fields = {
         "session_id",
@@ -495,10 +523,18 @@ def hermes_snapshot_envelope(handle: JsonReadable) -> dict[str, JsonValue] | Non
         "base_url",
         "platform",
         "message_count",
+        "polylogue_artifact",
+        "state_db_path",
+        "verification_db_path",
+        "schema_version",
     }
+    provenance_keys = {"file", "source_file", "source_path", "transcript", "session_file"}
+    content_keys = {"content", "text", "message_text", "body"}
+    native_markers = {"uuid", "sessionId", "parentUuid", "message", "payload", "cwd", "version"}
     envelope: dict[str, JsonValue] = {}
     current_key: str | None = None
-    map_keys: dict[str, str] = {}
+    frames = [_FutureTypeFrame("map")]
+    taxonomy_witness: dict[str, JsonValue] = {}
     message_arrays = 0
     tool_fields = 0
     first_future_type: str | None = None
@@ -509,37 +545,49 @@ def hermes_snapshot_envelope(handle: JsonReadable) -> dict[str, JsonValue] | Non
         for prefix, event, value in events:
             if prefix == "" and event == "map_key":
                 current_key = str(value)
-                map_keys[""] = current_key
                 if current_key == "messages":
                     message_arrays += 1
                 elif current_key == "tools":
                     tool_fields += 1
-                continue
+                if current_key in provenance_keys | content_keys | native_markers:
+                    taxonomy_witness[current_key] = None
+                if current_key == "steps":
+                    envelope.pop("steps", None)
             if event == "map_key":
-                map_keys[prefix] = str(value)
+                frames[-1].key = str(value)
                 continue
-            if event == "string" and first_future_type is None:
-                key = map_keys.get(prefix.rpartition(".")[0])
-                if (
-                    key in {"type", "content_type", "kind", "record_type"}
-                    and isinstance(value, str)
-                    and (
-                        value.startswith(("future_", "unknown_", "unsupported_"))
-                        or value in {"future", "unknown", "unsupported"}
-                    )
-                ):
-                    first_future_type = value
-            if current_key in scalar_fields and prefix == current_key:
-                if event in {"start_array", "start_map"}:
-                    # These parser fields are scalar-only. Keep a sentinel so
-                    # a nested value cannot impersonate an asserted string.
-                    envelope.pop(current_key, None)
-                elif event in {"string", "number", "boolean", "null"}:
-                    envelope[current_key] = cast(JsonValue, normalize_ijson_stdlib_numbers(value))
             if current_key == "messages" and prefix == "messages" and event not in {"start_array", "end_array"}:
                 return None
-            if event == "end_map":
-                map_keys.pop(prefix, None)
+            if event in {"start_array", "start_map"}:
+                if len(frames) == 1 and current_key in scalar_fields:
+                    envelope.pop(current_key, None)
+                if len(frames) == 1 and current_key == "steps" and event == "start_array":
+                    envelope["steps"] = []
+                if frames[-1].kind == "map" and frames[-1].key in {"type", "content_type", "kind", "record_type"}:
+                    frames[-1].own_types[frames[-1].key or ""] = None
+                frames.append(_FutureTypeFrame("map" if event == "start_map" else "array"))
+                continue
+            if event in {"end_array", "end_map"}:
+                selected = frames.pop().selected()
+                if frames:
+                    if selected is not None and frames[-1].first_child is None:
+                        frames[-1].first_child = selected
+                else:
+                    first_future_type = selected
+                continue
+            if frames[-1].kind == "map" and frames[-1].key in {"type", "content_type", "kind", "record_type"}:
+                frames[-1].own_types[frames[-1].key or ""] = _future_wire_type(value) if event == "string" else None
+            if len(frames) == 1 and prefix == current_key:
+                if current_key in scalar_fields:
+                    envelope[current_key] = cast(JsonValue, normalize_ijson_stdlib_numbers(value))
+                if current_key in provenance_keys and isinstance(value, str):
+                    taxonomy_witness[current_key] = (
+                        "source.json"
+                        if value.lower().endswith((".jsonl", ".jsonl.txt", ".ndjson", ".json"))
+                        else "source"
+                    )
+                if current_key in content_keys and isinstance(value, str):
+                    taxonomy_witness[current_key] = "copied" if value else ""
     except ijson.common.JSONError:
         return None
     finally:
@@ -557,6 +605,8 @@ def hermes_snapshot_envelope(handle: JsonReadable) -> dict[str, JsonValue] | Non
         handle.seek(0)
     if first_future_type is not None:
         envelope["__admission_future_type"] = first_future_type
+    if taxonomy_witness:
+        envelope["__taxonomy_witness"] = taxonomy_witness
     return envelope
 
 

@@ -1094,8 +1094,10 @@ def prepare_retained_jsonl_artifact(
                 return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
 
             def classify_hermes_object(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
+                taxonomy_witness = envelope.get("__taxonomy_witness")
                 witness: JSONValue = {
-                    **{key: value for key, value in envelope.items() if key != "__admission_future_type"},
+                    **{key: value for key, value in envelope.items() if not key.startswith("__")},
+                    **(taxonomy_witness if isinstance(taxonomy_witness, dict) else {}),
                     "messages": list(messages),
                 }
                 return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None

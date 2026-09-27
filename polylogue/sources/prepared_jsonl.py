@@ -43,7 +43,15 @@ from polylogue.sources.dispatch import (
     parse_stream_payload,
     require_positive_conversational_evidence,
 )
-from polylogue.sources.parsers import browser_capture, chatgpt, grok, local_agent
+from polylogue.sources.parsers import (
+    browser_capture,
+    chatgpt,
+    grok,
+    hermes_spans,
+    hermes_state,
+    hermes_verification,
+    local_agent,
+)
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.prepared_message_sink import (
     SqliteMessageSink,
@@ -586,6 +594,12 @@ def prepare_jsonl_blob(
         ):
             with source.open("rb") as handle:
                 hermes_envelope = hermes_snapshot_envelope(handle)
+            if hermes_envelope is not None and (
+                hermes_state.looks_like_state_db_payload(hermes_envelope)
+                or hermes_verification.looks_like_verification_evidence_db_payload(hermes_envelope)
+                or hermes_spans.looks_like_atif_payload(hermes_envelope)
+            ):
+                hermes_envelope = None
         if (
             not is_stream
             and provider is Provider.GROK

@@ -540,6 +540,108 @@ def test_hermes_snapshot_stream_refuses_source_mutation_after_spill(
     assert list(directory.glob("*.db")) == []
 
 
+def test_retained_hermes_extracted_transcript_is_not_a_session(tmp_path: Path) -> None:
+    from polylogue.sources import revision_backfill
+
+    record = {
+        "session_id": "copied-extract",
+        "platform": "linux",
+        "transcript": "source.json",
+        "content": "Copied text",
+        "messages": [{"role": "user", "content": "Neutral source prompt"}],
+    }
+    blob_root = tmp_path / "blob"
+    blob_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(record).encode())
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
+        with sqlite3.connect(path) as conn:
+            initialize_archive_tier(conn, tier)
+    artifact = revision_backfill.prepare_retained_jsonl_artifact(
+        "synthetic-extract",
+        Provider.HERMES.value,
+        blob_hash,
+        str(tmp_path / "sessions" / "session_extract.json"),
+        "full",
+        None,
+        str(blob_root),
+        str(source_db),
+        str(index_db),
+        str(tmp_path / "prepared"),
+        None,
+    )
+    assert artifact.error is None
+    assert list(artifact.iter_sessions()) == []
+    artifact.discard()
+
+
+def test_hermes_snapshot_stream_uses_parser_future_type_priority(tmp_path: Path) -> None:
+    record = {
+        "session_id": "future-priority",
+        "platform": "linux",
+        "nested": {"type": "future_inner"},
+        "messages": [{"role": "user", "content": "Neutral prompt"}],
+        "type": "future_outer",
+    }
+    source = tmp_path / "session_future.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+    [expected] = parse_payload(Provider.HERMES, record, "fallback", source_path=str(source))
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.HERMES.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert artifact.error is None
+    [actual] = artifact.iter_sessions()
+    assert [event.model_dump(mode="json") for event in actual.session_events] == [
+        event.model_dump(mode="json") for event in expected.session_events
+    ]
+    assert actual.content_hash == session_content_hash(expected)
+    artifact.discard()
+
+
+@pytest.mark.parametrize("marker", ["atif", "state", "verification"])
+def test_hermes_snapshot_shortcut_preserves_higher_priority_dispatch(tmp_path: Path, marker: str) -> None:
+    record: dict[str, object] = {
+        "session_id": "priority",
+        "platform": "linux",
+        "messages": [{"role": "user", "content": "Neutral prompt"}],
+    }
+    if marker == "atif":
+        record.update(
+            {
+                "schema_version": "ATIF-v1.7",
+                "steps": [{"source": "agent", "message": "Observer step"}],
+            }
+        )
+    else:
+        record["polylogue_artifact"] = "hermes_state_db" if marker == "state" else "hermes_verification_evidence_db"
+        record["state_db_path" if marker == "state" else "verification_db_path"] = "missing.db"
+    source = tmp_path / "session_priority.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.HERMES.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    if marker == "atif":
+        assert artifact.error is None
+        [session] = artifact.iter_sessions()
+        [expected] = parse_payload(Provider.HERMES, record, "fallback", source_path=str(source))
+        assert session.provider_session_id == expected.provider_session_id
+        assert any(event.event_type == "hermes_llm_request_span" for event in session.session_events)
+    else:
+        assert artifact.error is not None
+        assert artifact.sessions_path is None
+    artifact.discard()
+
+
 def test_generic_retained_callbacks_keep_bounded_message_preparation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
