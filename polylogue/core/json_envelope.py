@@ -11,6 +11,7 @@ SQLite's value limit.
 
 from __future__ import annotations
 
+import codecs
 import re
 import sqlite3
 import sys
@@ -43,9 +44,17 @@ _INVALID_ESCAPE = b"\\q"
 #: A run of bytes that can belong to a JSON number token outside strings.
 _NUMBER_RUN = re.compile(rb"[-+0-9.eE]+")
 
-#: Appended to an over-long integer token so the tokenizer rejects it as
-#: malformed instead of converting it.
+#: Passed in place of an over-long integer token so the tokenizer rejects it
+#: as malformed instead of converting it.
 _INVALID_NUMBER_END = b"x"
+
+#: Marks the end of a number token's integer part.
+_NUMBER_NON_INTEGER = re.compile(rb"[.eE]")
+
+#: Raw bytes of a number token the tokenizer sees exactly; longer tokens are
+#: passed as a placeholder of the same JSON type. It exceeds Python's default
+#: integer conversion limit, so every integer the decoder accepts is exact.
+_NUMBER_VIEW_BYTES = 8192
 
 
 class EnvelopeValueTooLargeError(ValueError):
@@ -141,9 +150,12 @@ class _PrefixStringReader:
         #: State of the number token being passed outside strings, which may
         #: span chunks.
         self._number_open = False
-        self._number_poisoned = False
+        self._number_view = bytearray()
+        self._number_long = False
+        self._number_is_integer = True
         self._number_in_integer_part = True
         self._number_digits = 0
+        self._skip_decoder: codecs.IncrementalDecoder | None = None
 
     def read(self, size: int = -1) -> bytes:
         if size == 0:
@@ -156,53 +168,73 @@ class _PrefixStringReader:
                 self._eof = True
                 if self._in_string and not self._skipping:
                     out += self._string
+                elif self._number_open:
+                    self._end_number(out)
                 break
             self._consume(chunk, out)
         return bytes(out)
 
     def _pass_structure(self, segment: bytes, out: bytearray) -> None:
-        """Pass bytes outside any string through, refusing over-long integer parts.
+        """Pass bytes outside any string through, number tokens bounded.
 
-        The JSON decoder refuses an integer longer than Python's conversion
-        limit with ``ValueError``, and converting one inside the C tokenizer
-        is not safe. A number whose integer part exceeds the limit is
-        therefore cut at the limit and made malformed there, so the tokenizer
-        rejects the record before any over-long value is converted. A float
-        with that many integer digits is refused the same way: failing closed
-        on a pathological number rather than guessing its value.
+        Each number token is held back until it ends. A short token reaches
+        the tokenizer exactly. An integer longer than Python's conversion
+        limit, which the JSON decoder refuses with ``ValueError``, reaches it
+        as a malformed token, so the record is rejected as the decoder rejects
+        it and the C tokenizer never converts the value. Any other token
+        longer than :data:`_NUMBER_VIEW_BYTES` reaches it as a placeholder of
+        the same JSON type: an envelope is a view of presence and type, and a
+        signature never reads a number's value, so a number of any length
+        costs bounded memory.
         """
-        if not segment:
-            return
-        limit = sys.get_int_max_str_digits()
         position = 0
-        ends_open = False
         for run in _NUMBER_RUN.finditer(segment):
-            if not (run.start() == 0 and self._number_open):
-                self._number_digits = 0
-                self._number_poisoned = False
-                self._number_in_integer_part = True
-            if self._number_poisoned:
-                # The rest of a refused token never reaches the tokenizer.
-                out += segment[position : run.start()]
-                position = run.end()
-            elif limit and self._number_in_integer_part:
-                token = run.group()
-                for offset, byte in enumerate(token):
-                    if byte in b".eE":
-                        self._number_in_integer_part = False
-                        break
-                    if 0x30 <= byte <= 0x39:
-                        self._number_digits += 1
-                        if self._number_digits > limit:
-                            out += segment[position : run.start() + offset]
-                            out += _INVALID_NUMBER_END
-                            position = run.end()
-                            self._number_poisoned = True
-                            break
-            ends_open = run.end() == len(segment)
-        # A token continues into the next chunk only if this one ends inside it.
-        self._number_open = ends_open
-        out += segment[position:]
+            if self._number_open and run.start() > 0:
+                self._end_number(out)
+            out += segment[position : run.start()]
+            if not self._number_open:
+                self._start_number()
+            self._extend_number(run.group())
+            position = run.end()
+            if run.end() < len(segment):
+                self._end_number(out)
+        if position < len(segment):
+            if self._number_open:
+                self._end_number(out)
+            out += segment[position:]
+
+    def _start_number(self) -> None:
+        self._number_open = True
+        self._number_view = bytearray()
+        self._number_long = False
+        self._number_is_integer = True
+        self._number_in_integer_part = True
+        self._number_digits = 0
+
+    def _extend_number(self, token: bytes) -> None:
+        if self._number_in_integer_part:
+            mark = _NUMBER_NON_INTEGER.search(token)
+            integer_part = token if mark is None else token[: mark.start()]
+            self._number_digits += len(integer_part) - len(integer_part.translate(None, b"0123456789"))
+            if mark is not None:
+                self._number_in_integer_part = False
+                self._number_is_integer = False
+        if not self._number_long:
+            self._number_view += token
+            if len(self._number_view) > _NUMBER_VIEW_BYTES:
+                self._number_long = True
+                self._number_view = bytearray()
+
+    def _end_number(self, out: bytearray) -> None:
+        self._number_open = False
+        limit = sys.get_int_max_str_digits()
+        if self._number_is_integer and limit and self._number_digits > limit:
+            out += _INVALID_NUMBER_END
+        elif self._number_long:
+            out += b"0" if self._number_is_integer else b"0.0"
+        else:
+            out += self._number_view
+        self._number_view = bytearray()
 
     def readinto(self, buffer: bytearray | memoryview) -> int:
         data = self.read(len(buffer))
@@ -238,15 +270,24 @@ class _PrefixStringReader:
                     self._skipped_bytes = len(self._string)
                     self._skip_carry = b""
                     self._skip_invalid = False
+                    self._skip_decoder = codecs.getincrementaldecoder("utf-8")()
                     self._validate_skipped(bytes(self._string[cut:]), out)
                     self._string = bytearray()
                     self._skipping = True
             if end < 0:
                 return
             if self._skipping:
-                if self._skip_carry and not self._skip_invalid:
+                if not self._skip_invalid and self._skip_carry:
                     # An escape left incomplete by the closing quote.
+                    self._skip_invalid = True
                     out += _INVALID_ESCAPE
+                if not self._skip_invalid and self._skip_decoder is not None:
+                    try:
+                        self._skip_decoder.decode(b"", final=True)
+                    except UnicodeDecodeError:
+                        # A UTF-8 sequence left incomplete by the closing quote.
+                        self._skip_invalid = True
+                        out += _INVALID_ESCAPE
                 self.truncated[self._ordinal] = self._skipped_bytes
             else:
                 out += self._string
@@ -258,12 +299,20 @@ class _PrefixStringReader:
     def _validate_skipped(self, piece: bytes, out: bytearray) -> None:
         """Check that a skipped string suffix is valid JSON string content.
 
-        The tokenizer never sees the suffix, so an invalid escape or raw
-        control character there is injected as an invalid escape: the
-        document is then rejected exactly as the full decoder rejects it.
+        The tokenizer never sees the suffix, so an invalid UTF-8 sequence,
+        invalid escape or raw control character there is injected as an
+        invalid escape: the document is then rejected exactly as the full
+        decoder rejects it.
         """
         if self._skip_invalid:
             return
+        if self._skip_decoder is not None:
+            try:
+                self._skip_decoder.decode(piece)
+            except UnicodeDecodeError:
+                self._skip_invalid = True
+                out += _INVALID_ESCAPE
+                return
         buffer = self._skip_carry + piece
         self._skip_carry = b""
         for match in _SKIPPED_TOKEN.finditer(buffer):
@@ -350,6 +399,12 @@ class _Line:
             pass
 
 
+#: Set in an envelope whose object had root keys outside the declared fields,
+#: so a caller can still tell an empty object from one with other content,
+#: without the envelope holding those keys.
+UNDECLARED_FIELDS = "\x00undeclared"
+
+
 def _envelope_scalar(value: object, raw_bytes: int | None, ordinal: int) -> object:
     if isinstance(value, str) and (raw_bytes is not None or len(value) > ENVELOPE_TEXT_PREFIX_CHARS):
         text = _TruncatedText(value[:ENVELOPE_TEXT_PREFIX_CHARS])
@@ -399,8 +454,12 @@ def _envelopes(
         if event == "map_key":
             if depth == 1:
                 key = str(value)
+                if key not in fields and isinstance(root, dict):
+                    root[UNDECLARED_FIELDS] = True
             elif depth == 2 and expanding:
                 element_key = str(value)
+                if element_key not in fields and isinstance(element, dict):
+                    element[UNDECLARED_FIELDS] = True
             continue
         scalar = _envelope_scalar(value, reader.truncated.get(ordinal) if event == "string" else None, ordinal)
         if depth == 0 or (depth == 1 and expanding):
@@ -452,8 +511,12 @@ def top_level_envelopes(
 
     reader = _PrefixStringReader(handle)
     events = ijson.basic_parse(reader, use_float=False)
-    envelopes = list(_envelopes(events, reader, expand_arrays=expand_arrays, fields=fields))
-    if whole_fields and not expand_arrays:
+    if not whole_fields or expand_arrays:
+        # Streamed: an array document's elements are never held together.
+        yield from _envelopes(events, reader, expand_arrays=expand_arrays, fields=fields)
+        return
+    envelopes = list(_envelopes(events, reader, expand_arrays=False, fields=fields))
+    if envelopes:
         for envelope in envelopes:
             if not isinstance(envelope, dict):
                 continue
@@ -495,6 +558,7 @@ def jsonl_record_envelopes(handle: IO[bytes], *, fields: frozenset[str]) -> Iter
 
 __all__ = [
     "ENVELOPE_TEXT_PREFIX_CHARS",
+    "UNDECLARED_FIELDS",
     "EnvelopeValueTooLargeError",
     "jsonl_record_envelopes",
     "top_level_envelopes",

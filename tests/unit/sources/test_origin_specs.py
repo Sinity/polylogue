@@ -1398,12 +1398,55 @@ def test_envelope_keeps_only_declared_root_fields() -> None:
     """Anti-vacuity: keep every root key again and the undeclared keys appear."""
     import io
 
-    from polylogue.core.json_envelope import top_level_envelopes
+    from polylogue.core.json_envelope import UNDECLARED_FIELDS, top_level_envelopes
 
     body = ", ".join(f'"k{index}": {index}' for index in range(5000))
     document = ('{"session_id": "s", ' + body + "}").encode()
     (envelope,) = top_level_envelopes(io.BytesIO(document), expand_arrays=False, fields=frozenset({"session_id"}))
-    assert envelope == {"session_id": "s"}
+    assert envelope == {"session_id": "s", UNDECLARED_FIELDS: True}
+    (declared_only,) = top_level_envelopes(
+        io.BytesIO(b'{"session_id": "s"}'), expand_arrays=False, fields=frozenset({"session_id"})
+    )
+    assert declared_only == {"session_id": "s"}
+
+
+def test_skipped_suffix_utf8_and_long_numbers_match_the_decoder() -> None:
+    """Anti-vacuity: drop the suffix UTF-8 check and the invalid byte is admitted;
+    drop the integer guard and the over-long float is refused with the integers."""
+    import io
+
+    import ijson
+    import pytest
+
+    from polylogue.core.json_envelope import UNDECLARED_FIELDS, jsonl_record_envelopes, top_level_envelopes
+
+    fields = frozenset({"atof_version"})
+    invalid_utf8 = b'{"atof_version": "0.1", "padding": "' + b"x" * (200 * 1024) + b'\xff"}'
+    with pytest.raises((ijson.JSONError, UnicodeDecodeError)):
+        list(top_level_envelopes(io.BytesIO(invalid_utf8), expand_arrays=False, fields=fields))
+    long_float = b'{"atof_version": "0.1", "n": ' + b"9" * 4301 + b".0}"
+    assert list(jsonl_record_envelopes(io.BytesIO(long_float), fields=fields)) == [
+        {"atof_version": "0.1", UNDECLARED_FIELDS: True}
+    ]
+    huge_fraction = b'{"atof_version": "0.1", "n": 0.' + b"1" * (1024 * 1024) + b"}"
+    (envelope,) = top_level_envelopes(io.BytesIO(huge_fraction), expand_arrays=False, fields=fields)
+    assert envelope == {"atof_version": "0.1", UNDECLARED_FIELDS: True}
+
+
+def test_hermes_jsonl_recognition_requires_every_record_to_be_atof(tmp_path: Path) -> None:
+    """Anti-vacuity: go back to ``any`` and the mixed file is recognized as a session."""
+    from polylogue.sources.origin_specs import recognize_source_class
+
+    atof = '{"atof_version": "0.1", "kind": "mark", "uuid": "u", "timestamp": "t", "name": "n"}'
+    mixed = tmp_path / "mixed.jsonl"
+    mixed.write_text(atof + "\n" + '{"other": 1}\n', encoding="utf-8")
+    pure = tmp_path / "pure.jsonl"
+    pure.write_text(atof + "\n" + atof + "\n", encoding="utf-8")
+
+    mixed_recognition = recognize_source_class(Provider.HERMES, mixed)
+    pure_recognition = recognize_source_class(Provider.HERMES, pure)
+    assert mixed_recognition is not None and mixed_recognition.source_class == "unsupported"
+    assert pure_recognition is not None and pure_recognition.source_class == "session"
 
 
 def test_invalid_escape_in_a_skipped_string_suffix_rejects_the_record() -> None:
@@ -1413,7 +1456,7 @@ def test_invalid_escape_in_a_skipped_string_suffix_rejects_the_record() -> None:
     import ijson
     import pytest
 
-    from polylogue.core.json_envelope import jsonl_record_envelopes, top_level_envelopes
+    from polylogue.core.json_envelope import UNDECLARED_FIELDS, jsonl_record_envelopes, top_level_envelopes
 
     long_text = "x" * (200 * 1024) + "\\q" + "y" * 16
     bad = ('{"atof_version": "0.1", "padding": "' + long_text + '"}').encode()
@@ -1427,7 +1470,7 @@ def test_invalid_escape_in_a_skipped_string_suffix_rejects_the_record() -> None:
         list(top_level_envelopes(io.BytesIO(control), expand_arrays=False, fields=fields))
     valid = ('{"atof_version": "0.1", "padding": "' + "x" * (200 * 1024) + '\\n\\u00e9\\\\q"}').encode()
     (envelope,) = top_level_envelopes(io.BytesIO(valid), expand_arrays=False, fields=fields)
-    assert envelope == {"atof_version": "0.1"}
+    assert envelope == {"atof_version": "0.1", UNDECLARED_FIELDS: True}
 
 
 def test_declared_identity_field_is_read_whole_or_refused() -> None:
@@ -1444,7 +1487,7 @@ def test_declared_identity_field_is_read_whole_or_refused() -> None:
     (envelope,) = json_envelope.top_level_envelopes(
         io.BytesIO(document), expand_arrays=False, fields=fields, whole_fields=fields
     )
-    assert envelope == {"toolUseId": tool_id}
+    assert envelope == {"toolUseId": tool_id, json_envelope.UNDECLARED_FIELDS: True}
 
     json_envelope._sqlite_value_limit.cache_clear()
     original = json_envelope._sqlite_value_limit

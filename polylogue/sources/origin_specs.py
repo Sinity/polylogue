@@ -808,9 +808,11 @@ def recognize_source_class(
             or local_agent.looks_like_hermes(record)
         ):
             return SourceClassRecognition("session", "Hermes declared JSON structural signature")
-        if isinstance(payload, list) and any(
-            isinstance(item, dict) and hermes_spans.looks_like_atof_payload(item) for item in payload
-        ):
+        # The same all-record predicate the artifact route applies
+        # (artifact_taxonomy.runtime._classify_list): one non-ATOF mapping in
+        # the sample means replay admits no session from this file.
+        records = [item for item in payload if isinstance(item, dict) and item] if isinstance(payload, list) else []
+        if records and all(hermes_spans.looks_like_atof_payload(item) for item in records):
             return SourceClassRecognition("session", "Hermes ATOF JSONL structural signature")
         return SourceClassRecognition("unsupported", "Hermes candidate has no declared source-class signature")
 
