@@ -601,7 +601,7 @@ class CursorStore:
 
         best_effort_cursor_write("archive ops interrupted attempt recovery", write)
 
-    def _rewind_interrupted_unparsed_cursors(self, source_paths: Iterable[str]) -> bool | None:
+    def _rewind_interrupted_unparsed_cursors(self, source_paths: Iterable[str]) -> bool:
         """Reopen cursors that outran a raw row left unparsed by interruption.
 
         Full ingest admits source bytes before parsing them. If the daemon
@@ -612,7 +612,7 @@ class CursorStore:
         Decided ambiguous membership is already terminal authority and stays
         cursor-complete.
 
-        Returns a true value only when source state was read and every
+        Returns true only when source state was read and every
         rewind was written, so the caller keeps the attempts as the recovery
         obligation otherwise. A read that keeps expiring propagates, with the
         attempts still ``running`` for the next startup.
@@ -623,8 +623,9 @@ class CursorStore:
         source_db = self._ops_db_path.with_name("source.db")
         if not source_db.exists():
             return True
+        unparsed: set[str] = set()
+        read_complete = True
         try:
-            unparsed: set[str] = set()
             with read_frame(source_db, tier=ArchiveTier.SOURCE, timeout_class="background-read") as frame:
                 for offset in range(0, len(paths), _INTERRUPTED_SOURCE_PATH_PAGE_SIZE):
                     page = tuple(paths[offset : offset + _INTERRUPTED_SOURCE_PATH_PAGE_SIZE])
@@ -657,7 +658,10 @@ class CursorStore:
                 "archive ops interrupted recovery: could not inspect source parse state",
                 exc_info=True,
             )
-            return
+            read_complete = False
+        if not read_complete:
+            # Not read: the attempts remain the recovery obligation.
+            return False
         if not unparsed:
             return True
 

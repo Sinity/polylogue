@@ -686,10 +686,6 @@
       "count": 2
     },
     {
-      "file": "polylogue/sources/live/cursor.py",
-      "digest": "81ce7f9a711dc1ef2bf4b4a372c6985e3f0e7b1e"
-    },
-    {
       "file": "polylogue/sources/live/hook_tool_response.py",
       "digest": "9ed4db00c6ca6fc8fb93ce408c457615f4badac9"
     },
