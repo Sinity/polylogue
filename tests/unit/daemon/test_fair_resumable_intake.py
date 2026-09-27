@@ -295,6 +295,50 @@ async def test_file_discovery_resumes_after_a_page_of_rejected_entries(
 
 
 @pytest.mark.asyncio
+async def test_file_discovery_keeps_its_page_under_repeated_watcher_hints(tmp_path: Path) -> None:
+    """Resetting on each hint repeats the rejected prefix and hides z.json."""
+    root = tmp_path / "source"
+    root.mkdir()
+    for index in range(300):
+        (root / f"{index:04d}.txt").write_text("ignored")
+    accepted = root / "z.json"
+    accepted.write_text("{}")
+    changed = root / "zz-hint.json"
+    changed.write_text("{}")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+
+    class HintingWatcher:
+        revision = 0
+
+        def intake_revision(self, _source: WatchSource) -> int:
+            return self.revision
+
+    watcher = HintingWatcher()
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+
+    assert await adapter.discover(limit=1) == ()
+    changed.write_text('{"revision":1}')
+    watcher.revision += 1
+    page = await adapter.discover(limit=1)
+    assert [item.payload for item in page] == [accepted]
+    await adapter.acknowledge(page[0])
+
+    inserted = root / "0000-new.json"
+    inserted.write_text("{}")
+    changed.write_text('{"revision":2}')
+    watcher.revision += 1
+    page = await adapter.discover(limit=1)
+    assert [item.payload for item in page] == [changed]
+    await adapter.acknowledge(page[0])
+    assert await adapter.discover(limit=1) == ()
+    page = await adapter.discover(limit=1)
+    assert [item.payload for item in page] == [inserted]
+
+
+@pytest.mark.asyncio
 async def test_exhausted_file_walk_recovers_a_missed_nested_change(tmp_path: Path) -> None:
     root = tmp_path / "source"
     nested = root / "a"
@@ -1565,9 +1609,12 @@ async def test_archive_sidecars_do_not_restart_a_file_sweep_but_new_source_files
     assert [item.payload for item in second] == [paths[1]]
     await adapter.acknowledge(second[0])
 
-    # An insertion behind the current position needs a fresh source walk.
+    # An insertion behind the current position needs a fresh source walk,
+    # after the active continuation reaches its end.
     earlier = tmp_path / "b.json"
     earlier.write_text("{}")
+    assert await adapter.discover(limit=1) == ()
+    assert adapter.discovery_pending
     restarted = await adapter.discover(limit=1)
     assert [item.payload for item in restarted] == [paths[0]]
     await adapter.acknowledge(restarted[0])

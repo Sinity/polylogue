@@ -106,6 +106,7 @@ class FileIntakeAdapter(IntakeAdapter):
         self._fresh_pending: list[Path] = []
         self._fresh_exhausted = False
         self._fresh_exhausted_at: float | None = None
+        self._rescan_after_walk = False
         self._discovery_lock = threading.Lock()
         self._discovery_thread = threading.local()
 
@@ -141,10 +142,20 @@ class FileIntakeAdapter(IntakeAdapter):
         self._fresh_pending.clear()
         self._fresh_exhausted = False
         self._fresh_exhausted_at = None
+        self._rescan_after_walk = False
+
+    def _request_fresh_rescan(self) -> None:
+        if self._fresh_walk is not None or self._fresh_pending:
+            # Finish the bounded continuation and its unacknowledged page.
+            # Repeated hints coalesce into one complete follow-up walk.
+            self._rescan_after_walk = True
+        else:
+            self._after = None
+            self._reset_fresh_walk()
 
     @property
     def discovery_pending(self) -> bool:
-        return self._fresh_walk is not None or bool(self._fresh_pending)
+        return self._fresh_walk is not None or bool(self._fresh_pending) or self._rescan_after_walk
 
     def _discover_fresh_paths(self, limit: int) -> list[Path]:
         if limit <= 0:
@@ -154,17 +165,21 @@ class FileIntakeAdapter(IntakeAdapter):
         if self._fresh_pending:
             return self._fresh_pending[:limit]
         if self._fresh_exhausted:
-            if (
+            if self._rescan_after_walk:
+                self._after = None
+                self._reset_fresh_walk()
+            elif (
                 self._fresh_exhausted_at is None
                 or time.monotonic() - self._fresh_exhausted_at < _FILE_DISCOVERY_RESCAN_S
             ):
                 return []
-            # A missed recursive watcher event may have inserted a file
-            # before the acknowledged cursor. Reconcile from the beginning;
-            # durable ingest identity makes previously admitted files cheap
-            # duplicates rather than skipping the new file forever.
-            self._after = None
-            self._reset_fresh_walk()
+            else:
+                # A missed recursive watcher event may have inserted a file
+                # before the acknowledged cursor. Reconcile from the beginning;
+                # durable ingest identity makes previously admitted files cheap
+                # duplicates rather than skipping the new file forever.
+                self._after = None
+                self._reset_fresh_walk()
         if self._fresh_walk is None:
             from polylogue.daemon.discovery_progress import advance_discovery
 
@@ -215,9 +230,8 @@ class FileIntakeAdapter(IntakeAdapter):
         self._retry_page_paths = ()
         hint_revision = self.context.watcher.intake_revision(self.source)
         if hint_revision != self._last_hint_revision:
-            self._after = None
             self._last_hint_revision = hint_revision
-            self._reset_fresh_walk()
+            self._request_fresh_rescan()
         # A producer may add a file before the walk's position. Root mtime
         # catches direct additions without a watcher hint, but SQLite sidecars
         # in a coincident archive/source root change that mtime too. Compare
@@ -229,8 +243,7 @@ class FileIntakeAdapter(IntakeAdapter):
         if root_mtime_ns is not None and root_mtime_ns != self._last_root_mtime_ns:
             entries = self._source_entries()
             if self._last_source_entries is not None and entries != self._last_source_entries:
-                self._after = None
-                self._reset_fresh_walk()
+                self._request_fresh_rescan()
             self._last_source_entries = entries
             self._last_root_mtime_ns = root_mtime_ns
         # The cursor advances in ``acknowledge``, over items the dispatcher
