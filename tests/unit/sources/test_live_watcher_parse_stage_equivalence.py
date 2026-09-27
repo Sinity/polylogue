@@ -1048,6 +1048,49 @@ def test_prefetch_submits_without_waiting_and_warm_claims_the_work(
         stage.shutdown()
 
 
+def test_unclaimed_prefetch_is_dropped_with_its_scratch(tmp_path: Path) -> None:
+    """A prefetched path no warm claims is discarded after its lifetime.
+
+    Anti-vacuity: without the lifetime, the unclaimed result and its sealed
+    attempt directory stay held until shutdown, so the result is still in
+    ``_path_results`` and an attempt directory still exists.
+    """
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    skipped, claimed = _write_fixture_corpus(tmp_path / "sessions", count=2)
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    try:
+        assert stage.prefetch_paths([(str(skipped), Provider.CODEX, True)]) == 1
+        for _ in range(parse_prefetch._SPECULATIVE_WARM_LIFETIME):
+            stage.warm_paths([(str(claimed), Provider.CODEX, True)])
+            stage.pop_path(str(claimed), blob_hash="")
+        assert str(skipped) not in stage._path_results
+        assert str(skipped) not in stage._path_futures
+        attempts = tmp_path / "parse-shards" / ".live-parse-attempts"
+        assert [path for path in attempts.iterdir() if path.name.startswith("attempt-")] == []
+    finally:
+        stage.shutdown()
+
+
+def test_a_failed_prefetch_stat_is_retried_by_the_warm(tmp_path: Path) -> None:
+    """Anti-vacuity: caching the speculative stat failure makes the warm
+    return that failure for a file that exists by the time it is needed."""
+    import hashlib
+
+    [path] = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    payload = path.read_bytes()
+    path.unlink()
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    try:
+        assert stage.prefetch_paths([(str(path), Provider.CODEX, True)]) == 0
+        path.write_bytes(payload)
+        stage.warm_paths([(str(path), Provider.CODEX, True)])
+        result = stage.pop_path(str(path), blob_hash=hashlib.sha256(payload).hexdigest())
+        assert result is not None and result.error is None
+    finally:
+        stage.shutdown()
+
+
 def test_default_process_pool_is_sized_for_the_writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Anti-vacuity: an uncapped default gives the process pool every core."""
     import polylogue.sources.live.parse_prefetch as parse_prefetch

@@ -262,15 +262,17 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
         retained: list[ParsedMessage] | None = [] if key is not None and start == 0 else None
         retained_bytes = 0
         with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
+            # The budget is in stored bytes: ``len`` of the decoded text
+            # counts code points and undercounts non-ASCII transcripts.
             cursor = conn.execute(
-                "SELECT message_json FROM prepared_message WHERE session_ordinal = ? "
-                "AND message_ordinal >= ? ORDER BY message_ordinal",
+                "SELECT message_json, length(CAST(message_json AS BLOB)) FROM prepared_message "
+                "WHERE session_ordinal = ? AND message_ordinal >= ? ORDER BY message_ordinal",
                 (self.session_ordinal, start),
             )
             for row in cursor:
                 message = ParsedMessage.model_validate_json(row[0])
                 if retained is not None:
-                    retained_bytes += len(row[0])
+                    retained_bytes += int(row[1])
                     if retained_bytes > _DECODED_SESSIONS.budget_bytes // 2:
                         retained = None
                     else:

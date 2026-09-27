@@ -55,6 +55,10 @@ ReadSnapshot = Callable[[Path], AbstractContextManager[PreparedReadSnapshot]]
 
 _DEFAULT_WORKER_COUNT_FLOOR = 1
 _DEFAULT_PROCESS_WORKER_CAP = 8
+#: Warms a prefetched result may wait to be claimed before it is dropped.
+#: Prefetch looks ahead about two pages, so a claimed guess is warmed within
+#: two or three; anything older is a path selection skipped.
+_SPECULATIVE_WARM_LIFETIME = 4
 _DEFAULT_WARM_TIMEOUT_SECONDS = 60.0
 
 # The dispatcher's per-pass byte budget already caps one admitted page at
@@ -412,6 +416,14 @@ class LiveParseStage:
         self.shard_build_failure_count = 0
         self._path_results: dict[str, LivePathPreparation] = {}
         self._path_futures: dict[str, Future[LivePathPreparation]] = {}
+        #: Paths submitted by ``prefetch_paths`` that no warm has claimed yet,
+        #: with the warm count at submission. A prefetch is a guess about what
+        #: a later batch will ingest; selection may skip the path (an
+        #: unchanged file whose cursor is restored from the archive), so an
+        #: unclaimed guess is dropped after ``_SPECULATIVE_WARM_LIFETIME``
+        #: warms rather than held, with its scratch, until shutdown.
+        self._speculative: dict[str, int] = {}
+        self._warm_count = 0
         self._path_sizes: dict[str, int] = {}
         self._path_attempt_dirs: dict[str, Path] = {}
         self._path_inflight_bytes = 0
@@ -485,6 +497,15 @@ class LiveParseStage:
         """
         if self._shard_directory is None:
             return 0
+        self._warm_count += 1
+        for source_path, _provider, _is_stream in candidates:
+            if self._speculative.pop(source_path, None) is None:
+                continue
+            claimed = self._path_results.get(source_path)
+            if claimed is not None and claimed.error is not None and claimed.deferred:
+                # A retryable failure of a speculative preparation is not this
+                # warm's answer: prepare the path again now.
+                self._path_results.pop(source_path).discard()
         if self._cleanup_blocked:
             for source_path, _provider, _is_stream in candidates:
                 if source_path not in self._path_results and source_path not in self._path_futures:
@@ -537,8 +558,24 @@ class LiveParseStage:
                 read_snapshot=read_snapshot,
                 capture_mode=capture_mode,
                 source_index=source_index,
+                paths={source_path for source_path, _provider, _is_stream in candidates},
             )
+        self._drop_stale_speculation()
         return len(candidates)
+
+    def _drop_stale_speculation(self) -> None:
+        """Discard prefetched results no warm claimed within their lifetime."""
+        for source_path, submitted_at in tuple(self._speculative.items()):
+            if self._warm_count - submitted_at < _SPECULATIVE_WARM_LIFETIME:
+                continue
+            if source_path in self._path_futures:
+                # Still running: its result is dropped when a later warm
+                # collects it and finds it expired.
+                continue
+            self._speculative.pop(source_path, None)
+            result = self._path_results.pop(source_path, None)
+            if result is not None:
+                result.discard()
 
     def prefetch_paths(self, candidates: Sequence[tuple[str, Provider, bool]]) -> int:
         """Start preparing paths a later ``warm_paths`` will ask for, without waiting.
@@ -553,12 +590,22 @@ class LiveParseStage:
         """
         if self._shard_directory is None or self._cleanup_blocked or self._closing:
             return 0
-        before = len(self._path_futures)
-        self._submit_path_candidates(list(candidates))
-        return max(0, len(self._path_futures) - before)
+        before = set(self._path_futures)
+        self._submit_path_candidates(list(candidates), speculative=True)
+        submitted = [path for path in self._path_futures if path not in before]
+        for source_path in submitted:
+            self._speculative[source_path] = self._warm_count
+        return len(submitted)
 
-    def _submit_path_candidates(self, candidates: list[tuple[str, Provider, bool]]) -> list[tuple[str, Provider, bool]]:
-        """Submit every candidate that fits the worker and byte budget; return the rest."""
+    def _submit_path_candidates(
+        self, candidates: list[tuple[str, Provider, bool]], *, speculative: bool = False
+    ) -> list[tuple[str, Provider, bool]]:
+        """Submit every candidate that fits the worker and byte budget; return the rest.
+
+        A speculative (prefetch) submission records no result when the path
+        cannot be stat'ed or submitted: the warm that needs the path retries
+        it then, instead of inheriting a transient failure.
+        """
         for source_path, future in tuple(self._path_futures.items()):
             if future.done():
                 self._collect_path_future(source_path, future)
@@ -569,9 +616,10 @@ class LiveParseStage:
             try:
                 source_bytes = Path(source_path).stat().st_size
             except OSError as exc:
-                self._path_results[source_path] = LivePathPreparation(
-                    None, None, None, f"source stat failed: {type(exc).__name__}"[:500], deferred=True
-                )
+                if not speculative:
+                    self._path_results[source_path] = LivePathPreparation(
+                        None, None, None, f"source stat failed: {type(exc).__name__}"[:500], deferred=True
+                    )
                 continue
             if len(self._path_futures) >= self._max_path_pending or (
                 self._path_futures and self._path_inflight_bytes + source_bytes > self._max_path_bytes
@@ -593,9 +641,10 @@ class LiveParseStage:
             except Exception as exc:
                 if attempt_directory is not None:
                     self._remove_attempt_directory(attempt_directory)
-                self._path_results[source_path] = LivePathPreparation(
-                    None, None, None, f"worker submission failed: {type(exc).__name__}"[:500], deferred=True
-                )
+                if not speculative:
+                    self._path_results[source_path] = LivePathPreparation(
+                        None, None, None, f"worker submission failed: {type(exc).__name__}"[:500], deferred=True
+                    )
                 continue
             self._path_futures[source_path] = future
             self._path_attempt_dirs[source_path] = attempt_directory
@@ -610,8 +659,15 @@ class LiveParseStage:
         read_snapshot: ReadSnapshot | None,
         capture_mode: Provider | None,
         source_index: int,
+        paths: set[str],
     ) -> None:
-        """Reconcile prior acquisitions on a read-only index before admission."""
+        """Reconcile prior acquisitions on a read-only index before admission.
+
+        Only the paths this warm is about to publish are reconciled. A
+        prefetched result for a later group would be reconciled against the
+        snapshot before the earlier groups publish, and a result carrying
+        prepared writes is never reconciled again.
+        """
         from polylogue.core.identity_law import session_id as archive_session_id
         from polylogue.core.sources import origin_from_provider
         from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_raw_session_id
@@ -623,7 +679,7 @@ class LiveParseStage:
         pending = {
             path: result
             for path, result in self._path_results.items()
-            if result.error is None and not result.prepared_writes
+            if path in paths and result.error is None and not result.prepared_writes
         }
         if not pending:
             return
@@ -712,6 +768,10 @@ class LiveParseStage:
     def _collect_path_future(self, source_path: str, future: Future[LivePathPreparation]) -> None:
         if self._path_futures.get(source_path) is not future:
             return
+        expired = (
+            source_path in self._speculative
+            and self._warm_count - self._speculative[source_path] >= _SPECULATIVE_WARM_LIFETIME
+        )
         self._path_futures.pop(source_path, None)
         self._path_inflight_bytes -= self._path_sizes.pop(source_path, 0)
         attempt_directory = self._path_attempt_dirs.pop(source_path, None)
@@ -760,6 +820,10 @@ class LiveParseStage:
         old = self._path_results.pop(source_path, None)
         if old is not None:
             old.discard()
+        if expired:
+            self._speculative.pop(source_path, None)
+            result.discard()
+            return
         self._path_results[source_path] = result
 
     def _new_attempt_directory(self) -> Path:
