@@ -135,6 +135,53 @@ def test_static_gates_run_side_by_side_and_report_in_declared_order(tmp_path: Pa
     assert [label for label, _outcome in outcomes] == ["gate first", "gate second"]
 
 
+def test_no_gate_started_around_the_interruption_runs_to_completion(tmp_path: Path) -> None:
+    """With more gates than workers, every gate process is stopped, none awaited.
+
+    A queued gate is either cancelled before it starts or, if a freed worker
+    picks it up first, registered before the interruption's snapshot of live
+    processes, so it is terminated rather than waited for.
+
+    Anti-vacuity: snapshot the live processes before cancelling queued gates,
+    or register a process without checking the interruption under the same
+    lock, and a gate launched after the snapshot runs its ``sleep`` to a
+    natural exit, so a return code is 0 instead of a signal.
+    """
+    spawned: list[subprocess.Popen[str]] = []
+    real_popen = subprocess.Popen
+
+    def tracking_popen(*args: Any, **kwargs: Any) -> subprocess.Popen[str]:
+        process = real_popen(*args, **kwargs)
+        spawned.append(process)
+        return process
+
+    def run_gate(label: str, command: list[str], *, run: Any, runner: str) -> tuple[int, float, dict[str, Any]]:
+        del run, runner
+        if label == "gate interrupting":
+            for _ in range(1000):
+                if verify._LIVE_GATE_PROCESSES:
+                    break
+                time.sleep(0.01)
+            raise verify.VerificationInterrupted(signal.SIGTERM)
+        completed = verify._run_gate_process(command, env=dict(os.environ))
+        return completed.returncode, 0.0, {}
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(verify, "ROOT", tmp_path)
+        patch.setattr(verify, "GATE_PARALLELISM", 2)
+        patch.setattr(subprocess, "Popen", tracking_popen)
+        patch.setattr(verify, "_run", run_gate)
+        with pytest.raises(verify.VerificationInterrupted):
+            verify._run_steps(
+                [("gate running", ["sleep", "3"]), ("gate interrupting", ["true"]), ("gate queued", ["sleep", "3"])],
+                run=None,  # type: ignore[arg-type]
+                runner="managed",
+            )
+
+    assert spawned
+    assert all(process.returncode is not None and process.returncode < 0 for process in spawned)
+
+
 def test_an_interrupted_run_stops_and_joins_its_running_gates(tmp_path: Path) -> None:
     """An interruption terminates live gates and returns only after their workers.
 

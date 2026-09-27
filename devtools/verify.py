@@ -609,16 +609,21 @@ def _run_gate_process(command: list[str], *, env: Mapping[str, str]) -> subproce
     child (``devtools.mypy_gate`` runs ``mypy``) is stopped with that child,
     which would otherwise hold the output pipes open after its parent died.
     """
-    process = subprocess.Popen(
-        command,
-        cwd=ROOT,
-        env=dict(env),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-    )
+    # Checking the interruption and registering the process are one step, so a
+    # gate either starts before the interruption's snapshot of live processes,
+    # and is stopped with them, or sees the interruption and never starts.
     with _STEP_LOCK:
+        if _GATES_INTERRUPTED.is_set():
+            raise _GateInterruptedError(command[0])
+        process = subprocess.Popen(
+            command,
+            cwd=ROOT,
+            env=dict(env),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
         _LIVE_GATE_PROCESSES.add(process)
     try:
         stdout, stderr = process.communicate()
@@ -667,9 +672,11 @@ def _run_steps(
                 future.result()
             outcomes.extend((label, future.result()) for (label, _command), future in zip(gates, futures, strict=True))
         except BaseException:
-            _GATES_INTERRUPTED.set()
+            with _STEP_LOCK:
+                _GATES_INTERRUPTED.set()
+            pool.shutdown(wait=False, cancel_futures=True)
             _stop_gate_processes()
-            pool.shutdown(wait=True, cancel_futures=True)
+            pool.shutdown(wait=True)
             raise
         pool.shutdown(wait=True)
     for label, command in tests:
