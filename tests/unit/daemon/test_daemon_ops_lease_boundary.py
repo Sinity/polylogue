@@ -72,7 +72,6 @@ def test_ops_tier_reads_need_no_write_lease(tmp_path: Path) -> None:
         assert store.list_failed_with_retry() == []
         assert store.list_convergence_debt(limit=5) == []
         assert store.recent_ingest_attempts(limit=5) == []
-        assert store.open_whole_archive_convergence_pledges() == ()
 
 
 def test_ops_tier_writes_still_require_the_write_lease(tmp_path: Path) -> None:

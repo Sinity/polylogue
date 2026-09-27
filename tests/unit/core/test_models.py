@@ -25,7 +25,9 @@ from polylogue.core.provider_identity import (
     canonical_schema_provider,
 )
 from polylogue.core.types import ContentHash, MessageId, SessionId
-from polylogue.schemas.code_detection.detection import LANGUAGE_PATTERNS, detect_language, extract_code_block
+from polylogue.schemas.code_detection.extractors import extract_code_block
+from polylogue.schemas.code_detection.regex import LANGUAGE_PATTERNS
+from polylogue.schemas.code_detection.runtime import detect_language
 from polylogue.storage.hydrators import (
     attachment_from_record,
     message_from_record,

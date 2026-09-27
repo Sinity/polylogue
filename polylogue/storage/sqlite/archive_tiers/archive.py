@@ -1449,19 +1449,6 @@ class ArchiveStore:
         """The durable source-tier handle, opened on first use."""
         return self._ensure_source_conn()
 
-    def _optional_source_conn(self) -> sqlite3.Connection | None:
-        """Return the source.db handle for evidence reads, or ``None``.
-
-        Topology hook-evidence consultation is strictly additive: a store whose
-        source tier is absent or unopenable (index-only harnesses, a read-only
-        candidate without the durable tier staged) must behave exactly as it did
-        before hook authority existed rather than fail a session write.
-        """
-        try:
-            return self._ensure_source_conn()
-        except sqlite3.Error:
-            return None
-
     def _ensure_source_conn(self) -> sqlite3.Connection:
         """Return the persistent source.db connection, opening it lazily."""
         if self._source_conn is None:
@@ -8024,11 +8011,6 @@ def _origin_value(origin: str | None) -> str | None:
 
 def _origin_for_tool_usage_filter(origin: str | None) -> str | None:
     return _origin_value(origin)
-
-
-def _session_origin(conn: sqlite3.Connection, session_id: str) -> str:
-    row = conn.execute("SELECT origin FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
-    return str(row["origin"]) if row is not None else "unknown-export"
 
 
 def _read_session_insight_provenance(

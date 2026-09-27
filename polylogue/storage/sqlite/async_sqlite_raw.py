@@ -33,26 +33,6 @@ class SQLiteRawMixin:
 
         def _get_connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]: ...
 
-    def _raw_id_query(
-        self,
-        *,
-        source_paths: list[str] | None = None,
-        source_name: str | None = None,
-        require_unparsed: bool = False,
-        require_unvalidated: bool = False,
-        validation_statuses: list[str] | None = None,
-        exclude_terminal_failure_evidence: bool = False,
-    ) -> tuple[str, tuple[str, ...]]:
-        """Build the canonical scoped raw-ID query."""
-        return self.queries.raw_id_query(
-            source_paths=source_paths,
-            source_name=source_name,
-            require_unparsed=require_unparsed,
-            require_unvalidated=require_unvalidated,
-            validation_statuses=validation_statuses,
-            exclude_terminal_failure_evidence=exclude_terminal_failure_evidence,
-        )
-
     async def iter_raw_ids(
         self,
         *,

@@ -223,11 +223,6 @@ class AnnotationBatch:
             context="annotation batch provenance",
         )
 
-    def canonical_provenance_json(self) -> str:
-        """Return the byte-stable finite JSON used for exact-retry identity."""
-
-        return self._canonical_provenance.decode("utf-8")
-
     def canonical_provenance_bytes(self) -> bytes:
         """Return canonical UTF-8 provenance bytes, rejecting invalid Unicode."""
 

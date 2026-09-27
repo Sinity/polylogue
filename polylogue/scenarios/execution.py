@@ -37,17 +37,6 @@ class ExecutionKind(str, Enum):
     RUNNER = "runner"
 
 
-def _argv_requests_json(argv: tuple[str, ...]) -> bool:
-    for index, arg in enumerate(argv):
-        if arg == "--format" and index + 1 < len(argv) and argv[index + 1] == "json":
-            return True
-        if arg == "-f" and index + 1 < len(argv) and argv[index + 1] == "json":
-            return True
-        if arg.startswith("--format=") and arg.split("=", 1)[1] == "json":
-            return True
-    return False
-
-
 class PipelineProbeInputMode(str, Enum):
     SYNTHETIC = "synthetic"
     ARCHIVE_SUBSET = "archive-subset"
@@ -341,11 +330,6 @@ class ExecutionSpec:
         if self.kind is not ExecutionKind.POLYLOGUE:
             return ()
         return ("--plain", *self.argv)
-
-    def pytest_command(self, *prefix_args: str) -> tuple[str, ...]:
-        if self.kind is not ExecutionKind.PYTEST:
-            raise ValueError(f"{self.kind.value} execution cannot render a pytest command")
-        return ("pytest", *prefix_args, *self.argv)
 
     def to_payload(self) -> PayloadDict:
         payload: PayloadDict = {"kind": self.kind.value}

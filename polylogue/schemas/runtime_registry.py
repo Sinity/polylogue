@@ -644,36 +644,6 @@ class SchemaRegistry:
                     f"Package {package.provider}/{package.version} has a non-JSON workload profile"
                 ) from exc
 
-    def _load_local_element_schema(
-        self,
-        provider_token: str,
-        *,
-        version: str,
-        element_kind: str | None,
-    ) -> PublicSchemaDocument | None:
-        """Load an element schema strictly from this registry's own storage root.
-
-        Mirrors ``_load_local_catalog``'s no-bundled-fallback guarantee: a
-        caller merging against "the committed prior schema"
-        (``replace_provider_packages``) must not silently pull in an
-        unrelated version from the bundled ``SCHEMA_DIR`` tree when
-        ``storage_root`` is isolated (e.g. a test's ``tmp_path``, or a
-        ``devtools schema-generate`` run pointed at a scratch output dir).
-        """
-        catalog = self._load_local_catalog(provider_token)
-        if catalog is None:
-            return None
-        resolved_version = _resolved_package_version(catalog, version)
-        if resolved_version is None:
-            return None
-        package = catalog.package(resolved_version)
-        if package is None:
-            return None
-        element = package.element(element_kind)
-        if element is None or element.schema_file is None:
-            return None
-        return self._read_local_element_schema_file(provider_token, package.version, element.schema_file)
-
     def _read_local_element_schema_file(
         self, provider_token: str, package_version: str, schema_file: str
     ) -> PublicSchemaDocument | None:
@@ -1074,9 +1044,6 @@ class SchemaRegistry:
                 / "elements"
                 / f"{package.default_element_kind}.schema.json.gz"
             )
-
-    def _package_rank(self, catalog: SchemaPackageCatalog) -> dict[str, int]:
-        return {package.version: index for index, package in enumerate(self._ranked_packages(catalog))}
 
     @staticmethod
     def _package_rank_from_sorted(packages: Sequence[SchemaVersionPackage]) -> dict[str, int]:

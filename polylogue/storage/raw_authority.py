@@ -111,12 +111,6 @@ class RawReplayPlan:
         )
 
 
-def _decode_json_field(value: object) -> object:
-    if not isinstance(value, str):
-        raise RuntimeError("raw authority ledger contains a non-text JSON field")
-    return json.loads(value)
-
-
 def _canonical_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 

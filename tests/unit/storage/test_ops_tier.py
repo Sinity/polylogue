@@ -66,7 +66,6 @@ def test_restart_required_state_is_not_a_retirement_target() -> None:
     assert not protected & dropped
     assert {
         "secret_scan_status",
-        "whole_archive_convergence_pledge",
         "context_injection_ledger",
         "convergence_debt",
     } <= protected

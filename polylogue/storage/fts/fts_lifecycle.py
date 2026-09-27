@@ -72,16 +72,6 @@ def _status_int(status: dict[str, object], key: str) -> int:
     return 0
 
 
-def _message_trigger_names_for_sync(conn: sqlite3.Connection) -> tuple[str, ...]:
-    del conn
-    return _BLOCKS_FTS_TRIGGER_NAMES
-
-
-async def _message_trigger_names_for_async(conn: aiosqlite.Connection) -> tuple[str, ...]:
-    del conn
-    return _BLOCKS_FTS_TRIGGER_NAMES
-
-
 _BLOCKS_FTS_TRIGGER_NAMES = (
     "messages_fts_ai",
     "messages_fts_ad",
@@ -157,17 +147,6 @@ def _triggers_present_sync(conn: sqlite3.Connection, names: tuple[str, ...]) -> 
         f"SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN ({placeholders})",
         names,
     ).fetchone()
-    return row is not None and row[0] == len(names)
-
-
-async def _triggers_present_async(conn: aiosqlite.Connection, names: tuple[str, ...]) -> bool:
-    """Check whether every named trigger exists in sqlite_master."""
-    placeholders = ", ".join("?" for _ in names)
-    cursor = await conn.execute(
-        f"SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN ({placeholders})",
-        names,
-    )
-    row = await cursor.fetchone()
     return row is not None and row[0] == len(names)
 
 

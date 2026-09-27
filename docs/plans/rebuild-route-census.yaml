@@ -86,24 +86,6 @@ routes:
       It applies demo-only post-ingest writes over context.archive_root; it is
       a root because the dispatcher resolves handlers by name.
 
-  - function: polylogue.daemon.http.DaemonAPIHandler._handle_demo_augment.augment
-    kinds: [entry_root]
-    entrypoints:
-      - polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync
-    route: daemon_operation
-    reason: >-
-      POST /api/demo/augment runs the same demo augmentation on the daemon
-      write bridge. It reaches apply_demo_post_ingest_augmentation directly
-      rather than through the `maintenance.demo.augment` dispatcher, so it is a
-      second entry into one augmentation inside the daemon process -- recorded
-      here rather than hidden (follow-up: lower it onto the declared
-      operation).
-
-  # ── Reachable from no production caller at this head ────────────────
-  # Each of these is an exported rebuild route whose only callers are tests.
-  # They are the shape polylogue-sbebh exists to police: an orchestration-only
-  # route that executes no DML of its own and is invisible to the writer
-  # census. Recorded so none can quietly acquire a production caller.
   - function: polylogue.operations.mutation_actuators.InsightsRebuildActuator.apply
     kinds: [direct_caller, entry_root]
     entrypoints:

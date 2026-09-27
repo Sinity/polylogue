@@ -470,23 +470,6 @@ class PublicationService:
         finally:
             conn.close()
 
-    def has_due_work(self, object_ids: Sequence[str]) -> bool:
-        if self.mode is PublicationMode.OFF or not object_ids:
-            return False
-        conn = self._connect(readonly=True)
-        try:
-            return bool(
-                obligations_store.list_obligations(
-                    conn,
-                    statuses=_RETRYABLE_STATUSES,
-                    object_ids=object_ids,
-                    due_at_ms=self.clock(),
-                    limit=1,
-                )
-            )
-        finally:
-            conn.close()
-
     def unresolved_object_ids(self, object_ids: Sequence[str]) -> set[str]:
         """Return selected objects with any exact revision not fully confirmed."""
         if self.mode is PublicationMode.OFF or not object_ids:

@@ -18,7 +18,6 @@ import contextlib
 import time
 from collections.abc import Callable, Coroutine, Iterable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from polylogue.daemon.observation import Observation, ObservationBoard, ObservationState
@@ -480,8 +479,3 @@ _OBSERVATION_STATE_FOR: Mapping[ServiceState, ObservationState] = {
     ServiceState.RUNNING: ObservationState.MEASURED,
     ServiceState.STOPPED: ObservationState.MEASURED,
 }
-
-
-def halt_registry_for(archive_root: Path | str) -> HaltRegistry:
-    """Return the durable halt registry for *archive_root*."""
-    return HaltRegistry(archive_root)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import builtins
-from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from polylogue.archive.session.domain_models import Session, SessionSummary
@@ -77,62 +76,6 @@ class RepositoryArchiveQueryMixin:
                 message_type=message_type,
             )
         )
-
-    async def iter_summary_pages(
-        self,
-        *,
-        page_size: int = 50,
-        origin: str | None = None,
-        origins: list[str] | None = None,
-        source: str | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        title_contains: str | None = None,
-        referenced_path: list[str] | None = None,
-        cwd_prefix: str | None = None,
-        action_terms: list[str] | None = None,
-        excluded_action_terms: list[str] | None = None,
-        tool_terms: list[str] | None = None,
-        excluded_tool_terms: list[str] | None = None,
-        has_tool_use: bool = False,
-        has_thinking: bool = False,
-        min_messages: int | None = None,
-        max_messages: int | None = None,
-        min_words: int | None = None,
-        max_words: int | None = None,
-        message_type: str | None = None,
-    ) -> AsyncIterator[list[SessionSummary]]:
-        offset = 0
-        while True:
-            page = await self.list_summaries(
-                limit=page_size,
-                offset=offset,
-                origin=origin,
-                origins=origins,
-                source=source,
-                since=since,
-                until=until,
-                title_contains=title_contains,
-                referenced_path=referenced_path,
-                cwd_prefix=cwd_prefix,
-                action_terms=action_terms,
-                excluded_action_terms=excluded_action_terms,
-                tool_terms=tool_terms,
-                excluded_tool_terms=excluded_tool_terms,
-                has_tool_use=has_tool_use,
-                has_thinking=has_thinking,
-                min_messages=min_messages,
-                max_messages=max_messages,
-                min_words=min_words,
-                max_words=max_words,
-                message_type=message_type,
-            )
-            if not page:
-                break
-            yield page
-            if len(page) < page_size:
-                break
-            offset += len(page)
 
     async def list(
         self,

@@ -124,33 +124,6 @@ class SourceItemMemberDispositionRecord:
     observed_at_ms: int
 
 
-def retained_source_generation(conn: sqlite3.Connection, source_generation_id: str) -> RetainedSourceGeneration:
-    """Read accepted identity without inventing a consumed publication receipt."""
-    generation = conn.execute(
-        "SELECT item_count FROM source_generations WHERE source_generation_id=?", (source_generation_id,)
-    ).fetchone()
-    if generation is None:
-        raise KeyError(source_generation_id)
-    fingerprint: str | None = None
-    inputs: list[RetainedSourceInput] = []
-    cursor: tuple[str, str] | None = None
-    while True:
-        page = page_retained_source_inputs(conn, source_generation_id, after=cursor)
-        if not page:
-            break
-        for item, item_fingerprint in page:
-            if fingerprint is None:
-                fingerprint = item_fingerprint
-            elif fingerprint != item_fingerprint:
-                raise ValueError("accepted source generation has mixed decoder identities")
-            inputs.append(item)
-        cursor = (page[-1][0].coordinate, page[-1][0].source_item_id)
-    if not inputs or len(inputs) != int(generation[0]) or fingerprint is None:
-        raise ValueError("accepted source generation has an incomplete manifest")
-    _require_digest(fingerprint, "enumeration_fingerprint")
-    return RetainedSourceGeneration(source_generation_id, fingerprint, tuple(inputs), len(inputs))
-
-
 def retained_source_generation_header(conn: sqlite3.Connection, source_generation_id: str) -> RetainedSourceGeneration:
     """Read the accepted decoder and count without materializing input members."""
     row = conn.execute(

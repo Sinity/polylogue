@@ -50,39 +50,15 @@ reset**. Reset is the only one that destroys primary data.
 
 ## Subcommands
 
-### Blob-reference integrity — preview and apply pairs
+### Blob-reference integrity — classification only
 
-`polylogue ops maintenance blob-reference-debt` and
-`blob-reference-recovery-plan` are read-only classification/planning
-commands. The two commands that can actually mutate the archive each
-follow the same preview/apply split: a dedicated
-read-only `-preview` command with no `--yes`/`--apply` flag, and a lean
-apply command that always mutates.
-
-```bash
-# Read-only: simulate what a replace-from-source pass would change.
-polylogue ops maintenance blob-reference-replace-from-source-preview --output-format json
-
-# Apply: always mutates; --manifest-file is required.
-polylogue ops maintenance blob-reference-replace-from-source \
-  --manifest-file /tmp/replace.jsonl --output-format json
-
-# Read-only: simulate what an orphan prune would remove.
-polylogue ops maintenance blob-reference-prune-orphans-preview --output-format json
-
-# Apply: always mutates; writes a quarantine JSONL before deleting rows.
-polylogue ops maintenance blob-reference-prune-orphans \
-  --quarantine-file /tmp/quarantine.jsonl --output-format json
-```
-
-These four commands are campaign-scoped, not standing maintenance. Their
-actuators implement one step of the 2026-09-07 fresh-start ruling — copying
-`restore_required` material back to its spool and deleting GC-eligible
-material — and have no purpose once the final archive is built and accepted.
-`CAMPAIGN_ACTUATOR_RETIREMENTS` in `polylogue/maintenance/declarations.py`
-records each actuator, the work it serves, and the condition that retires it;
-`devtools gate declaration-bindings` reads that declaration and refuses once a
-recorded-as-met condition leaves an actuator still standing.
+`polylogue ops maintenance blob-reference-debt` is read-only: it classifies
+any referenced blob missing from the store. There is no repair command. No
+current write path produces this debt -- raw-deleting routes remove the
+`blob_refs` row with its raw row, publication reserves bytes before the
+referencing row commits, and GC reclaims only unreferenced hashes -- so a
+non-zero count is a producer defect to fix at its source, and the daemon's
+expensive health check reports it as an error.
 
 ### `polylogue ops maintenance verify-archive` — coherence gate
 
@@ -107,7 +83,7 @@ extensible registry):
 | `tier-schema` | Every tier file (source/index/embeddings/user/ops) exists at its current `PRAGMA user_version`. |
 | `pointer-coherence` | The conventional `index.db` path and the active `.index-active-pointer` generation agree (an interrupted blue-green promotion leaves these diverged — polylogue-k8kj class). |
 | `source-index-coverage` | Every raw logical head is materialized, has an explicit terminal disposition, or is quarantined, and every index session's `raw_id` still resolves to a real raw row (orphans). The raw source population, not the derived census ledger, defines the coverage universe. |
-| `source-conservation` | Every acquired source item (each `raw_sessions` row, hook event, history sidecar) is materialized or carries a typed exclusion citing its rule (revision superseded, byte-duplicate receipt, parse failure, validation rejection, declared non-session artifact kind, decode failure, census verdict, pending); a raw row whose source file no longer exists on disk is `source_missing` when its raw payload bytes are still retained and `source_lost` when they are not. A raw acquired from inside an export bundle records an `archive!member` coordinate: the on-disk probe resolves it to its container and requires the member to be present in it, so a bundle member is neither reported lost while its archive is on disk nor conserved by container existence alone. Two rules cite another owner's durable ledger: `authority_blocked_head` (warning) is a raw an unresolved `raw_authority_blockers` row names as the accepted revision head while the index materialized a different raw of the same logical source, and `quarantined_cohort_unmaterialized` (blocking) is a raw whose `raw_session_memberships` rows are all quarantined with no revision of the logical source indexed at all. Reverse: every session traces to a raw row that is not a declared non-session artifact (phantom sessions, polylogue-b508, are reported and never deleted), and every message, block, and attachment ref traces to its owner. An attachment with no ref splits on `ref_count`: `attachment_unowned` (ref_count 0) is explained and `attachment_unreferenced` (non-zero ref_count) blocks — `ref_count` distinguishes the two only in an archive written throughout by the current sweep, so on a legacy archive `plan_orphaned_attachment_relink` is the instrument that types each ref-less row. Unexplained, unclassified, lost-source, quarantined-cohort, orphan, and phantom terms block; pending and authority-blocked are warnings. The acceptance instrument for a rebuilt archive: zero blocking terms. |
+| `source-conservation` | Every acquired source item (each `raw_sessions` row, hook event, history sidecar) is materialized or carries a typed exclusion citing its rule (revision superseded, byte-duplicate receipt, parse failure, validation rejection, declared non-session artifact kind, decode failure, census verdict, pending); a raw row whose source file no longer exists on disk is `source_missing` when its raw payload bytes are still retained and `source_lost` when they are not. A raw acquired from inside an export bundle records an `archive!member` coordinate: the on-disk probe resolves it to its container and requires the member to be present in it, so a bundle member is neither reported lost while its archive is on disk nor conserved by container existence alone. Two rules cite another owner's durable ledger: `authority_blocked_head` (warning) is a raw an unresolved `raw_authority_blockers` row names as the accepted revision head while the index materialized a different raw of the same logical source, and `quarantined_cohort_unmaterialized` (blocking) is a raw whose `raw_session_memberships` rows are all quarantined with no revision of the logical source indexed at all. Reverse: every session traces to a raw row that is not a declared non-session artifact (phantom sessions, polylogue-b508, are reported and never deleted), and every message, block, and attachment ref traces to its owner. An attachment with no ref splits on `ref_count`: `attachment_unowned` (ref_count 0) is explained and `attachment_unreferenced` (non-zero ref_count) blocks. Unexplained, unclassified, lost-source, quarantined-cohort, orphan, and phantom terms block; pending and authority-blocked are warnings. The acceptance instrument for a rebuilt archive: zero blocking terms. |
 | `reasoning-conservation` | Every reasoning witness inside the acquired bytes of a materialized coding-origin raw reaches a thinking block of the exact session and message that carries it. Witnesses are selected structurally from the payload -- Claude Code `thinking` segments (text-bearing, signature-only, empty) and standalone Codex `reasoning` records (summary-bearing, content-bearing, opaque) -- never from the parser, the index, or any identity in the file. Denominators and outcomes are reported per origin and per variant: material surviving under a non-thinking kind is `reasoning_kind_collapsed`, an absent carrier or lost material blocks, a declared origin that contributed no readable evidence is `origin_evidence_absent`, and a bounded run that truncated is `scan_truncated`. One origin's conserved witnesses can never stand in for another's lost ones. Reads every selected blob of the two largest origins, so it is declared on the cross-tier candidate route only, never the routine live route. |
 | `fts-parity` | `messages_fts` exactly covers its source `blocks` rows, archive-wide, with the worst-offending sessions surfaced by name. |
 | `lineage-sanity` | `session_links.resolved_dst_session_id` and `branch_point_message_id` resolve to real sessions/messages (the latter is deliberately not a foreign key — see the data-model docs). |
