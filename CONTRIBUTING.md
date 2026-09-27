@@ -63,7 +63,13 @@ targeting `master`.
 5. Open a pull request. The template has required sections — fill them
    all in. The PR title becomes the squash-merge subject on `master`.
 6. CI must pass. Fix failures on the branch, do not merge with red CI.
-7. Squash-merge the pull request into `master`.
+7. Codex reviews every non-draft head. Answer each finding with a fix commit
+   or a concrete refutation in its thread, then resolve the thread. The
+   `codex-review` status turns green once Codex has completed a review of the
+   current head; the `codex-review-waived` label is an explicit maintainer
+   override for when Codex is unavailable.
+8. Queue the squash merge with `gh pr merge --auto --squash
+   --match-head-commit <sha>`; GitHub merges once every requirement holds.
 
 ## Branch Naming
 
@@ -218,7 +224,9 @@ The repository should stay aligned with the workflow above:
 
 - protect `master` against direct pushes
 - require pull requests for normal changes
-- require the authoritative CI checks before merge
+- require the authoritative CI checks (`ci/circleci: quick-gate`) and
+  `codex-review` before merge
+- require conversation resolution before merge
 - keep squash merge enabled and leave merge-commit and rebase-merge disabled
 - enable automatic deletion of head branches after merge
 - allow Update branch for stale PRs

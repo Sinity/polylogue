@@ -1,0 +1,77 @@
+name: codex-review-gate
+
+# Publishes the `codex-review` commit status on a pull request's head.
+# Branch protection requires it, so a PR cannot merge before the hosted Codex
+# review has completed on that exact head. Unanswered findings are enforced
+# separately by required conversation resolution.
+#
+# success  - the Codex summary shows a completed Code Review for the head, or
+#            the PR carries the `codex-review-waived` label (an explicit
+#            maintainer decision, e.g. while Codex is over its usage limit).
+# pending  - no completed review for the head yet (running, not started, or a
+#            draft, which Codex does not review until marked ready).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  issue_comment:
+    types: [created, edited]
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  statuses: write
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: codex-review-gate-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    if: github.event_name != 'issue_comment' || github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const number = context.payload.pull_request?.number ?? context.payload.issue.number;
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: number });
+            const head = pr.head.sha;
+            const waived = pr.labels.some((label) => label.name === "codex-review-waived");
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number: number, per_page: 100,
+            });
+            const summary = comments
+              .filter((c) => c.user?.type === "Bot" && c.body?.includes("<!-- codex-pull-request-review-summary -->"))
+              .pop();
+            // Row: | 📝 **Code Review** | ✅ **Completed** <time> | `abc1234` | trigger |
+            const row = summary?.body.split("\n").find((line) => line.includes("**Code Review**"));
+            const cells = row ? row.split("|").map((cell) => cell.trim()) : [];
+            const reviewed = (cells[3] ?? "").replace(/`/g, "");
+            const completed = /\*\*Completed\*\*/.test(cells[2] ?? "");
+            const forHead = reviewed.length >= 7 && head.startsWith(reviewed);
+
+            let state = "pending";
+            let description = "waiting for Codex to review this head";
+            if (waived) {
+              state = "success";
+              description = "waived by the codex-review-waived label";
+            } else if (pr.draft) {
+              description = "draft: Codex reviews once marked ready";
+            } else if (forHead && completed) {
+              state = "success";
+              description = `Codex review completed on ${reviewed}`;
+            } else if (forHead) {
+              description = `Codex review of ${reviewed} not completed yet`;
+            }
+
+            await github.rest.repos.createCommitStatus({
+              owner, repo, sha: head, state, context: "codex-review", description,
+              target_url: summary?.html_url ?? pr.html_url,
+            });
+            core.info(`${number} ${head}: ${state} (${description})`);
