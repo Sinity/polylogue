@@ -573,7 +573,14 @@ def main(argv: list[str] | None = None) -> int:
     # Refuse a missing path before queueing for the host pytest slot: pytest
     # fails such a run at collection anyway, but only after it has waited out
     # the pool admission, which on a contended pool is many minutes.
-    absent_before_admission = absent_selection_paths(selection, root=ROOT)
+    absent_before_admission = [
+        argument
+        for argument in absent_selection_paths(selection, root=ROOT)
+        # Only a test module or node id is certain to be a selection: an
+        # option value such as ``--junit-xml reports/out.xml`` also contains a
+        # slash and legitimately does not exist before the run.
+        if argument.split("::", 1)[0].endswith(".py")
+    ]
     if absent_before_admission:
         sys.stderr.write(
             "devtools test: these selected paths do not exist, so nothing was queued: "
