@@ -157,3 +157,26 @@ def test_debt_waits_while_a_cold_build_is_unsettled(archive: Path, monkeypatch: 
 
     assert stage.executions == []
     assert len(_rows(archive)) == 3
+
+
+def test_promotion_release_makes_deferred_rows_due_and_keeps_failure_backoff(archive: Path) -> None:
+    """Anti-vacuity: releasing every row would drop a real failure's backoff;
+    releasing none leaves the deferred row waiting out its backoff."""
+    cursor = CursorStore(archive / "index.db")
+    for stage, deferred in (("deferred_stage", True), ("failed_stage", False)):
+        cursor.record_convergence_debt(
+            stage=stage,
+            subject_type="source_path",
+            subject_id=str(archive / "sources" / f"{stage}.jsonl"),
+            error="waiting",
+            deferred=deferred,
+        )
+    with sqlite3.connect(archive / "ops.db") as conn:
+        conn.execute("UPDATE convergence_debt SET next_retry_at = '2999-01-01T00:00:00+00:00'")
+        conn.commit()
+
+    assert cursor.release_deferred_convergence_debt() == 1
+
+    with sqlite3.connect(archive / "ops.db") as conn:
+        retry = dict(conn.execute("SELECT stage, next_retry_at FROM convergence_debt"))
+    assert retry == {"deferred_stage": None, "failed_stage": "2999-01-01T00:00:00+00:00"}

@@ -3084,6 +3084,26 @@ async def _run_daemon_services_under_active_writer_lease(
                                     reason="promoted" if promoted else "discarded",
                                     generation_id=generation.generation_id,
                                 )
+                        if promoted and watcher is not None:
+                            # Work deferred behind the unpromoted candidate
+                            # (stages the build could not run, retention it
+                            # could not apply) accrued retry backoff while it
+                            # waited, though nothing failed. It is due now.
+                            try:
+                                released = await write_coordinator.run_sync(
+                                    "daemon.cold_build.release_deferred_debt",
+                                    watcher._cursor.release_deferred_convergence_debt,
+                                )
+                            except Exception as exc:
+                                emit(
+                                    "daemon.cold_build.release_deferred_debt_failed",
+                                    level=WARNING,
+                                    outcome="degraded",
+                                    error_type=type(exc).__name__,
+                                    error_detail=str(exc),
+                                )
+                            else:
+                                emit("daemon.cold_build.deferred_debt_released", outcome="ok", rows=released)
                         if promoted and isinstance(session_profile_callback, ComposedSessionProfiles):
                             try:
                                 await session_profile_callback.converge_promoted()

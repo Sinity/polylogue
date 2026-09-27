@@ -2033,6 +2033,28 @@ class CursorStore:
         """Clear derived convergence debt after successful convergence."""
         self._clear_convergence_debt_from_ops(subject_type=subject_type, subject_id=subject_id, stage=stage)
 
+    def release_deferred_convergence_debt(self) -> int:
+        """Make every deferred debt row due now; failed rows keep their backoff.
+
+        A deferral is backpressure, not a failure. When the condition it waited
+        on ends (a cold build's promotion), the exponential backoff it accrued
+        while re-deferred only delays work that can now run.
+        """
+        released = 0
+
+        def write() -> None:
+            nonlocal released
+            with self._connect_ops() as conn:
+                cursor = conn.execute(
+                    "UPDATE convergence_debt SET next_retry_at = NULL "
+                    "WHERE status = 'deferred' AND next_retry_at IS NOT NULL"
+                )
+                released = int(cursor.rowcount or 0)
+                conn.commit()
+
+        best_effort_cursor_write("archive ops convergence debt release", write)
+        return released
+
     def clear_stage_convergence_debt(self, *, stage: str, recorded_at_or_before_ms: int) -> int:
         """Clear every subject's debt for one archive-wide stage.
 
