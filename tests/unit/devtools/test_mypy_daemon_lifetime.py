@@ -6,7 +6,6 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -27,46 +26,116 @@ def test_mypy_command_isolated_by_checkout(tmp_path: Path) -> None:
     assert gate.mypy_command(root=tmp_path) == [str(tmp_path / ".venv/bin/python"), "-m", "devtools.mypy_gate"]
 
 
-def test_shared_gate_uses_one_cache_and_returns_checker_status(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    checker = tmp_path / ".venv/bin/mypy"
-    checker.parent.mkdir(parents=True)
-    checker.write_text("#!/bin/sh\nexit 7\n", encoding="utf-8")
+def _stamped_seed(shared: Path, root: Path) -> None:
+    """A complete shared cache for *root*'s default inputs."""
+    shared.mkdir(parents=True)
+    (shared / "seed.db").write_text("seed", encoding="utf-8")
+    (shared / mypy_gate._STAMP).write_text(mypy_gate._input_key(root), encoding="utf-8")
+
+
+def _stub_checker(lane: Path, body: str) -> None:
+    checker = lane / ".venv" / "bin" / "mypy"
+    checker.parent.mkdir(parents=True, exist_ok=True)
+    checker.write_text("#!/bin/sh\n" + body, encoding="utf-8")
     checker.chmod(0o755)
+
+
+def test_gate_checks_on_its_checkout_cache_and_publishes_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The checker's status is the gate's; a complete cache becomes the shared seed.
+
+    Anti-vacuity: point ``--cache-dir`` at the shared cache and the recorded
+    directory is not the checkout's; drop ``_publish`` and the shared seed
+    never receives the entry the checker wrote.
+    """
     common = tmp_path / ".git"
     common.mkdir()
-    calls: list[list[str]] = []
-
     monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
+    shared = common / "polylogue-mypy" / "cache"
+    _stamped_seed(shared, tmp_path)
+    # mypy exits 1 on type errors with a complete cache; that cache is published.
+    _stub_checker(tmp_path, 'mkdir -p "$2/3.11" && echo "$2" > "$2/3.11/checked-by"\nexit 1\n')
 
-    def fake_run(argv: list[str], **_kwargs: object) -> SimpleNamespace:
-        calls.append(list(argv))
-        return SimpleNamespace(returncode=7)
+    assert mypy_gate.main(["--root", str(tmp_path)]) == 1
 
-    monkeypatch.setattr("devtools.mypy_gate.subprocess.run", fake_run)
-
-    assert mypy_gate.main(["--root", str(tmp_path)]) == 7
-    assert calls == [[str(checker), "--cache-dir", str(common / "polylogue-mypy/cache")]]
-    assert (common / "polylogue-mypy/lock").is_file()
+    local = tmp_path / ".cache" / "mypy"
+    assert (local / "seed.db").read_text(encoding="utf-8") == "seed"
+    assert (local / "3.11" / "checked-by").read_text(encoding="utf-8").strip() == str(local)
+    assert (shared / "3.11" / "checked-by").is_file()
+    assert mypy_gate._is_complete(local, mypy_gate._input_key(tmp_path))
 
 
-@pytest.mark.load_sensitive
-def test_sibling_worktrees_serialize_on_one_lock_and_share_one_cache(tmp_path: Path) -> None:
-    """Two lanes of one checkout never type-check at the same time.
+def test_a_crashed_check_does_not_publish_its_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: publish on every exit and the partial entry reaches the seed."""
+    common = tmp_path / ".git"
+    common.mkdir()
+    monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
+    shared = common / "polylogue-mypy" / "cache"
+    _stamped_seed(shared, tmp_path)
+    _stub_checker(tmp_path, 'echo partial > "$2/partial"\nexit 2\n')
 
-    This is the shape polylogue-r2lud reported: batch workers in sibling
-    worktrees each started a cold mypy scan, so the same analysis ran N times
-    under I/O contention. The gate takes an exclusive lock on the *common*
-    git dir and points every lane at one cache directory, so the second lane
-    waits and then reuses the first lane's module results.
+    assert mypy_gate.main(["--root", str(tmp_path)]) == 2
 
-    The checker here is a stub that claims exclusive entry with ``mkdir`` and
-    holds it briefly, so a lane that runs concurrently exits 9 rather than 0.
+    assert not (shared / "partial").exists()
+    assert (shared / "seed.db").is_file()
+    # The crashed checkout's own cache is not complete either: the next run re-checks.
+    assert not mypy_gate._is_complete(tmp_path / ".cache" / "mypy", mypy_gate._input_key(tmp_path))
 
-    Anti-vacuity: removing the ``fcntl.flock`` from ``devtools/mypy_gate.py``
-    lets both stubs run inside the same window and the second exits 9;
-    replacing ``--cache-dir`` with a per-worktree path makes the two recorded
-    cache directories differ. Either mutation turns this red.
+
+def test_an_unstamped_shared_cache_is_not_a_seed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A partial or differently configured cache is cold, not warm.
+
+    Anti-vacuity: treat any non-empty directory as warm and the checkout seeds
+    from the partial cache, so ``partial.db`` reaches the checkout.
     """
+    common = tmp_path / ".git"
+    common.mkdir()
+    monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
+    shared = common / "polylogue-mypy" / "cache"
+    shared.mkdir(parents=True)
+    (shared / "partial.db").write_text("interrupted", encoding="utf-8")
+    (shared / mypy_gate._STAMP).write_text("stamp-of-another-configuration", encoding="utf-8")
+    _stub_checker(tmp_path, "exit 0\n")
+
+    assert mypy_gate.main(["--root", str(tmp_path)]) == 0
+
+    assert not (tmp_path / ".cache" / "mypy" / "partial.db").exists()
+
+
+def test_seeding_preserves_cache_file_timestamps(tmp_path: Path) -> None:
+    """mypy's filesystem cache rejects a data file whose mtime moved.
+
+    Anti-vacuity: drop ``--preserve=timestamps`` from the copy and the seeded
+    file carries the copy time.
+    """
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    data = shared / "module.data.json"
+    data.write_text("{}", encoding="utf-8")
+    os.utime(data, ns=(1_000_000_000_000_000_000, 1_000_000_000_000_000_000))
+    local = tmp_path / "checkout" / ".cache" / "mypy"
+
+    mypy_gate._seed(local, shared)
+
+    assert (local / "module.data.json").stat().st_mtime_ns == 1_000_000_000_000_000_000
+
+
+def test_two_gates_in_one_checkout_do_not_share_a_running_cache(tmp_path: Path) -> None:
+    """Gates in the same checkout take turns on its cache.
+
+    Anti-vacuity: drop the checkout-local lock and both stubs hold the cache at
+    once, so one exits 9.
+    """
+    lane = _worktrees(tmp_path, 1)[0]
+    _stamped_seed(lane / ".git" / "polylogue-mypy" / "cache", lane)
+    _stub_checker(
+        lane,
+        'if ! mkdir "$2/busy" 2>/dev/null; then exit 9; fi\nsleep 0.5\nrmdir "$2/busy"\nexit 0\n',
+    )
+
+    _run_lanes([lane, lane])
+
+
+def _worktrees(tmp_path: Path, count: int) -> list[Path]:
     primary = tmp_path / "primary"
     primary.mkdir()
 
@@ -79,28 +148,18 @@ def test_sibling_worktrees_serialize_on_one_lock_and_share_one_cache(tmp_path: P
     (primary / "seed.txt").write_text("seed\n", encoding="utf-8")
     git(primary, "add", "seed.txt")
     git(primary, "commit", "-m", "Seed")
-    secondary = tmp_path / "secondary"
-    git(primary, "worktree", "add", str(secondary), "-b", "lane")
+    lanes = [primary]
+    for index in range(1, count):
+        lane = tmp_path / f"lane{index}"
+        git(primary, "worktree", "add", str(lane), "-b", f"lane{index}")
+        lanes.append(lane)
+    return lanes
 
-    observed = tmp_path / "observed"
-    observed.mkdir()
-    for lane in (primary, secondary):
-        checker = lane / ".venv" / "bin" / "mypy"
-        checker.parent.mkdir(parents=True)
-        checker.write_text(
-            "#!/bin/sh\n"
-            f'if ! mkdir "{observed}/busy" 2>/dev/null; then exit 9; fi\n'
-            f'echo "$2" >> "{observed}/cache-dirs"\n'
-            "sleep 0.5\n"
-            f'rmdir "{observed}/busy"\n'
-            "exit 0\n",
-            encoding="utf-8",
-        )
-        checker.chmod(0o755)
 
+def _run_lanes(lanes: list[Path]) -> list[int]:
     repository_root = Path(mypy_gate.__file__).parents[1]
     environment = {**os.environ, "PYTHONPATH": str(repository_root)}
-    lanes = [
+    processes = [
         subprocess.Popen(
             [sys.executable, "-m", "devtools.mypy_gate", "--root", str(lane)],
             cwd=str(lane),
@@ -108,12 +167,242 @@ def test_sibling_worktrees_serialize_on_one_lock_and_share_one_cache(tmp_path: P
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        for lane in (primary, secondary)
+        for lane in lanes
     ]
-    statuses = [process.wait(timeout=120) for process in lanes]
+    statuses = [process.wait(timeout=120) for process in processes]
+    assert all(status == 0 for status in statuses), [process.communicate() for process in processes]
+    return statuses
 
-    assert statuses == [0, 0], [process.communicate() for process in lanes]
-    recorded = (observed / "cache-dirs").read_text(encoding="utf-8").split()
-    assert len(recorded) == 2
-    assert recorded[0] == recorded[1]
-    assert Path(recorded[0]) == (primary / ".git" / "polylogue-mypy" / "cache")
+
+@pytest.mark.load_sensitive
+def test_warm_sibling_worktrees_check_side_by_side(tmp_path: Path) -> None:
+    """Seeded siblings do not queue behind one another.
+
+    Each stub records entry and waits until every sibling has entered, so a
+    gate that serializes the checks never lets the first one finish and the
+    lanes time out.
+
+    Anti-vacuity: hold the lock across the warm check and no lane sees its
+    siblings enter; the stubs give up and exit 9.
+    """
+    lanes = _worktrees(tmp_path, 3)
+    shared = lanes[0] / ".git" / "polylogue-mypy" / "cache"
+    _stamped_seed(shared, lanes[0])
+    observed = tmp_path / "observed"
+    observed.mkdir()
+    for index, lane in enumerate(lanes):
+        _stub_checker(
+            lane,
+            f'touch "{observed}/entered-{index}"\n'
+            "i=0\n"
+            f'while [ "$(ls "{observed}" | wc -l)" -lt {len(lanes)} ]; do\n'
+            "  i=$((i+1)); [ $i -gt 200 ] && exit 9\n"
+            "  sleep 0.05\n"
+            "done\n"
+            "exit 0\n",
+        )
+
+    _run_lanes(lanes)
+
+    for lane in lanes:
+        assert (lane / ".cache" / "mypy" / "seed.db").is_file()
+
+
+@pytest.mark.load_sensitive
+def test_cold_siblings_run_one_cold_scan_and_seed_from_it(tmp_path: Path) -> None:
+    """With no shared cache, exactly one sibling scans cold; the rest seed from it.
+
+    This is the polylogue-r2lud shape: several full cold analyses at once. The
+    stub counts a cold scan as a check whose cache directory lacks the entry a
+    completed scan writes.
+
+    Anti-vacuity: run the cold scan outside the lock and the siblings scan
+    cold together, so the recorded cold count exceeds one.
+    """
+    lanes = _worktrees(tmp_path, 3)
+    observed = tmp_path / "observed"
+    observed.mkdir()
+    for lane in lanes:
+        _stub_checker(
+            lane,
+            f'if [ ! -f "$2/3.11/scanned.db" ]; then echo cold >> "{observed}/cold"; sleep 0.5; fi\n'
+            'mkdir -p "$2/3.11" && echo done > "$2/3.11/scanned.db"\n'
+            "exit 0\n",
+        )
+
+    _run_lanes(lanes)
+
+    assert (observed / "cold").read_text(encoding="utf-8").split() == ["cold"]
+    for lane in lanes:
+        assert (lane / ".cache" / "mypy" / "3.11" / "scanned.db").is_file()
+
+
+def test_publishing_reclaims_abandoned_staging_copies(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A gate killed mid-copy leaves a staging directory the next publisher removes.
+
+    Anti-vacuity: remove only this process's own staging path and the
+    abandoned copy survives.
+    """
+    common = tmp_path / ".git"
+    common.mkdir()
+    monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
+    shared = common / "polylogue-mypy" / "cache"
+    _stamped_seed(shared, tmp_path)
+    abandoned = common / "polylogue-mypy" / "cache.publish-1"
+    abandoned.mkdir()
+    (abandoned / "partial.db").write_text("partial", encoding="utf-8")
+    _stub_checker(tmp_path, 'mkdir -p "$2/3.11" && echo data > "$2/3.11/module.db"\nexit 0\n')
+
+    assert mypy_gate.main(["--root", str(tmp_path)]) == 0
+
+    assert not abandoned.exists()
+
+
+def test_the_mypy_configuration_is_part_of_the_cache_key(tmp_path: Path) -> None:
+    """A sibling that narrowed ``[tool.mypy].files`` does not seed a full checkout.
+
+    Anti-vacuity: key only the version and argv and the two keys are equal.
+    """
+    narrowed = tmp_path / "narrowed"
+    full = tmp_path / "full"
+    for root, files in ((narrowed, '["polylogue/core"]'), (full, '["polylogue"]')):
+        root.mkdir()
+        (root / "pyproject.toml").write_text(f"[tool.mypy]\nfiles = {files}\n", encoding="utf-8")
+
+    assert mypy_gate._input_key(narrowed) != mypy_gate._input_key(full)
+
+
+@pytest.mark.parametrize(
+    "passthrough", [["@opts"], ["--version"], ["--no-incremental"], ["--cache-dir", "/elsewhere/.cache/mypy"]]
+)
+def test_passthrough_arguments_are_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, passthrough: list[str]
+) -> None:
+    """Arguments that can change whether or where mypy caches never reach the gate's check.
+
+    Anti-vacuity: pass them through and ``--version`` (exit 0, no cache) is
+    stamped and published, or ``--cache-dir`` writes a sibling's cache.
+    """
+    common = tmp_path / ".git"
+    common.mkdir()
+    monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
+    shared = common / "polylogue-mypy" / "cache"
+    _stamped_seed(shared, tmp_path)
+    _stub_checker(tmp_path, 'touch "$(dirname "$0")/ran"\nexit 0\n')
+
+    assert mypy_gate.main(["--root", str(tmp_path), *passthrough]) == 2
+
+    assert not (tmp_path / ".venv" / "bin" / "ran").exists()
+    assert (shared / "seed.db").is_file()
+
+
+def test_a_first_publish_killed_after_copying_is_recovered(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """With no retired copy, a finished staging copy becomes the shared cache.
+
+    Anti-vacuity: recover only retired copies and the checkout scans cold, so
+    ``seed.db`` never reaches it; recover unmarked staging and a half-copied
+    directory would be adopted.
+    """
+    common = tmp_path / ".git"
+    common.mkdir()
+    monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
+    finished = common / "polylogue-mypy" / "cache.publish-4242"
+    _stamped_seed(finished, tmp_path)
+    (finished / mypy_gate._STAGED).touch()
+    _stub_checker(tmp_path, "exit 0\n")
+
+    assert mypy_gate.main(["--root", str(tmp_path)]) == 0
+
+    assert (tmp_path / ".cache" / "mypy" / "seed.db").read_text(encoding="utf-8") == "seed"
+
+
+def test_a_swap_interrupted_between_renames_restores_the_shared_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A publisher killed after retiring the old cache leaves it recoverable, not cold.
+
+    Anti-vacuity: decide coldness without restoring the retired copy and the
+    checkout scans cold, so ``seed.db`` never reaches it.
+    """
+    common = tmp_path / ".git"
+    common.mkdir()
+    monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
+    retired = common / "polylogue-mypy" / "cache.retired-4242"
+    _stamped_seed(retired, tmp_path)
+    _stub_checker(tmp_path, "exit 0\n")
+
+    assert mypy_gate.main(["--root", str(tmp_path)]) == 0
+
+    assert (tmp_path / ".cache" / "mypy" / "seed.db").read_text(encoding="utf-8") == "seed"
+
+
+def test_a_check_that_wrote_no_module_cache_is_not_published(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """``incremental = false`` exits 0 without a cache; it must not become the seed.
+
+    Anti-vacuity: stamp every exit-0 run and this empty cache is published
+    over the useful shared seed.
+    """
+    common = tmp_path / ".git"
+    common.mkdir()
+    monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
+    shared = common / "polylogue-mypy" / "cache"
+    _stamped_seed(shared, tmp_path)
+    (shared / mypy_gate._STAMP).write_text("stamp-of-another-configuration", encoding="utf-8")
+    _stub_checker(tmp_path, "exit 0\n")
+
+    assert mypy_gate.main(["--root", str(tmp_path)]) == 0
+
+    assert not mypy_gate._is_complete(tmp_path / ".cache" / "mypy", mypy_gate._input_key(tmp_path))
+    assert (shared / mypy_gate._STAMP).read_text(encoding="utf-8") == "stamp-of-another-configuration"
+
+
+def test_the_locked_environment_is_part_of_the_cache_key(tmp_path: Path) -> None:
+    """Checkouts on different ``uv.lock`` revisions do not share a warm seed.
+
+    Anti-vacuity: leave ``uv.lock`` out of the key and the two keys are equal.
+    """
+    old = tmp_path / "old"
+    new = tmp_path / "new"
+    for root, pin in ((old, "2.10"), (new, "2.11")):
+        root.mkdir()
+        (root / "uv.lock").write_text(f'[[package]]\nname = "pydantic"\nversion = "{pin}"\n', encoding="utf-8")
+
+    assert mypy_gate._input_key(old) != mypy_gate._input_key(new)
+
+
+def test_a_published_cache_carries_no_staging_marker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The marker survives the rename, so a kill between them leaves it recoverable, and is then removed."""
+    common = tmp_path / ".git"
+    common.mkdir()
+    monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
+    _stub_checker(tmp_path, 'mkdir -p "$2/3.11" && echo data > "$2/3.11/module.db"\nexit 0\n')
+
+    assert mypy_gate.main(["--root", str(tmp_path)]) == 0
+
+    shared = common / "polylogue-mypy" / "cache"
+    assert (shared / "3.11" / "module.db").is_file()
+    assert not (shared / mypy_gate._STAGED).exists()
+    assert not list(shared.parent.glob("cache.publish-*"))
+
+
+def test_a_cache_disabled_configuration_never_stamps_stale_modules(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Old module files from an incremental run do not make a cache-disabled check complete.
+
+    Anti-vacuity: decide completeness from the files present and the stale
+    ``3.11/old.db`` is stamped and published under the new configuration.
+    """
+    common = tmp_path / ".git"
+    common.mkdir()
+    monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
+    (tmp_path / "pyproject.toml").write_text("[tool.mypy]\nincremental = false\n", encoding="utf-8")
+    stale = tmp_path / ".cache" / "mypy" / "3.11"
+    stale.mkdir(parents=True)
+    (stale / "old.db").write_text("stale", encoding="utf-8")
+    _stub_checker(tmp_path, "exit 0\n")
+
+    assert mypy_gate.main(["--root", str(tmp_path)]) == 0
+
+    assert not mypy_gate._is_complete(tmp_path / ".cache" / "mypy", mypy_gate._input_key(tmp_path))
+    assert not (common / "polylogue-mypy" / "cache").exists()
