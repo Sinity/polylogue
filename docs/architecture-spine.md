@@ -161,8 +161,8 @@ Archive verification is composed from domain-owned declarations. Each owner supp
 
 ### CI gate claims: one registry, no second declaration (polylogue-vijnq)
 - **Chosen**: the gate registry in `devtools/gate.py` is the only declaration
-  of what CI enforces, and `.github/workflows/verify.yml` runs
-  `devtools verify` as one step that enumerates it at run time. No file
+  of what CI enforces, and the CircleCI quick-gate job runs
+  `devtools verify --quick` as one step that enumerates it at run time. No file
   restates a per-check `ci_gate` claim, so a claim and the real workflow step
   cannot diverge — there is only one.
 - **Rejected**: restoring `check_test_quality_ci_claims`, the one genuine
