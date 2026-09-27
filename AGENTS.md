@@ -102,6 +102,11 @@ invariant at the write boundary where the producer remains. Compatibility,
 legacy, deprecated, and transitional shapes are removal targets: enumerate
 their readers and writers and give each a replacement path.
 
+A size or count cap that refuses, truncates, or drops valid input is a defect:
+bound memory by streaming or paging instead. Only a real physical limit (such
+as SQLite's maximum value length) justifies refusal, and that refusal is typed
+and visible, never silent.
+
 ## Provider, Origin, Source
 
 `Origin` is the public source token on query surfaces and read payloads;
