@@ -866,7 +866,10 @@ async def test_vanished_local_retry_gets_one_due_rescan(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_excluded_cursor_row_does_not_replace_local_retry_debt(tmp_path: Path) -> None:
+@pytest.mark.parametrize("cursor_state", ["excluded", "dormant"])
+async def test_cursor_row_without_due_authority_does_not_replace_local_retry_debt(
+    tmp_path: Path, cursor_state: str
+) -> None:
     carrier = tmp_path / "capture.json"
     carrier.write_text("{}")
     source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
@@ -874,7 +877,15 @@ async def test_excluded_cursor_row_does_not_replace_local_retry_debt(tmp_path: P
 
     class ExcludedCursor:
         def get_records(self, paths: Sequence[Path]) -> dict[Path, SimpleNamespace]:
-            return {path: SimpleNamespace(failure_count=1, next_retry_at="later", excluded=True) for path in paths}
+            return {
+                path: SimpleNamespace(
+                    failure_count=1 if cursor_state == "excluded" else 0,
+                    content_fingerprint=None if cursor_state == "excluded" else "old",
+                    next_retry_at="later",
+                    excluded=cursor_state == "excluded",
+                )
+                for path in paths
+            }
 
         def list_due_retry_paths(self, _root: Path, **_kwargs: object) -> tuple[Path, ...]:
             return ()
@@ -918,8 +929,10 @@ async def test_durable_retry_alias_is_retired_after_symlink_swap(tmp_path: Path,
     source = WatchSource(name="capture", root=root, suffixes=(".json",))
     cursor = CursorStore(tmp_path / "index.db")
     cursor.set(carrier, 2, next_retry_at="1970-01-01T00:00:00+00:00")
-    carrier.unlink()
+    parked = root / "parked.json"
+    carrier.rename(parked)
     carrier.symlink_to(target)
+    alias_stat = carrier.lstat()
     watcher = SimpleNamespace(_cursor=cursor, intake_revision=lambda _source: 0)
     adapter = FileIntakeAdapter(
         DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
@@ -931,6 +944,53 @@ async def test_durable_retry_alias_is_retired_after_symlink_swap(tmp_path: Path,
     outcomes = await adapter.admit_page(page)
     assert outcomes[page[0].item_id].outcome is AdmissionOutcome.RETRYABLE
     assert cursor.has_pending_retries((root,)) is False
+    assert cursor.get_record(carrier).st_ino == alias_stat.st_ino  # type: ignore[union-attr]
+    carrier.unlink()
+    parked.rename(carrier)
+    restored = carrier.stat()
+    cursor.revive_replaced_exclusion(
+        carrier,
+        byte_size=restored.st_size,
+        st_dev=restored.st_dev,
+        st_ino=restored.st_ino,
+        mtime_ns=restored.st_mtime_ns,
+    )
+    assert cursor.get_record(carrier).excluded is False  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_durable_alias_retirement_respects_cursor_authority(tmp_path: Path) -> None:
+    root = tmp_path / "source"
+    root.mkdir()
+    carrier = root / "alias.json"
+    target = root / "target.json"
+    carrier.write_text("{}")
+    target.write_text("{}")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+    cursor = CursorStore(tmp_path / "index.db")
+    cursor.set(carrier, 2, next_retry_at="1970-01-01T00:00:00+00:00")
+    carrier.unlink()
+    carrier.symlink_to(target)
+
+    class RefusingProcessor:
+        def require_cursor_authority(self, _paths: Sequence[Path]) -> None:
+            raise RuntimeError("cursor authority refused")
+
+    watcher = SimpleNamespace(
+        _cursor=cursor,
+        _batch_processor=RefusingProcessor(),
+        intake_revision=lambda _source: 0,
+    )
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    adapter._retry_turn = True
+    page = await adapter.discover(limit=1)
+    outcomes = await adapter.admit_page(page)
+    assert outcomes[page[0].item_id].outcome is AdmissionOutcome.RETRYABLE
+    assert cursor.get_record(carrier).excluded is False  # type: ignore[union-attr]
+    assert cursor.has_pending_retries((root,)) is True
 
 
 @pytest.mark.asyncio

@@ -199,6 +199,17 @@ class FileIntakeAdapter(IntakeAdapter):
             # An inaccessible live file still needs its retryable admission.
             return True
 
+    @staticmethod
+    def _has_durable_retry_record(record: Any) -> bool:
+        return (
+            record is not None
+            and not getattr(record, "excluded", False)
+            and (
+                record.failure_count > 0
+                or (getattr(record, "content_fingerprint", None) is None and record.next_retry_at is not None)
+            )
+        )
+
     def _offer_fresh_page(self, limit: int) -> list[Path]:
         page = self._fresh_pending[:limit]
         self._fresh_page_paths = tuple(page)
@@ -236,11 +247,7 @@ class FileIntakeAdapter(IntakeAdapter):
                     self._overflow_rescan_due_at = due_at
                 for retry_path in live_paths:
                     record = records.get(retry_path)
-                    if (
-                        record is not None
-                        and not getattr(record, "excluded", False)
-                        and (record.failure_count > 0 or record.next_retry_at is not None)
-                    ):
+                    if self._has_durable_retry_record(record):
                         # The durable cursor owns this retry and its backoff.
                         self._fresh_retry_debt.pop(retry_path, None)
                         continue
@@ -491,11 +498,7 @@ class FileIntakeAdapter(IntakeAdapter):
                 self._overflow_rescan_due_at = now + _FILE_RETRY_DELAY_S
             for path in due_local:
                 record = records.get(path)
-                if (
-                    record is not None
-                    and not getattr(record, "excluded", False)
-                    and (record.failure_count > 0 or record.next_retry_at is not None)
-                ):
+                if self._has_durable_retry_record(record):
                     self._fresh_retry_debt.pop(path, None)
                 else:
                     local_without_durable_row.append(path)
@@ -618,16 +621,6 @@ class FileIntakeAdapter(IntakeAdapter):
             batch.append(item)
         cursor = getattr(self.context.watcher, "_cursor", None)
         mark_excluded = getattr(cursor, "mark_excluded", None)
-        if nonregular_paths and callable(mark_excluded):
-
-            def retire_nonregular() -> None:
-                for path in nonregular_paths:
-                    mark_excluded(path)
-
-            await self.context.run_write("daemon.intake.retire_nonregular_cursor", retire_nonregular)
-        if not batch:
-            return outcomes
-
         try:
             # The source-selection/cursor authority gate runs before anything
             # in this page can mutate cursor state -- before initialization,
@@ -635,7 +628,23 @@ class FileIntakeAdapter(IntakeAdapter):
             # authority is refused must leave the archive exactly as it was.
             processor = getattr(self.context.watcher, "_batch_processor", None)
             if processor is not None:
-                processor.require_cursor_authority([Path(cast(Any, item.payload)) for item in batch])
+                processor.require_cursor_authority(
+                    [*nonregular_paths, *(Path(cast(Any, item.payload)) for item in batch)]
+                )
+            if nonregular_paths and callable(mark_excluded):
+
+                def retire_nonregular() -> None:
+                    for path in nonregular_paths:
+                        try:
+                            observed = path.lstat()
+                        except OSError:
+                            continue
+                        if not stat.S_ISREG(observed.st_mode):
+                            mark_excluded(path, observed_stat=observed)
+
+                await self.context.run_write("daemon.intake.retire_nonregular_cursor", retire_nonregular)
+            if not batch:
+                return outcomes
             # Cursor initialization precedes every read of cursor state, and
             # takes the writer admission to do it: the selection below reads
             # the cursor rows, so doing it first would touch (and create) the
