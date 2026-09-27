@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from concurrent.futures import Executor, Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import suppress
@@ -99,6 +100,9 @@ def prepare_live_retained_raws(
         from polylogue.sources.live.parse_prefetch import live_watcher_parse_stage_warm_timeout_seconds
 
         member_timeout_s = live_watcher_parse_stage_warm_timeout_seconds()
+    # One deadline for the whole prewarm: a slow member must not grant each
+    # later member a fresh wait on the same saturated executor.
+    deadline = time.monotonic() + member_timeout_s
     raw_ids: set[str] = set()
     for key in logical_keys:
         raw_ids.update(archive.raw_membership_raw_ids(key))
@@ -120,6 +124,9 @@ def prepare_live_retained_raws(
                 continue
             native_id = archive.raw_native_id(raw_id) if kind is RawRevisionKind.APPEND else None
             fallback_timestamp = archive.raw_revision_file_mtime(raw_id)
+            remaining_s = deadline - time.monotonic()
+            if remaining_s <= 0:
+                break
             directory.mkdir(parents=True, exist_ok=True)
             future = worker_executor.submit(
                 prepare_retained_jsonl_artifact,
@@ -136,12 +143,14 @@ def prepare_live_retained_raws(
                 fallback_timestamp,
             )
             try:
-                artifact = future.result(timeout=member_timeout_s)
+                artifact = future.result(timeout=remaining_s)
             except FutureTimeoutError:
-                # One slow member must not hold the pass. The writer owns the
-                # member's replay; the late carrier is discarded on arrival.
-                future.add_done_callback(_discard_late_artifact)
-                continue
+                # The prewarm budget is spent. The writer owns every member
+                # not prepared by now; stop submitting, and discard the late
+                # carrier (or cancel it if it never started).
+                if not future.cancel():
+                    future.add_done_callback(_discard_late_artifact)
+                break
             except (RetainedPreparationRetryableError, OSError, ValueError, sqlite3.Error):
                 # The writer still owns this member's replay. A prewarm miss
                 # must not defer the live path that merely overlaps it.

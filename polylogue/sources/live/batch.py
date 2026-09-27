@@ -574,6 +574,29 @@ def _shard_prepared_by_raw_id(
     return None if binding is None else {raw_id: binding}
 
 
+#: Artifact kinds whose retained bytes other sessions are enriched from
+#: (``retained_assembly``): session indexes, prompt history, export asset maps.
+_ENRICHMENT_EVIDENCE_KINDS = frozenset({"session_index", "prompt_history_log", "export_asset_index", "export_asset"})
+
+
+def _enrichment_evidence_first(paths: list[Path], provider: Provider) -> list[Path]:
+    """Admit enrichment evidence ahead of the sessions it describes.
+
+    A pass admits records in order, and each session is enriched (or its
+    prepared carrier revalidated) against the evidence admitted before it.
+    Discovery order puts ``sessions-index.json`` after the UUID-named
+    transcripts beside it, so without this a transcript in the same pass as
+    its index was published with the heuristic title while retained replay
+    of the same bytes used the index. The sort is stable otherwise.
+    """
+
+    def evidence_rank(path: Path) -> int:
+        rule = artifact_rule_for_path(provider, str(path))
+        return 0 if rule is not None and rule.kind in _ENRICHMENT_EVIDENCE_KINDS else 1
+
+    return sorted(paths, key=evidence_rank)
+
+
 def _retained_chain_prepared(
     archive: Any,
     accepted_raw_ids: Sequence[str],
@@ -2852,6 +2875,9 @@ class LiveBatchProcessor:
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
     ) -> _FullIngestResult:
+        paths = _enrichment_evidence_first(
+            paths, Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
+        )
         prepared_json_paths: frozenset[str] = frozenset()
         if self._parse_stage is not None and not _source_tier_acquisition_required():
             # Prepare JSON/JSONL before asking the coordinator for a writer

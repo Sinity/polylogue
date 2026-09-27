@@ -262,8 +262,10 @@ def test_parse_stage_reenriches_when_a_sidecar_lands_in_the_same_pass(tmp_path: 
     the evidence digest against what it has admitted and re-enriches.
 
     Anti-vacuity: drop the write-time ``prepared_enrichment_dependency_state``
-    check and the parse-stage route stores the heuristic ``"prompt 0"`` title
-    with a different content hash than the route without the stage.
+    check, or the evidence-first ordering of the pass
+    (``_enrichment_evidence_first``, the transcript is offered first here), and
+    the parse-stage route stores the heuristic ``"prompt 0"`` title with a
+    different content hash than the route without the stage.
     """
     project, transcript, index_path = _claude_project(tmp_path / "live")
 
@@ -275,7 +277,8 @@ def test_parse_stage_reenriches_when_a_sidecar_lands_in_the_same_pass(tmp_path: 
     staged_root = tmp_path / "staged"
     stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
     try:
-        _claude_ingest(staged_root, project, [index_path, transcript], parse_stage=stage)
+        # Discovery order: the UUID-named transcript sorts before the index.
+        _claude_ingest(staged_root, project, [transcript, index_path], parse_stage=stage)
     finally:
         stage.shutdown()
     assert _session_rows(staged_root) == plain
@@ -413,3 +416,54 @@ def test_writer_enrichment_resolves_an_unknown_acquisition_provider(monkeypatch:
     archive = SimpleNamespace(archive_root=Path("/nonexistent"), index_connection=None, source_connection=None)
     revision_backfill.enrich_sessions_from_archive(archive, Provider.UNKNOWN, "/nonexistent/x.jsonl", [session])
     assert seen == [Provider.CLAUDE_CODE]
+
+
+def test_retained_prewarm_spends_one_deadline_across_members(tmp_path: Path) -> None:
+    """A member that outlives the budget stops the prewarm; nothing waits again.
+
+    Anti-vacuity: restore a per-member timeout and every later member is
+    submitted and waited on in turn (``submitted`` grows to three).
+    """
+    from concurrent.futures import Future
+    from types import SimpleNamespace
+
+    from polylogue.archive.revision_authority import RawRevisionKind
+    from polylogue.sources.live.retained_prefetch import prepare_live_retained_raws
+
+    blob = tmp_path / "blob"
+    descriptors = {
+        f"raw-{index}": (Provider.CODEX, f"{index:064x}", f"/src/{index}.jsonl", RawRevisionKind.FULL, 1)
+        for index in range(3)
+    }
+    archive = SimpleNamespace(
+        archive_root=tmp_path,
+        source_db_path=tmp_path / "source.db",
+        index_db_path=tmp_path / "index.db",
+        raw_membership_raw_ids=lambda _key: set(descriptors),
+        raw_membership_retired_full_revision_siblings=lambda _key: set(),
+        convertible_full_revision_raw_ids=lambda _key: set(),
+        raw_revision_head_raw_id=lambda _key: None,
+        raw_revision_replay_plan=lambda _key: SimpleNamespace(accepted_raw_ids=()),
+        raw_revision_descriptor=descriptors.__getitem__,
+        raw_revision_file_mtime=lambda _raw_id: None,
+    )
+    blob.mkdir()
+    submitted: list[str] = []
+
+    class StalledExecutor:
+        def submit(self, _fn: object, raw_id: str, *_args: object) -> Future[object]:
+            submitted.append(raw_id)
+            future: Future[object] = Future()
+            future.set_running_or_notify_cancel()
+            return future
+
+    prepared = prepare_live_retained_raws(
+        archive,
+        logical_keys={"codex-session:x"},
+        current_raw_id="current",
+        directory=tmp_path / "retained",
+        worker_executor=StalledExecutor(),  # type: ignore[arg-type]
+        member_timeout_s=0.05,
+    )
+    assert prepared == {}
+    assert submitted == ["raw-0"]
