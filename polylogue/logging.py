@@ -212,12 +212,22 @@ class _StdlibBoundLogger:
 
     def bind(self, **new_values: object) -> _StdlibBoundLogger:
         accepted, rejected = _validate(new_values)
-        _emit_field_rejections(rejected)
+        _emit_field_rejections(rejected, source_event="bind", logger=self._logger.name)
         return _StdlibBoundLogger(self._logger, {**self._context, **accepted})
 
     def _log(
-        self, method: Callable[..., object], message: str, args: tuple[object, ...], event_kw: dict[str, object]
+        self,
+        level: int,
+        method: Callable[..., object],
+        message: str,
+        args: tuple[object, ...],
+        event_kw: dict[str, object],
     ) -> None:
+        # A record the logger would discard must not cost validation or warn
+        # about its fields, exactly as the configured structlog path filters
+        # by level before any processor runs.
+        if not self._logger.isEnabledFor(level):
+            return
         stdlib_kwargs = _stdlib_log_kwargs(event_kw)
         supplied_extra = event_kw.get("extra")
         structured_extra = supplied_extra if isinstance(supplied_extra, Mapping) else {}
@@ -227,7 +237,7 @@ class _StdlibBoundLogger:
             if key not in {"exc_info", "stack_info", "stacklevel", "extra"}
         }
         accepted, rejected = _validate({**self._context, **structured_extra, **structured})
-        _emit_field_rejections(rejected)
+        _emit_field_rejections(rejected, source_event=message, logger=self._logger.name)
         if accepted:
             extra = dict(structured_extra)
             extra["_polylogue_event_fields"] = accepted
@@ -235,24 +245,28 @@ class _StdlibBoundLogger:
         method(message, *args, **stdlib_kwargs)
 
     def debug(self, message: str, *args: object, **event_kw: object) -> None:
-        self._log(self._logger.debug, message, args, event_kw)
+        self._log(logging.DEBUG, self._logger.debug, message, args, event_kw)
 
     def info(self, message: str, *args: object, **event_kw: object) -> None:
-        self._log(self._logger.info, message, args, event_kw)
+        self._log(logging.INFO, self._logger.info, message, args, event_kw)
 
     def warning(self, message: str, *args: object, **event_kw: object) -> None:
-        self._log(self._logger.warning, message, args, event_kw)
+        self._log(logging.WARNING, self._logger.warning, message, args, event_kw)
 
     def error(self, message: str, *args: object, **event_kw: object) -> None:
-        self._log(self._logger.error, message, args, event_kw)
+        self._log(logging.ERROR, self._logger.error, message, args, event_kw)
 
     def exception(self, message: str, *args: object, **event_kw: object) -> None:
-        self._log(self._logger.exception, message, args, event_kw)
+        self._log(logging.ERROR, self._logger.exception, message, args, event_kw)
 
 
-def _emit_field_rejections(rejected: Mapping[str, str]) -> None:
+def _emit_field_rejections(rejected: Mapping[str, str], *, source_event: str, logger: str) -> None:
     for name, reason in rejected.items():
-        _emit_raw(WARNING, "log.field_rejected", {"reason": reason, "field": name})
+        _emit_raw(
+            WARNING,
+            "log.field_rejected",
+            {"reason": reason, "field": name, "source_event": _truncate_scalar(source_event), "logger": logger},
+        )
 
 
 def _stdlib_log_kwargs(event_kw: dict[str, object]) -> dict[str, Any]:
