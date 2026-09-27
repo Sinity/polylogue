@@ -1657,7 +1657,7 @@ paths:
         domain_operation: ingest
   /api/demo/augment:
     post:
-      summary: Apply deterministic demo augmentation through the daemon write bridge.
+      summary: Submit deterministic demo augmentation to the declared daemon operation.
       responses:
         default:
           description: DemoAugmentResult
@@ -1678,8 +1678,7 @@ paths:
         response_contract: DemoAugmentResult
         auth_policy: bearer_if_configured_and_same_origin
         owner_path: polylogue/daemon/http.py
-        migration_reason: This compatibility route still applies demo writes through the bridge; the declared maintenance.demo.augment
-          operation is not its executor.
+        domain_operation: maintenance.demo.augment
   /api/health/check:
     get:
       summary: Execute GET /api/health/check through the daemon HTTP adapter.
@@ -6780,8 +6779,8 @@ x-polylogue-route-contracts:
   stability: operational
   auth_policy: bearer_if_configured_and_same_origin
   response_contract: DemoAugmentResult
-  notes: declaration=daemon.maintenance.demo.augment; request=DemoAugmentRequest; operation-migration=This compatibility route
-    still applies demo writes through the bridge; the declared maintenance.demo.augment operation is not its executor.
+  notes: declaration=daemon.maintenance.demo.augment; request=DemoAugmentRequest
+  domain_operation: maintenance.demo.augment
 - method: POST
   pattern: /api/web-auth/session
   kind: browser_shell
