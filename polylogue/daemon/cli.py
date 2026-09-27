@@ -134,8 +134,9 @@ _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
 _CONVERGENCE_DEBT_RETRY_LIMIT = 100
 #: Convergence-debt stages whose backlog has its own recurring domain owner.
 #: The generic drain neither retries nor reports on these: the owner does.
-#: ``raw_retention`` is drained by ``LiveBatchProcessor`` on every live-ingest
-#: pass (``polylogue.sources.live.batch.RAW_RETENTION_STAGE``). Admission
+#: ``raw_retention`` is drained by ``LiveBatchProcessor`` on live-ingest passes
+#: and by the convergence tick's watcher callback when no source changed
+#: (``polylogue.sources.live.batch.RAW_RETENTION_STAGE``). Admission
 #: refusals are also retried by that pass, which rechecks the source path and
 #: clears its debt after successful convergence.
 _OWNED_DEBT_STAGES = frozenset(
@@ -961,12 +962,15 @@ async def _periodic_convergence_check(
     fts_owner: FtsConvergenceOwner,
     watcher_registered: asyncio.Event | None = None,
     session_profile_callback: Callable[[tuple[str, ...] | None], Awaitable[object]] | None = None,
+    raw_retention_callback: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
-    """Periodically retry recorded derived convergence debt."""
+    """Periodically retry recorded convergence debt."""
     db = _active_index_db_path()
 
     async def once() -> None:
         await _retry_convergence_debt_once(db)
+        if raw_retention_callback is not None:
+            await raw_retention_callback()
         await fts_owner.converge()
         if session_profile_callback is not None:
             await session_profile_callback(None)
@@ -2557,6 +2561,11 @@ async def _run_daemon_services_under_active_writer_lease(
                 _loop.call_soon_threadsafe(ingest_wakeup.set)
 
             daemon_event_bus().subscribe(IngestCommitted, _wake_on_ingest)
+
+            async def retry_raw_retention() -> None:
+                if watcher_holder:
+                    await watcher_holder[0].retry_raw_retention_backlog()
+
             periodic_services: tuple[tuple[str, Callable[[], Coroutine[Any, Any, None]]], ...] = (
                 (
                     "convergence_check",
@@ -2565,6 +2574,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         fts_owner=fts_owner,
                         watcher_registered=gate,
                         session_profile_callback=session_profile_callback,
+                        raw_retention_callback=retry_raw_retention,
                     ),
                 ),
                 (

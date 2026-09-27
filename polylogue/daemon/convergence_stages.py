@@ -283,8 +283,10 @@ def make_delegation_work_evidence_stage(db_path: Path) -> ConvergenceStage:
     """Project the canonical delegation view into the shared work graph."""
 
     def archive_root() -> Path:
-        active_index = _active_archive_index_path(db_path)
-        return (active_index or db_path).parent
+        # The stage anchor is rooted beside the durable tiers. Following the
+        # active-index pointer here would mistake a promoted generation's
+        # private directory for the archive root.
+        return db_path.parent
 
     def check(path: Path) -> bool:
         del path

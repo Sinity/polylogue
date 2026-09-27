@@ -142,6 +142,71 @@ def test_materializer_replaces_archive_projection_and_tracks_delegation_freshnes
         )
 
 
+def test_stage_uses_archive_root_after_index_generation_promotion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The promoted index lives below the archive's durable source tier."""
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    bootstrap_archive_root(tmp_path)
+    _seed_delegation(tmp_path)
+    generation = tmp_path / ".index-generations" / "promoted"
+    generation.mkdir(parents=True)
+    (tmp_path / "index.db").rename(generation / "index.db")
+    (tmp_path / "index.db").symlink_to(generation / "index.db")
+    (tmp_path / ".index-active-pointer").write_text(str(generation / "index.db"), encoding="utf-8")
+
+    real_needed = materializer.delegation_work_evidence_materialization_needed
+    real_materialize = materializer.materialize_delegation_work_evidence_archive
+
+    def needed(root: Path) -> bool:
+        assert root == tmp_path
+        return real_needed(root)
+
+    def materialize(root: Path) -> int:
+        assert root == tmp_path
+        return real_materialize(root)
+
+    monkeypatch.setattr(materializer, "delegation_work_evidence_materialization_needed", needed)
+    monkeypatch.setattr(materializer, "materialize_delegation_work_evidence_archive", materialize)
+
+    stage = make_delegation_work_evidence_stage(tmp_path / "index.db")
+    subject = tmp_path / "source.jsonl"
+    assert stage.check(subject) is True
+    assert stage.execute(subject) is True
+    assert delegation_work_evidence_materialization_needed(tmp_path) is False
+    with sqlite3.connect(generation / "index.db") as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM work_evidence_graphs WHERE graph_id = ?",
+                (DELEGATION_WORK_EVIDENCE_GRAPH_ID,),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM work_evidence_nodes WHERE graph_id = ?",
+                (DELEGATION_WORK_EVIDENCE_GRAPH_ID,),
+            ).fetchone()[0]
+            == 2
+        )
+
+    with sqlite3.connect(generation / "index.db") as conn:
+        conn.execute("DELETE FROM session_links")
+        conn.execute("DELETE FROM blocks WHERE tool_id = 'task-1'")
+    assert stage.check(subject) is True
+    assert stage.execute(subject) is True
+    with sqlite3.connect(generation / "index.db") as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM work_evidence_nodes WHERE graph_id = ?",
+                (DELEGATION_WORK_EVIDENCE_GRAPH_ID,),
+            ).fetchone()[0]
+            == 0
+        )
+    assert delegation_work_evidence_materialization_needed(tmp_path) is False
+
+
 def test_convergence_stage_reports_probe_and_materialization_failures_as_pending_work(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

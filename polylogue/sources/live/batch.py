@@ -6172,7 +6172,8 @@ class LiveBatchProcessor:
         # bounded pass named. Both populations go through the one authority
         # resolution below, so draining the backlog costs no extra hold.
         scoped_paths = list(dict.fromkeys(paths))
-        scoped_paths.extend(self._raw_retention_backlog_paths(exclude=set(scoped_paths)))
+        backlog_paths = self._raw_retention_backlog_paths(exclude=set())
+        scoped_paths = list(dict.fromkeys((*scoped_paths, *backlog_paths)))
         if not scoped_paths:
             return
         from polylogue.sources.live.cold_build import active_cold_build_generation
@@ -6223,7 +6224,11 @@ class LiveBatchProcessor:
                     conn,
                     scoped_paths,
                     limit_per_path=RAW_RETENTION_LIMIT_PER_PATH,
-                    min_acquired_at=self._raw_compaction_min_acquired_at,
+                    # A recorded backlog can predate this watcher process.
+                    # The active-index authority still decides which raw ids
+                    # are eligible, so use the full recorded path history on
+                    # its retry instead of declaring older work complete.
+                    min_acquired_at=None if backlog_paths else self._raw_compaction_min_acquired_at,
                     protected_raw_ids=retention_authority.protected_raw_ids,
                     eligible_raw_ids=retention_authority.eligible_raw_ids,
                     index_conn=index_conn,
