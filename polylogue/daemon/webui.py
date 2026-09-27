@@ -1433,7 +1433,30 @@ async def build_observability_payload(
             )
         )
     )
-    return {"contract_version": 1, "status": _status_panel_payload(status), "insights": panels}
+    return {
+        "contract_version": 1,
+        "status": _observability_status_payload(status),
+        "insights": panels,
+        "insights_loaded": True,
+    }
+
+
+def build_observability_status_payload(status: Mapping[str, object]) -> dict[str, object]:
+    """Return the cached status projection without querying insight descriptors."""
+    return {
+        "contract_version": 1,
+        "status": _observability_status_payload(status),
+        "insights": [],
+        "insights_loaded": False,
+    }
+
+
+def _observability_status_payload(status: Mapping[str, object]) -> dict[str, object]:
+    """Project the compact status snapshot and its owner-reported catch-up fields."""
+    projection = _status_panel_payload(status)
+    catchup = status.get("catchup")
+    projection["catchup"] = dict(catchup) if isinstance(catchup, Mapping) else {}
+    return projection
 
 
 async def _build_insight_panel(
@@ -1581,11 +1604,27 @@ def _status_panel_payload(status: Mapping[str, object]) -> dict[str, object]:
     snapshot_payload = dict(snapshot) if isinstance(snapshot, Mapping) else {"state": "unavailable"}
     supplied = status.get("status_components")
     if isinstance(supplied, list):
-        # Not a dead branch: ``polylogue/daemon/status.py`` populates
-        # ``status_components`` from ``_status_component_metadata(snapshots)``
-        # and the HTTP status payload carries it verbatim, so the production
-        # daemon does reach this arm.
-        return {"adapter": "status-component-snapshot", "snapshot": snapshot_payload, "components": supplied}
+        # The production DTO names this field ``component`` (from
+        # ComponentSnapshot.to_dict); the WebUI contract calls it ``name``.
+        # Normalize at this seam so SSR and the generated-client reader share
+        # the same stable projection.
+        projected_components = []
+        for raw in supplied:
+            component = dict(raw) if isinstance(raw, Mapping) else {}
+            name = component.get("name") or component.get("component")
+            projected_components.append(
+                {
+                    **component,
+                    "name": str(name) if name else "unknown component",
+                    "detail": component.get("detail") or component.get("error"),
+                    "last_good": component.get("last_good"),
+                }
+            )
+        return {
+            "adapter": "status-component-snapshot",
+            "snapshot": snapshot_payload,
+            "components": projected_components,
+        }
     legacy = status.get("component_readiness")
     components: list[dict[str, object]] = []
     if isinstance(legacy, Mapping):
@@ -1623,11 +1662,21 @@ def render_observability_page(
     status = payload.get("status")
     status_payload = status if isinstance(status, Mapping) else {}
     components = status_payload.get("components")
+    catchup = status_payload.get("catchup")
+    snapshot = status_payload.get("snapshot")
     insights = payload.get("insights")
     component_rows = components if isinstance(components, list) else []
     insight_panels = insights if isinstance(insights, list) else []
     rendered_components = "\n".join(_render_status_component(component) for component in component_rows)
     rendered_insights = "\n".join(_render_insight_panel(panel) for panel in insight_panels)
+    rendered_monitor = _render_build_monitor(catchup, snapshot)
+    insights_loaded = payload.get("insights_loaded") is True
+    insights_placeholder = (
+        rendered_insights
+        if insights_loaded
+        else '<p data-insights-state="not-loaded">Insights have not been loaded.</p>'
+    )
+    insights_button = "Refresh insights" if insights_loaded else "Load insights"
     summary = (
         notice
         or "Status and insight evidence are projected by the daemon; unavailable and degraded states remain visible."
@@ -1647,9 +1696,10 @@ def render_observability_page(
     <main id="main" class="page-shell">
       <p class="eyebrow">Daemon-projected evidence</p><h1>Archive observability</h1><p class="lede">{html.escape(summary)}</p>
       <div id="observability-island" data-island="observability">
+        <section class="observability-panel" aria-labelledby="build-monitor-title">{rendered_monitor}</section>
         <section class="observability-panel" aria-labelledby="status-title"><h2 id="status-title">Component status</h2><ul class="status-grid">{rendered_components}</ul></section>
         <section class="observability-panel" aria-labelledby="freshness-title"><h2 id="freshness-title">Named-source freshness</h2><p>Inspect one exact source after web credentials are established. The ladder reports source, cursor, raw, parse, index, FTS, and insight evidence without an archive-wide scan.</p><form class="source-lookup"><label for="source-path">Exact source path</label><input id="source-path" name="source" type="text" autocomplete="off"><button type="submit">Inspect source</button></form><div data-source-freshness></div></section>
-        <section class="observability-panel" aria-labelledby="insights-title"><h2 id="insights-title">Insights</h2><div class="insight-grid">{rendered_insights}</div></section>
+        <section class="observability-panel" aria-labelledby="insights-title"><h2 id="insights-title">Insights</h2><button type="button" data-load-insights>{insights_button}</button><div class="insight-grid">{insights_placeholder}</div></section>
       </div>
     </main>
     <script id="observability-bootstrap" type="application/json">{_json_script(payload)}</script>
@@ -1657,6 +1707,83 @@ def render_observability_page(
   </body>
 </html>
 """
+
+
+def _render_build_monitor(catchup: object, snapshot: object) -> str:
+    """Render a small owner-reported progress view without implying completion."""
+    progress = catchup if isinstance(catchup, Mapping) else {}
+    frame = snapshot if isinstance(snapshot, Mapping) else {}
+
+    def number(name: str, *, integer: bool = False) -> str:
+        value = progress.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return "Unknown"
+        return f"{int(value):,}" if integer else f"{value:,.1f}"
+
+    def age(value: object) -> str:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            return "Unknown"
+        return f"{value:.1f} s"
+
+    phase = progress.get("current_phase") or progress.get("mode") or "unknown"
+    source = progress.get("current_source")
+    state = frame.get("state") or "unavailable"
+    sample_age = age(frame.get("age_s"))
+    planned = progress.get("planned_raw_revision_count")
+    completed = progress.get("completed_raw_revision_count")
+    if (
+        isinstance(planned, int)
+        and not isinstance(planned, bool)
+        and planned > 0
+        and isinstance(completed, int)
+        and not isinstance(completed, bool)
+        and completed >= 0
+    ):
+        completed_value = f"{completed:,} / {planned:,} ({min(100.0, completed * 100 / planned):.1f}%)"
+    elif isinstance(planned, int) and not isinstance(planned, bool) and planned >= 0:
+        completed_value = f"{number('completed_raw_revision_count', integer=True)} / {planned:,}"
+    else:
+        completed_value = "Unknown / unknown"
+
+    halted = progress.get("halted_sources")
+    halted_markup = ""
+    if isinstance(halted, list) and halted:
+        rows = []
+        for raw in halted:
+            item = raw if isinstance(raw, Mapping) else {}
+            name = html.escape(str(item.get("source_name") or "unknown source"))
+            code = html.escape(str(item.get("code") or "unknown"))
+            message = html.escape(str(item.get("message") or ""))
+            rows.append(f"<li>{name}: {code}{f' — {message}' if message else ''}</li>")
+        halted_markup = (
+            f'<section aria-label="Halted sources"><h3>Halted sources</h3><ul>{"".join(rows)}</ul></section>'
+        )
+
+    source_markup = html.escape(str(source)) if isinstance(source, str) and source else "Unknown"
+    return f"""<h2 id="build-monitor-title">Live build monitor</h2>
+      <p data-monitor-connection="checking">Browser connection: not checked yet</p>
+      <p data-monitor-phase="{html.escape(str(phase), quote=True)}">Phase: {html.escape(str(phase))} · source: {source_markup}</p>
+      <dl class="monitor-facts">
+        <div><dt>Accepted revisions</dt><dd data-progress="revisions">{completed_value}</dd></div>
+        <div><dt>Discovery inspected</dt><dd>{number("discovery_inspected_count", integer=True)}</dd></div>
+        <div><dt>Discovery accepted</dt><dd>{number("discovery_accepted_count", integer=True)}</dd></div>
+        <div><dt>Discovery rejected</dt><dd>{number("discovery_rejected_count", integer=True)}</dd></div>
+        <div><dt>Last advancement</dt><dd>{age(progress.get("last_advanced_age_s") if progress.get("last_advanced_age_s") is not None else progress.get("discovery_last_advanced_age_s"))}</dd></div>
+        <div><dt>Owner ETA</dt><dd>{age(progress.get("eta_s"))}</dd></div>
+        <div><dt>Successful files</dt><dd>{number("cumulative_succeeded_file_count", integer=True)}</dd></div>
+        <div><dt>Failed file attempts</dt><dd>{number("cumulative_failed_file_attempts", integer=True)}</dd></div>
+        <div><dt>Refused files</dt><dd>{number("cumulative_refused_file_count", integer=True)}</dd></div>
+      </dl>
+      <p data-monitor-snapshot="{html.escape(str(state), quote=True)}">Status sample: {html.escape(str(state))}, {sample_age} old</p>
+      <p>Idle means no active catch-up was reported; completion is not inferred from polling or missing counts.</p>
+      {halted_markup}
+      <details><summary>Snapshot evidence</summary><dl>
+        <div><dt>Captured at</dt><dd>{html.escape(str(frame.get("captured_at") or "Unknown"))}</dd></div>
+        <div><dt>Observed frame</dt><dd>{html.escape(str(frame.get("frame") or "Unknown"))}</dd></div>
+        <div><dt>Current frame</dt><dd>{html.escape(str(frame.get("current_frame") or "Unknown"))}</dd></div>
+        <div><dt>Frame changed</dt><dd>{html.escape(str(frame.get("frame_changed") if frame.get("frame_changed") is not None else "Unknown"))}</dd></div>
+        <div><dt>Refresh error</dt><dd>{html.escape(str(frame.get("refresh_error") or "None reported"))}</dd></div>
+      </dl></details>"""
 
 
 def _render_status_component(raw: object) -> str:
