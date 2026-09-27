@@ -215,11 +215,15 @@ def test_resource_probe_peak_is_the_interval(tmp_path: Path) -> None:
         "candidate = Path(sys.argv[1])\n"
         "candidate.mkdir()\n"
         "(candidate / 'index.db').write_bytes(b'index')\n"
-        "released = bytearray(256 * 1024 * 1024)\n"
+        # An anonymous mapping, not a bytearray: the free-threaded build's
+        # allocator may keep a freed buffer resident, and a retained buffer
+        # would make the interval peak equal the mark it must stay below.
+        "import mmap\n"
+        "released = mmap.mmap(-1, 256 * 1024 * 1024)\n"
         "for offset in range(0, len(released), 4096):\n"
         "    released[offset] = 1\n"
         "mark = max(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, 0) * 1024\n"
-        "del released\n"
+        "released.close()\n"
         "gc.collect()\n"
         "m = FinishedBuildResourceProbe.start().finish(candidate)\n"
         "print(json.dumps({'mark': mark, 'peak': m.peak_rss_self_bytes, 'source': m.peak_rss_source}))\n"
