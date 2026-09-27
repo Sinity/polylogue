@@ -28,14 +28,18 @@ def _write_session(path: Path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("directory", ["claude-projects", "run:1"])
 async def test_failed_raw_persist_withholds_the_source_cursor(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
+    directory: str,
 ) -> None:
     """Anti-vacuity: before the failure was recorded against its path, the
     pass saved the stat cursor anyway and the second pass skipped the file
-    (``acquired == 0``), so its bytes were never stored."""
-    source_dir = workspace_env["data_root"] / "claude-projects"
+    (``acquired == 0``), so its bytes were never stored. The ``run:1``
+    directory is a valid POSIX path whose colon a first-colon split would
+    truncate to a prefix matching no file."""
+    source_dir = workspace_env["data_root"] / directory
     source_dir.mkdir(parents=True)
     source_path = source_dir / "session.jsonl"
     _write_session(source_path)
