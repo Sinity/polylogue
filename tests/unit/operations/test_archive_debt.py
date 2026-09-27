@@ -43,6 +43,47 @@ def test_archive_debt_reports_missing_required_tiers(tmp_path: Path) -> None:
     assert all(row.kind == "archive-tier" for row in payload.rows)
 
 
+def test_archive_debt_blocks_a_lost_durable_tier_and_keeps_fresh_roots_actionable(tmp_path: Path) -> None:
+    """A durable tier lost beside a surviving one is blocked, not sent to the daemon.
+
+    Opening the archive refuses that state, so advertising ``polylogued run``
+    would name an action that cannot discharge the debt. Anti-vacuity: drop
+    the ``established`` classification in ``_tier_rows`` and ``audit`` is
+    reported ``actionable`` with a ``polylogued run`` action again.
+    """
+    _write_current_tier_files(tmp_path)
+    (tmp_path / ARCHIVE_TIER_SPECS[ArchiveTier.AUDIT].filename).unlink()
+    (tmp_path / ARCHIVE_TIER_SPECS[ArchiveTier.OPS].filename).unlink()
+
+    by_ref = {row.debt_ref: row for row in archive_debt_list(archive_root=tmp_path, kinds=("archive-tier",)).rows}
+
+    lost = by_ref["debt:archive-tier:audit:missing"]
+    assert lost.status == "blocked"
+    assert lost.actions == ()
+    assert "Restore the archive root from a verified backup" in (lost.details or "")
+    derived = by_ref["debt:archive-tier:ops:missing"]
+    assert derived.status == "actionable"
+    assert [action.command for action in derived.actions] == [("polylogued", "run")]
+
+
+def test_archive_debt_keeps_a_resumable_bootstrap_actionable(tmp_path: Path) -> None:
+    """A pending bootstrap intent makes missing durable tiers the daemon's to finish.
+
+    Anti-vacuity: ignore ``.bootstrap.pending`` in ``lost_durable_tiers`` and
+    ``user`` is reported ``blocked`` with no action.
+    """
+    _write_tier_version(tmp_path / ARCHIVE_TIER_SPECS[ArchiveTier.SOURCE].filename, 1)
+    ledger = tmp_path / ".maintenance-state" / "durable-change-trains"
+    ledger.mkdir(parents=True)
+    (ledger / ".bootstrap.pending").write_text("{}", encoding="utf-8")
+
+    by_ref = {row.debt_ref: row for row in archive_debt_list(archive_root=tmp_path, kinds=("archive-tier",)).rows}
+
+    resumable = by_ref["debt:archive-tier:user:missing"]
+    assert resumable.status == "actionable"
+    assert [action.command for action in resumable.actions] == [("polylogued", "run")]
+
+
 def test_archive_debt_filters_rows_by_status(tmp_path: Path) -> None:
     actionable = archive_debt_list(archive_root=tmp_path, kinds=("archive-tier",), statuses=("actionable",))
     blocked = archive_debt_list(archive_root=tmp_path, kinds=("archive-tier",), statuses=("blocked",))

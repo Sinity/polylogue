@@ -6,7 +6,6 @@ import importlib
 import json
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import click
 import pytest
@@ -19,10 +18,6 @@ from polylogue.cli.commands.maintenance._blob_integrity import (
     blob_reference_replace_from_source_command,
     blob_reference_replace_from_source_preview_command,
 )
-from polylogue.cli.commands.maintenance._operation_recovery import operation_recovery_command
-from polylogue.cli.shared.types import AppEnv
-from polylogue.config import Config
-from polylogue.services import RuntimeServices
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 
@@ -43,79 +38,6 @@ def test_maintenance_group_in_ops_commands() -> None:
 def test_maintenance_group_is_click_group() -> None:
     """maintenance_group is a Click Group."""
     assert isinstance(_registered_maintenance_command(), click.Group)
-
-
-def test_operation_recovery_is_click_command() -> None:
-    assert isinstance(operation_recovery_command, click.Command)
-
-
-def _recovery_env(tmp_path: Path) -> AppEnv:
-    archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
-    return AppEnv(services=RuntimeServices(config=Config(archive_root=archive_root, render_root=tmp_path, sources=[])))
-
-
-def test_operation_recovery_adjudication_refuses_while_daemon_owns_writes(tmp_path: Path) -> None:
-    """The offline CLI must not become a second writer beside a live daemon.
-
-    Anti-vacuity: this patches the daemon-liveness probe, not the guard, so
-    dropping ``offline_maintenance_block_reason`` from the command makes the
-    adjudication proceed and fail with ``operation not found`` instead.
-    """
-
-    env = _recovery_env(tmp_path)
-    with patch("polylogue.maintenance.offline_guard.running_daemon_pid", return_value=4321):
-        result = CliRunner().invoke(
-            operation_recovery_command,
-            [
-                "--operation-id",
-                "operation:test",
-                "--target-outcome",
-                "session:test=applied",
-                "--reason",
-                "operator evidence",
-                "--confirm",
-            ],
-            obj=env,
-        )
-    assert result.exit_code == 1
-    assert "4321" in result.output
-    assert "not found" not in result.output
-
-
-def test_operation_recovery_adjudication_requires_confirm_and_reason(tmp_path: Path) -> None:
-    """Adjudication fails closed without both operator authorizations."""
-
-    env = _recovery_env(tmp_path)
-    for extra in (["--confirm"], ["--reason", "operator evidence"]):
-        result = CliRunner().invoke(
-            operation_recovery_command,
-            ["--operation-id", "operation:test", "--target-outcome", "session:test=applied", *extra],
-            obj=env,
-        )
-        assert result.exit_code == 1
-        assert "requires --confirm and --reason" in result.output
-
-
-def test_operation_recovery_rejects_an_unknown_target_outcome_value(tmp_path: Path) -> None:
-    """The CLI validates outcome values before touching audit authority."""
-
-    env = _recovery_env(tmp_path)
-    result = CliRunner().invoke(
-        operation_recovery_command,
-        [
-            "--operation-id",
-            "operation:test",
-            "--target-outcome",
-            "session:test=probably",
-            "--reason",
-            "operator evidence",
-            "--confirm",
-        ],
-        obj=env,
-    )
-    assert result.exit_code == 1
-    assert "applied|not-applied|unknown" in result.output
 
 
 def test_maintenance_appears_in_ops_help() -> None:

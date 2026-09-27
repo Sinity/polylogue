@@ -156,7 +156,7 @@ def _reset_targets(root: Path, payload: dict[str, object]) -> list[tuple[str, Pa
             # ``expensive_rebuild`` because nothing replays its vectors from
             # source.db -- they are re-purchased from the embedding provider.
             # Deleting it is a repurchase, not a reset, so ``--database`` keeps
-            # it and the CLI names the embedding-preservation route instead.
+            # it; no product route replaces this tier.
             names = [
                 ("source database", "source.db"),
                 ("index database", "index.db"),

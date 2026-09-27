@@ -152,7 +152,6 @@ MAINTENANCE_COMMAND_DECLARATIONS: Final[tuple[MaintenanceCommandDeclaration, ...
         "beads_origin_census_command",
         "Read-only census and exact plan for retired Beads-origin evidence.",
     ),
-    _command("archive-plan", "_archive_plan", "archive_plan_command", "Inspect readiness for the archive file set."),
     _command(
         "backup-plan",
         "_backup_plan",
@@ -166,18 +165,6 @@ MAINTENANCE_COMMAND_DECLARATIONS: Final[tuple[MaintenanceCommandDeclaration, ...
         "Export the durable assertion substrate from user.db.",
     ),
     _command("archive-read", "_archive_read", "archive_read_command", "Read index sessions from the archive."),
-    _command(
-        "archive-init",
-        "_archive_plan",
-        "archive_init_command",
-        "Initialize the archive file set after explicit confirmation.",
-    ),
-    _command(
-        "migrate-tier",
-        "_migrate_tier",
-        "migrate_tier_command",
-        "Apply additive migrations for one durable archive tier.",
-    ),
     _command(
         "raw-authority-frontier",
         "_raw_identity",
@@ -195,12 +182,6 @@ MAINTENANCE_COMMAND_DECLARATIONS: Final[tuple[MaintenanceCommandDeclaration, ...
         "_raw_identity",
         "raw_authority_blocker_resolve_command",
         "Resolve one durable frontier blocker against current source evidence.",
-    ),
-    _command(
-        "operation-recovery",
-        "_operation_recovery",
-        "operation_recovery_command",
-        "Inspect or adjudicate bounded interrupted-operation recovery evidence.",
     ),
     _command("blob-gc", "_blob_gc", "blob_gc_command", "Preview lease-safe blob garbage collection. Read-only."),
     _command(
@@ -277,26 +258,6 @@ MAINTENANCE_COMMAND_DECLARATIONS: Final[tuple[MaintenanceCommandDeclaration, ...
         "_wanted_sources",
         "wanted_sources_command",
         "Freeze or authorize the private wanted-source denominator for the final rebuild.",
-    ),
-    _command(
-        "blob-residue-compare",
-        "_blob_residue_compare",
-        "blob_residue_compare_command",
-        "Compare present blob-residue candidates through the production parse route.",
-    ),
-    _command(
-        "blob-disposition",
-        "_blob_disposition",
-        "blob_disposition_group",
-        "Compile or consume the physical blob namespace disposition plan.",
-        nested_group=True,
-    ),
-    _command(
-        "embedding-preservation",
-        "_embedding_preservation",
-        "embedding_preservation_group",
-        "Preserve, restore, prove, and discard embedding vectors across a rebuild.",
-        nested_group=True,
     ),
 )
 

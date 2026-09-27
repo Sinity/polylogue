@@ -837,7 +837,7 @@ class TestWriteToolRoutesThroughOperationExecutor:
 class TestJudgeTool:
     @pytest.mark.asyncio
     async def test_single_candidate_shorthand_builds_a_one_item_bulk_call(self, tmp_path: Path) -> None:
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import AsyncMock
 
         from polylogue.mcp.server import build_server
 
@@ -889,7 +889,7 @@ class TestJudgeTool:
         judgment is instead pinned to the fixed, non-"user:"-prefixed
         ``_MCP_JUDGE_ACTOR_REF``.
         """
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import AsyncMock
 
         from polylogue.mcp.server import build_server
         from polylogue.mcp.server_cutover import _MCP_JUDGE_ACTOR_REF
@@ -1004,135 +1004,6 @@ class TestRunTool:
             assert result.get("code") == "invalid_argument"
 
 
-class TestMaintenanceTool:
-    @pytest.mark.asyncio
-    async def test_recovery_status_without_operation_id_returns_invalid_argument(self, tmp_path: Path) -> None:
-        from polylogue.mcp.server import build_server
-
-        archive_root = tmp_path / "archive"
-        _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
-        maintenance_fn = server._tool_manager._tools["maintenance"].fn
-
-        with installed_runtime_services(archive_root):
-            result = json.loads(await invoke_surface_async(maintenance_fn, operation="recovery_status"))
-            assert result.get("is_error") is True
-            assert result.get("code") == "invalid_argument"
-
-    @pytest.mark.asyncio
-    async def test_recovery_status_for_missing_operation_id_returns_not_found(self, tmp_path: Path) -> None:
-        from polylogue.mcp.server import build_server
-
-        archive_root = tmp_path / "archive"
-        _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
-        maintenance_fn = server._tool_manager._tools["maintenance"].fn
-
-        with installed_runtime_services(archive_root):
-            result = json.loads(
-                await invoke_surface_async(maintenance_fn, operation="recovery_status", operation_id="does-not-exist")
-            )
-            assert result.get("is_error") is True
-            assert result.get("code") == "not_found"
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("target_outcomes", "detail"),
-        [
-            ({"session:test": "bogus"}, "outcome value outside the closed vocabulary"),
-            ({"session:test": None}, "non-string outcome value"),
-            ({7: "applied"}, "non-string target ref"),
-        ],
-    )
-    async def test_recovery_adjudication_refuses_malformed_outcomes(
-        self, tmp_path: Path, target_outcomes: dict[object, object], detail: str
-    ) -> None:
-        """Malformed adjudication input is refused at the MCP boundary.
-
-        Anti-vacuity: dropping the boundary validation lets these reach
-        ``adjudicate_recovery``, where a non-string key raises ``KeyError``
-        rather than a typed refusal.
-        """
-
-        from polylogue.mcp.server import build_server
-
-        archive_root = tmp_path / "archive"
-        _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
-        maintenance_fn = server._tool_manager._tools["maintenance"].fn
-
-        with installed_runtime_services(archive_root):
-            result = json.loads(
-                await invoke_surface_async(
-                    maintenance_fn,
-                    operation="recovery_adjudicate",
-                    operation_id="operation:test",
-                    target_outcomes=target_outcomes,
-                    reason="operator evidence",
-                    confirm=True,
-                )
-            )
-        assert result.get("is_error") is True, detail
-        assert result.get("code") == "invalid_argument", detail
-
-    @pytest.mark.asyncio
-    async def test_recovery_adjudication_fails_closed_without_confirm(self, tmp_path: Path) -> None:
-        """``recovery_adjudicate`` honours the confirmation the tool declares."""
-
-        from polylogue.mcp.server import build_server
-
-        archive_root = tmp_path / "archive"
-        _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
-        maintenance_fn = server._tool_manager._tools["maintenance"].fn
-
-        with installed_runtime_services(archive_root):
-            result = json.loads(
-                await invoke_surface_async(
-                    maintenance_fn,
-                    operation="recovery_adjudicate",
-                    operation_id="operation:test",
-                    target_outcomes={"session:test": "applied"},
-                    reason="operator evidence",
-                )
-            )
-        assert result.get("is_error") is True
-        assert "confirm" in result.get("message", "").lower()
-
-    @pytest.mark.asyncio
-    async def test_recovery_adjudication_refuses_beside_a_live_daemon_writer(self, tmp_path: Path) -> None:
-        """MCP adjudication is not a second writer racing the daemon.
-
-        Anti-vacuity: removing the offline-guard call makes this reach the
-        audit repository and fail with ``not_found`` instead of refusing.
-        """
-
-        from polylogue.mcp.server import build_server
-
-        archive_root = tmp_path / "archive"
-        _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
-        maintenance_fn = server._tool_manager._tools["maintenance"].fn
-
-        with (
-            installed_runtime_services(archive_root),
-            patch("polylogue.maintenance.offline_guard.running_daemon_pid", return_value=4321),
-        ):
-            result = json.loads(
-                await invoke_surface_async(
-                    maintenance_fn,
-                    operation="recovery_adjudicate",
-                    operation_id="operation:test",
-                    target_outcomes={"session:test": "applied"},
-                    reason="operator evidence",
-                    confirm=True,
-                )
-            )
-        assert result.get("is_error") is True
-        assert result.get("code") == "offline_required"
-        assert "4321" in result.get("message", "")
-
-
 class TestMaintenanceConfirmGates:
     @pytest.mark.asyncio
     async def test_rebuild_insights_without_confirm_is_refused(self, tmp_path: Path) -> None:
@@ -1147,6 +1018,28 @@ class TestMaintenanceConfirmGates:
             result = json.loads(await invoke_surface_async(maintenance_fn, operation="rebuild_insights"))
             assert result.get("is_error") is True
             assert "confirm" in result.get("message", "").lower()
+
+    @pytest.mark.asyncio
+    async def test_declared_minimal_call_reaches_the_rebuild_route(self, tmp_path: Path) -> None:
+        """The declaration's minimal valid call passes the confirmation gate.
+
+        Anti-vacuity: drop ``("confirm", True)`` from the maintenance row's
+        minimal arguments in ``polylogue/mcp/declarations/registry.py`` and the
+        call is refused by the gate instead of reaching the daemon route.
+        """
+        from polylogue.mcp.declarations.registry import MCP_TOOL_DECLARATIONS
+        from polylogue.mcp.server import build_server
+
+        declaration = next(item for item in MCP_TOOL_DECLARATIONS if item.name == "maintenance")
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
+        maintenance_fn = server._tool_manager._tools["maintenance"].fn
+
+        with installed_runtime_services(archive_root):
+            result = json.loads(await invoke_surface_async(maintenance_fn, **dict(declaration.minimal_arguments)))
+        assert "confirm" not in result.get("message", "").lower()
+        assert result.get("code") == "daemon_required"
 
     @pytest.mark.asyncio
     async def test_rebuild_insights_with_confirm_names_its_sealed_owner(self, tmp_path: Path) -> None:

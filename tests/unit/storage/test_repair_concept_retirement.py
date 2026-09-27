@@ -12,18 +12,10 @@ either an explicit retryable obligation that ordinary acquisition discharges,
 or a typed permanent refusal. This module is that boundary's ratchet: each
 assertion names the exact production shape whose reintroduction turns it red.
 
-One local mutation is deliberately retained rather than deleted:
-``ops maintenance operation-recovery --confirm`` (and its MCP twin
-``recovery_adjudicate``) records operator testimony about an interrupted
-operation's durable targets into ``audit.db``. It repairs nothing, it mutates
-no archive content, and what it records -- whether a crashed EXECUTE's effect
-landed -- is not derivable from durable evidence, so no convergence stage can
-own it. Its premise is a dead daemon, and routing it through the daemon would
-make the record of the daemon's own interrupted operation permanently
-unclosable. That premise is enforced, not merely documented:
-``tests/unit/cli/test_maintenance_registration.py::
-test_operation_recovery_adjudication_refuses_while_daemon_owns_writes`` proves
-the adjudication refuses beside a live ``polylogued``.
+The operator-adjudication route that once survived here
+(``ops maintenance operation-recovery --confirm`` and MCP
+``recovery_adjudicate``) is deleted too: an interrupted mutation's outcome must
+be decidable from durable evidence, not operator testimony (polylogue-aw070).
 """
 
 from __future__ import annotations

@@ -75,7 +75,7 @@ def test_operation_read_succeeds_while_another_process_owns_the_archive(tmp_path
     """Red if the read contends for the lease held by a legitimate owner.
 
     ``flock`` is per open-file-description, so this second descriptor conflicts
-    exactly as a separate daemon or migrate-tier process would. This is the
+    exactly as a separate daemon process would. This is the
     campaign rollback case: reading a preserved aside archive that something
     else legitimately owns.
     """

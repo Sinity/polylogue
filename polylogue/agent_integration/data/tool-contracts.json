@@ -935,34 +935,11 @@
         {
           "description": "The declared maintenance operation.",
           "enum_values": [
-            "rebuild_insights",
-            "recovery_status",
-            "recovery_adjudicate"
+            "rebuild_insights"
           ],
           "kind": "string",
           "name": "operation",
           "required_initial": true
-        },
-        {
-          "description": "Exact operation identity to adjudicate.",
-          "enum_values": [],
-          "kind": "string",
-          "name": "operation_id",
-          "required_initial": false
-        },
-        {
-          "description": "Observed target outcomes for adjudication.",
-          "enum_values": [],
-          "kind": "object",
-          "name": "target_outcomes",
-          "required_initial": false
-        },
-        {
-          "description": "Operator reason.",
-          "enum_values": [],
-          "kind": "string",
-          "name": "reason",
-          "required_initial": false
         },
         {
           "description": "Explicit confirmation required by the full-effect operations.",
@@ -974,27 +951,25 @@
       ],
       "confirmation": {
         "argument": "confirm",
-        "inspection_operations": [
-          "recovery_status"
-        ],
+        "inspection_operations": [],
         "operations": [
-          "rebuild_insights",
-          "recovery_adjudicate"
+          "rebuild_insights"
         ]
       },
       "emits_result_ref": false,
       "examples": [
         {
           "arguments": {
-            "operation": "recovery_status"
+            "confirm": true,
+            "operation": "rebuild_insights"
           },
-          "id": "maintenance-recovery-status",
-          "result_note": "A read-only operation_result describing operations whose applied/not-applied outcome is still unknown.",
-          "title": "Inspect unreconciled operation recovery"
+          "id": "maintenance-rebuild-insights",
+          "result_note": "The daemon's operation_result for the accepted insights rebuild.",
+          "title": "Rebuild session insights"
         }
       ],
       "name": "maintenance",
-      "purpose": "Rebuild session insights and inspect or adjudicate operation recovery; there is no generic maintenance or repair umbrella.",
+      "purpose": "Rebuild session insights; there is no generic maintenance or repair umbrella.",
       "required_capability": "maintenance",
       "result_semantics": [
         "maintenance"

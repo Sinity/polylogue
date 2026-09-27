@@ -211,16 +211,6 @@
   },
   {
     "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/maintenance/_archive_plan.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.archive_init"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/maintenance/_archive_plan.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.archive_plan"
-  },
-  {
-    "target": "polylogue/cli",
     "file": "polylogue/cli/commands/maintenance/_archive_read.py",
     "import": "polylogue.storage.archive_identity"
   },
@@ -273,21 +263,6 @@
     "target": "polylogue/cli",
     "file": "polylogue/cli/commands/maintenance/_embeddings.py",
     "import": "polylogue.storage.embeddings.reconcile"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/maintenance/_migrate_tier.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/maintenance/_migrate_tier.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.types"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/maintenance/_migrate_tier.py",
-    "import": "polylogue.storage.sqlite.migration_runner"
   },
   {
     "target": "polylogue/cli",

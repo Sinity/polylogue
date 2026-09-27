@@ -107,11 +107,18 @@ def _include(kind: ArchiveDebtKind, selected: set[str] | None) -> bool:
 
 
 def _tier_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]:
+    from polylogue.storage.archive_readiness import lost_durable_tiers
+
     rows: list[ArchiveDebtRowPayload] = []
+    # Opening the archive refuses a lost durable tier rather than recreating
+    # it, so only a fresh root, a resumable bootstrap, or a missing derived
+    # tier is the daemon's to fix.
+    lost = lost_durable_tiers(archive_root)
     for tier, spec in ARCHIVE_TIER_SPECS.items():
         path = archive_root / spec.filename
         subject_ref = f"archive-tier:{tier.value}"
         if not path.exists():
+            lost_durable = tier in lost
             rows.append(
                 ArchiveDebtRowPayload(
                     debt_ref=f"debt:archive-tier:{tier.value}:missing",
@@ -119,15 +126,22 @@ def _tier_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]:
                     stage="archive-layout",
                     subject_ref=subject_ref,
                     severity=_tier_missing_severity(spec.durability),
-                    status="actionable",
+                    status="blocked" if lost_durable else "actionable",
                     owner="ops",
                     summary=f"{spec.filename} is missing",
-                    details=f"Expected {spec.durability} archive tier at {path}.",
+                    details=(
+                        f"Durable tier {path} was lost from an established archive; it is never recreated. "
+                        "Restore the archive root from a verified backup."
+                        if lost_durable
+                        else f"Expected {spec.durability} archive tier at {path}."
+                    ),
                     evidence_refs=(f"file:{path}",),
-                    actions=(
+                    actions=()
+                    if lost_durable
+                    else (
                         ArchiveDebtActionPayload(
-                            label="Initialize archive tiers",
-                            command=("polylogue", "ops", "maintenance", "archive-init"),
+                            label="Open the archive; bootstrap creates a fresh root and missing derived tiers",
+                            command=("polylogued", "run"),
                         ),
                     ),
                 )

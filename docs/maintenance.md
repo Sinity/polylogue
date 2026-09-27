@@ -1,108 +1,31 @@
 # Maintenance
 
 This guide is for operators choosing between the read-only inspection
-verbs under `polylogue ops maintenance`, the guarded durable-evidence
-recovery verbs, `polylogue ops reset`, and "do nothing — the daemon will
-catch up." It also collects runbook recipes for the most common
+verbs under `polylogue ops maintenance`, the remaining guarded
+durable-evidence verbs, `polylogue ops reset`, and "do nothing — the daemon
+will catch up." It also collects runbook recipes for the most common
 operational incidents. Derived state (`index.db`, FTS, insights,
 embeddings) is rebuilt only by ordinary daemon convergence; there is no
 manual rebuild or repair verb.
 
-## Applying a durable schema change train
+## Durable schema changes
 
-Durable schema changes for an archive intentionally retained for operation are an offline release operation. The fresh-start reset creates six empty tier files at `user_version=1` and does not apply migrations to the preserved prior archive. Before applying a later
-`source.db`, `user.db`, or `audit.db` migration,
-confirm that the release contains the matching
-`migrations/{source,user,audit}/NNN.train.json`
-sidecar. The sidecar reserves the exact slot and SQL hash and records the
-runtime and restart evidence needed for the change.
-
-Stop `polylogued`, create a fresh verified backup with the normal
-`backup_archive(..., verify=True)` route, then invoke the existing maintenance
-command with that manifest:
-
-```bash
-polylogue ops maintenance migrate-tier source \
-  --backup-manifest /path/to/verified-source-backup/manifest.json \
-  --output-format json
-```
-
-The command acquires the daemon startup exclusion and archive ownership before
-opening SQLite. It refuses when a live daemon or another archive writer holds
-either authority. The migration runner then validates the package sidecar,
-revalidates the backup against the current database, and performs the numbered
-SQL step in the existing transaction. It verifies row and schema parity,
-SQLite integrity, foreign keys, and canonical DDL parity before commit. A
-failed transaction is rolled back and may be retried after the cause is
-repaired.
-
-The JSON output reports the migration receipt and stopped-daemon authority.
-Restart health and runtime-consumer convergence are the final lifecycle proof
-and are recorded by the durable train lifecycle API, not inferred from this
-command's migration result alone.
-
-## Rehearsal clones and audit adoption
-
-A FICLONE or copied archive has new source/user device-inode authority and must
-fail closed on the existing audit-adoption receipt. For a rehearsal, create the
-clone through the authorized established-archive adoption route, using a
-verified `full_evidence` backup and
-`migrate-tier audit --adopt-established-audit`; do not copy an adoption receipt
-into a new authority set. A normal inactive index-generation build and
-promotion keeps source/user authority in place, so the adopted audit receipt
-must remain valid across that promotion; the regression test
-`test_audit_adoption_continuity_survives_index_generation_promotion` proves
-that production path.
+Durable tiers (`source.db`, `user.db`, `audit.db`) evolve only by numbered
+additive migrations under `storage/sqlite/migrations/{source,user,audit}/`.
+None are declared: a fresh archive is created at `user_version=1` for every
+tier when the daemon first opens its root, and bootstrap creates all durable
+tiers together under one pending intent. There is no command that initializes
+an archive, applies a migration, or recreates a missing durable tier. A
+durable tier from a different runtime is refused with a typed `SchemaSkew`; a
+lost durable tier is refused by name and is never recreated. Applying the
+first declared migration at daemon open, behind a backup the daemon takes and
+verifies, is tracked as `polylogue-ywsgj`.
 
 Authenticated source maintenance writes a typed refresh receipt that binds its
 predecessor authority and the exact durable-train manifest hashes before and
 after the refresh. Successive refreshes therefore validate as one unbranched
 transition chain ending at the exact current manifest; matching only the
 current source hash or archive identity is not authority.
-
-### Deploying a package that owns the live durable schemas
-
-Confirm that the package being deployed owns the live durable schemas
-(`source.db`, `user.db`, `audit.db`). `index.db` may be behind: the daemon
-rebuilds that derived tier from source through ordinary convergence.
-
-For a safe deployment recovery, first choose the exact target package commit.
-With the daemon stopped, create a fresh verified full-evidence backup. If the
-preflight reports that a newly introduced durable tier is absent, initialize
-only that absent file through the archive ownership gate. This recovery path is
-allowed only for a completely unadopted private archive directory. Any sibling
-durable tier, active-index pointer, or durable change-train marker proves that
-the archive already has an identity, so the command refuses to create the
-missing file and leaves it absent:
-
-```bash
-polylogue ops maintenance migrate-tier audit --initialize-missing --output-format json
-```
-
-The flag builds the canonical database in memory, writes it into an anonymous
-inode, and requires filesystem support for `O_TMPFILE`. If the filesystem does
-not support anonymous temporary files, the command fails closed and leaves the
-tier absent. It fsyncs the image, publishes it with a no-replace hard link, then
-fsyncs the directory. It refuses any existing target including one created
-concurrently, and never replaces durable data.
-
-If publication fails after the file becomes visible, JSON output carries a
-`durable_recovery` object. A state of `uncertain` means the command preserved a
-visible tier because it could not prove a pathname still names its inode.
-Inspect the reported target and remove it manually before retrying.
-
-For each existing tier that the selected package reports behind, run its numbered
-migration with the verified full-evidence backup manifest:
-
-```bash
-polylogue ops maintenance migrate-tier source --backup-manifest /path/to/verified-full-backup/manifest.json --output-format json
-polylogue ops maintenance migrate-tier user --backup-manifest /path/to/verified-full-backup/manifest.json --output-format json
-polylogue ops maintenance migrate-tier audit --backup-manifest /path/to/verified-full-backup/manifest.json --output-format json
-```
-
-Deploy that exact package after every required durable migration, then
-start the daemon; ordinary convergence rebuilds `index.db` from `source.db`.
-`polylogue ops status` must show no durable-tier mismatch after the deploy.
 
 For the conceptual model behind derived insights and the FTS / blob
 substrate, see [architecture.md](architecture.md) and
@@ -116,8 +39,8 @@ materialization, FTS, embeddings, and derived read models in bounded
 batches from durable source evidence; a stale or missing derived row is
 converged, never repaired by hand. The `ops maintenance` verbs below are
 read-only inspection, or guarded, receipted recovery of durable evidence
-that convergence cannot re-derive (blob quarantine, durable-tier
-migrations, raw-authority ledger recovery).
+that convergence cannot re-derive (blob quarantine, raw-authority ledger
+recovery).
 A WAL checkpoint is not a maintenance operation: ingest runs bounded passive
 checkpoints after commits, the daemon runs periodic truncate checkpoints, and
 status/metrics report WAL pressure.
@@ -126,109 +49,6 @@ The order of preference is: **do nothing → daemon → guarded recovery →
 reset**. Reset is the only one that destroys primary data.
 
 ## Subcommands
-
-### `polylogue ops maintenance blob-disposition` — physical namespace disposition
-
-One-time transition tooling for the blob-store maneuver. `plan` is read-only:
-it walks the complete physical namespace and gives every object exactly one
-disposition proven against a configured source — `source_present`,
-`superseded_prefix`, `restore_required`, `unreferenced`, or `unresolved`. A
-plan is acceptable at zero unresolved members with every non-blob namespace
-entry explained, and its digest binds the archive identity, the namespace, the
-denominators, and every member outcome.
-
-`unreferenced` is the terminal outcome for an object no durable relation
-names. A blob is published before the row that owns it, and reference-dropping
-repairs strand objects by design, so an unnamed object is daemon GC's to
-collect: this plan records it, never removes it, and never blocks on it.
-
-The plan splits the redundant population two ways. `reclaimable_bytes` counts
-the `source_present` and `superseded_prefix` members no durable row
-references; `retained_by_reference_bytes` counts the ones a durable reference
-still names. Only the first half can go, whatever the second half's proofs say.
-
-```bash
-polylogue ops maintenance blob-disposition plan \
-  --archive-root /path/to/archive \
-  --output /path/to/disposition-plan.json --output-format json
-polylogue ops maintenance blob-disposition apply \
-  --archive-root /path/to/archive \
-  --plan /path/to/disposition-plan.json \
-  --authorized-digest <digest of the reviewed plan> \
-  --receipt /path/to/new/disposition-receipt.json --active
-```
-
-`restore` is the additive half on its own: it publishes sole-copy carriers
-into their ordinary spool and deletes nothing.
-
-`apply` does two things, in an order that cannot lose material. It restores
-every `restore_required` carrier into its ordinary spool and reads the
-published material back — the capture receiver publishes acquired bytes
-verbatim, so a restored capture is verified byte-for-byte, while a hook event
-is verified through the production read route that derives the fields the
-spool file does not carry. One provider session keeps one capture artifact, so
-a carrier arriving at an occupied artifact name is a revision the spool
-converges: the newer or richer capture is published and the rest report
-`restoration_superseded`, which is a completed restoration because the
-artifact holding that identity carries the material. Only a malformed
-envelope, a genuinely different session claiming the artifact name, or the
-spool quota refuses a carrier. It then deletes, through the canonical blob-GC
-seam, every member no durable row references: the same objects recurring GC
-would take, plus the namespace's non-blob entries (a SQLite `-wal` or `-shm`
-stranded beside a content-addressed object, whose bytes are that object's
-identity, so the sidecar has no owner).
-
-Deletion is bounded by unreferencedness, not by disposition. A referenced
-object is never deleted whatever its proof; an `unresolved` orphan nothing
-names goes, because being unreferenced is its disposition. The plan's
-unresolved count gates nothing — what stays in the namespace after a pass is
-what a durable row still references, and the receipt's `cohorts` block says
-how much of that is still unexplained.
-
-`apply` is a dry rehearsal without `--active`, and the rehearsal reports the
-totals and counts its active twin would: it resolves every restoration
-destination and evaluates the same admission rule, carrying what it would have
-published so a second carrier of one identity converges in the rehearsal
-exactly as it does in the run. A stale digest, a namespace that is not the
-plan's, a drifted denominator, or an active archive writer refuses the run
-before any effect. A carrier whose restoration did not complete keeps its blob
-and reports `blocked`. A pass interrupted part-way is resumed by re-running
-it: an object a previous pass deleted is reported `retained_absent`, and a
-carrier an earlier pass already restored is proven at the spool it was
-restored into rather than published a second time.
-
-The receipt records, per member: hash, cohort, referenced flag, size, source
-path, restoration outcome and spool path, and terminal outcome; plus `counts`,
-`cohorts` (everything deleted and everything left, per disposition, with
-bytes), `totals` (blob count and bytes in the namespace before and after),
-`restorations` (every sole copy and where the spool now holds it), and
-`reference_relations` — the durable relations a deleted member's
-`referenced: false` was decided against.
-
-Hook-event and browser-capture carriers are proven by the owning production
-read route, not by bytes: acquisition derives fields the spool file does not
-carry, so byte equality would misreport reproducible material as a sole copy.
-The same reasoning governs the three provers for material no filesystem walk
-can hash. A payload synthesized from a database row is reproduced by re-running
-the production encoding over the live state database. An attachment extracted
-from an account export is proven against a member of the retained export
-archive, selected by the member's uncompressed size and decided by a fresh
-SHA-256 — pass `--export-archive-root` to `plan`, and again to `restore` and
-`apply`, which cannot revalidate a proof whose prover they were not given. A
-whole-session carrier whose source was rewritten in place is proven by the
-normalized session contribution both sides produce through the live detector,
-parser and admission: the source proves the carrier when it reproduces every
-stored session and no stored axis is missing from it.
-
-A non-blob entry inside the namespace blocks acceptance until it carries
-positive evidence of what it is. The one explained shape is a SQLite sidecar
-named after a blob that is still present, written beside the object by a
-reader that opened the stored database in place.
-
-Deletion trigger: this command, both maintenance modules, and their tests are
-removed with the terminal disposition receipt. The recurring liveness,
-publication, GC, and spool-admission laws stay with their owners.
-
 
 ### Blob-reference integrity — preview and apply pairs
 
@@ -466,7 +286,7 @@ derivation (`polylogue/storage/derived/raw.py`) under the daemon writer
 coordinator, which replays one authority component per call from ordinary
 durable evidence.
 
-### `polylogue ops maintenance operation-recovery` - inspecting and adjudicating interrupted mutations
+### Interrupted mutations
 
 An executor-routed mutation that is interrupted before audit finalization
 leaves a nonterminal `operation_runs` row. The daemon classifies these once,
@@ -474,61 +294,13 @@ explicitly, at startup under its own writer lease (`polylogued run` ->
 `recover_interrupted_operations`); it is not a side effect of constructing an
 `OperationExecutor`, so a request handler never reclassifies anything.
 
-What the archive can actually classify by itself is narrow, and the daemon
-does not pretend otherwise:
-
-- **`mutate-delete-session`** is auto-classifiable. A session either exists or
-  does not, so committed target state is real postcondition evidence and the
-  domain inspector can confirm applied, not-applied, or partial.
-- **Every other routed family**, and any operation version this build no
-  longer recognizes, **fails closed**. It is terminalized as an
-  operator-blocking `unknown` with `terminal_reason = 'recovery_unknown'`.
-  Create/update and mixed-effect families have no such postcondition oracle,
-  and are never guessed or silently retried.
-
-Classification is one-pass and idempotent. A classified run is terminal, so
-restarting the daemon over an already-recovered archive appends no further
-`recovery_classified` events.
-
-Recovery terminal reasons deliberately keep an operation visible to bounded
-inspection:
-
-- `recovery_unknown` keeps the run visible to overlap detection, so a later
-  mutation touching the same targets is refused rather than racing an effect
-  nobody has proved.
-- `recovered_applied` installs the duplicate-effect barrier: a confirmed
-  applied recovery refuses a second attempt at the same semantic effect.
-
-- `recovered_partial:<action>` preserves the declared `retry-exact`, `forward`,
-  or `rollback` continuation. A retryable partial remains eligible for the
-  same exact plan; a forward or rollback continuation remains blocked until an
-  operator adjudicates it.
-
-These states are adjudicable, which keeps them from becoming permanent wedges.
-Adjudication is an offline operator route with no writer lease of its own, so
-it refuses to run beside a live `polylogued`:
-
-```bash
-# Inspect only.
-polylogue ops maintenance operation-recovery \
-  --operation-id operation:... --output-format json
-
-# Adjudicate, naming every durable target exactly once.
-polylogue ops maintenance operation-recovery \
-  --operation-id operation:... \
-  --target-outcome session:claude:abc=not-applied \
-  --reason "verified against source export; the delete never committed" \
-  --confirm
-```
-
-A run whose plan resolved to zero durable targets never installs a barrier at
-all -- it has no target rows to overlap and no semantic effect to duplicate --
-and `--confirm --reason` with no `--target-outcome` closes it.
-
-The same two operations are reachable over MCP as
-`maintenance(operation="recovery_status", ...)` and
-`maintenance(operation="recovery_adjudicate", ..., confirm=true)`, under the
-same confirmation gate and the same offline-writer exclusion.
+Only `mutate-delete-session` is classifiable from committed target state: a
+session either exists or does not. Every other routed family, and any
+operation version this build no longer recognizes, fails closed as an
+operator-blocking `unknown` (`terminal_reason = 'recovery_unknown'`) that
+keeps later overlapping mutations refused rather than racing an effect nobody
+has proved. There is no adjudication route; deciding every family's outcome
+from durable evidence is tracked as `polylogue-aw070`.
 
 ### Measuring Codex UUID-title coverage
 
@@ -630,35 +402,19 @@ cp ~/.local/share/polylogue/index.db /tmp/index-before-rebuild.db
 # ...run the documented re-ingest/rederive flow for the release, verify
 # it opens cleanly with the new polylogue binary, then restart production.
 
-# 3c. Durable-tier additive migration: keep the daemon stopped, create and
-#     scratch-verify a minimal backup, then use its authenticated receipt.
-polylogue ops backup --output-dir /path/to/staging \
-  --profile user_overlays --verify
-polylogue ops maintenance migrate-tier user \
-  --backup-manifest /path/to/staging/polylogue-archive-*/manifest.json \
-  --output-format json
+# 3c. Durable tier: no durable migration is declared, so a durable-tier
+#     mismatch means a different runtime wrote it. Roll the binary back.
 
 # 4. Restart and verify.
 systemctl --user start polylogued.service
 polylogue ops doctor
 ```
 
-The daemon and `migrate-tier` command share the stable
-`<archive-root>/.archive-ownership.lock` archive lease. `daemon.pid` is process
-metadata only and is never reclaimed by unlinking it as a lock. A crash during
-the train apply phase leaves a checksummed manifest under
-`.maintenance-state/durable-change-trains/`; the next daemon startup acquires
-the same archive lease, reconciles the interrupted version, and persists the
-recovery evidence before opening normal archive components.
-
-Never hand-edit a tier or use a plain manifest as migration authority. A
-durable migration requires a successful scratch-restore receipt authenticated
-by the exact live tier's local key; public hashes and an in-memory "Verification: OK" are
-insufficient. Keep the backup as an independent copied file set: linked or
-symlinked tiers are rejected because they do not survive mutation of the live
-database. If release notes provide neither an additive durable migration
-nor a derived-tier rebuild plan, keep the daemon stopped and roll back the
-binary.
+The daemon holds the stable `<archive-root>/.archive-ownership.lock` archive
+lease. `daemon.pid` is process metadata only and is never reclaimed by
+unlinking it as a lock. Never hand-edit a tier. If release notes provide
+neither an additive durable migration nor a derived-tier rebuild plan, keep
+the daemon stopped and roll back the binary.
 
 ### Fresh-start archive after a reset ruling
 

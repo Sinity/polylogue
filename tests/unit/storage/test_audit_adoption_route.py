@@ -1,11 +1,11 @@
-"""The archive-format guard must not hide the audit-adoption recovery route.
+"""A lost ``audit.db`` is refused by name, and only for a proven lineage member.
 
-An archive that belongs to the current format lineage and has lost only
-``audit.db`` is recoverable through ``maintenance migrate-tier audit
---adopt-established-audit``. The format-marker guard introduced with the
-lineage floor inspects every durable tier file before that refusal is reached,
-so an operator in exactly that state was told ``archive format marker names a
-missing durable tier`` -- true, and actionable by nobody.
+Bootstrap creates every durable tier under one pending intent, so an
+established archive without ``audit.db`` lost it outside Polylogue. Startup
+refuses it with a lost-tier message and never recreates the tier. The
+format-marker guard must still run first for the surviving durable pair: an
+archive whose remaining tiers are not proven members of this lineage is
+reported as that more severe finding instead.
 """
 
 from __future__ import annotations
@@ -26,34 +26,34 @@ def _bootstrapped(root: Path) -> Path:
     return root
 
 
-def test_lost_audit_names_the_adoption_route(tmp_path: Path) -> None:
-    """A lineage member missing only audit.db is refused with its recovery command.
+def test_lost_audit_is_refused_by_name(tmp_path: Path) -> None:
+    """A lineage member missing only audit.db is refused as a lost durable tier.
 
     Anti-vacuity: restoring the unconditional
     ``assert_archive_format_lineage(root)`` in ``_initialize_active_archive_root``
     makes this raise ``archive format marker names a missing durable tier``
     instead, and the ``match`` fails. The second assertion pins the other
     direction: the refusal must not become a silent re-creation of the durable
-    tier the operator is being asked to adopt.
+    tier.
     """
     root = _bootstrapped(tmp_path / "archive")
     (root / "audit.db").unlink()
 
-    with pytest.raises(RuntimeError, match="adopt-established-audit"):
+    with pytest.raises(RuntimeError, match="established archive is missing audit.db"):
         initialize_active_archive_root(root)
 
     assert not (root / "audit.db").exists()
 
 
 @pytest.mark.parametrize("damage", ["nomarker", "forged", "foreign", "nouser"])
-def test_adoption_route_needs_lineage_proof(tmp_path: Path, damage: str) -> None:
-    """Only a proven lineage member reaches the adoption route.
+def test_lost_audit_refusal_needs_lineage_proof(tmp_path: Path, damage: str) -> None:
+    """Only a proven lineage member is reported as having lost audit.db.
 
     Anti-vacuity: dropping the scoped ``assert_archive_format_lineage`` call and
-    raising the adoption message on ``audit.db`` absence alone turns every case
-    here into ``adopt-established-audit``, which would invite an operator to
-    adopt an audit tier into an archive whose surviving durable files were never
-    shown to belong to this lineage.
+    raising the lost-tier message on ``audit.db`` absence alone turns every
+    case here into the lost-tier refusal, reporting an archive whose surviving
+    durable files were never shown to belong to this lineage as merely
+    missing one tier.
     """
     root = _bootstrapped(tmp_path / "archive")
     (root / "audit.db").unlink()
@@ -74,5 +74,5 @@ def test_adoption_route_needs_lineage_proof(tmp_path: Path, damage: str) -> None
     with pytest.raises(RuntimeError) as refusal:
         initialize_active_archive_root(root)
 
-    assert "adopt-established-audit" not in str(refusal.value)
+    assert "established archive is missing audit.db" not in str(refusal.value)
     assert not (root / "audit.db").exists()

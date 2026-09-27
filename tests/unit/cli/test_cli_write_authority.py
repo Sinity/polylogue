@@ -4,14 +4,13 @@ Enforcement used to be armed in two processes only -- ``polylogued run`` and
 the MCP stdio bridge with a write/maintenance capability. The
 ``polylogue``/``plg``/``plog`` console scripts armed neither, so
 ``require_write_lease`` returned ``None`` for every writable archive-tier open
-an ordinary CLI invocation made, and ``ops maintenance archive-init --yes``
-created and wrote all six durable tiers beside a live daemon.
+an ordinary CLI invocation made, so an offline writer could create tier files
+beside a live daemon.
 
-These tests drive the real console-script route (Click's root callback, which
-``main()``, ``python -m polylogue`` and an embedded ``cli`` caller all reach)
-against a real resident process the pidfile claims, and check both
-directions: refused when a daemon owns the archive, still executed when
-nothing does.
+These tests prove the boundary mechanism against a real resident process the
+pidfile claims, in both directions: refused when a daemon owns the archive,
+still writable when nothing does. ``tests/unit/cli/test_offline_writers.py``
+drives each remaining offline writer through the console-script route.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
-from click.testing import CliRunner, Result
+from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
 from polylogue.cli.write_authority import (
@@ -32,11 +31,6 @@ from polylogue.cli.write_authority import (
     cli_archive_writer_ownership,
 )
 from polylogue.core.write_lease import UnleasedWriteError
-
-#: Every durable/derived tier ``archive-init`` creates. The refusal must leave
-#: none of them behind: a partially initialized archive is the silent-damage
-#: outcome the boundary exists to prevent.
-TIER_FILES = ("source.db", "index.db", "embeddings.db", "user.db", "audit.db", "ops.db")
 
 
 @pytest.fixture
@@ -88,71 +82,6 @@ def _archive_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
     return root
-
-
-def _init_archive(runner: CliRunner) -> Result:
-    return runner.invoke(
-        cli,
-        ["--plain", "ops", "maintenance", "archive-init", "--yes", "--output-format", "json"],
-        catch_exceptions=False,
-    )
-
-
-def test_resident_daemon_refuses_a_writable_tier_open(
-    cli_runner: CliRunner,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    resident_daemon: Callable[[Path], int],
-) -> None:
-    """An ordinary CLI process may not create tier files a live daemon owns.
-
-    The refusal is asserted as the *boundary's* relabelled error, not as the
-    command's own "Blocked:" line. ``archive-init`` used to catch
-    ``RuntimeError`` around ``initialize_archive_tier_files_from_plan``, which
-    swallowed ``UnleasedWriteError`` and printed its internal text ("open it
-    inside ``write_lease(...)``") as a blocked plan -- so this assertion was
-    satisfied by a message that never named the resident daemon and never
-    reached the relabelling the boundary exists to do (polylogue-re6s3 AC4).
-    The catch is now narrowed to ``ArchiveInitBlockedError``.
-
-    Anti-vacuity: drop ``ctx.with_resource(cli_archive_writer_ownership())``
-    from the root callback in ``polylogue/cli/click_app.py`` and this test goes
-    red with ``executed: true`` and all six tier files on disk -- the defect.
-    """
-    root = _archive_root(monkeypatch, tmp_path)
-    resident_pid = resident_daemon(root / "daemon.pid")
-
-    result = cli_runner.invoke(
-        cli,
-        ["--plain", "ops", "maintenance", "archive-init", "--yes", "--output-format", "json"],
-        catch_exceptions=True,
-    )
-
-    assert result.exit_code == 1, result.output
-    assert isinstance(result.exception, ArchiveWriterOwnershipError), result.output
-    assert f"PID {resident_pid}" in str(result.exception)
-    assert "write lease" in str(result.exception)
-    assert [name for name in TIER_FILES if (root / name).exists()] == []
-
-
-def test_offline_cli_still_initializes_the_archive(
-    cli_runner: CliRunner,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """With no resident daemon the CLI is the archive's single writer.
-
-    The opposite direction, so "refuse every CLI write" cannot pass as a fix:
-    a boundary that refused unconditionally would break the declared offline
-    authorities (archive initialization, durable tier migration, embedding
-    backfill) that legitimately own an archive no daemon is serving.
-    """
-    root = _archive_root(monkeypatch, tmp_path)
-
-    result = _init_archive(cli_runner)
-
-    assert result.exit_code == 0, result.output
-    assert sorted(name for name in TIER_FILES if (root / name).exists()) == sorted(TIER_FILES)
 
 
 def test_resident_daemon_does_not_refuse_reads(

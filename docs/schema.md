@@ -292,7 +292,7 @@ migrate, rebuild, or reject is shared across sync and async backends in
 
 ```bash
 polylogue ops status                    # daemon/archive snapshot, including per-tier row counts
-polylogue ops maintenance archive-plan  # planned archive file set
+polylogue ops maintenance backup-plan   # archive file set and backup boundaries
 polylogue ops doctor                     # schema health + referential integrity
 polylogue ops doctor --schemas           # provider-schema conformance over raw records
 ```

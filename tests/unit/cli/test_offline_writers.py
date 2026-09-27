@@ -1,10 +1,10 @@
 """The CLI commands that still write archive tiers in this process.
 
 ``polylogue-re6s3`` / ``polylogue-5vps8`` require that no CLI route opens a
-writable tier beside a running daemon. Four command families are not lowered
+writable tier beside a running daemon. Three command families are not lowered
 onto a declared daemon operation and are not going to be: they are declared
-*offline* authorities (archive initialization, backup, demo seeding, the
-secret sweep's coverage ledger). For those the requirement is not "route it
+*offline* authorities (backup, demo seeding, the secret sweep's coverage
+ledger). For those the requirement is not "route it
 through the daemon" but "own the archive exclusively, or refuse" -- design D8.
 
 ``tests/unit/cli/test_cli_write_authority.py`` proves the boundary mechanism
@@ -55,11 +55,6 @@ class _WritableTierOpened(BaseException):
         super().__init__(str(path))
 
 
-def _argv_archive_init(root: Path, scratch: Path) -> tuple[str, ...]:
-    del root, scratch
-    return ("ops", "maintenance", "archive-init", "--yes")
-
-
 def _argv_backup(root: Path, scratch: Path) -> tuple[str, ...]:
     del root
     return ("ops", "backup", "--output-dir", str(scratch / "backup-out"))
@@ -82,16 +77,12 @@ def _argv_scan_secrets(root: Path, scratch: Path) -> tuple[str, ...]:
 #: That is recorded rather than worked around: inventing a format for the sake
 #: of a test row would assert a surface no operator has.
 _OFFLINE_WRITERS: tuple[tuple[str, Callable[[Path, Path], tuple[str, ...]], str, tuple[str, ...] | None], ...] = (
-    ("archive-init", _argv_archive_init, _NEEDS_NOTHING, ("--output-format", "json")),
     ("backup", _argv_backup, _NEEDS_TIERS, None),
     ("demo-seed", _argv_demo_seed, _NEEDS_NOTHING, None),
     ("scan-secrets", _argv_scan_secrets, _NEEDS_TIERS, ("--format", "json")),
 )
 
 #: Rows carrying a machine-format leg, and the flag spelling each one accepts.
-#: ``archive-init`` uses ``--output-format``, which the argv probe in
-#: ``machine_errors.wants_json`` did not recognise, so its refusal reached a
-#: machine caller as a prose ``Error:`` line on stderr with an empty stdout.
 _MACHINE_FORMAT_ROWS = tuple(row for row in _OFFLINE_WRITERS if row[3] is not None)
 
 #: Why a row carries no machine-format leg. Read by
@@ -317,17 +308,12 @@ def test_machine_format_refusal_is_typed(
     Two failures met here. The refusal reached a ``--format json`` client as
     ``runtime_error`` -- the code a corrupt tier and a genuine crash also
     produce -- with the resident writer and the remedy nowhere on the wire.
-    And ``archive-init`` never produced an envelope at all: it spells its
-    machine mode ``--output-format json``, which ``wants_json`` did not
-    recognise, so the terminal branch ran and the caller got an empty stdout
-    and prose on stderr.
 
     Anti-vacuity: delete the ``ArchiveWriterOwnershipError`` branch from the
-    JSON path of ``run_machine_entry`` and both rows go red on ``code`` while
+    JSON path of ``run_machine_entry`` and the row goes red on ``code`` while
     ``test_refused_beside_resident_daemon`` stays green, because the terminal
     branch is a separate mapping -- the asymmetry that let the gap survive a
-    green suite. Drop ``--output-format`` from ``_JSON_FORMAT_FLAGS`` and the
-    ``archive-init`` row alone goes red, on the JSON decode.
+    green suite.
     """
     assert machine_tail is not None
     root = _prepare_root(monkeypatch, tmp_path, needs)

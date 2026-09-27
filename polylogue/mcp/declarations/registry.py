@@ -259,9 +259,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
     ),
     _ToolRow(
         "maintenance",
-        "Rebuild session insights and inspect or adjudicate operation recovery. "
-        "rebuild_insights and recovery_adjudicate require confirm=true "
-        "and fail closed without it.",
+        "Rebuild session insights. rebuild_insights requires confirm=true and fails closed without it.",
         "polylogue.mcp.server_cutover",
         "register_cutover_privileged_tools",
         "maintenance",
@@ -269,11 +267,11 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         ("maintenance-operation",),
         MCPResultSemantics.MAINTENANCE,
         "polylogue.mcp.server_cutover.maintenance:inspect.signature",
-        (("operation", "recovery_status"),),
+        (("operation", "rebuild_insights"), ("confirm", True)),
         "operation_result",
         "mutate-rebuild-insights",
         target_object_kinds=("maintenance-plan", "maintenance-operation"),
-        target_purpose="Rebuild session insights and inspect or adjudicate operation recovery.",
+        target_purpose="Rebuild session insights.",
     ),
 )
 

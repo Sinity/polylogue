@@ -63,12 +63,6 @@
     ]
   },
   {
-    "file": "polylogue/maintenance/embedding_preservation.py",
-    "tiers": [
-      "embeddings"
-    ]
-  },
-  {
     "file": "polylogue/operations/attachment_convergence.py",
     "tiers": [
       "index"

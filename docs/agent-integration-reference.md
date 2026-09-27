@@ -446,30 +446,28 @@ A result_ref and receipt for the declared recipe; mutation authority is never ga
 - result semantics: `maintenance`
 - continuation: `none`
 - emits result ref: `no`
-- purpose: Rebuild session insights and inspect or adjudicate operation recovery; there is no generic maintenance or repair umbrella.
+- purpose: Rebuild session insights; there is no generic maintenance or repair umbrella.
 
 Arguments:
 
 | Name | Kind | Required initially | Meaning |
 |---|---|---:|---|
 | `operation` | `string` | yes | The declared maintenance operation. |
-| `operation_id` | `string` | no | Exact operation identity to adjudicate. |
-| `target_outcomes` | `object` | no | Observed target outcomes for adjudication. |
-| `reason` | `string` | no | Operator reason. |
 | `confirm` | `boolean` | no | Explicit confirmation required by the full-effect operations. |
 
-Example — Inspect unreconciled operation recovery:
+Example — Rebuild session insights:
 
 ```json
 {
   "arguments": {
-    "operation": "recovery_status"
+    "confirm": true,
+    "operation": "rebuild_insights"
   },
   "name": "maintenance"
 }
 ```
 
-A read-only operation_result describing operations whose applied/not-applied outcome is still unknown.
+The daemon's operation_result for the accepted insights rebuild.
 
 ## Exact continuation contract
 

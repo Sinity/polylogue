@@ -21,9 +21,10 @@ The configured archive root contains these durable paths:
 | `source-declared-absent.json` | Operator-authored declared-absent blob hashes for a pre-generation `source.db`. | Copy with `source.db`; never derive or replace it with GC observations. |
 | `blob/` | Content-addressed binary payloads keyed by SHA-256. | Back up referenced blobs with `source.db`/`user.db`; do not prune by age alone. |
 
-`polylogue ops maintenance archive-plan --output-format json` is the machine-readable
-inventory for tier filenames, expected versions, backup-required tiers, and
-missing blockers. Run it before backup automation rather than hard-coding only
+`polylogue ops maintenance backup-plan --output-format json` is the
+machine-readable inventory for tier filenames, backup boundaries, and missing
+tiers; `polylogue ops status --format json` reports each tier's expected and
+found version. Run them before backup automation rather than hard-coding only
 the files that happen to exist locally.
 
 ## Backup Profiles
@@ -35,7 +36,7 @@ Use these profiles when choosing what to copy:
 | Full evidence | All six archive tiers: `source.db`, `index.db`, `embeddings.db`, `user.db`, `ops.db`, and `audit.db`, plus referenced `blob/`. | Temporary SQLite `*-wal`/`*-shm` only after a clean checkpoint. | The fastest restore with raw evidence, read models, vectors, overlays, audit authority, and operational state. |
 | User overlays | `user.db` and any assertion/note evidence blobs referenced by user-owned rows. | `index.db`, `ops.db`, rebuildable search/derived models. | Protect irreplaceable human/agent state before resets or schema rebuilds. |
 | Rebuildable-cache exclude | `source.db`, `user.db`, referenced `blob/`, optionally `embeddings.db`. | `index.db`, `ops.db`, derived/cache artifacts. | Small backup that can rebuild parsed/indexed data locally. |
-| Diagnostics bundle | `ops.db`, `archive-plan` JSON, `daemon-workload-probe` JSON, logs, and readonly status outputs. | Private raw blobs unless explicitly needed for the incident. | Bug reports and incident triage without over-sharing archive contents. |
+| Diagnostics bundle | `ops.db`, `backup-plan` JSON, `daemon-workload-probe` JSON, logs, and readonly status outputs. | Private raw blobs unless explicitly needed for the incident. | Bug reports and incident triage without over-sharing archive contents. |
 
 When SQLite WAL files are present, either stop the daemon or run an explicit
 checkpoint before copying. Copying only `*.db` while an uncheckpointed `*-wal`
@@ -134,7 +135,6 @@ the archive:
 
 ```bash
 export POLYLOGUE_ARCHIVE_ROOT=/restored/archive/root
-polylogue ops maintenance archive-plan --output-format json  # expected vs found user_version, per tier
 polylogue status                                             # each tier reports vN/N ok
 polylogue --origin ORIGIN find 'FIELD:VALUE' then select --format json
 ```
@@ -160,7 +160,7 @@ An archive copy is usable only with a runtime that accepts every tier it must re
 
 Archive roots may contain absolute symlinks to generation or tier files. Moving the root aside does not preserve those files independently: a link can still resolve through the original path after that path is recreated. Before relying on a moved copy, inventory and preserve the resolved targets as part of the custody copy, or repair links in a separate copy and verify that every target resolves within that copy. Do not modify the sole preserved archive to repair its links.
 
-Qualification requires the production read route with the candidate runtime against the preserved copy. Check the archive plan and status, then run a representative field/origin query. Report field-query and FTS readiness separately; stale search indexes can remain unavailable until daemon convergence. A raw SQLite open or file listing establishes neither runtime compatibility nor query readiness. Never migrate the sole preserved copy as part of qualification.
+Qualification requires the production read route with the candidate runtime against the preserved copy. Check status, then run a representative field/origin query. Report field-query and FTS readiness separately; stale search indexes can remain unavailable until daemon convergence. A raw SQLite open or file listing establishes neither runtime compatibility nor query readiness. Never migrate the sole preserved copy as part of qualification.
 
 Changing a configured archive root is a restore into a new root, not an in-place transition. Create and verify a full-evidence backup, restore it at the new root, and let the daemon converge. `ArchiveLocation` refuses an out-of-root active-generation pointer unless it resolves through the configured index symlink in the supported symlink-farm layout.
 
@@ -170,7 +170,7 @@ Restore into an isolated archive root first:
 
 ```bash
 export POLYLOGUE_ARCHIVE_ROOT=/tmp/polylogue-restore-check
-polylogue ops maintenance archive-plan --output-format json
+polylogue ops maintenance backup-plan --output-format json
 polylogue ops status --format json
 ```
 

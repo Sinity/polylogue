@@ -170,27 +170,6 @@ writes:
     classification: lifecycle_transition
     reason: "audit.db mutation-authority state machine: every statement carries its own prior state in the WHERE (state IN ('prepared'|'active'|'running'|'pending'), COALESCE first-write-wins on stop_reason, or operation_id/authorization_ref IS NULL), and the guarded ones assert rowcount == 1 and raise MachineRequestConflictError/AuthorizationMismatchError rather than proceeding; no column carries a producer judgement that a later pass recomputes"
   - file: "polylogue/operations/audit.py"
-    function: "AuditRepository.adjudicate_recovery"
-    table: "operation_attempts"
-    kind: "update"
-    tier: "audit"
-    classification: lifecycle_transition
-    reason: "audit.db mutation-authority state machine: every statement carries its own prior state in the WHERE (state IN ('prepared'|'active'|'running'|'pending'), COALESCE first-write-wins on stop_reason, or operation_id/authorization_ref IS NULL), and the guarded ones assert rowcount == 1 and raise MachineRequestConflictError/AuthorizationMismatchError rather than proceeding; no column carries a producer judgement that a later pass recomputes"
-  - file: "polylogue/operations/audit.py"
-    function: "AuditRepository.adjudicate_recovery"
-    table: "operation_runs"
-    kind: "update"
-    tier: "audit"
-    classification: lifecycle_transition
-    reason: "audit.db mutation-authority state machine: every statement carries its own prior state in the WHERE (state IN ('prepared'|'active'|'running'|'pending'), COALESCE first-write-wins on stop_reason, or operation_id/authorization_ref IS NULL), and the guarded ones assert rowcount == 1 and raise MachineRequestConflictError/AuthorizationMismatchError rather than proceeding; no column carries a producer judgement that a later pass recomputes"
-  - file: "polylogue/operations/audit.py"
-    function: "AuditRepository.adjudicate_recovery"
-    table: "operation_targets"
-    kind: "update"
-    tier: "audit"
-    classification: lifecycle_transition
-    reason: "audit.db mutation-authority state machine: every statement carries its own prior state in the WHERE (state IN ('prepared'|'active'|'running'|'pending'), COALESCE first-write-wins on stop_reason, or operation_id/authorization_ref IS NULL), and the guarded ones assert rowcount == 1 and raise MachineRequestConflictError/AuthorizationMismatchError rather than proceeding; no column carries a producer judgement that a later pass recomputes"
-  - file: "polylogue/operations/audit.py"
     function: "AuditRepository.cancel_preview"
     table: "operation_authorizations"
     kind: "update"

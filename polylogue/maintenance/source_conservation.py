@@ -365,11 +365,10 @@ def _source_exists(archive_root: Path, source_path: str) -> bool:
     """Does the acquired source still exist on disk?
 
     A raw acquired from inside an export bundle records an ``archive!member``
-    coordinate (``sources/source_snapshot.py`` builds it, ``blob_disposition``
-    writes it).  Probing that string as a filesystem path can never succeed, so
-    the coordinate is resolved to its container and the member is required to be
-    present in it -- container existence alone would conserve a member the
-    archive no longer holds.  A container that is not a readable zip cannot be
+    coordinate (``sources/source_snapshot.py`` builds it).  Probing that string
+    as a filesystem path can never succeed, so the coordinate is resolved to its
+    container and the member is required to be present in it -- container
+    existence alone would conserve a member the archive no longer holds.  A container that is not a readable zip cannot be
     inspected here; its existence is the strongest evidence this check owns.
     """
 

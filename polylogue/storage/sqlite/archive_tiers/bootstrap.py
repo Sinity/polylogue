@@ -802,6 +802,16 @@ def initialize_archive_database(
         conn.close()
 
 
+#: Bootstrap creates every durable tier together under one pending intent, so
+#: an established archive without ``audit.db`` lost it outside Polylogue.
+#: Durable evidence is never recreated in place: an empty audit tier would
+#: silently claim a continuity history the archive no longer has.
+_LOST_AUDIT_TIER_REFUSAL = (
+    "established archive is missing audit.db; a lost durable tier is never recreated. "
+    "Restore the archive root from a verified backup"
+)
+
+
 def _initialize_active_archive_root(root: Path) -> None:
     """Create or initialize every tier database in an archive root."""
     from polylogue.operations.durable_change_train import audit_adoption_receipt_path, recover_pending_audit_adoption
@@ -909,10 +919,7 @@ def _initialize_active_archive_root(root: Path) -> None:
         ):
             if established_pair_without_audit:
                 assert_archive_format_lineage(root, tiers=frozenset({ArchiveTier.SOURCE, ArchiveTier.USER}))
-                raise RuntimeError(
-                    "established archive is missing audit.db; use maintenance migrate-tier audit "
-                    "--adopt-established-audit with a verified full_evidence backup"
-                )
+                raise RuntimeError(_LOST_AUDIT_TIER_REFUSAL)
             assert_archive_format_lineage(root)
         elif format_marker.exists() and not any_durable_tier_exists:
             raise RuntimeError(f"archive format marker exists without a six-tier archive: {format_marker}")
@@ -956,10 +963,9 @@ def _initialize_active_archive_root(root: Path) -> None:
         # A durable tier that is a symlink (or otherwise not a lone regular
         # file) is a tamper/containment finding, and the change-train
         # reconciliation below refuses startup for it by name. Announcing
-        # "missing audit.db, run migrate-tier --adopt-established-audit" first
-        # would both misreport that condition and invite an operator to run a
-        # durable migration against an archive whose tiers were replaced. Report
-        # the more severe finding first by deferring to the barrier below.
+        # "missing audit.db" first would misreport that condition as a lost
+        # tier in an archive whose tiers were in fact replaced. Report the more
+        # severe finding first by deferring to the barrier below.
         durable_tier_files_are_safe = all(
             not (path := root / archive_tier_spec(tier).filename).is_symlink() and (path.is_file() or not path.exists())
             for tier in (ArchiveTier.SOURCE, ArchiveTier.USER)
@@ -971,10 +977,7 @@ def _initialize_active_archive_root(root: Path) -> None:
             and durable_tier_files_are_safe
             and not (root / archive_tier_spec(ArchiveTier.AUDIT).filename).is_file()
         ):
-            raise RuntimeError(
-                "established archive is missing audit.db; use maintenance migrate-tier audit "
-                "--adopt-established-audit with a verified full_evidence backup"
-            )
+            raise RuntimeError(_LOST_AUDIT_TIER_REFUSAL)
         if not recovering_fresh_durable_bootstrap and not pre_marker_adoption and not format_marker.exists():
             assert_owned_root()
             reconcile_durable_change_trains_on_startup(root)

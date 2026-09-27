@@ -273,10 +273,10 @@ def error_no_results(
 #:
 #: ``--output-format`` is not a synonym this probe invented: it is the spelling
 #: the entire ``ops maintenance`` family uses (plus ``materialize-incident-
-#: evidence`` and ``reconcile-work-effects``), and it was invisible here. So
-#: ``polylogue ops maintenance archive-init --yes --output-format json`` beside
-#: a resident daemon printed an empty stdout and a prose ``Error:`` line on
-#: stderr -- the terminal branch of :func:`polylogue.cli.machine_main.
+#: evidence`` and ``reconcile-work-effects``), and it was invisible here. So a
+#: maintenance writer run with ``--output-format json`` beside a resident
+#: daemon printed an empty stdout and a prose ``Error:`` line on stderr -- the
+#: terminal branch of :func:`polylogue.cli.machine_main.
 #: run_machine_entry`, because ``wants_json`` said the caller had not asked for
 #: JSON. Roughly twenty mutating maintenance commands reached a machine caller
 #: that way on every unhandled failure (polylogue-re6s3 AC4, polylogue-5vps8
