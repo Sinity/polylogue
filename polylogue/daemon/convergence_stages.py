@@ -157,6 +157,7 @@ def _record_claude_workflow_stage_event(archive_root: Path, summary: object) -> 
     }
     status = "gaps" if gaps else "clean"
     try:
+        from polylogue.core.stage_admission import admit_stage_write
         from polylogue.storage.archive_readiness import CLAUDE_WORKFLOW_STAGE_NAME
         from polylogue.storage.sqlite.archive_tiers.bootstrap import open_initialized_tier_connection
         from polylogue.storage.sqlite.archive_tiers.ops_write import record_daemon_stage_event
@@ -164,20 +165,27 @@ def _record_claude_workflow_stage_event(archive_root: Path, summary: object) -> 
 
         ops_db = archive_root / "ops.db"
         ops_db.parent.mkdir(parents=True, exist_ok=True)
-        with open_initialized_tier_connection(ops_db, ArchiveTier.OPS) as conn:
-            record_daemon_stage_event(
-                conn,
-                stage=CLAUDE_WORKFLOW_STAGE_NAME,
-                status=status,
-                observed_at_ms=int(time.time() * 1000),
-                payload=payload,
-                # A stable id makes this the current snapshot rather than an
-                # append: every reader selects only the newest row for this
-                # stage, and ``daemon_stage_events`` has no retention, so
-                # letting the writer mint a fresh UUID each pass grew ops.db
-                # without bound for a row nothing ever read again.
-                event_id=f"{CLAUDE_WORKFLOW_STAGE_NAME}:current",
-            )
+
+        def record() -> None:
+            with open_initialized_tier_connection(ops_db, ArchiveTier.OPS) as conn:
+                record_daemon_stage_event(
+                    conn,
+                    stage=CLAUDE_WORKFLOW_STAGE_NAME,
+                    status=status,
+                    observed_at_ms=int(time.time() * 1000),
+                    payload=payload,
+                    # A stable id makes this the current snapshot rather than
+                    # an append: every reader selects only the newest row for
+                    # this stage, and ``daemon_stage_events`` has no retention,
+                    # so letting the writer mint a fresh UUID each pass grew
+                    # ops.db without bound for a row nothing ever read again.
+                    event_id=f"{CLAUDE_WORKFLOW_STAGE_NAME}:current",
+                )
+
+        # The stage is ``bridged``: its engine runs off the writer lease (the
+        # convergence-debt retry calls it directly), so this ops write must be
+        # admitted like the materializer's own publication.
+        admit_stage_write("stage.claude_workflow.record", record)
     except Exception as exc:
         emit(
             "daemon.stage.event_record_failed",
