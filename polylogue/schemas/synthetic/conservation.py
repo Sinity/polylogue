@@ -439,6 +439,11 @@ def check_conservation(
     wire_strings = _wire_string_occurrences(payloads)
 
     findings: list[ConservationFinding] = []
+    roles = {item.role for item in planted}
+    # The distinct places parsed output is counted: titles, and block text
+    # (shared by every non-title role).
+    observation_sources = ([titles] if TITLE_ROLE in roles else []) + ([block_texts] if roles - {TITLE_ROLE} else [])
+    expected_total: Counter[str] = Counter(item.value for item in planted)
     for role in sorted({item.role for item in planted}):
         observed = titles if role == TITLE_ROLE else block_texts
         expected: Counter[str] = Counter(item.value for item in planted if item.role == role)
@@ -450,8 +455,10 @@ def check_conservation(
             # A value may also sit at wire positions outside the conserved
             # roles (a tool result echoing a message, say). Emitting it once
             # per wire occurrence is not duplication; exceeding every wire
-            # occurrence is.
-            if observed_count > max(expected_count, wire_strings.get(value, 0)):
+            # occurrence -- counted across all roles together, so two roles
+            # cannot each spend the same unannotated occurrence -- is.
+            emitted = sum(source.get(value, 0) for source in observation_sources)
+            if observed_count > expected_count and emitted > max(expected_total[value], wire_strings.get(value, 0)):
                 findings.append(
                     ConservationFinding(
                         path=path,

@@ -167,6 +167,26 @@ def test_value_also_carried_outside_the_role_is_not_duplication() -> None:
     assert not check_conservation(BODY_SCHEMA, [payload], [_session("alpha", "alpha", "alpha")]).conserved
 
 
+def test_the_wire_occurrence_budget_is_shared_across_roles() -> None:
+    """One title and one body occurrence cannot license two of each in the output.
+
+    Anti-vacuity: compare each role against the full wire count separately and
+    four emissions from two wire occurrences report as conserved.
+    """
+    schema = {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "x-polylogue-semantic-role": "session_title"},
+            "text": {"type": "string", "x-polylogue-semantic-role": "message_body"},
+        },
+    }
+    payload = {"title": "alpha", "text": "alpha"}
+    sessions = [_session("alpha", "alpha", title="alpha"), _session(title="alpha")]
+
+    assert not check_conservation(schema, [payload], sessions).conserved
+    assert check_conservation(schema, [payload], [_session("alpha", title="alpha")]).conserved
+
+
 def test_values_under_the_coverage_extra_key_are_out_of_scope() -> None:
     """The generator's invented key names no provider field, so nothing beneath it is conserved.
 

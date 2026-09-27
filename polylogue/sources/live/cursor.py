@@ -1750,13 +1750,16 @@ class CursorStore:
         *,
         observed_stat: os.stat_result | None = None,
         observation: tuple[int, int, int, int, int] | None = None,
+        parser_fingerprint: str | None = None,
     ) -> None:
         """Quarantine a source file, binding an optional observation.
 
         ``observation`` is ``(st_dev, st_ino, st_size, st_mtime_ns,
         st_ctime_ns)`` captured when the failing attempt read the file; it
         wins over ``observed_stat`` because a fresh stat may already describe
-        a later revision that was never attempted.
+        a later revision that was never attempted. ``parser_fingerprint``
+        records the parser that failed, so a revival triggered by a parser
+        change does not repeat once that parser has also failed.
         """
         if observation is not None:
             dev, ino, size, mtime_ns, _ctime_ns = observation
@@ -1777,6 +1780,7 @@ class CursorStore:
                 st_dev=bound[1] if bound is not None else current.st_dev,
                 st_ino=bound[2] if bound is not None else current.st_ino,
                 mtime_ns=bound[3] if bound is not None else current.mtime_ns,
+                parser_fingerprint=parser_fingerprint if parser_fingerprint is not None else current.parser_fingerprint,
             )
 
         self._read_modify_write_cursor_record(path, mutate, actuator="mark_excluded")

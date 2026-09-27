@@ -173,6 +173,8 @@ def test_failed_retry_of_an_excluded_cursor_rebinds_it_to_the_failed_observation
     record = store.get_record(source)
     assert record is not None
     assert record.excluded
+    # A revival caused by a parser change must not repeat once that parser failed too.
+    assert record.parser_fingerprint == processor._current_parser_fingerprint()
     assert (record.byte_size, record.st_ino, record.mtime_ns) == (
         appended.st_size,
         appended.st_ino,

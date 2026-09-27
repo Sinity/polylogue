@@ -903,11 +903,6 @@ def _jsonl_sample_with_failure(path: Path, *, max_records: int = 32) -> tuple[li
     return records, None
 
 
-def jsonl_detection_failure(path: Path) -> str | None:
-    """Why sampling ``path`` for provider detection failed, or ``None`` if it decoded."""
-    return _jsonl_sample_with_failure(path)[1]
-
-
 def _detect_provider_from_path_sample(
     path: Path, fallback_provider: Provider, *, json_document: bool = False
 ) -> Provider:
@@ -993,23 +988,31 @@ def _crash(exc: BaseException) -> str:
 def _jsonl_provider_and_session_artifact(
     path: Path,
     fallback_provider: Provider,
-) -> tuple[Provider, bool]:
+) -> tuple[Provider, bool, str | None]:
+    """Classify a JSONL path from one sample.
+
+    Returns the provider, whether to session-parse the path, and -- when the
+    provider is the fallback because the sample failed to decode -- that
+    failure (polylogue-fkqxx). All three come from the same sample.
+    """
     from polylogue.sources.origin_specs import path_declaration_refuses_session
 
-    records = _jsonl_sample_from_path(path)
-    provider = (detect_provider(records) if records else None) or fallback_provider
+    records, failure = _jsonl_sample_with_failure(path)
+    detected = detect_provider(records) if records else None
+    provider = detected or fallback_provider
+    detection_failure = failure if detected is None else None
     # A ``raw-only`` declaration is terminal: its bytes are evidence and the
     # record shape cannot decide otherwise (polylogue-ximhz). Checked before
     # the content probe so a prompt-history log -- whose rows carry the same
     # ``sessionId`` keys a transcript does -- is never session-parsed.
     if path_declaration_refuses_session(provider, path):
-        return provider, False
+        return provider, False, detection_failure
     if jsonl_session_artifact(path, provider=provider) is not None:
-        return provider, True
+        return provider, True, detection_failure
     path_classification = classify_artifact_path(path, provider=provider)
     if path_classification is not None:
-        return provider, path_classification.parse_as_session
-    return provider, False
+        return provider, path_classification.parse_as_session, detection_failure
+    return provider, False, detection_failure
 
 
 def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:

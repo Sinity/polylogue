@@ -142,7 +142,6 @@ from polylogue.sources.live.batch_support import (
     fingerprint_file,
     jsonl_complete_prefix,
     jsonl_complete_prefix_path,
-    jsonl_detection_failure,
     last_complete_newline_from_tail,
     sha256_range_from_path,
     tail_hash_from_path,
@@ -565,7 +564,7 @@ def _live_parse_stage_candidates(paths: list[Path], *, fallback_provider: Provid
     for path in paths:
         if not is_jsonl_source_path(str(path)):
             continue
-        provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
+        provider, parse_as_session, _detection_crash = _jsonl_provider_and_session_artifact(path, fallback_provider)
         if not parse_as_session:
             continue
         try:
@@ -593,7 +592,7 @@ def _live_parse_stage_path_candidates(
     candidates: list[tuple[str, Provider, bool]] = []
     for path in paths:
         if is_jsonl_source_path(str(path)):
-            provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
+            provider, parse_as_session, _detection_crash = _jsonl_provider_and_session_artifact(path, fallback_provider)
             if parse_as_session or provider is Provider.UNKNOWN:
                 candidates.append((str(path), provider, is_stream_record_provider(str(path), str(provider))))
         elif path.suffix.lower() == ".json":
@@ -1875,7 +1874,11 @@ class LiveBatchProcessor:
             # and quarantine it unread.
             if attempted_observation is not None:
                 try:
-                    self._cursor.mark_excluded(path, observation=attempted_observation)
+                    self._cursor.mark_excluded(
+                        path,
+                        observation=attempted_observation,
+                        parser_fingerprint=self._current_parser_fingerprint(),
+                    )
                 except sqlite3.OperationalError as exc:
                     if not is_transient_sqlite_lock(exc):
                         raise
@@ -3209,8 +3212,10 @@ class LiveBatchProcessor:
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
             elif is_jsonl_source_path(str(path)):
-                provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
-                if provider is fallback_provider and (detection_crash := jsonl_detection_failure(path)) is not None:
+                provider, parse_as_session, detection_crash = _jsonl_provider_and_session_artifact(
+                    path, fallback_provider
+                )
+                if detection_crash is not None:
                     detection_fallbacks[path] = detection_crash
                 source_name = provider.value
                 # An unknown JSONL cannot be safely excluded from acquire: the
