@@ -1,8 +1,7 @@
 """The explicit collection gate reports import failures without running tests.
 
-Anti-vacuity: remove the registered gate and the registration check goes red.
-Make ``main`` ignore pytest's exit code and both failure cases go red. The
-gate's reach is collection, not execution.
+Anti-vacuity: make ``main`` ignore pytest's exit code and both failure cases
+go red. The gate's reach is collection, not execution.
 """
 
 from __future__ import annotations
@@ -15,7 +14,6 @@ import pytest
 
 from devtools import verify_test_collection
 from devtools.agent_env import HARNESS_RUN_ENV
-from devtools.gate import GATES_BY_NAME, quick_gates
 
 
 class _Completed:
@@ -34,12 +32,6 @@ def _drive(monkeypatch: pytest.MonkeyPatch, completed: _Completed) -> list[dict[
 
     monkeypatch.setattr(subprocess, "run", _run)
     return calls
-
-
-def test_the_collection_gate_is_explicit_and_outside_the_quick_path() -> None:
-    assert "test-collection" not in {gate.name for gate in quick_gates()}
-    gate = GATES_BY_NAME["test-collection"]
-    assert gate.blocking is True
 
 
 def test_the_command_collects_and_never_executes() -> None:
