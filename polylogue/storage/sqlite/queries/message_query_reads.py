@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Literal, get_args
 
 import aiosqlite
@@ -14,6 +15,7 @@ from polylogue.core.enums import MaterialOrigin, MessageType
 from polylogue.core.identity_law import transcript_order_sql
 from polylogue.logging import get_logger
 from polylogue.storage.runtime import (
+    LINEAGE_TRUNCATION_CYCLE,
     LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT,
     LINEAGE_TRUNCATION_DEPTH_LIMIT,
     LineageCompleteness,
@@ -118,6 +120,92 @@ async def _own_messages(conn: aiosqlite.Connection, session_id: str) -> list[Mes
     return [decode(row) for row in rows]
 
 
+@dataclass(frozen=True, slots=True)
+class _Segment:
+    session_id: str
+    end: tuple[int, int] | None = None
+
+
+async def _segment_count(
+    conn: aiosqlite.Connection,
+    segment: _Segment,
+    *,
+    role_values: tuple[str, ...] = (),
+    message_type: str | None = None,
+) -> int:
+    where, params = _segment_predicate(segment, role_values=role_values, message_type=message_type)
+    row = await (await conn.execute(f"SELECT COUNT(*) FROM messages m WHERE {where}", params)).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def _segment_predicate(
+    segment: _Segment, *, role_values: tuple[str, ...] = (), message_type: str | None = None
+) -> tuple[str, tuple[str | int, ...]]:
+    where = "m.session_id = ?"
+    params: list[str | int] = [segment.session_id]
+    if segment.end is not None:
+        where += " AND (m.position, m.variant_index) <= (?, ?)"
+        params.extend(segment.end)
+    if role_values:
+        where += f" AND m.role IN ({','.join('?' for _ in role_values)})"
+        params.extend(role_values)
+    if message_type is not None:
+        where += " AND m.message_type = ?"
+        params.append(message_type)
+    return where, tuple(params)
+
+
+async def _lineage_segments(
+    conn: aiosqlite.Connection, session_id: str
+) -> tuple[tuple[_Segment, ...], LineageCompleteness]:
+    """Resolve the logical transcript from edge and coordinate metadata in one snapshot."""
+    chain: list[tuple[str, str, str]] = []
+    visited = {session_id}
+    cursor_session = session_id
+    reason = None
+    for _ in range(_MAX_LINEAGE_DEPTH):
+        edge = await _prefix_sharing_edge(conn, cursor_session)
+        if edge is None:
+            break
+        parent, branch_point = edge
+        parent = await _resolve_session_id(conn, parent)
+        if parent in visited:
+            reason = LINEAGE_TRUNCATION_CYCLE
+            break
+        chain.append((cursor_session, parent, branch_point))
+        visited.add(parent)
+        cursor_session = parent
+    else:
+        if await _prefix_sharing_edge(conn, cursor_session) is not None:
+            reason = LINEAGE_TRUNCATION_DEPTH_LIMIT
+
+    segments: tuple[_Segment, ...] = (_Segment(cursor_session),)
+    for child, parent, branch_point in reversed(chain):
+        coordinates = await (
+            await conn.execute(
+                "SELECT session_id, position, variant_index FROM messages WHERE message_id = ?",
+                (branch_point,),
+            )
+        ).fetchone()
+        witness_matches = await _branch_point_content_address_matches(conn, child, parent, branch_point)
+        prefix: tuple[_Segment, ...] | None = None
+        if coordinates is not None and witness_matches:
+            owner = str(coordinates["session_id"])
+            end = (int(coordinates["position"]), int(coordinates["variant_index"]))
+            for index, segment in enumerate(segments):
+                if segment.session_id == owner and (segment.end is None or end <= segment.end):
+                    prefix = (*segments[:index], _Segment(owner, end))
+                    break
+        if prefix is None:
+            if reason is None:
+                reason = LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT
+            segments = (_Segment(child),)
+        else:
+            segments = (*prefix, _Segment(child))
+    return segments, LineageCompleteness(complete=reason is None, truncation_reason=reason)
+
+
 async def get_messages(conn: aiosqlite.Connection, session_id: str) -> list[MessageRecord]:
     """Compose a session's full message transcript, holding one read snapshot.
 
@@ -186,9 +274,9 @@ async def get_messages_with_lineage_completeness(
     (e.g. a caller-held write transaction), this wraps the whole composition
     in one deferred read transaction so every SELECT sees the same snapshot.
 
-    Two paths can silently return an INCOMPLETE transcript: a chain deeper
+    Three paths can silently return an INCOMPLETE transcript: a chain deeper
     than ``_MAX_LINEAGE_DEPTH`` (ancestors beyond the cutoff are dropped), or
-    a dangling branch point (the parent message was hard-deleted, so only
+    a cycle, or a dangling branch point (the parent message was hard-deleted, so only
     this session's own divergent tail is returned starting mid-conversation).
     Consumers that care (MCP get_messages, context-image) can distinguish a
     complete logical transcript from a truncated one via the returned
@@ -212,6 +300,7 @@ async def get_messages_with_lineage_completeness(
     visited: set[str] = {session_id}
     cursor_session = session_id
     depth_limited = False
+    cycle = False
     for _ in range(_MAX_LINEAGE_DEPTH):
         edge = await _prefix_sharing_edge(conn, cursor_session)
         if edge is None:
@@ -219,6 +308,7 @@ async def get_messages_with_lineage_completeness(
         parent_session_id, branch_point_message_id = edge
         parent_session_id = await _resolve_session_id(conn, parent_session_id)
         if parent_session_id in visited:  # cyclic lineage: stop and compose what we have
+            cycle = True
             break
         chain.append((cursor_session, branch_point_message_id))
         visited.add(parent_session_id)
@@ -235,10 +325,11 @@ async def get_messages_with_lineage_completeness(
             )
 
     if not chain:
-        # depth_limited can only be set inside the for-else branch below,
-        # which only runs after _MAX_LINEAGE_DEPTH non-empty chain entries --
-        # an empty chain means the very first edge check returned None.
-        return await _own_messages(conn, session_id), LineageCompleteness()
+        # A self-parent cycle also leaves the chain empty.
+        return await _own_messages(conn, session_id), LineageCompleteness(
+            complete=not cycle,
+            truncation_reason=LINEAGE_TRUNCATION_CYCLE if cycle else None,
+        )
 
     # Compose from the root down: root's full transcript, then splice each
     # descendant's own tail at its branch point in the running composed view.
@@ -265,11 +356,15 @@ async def get_messages_with_lineage_completeness(
             composed = own
             dangling = True
     reason = (
-        LINEAGE_TRUNCATION_DEPTH_LIMIT
+        LINEAGE_TRUNCATION_CYCLE
+        if cycle
+        else LINEAGE_TRUNCATION_DEPTH_LIMIT
         if depth_limited
-        else (LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT if dangling else None)
+        else LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT
+        if dangling
+        else None
     )
-    return composed, LineageCompleteness(complete=not (depth_limited or dangling), truncation_reason=reason)
+    return composed, LineageCompleteness(complete=reason is None, truncation_reason=reason)
 
 
 def _filter_composed(
@@ -414,31 +509,54 @@ async def get_messages_paginated(
     """Return paginated messages for a session with optional filters.
 
     Returns ``(messages, total_count, lineage_completeness)`` where
-    ``total_count`` is the unfiltered count of messages matching the SQL-level
+    ``total_count`` is the count of messages matching the SQL-level
     filters (before limit/offset), and ``lineage_completeness`` reports
     whether ``messages`` is a page of the FULL composed transcript or was
-    silently truncated (dangling branch point / depth limit -- polylogue-ppkj).
+    truncated (dangling branch point, cycle, or depth limit -- polylogue-ppkj).
     A non-lineage session (the ``else`` branch below) can never be truncated
     this way, so it always reports ``LineageCompleteness()`` (complete=True).
     """
+    if not conn.in_transaction:
+        await conn.execute("BEGIN DEFERRED")
+        try:
+            return await get_messages_paginated(
+                conn, session_id, message_role=message_role, message_type=message_type, limit=limit, offset=offset
+            )
+        finally:
+            await conn.execute("ROLLBACK")
     session_id = await _resolve_session_id(conn, session_id)
 
-    # A prefix-sharing child stores only its divergent tail, so paginating its
-    # own ``messages`` rows returns a truncated transcript. Compose the full
-    # lineage view, filter in Python, and slice it for offset/limit (#2470).
-    # ``total`` is the filtered composed length so page math stays consistent.
-    # Uses ``get_messages_with_lineage_completeness`` directly (not the
-    # signal-dropping ``get_messages`` wrapper) so pagination -- the actual
-    # `polylogue read` / HTTP messages surface -- can report truncation
-    # instead of silently rendering a short transcript as if it were whole.
+    # A prefix-sharing child stores only its divergent tail. Plan its logical
+    # segments and fetch the requested window under the same read snapshot.
     if await _prefix_sharing_edge(conn, session_id) is not None:
-        composed_full, completeness = await get_messages_with_lineage_completeness(conn, session_id)
-        composed = _filter_composed(
-            composed_full,
-            message_role=message_role,
-            message_type=message_type,
-        )
-        return composed[offset : offset + limit], len(composed), completeness
+        segments, completeness = await _lineage_segments(conn, session_id)
+        role_values = message_role_sql_values(message_role)
+        type_value = validate_message_type_filter(message_type).value if message_type else None
+        counts = [
+            await _segment_count(conn, segment, role_values=role_values, message_type=type_value)
+            for segment in segments
+        ]
+        total = sum(counts)
+        page: list[MessageRecord] = []
+        skip = max(offset, 0)
+        remaining = max(limit, 0)
+        for segment, count in zip(segments, counts, strict=True):
+            if skip >= count:
+                skip -= count
+                continue
+            if remaining <= 0:
+                break
+            where, segment_params = _segment_predicate(segment, role_values=role_values, message_type=type_value)
+            cursor = await conn.execute(
+                f"SELECT {_MESSAGE_RECORD_SELECT} FROM messages m JOIN sessions s ON s.session_id = m.session_id "
+                f"WHERE {where} ORDER BY {_TRANSCRIPT_ORDER} LIMIT ? OFFSET ?",
+                (*segment_params, remaining, skip),
+            )
+            decode = bind_message_row_mapper(tuple(column[0] for column in cursor.description or ()))
+            page.extend(decode(row) for row in await cursor.fetchall())
+            remaining = max(limit, 0) - len(page)
+            skip = 0
+        return page, total, completeness
 
     query = f"""
         SELECT {_MESSAGE_RECORD_SELECT}
@@ -488,7 +606,13 @@ async def get_lineage_completeness(conn: aiosqlite.Connection, session_id: str) 
     domain object) and so cannot receive the signal from
     ``get_messages_paginated`` directly.
     """
-    _messages, completeness = await get_messages_with_lineage_completeness(conn, session_id)
+    if not conn.in_transaction:
+        await conn.execute("BEGIN DEFERRED")
+        try:
+            return await get_lineage_completeness(conn, session_id)
+        finally:
+            await conn.execute("ROLLBACK")
+    _segments, completeness = await _lineage_segments(conn, await _resolve_session_id(conn, session_id))
     return completeness
 
 

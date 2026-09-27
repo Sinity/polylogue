@@ -60,7 +60,7 @@ from polylogue.operations.user_state_resolution import (
 from polylogue.storage.derived.session.records import SessionProfileRecord
 from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.query_models import SessionRecordQuery
-from polylogue.storage.runtime import LineageCompleteness
+from polylogue.storage.runtime import LineageCompleteness, LineageTruncationReason
 from polylogue.storage.search.models import SearchHit, SearchResult
 from polylogue.storage.search.query_builders import session_web_url
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -4757,8 +4757,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
         Raises ``SessionNotFoundError`` if the session does not exist. The
         third element reports whether the composed transcript is the full
-        logical transcript or was silently truncated by a dangling lineage
-        branch point / depth-limited composition (polylogue-ppkj) -- the same
+        logical transcript or was truncated by a dangling branch point,
+        cycle, or depth-limited composition (polylogue-ppkj) -- the same
         read-time signal the MCP surface already carries.
         """
         from polylogue.operations.transcript_window import message_transcript_window, window_request
@@ -4786,7 +4786,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         completeness = LineageCompleteness(
             complete=window.lineage_complete,
             truncation_reason=cast(
-                "Literal['depth_limit', 'dangling_branch_point'] | None",
+                "LineageTruncationReason | None",
                 window.lineage_truncation_reason,
             ),
         )

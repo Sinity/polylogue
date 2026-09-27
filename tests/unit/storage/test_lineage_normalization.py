@@ -2140,6 +2140,76 @@ def test_fork_composes_on_paginated_batch_and_iter(tmp_path: Path) -> None:
     asyncio.run(_exercise())
 
 
+def test_fork_pages_and_completeness_skip_full_hydration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db = tmp_path / "index.db"
+    _parent_id, child_id = _build_parent_and_fork(db)
+
+    async def forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("a bounded lineage read hydrated an entire segment")
+
+    monkeypatch.setattr(_message_query_reads_module, "_own_messages", forbidden)
+
+    async def exercise() -> None:
+        reader = await aiosqlite.connect(db)
+        reader.row_factory = aiosqlite.Row
+        statements: list[str] = []
+        await reader.set_trace_callback(statements.append)
+        try:
+            for offset, expected in enumerate(("hello", "hi there", "child diverges here", "child reply")):
+                page, total, completeness = await get_messages_paginated(reader, child_id, limit=1, offset=offset)
+                assert [record.text for record in page] == [expected]
+                assert total == 4
+                assert completeness.complete
+            page, total, _ = await get_messages_paginated(
+                reader, child_id, message_role=(Role.USER,), limit=1, offset=1
+            )
+            assert [record.text for record in page] == ["child diverges here"]
+            assert total == 2
+            assert (await _message_query_reads_module.get_lineage_completeness(reader, child_id)).complete
+            row_reads = [sql for sql in statements if "SELECT" in sql and "FROM messages m JOIN sessions s" in sql]
+            assert row_reads
+            assert all(" LIMIT " in sql for sql in row_reads)
+        finally:
+            await reader.close()
+
+    asyncio.run(exercise())
+
+
+def test_cycle_is_typed_in_sync_and_async_reads(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
+    _parent_id, child_id = _build_parent_and_fork(db)
+    conn = _connect(db)
+    conn.execute(
+        "UPDATE session_links SET resolved_dst_session_id = ? WHERE src_session_id = ? AND inheritance = 'prefix-sharing'",
+        (child_id, child_id),
+    )
+    conn.commit()
+    envelope = read_archive_session_envelope(conn, child_id)
+    assert envelope.lineage_complete is False
+    assert envelope.lineage_truncation_reason == "cycle"
+    conn.close()
+
+    async def exercise() -> None:
+        reader = await aiosqlite.connect(db)
+        reader.row_factory = aiosqlite.Row
+        try:
+            full, full_completeness = await get_messages_with_lineage_completeness(reader, child_id)
+            page, total, page_completeness = await get_messages_paginated(reader, child_id, limit=1)
+            probe = await _message_query_reads_module.get_lineage_completeness(reader, child_id)
+            assert [record.message_id for record in page] == [full[0].message_id]
+            assert total == len(full)
+            assert {
+                full_completeness.truncation_reason,
+                page_completeness.truncation_reason,
+                probe.truncation_reason,
+            } == {"cycle"}
+            assert not full_completeness.complete and not page_completeness.complete and not probe.complete
+        finally:
+            await reader.close()
+
+    asyncio.run(exercise())
+
+
 def test_shared_signature_cache_composes_correctly(tmp_path: Path) -> None:
     """A batch-scoped signature cache shared across writes must not corrupt
     lineage composition (#2475). Two forks of one parent and a parent re-ingest

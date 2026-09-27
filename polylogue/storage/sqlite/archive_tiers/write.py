@@ -103,6 +103,7 @@ from polylogue.storage.fts.sql import (
     insert_session_rows_sql,
 )
 from polylogue.storage.runtime import (
+    LINEAGE_TRUNCATION_CYCLE,
     LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT,
     LINEAGE_TRUNCATION_DEPTH_LIMIT,
     LineageTruncationReason,
@@ -2539,7 +2540,9 @@ def _segments_through_branch_point(
     return None
 
 
-def _composed_transcript_plan(conn: sqlite3.Connection, session_id: str, *, _depth: int = 0) -> _ComposedTranscriptPlan:
+def _composed_transcript_plan(
+    conn: sqlite3.Connection, session_id: str, *, _depth: int = 0, _visited: frozenset[str] = frozenset()
+) -> _ComposedTranscriptPlan:
     """Plan a session's composed transcript: the parent's prefix, then its own tail.
 
     4ts.6: two paths yield an INCOMPLETE transcript -- a chain deeper than
@@ -2566,6 +2569,15 @@ def _composed_transcript_plan(conn: sqlite3.Connection, session_id: str, *, _dep
             lineage_branch_point_message_id=None,
         )
     parent_session_id, branch_point_message_id = edge
+    if parent_session_id == session_id or parent_session_id in _visited:
+        return _ComposedTranscriptPlan(
+            segments=(own,),
+            total_message_count=own.message_count,
+            lineage_complete=False,
+            lineage_truncation_reason=LINEAGE_TRUNCATION_CYCLE,
+            lineage_inheritance="prefix-sharing",
+            lineage_branch_point_message_id=branch_point_message_id,
+        )
     if _depth >= _MAX_LINEAGE_DEPTH:
         logger.warning(
             "lineage composition hit depth limit (%d) for session %s; ancestors beyond this depth are dropped",
@@ -2580,7 +2592,9 @@ def _composed_transcript_plan(conn: sqlite3.Connection, session_id: str, *, _dep
             lineage_inheritance="prefix-sharing",
             lineage_branch_point_message_id=branch_point_message_id,
         )
-    parent_plan = _composed_transcript_plan(conn, parent_session_id, _depth=_depth + 1)
+    parent_plan = _composed_transcript_plan(
+        conn, parent_session_id, _depth=_depth + 1, _visited=_visited | {session_id}
+    )
     witness_matches = _branch_point_content_address_matches(
         conn, session_id, parent_session_id, branch_point_message_id
     )
