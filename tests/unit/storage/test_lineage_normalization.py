@@ -1048,6 +1048,12 @@ def test_missing_variant_branch_point_keeps_the_child_whole(tmp_path: Path) -> N
     envelope = read_archive_session_envelope(conn, child_id)
     assert [message.blocks[0].text for message in envelope.messages] == before
     assert envelope.lineage_complete is True
+    # Sibling variants stay one turn: the copies keep their source coordinates.
+    coordinates = conn.execute(
+        "SELECT position, variant_index FROM messages WHERE session_id = ? ORDER BY position, variant_index",
+        (child_id,),
+    )
+    assert [tuple(row) for row in coordinates] == [(0, 0), (1, 0), (1, 1), (2, 0)]
     conn.close()
 
 
@@ -3505,6 +3511,123 @@ def test_relocated_branch_point_repairs_in_write(tmp_path: Path) -> None:
         ).fetchone()[0]
         == "codex-session:gp:n:m1"
     )
+    conn.close()
+
+
+def test_descendant_anchored_through_an_intermediate_parent_stays_whole(tmp_path: Path) -> None:
+    """``A -> B -> C`` with C branching inside B's inherited prefix, at an
+    A-owned row. Rewriting A without that row leaves B composable, but C's
+    branch point is gone although C's resolved parent is B, not A.
+
+    Anti-vacuity: capture only A's direct children and C reads
+    ``dangling_branch_point``.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    write_parsed_session_to_archive(conn, _codex_session("a", ["m0", "m1", "m2", "m3"]))
+    b_id = write_parsed_session_to_archive(conn, _codex_session("b", ["m0", "m1", "m2", "b3"], parent="a"))
+    c_id = write_parsed_session_to_archive(conn, _codex_session("c", ["m0", "m1", "c2"], parent="b"))
+    conn.commit()
+    assert _edge_state(conn, c_id)[:2] == (b_id, "prefix-sharing")
+
+    write_parsed_session_to_archive(conn, _codex_session("a", ["m0", "m2", "m3"]))
+    conn.commit()
+
+    envelope = read_archive_session_envelope(conn, c_id)
+    assert envelope.lineage_complete is True
+    assert [message.blocks[0].text for message in envelope.messages] == ["m0", "m1", "c2"]
+    assert _edge_state(conn, c_id) == (b_id, "spawned-fresh", None)
+    assert read_archive_session_envelope(conn, b_id).lineage_complete is True
+    conn.close()
+
+
+def test_reanchored_child_keeps_its_event_reference(tmp_path: Path) -> None:
+    """A relocated branch point re-anchors the child; the child's own event
+    reference into the relocated row follows it instead of staying NULL.
+
+    Anti-vacuity: restore references without the re-anchor map and the event
+    keeps ``source_message_id`` NULL after the parent's delete nulled it.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    write_parsed_session_to_archive(conn, _codex_session("gp", ["m0", "m1", "m2", "m3"]))
+    child = _codex_session("child", ["m0", "m1", "x2"], parent="parent").model_copy(
+        update={
+            "session_events": [
+                ParsedSessionEvent(
+                    event_type="capture_gap", source_message_provider_id="m1", payload={"summary": "prefix event"}
+                )
+            ]
+        }
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+    parent_id = write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1", "m2", "m3", "m4"]))
+    conn.commit()
+    events = "SELECT source_message_id FROM session_events WHERE session_id = ?"
+    assert [tuple(row) for row in conn.execute(events, (child_id,))] == [(f"{parent_id}:n:m1",)]
+
+    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1", "m2", "m3", "m4"], parent="gp"))
+    conn.commit()
+
+    assert _edge_state(conn, child_id)[1:] == ("prefix-sharing", "codex-session:gp:n:m1")
+    assert [tuple(row) for row in conn.execute(events, (child_id,))] == [("codex-session:gp:n:m1",)]
+    conn.close()
+
+
+def test_materialized_dispatch_block_keeps_its_subagent_edge(tmp_path: Path) -> None:
+    """A subagent dispatched from a tool call inside the child's inherited
+    prefix keeps its dispatch pointer once that call moves into the child.
+
+    Anti-vacuity: skip ``_restore_dispatch_refs`` and the delete's
+    ``ON DELETE SET NULL`` leaves the edge's ``parent_tool_use_block_id`` NULL.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    dispatch = ParsedMessage(
+        provider_message_id="m1",
+        role=Role.ASSISTANT,
+        text="",
+        position=1,
+        blocks=[ParsedContentBlock(type=BlockType.TOOL_USE, tool_name="Task", tool_id="task-1", tool_input={})],
+    )
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        title="parent",
+        messages=[_msg("m0", Role.USER, "go", 0), dispatch],
+    )
+    parent_id = write_parsed_session_to_archive(conn, parent)
+    child_id = write_parsed_session_to_archive(
+        conn,
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="child",
+            title="child",
+            parent_session_provider_id="parent",
+            branch_type=BranchType.FORK,
+            messages=[_msg("m0", Role.USER, "go", 0), dispatch, _msg("x2", Role.USER, "tail", 2)],
+        ),
+    )
+    worker_id = write_parsed_session_to_archive(conn, _codex_session("worker", ["w0"]))
+    conn.execute(
+        """
+        INSERT INTO session_links(
+            src_session_id, dst_origin, dst_native_id, link_type, resolved_dst_session_id,
+            inheritance, status, parent_tool_use_block_id, confidence, evidence_json, observed_at_ms
+        ) VALUES (?, 'codex-session', 'child', 'subagent', ?, 'spawned-fresh', NULL, ?, 1.0, '[]', 0)
+        """,
+        (worker_id, child_id, f"{parent_id}:n:m1:0"),
+    )
+    conn.commit()
+
+    write_parsed_session_to_archive(conn, parent.model_copy(update={"messages": [_msg("m0", Role.USER, "go", 0)]}))
+    conn.commit()
+
+    assert _edge_state(conn, child_id) == (parent_id, "spawned-fresh", None)
+    pointer = conn.execute(
+        "SELECT parent_tool_use_block_id FROM session_links WHERE src_session_id = ?", (worker_id,)
+    ).fetchone()
+    assert tuple(pointer) == (f"{child_id}:n:m1:0",)
     conn.close()
 
 
