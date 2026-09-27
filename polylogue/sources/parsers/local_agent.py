@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, MutableSequence, Sequence
 from pathlib import Path
 
 from polylogue.archive.message.artifacts import classify_block_message_type, classify_material_origin
@@ -415,6 +415,73 @@ def parse_hermes(
         messages=messages,
         session_events=session_events,
         active_leaf_message_provider_id=messages[-1].provider_message_id if messages else None,
+    )
+
+
+def parse_hermes_snapshot_stream(
+    envelope: JSONDocument,
+    records: Iterable[object],
+    fallback_id: str,
+    *,
+    messages: MutableSequence[ParsedMessage],
+    session_events: MutableSequence[ParsedSessionEvent],
+    source_path: str | Path | None = None,
+) -> ParsedSession:
+    """Lower one validated snapshot with disk-backed message and event rows."""
+    raw_session_id = _string(envelope.get("session_id")) or fallback_id
+    session_id = _hermes_qualified_session_id(raw_session_id, source_path)
+    model = _string(envelope.get("model"))
+    system_prompt = _string(envelope.get("system_prompt"))
+    if system_prompt:
+        messages.append(
+            ParsedMessage(
+                provider_message_id=f"{session_id}:system",
+                role=Role.SYSTEM,
+                text=system_prompt,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text=system_prompt)],
+                position=0,
+                variant_index=0,
+                is_active_path=True,
+                is_active_leaf=False,
+                model_name=model,
+            )
+        )
+    for index, item in enumerate(records, start=1):
+        parsed = _parse_hermes_message(item, index=index, position=len(messages), fallback_model=model)
+        if parsed is None:
+            continue
+        messages.append(parsed.model_copy(update={"is_active_leaf": False}))
+        if extras_event := _hermes_message_wire_extras_event(item, parsed):
+            session_events.append(extras_event)
+    if messages:
+        leaf = messages[-1]
+        messages[-1] = leaf.model_copy(update={"is_active_leaf": True})
+    if metadata_event := _hermes_session_metadata_event(envelope, message_count=len(messages)):
+        session_events.append(metadata_event)
+    if tool_event := _hermes_tool_availability_event(envelope):
+        session_events.append(tool_event)
+    for message in messages:
+        session_events.extend(_block_metadata_evidence_events([message]))
+
+    # The parser admission proof is for the one outer record. The bounded
+    # decoder records the first future-shaped wire type seen inside it.
+    future_type = envelope.get("__admission_future_type")
+    admission_stub: JSONDocument = {"session_id": raw_session_id, "messages": []}
+    if isinstance(future_type, str):
+        admission_stub["type"] = future_type
+    admitted = parse_hermes(admission_stub, fallback_id)
+    session_events.extend(admitted.session_events)
+    return ParsedSession(
+        source_name=Provider.HERMES,
+        provider_session_id=session_id,
+        title=raw_session_id,
+        created_at=_string(envelope.get("session_start")),
+        updated_at=_string(envelope.get("last_updated")),
+        messages=[],
+        session_events=[],
+        active_leaf_message_provider_id=messages[-1].provider_message_id if messages else None,
+    ).model_copy(
+        update={"messages": messages, "session_events": session_events, "unit_accounting": admitted.unit_accounting}
     )
 
 

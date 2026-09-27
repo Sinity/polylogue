@@ -1093,6 +1093,15 @@ def prepare_retained_jsonl_artifact(
                 witness: JSONValue = {**envelope, "messages": list(messages)}
                 return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
 
+            def classify_hermes_object(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
+                taxonomy_witness = envelope.get("__taxonomy_witness")
+                witness: JSONValue = {
+                    **{key: value for key, value in envelope.items() if not key.startswith("__")},
+                    **(taxonomy_witness if isinstance(taxonomy_witness, dict) else {}),
+                    "messages": list(messages),
+                }
+                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
+
             def classify_chatgpt_object(envelope: dict[str, object]) -> bool:
                 mapping = envelope["mapping"]
                 assert isinstance(mapping, Mapping)
@@ -1117,6 +1126,7 @@ def prepare_retained_jsonl_artifact(
                 prepare_records=classify_records,
                 classify_grok_export=classify_grok_export if stream_grok else None,
                 classify_generic_object=classify_generic_object,
+                classify_hermes_object=classify_hermes_object,
                 classify_chatgpt_object=classify_chatgpt_object,
                 preparation_dependency=lambda: (
                     _retained_dependency_digest(
