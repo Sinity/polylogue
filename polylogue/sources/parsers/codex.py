@@ -1625,29 +1625,46 @@ class _CodexTextConservation:
             f"context.role, context.phase, text.text, text.occurrences {stored} "
             "ORDER BY context.insert_at, context.ordinal"
         )
-        # The cursor streams rows; inserting into the sink does not touch the
-        # scratch index it reads from.
-        for offset, (insert_at, timestamp, source_index, entry_type, role, phase, text, occurrences) in enumerate(rows):
-            content = pickle.loads(text)
-            payload: dict[str, object] = {
-                "source_index": source_index,
-                "context_kind": "replacement_history",
-                "content": content,
-                "content_chars": len(content),
-                "occurrences": occurrences,
-            }
-            if entry_type:
-                payload["entry_type"] = entry_type
-            if role:
-                payload["role"] = role
-            if phase:
-                payload["phase"] = phase
-            events.insert(
-                insert_at + offset,
-                ParsedSessionEvent(
-                    event_type=_CODEX_REPLACEMENT_CONTEXT_EVENT_TYPE, timestamp=timestamp, payload=payload
-                ),
-            )
+
+        def insertions() -> Iterator[tuple[int, ParsedSessionEvent]]:
+            for insert_at, timestamp, source_index, entry_type, role, phase, text, occurrences in rows:
+                content = pickle.loads(text)
+                payload: dict[str, object] = {
+                    "source_index": source_index,
+                    "context_kind": "replacement_history",
+                    "content": content,
+                    "content_chars": len(content),
+                    "occurrences": occurrences,
+                }
+                if entry_type:
+                    payload["entry_type"] = entry_type
+                if role:
+                    payload["role"] = role
+                if phase:
+                    payload["phase"] = phase
+                yield (
+                    insert_at,
+                    ParsedSessionEvent(
+                        event_type=_CODEX_REPLACEMENT_CONTEXT_EVENT_TYPE, timestamp=timestamp, payload=payload
+                    ),
+                )
+
+        # One renumbering pass: inserting each context separately would shift
+        # every later event once per context.
+        insert_sorted = getattr(events, "insert_sorted", None)
+        if insert_sorted is not None:
+            insert_sorted(insertions())
+            return
+        pending = list(insertions())
+        merged: list[ParsedSessionEvent] = []
+        cursor = 0
+        for index, event in enumerate(events):
+            while cursor < len(pending) and pending[cursor][0] <= index:
+                merged.append(pending[cursor][1])
+                cursor += 1
+            merged.append(event)
+        merged.extend(event for _index, event in pending[cursor:])
+        events[:] = merged
 
     def _mark(self, text: str) -> None:
         if not text or not (self._unresolved or self._task_unresolved):

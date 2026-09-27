@@ -26,6 +26,9 @@ _ACTIVE_PARENT_LOOKUP_SQL = (
 
 
 _LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+# A \\u escape of a surrogate, preceded by an even run of backslashes (a real
+# escape, not the literal text of one).
+_ESCAPED_SURROGATE = re.compile(r"(?<!\\)(?:\\\\)*\\u[dD][89a-fA-F][0-9a-fA-F]{2}")
 
 
 def _text_json(value: object) -> str:
@@ -46,9 +49,29 @@ _ModelT = TypeVar("_ModelT", ParsedMessage, ParsedSessionEvent)
 
 def _from_text_json(model: type[_ModelT], encoded: str) -> _ModelT:
     """Decode sink JSON; an escaped lone surrogate needs the stdlib decoder."""
-    if "\\ud" in encoded or "\\uD" in encoded:
-        return model.model_validate(json.loads(encoded))
-    return model.model_validate_json(encoded)
+    if _ESCAPED_SURROGATE.search(encoded) is None:
+        return model.model_validate_json(encoded)
+    # pydantic's JSON parser rejects a surrogate escape. Validate in JSON mode
+    # (so JSON-serialized fields such as hex digests convert as usual) with
+    # each surrogate escape replaced by a unique marker, then put the
+    # surrogates back into the validated values.
+    nonce = uuid.uuid4().hex
+    marked = _ESCAPED_SURROGATE.sub(
+        lambda match: match.group()[:-6] + f"<surrogate-{nonce}-{match.group()[-4:].lower()}>", encoded
+    )
+    restore = re.compile(f"<surrogate-{nonce}-([0-9a-f]{{4}})>")
+    validated = model.model_validate_json(marked).model_dump(mode="python")
+    return model.model_validate(_restore_surrogates(validated, restore))
+
+
+def _restore_surrogates(value: object, marker: re.Pattern[str]) -> object:
+    if isinstance(value, str):
+        return marker.sub(lambda match: chr(int(match.group(1), 16)), value)
+    if isinstance(value, dict):
+        return {_restore_surrogates(key, marker): _restore_surrogates(item, marker) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_restore_surrogates(item, marker) for item in value]
+    return value
 
 
 def _read_uri(path: Path) -> str:
@@ -556,6 +579,56 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
             (self.session_ordinal, index, value.timestamp, value.event_type, _event_json(value)),
         )
         self._count += 1
+
+    def insert_sorted(self, insertions: Iterable[tuple[int, ParsedSessionEvent]]) -> None:
+        """Insert many events at original indices with one renumbering pass.
+
+        ``insertions`` are ordered by index; each index refers to the sequence
+        before any of them is inserted, and events sharing an index keep their
+        order. Equivalent to calling :meth:`insert` for each at
+        ``index + <events already inserted>``, without shifting the tail once
+        per event.
+        """
+        if self._writer is None:
+            raise TypeError("sealed prepared events are immutable")
+        writer = self._writer
+        writer.execute("DROP TABLE IF EXISTS temp.prepared_event_insert")
+        writer.execute(
+            "CREATE TEMP TABLE prepared_event_insert (seq INTEGER PRIMARY KEY, idx INTEGER NOT NULL, "
+            "timestamp TEXT, event_type TEXT NOT NULL, event_json TEXT NOT NULL)"
+        )
+        added = 0
+        previous = -1
+        for index, value in insertions:
+            index = min(max(index, 0), self._count)
+            if index < previous:
+                raise ValueError("insertions must be ordered by index")
+            previous = index
+            writer.execute(
+                "INSERT INTO temp.prepared_event_insert VALUES (?, ?, ?, ?, ?)",
+                (added, index, value.timestamp, value.event_type, _event_json(value)),
+            )
+            added += 1
+        if added:
+            writer.execute("CREATE INDEX temp.prepared_event_insert_idx ON prepared_event_insert(idx)")
+            writer.execute(
+                "UPDATE prepared_event SET event_ordinal = -1 - (event_ordinal + "
+                "(SELECT COUNT(*) FROM temp.prepared_event_insert AS i WHERE i.idx <= prepared_event.event_ordinal)) "
+                "WHERE session_ordinal = ?",
+                (self.session_ordinal,),
+            )
+            writer.execute(
+                "UPDATE prepared_event SET event_ordinal = -1 - event_ordinal "
+                "WHERE session_ordinal = ? AND event_ordinal < 0",
+                (self.session_ordinal,),
+            )
+            writer.execute(
+                "INSERT INTO prepared_event (session_ordinal, event_ordinal, timestamp, event_type, event_json) "
+                "SELECT ?, idx + seq, timestamp, event_type, event_json FROM temp.prepared_event_insert ORDER BY seq",
+                (self.session_ordinal,),
+            )
+            self._count += added
+        writer.execute("DROP TABLE temp.prepared_event_insert")
 
     def __iter__(self) -> Iterator[ParsedSessionEvent]:
         yield from self._iter_query("ORDER BY event_ordinal")

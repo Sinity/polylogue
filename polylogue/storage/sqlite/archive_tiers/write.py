@@ -11838,7 +11838,15 @@ def _hash_bytes(*parts: str) -> bytes:
 
 
 def _json_dumps(value: object) -> str:
-    return json.dumps(_sqlite_json_value(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    """Canonical JSON text for a column; a lone surrogate stays a ``\\uXXXX`` escape.
+
+    Escaping, unlike replacing it with U+FFFD, keeps the stored payload equal
+    to the value the session's content hash was computed from.
+    """
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if encoded.isascii() or not _SURROGATE_RE.search(encoded):
+        return encoded
+    return _SURROGATE_RE.sub(lambda match: f"\\u{ord(match.group()):04x}", encoded)
 
 
 def _sqlite_text(value: str | None) -> str | None:
@@ -11854,18 +11862,6 @@ def _sqlite_bool(value: bool | None) -> int | None:
     if value is None:
         return None
     return 1 if value else 0
-
-
-def _sqlite_json_value(value: object) -> object:
-    if isinstance(value, str):
-        return _sqlite_text(value)
-    if isinstance(value, list):
-        return [_sqlite_json_value(item) for item in value]
-    if isinstance(value, tuple):
-        return [_sqlite_json_value(item) for item in value]
-    if isinstance(value, dict):
-        return {str(_sqlite_text(str(key))): _sqlite_json_value(item) for key, item in value.items()}
-    return value
 
 
 def _json_loads(raw_json: str | bytes) -> dict[str, object]:
