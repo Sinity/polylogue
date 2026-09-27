@@ -241,3 +241,36 @@ def test_archive_members_at_a_bound_location_are_validated() -> None:
         iter_entry_payloads(BytesIO(_jsonl(_CODEX_ROLLOUT)), stream_name="member.jsonl", provider_hint=Provider.UNKNOWN)
     )
     assert {entry.provider for entry in unbound} == {Provider.CODEX}
+
+
+def test_one_shot_zip_parse_refuses_per_member(tmp_path: Path) -> None:
+    """A refused ZIP member does not discard the admissible member after it.
+
+    Anti-vacuity: letting the refusal escape ``process_zip`` records the whole
+    archive as failed and never parses the Claude Code member.
+    """
+    import zipfile
+
+    from polylogue.sources.decoder_zip import process_zip
+    from polylogue.storage.cursor_state import CursorStatePayload
+
+    archive = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("a-codex.jsonl", _jsonl(_CODEX_ROLLOUT))
+        zf.writestr("b-claude.jsonl", _jsonl(_CLAUDE_CODE_TRANSCRIPT))
+
+    cursor_state: CursorStatePayload = {"failed_count": 0, "failed_files": []}
+    sessions = [
+        session
+        for _raw, session in process_zip(
+            archive,
+            provider_hint=Provider.CLAUDE_CODE,
+            should_group=True,
+            file_mtime=None,
+            capture_raw=False,
+            cursor_state=cursor_state,
+            blob_root=tmp_path / "blobs",
+        )
+    ]
+    assert [session.source_name for session in sessions] == [Provider.CLAUDE_CODE]
+    assert "foreign_origin_content" in str(cursor_state["failed_files"])

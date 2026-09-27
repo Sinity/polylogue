@@ -264,7 +264,7 @@ def process_zip(
     from polylogue.storage.blob_publication import flush_blob_publications, publication_receipt_id
 
     from .cursor import _ParseContext
-    from .dispatch import GROUP_PROVIDERS, bound_location_provider
+    from .dispatch import GROUP_PROVIDERS, ForeignOriginContentError, bound_location_provider
     from .emitter import _SessionEmitter
 
     resolved_sidecar_data: SidecarData = sidecar_data if sidecar_data is not None else {}
@@ -357,6 +357,12 @@ def process_zip(
                     f"{zip_path}:{name}",
                     str(exc),
                 )
+                continue
+            except ForeignOriginContentError as exc:
+                # A refused member is recorded on its own; admissible siblings
+                # in the same archive are still parsed.
+                logger.warning("Refused foreign-origin ZIP entry %s in %s: %s", name, zip_path, exc)
+                _record_cursor_failure(cursor_state, f"{zip_path}:{name}", f"{exc.code}: {exc}")
                 continue
 
 
