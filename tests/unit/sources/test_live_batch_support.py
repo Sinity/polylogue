@@ -1017,7 +1017,7 @@ def test_full_ingest_acquires_but_does_not_parse_when_derived_tier_degraded(
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not classify source-only JSONL")),
     )
     monkeypatch.setattr(
-        "polylogue.sources.live.batch._detect_provider_from_path_sample",
+        "polylogue.sources.live.batch.detect_provider_from_path_sample_evidence",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not detect source-only provider")),
     )
     try:
@@ -2498,7 +2498,7 @@ def test_threshold_crossing_strong_sidecar_is_excluded_before_streaming(
     monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", 1)
     monkeypatch.setattr("polylogue.sources.live.batch_support._STREAMING_FULL_INGEST_BYTES", 1)
     monkeypatch.setattr(
-        "polylogue.sources.live.batch._detect_provider_from_path_sample",
+        "polylogue.sources.live.batch.detect_provider_from_path_sample_evidence",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("strong sidecar reached JSON provider detection")
         ),
