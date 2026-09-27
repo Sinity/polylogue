@@ -15,7 +15,7 @@ from uuid import uuid4
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.storage.blob_liveness import BlobLiveness, LivenessState, inspect_blob_liveness
 from polylogue.storage.blob_store import BlobStore, Heartbeat, PreparedBlob
-from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection, open_source_tier_write_connection
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
 
@@ -364,7 +364,7 @@ def inspect_blob_publication_receipts(
 
     if max_count is not None and max_count <= 0:
         raise ValueError("max_count must be positive when provided")
-    source_conn = sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)
+    source_conn = open_readonly_connection(source_db_path, timeout_class="background-read", validate_schema=False)
     index_conn: sqlite3.Connection | None = None
     try:
         source_conn.row_factory = sqlite3.Row
@@ -372,7 +372,11 @@ def inspect_blob_publication_receipts(
             resolved_index: Path = index_db_path
         else:
             resolved_index = ArchiveLocation.resolve(source_db_path.parent).active_index_path
-        index_conn = sqlite3.connect(f"file:{resolved_index}?mode=ro", uri=True) if resolved_index.exists() else None
+        index_conn = (
+            open_readonly_connection(resolved_index, timeout_class="background-read", validate_schema=False)
+            if resolved_index.exists()
+            else None
+        )
         store = BlobStore(blob_root)
         if not _table_exists(source_conn, "blob_publication_reservations"):
             return ()

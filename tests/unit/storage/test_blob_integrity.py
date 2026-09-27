@@ -421,6 +421,44 @@ def test_scan_attachment_coverage_never_counts_unfetched_as_missing(
     assert report.ok is True
 
 
+def test_scan_attachment_coverage_uses_read_profile_that_rejects_mutations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production scan opener permits reads and refuses every write class."""
+
+    index_db = tmp_path / "index.db"
+    conn = sqlite3.connect(index_db)
+    initialize_archive_tier(conn, ArchiveTier.INDEX)
+    conn.close()
+
+    real_open = blob_integrity.open_readonly_connection
+    attempted = (
+        "INSERT INTO attachments DEFAULT VALUES",
+        "UPDATE attachments SET acquisition_status = 'acquired'",
+        "DELETE FROM attachments",
+        "CREATE TABLE profile_probe (value INTEGER)",
+        "PRAGMA user_version = 99",
+        "ATTACH DATABASE ':memory:' AS profile_probe",
+    )
+    rejected: list[str] = []
+
+    def open_and_probe(*args: object, **kwargs: object) -> sqlite3.Connection:
+        conn = real_open(*args, **kwargs)  # type: ignore[arg-type]
+        assert conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == 0
+        for statement in attempted:
+            with pytest.raises(sqlite3.DatabaseError):
+                conn.execute(statement)
+            rejected.append(statement)
+        return conn
+
+    monkeypatch.setattr(blob_integrity, "open_readonly_connection", open_and_probe)
+
+    report = scan_attachment_coverage(index_db, store=BlobStore(tmp_path / "blob"))
+
+    assert report.total_attachments == 0
+    assert rejected == list(attempted)
+
+
 def test_scan_attachment_coverage_flags_acquired_row_with_missing_blob_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
