@@ -1449,10 +1449,18 @@ class DaemonConverger:
         return results, batch_stage_times
 
     def summary(self) -> dict[str, int]:
-        """Return counts of files by convergence state."""
+        """Return counts of files by convergence state.
+
+        Each file lands in exactly one bucket. A file that failed once and
+        later converged is converged: ``error_count`` is history, not state.
+        """
         total = len(self._file_states)
         converged = sum(1 for s in self._file_states.values() if s.converged)
-        failed = sum(1 for s in self._file_states.values() if s.error_count > 0)
+        failed = sum(
+            1
+            for s in self._file_states.values()
+            if not s.converged and (s.error_count > 0 or StageState.FAILED in s.stages.values())
+        )
         return {
             "total": total,
             "converged": converged,
