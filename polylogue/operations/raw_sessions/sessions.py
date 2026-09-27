@@ -371,13 +371,16 @@ class SessionLogService:
                 state = next_file(state)
                 continue
             try:
-                handle = path.open("rb")
+                # Non-blocking and no-follow: a path replaced by a FIFO or a
+                # symlink after selection must become a gap, not a hang.
+                descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
             except OSError:
                 gaps.add(reference, "selected file disappeared or became unreadable before it was searched")
                 state = next_file(state, skipped=True)
                 continue
-            with handle:
-                if _identity(os.fstat(handle.fileno())) != _identity(observed):
+            with os.fdopen(descriptor, "rb") as handle:
+                opened = os.fstat(handle.fileno())
+                if not stat.S_ISREG(opened.st_mode) or _identity(opened) != _identity(observed):
                     reason = "changed after it was partially searched" if state["offset"] else "changed after selection"
                     gaps.add(reference, f"selected file {reason}; not searched")
                     state = next_file(state, skipped=True)

@@ -12,6 +12,8 @@ import asyncio
 import hashlib
 import json
 import os
+import stat
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +49,7 @@ def _search(sources: tuple[SessionSource, ...], **fields: Any) -> Any:
 
 def _snapshot_files() -> list[Path]:
     directory = state_home() / "raw-session-search"
-    return sorted(directory.glob("*.json")) if directory.is_dir() else []
+    return sorted(directory.glob("*.snapshot")) if directory.is_dir() else []
 
 
 def test_default_scale_population_keeps_the_token_small_and_roster_free(tmp_path: Path) -> None:
@@ -271,6 +273,7 @@ def test_production_callers_share_one_global_lru_capacity(
         assert [item.reference for item in _search(sources, continuation=token).items] == ["codex:b.jsonl"]
 
     monkeypatch.setattr(snapshot_store, "MAX_GLOBAL_SNAPSHOTS", 2)
+    monkeypatch.setattr(snapshot_store, "IN_FLIGHT_GRACE_MS", 0)
     frozen_clock.advance(1)
     # Using the oldest handle makes it the most recently used survivor.
     assert _search(sources, continuation=tokens[0]).outcome == "ok"
@@ -350,7 +353,7 @@ def test_snapshot_survives_restart_and_retains_no_session_content(tmp_path: Path
     # raw_operation builds a fresh service per call: nothing is process-resident.
     files = _snapshot_files()
     assert len(files) == 1
-    stored = files[0].read_text()
+    stored = zlib.decompress(files[0].read_bytes()).decode()
     assert "secret" not in stored and "alpha" not in stored and "needle" not in stored
     assert files[0].stat().st_mode & 0o077 == 0
     resumed = _search(sources, continuation=first.continuation)
@@ -399,6 +402,7 @@ def test_snapshots_created_in_one_millisecond_never_evict_the_new_handle(
 ) -> None:
     """Anti-vacuity: pruning after the write lets a random-handle tie evict the snapshot just created."""
     monkeypatch.setattr(snapshot_store, "MAX_GLOBAL_SNAPSHOTS", 2)
+    monkeypatch.setattr(snapshot_store, "IN_FLIGHT_GRACE_MS", 0)
     root = tmp_path / "codex"
     first_file = _write(root / "a.jsonl", "needle a\n", 2)
     _write(root / "b.jsonl", "needle b\n", 1)
@@ -452,7 +456,7 @@ def test_concurrent_touch_of_one_handle_is_not_an_eviction(tmp_path: Path, monke
         if not raced["done"] and rows:
             raced["done"] = True
             last_used, key, handle, path = rows[0]
-            path.rename(path.with_name(f"{last_used + 1:013d}-{key}-{handle}.json"))
+            path.rename(path.with_name(f"{last_used + 1:013d}-{key}-{handle}.snapshot"))
         return rows
 
     monkeypatch.setattr(snapshot_store.SnapshotStore, "_entries", entries_then_concurrent_touch)
@@ -466,6 +470,7 @@ def test_concurrent_creator_cannot_push_the_store_past_its_bound(
 ) -> None:
     """Anti-vacuity: pruning only before the write leaves MAX + 1 files when another creator publishes meanwhile."""
     monkeypatch.setattr(snapshot_store, "MAX_GLOBAL_SNAPSHOTS", 2)
+    monkeypatch.setattr(snapshot_store, "IN_FLIGHT_GRACE_MS", 0)
     root = tmp_path / "codex"
     first_file = _write(root / "a.jsonl", "needle a\n", 2)
     _write(root / "b.jsonl", "needle b\n", 1)
@@ -475,7 +480,7 @@ def test_concurrent_creator_cannot_push_the_store_past_its_bound(
     from polylogue.core.durable_fs import atomic_replace as original
 
     def publish_with_a_concurrent_creator(path: Path, payload: bytes, *, mode: int | None = None) -> None:
-        foreign = path.with_name(f"{path.name.split('-')[0]}-{'f' * 16}-{'e' * 32}.json")
+        foreign = path.with_name(f"{path.name.split('-')[0]}-{'f' * 16}-{'e' * 32}.snapshot")
         original(foreign, payload, mode=mode)
         original(path, payload, mode=mode)
 
@@ -528,3 +533,52 @@ def test_long_reference_filter_fits_the_token_through_its_digest(tmp_path: Path)
     assert [item.reference for item in resumed.items] == [reference]
     with pytest.raises(StaleContinuationError):
         _search(sources, continuation=first.continuation)
+
+
+def test_a_fresh_handle_of_a_concurrent_creator_is_not_an_eviction_victim(
+    tmp_path: Path, frozen_clock: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: without the in-flight grace, a same-millisecond prune may delete another creator's new file."""
+    monkeypatch.setattr(snapshot_store, "MAX_GLOBAL_SNAPSHOTS", 1)
+    root = tmp_path / "codex"
+    first_file = _write(root / "a.jsonl", "needle a\n", 2)
+    _write(root / "b.jsonl", "needle b\n", 1)
+    sources = _sources(root)
+    tokens = [_search(sources, scan_bytes=first_file.stat().st_size).continuation for _ in range(8)]
+    for token in tokens:
+        assert _search(sources, continuation=token).outcome == "ok"
+    frozen_clock.advance(snapshot_store.IN_FLIGHT_GRACE_MS / 1000 + 1)
+    newest = _search(sources, scan_bytes=first_file.stat().st_size).continuation
+    assert len(_snapshot_files()) == 1
+    assert _search(sources, continuation=newest).outcome == "ok"
+
+
+def test_selected_path_replaced_by_a_fifo_is_a_gap_not_a_hang(tmp_path: Path) -> None:
+    """Anti-vacuity: a blocking open waits forever for a FIFO writer."""
+    root = tmp_path / "codex"
+    first_file = _write(root / "a.jsonl", "needle a\n", 2)
+    swapped = _write(root / "b.jsonl", "needle b\n", 1)
+    sources = _sources(root)
+    first = _search(sources, scan_bytes=first_file.stat().st_size)
+    swapped.unlink()
+    os.mkfifo(swapped)
+    assert stat.S_ISFIFO(swapped.stat().st_mode)
+
+    second = _search(sources, continuation=first.continuation)
+    assert second.items == [] and second.outcome == "degraded"
+    assert any("codex:b.jsonl" in gap for gap in second.coverage.gaps)
+
+
+def test_deep_shared_prefix_roster_is_retained_compactly(tmp_path: Path) -> None:
+    root = tmp_path / "codex"
+    directory = root
+    for _ in range(12):
+        directory = directory / ("p" * 250)
+    first_file = _write(directory / "s0000.jsonl", "needle\n", 3_000)
+    for index in range(1, 2_000):
+        _write(directory / f"s{index:04d}.jsonl", "x\n", 1)
+    token = _search(_sources(root), scan_bytes=first_file.stat().st_size).continuation
+    assert token is not None
+    (snapshot,) = _snapshot_files()
+    # ~3 KB of shared prefix on 2,000 rows is ~6 MB uncompressed.
+    assert snapshot.stat().st_size < 200_000

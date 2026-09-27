@@ -29,6 +29,7 @@ import json
 import os
 import time
 import uuid
+import zlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,7 +39,11 @@ from polylogue.core.durable_fs import atomic_replace
 
 SNAPSHOT_TTL_MS = 60 * 60 * 1000
 MAX_GLOBAL_SNAPSHOTS = 64
-_SUFFIX = ".json"
+_SUFFIX = ".snapshot"
+# Handles this young are never eviction victims: a concurrent creator may have
+# published one and not yet returned its token. The global bound can then be
+# exceeded briefly by the number of simultaneous creations.
+IN_FLIGHT_GRACE_MS = 60_000
 
 
 @dataclass(frozen=True)
@@ -155,7 +160,7 @@ class SnapshotStore:
             else:
                 live.append(entry)
         # Least recently used first, so the survivors are the handles in use.
-        victims = [entry for entry in live if entry[2] != keep]
+        victims = [entry for entry in live if entry[2] != keep and entry[0] + IN_FLIGHT_GRACE_MS <= now_ms]
         for entry in victims[: max(0, len(live) - (MAX_GLOBAL_SNAPSHOTS - reserve))]:
             self._unlink(entry[3])
 
@@ -179,7 +184,9 @@ class SnapshotStore:
         handle = uuid.uuid4().hex
         principal_key = _principal_key(binding.principal)
         body = {"v": 1, "binding": binding.as_json(), "created_at_ms": now_ms, "files": rows}
-        encoded = json.dumps(body, separators=(",", ":")).encode()
+        # Rosters under one deep prefix repeat it on every row; compression
+        # keeps retained bytes proportional to distinct path content.
+        encoded = zlib.compress(json.dumps(body, separators=(",", ":")).encode(), level=6)
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         # See _prune: reserve a slot before the write, then enforce the bound keeping this handle.
         self._prune(now_ms, reserve=1)
@@ -216,10 +223,10 @@ class SnapshotStore:
                 self._unlink(path)
                 break
             try:
-                body = json.loads(path.read_bytes())
+                body = json.loads(zlib.decompress(path.read_bytes()))
             except FileNotFoundError:
                 continue
-            except (OSError, ValueError):
+            except (OSError, ValueError, zlib.error):
                 break
             if not isinstance(body, dict) or body.get("v") != 1 or body.get("binding") != binding.as_json():
                 raise SnapshotUnavailableError("session continuation does not match its original search scope")
