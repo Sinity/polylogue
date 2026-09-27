@@ -3941,7 +3941,13 @@ def _daemon_startup_stubs(
 
 
 @pytest.mark.asyncio
-async def test_cold_build_busy_readiness_retries_in_running_daemon(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("fault", "expected_reason"),
+    (("busy", "sqlite_busy"), ("cantopen", "sqlite_open_unavailable")),
+)
+async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
+    tmp_path: Path, fault: str, expected_reason: str
+) -> None:
     from polylogue import Polylogue as RealPolylogue
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.catchup_status import _cold_build_settlement
@@ -3949,6 +3955,7 @@ async def test_cold_build_busy_readiness_retries_in_running_daemon(tmp_path: Pat
     from polylogue.daemon.intake_adapters import DaemonIntakeService
     from polylogue.daemon.services import ServiceProfile
     from polylogue.sources.live.cold_build import ColdBuildGeneration, active_cold_build_generation
+    from polylogue.sources.live.production_baseline import ProductionSourceBaseline
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     archive_root = tmp_path / "archive"
@@ -3976,15 +3983,30 @@ async def test_cold_build_busy_readiness_retries_in_running_daemon(tmp_path: Pat
         contender.close()
         holder.close()
 
+    missing_database = tmp_path / "temporarily-unavailable.db"
+    with pytest.raises(sqlite3.OperationalError) as cantopen:
+        sqlite3.connect(f"file:{missing_database}?mode=ro", uri=True)
+    assert cantopen.value.sqlite_errorcode & 0xFF == sqlite3.SQLITE_CANTOPEN
+
     real_readiness = ArchiveStore.run_generation_readiness_pass
+    real_verify = ProductionSourceBaseline.verify
     calls = 0
 
     def busy_once(self: ArchiveStore) -> None:
         nonlocal calls
         calls += 1
-        if calls == 1:
+        if fault == "busy" and calls == 1:
             raise busy.value
         real_readiness(self)
+
+    verify_calls = 0
+
+    def cantopen_once(self: ProductionSourceBaseline, source_db: Path) -> None:
+        nonlocal verify_calls
+        verify_calls += 1
+        if fault == "cantopen" and verify_calls == 1:
+            raise cantopen.value
+        real_verify(self, source_db)
 
     reset_daemon_compute_adapter()
     try:
@@ -3992,6 +4014,7 @@ async def test_cold_build_busy_readiness_retries_in_running_daemon(tmp_path: Pat
             _daemon_startup_stubs(stack, daemon_cli, archive_root)
             stack.enter_context(patch.object(daemon_cli, "Polylogue", lambda: RealPolylogue(archive_root=archive_root)))
             stack.enter_context(patch.object(ArchiveStore, "run_generation_readiness_pass", busy_once))
+            stack.enter_context(patch.object(ProductionSourceBaseline, "verify", cantopen_once))
             stack.enter_context(
                 patch(
                     "polylogue.daemon.intake_adapters.DaemonIntakeService",
@@ -4025,7 +4048,7 @@ async def test_cold_build_busy_readiness_retries_in_running_daemon(tmp_path: Pat
                 ) as candidate_reader:
                     assert candidate_reader.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
                 assert _cold_build_settlement()["cold_build_candidate_id"] == candidate_id
-                assert _cold_build_settlement()["cold_build_settlement_reason"] == "sqlite_busy"
+                assert _cold_build_settlement()["cold_build_settlement_reason"] == expected_reason
                 with contextlib.closing(
                     sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True)
                 ) as active:
@@ -4036,7 +4059,7 @@ async def test_cold_build_busy_readiness_retries_in_running_daemon(tmp_path: Pat
                         if task.done():
                             await task
                         await asyncio.sleep(0.05)
-                assert calls == 2
+                assert (calls if fault == "busy" else verify_calls) == 2
                 assert candidate.publication_complete
                 assert _cold_build_settlement()["cold_build_candidate_id"] == candidate_id
                 with contextlib.closing(

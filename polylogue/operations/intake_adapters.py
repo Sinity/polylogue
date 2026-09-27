@@ -104,6 +104,8 @@ def classify_cold_build_settlement_failure(exc: Exception) -> tuple[str, bool] |
         primary = code & 0xFF if isinstance(code, int) else None
         if primary in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
             return "sqlite_busy", True
+        if primary in (sqlite3.SQLITE_CANTOPEN, sqlite3.SQLITE_PERM):
+            return "sqlite_open_unavailable", True
         if primary == sqlite3.SQLITE_FULL:
             return "capacity_unavailable", False
         if primary == sqlite3.SQLITE_IOERR:
