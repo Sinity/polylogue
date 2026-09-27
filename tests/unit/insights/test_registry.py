@@ -25,10 +25,7 @@ from polylogue.analysis.registry import (
     RetentionVerdict,
     _attr,
     _build_query,
-    _count_with_percentage,
-    _formatted_float,
     _id_with_origin,
-    _list_preview,
     _nested,
     _nested_ms_as_seconds,
     _stringify,
@@ -266,84 +263,6 @@ class TestFieldAccessors:
         accessor = _id_with_origin("session_id")
         item = self._make_item(session_id="sess-123", origin="claude-code-session")
         assert accessor(item) == "sess-123 [claude-code-session]"  # type: ignore[arg-type]
-
-    def test_list_preview_basic(self) -> None:
-        """_list_preview() shows first N items joined by ', '."""
-        accessor = _list_preview("tags", limit=2)
-        item = self._make_item(tags=["tag1", "tag2", "tag3"])
-        assert accessor(item) == "tag1, tag2"  # type: ignore[arg-type]
-
-    def test_list_preview_fewer_than_limit(self) -> None:
-        """_list_preview() joins all items when fewer than limit."""
-        accessor = _list_preview("tags", limit=5)
-        item = self._make_item(tags=["a", "b"])
-        assert accessor(item) == "a, b"  # type: ignore[arg-type]
-
-    def test_list_preview_empty_list_returns_dash(self) -> None:
-        """_list_preview() returns '-' for empty list."""
-        accessor = _list_preview("tags")
-        item = self._make_item(tags=[])
-        assert accessor(item) == "-"  # type: ignore[arg-type]
-
-    def test_list_preview_tuple_works(self) -> None:
-        """_list_preview() works with tuples too."""
-        accessor = _list_preview("items", limit=2)
-        item = self._make_item(items=("x", "y", "z"))
-        assert accessor(item) == "x, y"  # type: ignore[arg-type]
-
-    def test_list_preview_non_list_stringified(self) -> None:
-        """_list_preview() stringifies non-list/tuple values."""
-        accessor = _list_preview("value")
-        item = self._make_item(value=42)
-        assert accessor(item) == "42"  # type: ignore[arg-type]
-
-    def test_formatted_float_basic(self) -> None:
-        """_formatted_float() formats with precision."""
-        accessor = _formatted_float("ratio", precision=2)
-        item = self._make_item(ratio=3.14159)
-        assert accessor(item) == "3.14"  # type: ignore[arg-type]
-
-    def test_formatted_float_int_converted(self) -> None:
-        """_formatted_float() works with int values too."""
-        accessor = _formatted_float("count", precision=1)
-        item = self._make_item(count=42)
-        assert accessor(item) == "42.0"  # type: ignore[arg-type]
-
-    def test_formatted_float_bool_returns_default(self) -> None:
-        """_formatted_float() returns default for bool values."""
-        accessor = _formatted_float("flag", default="BOOL")
-        item = self._make_item(flag=True)
-        assert accessor(item) == "BOOL"  # type: ignore[arg-type]
-
-    def test_formatted_float_non_numeric_returns_default(self) -> None:
-        """_formatted_float() returns default for non-numeric."""
-        accessor = _formatted_float("value", default="NAN")
-        item = self._make_item(value="not_a_number")
-        assert accessor(item) == "NAN"  # type: ignore[arg-type]
-
-    def test_count_with_percentage_both_present(self) -> None:
-        """_count_with_percentage() formats 'count (pct%)' when both present."""
-        accessor = _count_with_percentage("count", "percent")
-        item = self._make_item(count=50, percent=75.5)
-        assert accessor(item) == "50 (75.5%)"  # type: ignore[arg-type]
-
-    def test_count_with_percentage_count_only(self) -> None:
-        """_count_with_percentage() shows count alone if percentage missing/non-numeric."""
-        accessor = _count_with_percentage("count", "percent")
-        item = self._make_item(count=30, percent=None)
-        assert accessor(item) == "30"  # type: ignore[arg-type]
-
-    def test_count_with_percentage_count_invalid_returns_dash(self) -> None:
-        """_count_with_percentage() returns '-' if count is invalid."""
-        accessor = _count_with_percentage("count", "percent")
-        item = self._make_item(count="not_int", percent=50.0)
-        assert accessor(item) == "-"  # type: ignore[arg-type]
-
-    def test_count_with_percentage_bool_count_invalid(self) -> None:
-        """_count_with_percentage() treats bool count as invalid."""
-        accessor = _count_with_percentage("count", "percent")
-        item = self._make_item(count=True, percent=50.0)
-        assert accessor(item) == "-"  # type: ignore[arg-type]
 
 
 class TestStringify:
