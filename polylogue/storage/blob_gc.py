@@ -58,7 +58,7 @@ from uuid import uuid4
 
 from polylogue.core.errors import SchemaSkewError
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
-from polylogue.logging import ERROR, emit
+from polylogue.logging import ERROR, WARNING, emit
 from polylogue.storage.blob_gc_index_watermark import index_liveness_authority_blocker
 from polylogue.storage.blob_liveness import (
     BlobLiveness,
@@ -651,6 +651,10 @@ def _pending_gc_generation(control_db_path: Path) -> tuple[str | None, str | Non
         return generation_id, None
 
 
+_NAMESPACE_CHANGED = "blob namespace authority changed since GC intent was committed"
+_NAMESPACE_UNRECORDED = "pending blob GC generation lacks a durable blob namespace identity"
+
+
 def _generation_namespace_matches(
     control_db_path: Path,
     generation_id: str,
@@ -666,13 +670,13 @@ def _generation_namespace_matches(
     if row is None:
         return "blob GC generation disappeared before namespace verification"
     if row[0] is None:
-        return "pending blob GC generation lacks a durable blob namespace identity"
+        return _NAMESPACE_UNRECORDED
     try:
         observed = _blob_namespace_identity(blob_root)
     except _BlobNamespaceUnavailableError as exc:
         return str(exc)
     if str(row[0]) != observed.marker:
-        return "blob namespace authority changed since GC intent was committed"
+        return _NAMESPACE_CHANGED
     return None
 
 
@@ -949,6 +953,29 @@ def _resume_pending_gc_generation(
         _emit_gc_refusal(report.blocked_reason, phase="preflight")
         return True
     if pending_generation is None:
+        return False
+    namespace_blocker = _generation_namespace_matches(control_db_path, pending_generation, blob_root)
+    if namespace_blocker in {_NAMESPACE_CHANGED, _NAMESPACE_UNRECORDED}:
+        # The intent was committed against a namespace this archive no longer
+        # has, so it can never execute. Terminalizing it unlinks nothing: its
+        # members are recorded as not removed, the old namespace's bytes stay
+        # where they are, and this pass plans afresh from current referents.
+        # Holding it pending instead stopped every later GC pass until an
+        # operator abandoned it by hand (polylogue-cfeqd).
+        adjudication = _abandon_pending_gc_generation(
+            control_db_path,
+            pending_generation,
+            detail=f"{namespace_blocker}; intent abandoned, no unlink performed",
+        )
+        emit(
+            "storage.blob_gc.generation_abandoned",
+            level=WARNING,
+            outcome="degraded",
+            reason="namespace_changed",
+            generation_id=pending_generation,
+            count=adjudication.abandoned_members,
+            error_detail=namespace_blocker,
+        )
         return False
     evidence = GCRunEvidence(dry_run=False, max_batch=max_batch)
     deleted, reclaimed_bytes = _execute_gc_generation_members(
@@ -1540,16 +1567,6 @@ class GCHistoryRow:
 
 
 @dataclass(frozen=True, slots=True)
-class PendingGCGeneration:
-    """Operator-visible state for an incomplete exact GC intent."""
-
-    generation_id: str
-    member_count: int
-    pending_member_count: int
-    namespace_marker: str | None
-
-
-@dataclass(frozen=True, slots=True)
 class GCGenerationAdjudication:
     """The terminal, non-destructive disposition of a blocked generation."""
 
@@ -1558,70 +1575,15 @@ class GCGenerationAdjudication:
     completed: bool
 
 
-@dataclass(frozen=True, slots=True)
-class GCGenerationAbandonmentState:
-    """Exact durable state that an abandonment preview binds to."""
-
-    generation_id: str
-    namespace_marker: str | None
-    pending_member_count: int
-    completed: bool
-
-
-def inspect_gc_generation_abandonment(control_db_path: str | Path, generation_id: str) -> GCGenerationAbandonmentState:
-    """Read one exact generation for a zero-effect abandonment preview."""
-
-    with closing(_readonly(Path(control_db_path))) as conn:
-        row = conn.execute(
-            "SELECT blob_namespace_marker, completed_at_ms, "
-            "(SELECT COUNT(*) FROM gc_generation_members AS member "
-            " WHERE member.generation_id = generation.generation_id AND member.outcome = 'pending') "
-            "FROM gc_generations AS generation WHERE generation_id = ?",
-            (generation_id,),
-        ).fetchone()
-    if row is None:
-        raise ValueError(f"blob GC generation does not exist: {generation_id}")
-    return GCGenerationAbandonmentState(
-        generation_id=generation_id,
-        namespace_marker=str(row[0]) if row[0] is not None else None,
-        completed=row[1] is not None,
-        pending_member_count=int(row[2]),
-    )
-
-
-def inspect_pending_gc_generations(control_db_path: str | Path) -> list[PendingGCGeneration]:
-    """List incomplete GC intents without assigning them any new authority."""
-
-    with closing(_readonly(Path(control_db_path))) as conn:
-        if not _gc_member_table_available(conn) or not _gc_namespace_identity_columns_available(conn):
-            return []
-        rows = conn.execute(
-            "SELECT generation.generation_id, generation.blob_namespace_marker, "
-            "(SELECT COUNT(*) FROM gc_generation_members AS member "
-            " WHERE member.generation_id = generation.generation_id), "
-            "(SELECT COUNT(*) FROM gc_generation_members AS member "
-            " WHERE member.generation_id = generation.generation_id AND member.outcome = 'pending') "
-            "FROM gc_generations AS generation WHERE generation.completed_at_ms IS NULL "
-            "ORDER BY generation.started_at_ms, generation.generation_id"
-        ).fetchall()
-    return [
-        PendingGCGeneration(str(row[0]), int(row[2]), int(row[3]), str(row[1]) if row[1] is not None else None)
-        for row in rows
-    ]
-
-
 def _abandon_pending_gc_generation(
-    control_db_path: str | Path, generation_id: str, *, confirmed: bool
+    control_db_path: str | Path, generation_id: str, *, detail: str
 ) -> GCGenerationAdjudication:
-    """Executor-only primitive that terminalizes one blocked intent without blob effects.
+    """Terminalize one intent whose namespace is gone, without blob effects.
 
-    This is deliberately the only recovery action for a namespace that cannot
-    prove continuity. A future GC pass creates a new intent from current
-    physical referents and reservations; historical rows never authorize it.
+    A later GC pass creates a new intent from current physical referents and
+    reservations; historical rows never authorize it.
     """
 
-    if not confirmed:
-        raise ValueError("explicit confirmation is required to abandon a pending blob GC generation")
     path = Path(control_db_path)
     with sqlite_connection(path) as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -1634,10 +1596,9 @@ def _abandon_pending_gc_generation(
             conn.rollback()
             return GCGenerationAdjudication(generation_id, 0, True)
         cursor = conn.execute(
-            "UPDATE gc_generation_members SET outcome = 'failed', outcome_at_ms = ?, "
-            "outcome_detail = 'operator abandoned blocked namespace-bound intent; no unlink performed' "
+            "UPDATE gc_generation_members SET outcome = 'failed', outcome_at_ms = ?, outcome_detail = ? "
             "WHERE generation_id = ? AND outcome = 'pending'",
-            (int(time.time() * 1000), generation_id),
+            (int(time.time() * 1000), detail, generation_id),
         )
         abandoned = cursor.rowcount
         reclaimed_count, reclaimed_bytes = conn.execute(
@@ -1690,12 +1651,8 @@ __all__ = [
     "MIN_AGE_S",
     "GCHistoryRow",
     "GCGenerationAdjudication",
-    "GCGenerationAbandonmentState",
-    "PendingGCGeneration",
     "GCRunEvidence",
     "inspect_blob_liveness",
-    "inspect_gc_generation_abandonment",
-    "inspect_pending_gc_generations",
     "read_gc_history",
     "run_blob_gc",
     "run_blob_gc_report",

@@ -24,17 +24,6 @@ from polylogue.logging import configure_logging
 from polylogue.paths import archive_root, render_root
 
 
-def _submit(config: Config, generation_id: str) -> dict[str, object]:
-    from polylogue.cli.operation_kernel import OperationKernelError, configured_mutation_operation
-    from polylogue.cli.shared.helpers import mutation_refusal
-
-    operation = "maintenance.blob-gc.recover"
-    try:
-        return configured_mutation_operation(config, operation, {"generation_id": generation_id})
-    except OperationKernelError as exc:
-        raise mutation_refusal(exc, operation) from exc
-
-
 @click.command("blob-gc")
 @click.option(
     "--max-batch",
@@ -177,62 +166,3 @@ def gc_history_command(env: AppEnv, limit: int, output_format: str) -> None:
         )
         click.echo(f"  generation={row.generation_id}  completed_at={when}")
         click.echo(f"    reclaimed_count={row.reclaimed_count}  reclaimed_bytes={row.reclaimed_bytes}")
-
-
-@click.command("gc-recover")
-@click.option("--abandon", "generation_id", help="Terminally abandon this blocked pending generation.")
-@click.option("--yes", is_flag=True, help="Confirm abandonment. This never unlinks blobs.")
-@click.option("--output-format", type=click.Choice(["plain", "json"]), default="plain", show_default=True)
-def gc_recover_command(generation_id: str | None, yes: bool, output_format: str) -> None:
-    """Inspect pending GC intent, or terminalize one through mutation authority."""
-    from polylogue.storage.blob_gc import inspect_pending_gc_generations
-
-    root = archive_root()
-    if yes and generation_id is None:
-        raise click.UsageError("--yes requires --abandon GENERATION_ID")
-    if generation_id is not None and not yes:
-        raise click.UsageError("--yes is required with --abandon")
-    adjudication: dict[str, object] | None = None
-    receipt_ref: str | None = None
-    if generation_id is not None:
-        config = Config(archive_root=root, render_root=render_root(), sources=[])
-        result = _submit(config, generation_id)
-        value = result.get("result")
-        adjudication = value if isinstance(value, dict) else {}
-        # The audit handle lives on the operation envelope, not inside the
-        # domain receipt: the actuator reports blob/namespace effects, and the
-        # executor reports which audited attempt applied them.
-        receipt_ref_value = result.get("receipt_ref")
-        receipt_ref = str(receipt_ref_value) if receipt_ref_value is not None else None
-    pending = inspect_pending_gc_generations(root / "source.db")
-    payload = {
-        "mode": "gc_recover",
-        "mutates": adjudication is not None,
-        "adjudication": adjudication,
-        "receipt_ref": receipt_ref,
-        "pending": [
-            {
-                "generation_id": item.generation_id,
-                "member_count": item.member_count,
-                "pending_member_count": item.pending_member_count,
-                "namespace_marker_present": item.namespace_marker is not None,
-            }
-            for item in pending
-        ],
-    }
-    if output_format == "json":
-        click.echo(json.dumps(payload, indent=2, sort_keys=True))
-        return
-    if adjudication is not None:
-        click.echo(
-            f"Abandoned {adjudication['abandoned_members']} pending member(s) from {adjudication['generation_id']}; "
-            "no blobs unlinked."
-        )
-    if not pending:
-        click.echo("No pending blob-GC generations.")
-        return
-    for item in pending:
-        click.echo(
-            f"{item.generation_id}: pending={item.pending_member_count} members={item.member_count} "
-            f"namespace_marker_present={item.namespace_marker is not None}"
-        )

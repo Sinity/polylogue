@@ -223,11 +223,20 @@ def test_pending_member_retries_after_fresh_liveness_and_absence_reconciles(
 
 
 @pytest.mark.uses_real_clock("backdates a temporary blob to pass production GC's age gate")
-def test_pending_member_refuses_a_swapped_blob_namespace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Restart must not terminalize intent against a replacement namespace.
+def test_pending_intent_against_a_swapped_namespace_is_abandoned_not_executed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An intent bound to a namespace the archive no longer has terminalizes itself.
+
+    The intent can never execute: its namespace is gone. It is terminalized
+    with no unlink -- never reconciled as removed against the replacement
+    namespace -- and the same pass goes on to plan from current referents.
+    Holding it pending instead stopped every later GC pass until an operator
+    abandoned it by hand (polylogue-cfeqd).
 
     Anti-vacuity: a retry that treats any readable missing path as reconciled
-    removal would complete the pending member after the namespace swap.
+    removal records ``reconciled_removed``; the old fail-closed hold leaves the
+    member ``pending`` and reports the namespace as a blocker.
     """
     bootstrap_archive_root(tmp_path)
     store = BlobStore(tmp_path / "blob")
@@ -242,6 +251,7 @@ def test_pending_member_refuses_a_swapped_blob_namespace(tmp_path: Path, monkeyp
     with pytest.raises(RuntimeError, match="namespace-bound intent pending"):
         blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
     monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", original_final)
+    abandoned_generation = _member_rows(tmp_path / "source.db")[0][0]
 
     observed_namespace = tmp_path / "observed-blob-namespace"
     store.root.rename(observed_namespace)
@@ -249,9 +259,20 @@ def test_pending_member_refuses_a_swapped_blob_namespace(tmp_path: Path, monkeyp
 
     retry = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
 
-    assert retry.blocked_reason == "blob namespace authority changed since GC intent was committed"
+    assert retry.blocked_reason is None
+    assert retry.generation_id != abandoned_generation
     assert (observed_namespace / blob_hash[:2] / blob_hash[2:]).exists()
-    assert _member_rows(tmp_path / "source.db")[0][1:] == (blob_hash.upper(), "pending")
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        outcome, detail = conn.execute(
+            "SELECT outcome, outcome_detail FROM gc_generation_members WHERE generation_id = ?",
+            (abandoned_generation,),
+        ).fetchone()
+        completed = conn.execute(
+            "SELECT completed_at_ms FROM gc_generations WHERE generation_id = ?", (abandoned_generation,)
+        ).fetchone()[0]
+    assert outcome == "failed"
+    assert "no unlink performed" in detail
+    assert completed is not None
 
 
 @pytest.mark.uses_real_clock("backdates a temporary blob to pass production GC's age gate")
@@ -366,75 +387,6 @@ def test_member_unlink_stays_in_observed_namespace_after_root_swap(
     assert not (observed_root / blob_hash[:2] / blob_hash[2:]).exists()
     assert store.blob_path(blob_hash).read_bytes() == b"replacement namespace object"
     assert _member_rows(tmp_path / "source.db") == [(report.generation_id, blob_hash.upper(), "removed")]
-
-
-def test_authorized_abandonment_terminalizes_exact_intent_without_blob_effect(tmp_path: Path) -> None:
-    """The mutation authority writes source/audit only, never blob bytes or marker.
-
-    Anti-vacuity: calling the legacy GC execution path from the actuator, or
-    omitting the executor receipt, either unlinks the candidate or leaves no
-    durable audit operation for this exact generation.
-    """
-    from polylogue.operations.bindings import runtime_operation_binding
-    from polylogue.operations.mutation_actuators import (
-        PendingBlobGCGenerationAbandonActuator,
-        PendingBlobGCGenerationAbandonArgs,
-    )
-    from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
-
-    bootstrap_archive_root(tmp_path)
-    store = BlobStore(tmp_path / "blob")
-    blob_hash, _ = store.write_from_bytes(b"operator adjudication")
-    marker = blob_gc._blob_namespace_identity(store.root, create_marker=True).marker
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        conn.execute(
-            "INSERT INTO gc_generations (generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes, blob_namespace_marker) "
-            "VALUES ('blocked', 1, NULL, 0, 0, ?)",
-            (marker,),
-        )
-        conn.execute(
-            "INSERT INTO gc_generation_members (generation_id, blob_hash, candidate_size_bytes, intent_committed_at_ms, outcome) "
-            "VALUES ('blocked', ?, 1, 1, 'pending')",
-            (bytes.fromhex(blob_hash),),
-        )
-    assert blob_gc.inspect_pending_gc_generations(tmp_path / "source.db") == [
-        blob_gc.PendingGCGeneration("blocked", 1, 1, marker)
-    ]
-    actuator = PendingBlobGCGenerationAbandonActuator()
-    args = PendingBlobGCGenerationAbandonArgs(tmp_path, "blocked")
-    executor = OperationExecutor.for_archive_root(tmp_path)
-    binding = runtime_operation_binding(actuator)
-    principal = MutationPrincipal(
-        "user:test",
-        frozenset({"archive.blob_gc.abandon_pending_generation"}),
-        "cli",
-        "test",
-    )
-    preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=tmp_path)
-    authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
-    receipt = executor.execute_bound(binding, preview, authorization, args)
-
-    assert receipt.affected_count == 1
-    assert receipt.receipt_ref is not None
-    assert receipt.domain_receipt["blob_effect"] == "none"
-    assert receipt.domain_receipt["namespace_rebound"] is False
-    assert store.exists(blob_hash)
-    assert blob_gc._blob_namespace_identity(store.root).marker == marker
-    assert _member_rows(tmp_path / "source.db") == [("blocked", blob_hash.upper(), "failed")]
-    retry_preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=tmp_path)
-    retry_authorization = executor.authorize_bound(
-        binding, retry_preview, principal, confirmation_strength="bound_token"
-    )
-    retry = executor.execute_bound(binding, retry_preview, retry_authorization, args)
-    assert retry.status == "already_satisfied"
-    assert retry.affected_count == 0
-    with sqlite3.connect(tmp_path / "audit.db") as conn:
-        assert conn.execute(
-            "SELECT COUNT(*) FROM operation_attempts AS attempt "
-            "JOIN operation_runs AS run ON run.operation_id = attempt.operation_id "
-            "WHERE run.operation_name = ?",
-            ("mutate-abandon-pending-blob-gc-generation",),
-        ).fetchone() == (2,)
 
 
 @pytest.mark.uses_real_clock("backdates a temporary blob to pass production GC's age gate")

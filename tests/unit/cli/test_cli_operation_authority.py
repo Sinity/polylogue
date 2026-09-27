@@ -227,7 +227,6 @@ _MUTATING_INVOCATIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
 _MATRIX_EXEMPT: Mapping[str, str] = {
     "ingest": "needs a real staged export path; `import` refuses an absent path first",
     "maintenance.demo.augment": "only reachable behind `import --demo`, which seeds a fixture world first",
-    "maintenance.blob-gc.recover": "needs a live pending GC generation id read from source.db",
     "maintenance.blob-publications.abandon": "needs live publication ids read from source.db",
     "maintenance.blob-refs.replace-from-source": "needs a manifest file produced by a prior scan",
     "maintenance.blob-refs.prune-orphans": "needs a quarantine path and a prior orphan scan",

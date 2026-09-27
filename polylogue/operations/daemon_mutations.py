@@ -227,31 +227,6 @@ def maintenance_reset(
     return _execute_named_mutation(request, context, audit, snapshot, FilesystemResetActuator(), args)
 
 
-def maintenance_blob_gc_recover(
-    request: DaemonOperationRequest,
-    context: OperationContext,
-    audit: AuditRepository,
-    snapshot: PinnedOperationRead,
-) -> dict[str, object]:
-    from polylogue.operations.mutation_actuators import (
-        PendingBlobGCGenerationAbandonActuator,
-        PendingBlobGCGenerationAbandonArgs,
-    )
-
-    args = PendingBlobGCGenerationAbandonArgs(
-        archive_root=context.archive_root,
-        generation_id=str(request.payload["generation_id"]),
-    )
-    return _execute_named_mutation(
-        request,
-        context,
-        audit,
-        snapshot,
-        PendingBlobGCGenerationAbandonActuator(),
-        args,
-    )
-
-
 def maintenance_blob_publications_abandon(
     request: DaemonOperationRequest,
     context: OperationContext,

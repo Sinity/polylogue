@@ -207,10 +207,6 @@ CLI_OPERATION_BINDINGS: Mapping[str, CliOperationBinding] = {
         lowering="polylogue.cli.commands.embed:resolve_failure_subcommand",
         renderers=("polylogue.cli.commands.embed:resolve_failure_subcommand",),
     ),
-    "maintenance.blob-gc.recover": CliOperationBinding(
-        lowering="polylogue.cli.commands.maintenance._blob_gc:_submit",
-        renderers=("polylogue.cli.commands.maintenance._blob_gc:blob_gc_command",),
-    ),
     "maintenance.blob-publications.abandon": CliOperationBinding(
         lowering="polylogue.cli.commands.maintenance._blob_publications:_submit_abandonment",
         renderers=("polylogue.cli.commands.maintenance._blob_publications:blob_publications_command",),

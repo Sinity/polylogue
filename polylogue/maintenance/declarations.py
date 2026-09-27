@@ -261,12 +261,6 @@ MAINTENANCE_COMMAND_DECLARATIONS: Final[tuple[MaintenanceCommandDeclaration, ...
         "gc-history", "_blob_gc", "gc_history_command", "Show recent blob-GC passes recorded in ``gc_generations``."
     ),
     _command(
-        "gc-recover",
-        "_blob_gc",
-        "gc_recover_command",
-        "Inspect or explicitly abandon a blocked pending blob-GC generation without unlinking blobs.",
-    ),
-    _command(
         "verify-archive",
         "_verify_archive",
         "verify_archive_command",

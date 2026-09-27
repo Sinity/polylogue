@@ -793,10 +793,6 @@ class ResetRequest(_OperationPayload):
     reset_all: bool = False
 
 
-class BlobGCRecoverRequest(_OperationPayload):
-    generation_id: str = Field(min_length=1)
-
-
 class BlobPublicationsAbandonRequest(_OperationPayload):
     publication_ids: list[str] = Field(min_length=1, max_length=10_000)
 
@@ -2400,20 +2396,6 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=ResetRequest,
         result_model=MutationResult,
         handler="maintenance_reset",
-    ),
-    DaemonOperationSpec(
-        "maintenance.blob-gc.recover",
-        DaemonAuthority.WRITE,
-        DaemonFallback.NEVER,
-        capability="archive.blob_gc.abandon_pending_generation",
-        deadline_s=30.0,
-        request_contract="maintenance.blob-gc.recover.request/v1",
-        result_contract="mutation.result/v1",
-        request_type="BlobGCRecoverRequest",
-        result_type="MutationResult",
-        request_model=BlobGCRecoverRequest,
-        result_model=MutationResult,
-        handler="maintenance_blob_gc_recover",
     ),
     DaemonOperationSpec(
         "maintenance.blob-publications.abandon",
