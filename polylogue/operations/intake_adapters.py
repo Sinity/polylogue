@@ -204,6 +204,10 @@ class FileIntakeAdapter(IntakeAdapter):
                 self._fresh_exhausted_at = time.monotonic()
                 break
             except Exception:
+                # The continuation is gone. If a hint arrived during this
+                # walk, retry from the beginning before clearing its request.
+                if self._rescan_after_walk:
+                    self._after = None
                 self._reset_fresh_walk()
                 raise
             if path is not None:

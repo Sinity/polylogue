@@ -339,6 +339,46 @@ async def test_file_discovery_keeps_its_page_under_repeated_watcher_hints(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_file_discovery_retries_queued_rescan_after_walk_failure(tmp_path: Path) -> None:
+    """A failed continuation must not erase the hint that found an earlier file."""
+    root = tmp_path / "source"
+    root.mkdir()
+    first = root / "a.json"
+    first.write_text("{}")
+    (root / "z.json").write_text("{}")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+
+    class HintingWatcher:
+        revision = 0
+
+        def intake_revision(self, _source: WatchSource) -> int:
+            return self.revision
+
+    watcher = HintingWatcher()
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    page = await adapter.discover(limit=1)
+    assert [item.payload for item in page] == [first]
+    await adapter.acknowledge(page[0])
+
+    inserted = root / "0.json"
+    inserted.write_text("{}")
+    watcher.revision += 1
+
+    def failed_walk() -> Iterator[Path | None]:
+        raise OSError("temporary source-walk failure")
+        yield None
+
+    adapter._fresh_walk = failed_walk()
+    with pytest.raises(OSError, match="temporary source-walk failure"):
+        await adapter.discover(limit=1)
+    page = await adapter.discover(limit=1)
+    assert [item.payload for item in page] == [inserted]
+
+
+@pytest.mark.asyncio
 async def test_exhausted_file_walk_recovers_a_missed_nested_change(tmp_path: Path) -> None:
     root = tmp_path / "source"
     nested = root / "a"
