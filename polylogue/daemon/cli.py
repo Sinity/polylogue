@@ -118,6 +118,7 @@ def validate_api_bind_policy(*, enabled: bool, host: str, allow_remote: bool, au
 
 
 if TYPE_CHECKING:
+    from polylogue.daemon.events import DaemonEventRecord
     from polylogue.daemon.fts_convergence import FtsConvergenceOwner
     from polylogue.daemon.http import DaemonAPIHTTPServer
     from polylogue.daemon.intake_adapters import ColdBuildGeneration
@@ -1602,28 +1603,29 @@ def _emit_live_batch_event(kind: str, payload: dict[str, object]) -> None:
     refreshed by an event that only ever touched session B
     (polylogue-20d.13 -- the defect the description names: "an unscoped
     message event currently refreshes whichever session a browser has
-    open").
+    open"). The summary and every per-session event land in one ledger
+    transaction.
     """
+    from polylogue.daemon.events import DaemonEventRecord, emit_daemon_events
+
+    records = [DaemonEventRecord(kind, payload)]
+    if kind == "ingestion_batch":
+        records.extend(_live_batch_session_events(payload))
+    emit_daemon_events(records)
+
+
+def _live_batch_session_events(payload: dict[str, object]) -> list[DaemonEventRecord]:
+    """The identity-scoped session and message events one live batch implies."""
     from collections import Counter
 
-    from polylogue.daemon.events import (
-        emit_daemon_event,
-        emit_message_appended,
-        emit_session_appended,
-        emit_session_updated,
-    )
-
-    emit_daemon_event(kind, payload=payload)
-
-    if kind != "ingestion_batch":
-        return
+    from polylogue.daemon.events import message_appended_event, session_appended_event, session_updated_event
 
     succeeded_raw = payload.get("succeeded_file_count", 0)
     failed_raw = payload.get("failed_file_count", 0)
     succeeded = int(succeeded_raw) if isinstance(succeeded_raw, int | float) else 0
     failed = int(failed_raw) if isinstance(failed_raw, int | float) else 0
     if succeeded <= 0:
-        return
+        return []
 
     new_touches = _session_id_touches(payload, "new_sessions")
     updated_touches = _session_id_touches(payload, "updated_sessions")
@@ -1635,23 +1637,21 @@ def _emit_live_batch_event(kind: str, payload: dict[str, object]) -> None:
         # dropping the notification -- a coarse "something changed" signal
         # is still better than none, and existing consumers already treat
         # an absent session_id as "refresh regardless".
-        emit_session_appended(source_name=None, succeeded_file_count=succeeded, failed_file_count=failed)
-        emit_message_appended(session_id=None, source_name=None, appended_count=succeeded)
-        return
+        return [
+            session_appended_event(source_name=None, succeeded_file_count=succeeded, failed_file_count=failed),
+            message_appended_event(session_id=None, source_name=None, appended_count=succeeded),
+        ]
 
-    new_counts = Counter(new_touches)
-    for (source_name, session_id), count in new_counts.items():
-        emit_session_appended(
-            source_name=source_name,
-            succeeded_file_count=count,
-            session_id=session_id,
+    records: list[DaemonEventRecord] = []
+    for (source_name, session_id), count in Counter(new_touches).items():
+        records.append(
+            session_appended_event(source_name=source_name, succeeded_file_count=count, session_id=session_id)
         )
-        emit_message_appended(session_id=session_id, source_name=source_name, appended_count=count)
-
-    updated_counts = Counter(updated_touches)
-    for (source_name, session_id), count in updated_counts.items():
-        emit_session_updated(session_id=session_id, source_name=source_name, appended_count=count)
-        emit_message_appended(session_id=session_id, source_name=source_name, appended_count=count)
+        records.append(message_appended_event(session_id=session_id, source_name=source_name, appended_count=count))
+    for (source_name, session_id), count in Counter(updated_touches).items():
+        records.append(session_updated_event(session_id=session_id, source_name=source_name, appended_count=count))
+        records.append(message_appended_event(session_id=session_id, source_name=source_name, appended_count=count))
+    return records
 
 
 async def _emit_daemon_lifecycle_event(

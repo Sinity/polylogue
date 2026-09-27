@@ -166,3 +166,56 @@ def test_scope_refuses_an_unleased_entrant(store: CursorStore) -> None:
         with write_lease("test-writer"):
             with store.ops_write_scope():
                 pass
+
+
+def _cursor_size(store: CursorStore, path: Path) -> int | None:
+    with sqlite3.connect(store._ops_db_path) as conn:
+        row = conn.execute("SELECT stat_size FROM ingest_cursor WHERE source_path = ?", (str(path),)).fetchone()
+    return None if row is None else int(row[0])
+
+
+def test_ops_batch_commits_its_writes_once_at_the_end(store: CursorStore) -> None:
+    """Anti-vacuity: a per-write commit makes the first cursor visible to
+    another connection before the batch ends."""
+    first, second = Path("/tmp/a.jsonl"), Path("/tmp/b.jsonl")
+    with store.ops_write_scope():
+        with store.ops_batch():
+            store.set(first, 10)
+            assert _cursor_size(store, first) is None
+            store.set(second, 20)
+        assert (_cursor_size(store, first), _cursor_size(store, second)) == (10, 20)
+
+
+def test_ops_batch_rolls_back_as_a_unit(store: CursorStore) -> None:
+    """Anti-vacuity: committing inside the batch leaves the first cursor behind."""
+    path = Path("/tmp/a.jsonl")
+    with pytest.raises(RuntimeError, match="cursor write failed"):
+        with store.ops_write_scope(), store.ops_batch():
+            store.set(path, 10)
+            raise RuntimeError("cursor write failed")
+    assert _cursor_size(store, path) is None
+
+
+def test_ops_batch_holds_read_modify_writes_after_an_upsert(store: CursorStore) -> None:
+    """A group's cursor writes mix upserts and locked read-modify-writes.
+
+    Anti-vacuity: a read-modify-write that always issues ``BEGIN IMMEDIATE``
+    raises "cannot start a transaction within a transaction" once the batch's
+    first upsert has opened it (the published group then fails admission),
+    and one that commits its own upsert publishes the cursor mid-batch.
+    """
+    path = Path("/tmp/a.jsonl")
+    with store.ops_write_scope():
+        with store.ops_batch():
+            store.set(path, 10)
+            store.mark_failed(path)
+            assert _cursor_size(store, path) is None
+        assert _cursor_size(store, path) == 10
+    record = store.get_record(path)
+    assert record is not None and record.failure_count == 1
+
+
+def test_ops_batch_requires_a_scope(store: CursorStore) -> None:
+    with pytest.raises(RuntimeError, match="ops_write_scope"):
+        with store.ops_batch():
+            pass
