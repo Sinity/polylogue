@@ -86,6 +86,70 @@ def find_git_worktree_root(start: Path) -> Path | None:
     return None
 
 
+#: Variables that name a checkout. An agent shell started in the primary
+#: checkout carries them into every later command, including ones aimed at a
+#: worktree, so a tool launched from the worktree would resolve the primary
+#: checkout's code or interpreter and report its result as the worktree's.
+_CHECKOUT_ROOT_VARIABLES = ("POLYLOGUE_REPO_ROOT", "POLYLOGUE_ROOT")
+
+
+def _inside(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _foreign_checkout(path_text: str, root: Path) -> bool:
+    """Whether ``path_text`` lies in a Polylogue checkout other than ``root``."""
+    path = Path(path_text)
+    if not path_text or not path.is_absolute() or _inside(path, root):
+        return False
+    return find_git_worktree_root(path if path.is_dir() else path.parent) is not None
+
+
+def normalize_checkout_environment(root: Path, environ: dict[str, str] | None = None) -> list[str]:
+    """Rebind checkout-naming variables to ``root``; return what was corrected.
+
+    ``root`` is the checkout this devtools code belongs to, which the wrapper
+    derives from the working directory's Git root. Its own ``.venv`` is
+    authoritative: a ``VIRTUAL_ENV``, ``PATH`` or ``PYTHONPATH`` entry in a
+    different checkout is replaced or dropped, and ``POLYLOGUE_REPO_ROOT`` /
+    ``POLYLOGUE_ROOT`` are rebound, so every subprocess resolves this checkout.
+    """
+    env = os.environ if environ is None else environ
+    resolved_root = root.resolve()
+    corrected: list[str] = []
+    for name in _CHECKOUT_ROOT_VARIABLES:
+        value = env.get(name)
+        if value and Path(value).resolve() != resolved_root:
+            env[name] = str(resolved_root)
+            corrected.append(f"{name}={value}")
+    own_venv = resolved_root / ".venv"
+    virtual_env = env.get("VIRTUAL_ENV")
+    if virtual_env and not _inside(Path(virtual_env), resolved_root):
+        corrected.append(f"VIRTUAL_ENV={virtual_env}")
+        if own_venv.is_dir():
+            env["VIRTUAL_ENV"] = str(own_venv)
+        else:
+            env.pop("VIRTUAL_ENV", None)
+    for name in ("PATH", "PYTHONPATH"):
+        value = env.get(name)
+        if not value:
+            continue
+        entries = value.split(os.pathsep)
+        kept = [entry for entry in entries if not _foreign_checkout(entry, resolved_root)]
+        if name == "PATH" and (own_venv / "bin").is_dir() and str(own_venv / "bin") not in kept:
+            kept.insert(0, str(own_venv / "bin"))
+        if kept != entries:
+            dropped = [entry for entry in entries if entry not in kept]
+            if dropped:
+                corrected.append(f"{name} entries {dropped}")
+            env[name] = os.pathsep.join(kept)
+    return corrected
+
+
 def assert_polylogue_matches_checkout(repo_root: Path, *, context: str) -> Path:
     """Raise unless the resolved package path is contained by ``repo_root``."""
     resolved_root = repo_root.resolve()
