@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -159,6 +160,7 @@ def test_cold_build_eta_counts_only_matching_applied_raw_revisions(
 
     class Baseline:
         reads = 0
+        digest = "sealed-baseline"
 
         @property
         def accepted(self) -> tuple[SourceDecision, ...]:
@@ -171,6 +173,9 @@ def test_cold_build_eta_counts_only_matching_applied_raw_revisions(
     baseline = Baseline()
     from polylogue.sources.live import cold_build
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection as real_open
+
+    monotonic = [100.0]
+    monkeypatch.setattr(time, "monotonic", lambda: monotonic[0])
 
     profiles: list[tuple[str, bool]] = []
     candidate_sql: list[str] = []
@@ -197,18 +202,44 @@ def test_cold_build_eta_counts_only_matching_applied_raw_revisions(
         _store=cast(IndexGenerationStore, SimpleNamespace()),
         source_baseline=cast(ProductionSourceBaseline, baseline),
     )
+    generation._accepted_progress_started_at = monotonic[0]
     initial = generation.accepted_progress
     assert initial == (None, 2, None, None)
+    monotonic[0] = 101.0
     generation.refresh_accepted_progress()
     assert profiles == [("candidate.db", False), ("source.db", True)]
     assert any(statement == "BEGIN" for statement in candidate_sql)
     assert any("rowid <=" in statement for statement in candidate_sql)
     completed, planned, rate, eta = generation.accepted_progress
     assert (completed, planned) == (1, 2)
-    assert rate is not None and rate > 0
-    assert eta is not None and eta > 0
+    assert rate == 1.0
+    assert eta == 1.0
+
+    # A reconciliation with no newly matched keys is a new observation, not
+    # progress. The lifetime rate moves with elapsed time, while the advance
+    # timestamp stays fixed and ETA expires after a sustained stall.
+    monotonic[0] = 104.0
+    generation.refresh_accepted_progress()
+    assert generation._accepted_progress_last_observed_at == 104.0
+    assert generation._accepted_progress_last_advanced_at == 101.0
+    completed, _, rate, eta = generation.accepted_progress
+    assert completed == 1
+    assert rate == 0.25
+    assert eta == 4.0
+
+    monotonic[0] = 162.0
+    assert generation.accepted_progress[2] == 1 / 62
+    assert generation.accepted_progress[3] is None
+
+    # An unsealed denominator never produces a completion estimate.
+    generation._accepted_progress_denominator_sealed = False
+    monotonic[0] = 163.0
+    assert generation.accepted_progress[3] is None
+    generation._accepted_progress_denominator_sealed = True
+
     with sqlite3.connect(index) as conn:
         conn.execute("INSERT INTO raw_revision_applications VALUES ('two', 'applied_append')")
+    monotonic[0] = 164.0
     generation.refresh_accepted_progress()
     assert generation.accepted_progress[0] == 2
     assert generation.accepted_progress[3] == 0

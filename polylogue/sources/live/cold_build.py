@@ -60,6 +60,9 @@ if TYPE_CHECKING:
     from polylogue.sources.live.production_baseline import ProductionSourceBaseline
     from polylogue.sources.live.watcher import WatchSource
 
+
+_ACCEPTED_PROGRESS_STALL_AFTER_S = 60.0
+
 __all__ = [
     "ColdBuildGeneration",
     "active_cold_build_generation",
@@ -233,13 +236,17 @@ class ColdBuildGeneration:
     _accepted_progress_rowid: int = field(default=0, init=False, repr=False)
     _accepted_progress_index_identity: tuple[int, int] | None = field(default=None, init=False, repr=False)
     _accepted_progress_started_at: float = field(default_factory=time.monotonic, init=False, repr=False)
-    _accepted_progress_last_at: float | None = field(default=None, init=False, repr=False)
+    _accepted_progress_last_observed_at: float | None = field(default=None, init=False, repr=False)
+    _accepted_progress_last_advanced_at: float | None = field(default=None, init=False, repr=False)
+    _accepted_progress_denominator_sealed: bool = field(default=False, init=False, repr=False)
     _accepted_progress_valid: bool = field(default=False, init=False, repr=False)
     _accepted_progress_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         accepted = self.source_baseline.accepted
         self._accepted_progress_total = len(accepted)
+        # begin() supplies an immutable, integrity-sealed discovery baseline.
+        self._accepted_progress_denominator_sealed = bool(self.source_baseline.digest)
         weights: dict[tuple[str, int, str], int] = {}
         for row in accepted:
             if row.revision is None:
@@ -250,20 +257,31 @@ class ColdBuildGeneration:
 
     @property
     def accepted_progress(self) -> tuple[int | None, int, float | None, float | None]:
-        """Matching applied raw revisions, denominator, rate, and ETA.
+        """Matching applied revisions, sealed denominator, lifetime rate, and ETA.
 
+        The rate is cumulative from build start. ETA is available only after
+        recent count advancement; an observation alone never renews its clock.
         A warm status call only reads this cached projection. An intake pass
         advances it from candidate receipts after its writer has closed.
         """
         with self._accepted_progress_lock:
             denominator = self._accepted_progress_total
+            observed_at = time.monotonic()
+            self._accepted_progress_last_observed_at = observed_at
             if not self._accepted_progress_valid:
                 return None, denominator, None, None
             count = self._accepted_progress_count
-            last_at = self._accepted_progress_last_at
-            elapsed = last_at - self._accepted_progress_started_at if last_at is not None else 0.0
+            elapsed = observed_at - self._accepted_progress_started_at
             rate = count / elapsed if count > 0 and elapsed > 0 else None
-            eta = max(0, denominator - count) / rate if rate is not None else None
+            last_advanced_at = self._accepted_progress_last_advanced_at
+            advancing = (
+                last_advanced_at is not None and observed_at - last_advanced_at <= _ACCEPTED_PROGRESS_STALL_AFTER_S
+            )
+            eta = (
+                max(0, denominator - count) / rate
+                if self._accepted_progress_denominator_sealed and advancing and rate is not None
+                else None
+            )
             return count, denominator, rate, eta
 
     def invalidate_accepted_progress(self) -> None:
@@ -336,10 +354,14 @@ class ColdBuildGeneration:
             with self._accepted_progress_lock:
                 new_keys = matched.difference(self._accepted_progress_seen)
                 self._accepted_progress_seen.update(new_keys)
-                self._accepted_progress_count += sum(self._accepted_progress_weights[key] for key in new_keys)
+                count_advance = sum(self._accepted_progress_weights[key] for key in new_keys)
+                self._accepted_progress_count += count_advance
                 self._accepted_progress_rowid = head
                 self._accepted_progress_index_identity = identity
-                self._accepted_progress_last_at = time.monotonic()
+                observed_at = time.monotonic()
+                self._accepted_progress_last_observed_at = observed_at
+                if count_advance:
+                    self._accepted_progress_last_advanced_at = observed_at
                 self._accepted_progress_valid = True
         except (OSError, sqlite3.Error) as exc:
             self.invalidate_accepted_progress()
