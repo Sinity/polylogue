@@ -65,6 +65,7 @@ from polylogue.sources.assembly import SidecarData
 from polylogue.sources.codex_state_evidence import record_codex_state_snapshot_terminal
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import (
+    BUNDLE_PROVIDERS,
     detect_provider_evidence,
     detect_provider_from_raw_bytes_evidence,
     is_jsonl_source_path,
@@ -1003,6 +1004,19 @@ def prepare_retained_jsonl_artifact(
                 nonlocal evidence_digest
                 evidence_digest = _enrichment_evidence_digest(value)
 
+            sidecar_data_cache: SidecarData = {}
+            sidecar_data_loaded = False
+            from polylogue.sources.assembly import get_assembly_spec
+
+            prepare_per_session = (
+                not is_stream_record_provider(source_path, provider)
+                and provider in BUNDLE_PROVIDERS
+                and Path(source_path).name.lower().endswith(".json")
+            )
+
+            # Bundle providers have source-scoped assembly evidence. Codex's
+            # title enrichment needs the cohort's session IDs and is not a
+            # bundle provider, so it remains on the cohort callback below.
             def finalize(sessions: list[ParsedSession]) -> list[ParsedSession]:
                 selected = require_positive_conversational_evidence(
                     sessions, provider=provider, source_path=source_path
@@ -1019,6 +1033,28 @@ def prepare_retained_jsonl_artifact(
                     source_path=source_path,
                     evidence_observer=capture_evidence,
                 )
+
+            def prepare_bundle_session(session: ParsedSession) -> ParsedSession:
+                nonlocal sidecar_data_loaded
+                normalized = normalize_session_timestamps(session, fallback_timestamp=fallback_timestamp)
+                spec = get_assembly_spec(provider)
+                if spec is None:
+                    return cast(ParsedSession, normalized)
+                if not sidecar_data_loaded:
+                    sidecar_data_cache.update(
+                        _retained_enrichment_sidecar_data(
+                            provider=provider,
+                            sessions=(),
+                            index_conn=index_conn,
+                            source_conn=source_conn,
+                            blob_root=Path(blob_root),
+                            source_path=source_path,
+                        )
+                    )
+                    capture_evidence(sidecar_data_cache)
+                    sidecar_data_loaded = True
+                assert sidecar_data_loaded
+                return spec.enrich_session(normalized, sidecar_data_cache)
 
             def classify_records(records: Iterable[JSONValue]) -> Iterable[JSONValue]:
                 source = iter(records)
@@ -1039,7 +1075,8 @@ def prepare_retained_jsonl_artifact(
                     blob_root=Path(blob_root),
                     source_conn=source_conn,
                 ),
-                prepare_sessions=finalize,
+                prepare_session=prepare_bundle_session if prepare_per_session else None,
+                prepare_sessions=None if prepare_per_session else finalize,
                 prepare_records=classify_records,
                 preparation_dependency=lambda: (
                     _retained_dependency_digest(

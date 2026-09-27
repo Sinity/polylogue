@@ -6,13 +6,14 @@ import json
 import os
 import sqlite3
 import zipfile
+from collections.abc import Iterator, Sequence
 from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, cast, overload
 
 import pytest
 
@@ -29,10 +30,12 @@ from polylogue.archive.revision_authority import (
 from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS, RawFailureEvidenceKind
+from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.live import LiveWatcher, WatchSource
+from polylogue.sources.live import batch as live_batch
 from polylogue.sources.live.append_ingest import ingest_append_plans
 from polylogue.sources.live.batch import (
     _MAX_APPEND_PLAN_PAYLOAD_BYTES,
@@ -72,7 +75,7 @@ from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.sqlite.archive_tiers import archive as archive_tier_module
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
-from tests.infra.source_builders import make_chatgpt_node, make_claude_chat_message
+from tests.infra.source_builders import ChatGPTExportBuilder, make_chatgpt_node, make_claude_chat_message
 
 
 @pytest.mark.parametrize(
@@ -7314,6 +7317,256 @@ def test_raw_membership_decision_pending_distinguishes_null_from_ambiguous(tmp_p
             assert conn.execute(
                 "SELECT decision FROM raw_session_memberships WHERE raw_id = ?", (raw_id,)
             ).fetchone() == ("ambiguous",)
+
+
+def test_membership_publication_parses_each_retained_raw_once_for_multi_session_sequence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Membership indexes each raw once and omits missing IDs from classifier input.
+
+    The retained sessions contain one id-less and one provider-id-bearing
+    message. The classifier must receive exactly ``{"m0"}`` for each sibling;
+    dropping the non-null filter adds ``None`` and breaks the exact assertion.
+    """
+    source_raw_id = "current-raw"
+    retained_raw_id = "retained-raw"
+    current_sessions = [
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=native_id,
+            messages=[
+                ParsedMessage.model_construct(provider_message_id=None, role=Role.USER, text="generated identity"),
+                ParsedMessage(provider_message_id="m0", role=Role.ASSISTANT, text=native_id),
+            ],
+        )
+        for native_id in ("first", "second")
+    ]
+    retained_sessions = [session.model_copy(deep=True) for session in current_sessions]
+
+    class OnePassSessions(Sequence[ParsedSession]):
+        def __init__(self, rows: list[ParsedSession]) -> None:
+            self.rows = rows
+            self.iterations = 0
+
+        def __len__(self) -> int:
+            return len(self.rows)
+
+        @overload
+        def __getitem__(self, index: int) -> ParsedSession: ...
+
+        @overload
+        def __getitem__(self, index: slice) -> Sequence[ParsedSession]: ...
+
+        def __getitem__(self, _index: int | slice) -> ParsedSession | Sequence[ParsedSession]:
+            raise AssertionError("live membership publication should stream the prepared sequence")
+
+        def __iter__(self) -> Iterator[ParsedSession]:
+            self.iterations += 1
+            return iter(self.rows)
+
+    prepared_sessions = OnePassSessions(current_sessions)
+
+    class MembershipArchive:
+        def __init__(self) -> None:
+            self.classified_keys: list[str] = []
+
+        def convertible_full_revision_raw_ids(self, _logical_source_key: str) -> tuple[str, ...]:
+            return ()
+
+        def raw_membership_raw_ids(
+            self, _logical_source_key: str, *, include_complete_raw_ids: frozenset[str]
+        ) -> tuple[str, ...]:
+            assert include_complete_raw_ids == frozenset({source_raw_id})
+            return source_raw_id, retained_raw_id
+
+        def raw_revision_head_raw_id(self, _logical_source_key: str) -> None:
+            return None
+
+        def raw_revision_acquired_at_ms(self, _raw_id: str) -> int:
+            return 1
+
+        def apply_raw_membership_classification(self, logical_source_key: str, *_args: Any, **_kwargs: Any) -> None:
+            self.classified_keys.append(logical_source_key)
+            return None
+
+        def raw_membership_authority_complete(self, _raw_id: str) -> bool:
+            return True
+
+    archive = MembershipArchive()
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (),
+        cursor=CursorStore(tmp_path / "index.db"),
+        parser_fingerprint="test-parser",
+    )
+    parsed_raw_ids: list[str] = []
+
+    def parse_retained(_archive: Any, raw_id: str) -> list[ParsedSession]:
+        parsed_raw_ids.append(raw_id)
+        return retained_sessions
+
+    monkeypatch.setattr(processor, "_parse_retained_raw_sessions", parse_retained)
+    from polylogue.sources.live import batch as live_batch
+
+    captured_provider_ids: list[frozenset[str]] = []
+    classify = cast(Any, live_batch).classify_membership_revisions
+    projection = session_revision_projection(
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="stable-projection",
+            messages=[ParsedMessage(provider_message_id="m0", role=Role.ASSISTANT, text="stable")],
+        )
+    )
+    monkeypatch.setattr(live_batch, "session_revision_projection", lambda _session: projection)
+
+    def capture_provider_ids(revisions: Any, **kwargs: Any) -> Any:
+        captured_provider_ids.extend(
+            revision.provider_message_ids for revision in revisions if revision.raw_id == retained_raw_id
+        )
+        return classify(revisions, **kwargs)
+
+    monkeypatch.setattr(live_batch, "classify_membership_revisions", capture_provider_ids)
+
+    _, session_count, _, complete = processor._apply_membership_sessions(
+        archive,
+        source_raw_id,
+        prepared_sessions,
+        acquired_at_ms=1,
+        allow_current_complete_raw=True,
+    )
+
+    assert complete is True
+    assert session_count == 0
+    assert archive.classified_keys == ["codex-session:first", "codex-session:second"]
+    assert parsed_raw_ids == [retained_raw_id]
+    assert prepared_sessions.iterations == 1
+    assert captured_provider_ids == [frozenset({"m0"}), frozenset({"m0"})]
+
+
+def test_membership_publication_reads_retained_whole_json_by_index_without_cohort_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.sources.prepared_jsonl import PreparedJsonl, prepare_jsonl_blob
+
+    source_raw_id = "incoming"
+    retained_raw_id = "retained"
+    records = [
+        ChatGPTExportBuilder(f"conversation-{index}").add_node("user", f"Neutral prompt {index}").build()
+        for index in range(2)
+    ]
+    source_path = tmp_path / "conversations.json"
+    source_path.write_text(json.dumps(records), encoding="utf-8")
+    retained_artifact = prepare_jsonl_blob(
+        str(source_path),
+        str(source_path),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert retained_artifact.error is None
+    current_sessions = parse_payload(Provider.CHATGPT, records, "fallback", source_path=source_path.name)
+
+    class MembershipArchive:
+        archive_root = tmp_path
+        source_db_path = tmp_path / "source.db"
+        index_db_path = tmp_path / "index.db"
+
+        def __init__(self) -> None:
+            self.classified_keys: list[str] = []
+
+        def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]:
+            assert raw_id == retained_raw_id
+            return Provider.CHATGPT, cast(str, retained_artifact.blob_hash), source_path.name, RawRevisionKind.FULL, 1
+
+        def raw_revision_file_mtime(self, _raw_id: str) -> None:
+            return None
+
+        def convertible_full_revision_raw_ids(self, _logical_source_key: str) -> tuple[str, ...]:
+            return ()
+
+        def raw_membership_raw_ids(
+            self, _logical_source_key: str, *, include_complete_raw_ids: frozenset[str]
+        ) -> tuple[str, ...]:
+            assert include_complete_raw_ids == frozenset({source_raw_id})
+            return source_raw_id, retained_raw_id
+
+        def raw_revision_head_raw_id(self, _logical_source_key: str) -> None:
+            return None
+
+        def raw_revision_acquired_at_ms(self, _raw_id: str) -> int:
+            return 1
+
+        def apply_raw_membership_classification(self, logical_source_key: str, *_args: Any, **_kwargs: Any) -> None:
+            self.classified_keys.append(logical_source_key)
+            return None
+
+        def raw_membership_authority_complete(self, _raw_id: str) -> bool:
+            return True
+
+    archive = MembershipArchive()
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (),
+        cursor=CursorStore(tmp_path / "index.db"),
+        parser_fingerprint="test-parser",
+    )
+
+    def forbidden_parse(_archive: Any, _raw_id: str) -> list[ParsedSession]:
+        raise AssertionError("prepared retained sessions must not be materialized as a Python cohort")
+
+    def forbidden_iteration(_artifact: PreparedJsonl) -> Any:
+        raise AssertionError("membership lookup must not iterate a sibling artifact cohort")
+
+    monkeypatch.setattr(processor, "_parse_retained_raw_sessions", forbidden_parse)
+    monkeypatch.setattr(PreparedJsonl, "iter_sessions", forbidden_iteration)
+    monkeypatch.setattr(live_batch, "prepare_retained_jsonl_artifact", lambda *_args: retained_artifact)
+
+    _, session_count, _, complete = processor._apply_membership_sessions(
+        archive,
+        source_raw_id,
+        current_sessions,
+        acquired_at_ms=1,
+        allow_current_complete_raw=True,
+    )
+
+    assert complete is True
+    assert session_count == 0
+    assert archive.classified_keys == [
+        f"{origin_from_provider(Provider.CHATGPT).value}:conversation-0",
+        f"{origin_from_provider(Provider.CHATGPT).value}:conversation-1",
+    ]
+    assert retained_artifact.sessions_path is not None and not retained_artifact.sessions_path.exists()
+
+    failed_artifact = prepare_jsonl_blob(
+        str(source_path),
+        str(source_path),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared-failure"),
+    )
+    assert failed_artifact.error is None
+    failed_sessions_path = failed_artifact.sessions_path
+    failed_shard_path = failed_artifact.shard_path
+    assert failed_sessions_path is not None and failed_sessions_path.exists()
+    assert failed_shard_path is not None and failed_shard_path.exists()
+
+    def fail_sequence(_artifact: PreparedJsonl) -> Any:
+        raise ValueError("synthetic sequence seal failure")
+
+    monkeypatch.setattr(live_batch, "prepare_retained_jsonl_artifact", lambda *_args: failed_artifact)
+    monkeypatch.setattr(PreparedJsonl, "session_sequence", fail_sequence)
+    with pytest.raises(ValueError, match="synthetic sequence seal failure"):
+        processor._apply_membership_sessions(
+            archive,
+            source_raw_id,
+            current_sessions,
+            acquired_at_ms=1,
+            allow_current_complete_raw=True,
+        )
+    assert not failed_sessions_path.exists()
+    assert not failed_shard_path.exists()
 
 
 def test_live_membership_reprocesses_parser_drift_without_retiring_unrelated_head(tmp_path: Path) -> None:

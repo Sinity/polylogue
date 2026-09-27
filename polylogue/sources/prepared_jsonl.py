@@ -8,11 +8,12 @@ import json
 import os
 import sqlite3
 import uuid
-from collections.abc import Callable, Generator, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import closing
 from dataclasses import asdict, dataclass
+from itertools import islice
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, overload
 from urllib.parse import quote
 
 from polylogue.core.enums import Provider
@@ -27,6 +28,7 @@ from polylogue.sources.dispatch import (
     iter_bundle_record_sessions,
     parse_payload,
     parse_stream_payload,
+    require_positive_conversational_evidence,
 )
 from polylogue.sources.parsers import browser_capture
 from polylogue.sources.parsers.base import ParsedSession
@@ -42,6 +44,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     prepare_session_shard,
 )
 from polylogue.storage.sqlite.archive_tiers.write_shard import (
+    SessionShard,
     SessionShardBuilder,
     discard_session_shard,
     open_session_shard,
@@ -135,6 +138,7 @@ class PreparedJsonl:
     prepared_writes: tuple[PreparedSessionWrite, ...] = ()
     parsed_prefix_size: int | None = None
     resolved_provider: Provider | None = None
+    positive_evidence_filtered: bool = False
 
     @classmethod
     def seal(
@@ -147,6 +151,7 @@ class PreparedJsonl:
         enrichment_index_path: str | None = None,
         parsed_prefix_size: int | None = None,
         resolved_provider: Provider | None = None,
+        positive_evidence_filtered: bool = False,
     ) -> PreparedJsonl:
         """Take custody only after both SQLite writers have closed."""
         return cls(
@@ -159,6 +164,7 @@ class PreparedJsonl:
             shard_seal=PreparedFileSeal.capture(shard_path),
             parsed_prefix_size=parsed_prefix_size,
             resolved_provider=resolved_provider,
+            positive_evidence_filtered=positive_evidence_filtered,
         )
 
     def verify_files(self, *, full: bool) -> None:
@@ -253,6 +259,141 @@ class PreparedJsonl:
     def load_sessions(self) -> list[ParsedSession]:
         """Compatibility adapter for publication callers that consume a cohort."""
         return list(self.iter_sessions())
+
+    def session_sequence(self) -> PreparedSessionSequence:
+        """Expose a sealed cohort without retaining its parsed sessions in Python."""
+        if self.sessions_path is None:
+            raise RuntimeError(self.error or "JSONL preparation has no sealed artifact")
+        self.verify_files(full=False)
+        uri = f"file:{quote(str(self.sessions_path))}?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as conn:
+            seal = conn.execute(
+                "SELECT version, source_hash, session_count, enrichment_digest, enrichment_index_path "
+                "FROM artifact_seal"
+            ).fetchall()
+            if len(seal) != 1 or (
+                seal[0][0],
+                seal[0][1],
+                seal[0][3],
+                seal[0][4],
+            ) != (
+                _ARTIFACT_VERSION,
+                self.blob_hash,
+                self.enrichment_digest,
+                self.enrichment_index_path,
+            ):
+                raise ValueError("JSONL preparation seal or source dependency changed")
+            count = int(seal[0][2])
+            actual_count = int(conn.execute("SELECT COUNT(*) FROM prepared_session").fetchone()[0])
+        if actual_count != count:
+            raise ValueError("JSONL preparation session count changed")
+        return PreparedSessionSequence(self, count)
+
+    def session_by_id(self, session_id: str, *, _shard: SessionShard | None = None) -> ParsedSession:
+        """Read one sealed session through the artifact's unique identity index."""
+        if self.sessions_path is None or self.blob_hash is None or self.shard_path is None:
+            raise RuntimeError(self.error or "JSONL preparation has no sealed artifact")
+        self.verify_files(full=False)
+        shard = _shard if _shard is not None else open_session_shard(self.shard_path)
+        uri = f"file:{quote(str(self.sessions_path))}?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as conn:
+            seal = conn.execute(
+                "SELECT version, source_hash, session_count, enrichment_digest, enrichment_index_path "
+                "FROM artifact_seal"
+            ).fetchall()
+            if seal != [
+                (
+                    _ARTIFACT_VERSION,
+                    self.blob_hash,
+                    len(shard.sessions),
+                    self.enrichment_digest,
+                    self.enrichment_index_path,
+                )
+            ]:
+                raise ValueError("JSONL preparation seal or source dependency changed")
+            rows = conn.execute(
+                "SELECT session_id, metadata_json, message_ordinal, message_count, event_ordinal, event_count "
+                "FROM prepared_session WHERE session_id = ? LIMIT 2",
+                (session_id,),
+            ).fetchall()
+            if len(rows) != 1:
+                raise KeyError(session_id)
+            stored_id, metadata_json, message_ordinal, message_count, event_ordinal, event_count = rows[0]
+            try:
+                shard_entry = shard.by_session_id()[stored_id]
+            except KeyError as exc:
+                raise ValueError("JSONL preparation session is absent from row shard") from exc
+            physical_count = conn.execute(
+                "SELECT COUNT(*) FROM prepared_message WHERE session_ordinal = ?", (message_ordinal,)
+            ).fetchone()[0]
+            if physical_count != message_count or physical_count != shard_entry.message_row_count:
+                raise ValueError("JSONL preparation message count disagrees with row shard")
+            physical_events = conn.execute(
+                "SELECT COUNT(*) FROM prepared_event WHERE session_ordinal = ?", (event_ordinal,)
+            ).fetchone()[0]
+            if physical_events != event_count:
+                raise ValueError("JSONL preparation event count changed")
+            metadata = json.loads(metadata_json)
+            for attachment in metadata.get("attachments", []):
+                encoded = attachment.pop("_prepared_inline_bytes", None)
+                if encoded is not None:
+                    attachment["inline_bytes"] = base64.b64decode(encoded, validate=True)
+            metadata["messages"] = []
+            metadata["session_events"] = []
+            session = ParsedSession.model_validate(metadata)
+            return session.model_copy(
+                update={
+                    "messages": SqliteMessageSink(self.sessions_path, message_ordinal, count=message_count),
+                    "session_events": SqliteSessionEventSink(self.sessions_path, event_ordinal, count=event_count),
+                }
+            )
+
+
+class PreparedSessionSequence(Sequence[ParsedSession]):
+    """A reusable session view over the sealed worker artifact."""
+
+    def __init__(self, artifact: PreparedJsonl, count: int) -> None:
+        self.artifact = artifact
+        self._count = count
+        if artifact.shard_path is None:
+            raise RuntimeError(artifact.error or "JSONL preparation has no row shard")
+        self._shard = open_session_shard(artifact.shard_path)
+        if len(self._shard.sessions) != count:
+            raise ValueError("JSONL preparation session count disagrees with row shard")
+
+    def __len__(self) -> int:
+        return self._count
+
+    def by_session_id(self, session_id: str) -> ParsedSession:
+        return self.artifact.session_by_id(session_id, _shard=self._shard)
+
+    def iter_session_ids(self) -> Iterator[str]:
+        """Stream canonical archive IDs from the artifact's unique SQLite index."""
+        if self.artifact.sessions_path is None:
+            raise RuntimeError(self.artifact.error or "JSONL preparation has no sealed artifact")
+        self.artifact.verify_files(full=False)
+        uri = f"file:{quote(str(self.artifact.sessions_path))}?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as conn:
+            for (session_id,) in conn.execute("SELECT session_id FROM prepared_session ORDER BY session_id"):
+                yield str(session_id)
+
+    def __iter__(self) -> Iterator[ParsedSession]:
+        return self.artifact.iter_sessions()
+
+    @overload
+    def __getitem__(self, index: int) -> ParsedSession: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[ParsedSession]: ...
+
+    def __getitem__(self, index: int | slice) -> ParsedSession | list[ParsedSession]:
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(self._count))]
+        if index < 0:
+            index += self._count
+        if index < 0 or index >= self._count:
+            raise IndexError(index)
+        return next(islice(self.artifact.iter_sessions(), index, index + 1))
 
 
 def _write_artifact(
@@ -362,6 +503,7 @@ def prepare_jsonl_blob(
     shard_directory: str,
     sidecar_resolver: SidecarResolver | None = None,
     prepare_sessions: Callable[[list[ParsedSession]], list[ParsedSession]] | None = None,
+    prepare_session: Callable[[ParsedSession], ParsedSession] | None = None,
     preparation_dependency: Callable[[], tuple[str | None, str | None]] | None = None,
     parse_prefix_size: int | None = None,
     prepare_records: Callable[[Iterable[JSONValue]], Iterable[JSONValue]] | None = None,
@@ -386,38 +528,47 @@ def prepare_jsonl_blob(
         if (
             not is_stream
             and provider in BUNDLE_PROVIDERS
-            and prepare_records is None
             and prepare_sessions is None
             and Path(source_path).name.lower().endswith(".json")
         ):
             with source.open("rb") as handle:
                 stream_prefix = json_record_container(handle)
         if stream_prefix is not None:
+
+            def bundle_records() -> Iterator[JSONValue]:
+                with source.open("rb") as handle:
+                    records: Iterable[JSONValue] = iter_json_container_records(handle, stream_prefix)
+                    if prepare_records is not None:
+                        records = prepare_records(records)
+                    yield from records
+
             count = 0
             all_browser_captures = True
-            with source.open("rb") as handle:
-                for record in iter_json_container_records(handle, stream_prefix):
-                    count += 1
-                    all_browser_captures = all_browser_captures and (
-                        isinstance(record, dict) and browser_capture.looks_like(record)
-                    )
+            for record in bundle_records():
+                count += 1
+                all_browser_captures = all_browser_captures and (
+                    isinstance(record, dict) and browser_capture.looks_like(record)
+                )
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(directory / f"shard-{uuid.uuid4().hex}.db")
             session_count = 0
-            with source.open("rb") as handle:
-                for session in iter_bundle_record_sessions(
-                    provider,
-                    iter_json_container_records(handle, stream_prefix),
-                    fallback_id,
-                    count=count,
-                    all_browser_captures=all_browser_captures,
-                    source_path=source_path,
-                    sidecar_resolver=sidecar_resolver,
-                ):
-                    session.content_hash = session_content_hash(session)
-                    append_session_to_shard(shard_builder, session)
-                    _append_artifact_session(store, session_count, session)
-                    session_count += 1
+            for session in iter_bundle_record_sessions(
+                provider,
+                bundle_records(),
+                fallback_id,
+                count=count,
+                all_browser_captures=all_browser_captures,
+                source_path=source_path,
+                sidecar_resolver=sidecar_resolver,
+            ):
+                if not require_positive_conversational_evidence([session], provider=provider, source_path=source_path):
+                    continue
+                if prepare_session is not None:
+                    session = prepare_session(session)
+                session.content_hash = session_content_hash(session)
+                append_session_to_shard(shard_builder, session)
+                _append_artifact_session(store, session_count, session)
+                session_count += 1
             after_hash = _source_digest(source)
             if before_hash != after_hash:
                 raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
@@ -463,6 +614,12 @@ def prepare_jsonl_blob(
                 raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
             if prepare_sessions is not None:
                 sessions = prepare_sessions(sessions)
+            elif prepare_session is not None:
+                sessions = [
+                    prepare_session(session)
+                    for session in sessions
+                    if require_positive_conversational_evidence([session], provider=provider, source_path=source_path)
+                ]
             for session in sessions:
                 session.content_hash = session_content_hash(session)
             shard_path = prepare_session_shard(directory, sessions).path
@@ -486,6 +643,8 @@ def prepare_jsonl_blob(
             enrichment_index_path=enrichment_index_path,
             parsed_prefix_size=parse_prefix_size,
             resolved_provider=provider,
+            positive_evidence_filtered=stream_prefix is not None
+            or (prepare_sessions is None and prepare_session is not None),
         )
         sealed = True
         return result

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -1013,6 +1014,39 @@ def test_parser_census_writers_persist_a_row_without_a_timestamp(tmp_path: Path)
     assert str(blocked["status"]) == "failed"
     assert "exceeds envelope" in str(blocked["detail"])
     verify.close()
+
+
+def test_parser_census_identity_comparison_is_streamed_and_deduplicated(tmp_path: Path) -> None:
+    """Parser identities stay in scratch SQLite and retain sorted-set parity."""
+    from polylogue.sources.parsers.base_models import ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import _file_backed_parser_census_keys
+
+    class OnePassSessions:
+        def __init__(self) -> None:
+            self.reads = 0
+
+        def __iter__(self) -> Iterator[ParsedSession]:
+            assert self.reads == 0
+            self.reads += 1
+            yield ParsedSession(source_name=Provider.CHATGPT, provider_session_id="a", messages=[])
+            yield ParsedSession(source_name=Provider.CHATGPT, provider_session_id="b", messages=[])
+            yield ParsedSession(source_name=Provider.CHATGPT, provider_session_id="a", messages=[])
+
+    conn = _connect(tmp_path / "source.db")
+    sessions = OnePassSessions()
+    valid, matches, count, encoded = _file_backed_parser_census_keys(
+        conn,
+        "synthetic-raw",
+        None,
+        None,
+        sessions,  # type: ignore[arg-type]
+    )
+    assert sessions.reads == 1
+    assert valid is True
+    assert matches is False
+    assert count == 2
+    assert encoded == '["chatgpt-export:a","chatgpt-export:b"]'
+    conn.close()
 
 
 def test_newer_raw_replaces_a_terminal_carrier(tmp_path: Path) -> None:
