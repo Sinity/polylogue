@@ -1111,16 +1111,16 @@ def test_main_reuses_a_green_receipt_without_queueing(
 
 
 def test_identical_selections_in_one_checkout_share_one_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A second caller with the same selection waits for the first, then reuses its receipt.
+    """A second caller with the same selection waits until the first releases.
 
-    Anti-vacuity: remove ``_hold_selection_lock`` and the second process
-    finishes while the first still holds the lock, so its recorded wait is
-    missing.
+    Anti-vacuity: remove the blocking acquisition in ``_hold_selection_lock``
+    and the second caller returns while the first still holds the lock, so
+    the first ``wait`` below sees it done.
     """
     import fcntl
     import hashlib
     import os
-    import time
+    import threading
 
     monkeypatch.setattr(run_tests, "ROOT", tmp_path)
     selection = ["tests/unit/test_a.py"]
@@ -1129,24 +1129,21 @@ def test_identical_selections_in_one_checkout_share_one_run(tmp_path: Path, monk
     digest = hashlib.sha256(json.dumps(selection).encode("utf-8")).hexdigest()[:24]
     held = os.open(lock_dir / f"{digest}.lock", os.O_RDWR | os.O_CREAT, 0o600)
     fcntl.flock(held, fcntl.LOCK_EX)
-    released_at: list[float] = []
+    done = threading.Event()
 
-    import threading
+    def second_caller() -> None:
+        run_tests._hold_selection_lock(selection)
+        done.set()
 
-    def release_later() -> None:
-        time.sleep(0.3)
-        released_at.append(time.monotonic())
-        fcntl.flock(held, fcntl.LOCK_UN)
-
-    thread = threading.Thread(target=release_later)
+    thread = threading.Thread(target=second_caller, daemon=True)
     thread.start()
-    run_tests._hold_selection_lock(selection)
-    acquired_at = time.monotonic()
-    thread.join()
-    os.close(held)
     try:
-        assert released_at and acquired_at >= released_at[0]
+        assert not done.wait(timeout=0.5), "the second caller did not wait for the first"
+        fcntl.flock(held, fcntl.LOCK_UN)
+        assert done.wait(timeout=10), "the second caller never acquired after release"
     finally:
+        os.close(held)
+        thread.join(timeout=10)
         for handle in run_tests._SELECTION_LOCKS:
             os.close(handle)
         run_tests._SELECTION_LOCKS.clear()
