@@ -20,6 +20,7 @@ from polylogue.archive.ingest_flags import (
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.core.errors import SchemaSkew
+from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.pipeline.parsed_tree_size import estimate_parsed_tree_bytes
 from polylogue.sources import revision_backfill
 from polylogue.sources.decoders import _iter_json_stream
@@ -53,7 +54,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.storage.sqlite.connection_profile import ReadFrameCancelledError
+from polylogue.storage.sqlite.connection_profile import ReadFrame, ReadFrameCancelledError, StaleContinuationError
 from polylogue.storage.sqlite.runtime_indexes import DEFERRED_SECONDARY_INDEX_NAMES
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.revision_backfill_benchmark import (
@@ -150,6 +151,160 @@ def test_revision_backfill_profile_preserves_stale_source_tier_diagnostic(tmp_pa
 
     with pytest.raises(SchemaSkew, match="source schema skew"):
         revision_backfill._expand_frozen_revision_link_selection(root, [])
+
+
+def test_current_parser_source_census_rebinds_between_bounded_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: Any
+) -> None:
+    """The census retries complete pages after their streams expire mid-page.
+
+    Anti-vacuity: the clock advances after row one of two while both the raw-ID
+    and parser-census streams yield, forcing expiry before either stream ends.
+    """
+    root = tmp_path / "archive"
+    bootstrap_archive_root(root)
+    raw_ids: list[str] = []
+
+    def write_terminal_non_session(archive: ArchiveStore, index: int) -> str:
+        source_path = f"synthetic/census-{index}.jsonl"
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=f"not valid codex jsonl {index}".encode(),
+            source_path=source_path,
+            acquired_at_ms=index + 1,
+        )
+        archive.record_raw_failure_evidence(
+            raw_id,
+            provider=Provider.CODEX,
+            source_path=source_path,
+            source_index=0,
+            acquired_at_ms=index + 1,
+            kind=RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
+        )
+        archive.mark_raw_parse_failed(
+            raw_id,
+            provider=Provider.CODEX,
+            error=ValueError("synthetic terminal corrupt source"),
+            preserve_existing_failure_evidence=True,
+        )
+        with archive._ensure_source_conn():
+            archive_revision_governance.record_current_parser_source_census(archive._ensure_source_conn(), raw_id)
+        return raw_id
+
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        for index in range(2):
+            raw_ids.append(write_terminal_non_session(archive, index))
+
+    monkeypatch.setattr(revision_backfill, "_CURRENT_SOURCE_CENSUS_PAGE_SIZE", 2)
+    real_read_frame = cast(Any, revision_backfill).read_frame
+    frames: list[ReadFrame] = []
+
+    @contextmanager
+    def capture_frames(path: str | Path, **kwargs: Any) -> Iterator[ReadFrame]:
+        with real_read_frame(path, **kwargs) as frame:
+            frames.append(frame)
+            yield frame
+
+    real_stream = ReadFrame.stream
+    expired_id_page = False
+    expired_census_page = False
+
+    def expire_after_first_census_page(frame: ReadFrame, sql: str, parameters: Any = ()) -> Iterator[sqlite3.Row]:
+        nonlocal expired_id_page, expired_census_page
+        for row in real_stream(frame, sql, parameters):
+            yield row
+            if not expired_id_page and sql.startswith("SELECT raw_id FROM raw_sessions"):
+                expired_id_page = True
+                frozen_clock.advance(301)
+            if not expired_census_page and "LEFT JOIN raw_authority_parser_census" in sql:
+                expired_census_page = True
+                frozen_clock.advance(301)
+
+    monkeypatch.setattr(revision_backfill, "read_frame", capture_frames)
+    monkeypatch.setattr(ReadFrame, "stream", expire_after_first_census_page)
+
+    result = revision_backfill.require_current_parser_source_census(root)
+
+    assert result == dict.fromkeys(raw_ids, ())
+    assert expired_id_page and expired_census_page
+    assert frames and frames[0].epoch >= 2
+
+
+def test_current_parser_source_census_refuses_reused_rowid_frontier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deleted maximum rowid cannot admit a concurrent replacement.
+
+    Anti-vacuity: replace the only raw row after frontier capture, confirm
+    SQLite reuses its rowid, and require the census to refuse the mixed read.
+    """
+    root = tmp_path / "archive"
+    bootstrap_archive_root(root)
+
+    def write_terminal_non_session(archive: ArchiveStore, index: int) -> str:
+        source_path = f"synthetic/reused-rowid-{index}.jsonl"
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=f"not valid codex jsonl {index}".encode(),
+            source_path=source_path,
+            acquired_at_ms=index + 1,
+        )
+        archive.record_raw_failure_evidence(
+            raw_id,
+            provider=Provider.CODEX,
+            source_path=source_path,
+            source_index=0,
+            acquired_at_ms=index + 1,
+            kind=RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
+        )
+        archive.mark_raw_parse_failed(
+            raw_id,
+            provider=Provider.CODEX,
+            error=ValueError("synthetic terminal corrupt source"),
+            preserve_existing_failure_evidence=True,
+        )
+        with archive._ensure_source_conn():
+            archive_revision_governance.record_current_parser_source_census(archive._ensure_source_conn(), raw_id)
+        return raw_id
+
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        original_raw_id = write_terminal_non_session(archive, 0)
+        original_rowid = int(
+            archive._ensure_source_conn()
+            .execute("SELECT rowid FROM raw_sessions WHERE raw_id = ?", (original_raw_id,))
+            .fetchone()[0]
+        )
+
+    monkeypatch.setattr(revision_backfill, "_CURRENT_SOURCE_CENSUS_PAGE_SIZE", 2)
+    real_stream = ReadFrame.stream
+    replaced = False
+    replacement_raw_id: str | None = None
+
+    def replace_maximum_rowid(frame: ReadFrame, sql: str, parameters: Any = ()) -> Iterator[sqlite3.Row]:
+        nonlocal replaced, replacement_raw_id
+        if not replaced and sql.startswith("SELECT raw_id FROM raw_sessions"):
+            replaced = True
+            with ArchiveStore.open_existing(root, read_only=False) as archive:
+                with archive._ensure_source_conn():
+                    archive._ensure_source_conn().execute(
+                        "DELETE FROM raw_sessions WHERE raw_id = ?", (original_raw_id,)
+                    )
+                replacement_raw_id = write_terminal_non_session(archive, 1)
+                replacement_rowid = (
+                    archive._ensure_source_conn()
+                    .execute("SELECT rowid FROM raw_sessions WHERE raw_id = ?", (replacement_raw_id,))
+                    .fetchone()[0]
+                )
+                assert int(replacement_rowid) == original_rowid
+        yield from real_stream(frame, sql, parameters)
+
+    monkeypatch.setattr(ReadFrame, "stream", replace_maximum_rowid)
+
+    with pytest.raises(StaleContinuationError, match="source archive changed during parser source census"):
+        revision_backfill.require_current_parser_source_census(root)
+
+    assert replaced
+    assert replacement_raw_id is not None and replacement_raw_id != original_raw_id
 
 
 def _chatgpt_session(native_id: str, *texts: str) -> dict[str, object]:
