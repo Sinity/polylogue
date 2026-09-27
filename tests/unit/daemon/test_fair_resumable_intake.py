@@ -43,6 +43,7 @@ from polylogue.operations.intake_adapters import (
     DaemonIntakeContext,
     DaemonIntakeService,
     FileIntakeAdapter,
+    MultiplexIntakeAdapter,
     RawMaterializationDiscovery,
     RawMaterializationIntakeAdapter,
     _bounded_source_paths,
@@ -582,12 +583,100 @@ async def test_retry_cooldown_does_not_restart_large_file_walk(
     assert watcher.poison_attempts == 2
     assert len(walk_starts) == 1
 
+    if not durable_retry:
+        now[0] = 10.2
+        for _ in range(2):
+            await dispatcher.run_once()
+        assert watcher.poison_attempts == 3
+        assert len(walk_starts) == 1
+        watcher._cursor = cursor  # type: ignore[attr-defined]
+        now[0] = 15.3
+        await dispatcher.run_once()
+        assert watcher.poison_attempts == 3
+        cursor.due = True
+        await dispatcher.run_once()
+        assert watcher.poison_attempts == 4
+
     inserted = root / "0.json"
     inserted.write_text("{}")
     watcher.revision += 1
-    await dispatcher.run_once()
+    for _ in range(3):
+        await dispatcher.run_once()
+        if inserted in watcher.admitted:
+            break
     assert inserted in watcher.admitted
     assert len(walk_starts) == 2
+
+
+@pytest.mark.asyncio
+async def test_retry_debt_overflow_revisits_evicted_file_after_cooldown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bounded retry cache cannot hide its 257th live carrier for ten minutes."""
+    root = tmp_path / "source"
+    root.mkdir()
+    files = tuple(root / f"{index:04d}.json" for index in range(300))
+    for path in files:
+        path.write_text("{}")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+    now = [0.0]
+    walk_starts = 0
+
+    def counted_steps(*args: Any, **kwargs: Any) -> Iterator[Path | None]:
+        nonlocal walk_starts
+        walk_starts += 1
+        return real_source_path_steps(*args, **kwargs)
+
+    monkeypatch.setattr("polylogue.operations.intake_adapters._source_path_steps", counted_steps)
+
+    class BurstWatcher:
+        admitted: list[Path] = []
+
+        def intake_revision(self, _source: WatchSource) -> int:
+            return 0
+
+        def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
+            return tuple(paths)
+
+        async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+            if now[0] < 5.0:
+                return SimpleNamespace(
+                    succeeded_paths=(),
+                    failed_paths=tuple(str(path) for path in paths),
+                    source_payload_read_bytes=0,
+                )
+            self.admitted.extend(paths)
+            return SimpleNamespace(
+                succeeded_paths=tuple(str(path) for path in paths),
+                failed_paths=(),
+                source_payload_read_bytes=sum(path.stat().st_size for path in paths),
+            )
+
+    watcher = BurstWatcher()
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+        clock=lambda: now[0],
+    )
+    dispatcher = FairIntakeDispatcher(
+        [IntakeClassSpec(name="capture", adapter=adapter, page_size=32, max_attempts=1, retry_cooldown_s=5.0)],
+        clock=lambda: now[0],
+    )
+
+    for _ in range(24):
+        await dispatcher.run_once()
+    assert walk_starts == 1
+    assert len(adapter._fresh_retry_debt) == 256
+    assert files[0] not in adapter._fresh_retry_debt
+    assert not adapter.discovery_pending
+
+    now[0] = 5.1
+    for _ in range(40):
+        await dispatcher.run_once()
+        if files[0] in watcher.admitted:
+            break
+    assert files[0] in watcher.admitted
+    assert walk_starts == 2
 
 
 @pytest.mark.asyncio
@@ -685,6 +774,68 @@ async def test_intake_service_keeps_scanning_before_declaring_backlog_drained(
     try:
         await asyncio.wait_for(drained.wait(), timeout=2.0)
         assert drained_after == [str(accepted)]
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("multiplex", [False, True])
+async def test_cold_build_waits_for_local_retry_debt_without_cursor_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, multiplex: bool
+) -> None:
+    """A failed file cannot settle the candidate before its local retry succeeds."""
+    monkeypatch.setattr("polylogue.operations.intake_adapters._FILE_RETRY_DELAY_S", 0.1)
+    path = tmp_path / "capture.json"
+    path.write_text("{}")
+    source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
+
+    class ColdBuildWatcher:
+        attempts = 0
+        admitted = False
+
+        def intake_revision(self, _source: WatchSource) -> int:
+            return 0
+
+        def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
+            return tuple(paths)
+
+        async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+            self.attempts += 1
+            if self.attempts == 1:
+                return SimpleNamespace(succeeded_paths=(), failed_paths=(str(path),), source_payload_read_bytes=0)
+            self.admitted = True
+            return SimpleNamespace(succeeded_paths=(str(path),), failed_paths=(), source_payload_read_bytes=2)
+
+    watcher = ColdBuildWatcher()
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    scheduled_adapter = MultiplexIntakeAdapter((adapter,)) if multiplex else adapter
+    dispatcher = FairIntakeDispatcher(
+        [IntakeClassSpec(name="capture", adapter=scheduled_adapter, retry_cooldown_s=0.1, max_attempts=1)]
+    )
+    drained = asyncio.Event()
+    settled_after_admission: list[bool] = []
+
+    def on_drained() -> None:
+        settled_after_admission.append(watcher.admitted)
+        drained.set()
+
+    service = DaemonIntakeService(
+        dispatcher,
+        idle_delay_s=5.0,
+        on_backlog_drained=on_drained,
+        has_pending_backlog=lambda: False,
+    )
+    service._progressed_once = True
+    task = asyncio.create_task(service.run())
+    try:
+        await asyncio.wait_for(drained.wait(), timeout=2.0)
+        assert watcher.attempts == 2
+        assert settled_after_admission == [True]
     finally:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):

@@ -118,6 +118,7 @@ class FileIntakeAdapter(IntakeAdapter):
         self._fresh_page_paths: tuple[Path, ...] = ()
         self._fresh_page_pending = False
         self._fresh_retry_debt: dict[Path, float] = {}
+        self._overflow_rescan_due_at: float | None = None
         self._local_retry_page = False
         self._prefer_local_retry = True
         self._fresh_exhausted = False
@@ -175,6 +176,13 @@ class FileIntakeAdapter(IntakeAdapter):
     def discovery_pending(self) -> bool:
         return self._fresh_walk is not None or bool(self._fresh_pending) or self._rescan_after_walk
 
+    @property
+    def retry_due_in_s(self) -> float | None:
+        deadlines = (*self._fresh_retry_debt.values(),)
+        if self._overflow_rescan_due_at is not None:
+            deadlines += (self._overflow_rescan_due_at,)
+        return max(0.0, min(deadlines) - self._clock()) if deadlines else None
+
     @staticmethod
     def _pending_path_is_live(path: Path) -> bool:
         try:
@@ -222,9 +230,10 @@ class FileIntakeAdapter(IntakeAdapter):
                     retry_path not in self._fresh_retry_debt
                     and len(self._fresh_retry_debt) >= _FILE_DISCOVERY_STEP_LIMIT
                 ):
-                    # The source itself retains older debt for the periodic
-                    # full scan; this scheduling cache stays bounded.
+                    # A due rescan recovers evicted debt without growing memory.
                     self._fresh_retry_debt.pop(next(iter(self._fresh_retry_debt)))
+                    if self._overflow_rescan_due_at is None:
+                        self._overflow_rescan_due_at = due_at
                 self._fresh_retry_debt[retry_path] = due_at
             self._fresh_pending = [path for path in self._fresh_pending if path not in offered]
         self._fresh_page_pending = False
@@ -323,6 +332,9 @@ class FileIntakeAdapter(IntakeAdapter):
                 self._request_fresh_rescan()
             self._last_source_entries = entries
             self._last_root_mtime_ns = root_mtime_ns
+        if self._overflow_rescan_due_at is not None and self._clock() >= self._overflow_rescan_due_at:
+            self._overflow_rescan_due_at = None
+            self._request_fresh_rescan()
         # The cursor advances in ``acknowledge``, over items the dispatcher
         # actually consumed -- never here, over everything merely discovered.
         # A page is routinely truncated by the class deficit, so advancing on
@@ -406,6 +418,7 @@ class FileIntakeAdapter(IntakeAdapter):
 
     def _due_retry_paths(self, limit: int) -> list[Path]:
         now = self._clock()
+        cursor = getattr(self.context.watcher, "_cursor", None)
         due_local: list[Path] = []
         for path, due_at in tuple(self._fresh_retry_debt.items()):
             if len(due_local) >= limit:
@@ -418,13 +431,22 @@ class FileIntakeAdapter(IntakeAdapter):
                 self._fresh_retry_debt.pop(path, None)
                 continue
             due_local.append(path)
+        get_records = getattr(cursor, "get_records", None)
+        records = get_records(due_local) if due_local and callable(get_records) else {}
+        local_without_durable_row: list[Path] = []
+        for path in due_local:
+            record = records.get(path)
+            if record is not None and (record.failure_count > 0 or record.next_retry_at is not None):
+                self._fresh_retry_debt.pop(path, None)
+            else:
+                local_without_durable_row.append(path)
+        due_local = local_without_durable_row
         if due_local and self._prefer_local_retry:
             for path in due_local:
                 self._fresh_retry_debt[path] = now + _FILE_RETRY_DELAY_S
             self._local_retry_page = True
             self._prefer_local_retry = False
             return due_local
-        cursor = getattr(self.context.watcher, "_cursor", None)
         due_retries = getattr(cursor, "list_due_retry_paths", None)
         if not callable(due_retries):
             candidates = ()
@@ -459,14 +481,15 @@ class FileIntakeAdapter(IntakeAdapter):
             return due_local
         return []
 
-    def _consume_retry_item(self, item: IntakeItem) -> None:
+    def _consume_retry_item(self, item: IntakeItem, *, acknowledged: bool = False) -> None:
         if not self._retry_page or not isinstance(item.payload, (str, Path)):
             return
         path = Path(item.payload)
         if path not in self._retry_page_paths:
             return
         if self._local_retry_page:
-            self._fresh_retry_debt.pop(path, None)
+            if acknowledged:
+                self._fresh_retry_debt.pop(path, None)
             self._retry_page_pending = False
             return
         position = str(path)
@@ -703,7 +726,7 @@ class FileIntakeAdapter(IntakeAdapter):
         # Retry rows may be ahead of ordinary discovery. They cannot advance
         # that walk past files it has not offered yet.
         if self._retry_page:
-            self._consume_retry_item(item)
+            self._consume_retry_item(item, acknowledged=True)
             return
         payload = item.payload
         if isinstance(payload, (str, Path)):
@@ -807,6 +830,12 @@ class MultiplexIntakeAdapter(IntakeAdapter):
     @property
     def discovery_pending(self) -> bool:
         return any(bool(getattr(adapter, "discovery_pending", False)) for adapter in self.schedulable_adapters())
+
+    @property
+    def retry_due_in_s(self) -> float | None:
+        due = (getattr(adapter, "retry_due_in_s", None) for adapter in self.schedulable_adapters())
+        deadlines = tuple(value for value in due if value is not None)
+        return min(deadlines) if deadlines else None
 
     async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
         if limit <= 0:
@@ -1223,9 +1252,10 @@ class DaemonIntakeService:
         while True:
             self._wakeup.clear()
             result = await self.dispatcher.run_once(budget=self.budget)
-            discovery_pending = any(
-                bool(getattr(spec.adapter, "discovery_pending", False))
-                for spec in self.dispatcher.schedulable_classes()
+            schedulable = self.dispatcher.schedulable_classes()
+            discovery_pending = any(bool(getattr(spec.adapter, "discovery_pending", False)) for spec in schedulable)
+            retry_delays = tuple(
+                delay for spec in schedulable if (delay := getattr(spec.adapter, "retry_due_in_s", None)) is not None
             )
             if result.progressed:
                 self._progressed_once = True
@@ -1237,6 +1267,7 @@ class DaemonIntakeService:
                 self._progressed_once
                 and result.quiescent
                 and not discovery_pending
+                and not retry_delays
                 and self._on_backlog_drained is not None
             ):
                 pending = self._has_pending_backlog() if self._has_pending_backlog is not None else False
@@ -1250,7 +1281,10 @@ class DaemonIntakeService:
                     # completed one-shot callback.
                     self._on_backlog_drained = None
             try:
-                async with asyncio.timeout(0.05 if result.progressed or discovery_pending else self.idle_delay_s):
+                idle_delay = 0.05 if result.progressed or discovery_pending else self.idle_delay_s
+                if retry_delays:
+                    idle_delay = min(idle_delay, max(0.05, min(retry_delays)))
+                async with asyncio.timeout(idle_delay):
                     await self._wakeup.wait()
             except TimeoutError:
                 pass
