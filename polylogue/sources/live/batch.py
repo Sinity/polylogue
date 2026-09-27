@@ -3708,6 +3708,16 @@ class LiveBatchProcessor:
                     max_pass_seconds=max_pass_seconds,
                     pass_started=pass_clock_started,
                 )
+            except Exception as exc:
+                if storage_fault_kind(exc) is not None:
+                    # The flush reserved a receipt for every record; a storage
+                    # fault -- opening the archive or inside the record loop --
+                    # leaves some unconsumed, and each outage retry would
+                    # reserve and strand another GC-immune one. Releasing a
+                    # receipt a written record already consumed removes
+                    # nothing.
+                    _release_unwritten_publication_receipts(source_db, raw_records)
+                raise
             finally:
                 for residue in shard_paths_by_raw_id.values():
                     discard_session_shard(residue)
@@ -4822,14 +4832,6 @@ class LiveBatchProcessor:
                                     error_type=type(reset_exc).__name__,
                                     error_detail=str(reset_exc),
                                 )
-                        # The flush already reserved receipts for this record
-                        # and the ones after it; nothing will consume them
-                        # now, and a retry reserves new ones, so each outage
-                        # retry would strand another GC-immune reservation.
-                        _release_unwritten_publication_receipts(
-                            archive.source_db_path,
-                            records[record_index:] if source_raw_id is None else records[record_index + 1 :],
-                        )
                         raise_if_storage_fault(exc)
                     if provider is not None and source_raw_id is not None:
                         preserve_existing_failure_evidence = False

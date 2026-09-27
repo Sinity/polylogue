@@ -106,3 +106,32 @@ def test_a_colon_named_failure_does_not_withhold_its_prefix_sibling(tmp_path: Pa
     )
     assert str(plain) in saved
     assert str(colon) not in saved
+
+
+def test_a_failure_naming_no_resolved_file_withholds_every_cursor(tmp_path: Path) -> None:
+    """A provenance path (a staged SQLite snapshot's original location) names
+    no file the walk resolved; nothing can be proven safe to skip. Anti-vacuity:
+    dropping an unmatched failure persists the staged file's cursor."""
+    import asyncio
+
+    from polylogue.config import Source as ConfigSource
+
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    staged = source_dir / "state.jsonl"
+    staged.write_text("{}\n", encoding="utf-8")
+    saved: list[str] = []
+
+    class _Repository:
+        async def upsert_source_file_cursor(self, path: str, **_stat: object) -> None:
+            saved.append(path)
+
+    service = AcquisitionService.__new__(AcquisitionService)
+    service.repository = _Repository()  # type: ignore[assignment]
+    asyncio.run(
+        service._persist_source_cursors(
+            ConfigSource(name="claude-code", path=source_dir),
+            cursor_state={"failed_files": [{"path": "/elsewhere/original/state.db", "error": "OSError"}]},
+        )
+    )
+    assert saved == []

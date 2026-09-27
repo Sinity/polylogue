@@ -129,10 +129,15 @@ class AcquisitionService:
                 container = next((prefix for prefix in reversed(containers) if prefix in source_keys), None)
                 if container is not None:
                     failed_paths.add(container)
+                else:
+                    # A failure naming no file this walk resolved (a provenance
+                    # path, such as a staged SQLite snapshot's original) cannot
+                    # be scoped, so no cursor in this source is proven safe.
+                    failed_everything = True
             # An unscoped failure means the pass did not prove any path safe
             # to skip.  Do not turn a failed persistence/read pass into a
             # successful stat cursor for every file in the source.
-            failed_everything = bool(cursor_state.get("error_count"))
+            failed_everything = failed_everything or bool(cursor_state.get("error_count"))
         for file_path in source_paths:
             if failed_everything or str(file_path) in failed_paths:
                 continue
