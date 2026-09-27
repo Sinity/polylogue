@@ -146,8 +146,11 @@ hold retryable backlog.
 command needs its `CommandSpec` and `devtools render devtools-reference`).
 
 - `devtools test <selection>` runs focused tests through the managed host
-  pool; never run bare `pytest`. Run one combined selection after a coherent
-  change and reuse its receipt across related tasks.
+  pool; never run bare `pytest`. The pool is shared: run one selection per PR
+  head covering every affected file, re-run only the failing ids after a fix,
+  and batch review-thread fixes into one push. Reuse a receipt across related
+  tasks. The hosted quick gate covers static checks, so a local
+  `verify --quick` before pushing is optional.
 - `devtools verify --quick` runs the fast static gates; slower invariant gates
   run on their own tiers (`docs/devtools.md` lists them). `devtools verify` selects
   affected tests from a usable testmon graph and refuses when it cannot; it
