@@ -100,6 +100,10 @@ def verify_demo_archive(
     running that enrichment pass must not block on those constructs
     (polylogue-z1c6). ``polylogue demo verify`` and the final post-enrichment
     check both keep the default ``True``.
+
+    Canonical intake records physical paths for the generated fixture files.
+    The path check accepts those files beneath this archive's demo source
+    directory and reports absolute paths pointing elsewhere.
     """
 
     problems: list[str] = []
@@ -156,11 +160,13 @@ def verify_demo_archive(
         problems.extend(construct_problem_messages(construct_coverage))
 
     if check_source_path_leaks:
+        demo_source_root = (archive_root / DEMO_SOURCE_DIRNAME).resolve()
         for raw_path in _raw_source_paths(archive_root):
-            if Path(raw_path).is_absolute():
+            path = Path(raw_path)
+            if path.is_absolute() and not path.resolve().is_relative_to(demo_source_root):
                 leaks.append(raw_path)
         if leaks:
-            problems.append("raw source paths contain absolute paths")
+            problems.append("raw source paths contain absolute paths outside the demo fixture")
 
     return DemoVerifyResult(
         archive_root=archive_root,

@@ -13,6 +13,7 @@ from hashlib import sha256
 from pathlib import Path
 
 from polylogue.config import Source, load_polylogue_config
+from polylogue.core.errors import SchemaSkewError
 from polylogue.operations.canonical_archive_ingest import (
     ingest_sources_archive,
     scoped_one_shot_archive_owner,
@@ -33,15 +34,15 @@ from polylogue.scenarios import (
     seed_demo_user_overlays,
 )
 from polylogue.schemas.synthetic import SyntheticCorpus
+from polylogue.sources.parsers.browser_capture import parse as parse_browser_capture
 from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
 from polylogue.storage.embeddings.identity import (
     EmbeddingRecipe,
-    EmbeddingRequestSpec,
     EmbeddingSourceDigest,
     embedding_derivation_key,
     message_embedding_derivation_key,
 )
-from polylogue.storage.embeddings.materialization import archive_embeddable_message_where, message_prose_sql
+from polylogue.storage.embeddings.materialization import archive_embeddable_messages_relation
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     ARCHIVE_TIER_SPECS,
     initialize_archive_database,
@@ -49,6 +50,10 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 )
 from polylogue.storage.sqlite.archive_tiers.embedding_write import ArchiveEmbeddingWrite, upsert_message_embeddings
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
+from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
+    record_capture_gap_event,
+    record_source_outage_events,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
@@ -58,13 +63,9 @@ from .models import DemoSeedResult
 DEMO_SOURCE_DIRNAME = "demo-fixture-world-source"
 
 # Written once, on the first call that ever touches a given archive root,
-# recording a *permanent* determination of whether that root already held
-# real ingested content at that moment. This is the sole predicate self-heal
-# eligibility trusts (see ``_archive_root_is_demo_owned`` below) -- unlike
-# ``DEMO_SOURCE_DIRNAME``'s presence, which only proves "a demo seed touched
-# this root at some point" and can persist unconditionally on a root that
-# held real content when first (accidentally or forcibly) seeded
-# (polylogue-wyvio).
+# recording whether it held real content at that moment. Self-heal also
+# revalidates the recorded session set on each call. Older demo roots may
+# carry a false marker from before real-content refusal was unconditional.
 DEMO_OWNERSHIP_MANIFEST_FILENAME = "demo-archive-ownership.json"
 
 
@@ -224,31 +225,29 @@ def _guard_demo_seed_target(root: Path, *, explicit_root: bool, force: bool) -> 
     refusing to run against existing content, so that collision seeds
     synthetic fixture rows directly into a real archive.
 
-    This guard fires only for the genuinely dangerous case: no explicit
-    ``--root``/``POLYLOGUE_ARCHIVE_ROOT`` override was given, ``--force``
-    was not passed, the resolved root is not already a dedicated demo
-    archive, and it already holds real ingested content. A brand-new or
-    empty root -- a fresh operator machine, CI, a cloud sandbox -- is
-    unaffected: there is nothing there to protect, so the default
-    resolution keeps working with zero friction.
+    A new or demo-owned root is eligible. Real content in an unowned root
+    always refuses; an explicit path or ``--force`` does not authorize
+    mixing synthetic material with an existing archive.
     """
 
-    if explicit_root or force:
-        return
     if _archive_root_is_demo_owned(root):
         return
     if not _archive_root_has_real_content(root):
         return
+    if explicit_root or force:
+        raise DemoSeedTargetUnsafeError(
+            f"{root} contains real archive content; an explicit root or --force cannot seed an unowned archive"
+        )
     session_count = _archive_tier_session_count(root)
     detail = f"{session_count} real ingested session(s)" if session_count > 0 else "real ingested durable content"
     raise DemoSeedTargetUnsafeError(
         f"'polylogue demo seed' resolved its archive root to {root} through the default "
         "archive_root()/polylogue.toml resolution chain (no --root and no "
         "POLYLOGUE_ARCHIVE_ROOT override), and that root already holds "
-        f"{detail} with no demo-archive marker present. "
+        f"{detail} without valid demo ownership. "
         "Refusing to write synthetic demo fixture content into what looks like a live "
         "archive. Re-run with an explicit '--root <path>' pointed at a scratch/demo "
-        "location, or pass '--force' to proceed against this exact root anyway."
+        "location. --force cannot seed an unowned archive."
     )
 
 
@@ -270,8 +269,8 @@ def _record_demo_ownership_if_undetermined(root: Path) -> None:
     that call's own writes could change the answer. The ``demo_only`` bit
     itself is written only once per root and never overwritten afterwards --
     a root that already held real ingested content the very first time a
-    demo seed touched it (whether by the default-root collision this guards
-    against, or a deliberate ``--force`` override) is permanently recorded as
+    demo seed touched it (possible in archives seeded by older releases) is
+    permanently recorded as
     ``demo_only: false`` and can never regain self-heal eligibility merely by
     being reseeded again later; its schema mismatches keep raising loudly,
     exactly like a foreign/live root does (polylogue-wyvio).
@@ -397,8 +396,8 @@ def _self_heal_stale_demo_archive_tiers(archive_root: Path) -> tuple[str, ...]:
             continue
         try:
             initialize_archive_database(db_path, spec.tier)
-        except RuntimeError as exc:
-            if "schema version" not in str(exc):
+        except (RuntimeError, SchemaSkewError) as exc:
+            if not isinstance(exc, SchemaSkewError) and "schema version" not in str(exc):
                 raise
             for sidecar_suffix in ("", "-wal", "-shm"):
                 sidecar = db_path.with_name(db_path.name + sidecar_suffix)
@@ -1398,25 +1397,16 @@ def _seed_demo_embeddings(archive_root: Path) -> None:
         if not loaded:
             raise RuntimeError("demo embedding seeding requires sqlite-vec") from error
         index_conn.row_factory = sqlite3.Row
-        prose_expr = message_prose_sql("m", separator="char(10)||char(10)", block_types=("text",))
+        relation = archive_embeddable_messages_relation(index_conn, alias="candidate", recipe=recipe)
         rows = index_conn.execute(
             f"""
-            SELECT m.message_id, m.session_id, s.origin, m.content_hash,
-                   {prose_expr} AS text
-            FROM messages AS m
+            SELECT candidate.message_id, candidate.session_id, s.origin,
+                   candidate.vector_derivation_hash
+            FROM {relation}
             JOIN sessions AS s
-              ON s.session_id = m.session_id
-            JOIN blocks AS b
-              ON b.session_id = m.session_id
-             AND b.message_id = m.message_id
-             AND b.block_type = 'text'
-             AND b.text IS NOT NULL
-            WHERE m.session_id = ?
-              AND {archive_embeddable_message_where("m")}
-            GROUP BY m.message_id, m.position, m.variant_index
-            HAVING LENGTH(TRIM(COALESCE(text, ''))) >= 20
-            ORDER BY m.position, m.variant_index
-            LIMIT 3
+              ON s.session_id = candidate.session_id
+            WHERE candidate.session_id = ?
+            ORDER BY candidate.message_id
             """,
             (DEMO_EMBEDDING_PROSE_SESSION_ID,),
         ).fetchall()
@@ -1425,10 +1415,9 @@ def _seed_demo_embeddings(archive_root: Path) -> None:
                 str(row["message_id"]),
                 str(row["session_id"]),
                 str(row["origin"]),
-                EmbeddingRequestSpec(recipe=recipe, input_text=str(row["text"])).vector_derivation_hash,
+                bytes(row["vector_derivation_hash"]),
             )
             for row in rows
-            if row["content_hash"] is not None
         ]
         source_digest = EmbeddingSourceDigest()
         for _message_id, _session_id, _origin, input_hash in sorted(embeddable, key=lambda item: item[3]):
@@ -1573,6 +1562,74 @@ def _demo_usage_has_settled(archive_root: Path) -> bool:
     return row is not None and bool(row[0])
 
 
+def _restore_demo_capture_telemetry(archive_root: Path) -> None:
+    """Retain demo capture evidence rejected before the indexed write seam.
+
+    Canonical intake records every material in source.db, but its membership
+    decision can supersede a weaker browser capture before the index writer's
+    skip path has a chance to retain its gap and outage events.
+    """
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        conn.execute("ATTACH DATABASE ? AS source", (str(archive_root / "source.db"),))
+        session = conn.execute(
+            "SELECT raw_id, message_count FROM sessions WHERE session_id = ?",
+            (DEMO_CHATGPT_SESSION_ID,),
+        ).fetchone()
+        if session is None:
+            return
+        existing_raw_id, stored_message_count = str(session[0]), int(session[1])
+        captures = conn.execute(
+            """
+            SELECT r.raw_id, r.source_path, m.provider_session_id,
+                   m.message_count, m.decision
+            FROM source.raw_session_memberships AS m
+            JOIN source.raw_sessions AS r ON r.raw_id = m.raw_id
+            WHERE m.logical_source_key = ?
+              AND r.source_path LIKE '%/browser-capture/%'
+            """,
+            (DEMO_CHATGPT_SESSION_ID,),
+        ).fetchall()
+        by_name = {Path(str(row[1])).name: row for row in captures}
+        fallback = by_name.get("chatgpt-dom-fallback.json")
+        if (
+            fallback is not None
+            and fallback[4] == "superseded_equivalent"
+            and int(fallback[3]) < stored_message_count
+            and not conn.execute(
+                "SELECT 1 FROM session_events WHERE session_id = ? AND event_type = 'capture_gap'",
+                (DEMO_CHATGPT_SESSION_ID,),
+            ).fetchone()
+        ):
+            record_capture_gap_event(
+                conn,
+                session_id=DEMO_CHATGPT_SESSION_ID,
+                existing_raw_id=existing_raw_id,
+                incoming_raw_id=str(fallback[0]),
+                stored_message_count=stored_message_count,
+                incoming_message_count=int(fallback[3]),
+            )
+        native = by_name.get("chatgpt-raw-provider.json")
+        if (
+            native is not None
+            and not conn.execute(
+                "SELECT 1 FROM session_events WHERE session_id = ? AND event_type = 'source_outage'",
+                (DEMO_CHATGPT_SESSION_ID,),
+            ).fetchone()
+        ):
+            native_path = Path(str(native[1]))
+            if not native_path.is_absolute():
+                native_path = archive_root / native_path
+            payload = json.loads(native_path.read_text(encoding="utf-8"))
+            parsed = parse_browser_capture(payload, str(native[2]))
+            if parsed.provider_session_id == native[2]:
+                record_source_outage_events(
+                    conn,
+                    session_id=DEMO_CHATGPT_SESSION_ID,
+                    events=parsed.session_events,
+                )
+
+
 def apply_demo_post_ingest_augmentation(archive_root: Path) -> None:
     """Apply deterministic demo-only enrichments after any ingest path.
 
@@ -1594,6 +1651,7 @@ def apply_demo_post_ingest_augmentation(archive_root: Path) -> None:
 
     for attempt in range(_AUGMENTATION_SETTLE_ATTEMPTS):
         session_ids = _all_demo_session_ids(archive_root)
+        _restore_demo_capture_telemetry(archive_root)
         _inject_demo_session_usage(archive_root)
         _materialize_session_insights(archive_root, session_ids)
         _inject_demo_session_repos(archive_root)
@@ -1613,16 +1671,9 @@ async def _seed_demo_archive_owned(
 ) -> DemoSeedResult:
     """Materialize, ingest, and optionally overlay the deterministic demo archive.
 
-    ``explicit_root`` must be ``True`` only when the caller resolved
-    *archive_root* from an explicit, operator-provided override (a CLI
-    ``--root`` flag or a ``POLYLOGUE_ARCHIVE_ROOT`` environment variable) --
-    never from an ambient/config-file default. It disarms
-    :func:`_guard_demo_seed_target`'s default-root safety check (see that
-    function for the hazard it closes, polylogue-o3a1t) but never affects
-    the separate self-heal ownership determination recorded by
-    :func:`_record_demo_ownership_if_undetermined` and revalidated on every
-    call by :func:`_archive_root_is_demo_owned` (polylogue-wyvio,
-    polylogue-dl6af).
+    ``explicit_root`` records whether the caller supplied ``--root`` or
+    ``POLYLOGUE_ARCHIVE_ROOT``. It affects the refusal message but never
+    permits seeding real content into an unowned archive.
     """
 
     # polylogue-neeq4 follow-up: demo seeding is the one route that re-opens
@@ -1632,14 +1683,9 @@ async def _seed_demo_archive_owned(
     # bootstrap memo keys on file identity and marker presence, which an
     # in-place ``PRAGMA user_version`` change does not move, so without this
     # the second seed skips revalidation and the staleness surfaces later as
-    # a SchemaSkewError from the identity comparison instead of the
-    # actionable "move it aside and rebuild" refusal this path owns.
-    if _archive_root_has_real_content(archive_root) and not _archive_root_is_demo_owned(archive_root):
-        raise DemoSeedTargetUnsafeError(
-            f"{archive_root} contains real archive content; submit ingestion to its resident daemon"
-        )
-    invalidate_active_archive_bootstrap(archive_root)
+    # a SchemaSkewError instead of entering this demo-owned rebuild path.
     _guard_demo_seed_target(archive_root, explicit_root=explicit_root, force=force)
+    invalidate_active_archive_bootstrap(archive_root)
     _record_demo_ownership_if_undetermined(archive_root)
 
     healed_tiers: tuple[str, ...] = ()

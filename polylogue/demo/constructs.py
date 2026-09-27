@@ -127,9 +127,8 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
         description="Multiple raw source captures for the same ChatGPT session remain durable source evidence.",
         sql="""
             SELECT COUNT(*)
-            FROM source.raw_sessions
-            WHERE origin = 'chatgpt-export'
-              AND native_id = 'dc13ca54-0bba-4298-a38f-09068c2ef2c5'
+            FROM source.raw_session_memberships
+            WHERE logical_source_key = 'chatgpt-export:dc13ca54-0bba-4298-a38f-09068c2ef2c5'
         """,
         minimum=3,
     ),
