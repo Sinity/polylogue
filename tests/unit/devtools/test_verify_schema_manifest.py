@@ -104,6 +104,30 @@ def test_new_fresh_lineage_allows_floor_ddl_change_without_migration(monkeypatch
     assert verify_schema_manifest._durable_ddl_evolution_violations() == []
 
 
+def test_fresh_v1_source_preparation_marker_freezes_after_build(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A frozen marker cannot approve another unchanged-v1 source DDL edit."""
+    import hashlib
+    import json
+
+    ddl = "CREATE TABLE new_source_fact (id TEXT PRIMARY KEY) STRICT;"
+    marker = tmp_path / "fresh-v1-schema-preparation.json"
+    marker.write_text(
+        json.dumps({"state": "preparation", "source_ddl_sha256": hashlib.sha256(ddl.encode()).hexdigest()}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(verify_schema_manifest, "_FRESH_V1_PREPARATION_MARKER", marker)
+    assert verify_schema_manifest._approved_fresh_v1_ddl(ArchiveTier.SOURCE, ddl)
+    assert not verify_schema_manifest._approved_fresh_v1_ddl(ArchiveTier.SOURCE, ddl + " ")
+    marker.write_text(
+        json.dumps({"state": "frozen", "source_ddl_sha256": hashlib.sha256(ddl.encode()).hexdigest()}),
+        encoding="utf-8",
+    )
+    assert not verify_schema_manifest._approved_fresh_v1_ddl(ArchiveTier.SOURCE, ddl)
+    assert not verify_schema_manifest._approved_fresh_v1_ddl(ArchiveTier.SOURCE, ddl + " ")
+
+
 _RETIRED_DDL = """
 CREATE TABLE keeper (a TEXT PRIMARY KEY) STRICT;
 CREATE TABLE raw_membership_writeback_receipts (raw_id TEXT PRIMARY KEY) STRICT;

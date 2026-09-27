@@ -820,46 +820,67 @@ class LiveBatchProcessor:
 
     def require_cursor_authority(self, paths: Iterable[Path] | None = None) -> CursorAuthorityAuthorization | None:
         """Fail closed before a live batch can create attempts or write data."""
-        reason = self.cursor_authority_block_reason()
+        selected = [Path(path) for path in paths] if paths is not None else None
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        if _source_tier_acquisition_required():
+            return None
+        source_present = (archive_root / "source.db").is_file()
+        index_present = ArchiveLocation.resolve(archive_root).active_index_path.is_file()
+        if not source_present and not index_present:
+            from polylogue.storage.sqlite.archive_tiers.archive_plan import archive_format_marker_path
+
+            if archive_format_marker_path(archive_root).exists():
+                raise CursorAuthorityBlockedError(
+                    "live watcher source-selection gate blocked: archive tiers disappeared"
+                )
+            # Direct construction in a small test may precede archive bootstrap.
+            return None
+        from polylogue.storage.frontier_existence import raw_existence_block_reason, stable_selected_authority_frame
+
+        def require_global_existence() -> None:
+            global_reason = raw_existence_block_reason(archive_root)
+            if global_reason is not None:
+                raise CursorAuthorityBlockedError(f"live watcher source-selection gate blocked: {global_reason}")
+
+        require_global_existence()
         authorization = _CURSOR_AUTHORIZATION.get()
-        if reason is None:
-            if authorization is not None:
-                raise CursorAuthorityBlockedError("scoped cursor authority authorization has no planned violation")
-            return None
         if authorization is not None:
-            if paths is None:
+            if selected is None:
                 raise CursorAuthorityBlockedError("scoped cursor authority requires an exact selected path")
-            return self._consume_scoped_cursor_authority(paths)
-        # A full capture with a proven prefix intentionally leaves the
-        # durable cursor behind the observed raw size.  Its deferred range is
-        # the positive proof that this is safe incomplete-tail state, not an
-        # unexplained cursor violation; allow the ordinary watcher to observe
-        # the later completion and perform full replay.
-        if paths and all(
-            (cursor := self._cursor.get_record(path)) is not None
-            and cursor.deferred_end_offset is not None
-            and cursor.byte_offset < cursor.deferred_end_offset
-            for path in paths
-        ):
+            try:
+                with stable_selected_authority_frame(archive_root):
+                    consumed = self._consume_scoped_cursor_authority(selected)
+                    require_global_existence()
+            except (OSError, ValueError) as exc:
+                raise CursorAuthorityBlockedError(f"live watcher source-selection gate blocked: {exc}") from exc
+            return consumed
+        if selected is None:
+            # The production entry points pass their exact page. Keep the
+            # pathless diagnostic contract for callers without a selection.
+            try:
+                with stable_selected_authority_frame(archive_root):
+                    reason = self.cursor_authority_block_reason()
+                    if reason is not None:
+                        raise CursorAuthorityBlockedError(f"live watcher source-selection gate blocked: {reason}")
+                    require_global_existence()
+            except (OSError, ValueError) as exc:
+                raise CursorAuthorityBlockedError(f"live watcher source-selection gate blocked: {exc}") from exc
             return None
-        # The proof names the paths it refuses. Refusing only those keeps one
-        # anomalous file from stalling the other 45,000; a refusal that no
-        # path explains still blocks everything.
-        blocked = self._blocked_source_paths()
+        try:
+            with stable_selected_authority_frame(archive_root):
+                blocked = self._blocked_source_paths(selected)
+                # The selected proof runs on a separate pinned read. Consume
+                # any new global journal evidence before leaving the frame.
+                require_global_existence()
+        except (OSError, ValueError) as exc:
+            raise CursorAuthorityBlockedError(f"live watcher source-selection gate blocked: {exc}") from exc
+        reason = blocked.unattributed_reason or "selected source frontier is violated"
         if blocked.unattributed_reason is None:
             if not blocked.source_paths:
                 # Only authority gaps remain; ingesting their paths is what
                 # resolves them, so nothing is refused.
                 logger.debug("live.watcher: cursor authority names only resolvable gaps: %s", reason)
                 return None
-            if paths is None:
-                logger.warning(
-                    "live.watcher: cursor authority refuses %d source path(s); path-less route proceeds: %s",
-                    len(blocked.source_paths),
-                    reason,
-                )
-                return None
-            selected = [Path(path) for path in paths]
             # Resolve BOTH sides. A violation recorded through a symlinked
             # watch root is stored under that spelling; a restart configured
             # with the real path then selected the physically identical file
@@ -898,12 +919,11 @@ class LiveBatchProcessor:
         self._refused_paths = frozenset()
         return [path for path in selected if path not in refused]
 
-    def _blocked_source_paths(self) -> RawFrontierBlockedPaths:
+    def _blocked_source_paths(self, paths: Sequence[Path]) -> RawFrontierBlockedPaths:
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
-        from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
-        from polylogue.storage.raw_retention import raw_frontier_blocked_source_paths
+        from polylogue.storage.raw_retention import raw_frontier_blocked_selected_paths
 
-        return raw_frontier_blocked_source_paths(archive_root, raw_materialization_readiness_snapshot(archive_root))
+        return raw_frontier_blocked_selected_paths(archive_root, paths)
 
     async def ingest_files(
         self,

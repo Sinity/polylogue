@@ -1179,6 +1179,195 @@ class RawFrontierBlockedPaths:
     gap_source_paths: frozenset[str] = frozenset()
 
 
+def raw_frontier_blocked_selected_paths(archive_root: Path, selected_paths: Sequence[Path]) -> RawFrontierBlockedPaths:
+    """Check chain and cursor authority for the selected connected source paths.
+
+    Global index-to-source existence is proved separately before this read.
+    A path with no retained raw is still checked against its ops cursor.
+    """
+    try:
+        return _raw_frontier_blocked_selected_paths(archive_root, selected_paths)
+    except (OSError, RawRetentionSafetyError, ValueError) as exc:
+        return RawFrontierBlockedPaths(frozenset(), f"selected source frontier is unreadable: {exc}")
+
+
+def _raw_frontier_blocked_selected_paths(archive_root: Path, selected_paths: Sequence[Path]) -> RawFrontierBlockedPaths:
+    from polylogue.storage.archive_identity import resolve_active_index_path
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import expand_raw_membership_selection_sync
+    from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
+
+    try:
+        index_path = resolve_active_index_path(archive_root)
+        source_path = archive_root / "source.db"
+        ops_path = archive_root / "ops.db"
+        if not source_path.is_file() or not index_path.is_file() or not ops_path.is_file():
+            return RawFrontierBlockedPaths(frozenset(), "required frontier authority tier is unavailable")
+        spellings = {str(path) for path in selected_paths}
+        spellings.update(str(path.resolve()) for path in selected_paths)
+        with closing(open_readonly_connection(source_path, validate_schema=False)) as conn:
+            conn.row_factory = sqlite3.Row
+            attach_readonly_database(conn, index_path, alias="index_tier")
+            conn.execute("BEGIN")
+            source_reason = _source_tier_unavailable_reason(conn)
+            if source_reason is not None:
+                return RawFrontierBlockedPaths(frozenset(), source_reason)
+            if conn.execute("SELECT 1 FROM raw_sessions WHERE canonical_source_path IS NULL LIMIT 1").fetchone():
+                return RawFrontierBlockedPaths(frozenset(), "raw source canonical path authority is unavailable")
+            raw_ids: set[str] = set()
+            for batch in _value_batches(frozenset(spellings)):
+                marks = ",".join("?" for _ in batch)
+                raw_ids.update(
+                    str(row[0])
+                    for row in conn.execute(
+                        f"SELECT raw_id FROM raw_sessions WHERE source_path IN ({marks}) "
+                        f"OR canonical_source_path IN ({marks})",
+                        (*batch, *batch),
+                    )
+                )
+            component, logical_keys = expand_raw_membership_selection_sync(conn, sorted(raw_ids))
+            component_set = set(component)
+            paths_by_raw = _source_paths_for_raw_ids(conn, component_set)
+            component_paths = set(paths_by_raw.values())
+
+            def paths_for_logical_key(key: str) -> set[str]:
+                return {
+                    str(row[0])
+                    for row in conn.execute(
+                        "SELECT source_path FROM raw_sessions WHERE logical_source_key = ? "
+                        "UNION SELECT r.source_path FROM raw_session_memberships m "
+                        "JOIN raw_sessions r ON r.raw_id = m.raw_id WHERE m.logical_source_key = ?",
+                        (key, key),
+                    )
+                }
+
+            heads: list[_IndexRawRevisionHead] = []
+            sessions: set[str] = set()
+            for batch in _value_batches(frozenset(component)):
+                marks = ",".join("?" for _ in batch)
+                sessions.update(
+                    str(row[0])
+                    for row in conn.execute(
+                        f"SELECT DISTINCT raw_id FROM index_tier.sessions WHERE raw_id IN ({marks})", batch
+                    )
+                )
+                heads.extend(
+                    _IndexRawRevisionHead(*tuple(row))
+                    for row in conn.execute(
+                        f"SELECT logical_source_key, accepted_raw_id, accepted_source_revision, "
+                        f"accepted_frontier_kind, accepted_frontier, acquisition_generation, append_end_offset "
+                        f"FROM index_tier.raw_revision_heads WHERE accepted_raw_id IN ({marks})",
+                        batch,
+                    )
+                )
+            for batch in _value_batches(frozenset(logical_keys)):
+                marks = ",".join("?" for _ in batch)
+                heads.extend(
+                    _IndexRawRevisionHead(*tuple(row))
+                    for row in conn.execute(
+                        f"SELECT logical_source_key, accepted_raw_id, accepted_source_revision, "
+                        f"accepted_frontier_kind, accepted_frontier, acquisition_generation, append_end_offset "
+                        f"FROM index_tier.raw_revision_heads WHERE logical_source_key IN ({marks})",
+                        batch,
+                    )
+                )
+            unique_heads = tuple({(head.logical_source_key, head.accepted_raw_id): head for head in heads}.values())
+            paths_by_raw.update(_source_paths_for_raw_ids(conn, {head.accepted_raw_id for head in unique_heads}))
+            broken, count, _checked, samples, reason = _check_broken_active_chains(
+                conn, frozenset(sessions), unique_heads, sample_limit=len(component) + len(unique_heads) + 1
+            )
+            if broken == "unknown":
+                return RawFrontierBlockedPaths(frozenset(), reason)
+            refused: set[str] = set()
+            byte_heads_by_raw: dict[str, list[_IndexRawRevisionHead]] = {}
+            for head in unique_heads:
+                if head.accepted_frontier_kind == "byte":
+                    byte_heads_by_raw.setdefault(head.accepted_raw_id, []).append(head)
+            for sample in samples:
+                path = paths_by_raw.get(sample.accepted_raw_id)
+                if path is None:
+                    return RawFrontierBlockedPaths(
+                        frozenset(), f"broken head has no source path: {sample.accepted_raw_id}"
+                    )
+                refused.add(path)
+                # A raw can have several byte and semantic heads. Attribute
+                # each bad head binding to its key; a broken predecessor chain
+                # affects every byte head. Semantic-only siblings do not
+                # inherit a byte violation just because they share the raw.
+                byte_heads = byte_heads_by_raw.get(sample.accepted_raw_id, [])
+                relevant_keys: set[str] = set()
+                if byte_heads:
+                    revision_rows = _raw_revision_rows(conn, {sample.accepted_raw_id}, allow_missing=True)
+                    raw_row = revision_rows.get(sample.accepted_raw_id)
+                    if raw_row is None:
+                        return RawFrontierBlockedPaths(frozenset(), "selected byte-head raw disappeared")
+                    for head in byte_heads:
+                        try:
+                            _validate_byte_head(raw_row, head)
+                        except RawRetentionSafetyError:
+                            relevant_keys.add(head.logical_source_key)
+                    try:
+                        _validate_active_revision_chain(revision_rows, sample.accepted_raw_id)
+                    except RawRetentionSafetyError:
+                        relevant_keys.update(head.logical_source_key for head in byte_heads)
+                elif sample.logical_source_key != "session.raw_id":
+                    relevant_keys.add(sample.logical_source_key)
+                for key in relevant_keys:
+                    refused.update(paths_for_logical_key(key))
+            with closing(open_readonly_connection(ops_path, validate_schema=False)) as ops:
+                if ops.execute(
+                    "SELECT 1 FROM ingest_cursor WHERE canonical_source_path IS NULL "
+                    "AND byte_offset IS NOT NULL AND excluded = 0 LIMIT 1"
+                ).fetchone():
+                    return RawFrontierBlockedPaths(frozenset(), "ops cursor canonical path authority is unavailable")
+                cursor = _check_cursor_ahead_of_accepted(
+                    conn,
+                    ops_path,
+                    unique_heads,
+                    sample_limit=len(component_paths) + len(spellings) + len(unique_heads) + 1,
+                    ops_conn=ops,
+                    source_paths=frozenset(component_paths | spellings),
+                    resolve_path_aliases=True,
+                )
+            (
+                status,
+                _ahead_count,
+                _cursor_checked,
+                _comparisons,
+                _ahead_comparisons,
+                ahead,
+                _gap_count,
+                gaps,
+                _deferred,
+                cursor_reason,
+            ) = cursor
+            if status == "unknown" and not gaps:
+                return RawFrontierBlockedPaths(frozenset(), cursor_reason)
+            for ahead_sample in ahead:
+                refused.add(ahead_sample.source_path)
+                ahead_canonical = str(Path(ahead_sample.source_path).resolve())
+                ahead_keys = {
+                    head.logical_source_key
+                    for head in unique_heads
+                    if head.accepted_frontier_kind == "byte"
+                    and ahead_sample.cursor_byte_offset > head.accepted_frontier
+                    and (head_path := paths_by_raw.get(head.accepted_raw_id)) is not None
+                    and str(Path(head_path).resolve()) == ahead_canonical
+                }
+                for key in ahead_keys or ({ahead_sample.logical_source_key} if ahead_sample.logical_source_key else ()):
+                    refused.update(paths_for_logical_key(key))
+            if any(gap.source_path is None for gap in gaps):
+                return RawFrontierBlockedPaths(frozenset(), "selected accepted head has no source path")
+            return RawFrontierBlockedPaths(
+                frozenset(refused),
+                None,
+                gap_source_paths=frozenset(gap.source_path for gap in gaps if gap.source_path is not None).difference(
+                    refused
+                ),
+            )
+    except sqlite3.Error as exc:
+        raise RawRetentionSafetyError(f"selected source frontier query failed: {exc}") from exc
+
+
 def raw_frontier_blocked_raw_ids(archive_root: Path, raw_ids: Sequence[str]) -> RawFrontierBlockedPaths:
     """Authorize selected observations against only their source frontier.
 
@@ -1664,6 +1853,7 @@ def _check_cursor_ahead_of_accepted(
     ops_conn: sqlite3.Connection | None = None,
     ops_schema: str = "main",
     source_paths: frozenset[str] | None = None,
+    resolve_path_aliases: bool = False,
 ) -> tuple[
     RawFrontierIntegrityStatus,
     int,
@@ -1711,9 +1901,10 @@ def _check_cursor_ahead_of_accepted(
                         )
                     )
             continue
-        all_head_paths.add(source_path)
+        comparison_path = str(Path(source_path).resolve()) if resolve_path_aliases else source_path
+        all_head_paths.add(comparison_path)
         if head.accepted_frontier_kind == "byte":
-            byte_heads_by_path.setdefault(source_path, []).append(head)
+            byte_heads_by_path.setdefault(comparison_path, []).append(head)
 
     samples: list[CursorAheadSample] = []
     ahead_count = 0
@@ -1732,6 +1923,7 @@ def _check_cursor_ahead_of_accepted(
         return "unknown", 0, 0, 0, 0, (), 0, (), 0, f"terminal artifact authority is unreadable: {exc}"
     deferred_count = 0
     for path, cursor in cursor_map.items():
+        comparison_path = str(Path(path).resolve()) if resolve_path_aliases else path
         cursor_offset = cursor.byte_offset
         if cursor.is_deferred:
             # A deferred cursor is the positive proof of a safe incomplete
@@ -1740,11 +1932,11 @@ def _check_cursor_ahead_of_accepted(
             # every live host refuse its whole backlog while one file was hot.
             deferred_count += 1
             continue
-        comparable_heads = byte_heads_by_path.get(path)
+        comparable_heads = byte_heads_by_path.get(comparison_path)
         if not comparable_heads:
             # A path governed exclusively by membership authority has no
             # comparable byte frontier and is intentionally out of scope.
-            if path in all_head_paths or path in terminal_artifact_paths:
+            if comparison_path in all_head_paths or path in terminal_artifact_paths:
                 continue
             gap_count += 1
             if len(gaps) < sample_limit:
@@ -2104,7 +2296,12 @@ def _ops_cursor_byte_offsets_from_present_connection(
     ).fetchone()
     if has_table is None:
         raise RawRetentionSafetyError("ops tier has no ingest_cursor table")
-    path_filter = "" if source_paths is None else f"AND source_path IN ({','.join('?' for _ in source_paths)})"
+    path_filter = (
+        ""
+        if source_paths is None
+        else f"AND (source_path IN ({','.join('?' for _ in source_paths)}) "
+        f"OR canonical_source_path IN ({','.join('?' for _ in source_paths)}))"
+    )
     rows = conn.execute(
         f"""
         SELECT source_path, byte_offset, deferred_end_offset
@@ -2112,7 +2309,7 @@ def _ops_cursor_byte_offsets_from_present_connection(
         WHERE COALESCE(excluded, 0) = 0 AND byte_offset IS NOT NULL
         {path_filter}
         """,
-        tuple(source_paths) if source_paths is not None else (),
+        (*source_paths, *source_paths) if source_paths is not None else (),
     ).fetchall()
     return {
         str(row[0]): _OpsCursorAuthority(

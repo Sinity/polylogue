@@ -185,6 +185,7 @@ CREATE TABLE IF NOT EXISTS embedding_catchup_runs (
 OPS_DDL = f"""
 CREATE TABLE IF NOT EXISTS ingest_cursor (
     source_path          TEXT PRIMARY KEY,
+    canonical_source_path TEXT,
     origin               TEXT CHECK ({check("origin", Origin)} OR origin IS NULL),
     stat_size            INTEGER,
     byte_offset          INTEGER,
@@ -215,6 +216,14 @@ CREATE TABLE IF NOT EXISTS ingest_cursor (
 
 CREATE INDEX IF NOT EXISTS idx_ingest_cursor_attention
 ON ingest_cursor(failure_count, excluded, source_path);
+
+CREATE INDEX IF NOT EXISTS idx_ingest_cursor_canonical_path
+ON ingest_cursor(canonical_source_path)
+WHERE canonical_source_path IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_ingest_cursor_missing_canonical_path
+ON ingest_cursor(source_path)
+WHERE canonical_source_path IS NULL AND byte_offset IS NOT NULL AND excluded = 0;
 
 {_OPS_INGEST_ATTEMPTS_DDL}
 

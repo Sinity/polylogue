@@ -37,7 +37,8 @@ from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.parse_prefetch import LiveParseStage
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
-from polylogue.storage import raw_retention
+from polylogue.storage import frontier_existence, raw_retention
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.daemon_cold_start import write_fixture
 from tests.infra.workload_declarations import convergence_corpus_specs
 
@@ -179,6 +180,7 @@ def _run_dispatcher_ingest(
         if observe_writer_holds
         else None
     )
+
     watcher = LiveWatcher(
         cast(Any, polylogue),
         (source,),
@@ -265,6 +267,62 @@ def _run_dispatcher_ingest(
         raw_compaction_runs=raw_compaction_runs if isinstance(raw_compaction_runs, int) else 0,
         raw_compaction_time_s=float(raw_compaction_time_s) if isinstance(raw_compaction_time_s, (int, float)) else None,
     )
+
+
+def test_frontier_pages_reconcile_changes_without_repeating_global_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Publishing dispatcher pages after bootstrap consume changed keys only.
+
+    Restoring the archive-wide seed check to each admission makes this red.
+    """
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
+    bootstrap_calls = 0
+    changed_keys: list[str] = []
+    selected_sizes: list[int] = []
+    original_missing = frontier_existence._missing_reference
+    original_selected = raw_retention.raw_frontier_blocked_selected_paths
+
+    def count_missing(conn: sqlite3.Connection, raw_id: str | None = None) -> bool:
+        nonlocal bootstrap_calls
+        if raw_id is None:
+            bootstrap_calls += 1
+        else:
+            changed_keys.append(raw_id)
+        return original_missing(conn, raw_id)
+
+    def count_selected(root: Path, paths: list[Path]) -> raw_retention.RawFrontierBlockedPaths:
+        selected_sizes.append(len(paths))
+        return original_selected(root, paths)
+
+    monkeypatch.setattr(frontier_existence, "_missing_reference", count_missing)
+    monkeypatch.setattr(raw_retention, "raw_frontier_blocked_selected_paths", count_selected)
+    archive = tmp_path / "archive"
+    initialize_active_archive_root(archive)
+    measurements: list[_DispatcherMeasurement] = []
+    first_page_bootstraps = 0
+    for size in (0, 2, 5):
+        corpus = _write_corpus(tmp_path / f"frontier-{size}", prefix=f"frontier-{size}", keep_files=size)
+        measurements.append(_run_dispatcher_ingest(corpus, archive, observe_writer_holds=True))
+        if size == 2:
+            first_page_bootstraps = bootstrap_calls
+
+    assert first_page_bootstraps >= 1
+    assert bootstrap_calls == first_page_bootstraps
+    assert changed_keys
+    assert selected_sizes and max(selected_sizes) <= 5
+    assert all(item.succeeded_files == item.files for item in measurements)
+    assert measurements[0].files == 0 and measurements[0].passes >= 1
+    assert all(item.writer_hold_s is not None and item.outside_writer_hold_s is not None for item in measurements[1:])
+    with sqlite3.connect(archive / "source.db") as source, sqlite3.connect(archive / "ops.db") as ops:
+        assert source.execute("SELECT count(*) FROM raw_sessions WHERE canonical_source_path IS NULL").fetchone() == (
+            0,
+        )
+        assert ops.execute(
+            "SELECT count(*) FROM ingest_cursor WHERE canonical_source_path IS NULL "
+            "AND byte_offset IS NOT NULL AND excluded = 0"
+        ).fetchone() == (0,)
 
 
 def test_dispatcher_measurement_drains_rejected_prefix_and_counts_retry(
