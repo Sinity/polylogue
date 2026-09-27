@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import os
+import shutil
+import stat
 import tempfile
 from contextlib import suppress
 from pathlib import Path
+
+#: ``FICLONE`` ioctl: share the source's extents instead of copying bytes.
+_FICLONE = 0x40049409
+_REFLINK_UNSUPPORTED = frozenset({errno.EOPNOTSUPP, errno.ENOTTY, errno.EINVAL, errno.EXDEV})
 
 
 class DurableFilesystemError(OSError):
@@ -88,3 +96,46 @@ def append_line(path: Path, line: str | bytes) -> None:
 
 
 __all__ = ["DurableFilesystemError", "append_line", "atomic_replace", "sync_directory", "write_once"]
+
+
+def reflink_into(source_fd: int, destination_fd: int) -> bool:
+    """Clone ``source_fd``'s contents into ``destination_fd``; ``False`` when unsupported."""
+    try:
+        fcntl.ioctl(destination_fd, _FICLONE, source_fd)
+    except OSError as exc:
+        if exc.errno in _REFLINK_UNSUPPORTED:
+            return False
+        raise
+    return True
+
+
+def clone_or_copy_replace(source: Path, destination: Path) -> None:
+    """Place a copy of regular file ``source`` at ``destination``.
+
+    The bytes are cloned by reflink where the filesystem supports it and
+    copied otherwise, into a temporary sibling that replaces ``destination``
+    only once complete: a failure leaves any earlier ``destination`` intact.
+    Anything but a regular file (a FIFO, socket or device) is refused before
+    it is opened, since opening a FIFO for reading blocks.
+    """
+    info = source.stat()
+    if not stat.S_ISREG(info.st_mode):
+        raise OSError(errno.EINVAL, f"not a regular file: {source}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+    temporary_path = Path(temporary)
+    try:
+        with source.open("rb") as stream:
+            if not reflink_into(stream.fileno(), handle):
+                with os.fdopen(os.dup(handle), "wb") as target:
+                    shutil.copyfileobj(stream, target)
+        os.fsync(handle)
+        os.close(handle)
+        handle = -1
+        shutil.copystat(source, temporary_path)
+        os.replace(temporary_path, destination)
+    except BaseException:
+        if handle >= 0:
+            os.close(handle)
+        temporary_path.unlink(missing_ok=True)
+        raise

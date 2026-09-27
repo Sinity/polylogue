@@ -53,28 +53,23 @@ def _default_daemon_url() -> str:
 
 
 def _clone_file(source: str | Path, destination: str | Path) -> Path:
-    """Stage one file by reflink where the filesystem supports it, else copy.
+    """Stage one regular file by reflink where supported, else by copy.
 
     Account exports run to tens of gigabytes; on a copy-on-write filesystem a
-    reflink stages them without duplicating the bytes. Re-staging replaces the
-    previous copy, so importing the same export twice leaves one inbox entry.
+    reflink stages them without duplicating the bytes. The staged entry is
+    replaced only once the new copy is complete, so a failed restage keeps
+    the earlier import.
     """
-    from polylogue.sources.source_snapshot import try_reflink
+    from polylogue.core.durable_fs import clone_or_copy_replace
 
-    source_path = Path(source)
     destination_path = Path(destination)
-    destination_path.unlink(missing_ok=True)
-    if try_reflink(source_path, destination_path):
-        shutil.copystat(source_path, destination_path)
-    else:
-        shutil.copy2(source_path, destination_path)
+    clone_or_copy_replace(Path(source), destination_path)
     return destination_path
 
 
 def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:
     """Stage a local import target into the archive inbox for daemon pickup."""
     from polylogue.sources.parsers import antigravity, hermes_state
-    from polylogue.sources.source_snapshot import SourceSnapshotError
     from polylogue.sources.sqlite_snapshot import sqlite_staging_metadata_path, stage_sqlite_snapshot
 
     resolved = path.expanduser().resolve()
@@ -102,7 +97,7 @@ def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:
             shutil.copytree(resolved, dest, dirs_exist_ok=True, copy_function=_clone_file)
         else:
             _clone_file(resolved, dest)
-    except (OSError, SourceSnapshotError) as exc:
+    except OSError as exc:
         fail("import", f"Could not stage {resolved} in daemon inbox: {exc}")
 
     return dest

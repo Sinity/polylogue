@@ -290,9 +290,9 @@ def test_stage_for_daemon_removes_stale_sqlite_provenance(tmp_path: Path, worksp
 def test_stage_for_daemon_reflinks_and_restages_idempotently(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
     """Staging clones by reflink, and re-staging the same export replaces it.
 
-    Anti-vacuity: stage with ``shutil.copy2`` again and ``try_reflink`` is
-    never asked; drop the ``unlink`` in ``_clone_file`` and the second stage
-    refuses because the reflink destination already exists.
+    Anti-vacuity: stage with ``shutil.copy2`` again and ``reflink_into`` is
+    never asked; replace the destination before the copy completes and the
+    restage leaves temporary siblings or a partial entry.
     """
     from polylogue.cli.commands import import_command
 
@@ -304,13 +304,13 @@ def test_stage_for_daemon_reflinks_and_restages_idempotently(tmp_path: Path, wor
     single = tmp_path / "chatgpt-data.zip"
     single.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
 
-    cloned: list[tuple[Path, Path]] = []
+    cloned: list[int] = []
 
-    def record_reflink(source: Path, destination: Path) -> bool:
-        cloned.append((source, destination))
+    def record_reflink(source_fd: int, destination_fd: int) -> bool:
+        cloned.append(source_fd)
         return False
 
-    with patch("polylogue.sources.source_snapshot.try_reflink", side_effect=record_reflink):
+    with patch("polylogue.core.durable_fs.reflink_into", side_effect=record_reflink):
         staged_dir = import_command._stage_for_daemon(export)
         staged_file = import_command._stage_for_daemon(single)
         again_dir = import_command._stage_for_daemon(export)
@@ -319,8 +319,48 @@ def test_stage_for_daemon_reflinks_and_restages_idempotently(tmp_path: Path, wor
     assert (staged_dir, staged_file) == (again_dir, again_file)
     assert (staged_dir / "nested" / "one.json").read_text() == '{"b": 2}'
     assert staged_file.read_bytes() == single.read_bytes()
-    assert {source.name for source, _ in cloned} == {"conversations.json", "one.json", "chatgpt-data.zip"}
     assert len(cloned) == 6
+    assert not [path for path in staged_dir.rglob(".*") if path.is_file()]
+
+
+def test_failed_restage_keeps_the_earlier_import(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+    """A restage that cannot read its source leaves the earlier staged copy.
+
+    Anti-vacuity: remove the destination before the new copy is complete and
+    the earlier import's bytes are gone after the failed restage.
+    """
+    from polylogue.cli.commands import import_command
+
+    source = tmp_path / "export.json"
+    source.write_text('{"first": true}')
+    staged = import_command._stage_for_daemon(source)
+    source.write_text('{"second": true}')
+    source.chmod(0)
+    try:
+        with pytest.raises(SystemExit):
+            import_command._stage_for_daemon(source)
+    finally:
+        source.chmod(0o600)
+
+    assert staged.read_text() == '{"first": true}'
+    assert [path.name for path in staged.parent.iterdir()] == [staged.name]
+
+
+def test_staging_refuses_a_fifo_without_opening_it(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+    """A named pipe in an export directory is refused, never opened.
+
+    Anti-vacuity: drop the regular-file check in ``clone_or_copy_replace``
+    and opening the writerless FIFO blocks this test forever.
+    """
+    import os
+
+    from polylogue.core.durable_fs import clone_or_copy_replace
+
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+
+    with pytest.raises(OSError, match="not a regular file"):
+        clone_or_copy_replace(fifo, tmp_path / "staged" / "pipe")
 
 
 def test_import_command_uses_daemon_url_env_by_default(
