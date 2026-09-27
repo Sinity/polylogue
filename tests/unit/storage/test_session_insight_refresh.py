@@ -281,7 +281,7 @@ async def test_rebuild_counts_session_event_compactions(
                 source_message_id,
                 position,
                 event_type,
-                summary,
+                payload_json,
                 occurred_at_ms
             ) VALUES (?, ?, ?, ?, ?, ?)
             """,
@@ -290,7 +290,8 @@ async def test_rebuild_counts_session_event_compactions(
                 None,
                 0,
                 "compaction",
-                "Earlier context",
+                # The retired ``summary`` column was a render of this payload key.
+                json.dumps({"summary": "Earlier context"}),
                 1775037900000,
             ),
         )
@@ -967,7 +968,20 @@ def test_session_insight_load_skips_plain_text_blocks(tmp_path: Path) -> None:
 
 
 def test_session_profile_owner_lowers_declared_markers_to_user_assertions(tmp_path: Path) -> None:
-    """The typed session-profile owner reaches the marker lowering seam."""
+    """The typed session-profile owner reaches the marker lowering seam.
+
+    Marker lowering consumes the source-owned accepted marker inputs that
+    ingest appends (never the current index text), so the fixture appends the
+    carrier the ingest route would have accepted for the stored block.
+
+    Anti-vacuity: drop the marker derivation from the owner's composition and
+    no assertion row is written.
+    """
+    import asyncio
+    from dataclasses import asdict
+
+    from polylogue.markers import candidates_for_block
+    from polylogue.storage.accepted_marker_inputs import append_accepted_marker_input, prepare_accepted_marker_input
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
     from tests.infra.convergence_harness import converge_session_profiles
@@ -995,6 +1009,24 @@ def test_session_profile_owner_lowers_declared_markers_to_user_assertions(tmp_pa
             conn=conn,
         )
         conn.commit()
+        stored_message_id, block_id, block_text = conn.execute(
+            "SELECT message_id, block_id, text FROM blocks WHERE session_id = ? ORDER BY block_id LIMIT 1",
+            (session_id,),
+        ).fetchone()
+
+    candidate = candidates_for_block(str(stored_message_id), str(block_id), str(block_text))[0]
+    candidate_record = asdict(candidate)
+    candidate_record["assertion_kind"] = candidate.assertion_kind.value if candidate.assertion_kind else None
+
+    async def accept_marker_input() -> None:
+        async with aiosqlite.connect(archive_root / "source.db") as source:
+            batch = prepare_accepted_marker_input(
+                "marker-materialization", [{"session_id": session_id, "candidates": [candidate_record]}]
+            )
+            await append_accepted_marker_input(source, batch)
+            await source.commit()
+
+    asyncio.run(accept_marker_input())
 
     converge_session_profiles(index_db, archive_root, (session_id,), now=lambda: 0.0)
 
@@ -1037,7 +1069,7 @@ def test_session_insight_load_includes_compaction_session_events_for_profile_cla
                 source_message_id,
                 position,
                 event_type,
-                summary,
+                payload_json,
                 occurred_at_ms
             ) VALUES (?, ?, ?, ?, ?, ?)
             """,
@@ -1046,7 +1078,8 @@ def test_session_insight_load_includes_compaction_session_events_for_profile_cla
                 None,
                 0,
                 "compaction",
-                "Earlier context",
+                # The retired ``summary`` column was a render of this payload key.
+                json.dumps({"summary": "Earlier context"}),
                 1775037900000,
             ),
         )

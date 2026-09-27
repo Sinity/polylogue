@@ -198,7 +198,10 @@ def test_raw_scan_budget_advances_and_fanout_reports_unavailable(tmp_path: Path)
     assert len(matches) == 3
     memory = raw_operation(RawMemorySearch(query="needle"), sources=sources)
     assert memory.outcome == "degraded"
-    assert memory.sources[0].availability == "unavailable"
+    # Coverage rows follow the configured source order (#5632), so find the
+    # missing claude-code source by origin rather than by position.
+    availability = {row.origin: row.availability for row in memory.sources}
+    assert availability == {"codex-session": "available", "claude-code-session": "unavailable"}
     assert len(memory.items) == 3
     timeline = raw_operation(RawTimeline(), sources=sources)
     assert timeline.coverage.time_basis == "session-file-mtime"
@@ -517,18 +520,32 @@ async def test_session_contract_discovery_passes_mcp_argument_validation() -> No
 
 
 @pytest.mark.asyncio
-async def test_old_archive_refuses_indexed_reads_without_migration_and_keeps_raw_available(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("index_version_offset", "lifecycle_action"),
+    [
+        # The index counter restarted at 1 with the fresh-v1 archive, so the
+        # only version below it is 0 (never materialized); anything above it
+        # was written by a newer runtime.
+        (-1, "rebuild_index"),
+        (1, "upgrade_runtime"),
+    ],
+)
+async def test_old_archive_refuses_indexed_reads_without_migration_and_keeps_raw_available(
+    tmp_path: Path, index_version_offset: int, lifecycle_action: str
+) -> None:
     """Read admission must not upgrade an old archive to make a query succeed."""
     import hashlib
     import sqlite3
     from contextlib import closing
 
     from polylogue.core.errors import SchemaVersionMismatchError
+    from polylogue.storage.sqlite.schema_bootstrap import SCHEMA_VERSION
 
+    index_version = SCHEMA_VERSION + index_version_offset
     root = tmp_path / "archive"
     ids = seed(root, count=1)
     paths = [root / f"{tier}.db" for tier in ("source", "audit", "index")]
-    for path, version in zip(paths, (30, 2, 67), strict=True):
+    for path, version in zip(paths, (30, 2, index_version), strict=True):
         with closing(sqlite3.connect(path)) as conn:
             conn.execute(f"PRAGMA user_version = {version}")
     before = [hashlib.sha256(path.read_bytes()).hexdigest() for path in paths]
@@ -543,8 +560,8 @@ async def test_old_archive_refuses_indexed_reads_without_migration_and_keeps_raw
         for request in requests:
             with pytest.raises(SchemaVersionMismatchError) as failure:
                 await execute_session_operation(api, request)
-            assert failure.value.current_version == 67
-            assert failure.value.lifecycle_action == "rebuild_index"
+            assert failure.value.current_version == index_version
+            assert failure.value.lifecycle_action == lifecycle_action
         raw = await execute_session_operation(
             api, RawSearch(origin="codex-session", query="needle"), raw_sources=sources
         )

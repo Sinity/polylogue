@@ -245,15 +245,13 @@ def _daemon_product(request: Any, context: Any, audit: Any, product: str) -> dic
     actuator = actuator_type()
     binding = runtime_operation_binding(actuator)
     executor = OperationExecutor(audit=audit, archive_root=context.archive_root)
+    # ``mutation.facade.*`` is the Python API's operation family (no CLI route).
+    principal = context.principal.on_surface("api")
     with ArchiveStore.open_existing(context.archive_root, read_only=False) as archive:
         args = args_type(archive=archive, **fields)
         try:
-            preview = executor.prepare_bound_for_archive(
-                binding, args, context.principal, archive_root=context.archive_root
-            )
-            authorization = executor.authorize_bound(
-                binding, preview, context.principal, confirmation_strength="bound_token"
-            )
+            preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=context.archive_root)
+            authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
         except KeyError as exc:
             if isinstance(fields.get("session_id"), str):
                 raise FacadeProductRefusalError("session_not_found", str(fields["session_id"])) from exc
@@ -362,9 +360,7 @@ def facade_delete_session(request: Any, context: Any, audit: Any, snapshot: Any)
         actuator = actuators.SessionDeleteActuator()
         args = actuators.SessionDeleteArgs(archive=archive, session_ids=(resolved,))
         binding = runtime_operation_binding(actuator)
-        principal = MutationPrincipal(
-            actor, context.principal.capabilities, context.principal.surface, context.principal.role_label
-        )
+        principal = MutationPrincipal(actor, context.principal.capabilities, "api", context.principal.role_label)
         executor = OperationExecutor(audit=audit, archive_root=context.archive_root)
         preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=context.archive_root)
         authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")

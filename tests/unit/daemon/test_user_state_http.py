@@ -135,6 +135,7 @@ def test_absent_overlay_resource_returns_404(path: str) -> None:
         ("/api/user/marks", {"session_id": "s", "mark_type": "unknown"}, "invalid_request"),
         ("/api/user/annotations", {"session_id": "s", "note_text": " "}, "invalid_request"),
         ("/api/user/saved-views", {"name": "", "query": {}}, "invalid_request"),
+        ("/api/user/saved-views", {"name": "Broken", "query": {"limit": "not-a-number"}}, "invalid_request"),
         ("/api/user/recall-packs", {"pack_id": "p", "label": "P", "payload": {}}, "invalid_request"),
         ("/api/user/workspaces", {"workspace_id": "w", "name": "W", "mode": "invalid"}, "invalid_request"),
     ],

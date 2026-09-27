@@ -9,13 +9,6 @@
 # fits is a finding, not pending work.
 package: polylogue
 sites:
-  - file: "polylogue/operations/daemon_ingest.py"
-    function: "IngestExecution.recover_machine_request"
-    subject: "archive_identity"
-    kind: "read_path_substitution"
-    scope: "writing_module"
-    classification: operator_mutation
-    reason: "This explicit machine-request recovery route rebinds only the in-memory operation binding to the identity already stored on that request's durable audit row. The module writes bounded local ingest spools, so the census classifies it as writing; this recovery method still does not rewrite or mask any archive-derived producer value."
   - file: "polylogue/coordination/envelope.py"
     function: "_compact_coordination_payload"
     subject: "archive"
@@ -58,6 +51,13 @@ sites:
     scope: "read_only_module"
     classification: presentation_projection
     reason: "verified at this head: overall_status is composed here from the component snapshot states this call just read, and the only substitution is fail-closed -- a collected HealthSeverity.OK is ESCALATED to WARNING/ERROR when its own snapshot is unavailable/timed_out/degraded/refreshing, with a named status_component_observation alert appended. It can never report clean for a collector that did not complete, and it is not a read of a stored producer output"
+  - file: "polylogue/operations/daemon_ingest.py"
+    function: "IngestExecution.recover_machine_request"
+    subject: "archive_identity"
+    kind: "read_path_substitution"
+    scope: "writing_module"
+    classification: operator_mutation
+    reason: "This explicit machine-request recovery route rebinds only the in-memory operation binding to the identity already stored on that request's durable audit row. The module writes bounded local ingest spools, so the census classifies it as writing; this recovery method still does not rewrite or mask any archive-derived producer value."
   - file: "polylogue/pipeline/services/ingest_batch/_core.py"
     function: "_ensure_ingest_index_incarnation"
     subject: "ingest_index_incarnation"
@@ -107,6 +107,13 @@ sites:
     scope: "state_predicate"
     classification: declared_retention
     reason: "DELETE FROM <per-session insight table> WHERE session_id NOT IN (SELECT session_id FROM sessions): the referential rule the index tier's own ON DELETE CASCADE declares, applied explicitly because bulk ingest and maintenance paths mutate sessions with foreign_keys disabled. It drops only rows whose owning session no longer exists and rewrites nothing that is retained"
+  - file: "polylogue/storage/derived/session/rebuild.py"
+    function: "rebuild_session_insights_async"
+    subject: "sessions"
+    kind: "state_selected_subject"
+    scope: "no_where"
+    classification: whole_relation_derivation
+    reason: "async twin of rebuild_session_insights_sync with the same selection: the explicit full-rebuild path selects all canonical session IDs, then recomputes and replaces each session's derived profile rows in bounded chunks, acknowledging only the exact profile-demand revision captured for each rebuilt session. Incremental callers pass session_ids and remain scoped to those IDs"
   - file: "polylogue/storage/derived/session/rebuild.py"
     function: "rebuild_session_insights_sync"
     subject: "sessions"

@@ -2127,6 +2127,17 @@ async def rebuild_session_insights_async(
             chunk_degraded_ids = chunk
             chunk_full_ids = ()
 
+        demand_placeholders = ",".join("?" * len(chunk))
+        demand_revisions = {
+            str(row[0]): int(row[1])
+            for row in await (
+                await conn.execute(
+                    f"SELECT session_id, revision FROM session_profile_demand WHERE session_id IN ({demand_placeholders})",
+                    chunk,
+                )
+            ).fetchall()
+        }
+
         record_bundles: list[SessionInsightRecordBundle] = []
         batch: SessionInsightArchiveBatch | None = None
         if chunk_degraded_ids:
@@ -2155,6 +2166,17 @@ async def rebuild_session_insights_async(
 
         chunk_profiles = _count_record_bundles(record_bundles)
         await write_record_bundles(record_bundles)
+        # Parity with rebuild_session_insights_sync: a rebuilt profile completes
+        # the exact demand revision captured before it was built, in the same
+        # transaction; a later writer's revision survives. Without this the
+        # profile stays demanded and reads ``stale`` although it is current.
+        completed_ids = {bundle.profile_record.session_id for bundle in record_bundles}
+        for demanded_session_id, expected_revision in demand_revisions.items():
+            if expected_revision > 0 and demanded_session_id in completed_ids:
+                await conn.execute(
+                    "DELETE FROM session_profile_demand WHERE session_id = ? AND revision = ?",
+                    (demanded_session_id, expected_revision),
+                )
         profile_count += chunk_profiles
         if progress_callback is not None and chunk_profiles:
             progress_callback(
