@@ -197,6 +197,63 @@ def test_transcript_file_delivery_does_not_bypass_its_declared_operation(
     assert reached == ["cli.query"]
 
 
+def test_context_image_cancellation_is_final(
+    probe_env: tuple[Any, Config, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.cli.operation_kernel import OperationCancelledError
+    from polylogue.cli.read_view_handlers import run_read_view
+    from polylogue.cli.read_views import context as context_view
+    from polylogue.cli.read_views.base import ReadViewInvocation
+
+    env, config, session_id = probe_env
+    attempts: list[str] = []
+
+    def cancelled(_config: object, operation: Any, **_kwargs: object) -> object:
+        attempts.append(operation.operation)
+        raise OperationCancelledError(operation.operation, "cancelled", request_id="context-image-read")
+
+    monkeypatch.setattr(context_view, "dispatch_read", cancelled)
+    request = RootModeRequest.from_params({"_config": config, "id": session_id})
+    invocation = ReadViewInvocation(
+        view="context-image", session_id=session_id, output_format="json", destination="stdout", out_path=None
+    )
+    with pytest.raises(SystemExit) as refusal:
+        run_read_view(env, request, invocation)
+    assert refusal.value.code != 0
+    assert attempts == ["read.context-image"]
+
+
+def test_context_image_handler_submits_ledger_through_writer(
+    probe_env: tuple[Any, Config, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.cli.read_view_handlers import run_read_view
+    from polylogue.cli.read_views import context as context_view
+    from polylogue.cli.read_views.base import ReadViewInvocation
+
+    env, config, session_id = probe_env
+    ledger_writes: list[tuple[str, dict[str, object]]] = []
+
+    def read_image(_config: object, operation: Any, **_kwargs: object) -> tuple[dict[str, object], None]:
+        assert operation.operation == "read.context-image"
+        assert operation.payload["observed_at_ms"] > 0
+        return {"payload": {"build_ref": "build:handler", "ledger": [{"item_ref": "one"}]}}, None
+
+    def write_ledger(_config: object, operation: str, payload: dict[str, object]) -> None:
+        ledger_writes.append((operation, payload))
+
+    monkeypatch.setattr(context_view, "dispatch_read", read_image)
+    monkeypatch.setattr(context_view, "configured_mutation_operation", write_ledger)
+    monkeypatch.setattr(context_view, "deliver_content", lambda *_args, **_kwargs: None)
+    request = RootModeRequest.from_params({"_config": config, "id": session_id})
+    invocation = ReadViewInvocation(
+        view="context-image", session_id=session_id, output_format="json", destination="stdout", out_path=None
+    )
+    run_read_view(env, request, invocation)
+    assert ledger_writes[0][0] == "mutation.facade.context_ledger"
+    assert ledger_writes[0][1]["build_ref"] == "build:handler"
+    assert ledger_writes[0][1]["ledger_rows"] == [{"item_ref": "one"}]
+
+
 @pytest.mark.parametrize("view", ("lineage", "topology"))
 def test_graph_read_cancellation_is_final(
     view: str, probe_env: tuple[Any, Config, str], monkeypatch: pytest.MonkeyPatch

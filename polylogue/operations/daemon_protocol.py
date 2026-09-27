@@ -134,6 +134,40 @@ class CorrelationReadRequest(_OperationPayload):
     confidence_threshold: float = 0.3
 
 
+class ContextPreambleReadRequest(_OperationPayload):
+    session_id: str | None = None
+    related_limit: int = Field(default=5, ge=1, le=100)
+    repo_path: str | None = None
+    cwd: str | None = None
+    recent_files: list[str] = Field(default_factory=list)
+    require_session: bool = True
+    boundary: str = "session_start"
+    token_budget: int | None = Field(default=None, ge=1)
+    source_tool_calls: dict[str, str] = Field(default_factory=dict)
+    observed_at: str = Field(min_length=1)
+    observed_project_state: dict[str, object] | None = None
+    project_failure: str | None = None
+
+
+class ContextImageReadRequest(_OperationPayload):
+    seed_session_id: str | None = None
+    seed_session_ids: list[str] = Field(default_factory=list)
+    project_path: str | None = None
+    project_repo: str | None = None
+    since: str | None = None
+    until: str | None = None
+    origin: str | None = None
+    query: str | None = None
+    observed_at_ms: int = Field(ge=1)
+    max_sessions: int = Field(default=5, ge=1, le=20)
+    max_tokens: int | None = Field(default=None, ge=1)
+    max_messages_per_session: int | None = Field(default=24, ge=1)
+    max_chars_per_message: int | None = Field(default=1800, ge=1)
+    include_messages: bool = True
+    include_assertions: bool = True
+    redact_paths: bool = True
+
+
 class AssertionClaimsListRequest(_OperationPayload):
     kinds: list[str] | None = None
     statuses: list[str] | None = Field(default_factory=lambda: ["active", "candidate"])
@@ -396,6 +430,7 @@ class ContextLedgerRowRequest(_OperationPayload):
 class FacadeContextLedgerRequest(_OperationPayload):
     build_ref: str = Field(min_length=1)
     ledger_rows: list[ContextLedgerRowRequest] = Field(default_factory=list)
+    observed_at_ms: int = Field(default=0, ge=0)
 
 
 class CompletionRequest(_OperationPayload):
@@ -943,6 +978,17 @@ class CorrelationReadResult(_OperationResult):
     payload: dict[str, object]
 
 
+class ContextPreambleReadResult(_OperationResult):
+    view: Literal["context"]
+    payload: dict[str, object] | None
+    ledger: dict[str, object] | None
+
+
+class ContextImageReadResult(_OperationResult):
+    view: Literal["context-image"]
+    payload: dict[str, object]
+
+
 class CompletionCandidateResult(_OperationPayload):
     value: str
     insert: str
@@ -1446,6 +1492,22 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_contract="read.correlation.result/v1",
         request_model=CorrelationReadRequest,
         result_model=CorrelationReadResult,
+    ),
+    DaemonOperationSpec(
+        "read.context",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        result_contract="read.context.result/v1",
+        request_model=ContextPreambleReadRequest,
+        result_model=ContextPreambleReadResult,
+    ),
+    DaemonOperationSpec(
+        "read.context-image",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        result_contract="read.context-image.result/v1",
+        request_model=ContextImageReadRequest,
+        result_model=ContextImageReadResult,
     ),
     DaemonOperationSpec(
         "user.assertions.list",

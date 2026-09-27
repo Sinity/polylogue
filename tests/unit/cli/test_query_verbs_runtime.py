@@ -955,53 +955,102 @@ def test_read_verb_dialogue_query_set_keeps_max_tokens_as_projection() -> None:
     assert projection_spec.projection.max_tokens == 7
 
 
-def test_read_verb_context_composes_preamble_not_passthrough() -> None:
-    """read --view context routes to the context preamble composer."""
+def test_read_verb_context_uses_declared_preamble_operation() -> None:
+    """The context view sends its seed and budget to the pinned read route."""
     _, child = _context_pair(params={"conv_id": "claude-code:abc123"}, query_terms=())
+    child.obj.config = MagicMock()
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
     with (
-        patch("polylogue.context.preamble.compose_context_preamble", return_value="{}") as compose,
+        patch("polylogue.context.preamble._git_project_state", return_value=(None, None)),
+        patch(
+            "polylogue.cli.read_views.context.dispatch_read",
+            return_value=({"payload": {"preamble_version": "1.0"}, "ledger": None}, None),
+        ) as dispatch_context,
         patch("polylogue.cli.read_views.standard.execute_query_request") as execute,
         patch("polylogue.cli.read_views.context.deliver_content") as deliver,
     ):
         wrapped(child, **_read_verb_kwargs(view="context", related_limit=3))
 
     execute.assert_not_called()
-    compose.assert_called_once()
-    assert compose.call_args.kwargs["session_id"] == "claude-code:abc123"
-    assert compose.call_args.kwargs["related_limit"] == 3
+    dispatch_context.assert_called_once()
+    operation = dispatch_context.call_args.args[1]
+    assert operation.operation == "read.context"
+    assert operation.payload["session_id"] == "claude-code:abc123"
+    assert operation.payload["related_limit"] == 3
     deliver.assert_called_once()
 
 
-def test_read_verb_context_image_invokes_pack_view() -> None:
-    """polylogue-zok3: context-image predicates reach context_image_payload."""
+def test_read_verb_context_image_invokes_declared_read() -> None:
+    """Context-image predicates and page limit reach the typed read operation."""
     from polylogue.context.compiler import ContextImage
 
     _, child = _context_pair(query_terms=("repo:polylogue",))
-    child.obj.polylogue = SimpleNamespace(context_image_payload=MagicMock(name="context_image_payload"))
+    child.obj.config = SimpleNamespace()
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    image = ContextImage(spec=ContextSpec(seed_query="cost", read_views=("messages",)), segments=())
+    image = ContextImage(
+        spec=ContextSpec(seed_query="cost", read_views=("messages",)),
+        segments=(),
+        build_ref="build:context-image",
+        ledger=({"item_ref": "segment:one", "decision": "accepted"},),
+    )
     with (
         patch("polylogue.cli.query_verbs._resolve_query_action_session_ids", return_value=[]),
-        patch("polylogue.cli.query_verbs.run_coroutine_sync", return_value=image),
+        patch(
+            "polylogue.cli.read_dispatch.dispatch_read",
+            return_value=({"view": "context-image", "payload": image.model_dump(mode="json")}, None),
+        ) as dispatch_image,
+        patch("polylogue.cli.read_views.context.configured_mutation_operation") as ledger_write,
         patch("polylogue.cli.read_views.base.deliver_content") as deliver,
     ):
         wrapped(child, **_read_verb_kwargs(view="context-image", max_sessions=3))
 
-    child.obj.polylogue.context_image_payload.assert_called_once()
-    kwargs = child.obj.polylogue.context_image_payload.call_args.kwargs
-    assert kwargs["query"] == "repo:polylogue"
-    assert kwargs["max_sessions"] == 3
+    dispatch_image.assert_called_once()
+    operation = dispatch_image.call_args.args[1]
+    assert operation.operation == "read.context-image"
+    assert operation.payload["query"] == "repo:polylogue"
+    assert operation.payload["max_sessions"] == 3
+    assert operation.payload["observed_at_ms"] > 0
+    ledger_write.assert_called_once()
+    assert ledger_write.call_args.args[1] == "mutation.facade.context_ledger"
+    assert ledger_write.call_args.args[2]["build_ref"] == "build:context-image"
     deliver.assert_called_once()
     delivered = deliver.call_args.args[1]
     assert delivered.startswith("context: 0 segment(s), 0 omission(s)")
     assert "query=repo:polylogue" in delivered
     assert "limit 3" in delivered
     assert "- Selection query: repo:polylogue" not in delivered
+
+
+def test_context_image_first_uses_only_resolved_seed() -> None:
+    """A scoped --first result cannot be widened by a second seed query."""
+    _, child = _context_pair(query_terms=("repo:polylogue",))
+    child.obj.config = SimpleNamespace()
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+    session_id = "codex-session:first"
+    image = ContextImage(spec=ContextSpec(seed_refs=(f"session:{session_id}",), read_views=("messages",)), segments=())
+    with (
+        patch("polylogue.cli.query_verbs._resolve_query_action_session_ids", return_value=[session_id]) as resolve,
+        patch(
+            "polylogue.cli.read_dispatch.dispatch_read",
+            return_value=({"view": "context-image", "payload": image.model_dump(mode="json")}, None),
+        ) as dispatch_image,
+        patch("polylogue.cli.read_views.base.deliver_content") as deliver,
+    ):
+        wrapped(child, **_read_verb_kwargs(view="context-image", first_only=True, output_format="json"))
+
+    assert resolve.call_args.kwargs["first_only"] is True
+    operation = dispatch_image.call_args.args[1]
+    assert operation.payload["seed_session_ids"] == [session_id]
+    assert operation.payload["query"] is None
+    assert operation.payload["project_repo"] is None
+    result = json.loads(deliver.call_args.args[1])
+    assert result["projection_spec"]["selection"]["query"] == "repo:polylogue"
+    assert result["projection_spec"]["selection"]["refs"] == [f"session:{session_id}"]
 
 
 def test_read_verb_context_image_projection_spec_records_resolved_refs() -> None:

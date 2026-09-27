@@ -325,12 +325,14 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
         "required",
         declared_options=(RELATED_LIMIT_OPTION,),
         execution_kind="distinct-operation",
+        operations=("read.context",),
     ),
     "context-image": ReadViewHandlerMetadata(
         "context-image",
         "none",
         declared_options=(MAX_SESSIONS_OPTION, NO_REDACT_OPTION),
         execution_kind="distinct-operation",
+        operations=("read.context-image",),
     ),
     "neighbors": ReadViewHandlerMetadata(
         "neighbors",
