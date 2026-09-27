@@ -106,6 +106,7 @@ def write_retained_measurement_receipt(receipt: dict[str, object], report_file: 
     retained = {
         "format": "polylogue.daemon-cold-discovery-retained.v1",
         "candidate_sha": candidate.get("sha"),
+        "schema_validation_mode": receipt.get("schema_validation_mode"),
         "workload": {
             "rejected_siblings": fixture.get("rejected"),
             "accepted_sessions": fixture.get("accepted"),
@@ -143,6 +144,11 @@ def write_retained_measurement_receipt(receipt: dict[str, object], report_file: 
             "scope": receipt.get("process_tree_rss_scope"),
             "limits": receipt.get("process_tree_rss_limits"),
         },
+        "process_tree_survivor_check": receipt.get("process_tree_survivor_check"),
+        "process_tree_survivor_count": len(receipt.get("process_tree_survivors", []))
+        if isinstance(receipt.get("process_tree_survivors"), list)
+        else None,
+        "process_tree_survivor_check_missing_reason": receipt.get("process_tree_survivor_check_missing_reason"),
     }
     path = report_file.with_name("cold-daemon-4096-measurement.json")
     path.write_text(json.dumps(retained, indent=2, sort_keys=True) + "\n", encoding="utf-8")

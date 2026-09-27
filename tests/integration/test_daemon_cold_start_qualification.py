@@ -21,7 +21,10 @@ pytestmark = [
     pytest.mark.slow,
     pytest.mark.load_sensitive,
     pytest.mark.uses_real_clock("The owned daemon process and HTTP requests use real wall time."),
-    pytest.mark.timeout(145),
+    # The 120-second active qualification deadline leaves up to 60 seconds for
+    # a final bounded request iteration, child shutdown/reap, survivor checks,
+    # fixture digesting, and failure-receipt serialization.
+    pytest.mark.timeout(180),
 ]
 
 
@@ -58,6 +61,14 @@ def test_empty_archive_discovers_rejected_prefix_and_publishes_exact_sessions(
             assert retained["discovery"] == receipt["discovery_measurement"]
             assert retained["process_tree_rss"]["sampled_peak_bytes"] == receipt["process_tree_rss_bytes"]
             assert retained["process_tree_rss"]["limits"]["task_ids_per_sample"] > 0
+            assert retained["schema_validation_mode"] == "advisory"
+            expected_survivor_check = "clear" if receipt["process_tree_rss_available"] else "unavailable"
+            assert retained["process_tree_survivor_check"] == expected_survivor_check
+            assert retained["process_tree_survivor_count"] == 0
+            if expected_survivor_check == "clear":
+                assert retained["process_tree_survivor_check_missing_reason"] is None
+            else:
+                assert retained["process_tree_survivor_check_missing_reason"]
     assert receipt["outcome"] == "success"
     assert len(receipt["verified_sessions"]) == 3
     assert "public_search_all" in receipt["milestones_upper_bound_s"]
