@@ -115,7 +115,28 @@ def _foreign_checkout(path_text: str, root: Path) -> bool:
         path = Path.cwd() / path
     if _inside(path, root):
         return False
-    return find_git_worktree_root(path if path.is_dir() else path.parent) is not None
+    return _polylogue_checkout_ancestor(path) is not None
+
+
+def _polylogue_checkout_ancestor(path: Path) -> Path | None:
+    """The Polylogue checkout containing ``path``, ignoring Git ceilings.
+
+    Ownership of an environment entry is a containment question, not
+    repository discovery: a ceiling that stops ``git`` from searching above a
+    directory does not make that directory's venv this checkout's.
+    """
+    try:
+        current = path.resolve()
+    except OSError:
+        return None
+    for candidate in (current, *current.parents):
+        try:
+            has_git = (candidate / ".git").exists()
+        except OSError:
+            has_git = False
+        if has_git:
+            return candidate if _is_polylogue_checkout_root(candidate) else None
+    return None
 
 
 class ForeignInterpreterError(RuntimeError):
@@ -132,7 +153,7 @@ def assert_interpreter_belongs_to(root: Path, *, context: str) -> None:
     prefix = Path(sys.prefix)
     if _inside(prefix, root.resolve()):
         return
-    if find_git_worktree_root(prefix) is None:
+    if _polylogue_checkout_ancestor(prefix) is None:
         return
     raise ForeignInterpreterError(
         f"{context}: running on another checkout's interpreter.\n"
@@ -183,6 +204,14 @@ def normalize_checkout_environment(root: Path, environ: dict[str, str] | None = 
             if dropped:
                 corrected.append(f"{name} entries {dropped}")
             env[name] = os.pathsep.join(kept)
+    if environ is None:
+        # ``PYTHONPATH`` was copied into ``sys.path`` when this interpreter
+        # started; dropping it from the environment protects children only.
+        foreign = [entry for entry in sys.path if entry and _foreign_checkout(entry, resolved_root)]
+        for entry in foreign:
+            sys.path.remove(entry)
+        if foreign:
+            corrected.append(f"sys.path entries {foreign}")
     return corrected
 
 

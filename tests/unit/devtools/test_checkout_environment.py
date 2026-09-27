@@ -90,3 +90,36 @@ def test_an_interpreter_from_another_checkout_is_refused(tmp_path: Path, monkeyp
     assert_interpreter_belongs_to(worktree, context="devtools")
     monkeypatch.setattr(sys, "prefix", "/nix/store/python")
     assert_interpreter_belongs_to(worktree, context="devtools")
+
+
+def test_ownership_ignores_git_ceilings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ceiling that hides the primary checkout from git discovery does not make its venv ours.
+
+    Anti-vacuity: use ceiling-aware discovery for ownership and both the PATH
+    entry and the interpreter below are accepted.
+    """
+    primary = _checkout(tmp_path / "primary")
+    worktree = _checkout(tmp_path / "worktree")
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(primary))
+    environ = {"PATH": os.pathsep.join([str(primary / ".venv" / "bin"), "/usr/bin"])}
+
+    normalize_checkout_environment(worktree, environ)
+
+    assert str(primary / ".venv" / "bin") not in environ["PATH"].split(os.pathsep)
+    monkeypatch.setattr(sys, "prefix", str(primary / ".venv"))
+    with pytest.raises(ForeignInterpreterError):
+        assert_interpreter_belongs_to(worktree, context="devtools")
+
+
+def test_foreign_entries_leave_the_running_import_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: skip the ``sys.path`` filter and the primary site-packages stays importable."""
+    primary = _checkout(tmp_path / "primary")
+    worktree = _checkout(tmp_path / "worktree")
+    foreign = str(primary / ".venv" / "lib")
+    monkeypatch.setattr(sys, "path", [str(worktree), foreign, "/nix/store/site-packages"])
+    monkeypatch.setattr(os, "environ", {"PATH": "/usr/bin"})
+
+    corrected = normalize_checkout_environment(worktree)
+
+    assert sys.path == [str(worktree), "/nix/store/site-packages"]
+    assert any("sys.path" in item for item in corrected)
