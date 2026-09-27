@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-from collections.abc import Sequence
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -448,16 +447,17 @@ async def test_backlog_call_sweeps_every_domain_in_bounded_passes(tmp_path: Path
             now=lambda: 0.0,
         )
         passes = 0
-        real_callback = composed.callback
+        real_pass = composed.audit_pass
+        assert real_pass is not None
 
-        async def counting(scope: Sequence[str] | None) -> DerivationReport:
+        async def counting(deadline_s: float) -> DerivationReport | None:
             nonlocal passes
             passes += 1
-            report = await real_callback(scope)
-            assert report.work.published <= 64
+            report = await real_pass(deadline_s)
+            assert report is None or report.work.published <= 64
             return report
 
-        counted = replace(composed, callback=counting)
+        counted = replace(composed, audit_pass=counting)
         await counted.converge_backlog(600.0)
 
         assert passes > 1

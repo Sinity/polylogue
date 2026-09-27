@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from polylogue.daemon.convergence import (
@@ -36,6 +36,9 @@ class ComposedSessionProfiles:
     maintenance: SessionInsightMaintenance
     #: Whether the archive-wide audit sweep still has domains to finish.
     audit_pending: Callable[[], bool] = field(default=lambda: False)
+    #: One bounded audit pass whose derivation budget carries the given wall
+    #: deadline, or ``None`` when the audit has nothing left to sweep.
+    audit_pass: Callable[[float], Awaitable[DerivationReport | None]] | None = None
 
     async def __call__(self, scope: Sequence[str] | None) -> DerivationReport:
         return await self.callback(scope)
@@ -51,8 +54,16 @@ class ComposedSessionProfiles:
         """
         deadline = time.monotonic() + budget_s
         report = await self.callback(None)
-        while self.audit_pending() and time.monotonic() < deadline:
-            report = await self.callback(None)
+        if self.audit_pass is None:
+            return report
+        # Every further pass carries the remaining time as its derivation
+        # deadline, so the kernel stops inside the pass rather than a pass
+        # started near the end overrunning the tick's budget.
+        while (remaining := deadline - time.monotonic()) > 0:
+            passed = await self.audit_pass(remaining)
+            if passed is None:
+                break
+            report = passed
         return report
 
     async def converge_promoted(self) -> DerivationReport:
@@ -106,13 +117,13 @@ def compose_session_profile_callback(
     audit_reset = True
     demand_reset = False
 
-    async def audit_tick() -> DerivationReport:
+    async def audit_tick(deadline_s: float | None = None) -> DerivationReport:
         nonlocal audit_index, audit_reset, demand_reset
         domain = audit_domains[audit_index]
         frame = make_session_profile_frame(index_path, archive_root=archive_root, scope=None, profile_full_scan=True)
         report = await owner.converge(
             frame,
-            budget=audit_budget,
+            budget=audit_budget if deadline_s is None else replace(audit_budget, deadline_s=deadline_s),
             domains=(domain,),
             resume=not audit_reset,
         )
@@ -140,6 +151,12 @@ def compose_session_profile_callback(
             demand_reset = False
             return report
 
+    async def audit_pass(deadline_s: float) -> DerivationReport | None:
+        async with audit_lock:
+            if audit_index >= len(audit_domains):
+                return None
+            return await audit_tick(deadline_s)
+
     async def converge_promoted() -> DerivationReport:
         nonlocal audit_index, audit_reset, demand_reset
         async with audit_lock:
@@ -160,4 +177,5 @@ def compose_session_profile_callback(
         converge_promoted,
         make_session_insight_maintenance(owner, index_db_path=index_path, archive_root=archive_root),
         audit_pending=lambda: audit_index < len(audit_domains),
+        audit_pass=audit_pass,
     )
