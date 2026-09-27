@@ -375,90 +375,15 @@ class CodexStateSnapshot:
     spawn_edges: tuple[CodexSpawnEdge, ...]
 
 
-#: Bounded preview limit for the legacy ``parse_codex_*_db`` helpers.
-CODEX_STATE_MAX_ROWS = 10_000
-
 #: Default keyset page for complete state materialization.
 CODEX_STATE_PAGE_ROWS = 256
 
-#: Text chunk size in characters. Complete materialization fetches every
-#: chunk by SQL ``substr``; legacy parser previews still clip at this size.
+#: Text chunk size in characters. Materialization fetches every chunk of a
+#: field by SQL ``substr``; the chunk size paces reads and never clips text.
 CODEX_STATE_MAX_TEXT_CHARS = 64_000
 
 #: Byte window for a materialization commit, not a total export limit.
 CODEX_STATE_MAX_AGGREGATE_BYTES = 64 * 1024 * 1024
-
-
-@dataclass(frozen=True, slots=True)
-class CodexStateReadBound:
-    """What a bounded read of one state table declined to return.
-
-    Carried alongside the rows so the materializer can turn it into a
-    durable truncation receipt. ``rows_available`` is counted before the
-    capped select, so ``rows_declined`` is exact rather than "at least".
-    """
-
-    table: str
-    rows_available: int
-    rows_read: int
-    row_cap: int
-    text_char_cap: int
-    #: Item ids whose text was clipped at ``text_char_cap``.
-    clipped_item_ids: tuple[str, ...] = ()
-
-    @property
-    def rows_declined(self) -> int:
-        return max(self.rows_available - self.rows_read, 0)
-
-    @property
-    def bounded(self) -> bool:
-        """Whether this read actually declined or clipped anything."""
-        return bool(self.rows_declined or self.clipped_item_ids)
-
-
-def _clip(value: str, cap: int) -> tuple[str, bool]:
-    """Clip one text to ``cap`` characters, reporting whether it was clipped.
-
-    The SQL side already fetched at most ``cap + 1`` characters, so this only
-    decides the flag and drops the sentinel character.
-    """
-    if len(value) > cap:
-        return value[:cap], True
-    return value, False
-
-
-@dataclass(frozen=True, slots=True)
-class CodexThreadGoal:
-    """One ``thread_goals`` row from ``goals_1.sqlite``."""
-
-    thread_id: str
-    goal_id: str
-    objective: str
-    status: str
-    token_budget: int | None
-    tokens_used: int
-    time_used_seconds: int
-    created_at_ms: int
-    updated_at_ms: int
-
-
-@dataclass(frozen=True, slots=True)
-class CodexMemoryRecord:
-    """One ``stage1_outputs`` row from ``memories_1.sqlite``.
-
-    The text is provider-generated material, not a user assertion.  It is
-    exposed so the production material read route can retain it with explicit
-    Codex provenance; it is never promoted into a message or session row.
-    """
-
-    thread_id: str
-    source_updated_at_ms: int
-    generated_at_ms: int
-    raw_memory: str
-    rollout_summary: str
-    usage_count: int | None
-    has_rollout_slug: bool
-    selected_for_phase2: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -702,177 +627,28 @@ def parse_codex_state_db(path: Path, *, immutable: bool = False) -> CodexStateSn
     return CodexStateSnapshot(threads=threads, spawn_edges=edges)
 
 
-def parse_codex_goals_db(
-    path: Path,
-    *,
-    immutable: bool = False,
-    row_limit: int = CODEX_STATE_MAX_ROWS,
-    text_char_limit: int = CODEX_STATE_MAX_TEXT_CHARS,
-) -> tuple[tuple[CodexThreadGoal, ...], CodexStateReadBound]:
-    """Parse ``thread_goals`` from a Codex ``goals_1.sqlite`` snapshot.
-
-    Bounded by declared caps: at most ``row_limit`` rows, each objective
-    clipped in SQL at ``text_char_limit`` characters. The returned
-    :class:`CodexStateReadBound` names exactly what was declined.
-    """
-    clipped: list[str] = []
-    with closing(_connect_readonly(path, immutable=immutable)) as conn:
-        conn.row_factory = sqlite3.Row
-        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(thread_goals)")}
-        rows_available = int(conn.execute("SELECT COUNT(*) FROM thread_goals").fetchone()[0])
-
-        def col(name: str, fallback: str) -> str:
-            return name if name in columns else f"{fallback} AS {name}"
-
-        def clipped_col(name: str, fallback: str) -> str:
-            base = name if name in columns else fallback
-            # Clip in SQLite, not in Python: an unbounded objective must
-            # never be fully materialized in this process.
-            return f"substr({base}, 1, {int(text_char_limit) + 1}) AS {name}"
-
-        rows = conn.execute(
-            "SELECT "
-            + ", ".join(
-                (
-                    col(name, fallback)
-                    for name, fallback in (
-                        ("thread_id", "''"),
-                        ("goal_id", "thread_id"),
-                        ("status", "''"),
-                        ("token_budget", "NULL"),
-                        ("tokens_used", "0"),
-                        ("time_used_seconds", "0"),
-                        ("created_at_ms", "0"),
-                        ("updated_at_ms", "0"),
-                    )
-                )
-            )
-            + ", "
-            + clipped_col("objective", "''")
-            + " FROM thread_goals ORDER BY thread_id LIMIT ?",
-            (int(row_limit),),
-        ).fetchall()
-
-    goals: list[CodexThreadGoal] = []
-    for row in rows:
-        thread_id = _row_str(row, "thread_id")
-        goal_id = _row_str(row, "goal_id")
-        if not thread_id or not goal_id:
-            continue
-        objective, was_clipped = _clip(_row_str(row, "objective"), text_char_limit)
-        if was_clipped:
-            clipped.append(goal_id)
-        goals.append(
-            CodexThreadGoal(
-                thread_id=thread_id,
-                goal_id=goal_id,
-                objective=objective,
-                status=_row_str(row, "status"),
-                token_budget=_row_opt_int(row, "token_budget"),
-                tokens_used=_row_int(row, "tokens_used"),
-                time_used_seconds=_row_int(row, "time_used_seconds"),
-                created_at_ms=_row_int(row, "created_at_ms"),
-                updated_at_ms=_row_int(row, "updated_at_ms"),
-            )
-        )
-    bound = CodexStateReadBound(
-        table="thread_goals",
-        rows_available=rows_available,
-        rows_read=len(rows),
-        row_cap=int(row_limit),
-        text_char_cap=int(text_char_limit),
-        clipped_item_ids=tuple(clipped),
-    )
-    return tuple(goals), bound
-
-
-def parse_codex_memories_db(
-    path: Path,
-    *,
-    immutable: bool = False,
-    row_limit: int = CODEX_STATE_MAX_ROWS,
-    text_char_limit: int = CODEX_STATE_MAX_TEXT_CHARS,
-) -> tuple[tuple[CodexMemoryRecord, ...], CodexStateReadBound]:
-    """Parse generated memory content and accounting from a retained snapshot.
-
-    Bounded exactly as :func:`parse_codex_goals_db` is: ``raw_memory`` and
-    ``rollout_summary`` are clipped in SQL, so a multi-gigabyte generated
-    memory cannot be read into the process.
-    """
-    cap = int(text_char_limit)
-    clipped: list[str] = []
-    with closing(_connect_readonly(path, immutable=immutable)) as conn:
-        conn.row_factory = sqlite3.Row
-        rows_available = int(conn.execute("SELECT COUNT(*) FROM stage1_outputs").fetchone()[0])
-        rows = conn.execute(
-            "SELECT thread_id, source_updated_at, generated_at, "
-            f"substr(raw_memory, 1, {cap + 1}) AS raw_memory, "
-            f"substr(rollout_summary, 1, {cap + 1}) AS rollout_summary, "
-            "usage_count, rollout_slug, selected_for_phase2 "
-            "FROM stage1_outputs ORDER BY thread_id LIMIT ?",
-            (int(row_limit),),
-        ).fetchall()
-
-    records: list[CodexMemoryRecord] = []
-    for row in rows:
-        thread_id = _row_str(row, "thread_id")
-        if not thread_id:
-            continue
-        raw_memory, memory_clipped = _clip(_row_str(row, "raw_memory"), cap)
-        rollout_summary, summary_clipped = _clip(_row_str(row, "rollout_summary"), cap)
-        if memory_clipped or summary_clipped:
-            clipped.append(thread_id)
-        records.append(
-            CodexMemoryRecord(
-                thread_id=thread_id,
-                source_updated_at_ms=_row_int(row, "source_updated_at"),
-                generated_at_ms=_row_int(row, "generated_at"),
-                raw_memory=raw_memory,
-                rollout_summary=rollout_summary,
-                usage_count=_row_opt_int(row, "usage_count"),
-                has_rollout_slug=_row_opt_str(row, "rollout_slug") is not None,
-                selected_for_phase2=bool(_row_int(row, "selected_for_phase2")),
-            )
-        )
-    bound = CodexStateReadBound(
-        table="stage1_outputs",
-        rows_available=rows_available,
-        rows_read=len(rows),
-        row_cap=int(row_limit),
-        text_char_cap=cap,
-        clipped_item_ids=tuple(clipped),
-    )
-    return tuple(records), bound
-
-
 __all__ = [
     "CODEX_STATE_DB_MARKER",
     "CODEX_STATE_MAX_AGGREGATE_BYTES",
-    "CODEX_STATE_MAX_ROWS",
     "CODEX_STATE_PAGE_ROWS",
     "CODEX_STATE_MAX_TEXT_CHARS",
     "CODEX_STATE_FIDELITY",
     "CODEX_STATE_TABLE_FIDELITY",
     "IN_SCOPE_KINDS",
     "CodexAcquisitionDisposition",
-    "CodexMemoryRecord",
     "CodexSpawnEdge",
     "CodexSqliteKind",
     "CodexStateDbClassification",
     "CodexStateTableClassification",
-    "CodexStateReadBound",
     "CodexStatePart",
     "CodexStateSnapshot",
     "CodexTableDisposition",
-    "CodexThreadGoal",
     "CodexThreadRecord",
     "classify_codex_sqlite_path",
     "declared_codex_sqlite_classification",
     "is_in_scope_codex_sqlite_path",
     "looks_like_state_db_payload",
     "marker_payload",
-    "parse_codex_goals_db",
-    "parse_codex_memories_db",
     "parse_codex_state_db",
     "iter_codex_state_parts",
 ]

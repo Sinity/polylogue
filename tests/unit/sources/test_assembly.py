@@ -1112,7 +1112,7 @@ class TestCodexStateTitles:
     def test_parse_codex_state_titles_missing_file(self, tmp_path: Path) -> None:
         sessions_root = tmp_path / ".codex" / "sessions"
         sessions_root.mkdir(parents=True)
-        assert _parse_codex_state_titles(sessions_root) == ({}, 0)
+        assert _parse_codex_state_titles(sessions_root) == {}
 
     # -----------------------------------------------------------------
     # Projected retained-state titles (step 3b)
@@ -1212,51 +1212,34 @@ class TestCodexStateTitles:
 
 
 # -----------------------------------------------------------------------------
-# BOUNDED CODEX state_5.sqlite TITLE READ (bd polylogue-ddvpi)
+# COMPLETE CODEX state_5.sqlite TITLE READ (bd polylogue-ddvpi)
 # -----------------------------------------------------------------------------
 
 
-def test_codex_state_titles_bound_the_read_and_count_the_truncation(tmp_path: Path) -> None:
-    """The title read is bounded server-side and reports what it refused.
+def test_codex_state_titles_keep_every_row_and_every_title_length(tmp_path: Path) -> None:
+    """Every thread title is read whole; no row count or length is refused.
 
-    ``state_5.sqlite`` is located positionally beside discovered session
-    content rather than under a trusted install root, so an imported directory
-    can carry a large crafted one. Title enrichment is an optional lane and may
-    not cost unbounded importer memory -- but a silently short title map would
-    be worse, so the shortfall is counted.
-
-    Anti-vacuity: drop the ``LIMIT`` and the row-count/title-length caps and
-    both the row map and the refusal count change -- every row is materialized
-    and ``truncated`` is 0.
+    Anti-vacuity: reinstate a server-side ``LIMIT`` or a title-length ceiling
+    in ``_parse_state_db_file`` and either the third row or the long title
+    goes missing from the map.
     """
     import sqlite3 as _sqlite3
 
     from polylogue.sources import assembly_codex
 
     state_path = tmp_path / "state_5.sqlite"
+    long_title = "curated " * 2_000
     conn = _sqlite3.connect(state_path)
     try:
         conn.execute("CREATE TABLE threads (id TEXT, title TEXT)")
         conn.executemany(
             "INSERT INTO threads (id, title) VALUES (?, ?)",
-            [("t0", "short title"), ("t1", "x" * (assembly_codex.STATE_DB_TITLE_MAX_CHARS + 1))],
+            [("t0", "short title"), ("t1", long_title), ("t2", "third"), ("t3", "   ")],
         )
         conn.commit()
     finally:
         conn.close()
 
-    monkey_limit = 1
-    original_limit = assembly_codex.STATE_DB_TITLE_ROW_LIMIT
-    try:
-        assembly_codex.STATE_DB_TITLE_ROW_LIMIT = monkey_limit
-        titles, truncated = assembly_codex._parse_state_db_file(state_path)
-    finally:
-        assembly_codex.STATE_DB_TITLE_ROW_LIMIT = original_limit
+    titles = assembly_codex._parse_state_db_file(state_path)
 
-    assert titles == {"t0": "short title"}
-    assert truncated == 1
-
-    titles, truncated = assembly_codex._parse_state_db_file(state_path)
-    assert titles == {"t0": "short title"}
-    # The over-long title is refused rather than clipped into a fake signal.
-    assert truncated == 1
+    assert titles == {"t0": "short title", "t1": long_title.strip(), "t2": "third"}

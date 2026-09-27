@@ -33,7 +33,6 @@ from polylogue.storage.sqlite.queries.attachment_records import (
 logger = get_logger(__name__)
 
 DEFAULT_ATTACHMENT_CONVERGENCE_LIMIT = 25
-DEFAULT_MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,7 +234,6 @@ def converge_drive_attachments(
     archive_root: Path,
     download_bytes: Callable[[str], bytes],
     limit: int = DEFAULT_ATTACHMENT_CONVERGENCE_LIMIT,
-    max_attachment_bytes: int = DEFAULT_MAX_ATTACHMENT_BYTES,
     now_ms: Callable[[], int] | None = None,
     open_write_connections: Callable[[], tuple[sqlite3.Connection, sqlite3.Connection]] | None = None,
 ) -> AttachmentConvergenceResult:
@@ -244,8 +242,10 @@ def converge_drive_attachments(
     The query is intentionally route-neutral: it starts at indexed attachment
     references, not at ``iter_drive_raw_data`` or a source path.  Successful
     bytes are hashed from the bytes actually read and published before the
-    index row is marked acquired.  Oversize and explicit not-found results are
-    terminal ``unavailable`` rows; all other failures remain retryable.
+    index row is marked acquired.  Explicit not-found results are terminal
+    ``unavailable`` rows; all other failures remain retryable.  Size is never
+    a refusal reason: the bytes are already read, and dropping them would
+    lose an attachment the provider still serves.
 
     ``open_write_connections`` separates the scan from the publication: the
     passed connections then serve the candidate scan and survival probe, and
@@ -350,10 +350,6 @@ def converge_drive_attachments(
                 continue
             try:
                 payload = download_bytes(provider_file_id)
-                if len(payload) > max_attachment_bytes:
-                    fetch_outcomes[provider_file_id] = ("terminal", None, 0)
-                    terminal_ids.append(attachment_id)
-                    continue
                 candidate_hash = hashlib.sha256(payload).digest()
                 if is_blob_hash_excised(source_conn, candidate_hash):
                     # Refuse BEFORE publishing. write_from_bytes would stage
@@ -587,7 +583,6 @@ def make_configured_attachment_convergence_stage(db_path: Path, *, archive_root:
 __all__ = [
     "AttachmentConvergenceResult",
     "DEFAULT_ATTACHMENT_CONVERGENCE_LIMIT",
-    "DEFAULT_MAX_ATTACHMENT_BYTES",
     "converge_drive_attachments",
     "make_configured_attachment_convergence_stage",
     "make_attachment_convergence_stage",

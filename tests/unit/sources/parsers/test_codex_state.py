@@ -21,10 +21,9 @@ from polylogue.sources.parsers.codex_state import (
     classify_codex_sqlite_path,
     declared_codex_sqlite_classification,
     is_in_scope_codex_sqlite_path,
+    iter_codex_state_parts,
     looks_like_state_db_payload,
     marker_payload,
-    parse_codex_goals_db,
-    parse_codex_memories_db,
     parse_codex_state_db,
 )
 from polylogue.sources.sqlite_export import open_logical_source, read_export_header
@@ -440,32 +439,43 @@ def test_state_export_retains_unprojected_thread_evidence(tmp_path: Path) -> Non
         ]
 
 
-def test_parse_goals_db(tmp_path: Path) -> None:
+def test_goal_rows_materialize_whole(tmp_path: Path) -> None:
     path = tmp_path / "goals_1.sqlite"
     _write_goals_db(path)
-    goals, bound = parse_codex_goals_db(path)
-    assert len(goals) == 1
-    assert bound.bounded is False
-    assert bound.rows_available == 1
-    assert goals[0].thread_id == "0000-thread-parent"
-    assert goals[0].objective == "Land the retry fix"
-    assert goals[0].status == "active"
-    assert goals[0].token_budget == 100000
+
+    parts = list(iter_codex_state_parts(path, state_kind="goals"))
+
+    assert [(part.thread_id, part.item_id, part.part_kind) for part in parts] == [
+        ("0000-thread-parent", "goal-1", "record")
+    ]
+    payload = parts[0].payload
+    assert payload["objective"] == "Land the retry fix"
+    assert payload["status"] == "active"
+    assert payload["token_budget"] == 100000
 
 
-def test_parse_memories_db_preserves_generated_memory_text(tmp_path: Path) -> None:
+def test_memory_text_is_never_clipped_by_the_chunk_size(tmp_path: Path) -> None:
+    """Generated memory text arrives whole, whatever its length.
+
+    Anti-vacuity: clip a field at ``text_chars`` (the removed preview parsers
+    did, at ``CODEX_STATE_MAX_TEXT_CHARS``) and the reassembled memory text is
+    shorter than the stored one.
+    """
     path = tmp_path / "memories_1.sqlite"
     _write_memories_db(path)
-    records, bound = parse_codex_memories_db(path)
-    assert len(records) == 1
-    assert bound.bounded is False
-    record = records[0]
-    assert record.thread_id == "0000-thread-parent"
-    assert record.raw_memory == "summary text"
-    assert record.rollout_summary == "rollout summary"
-    assert record.usage_count == 3
-    assert record.has_rollout_slug is True
-    assert record.selected_for_phase2 is True
+
+    parts = list(iter_codex_state_parts(path, state_kind="memories", text_chars=4))
+
+    record = next(part.payload for part in parts if part.part_kind == "record")
+    assert record["usage_count"] == 3
+    assert record["selected_for_phase2"] is True
+    text = {"raw_memory": str(record["raw_memory"]), "rollout_summary": str(record["rollout_summary"])}
+    for part in parts:
+        if part.part_kind == "text_chunk":
+            field = str(part.payload["field"])
+            assert part.payload["offset_chars"] == len(text[field])
+            text[field] += str(part.payload["text"])
+    assert text == {"raw_memory": "summary text", "rollout_summary": "rollout summary"}
 
 
 # --- marker payload round trip -------------------------------------------

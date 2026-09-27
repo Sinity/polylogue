@@ -292,6 +292,33 @@ def test_attachment_convergence_terminal_failure_does_not_fabricate_bytes(tmp_pa
     source.close()
 
 
+def test_large_attachment_is_acquired_not_refused_for_size(tmp_path: Path) -> None:
+    """Bytes the provider served are kept whatever their size.
+
+    Anti-vacuity: reinstate any byte ceiling on the downloaded payload in
+    ``converge_drive_attachments`` (the removed 50 MiB cap) and this attachment
+    becomes a terminal ``unavailable`` row with no blob.
+    """
+    initialize_active_archive_root(tmp_path)
+    index = _open_index(tmp_path / "index.db")
+    write_parsed_session_to_archive(index, _session("large", file_id="large-file"), raw_id="large-raw")
+    index.commit()
+    source = sqlite3.connect(tmp_path / "source.db")
+    initialize_archive_tier(source, ArchiveTier.SOURCE)
+    payload = b"x" * (51 * 1024 * 1024)
+
+    result = converge_drive_attachments(index, source, archive_root=tmp_path, download_bytes=lambda _f: payload)
+
+    row = index.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
+    assert result.acquired == 1
+    assert result.terminal == 0
+    assert row["acquisition_status"] == "acquired"
+    assert bytes(row["blob_hash"]) == hashlib.sha256(payload).digest()
+    assert row["byte_count"] == len(payload)
+    index.close()
+    source.close()
+
+
 def test_surviving_blob_is_rebound_without_a_provider_request(tmp_path: Path) -> None:
     """A rebuilt attachment row re-binds bytes the blob store still holds.
 
