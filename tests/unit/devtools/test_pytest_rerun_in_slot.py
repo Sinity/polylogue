@@ -56,7 +56,11 @@ def test_slot_job_reruns_failures_and_records_the_exit(tmp_path: Path, monkeypat
     assert len(started) == 1
 
     record = json.loads((step / RERUN_IN_SLOT_RESULT).read_text(encoding="utf-8"))
-    assert record == {"attempted": ["tests/test_x.py::test_flaky"], "rerun_exit": 0}
+    assert record["attempted"] == ["tests/test_x.py::test_flaky"]
+    assert record["rerun_exit"] == 0
+    # Provenance is recorded only when the launch asked for it; the client
+    # compares it with the first run's before clearing anything.
+    assert "worktree_provenance" in record
 
 
 def test_client_adjudicates_from_the_slot_record_without_requeueing(

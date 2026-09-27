@@ -1151,7 +1151,7 @@ def test_identical_selections_in_one_checkout_share_one_run(tmp_path: Path, monk
     finally:
         os.close(held)
         thread.join(timeout=10)
-        for handle in run_tests._SELECTION_LOCKS:
+        for handle in run_tests._SELECTION_LOCKS.values():
             os.close(handle)
         run_tests._SELECTION_LOCKS.clear()
 

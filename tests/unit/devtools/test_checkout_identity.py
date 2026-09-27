@@ -340,6 +340,9 @@ def test_a_focused_run_whose_content_moves_during_pytest_is_void(
         )
         return SlotOutcome(returncode=0, slot="agentctl job 1", receipt={"worktree_provenance": provenance})
 
+    # The selection names a module that exists: a missing one is refused
+    # before the run is queued at all.
+    (root / "seed_test.py").write_text("", encoding="utf-8")
     monkeypatch.setattr(run_tests, "ROOT", root)
     monkeypatch.chdir(root)
     monkeypatch.setattr(run_tests, "assert_polylogue_matches_checkout", lambda *_a, **_k: None)

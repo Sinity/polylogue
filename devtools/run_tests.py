@@ -213,7 +213,9 @@ REUSE_ENV = "POLYLOGUE_TEST_REUSE"
 
 
 #: Held for the rest of the process once taken; the kernel releases it on exit.
-_SELECTION_LOCKS: list[int] = []
+#: Keyed by selection digest: a second ``flock`` from this same process on a
+#: new descriptor would wait on its own lock forever.
+_SELECTION_LOCKS: dict[str, int] = {}
 
 
 def _hold_selection_lock(selection: list[str]) -> None:
@@ -225,6 +227,8 @@ def _hold_selection_lock(selection: list[str]) -> None:
     try:
         lock_dir.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256(json.dumps(selection).encode("utf-8")).hexdigest()[:24]
+        if digest in _SELECTION_LOCKS:
+            return
         handle = os.open(lock_dir / f"{digest}.lock", os.O_RDWR | os.O_CREAT, 0o600)
     except OSError:
         return
@@ -234,7 +238,7 @@ def _hold_selection_lock(selection: list[str]) -> None:
         sys.stderr.write("devtools test: the same selection is already running in this checkout; waiting for it.\n")
         sys.stderr.flush()
         fcntl.flock(handle, fcntl.LOCK_EX)
-    _SELECTION_LOCKS.append(handle)
+    _SELECTION_LOCKS[digest] = handle
 
 
 def _parse_rerun(selection: list[str]) -> tuple[bool, list[str]]:
