@@ -1109,6 +1109,9 @@ def test_main_reuses_a_green_receipt_without_queueing(
 ) -> None:
     """Anti-vacuity: without the reuse branch ``main`` reaches the fake slot and fails."""
     monkeypatch.setenv(run_tests.REUSE_ENV, "1")
+    # The outer ``devtools test`` running this file holds the real checkout's
+    # lock for this very selection; the lock has its own law below.
+    monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
     receipt = tmp_path / "run.json"
     monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: receipt)
     monkeypatch.setattr(run_tests, "git_worktree_content_sha256", lambda _root: "d1")
@@ -1192,6 +1195,7 @@ def test_a_reused_receipt_is_emitted_as_json_when_asked(
 ) -> None:
     """Anti-vacuity: drop the ``use_json`` branch on reuse and stdout is empty."""
     monkeypatch.setenv(run_tests.REUSE_ENV, "1")
+    monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
     receipt = tmp_path / "run.json"
     receipt.write_text(json.dumps({"status": "success", "run_id": "r1"}), encoding="utf-8")
     monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: receipt)
