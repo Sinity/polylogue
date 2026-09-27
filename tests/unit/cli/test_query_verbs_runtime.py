@@ -991,13 +991,19 @@ def test_read_verb_context_image_invokes_declared_read() -> None:
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    image = ContextImage(spec=ContextSpec(seed_query="cost", read_views=("messages",)), segments=())
+    image = ContextImage(
+        spec=ContextSpec(seed_query="cost", read_views=("messages",)),
+        segments=(),
+        build_ref="build:context-image",
+        ledger=({"item_ref": "segment:one", "decision": "accepted"},),
+    )
     with (
         patch("polylogue.cli.query_verbs._resolve_query_action_session_ids", return_value=[]),
         patch(
             "polylogue.cli.read_dispatch.dispatch_read",
             return_value=({"view": "context-image", "payload": image.model_dump(mode="json")}, None),
         ) as dispatch_image,
+        patch("polylogue.cli.read_views.context.configured_mutation_operation") as ledger_write,
         patch("polylogue.cli.read_views.base.deliver_content") as deliver,
     ):
         wrapped(child, **_read_verb_kwargs(view="context-image", max_sessions=3))
@@ -1007,12 +1013,44 @@ def test_read_verb_context_image_invokes_declared_read() -> None:
     assert operation.operation == "read.context-image"
     assert operation.payload["query"] == "repo:polylogue"
     assert operation.payload["max_sessions"] == 3
+    assert operation.payload["observed_at_ms"] > 0
+    ledger_write.assert_called_once()
+    assert ledger_write.call_args.args[1] == "mutation.facade.context_ledger"
+    assert ledger_write.call_args.args[2]["build_ref"] == "build:context-image"
     deliver.assert_called_once()
     delivered = deliver.call_args.args[1]
     assert delivered.startswith("context: 0 segment(s), 0 omission(s)")
     assert "query=repo:polylogue" in delivered
     assert "limit 3" in delivered
     assert "- Selection query: repo:polylogue" not in delivered
+
+
+def test_context_image_first_uses_only_resolved_seed() -> None:
+    """A scoped --first result cannot be widened by a second seed query."""
+    _, child = _context_pair(query_terms=("repo:polylogue",))
+    child.obj.config = SimpleNamespace()
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+    session_id = "codex-session:first"
+    image = ContextImage(spec=ContextSpec(seed_refs=(f"session:{session_id}",), read_views=("messages",)), segments=())
+    with (
+        patch("polylogue.cli.query_verbs._resolve_query_action_session_ids", return_value=[session_id]) as resolve,
+        patch(
+            "polylogue.cli.read_dispatch.dispatch_read",
+            return_value=({"view": "context-image", "payload": image.model_dump(mode="json")}, None),
+        ) as dispatch_image,
+        patch("polylogue.cli.read_views.base.deliver_content") as deliver,
+    ):
+        wrapped(child, **_read_verb_kwargs(view="context-image", first_only=True, output_format="json"))
+
+    assert resolve.call_args.kwargs["first_only"] is True
+    operation = dispatch_image.call_args.args[1]
+    assert operation.payload["seed_session_ids"] == [session_id]
+    assert operation.payload["query"] is None
+    assert operation.payload["project_repo"] is None
+    result = json.loads(deliver.call_args.args[1])
+    assert result["projection_spec"]["selection"]["query"] == "repo:polylogue"
+    assert result["projection_spec"]["selection"]["refs"] == [f"session:{session_id}"]
 
 
 def test_read_verb_context_image_projection_spec_records_resolved_refs() -> None:

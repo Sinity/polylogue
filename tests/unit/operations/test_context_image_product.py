@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from polylogue.api import Polylogue
 from polylogue.api.sync.bridge import run_coroutine_sync
+from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.operations.context_image_product import context_image_from_pinned_reader
 from polylogue.operations.daemon_protocol import daemon_operation_spec, validate_operation_result
 from polylogue.operations.daemon_reads import execute_read_operation
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
 from tests.infra.storage_records import SessionBuilder
 
 
@@ -30,11 +37,11 @@ def test_pinned_context_image_preserves_message_and_budget_evidence(tmp_path: Pa
         session_id = archive.list_summaries(limit=1)[0].session_id
         ops_before = hashlib.sha256((root / "ops.db").read_bytes()).hexdigest()
         image = context_image_from_pinned_reader(
-            {"seed_session_id": session_id, "max_sessions": 1, "max_tokens": 100},
+            {"seed_session_id": session_id, "max_sessions": 1, "max_tokens": 100, "include_assertions": False},
             archive=archive,
         )
         missing = context_image_from_pinned_reader(
-            {"seed_session_id": "codex-session:missing", "max_sessions": 1},
+            {"seed_session_id": "codex-session:missing", "max_sessions": 1, "include_assertions": False},
             archive=archive,
         )
     assert image.spec.seed_refs == (f"session:{session_id}",)
@@ -59,12 +66,16 @@ def test_pinned_image_matches_facade_compilation(tmp_path: Path) -> None:
     )
     with ArchiveStore.open_existing(root, read_only=True) as archive:
         session_id = archive.list_summaries(limit=1)[0].session_id
-        pinned = context_image_from_pinned_reader({"seed_session_id": session_id, "max_sessions": 1}, archive=archive)
-        selected = context_image_from_pinned_reader({"max_sessions": 1}, archive=archive)
+        pinned = context_image_from_pinned_reader(
+            {"seed_session_id": session_id, "max_sessions": 1, "include_assertions": False}, archive=archive
+        )
+        selected = context_image_from_pinned_reader({"max_sessions": 1, "include_assertions": False}, archive=archive)
     facade = Polylogue(archive_root=root, db_path=root / "index.db")
     try:
-        direct = run_coroutine_sync(facade.context_image_payload(seed_session_id=session_id, max_sessions=1))
-        direct_selected = run_coroutine_sync(facade.context_image_payload(max_sessions=1))
+        direct = run_coroutine_sync(
+            facade.context_image_payload(seed_session_id=session_id, max_sessions=1, include_assertions=False)
+        )
+        direct_selected = run_coroutine_sync(facade.context_image_payload(max_sessions=1, include_assertions=False))
     finally:
         run_coroutine_sync(facade.close())
     assert pinned.spec == direct.spec
@@ -92,7 +103,13 @@ def test_context_image_operation_preserves_seed_order_and_projection(tmp_path: P
         selected = list(reversed(refs))
         result = execute_read_operation(
             "read.context-image",
-            {"seed_session_ids": selected, "max_sessions": 2, "max_tokens": 100},
+            {
+                "seed_session_ids": selected,
+                "max_sessions": 2,
+                "max_tokens": 100,
+                "include_assertions": False,
+                "observed_at_ms": 1_700_000_000_000,
+            },
             archive=archive,
             serving_identity="test",
         )
@@ -104,3 +121,54 @@ def test_context_image_operation_preserves_seed_order_and_projection(tmp_path: P
     assert len(payload["segments"]) == 2
     declaration = daemon_operation_spec("read.context-image")
     assert declaration is not None and declaration.fallback.value == "never"
+
+
+def test_assertion_request_requires_pinned_user_tier(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    SessionBuilder(root / "index.db", "context-image-user-tier").provider("codex").save()
+    (root / "user.db").unlink()
+    with ArchiveStore.open_existing(root, read_only=True) as archive:
+        with pytest.raises(ArchiveTierUnavailableError):
+            context_image_from_pinned_reader({"max_sessions": 1, "include_assertions": True}, archive=archive)
+
+
+def test_context_image_assertions_follow_pinned_user_snapshot(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    SessionBuilder(root / "index.db", "context-image-snapshot").provider("codex").save()
+    initialize_archive_database(root / "user.db", ArchiveTier.USER)
+    with sqlite3.connect(root / "user.db") as connection:
+        connection.execute("PRAGMA journal_mode=WAL")
+    with ArchiveStore.open_existing(root, read_only=True) as archive:
+        session_id = archive.list_summaries(limit=1)[0].session_id
+        target_ref = f"session:{session_id}"
+
+    def add_claim(assertion_id: str) -> None:
+        with sqlite3.connect(root / "user.db") as connection:
+            upsert_assertion(
+                connection,
+                assertion_id=assertion_id,
+                target_ref=target_ref,
+                kind="decision",
+                body_text=f"{assertion_id} evidence",
+                author_ref="user:local",
+                author_kind="user",
+                status="active",
+                visibility="private",
+                context_policy={"inject": True},
+                now_ms=1_700_000_000_000,
+            )
+
+    add_claim("visible")
+    with ArchiveStore.open_existing(root, read_only=True) as archive:
+        archive.begin_read_snapshot()
+        assert archive.index_connection is not None
+        assert archive.index_connection.execute("SELECT COUNT(*) FROM user_tier.assertions").fetchone()[0] == 1
+        add_claim("late")
+        image = context_image_from_pinned_reader(
+            {"seed_session_id": session_id, "include_assertions": True, "observed_at_ms": 1_700_000_000_001},
+            archive=archive,
+        )
+    assert "assertion:visible" in image.assertion_refs
+    assert "assertion:late" not in image.assertion_refs

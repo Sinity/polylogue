@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -16,9 +15,7 @@ from polylogue.context.compiler import (
     ContextSpec,
 )
 from polylogue.context.product_image import compile_context_image
-from polylogue.core.enums import AssertionStatus
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.surfaces.payloads import AssertionClaimPayload
 from polylogue.surfaces.projection_spec import projection_from_views
 
@@ -29,8 +26,9 @@ if TYPE_CHECKING:
 class PinnedContextImageSource:
     """Archive evidence for image composition, bound to a supplied reader."""
 
-    def __init__(self, archive: ArchiveStore) -> None:
+    def __init__(self, archive: ArchiveStore, *, observed_at_ms: int) -> None:
         self.archive = archive
+        self.observed_at_ms = observed_at_ms
 
     async def _compile_context_seed_query(
         self, spec: ContextSpec
@@ -118,22 +116,34 @@ class PinnedContextImageSource:
     async def list_assertion_claim_payloads(
         self, *, target_ref: str, statuses: tuple[str, ...], context_inject: bool
     ) -> list[AssertionClaimPayload]:
-        from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_claims
+        from polylogue.storage.sqlite.archive_tiers.user_write import (
+            _ASSERTION_COLUMNS,
+            ASSERTION_CLAIM_KINDS,
+            _assertion_row_to_envelope,
+        )
 
-        if not self.archive.user_db_path.exists():
-            return []
-        conn = open_readonly_connection(self.archive.user_db_path)
-        conn.row_factory = sqlite3.Row
-        try:
-            claims = list_assertion_claims(
-                conn,
-                target_ref=target_ref,
-                statuses=tuple(AssertionStatus.from_string(status) for status in statuses),
-                context_inject=context_inject,
-            )
-        finally:
-            conn.close()
-        return [AssertionClaimPayload.from_envelope(claim) for claim in claims]
+        self.archive.require_user_tier()
+        connection = self.archive.index_connection
+        if connection is None:
+            raise ValueError("context image requires an index snapshot")
+        kinds = tuple(str(kind.value) for kind in ASSERTION_CLAIM_KINDS)
+        kind_slots = ", ".join("?" for _ in kinds)
+        status_slots = ", ".join("?" for _ in statuses)
+        rows = connection.execute(
+            f"SELECT {_ASSERTION_COLUMNS} FROM user_tier.assertions "
+            f"WHERE kind IN ({kind_slots}) AND target_ref = ? "
+            f"AND COALESCE(status, 'active') IN ({status_slots}) "
+            "AND (staleness_json IS NULL OR json_extract(staleness_json, '$.expires_at_ms') IS NULL "
+            "OR json_extract(staleness_json, '$.expires_at_ms') > ?) "
+            "ORDER BY updated_at_ms DESC, assertion_id",
+            (*kinds, target_ref, *statuses, self.observed_at_ms),
+        ).fetchall()
+        claims = (_assertion_row_to_envelope(row) for row in rows)
+        return [
+            AssertionClaimPayload.from_envelope(claim)
+            for claim in claims
+            if bool(claim.context_policy.get("inject")) is context_inject
+        ]
 
 
 def context_image_from_pinned_reader(payload: Mapping[str, Any], *, archive: ArchiveStore) -> ContextImage:
@@ -143,6 +153,7 @@ def context_image_from_pinned_reader(payload: Mapping[str, Any], *, archive: Arc
     max_tokens = payload.get("max_tokens")
     query = payload.get("query")
     include_messages = bool(payload.get("include_messages", True))
+    include_assertions = bool(payload.get("include_assertions", True))
     redact_paths = bool(payload.get("redact_paths", True))
     seed_session_ids = payload.get("seed_session_ids") or ()
     seed_refs = (
@@ -166,10 +177,16 @@ def context_image_from_pinned_reader(payload: Mapping[str, Any], *, archive: Arc
             "max_messages_per_session", DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION
         ),
         max_chars_per_message=payload.get("max_chars_per_message", DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE),
-        include_assertions=bool(payload.get("include_assertions", True)),
+        include_assertions=include_assertions,
         redaction_policy="default" if redact_paths else "raw-opt-in",
     )
-    image = asyncio.run(compile_context_image(PinnedContextImageSource(archive), spec))
+    if include_assertions:
+        archive.require_user_tier()
+    image = asyncio.run(
+        compile_context_image(
+            PinnedContextImageSource(archive, observed_at_ms=int(payload.get("observed_at_ms", 0))), spec
+        )
+    )
     projection = projection_from_views(
         ("context-image",),
         format="json",

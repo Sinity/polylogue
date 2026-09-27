@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from contextlib import suppress
 from datetime import datetime, timezone
 from typing import cast
@@ -20,6 +21,7 @@ from polylogue.cli.read_views.base import (
 )
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
+from polylogue.config import Config
 
 
 def build_context_options(values: ReadViewOptionValues) -> ReadViewContextOptions:
@@ -41,6 +43,20 @@ def build_context_image_options(values: ReadViewOptionValues) -> ReadViewContext
         max_sessions=cast(int, values.get("max_sessions", 5)),
         no_redact=cast(bool, values.get("no_redact", False)),
     )
+
+
+def record_context_image_ledger(config: Config, payload: Mapping[str, object], *, observed_at_ms: int) -> None:
+    """Submit the read result's scheduler receipt through the daemon writer."""
+    build_ref = payload.get("build_ref")
+    ledger = payload.get("ledger")
+    if not isinstance(build_ref, str) or not isinstance(ledger, list):
+        return
+    with suppress(OperationKernelError):
+        configured_mutation_operation(
+            config,
+            "mutation.facade.context_ledger",
+            {"build_ref": build_ref, "ledger_rows": ledger, "observed_at_ms": observed_at_ms},
+        )
 
 
 def run_read_context(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
@@ -114,6 +130,7 @@ def run_read_context_image(env: AppEnv, request: RootModeRequest, invocation: Re
         else options.max_sessions
     )
     redact_paths = projection.redact_paths if projection is not None else not options.no_redact
+    observed_at_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     try:
         result, _ = dispatch_read(
             env.config,
@@ -127,6 +144,7 @@ def run_read_context_image(env: AppEnv, request: RootModeRequest, invocation: Re
                     "until": options.until,
                     "origin": options.origin,
                     "query": options.query,
+                    "observed_at_ms": observed_at_ms,
                     "max_sessions": max_sessions,
                     "redact_paths": redact_paths,
                 },
@@ -137,9 +155,12 @@ def run_read_context_image(env: AppEnv, request: RootModeRequest, invocation: Re
         from polylogue.cli.render.outcome import exit_for_read_failure
 
         exit_for_read_failure(exc)
+    image_payload = result["payload"]
+    if isinstance(image_payload, dict):
+        record_context_image_ledger(env.config, image_payload, observed_at_ms=observed_at_ms)
     deliver_content(
         env,
-        json.dumps(result["payload"], indent=2) + "\n",
+        json.dumps(image_payload, indent=2) + "\n",
         destination=invocation.destination,
         out_path=invocation.out_path,
     )

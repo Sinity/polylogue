@@ -158,6 +158,7 @@ class ContextImageReadRequest(_OperationPayload):
     until: str | None = None
     origin: str | None = None
     query: str | None = None
+    observed_at_ms: int = Field(ge=1)
     max_sessions: int = Field(default=5, ge=1, le=20)
     max_tokens: int | None = Field(default=None, ge=1)
     max_messages_per_session: int | None = Field(default=24, ge=1)

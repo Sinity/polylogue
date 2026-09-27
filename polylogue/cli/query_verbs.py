@@ -2879,10 +2879,14 @@ def run_read_context_image(
     uses_context_image_defaults = "context-image" in views
 
     if views == ("context-image",):
+        from datetime import datetime, timezone
+
         from polylogue.cli.operation_kernel import OperationKernelError, OperationRequest
         from polylogue.cli.read_dispatch import daemon_route_disabled, dispatch_read
+        from polylogue.cli.read_views.context import record_context_image_ledger
         from polylogue.context.compiler import ContextImage
 
+        observed_at_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         try:
             result, _ = dispatch_read(
                 env.config,
@@ -2890,12 +2894,13 @@ def run_read_context_image(
                     "read.context-image",
                     {
                         "seed_session_ids": session_ids,
-                        "project_path": project_path,
-                        "project_repo": project_repo,
-                        "since": since,
-                        "until": until,
-                        "origin": context_origin,
-                        "query": context_query,
+                        "project_path": project_path if not session_ids else None,
+                        "project_repo": project_repo if not session_ids else None,
+                        "since": since if not session_ids else None,
+                        "until": until if not session_ids else None,
+                        "origin": context_origin if not session_ids else None,
+                        "query": context_query if not session_ids else None,
+                        "observed_at_ms": observed_at_ms,
                         "max_sessions": limit,
                         "max_tokens": max_tokens,
                         "include_messages": True,
@@ -2909,7 +2914,9 @@ def run_read_context_image(
             from polylogue.cli.render.outcome import exit_for_read_failure
 
             exit_for_read_failure(exc)
-        image = ContextImage.model_validate(result["payload"])
+        image_payload = cast(dict[str, object], result["payload"])
+        image = ContextImage.model_validate(image_payload)
+        record_context_image_ledger(env.config, image_payload, observed_at_ms=observed_at_ms)
     elif session_ids:
         poly = env.polylogue
         spec = ContextSpec(
