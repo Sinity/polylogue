@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -14,9 +15,12 @@ from polylogue.analysis.delegation_work_evidence_materializer import (
     delegation_work_evidence_snapshot,
     materialize_delegation_work_evidence_archive,
 )
+from polylogue.core.stage_admission import stage_write_admission
 from polylogue.daemon.convergence_stages import make_delegation_work_evidence_stage
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.write_guard import install_archive_write_guard
+from polylogue.storage.sqlite.write_lease import UnleasedWriteError, arm_write_lease_enforcement, write_lease
 
 
 def _seed_delegation(archive_root: Path) -> None:
@@ -140,6 +144,27 @@ def test_materializer_replaces_archive_projection_and_tracks_delegation_freshnes
             ).fetchone()[0]
             == 0
         )
+
+
+def test_delegation_stage_reads_without_daemon_writer_lease(tmp_path: Path) -> None:
+    """The freshness probe and materialization read run outside writer admission."""
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    bootstrap_archive_root(tmp_path)
+    _seed_delegation(tmp_path)
+    stage = make_delegation_work_evidence_stage(tmp_path / "index.db")
+
+    def admit(actor: str, work: Callable[[], object]) -> object:
+        with write_lease(actor, archive_root=tmp_path):
+            return work()
+
+    with install_archive_write_guard(), arm_write_lease_enforcement():
+        with pytest.raises(UnleasedWriteError):
+            sqlite3.connect(tmp_path / "index.db")
+        with stage_write_admission(admit):
+            assert stage.check(tmp_path / "source.jsonl") is True
+            assert stage.execute(tmp_path / "source.jsonl") is True
+            assert stage.check(tmp_path / "source.jsonl") is False
 
 
 def test_stage_uses_archive_root_after_index_generation_promotion(

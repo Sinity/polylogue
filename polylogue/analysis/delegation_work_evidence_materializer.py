@@ -45,7 +45,7 @@ def delegation_work_evidence_snapshot(archive_root: Path) -> ObjectRef:
     digest = hashlib.sha256()
     row_count = 0
     byte_count = 0
-    with sqlite_connection(index_db) as conn:
+    with sqlite_connection(f"{index_db.absolute().as_uri()}?mode=ro", uri=True) as conn:
         # ``SELECT *`` deliberately: the digest must stay as sensitive as the
         # whole relation, and a hand-kept column list would silently stop
         # tracking a column added later -- freshness would go blind exactly
@@ -103,7 +103,7 @@ def delegation_work_evidence_materialization_needed(archive_root: Path) -> bool:
 
     index_db = Path(archive_root) / "index.db"
     snapshot = delegation_work_evidence_snapshot(archive_root).format()
-    with sqlite_connection(index_db) as conn:
+    with sqlite_connection(f"{index_db.absolute().as_uri()}?mode=ro", uri=True) as conn:
         row = conn.execute(
             "SELECT corpus_snapshot_ref FROM work_evidence_graphs WHERE graph_id = ?",
             (DELEGATION_WORK_EVIDENCE_GRAPH_ID,),
