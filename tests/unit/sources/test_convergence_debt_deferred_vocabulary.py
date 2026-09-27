@@ -7,6 +7,8 @@ deferral. Check and execute exceptions produce ``StageState.FAILED``.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,8 +24,8 @@ from polylogue.sources.live.convergence_debt import (
     is_deferred_stage_state,
 )
 from polylogue.sources.live.convergence_debt_retry import convergence_debt_source_path
-from polylogue.sources.live.convergence_outcome import record_convergence_outcome
-from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.live.convergence_outcome import record_convergence_outcome, record_convergence_outcomes
+from polylogue.sources.live.cursor import ConvergenceDebtBatchEntry, ConvergenceDebtWrite, CursorStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -198,6 +200,84 @@ def test_record_convergence_outcome_persists_deferred_and_failed_statuses(tmp_pa
         str(deferred_path): "deferred",
         str(failed_path): "failed",
     }
+
+
+def test_record_convergence_outcomes_batches_64_paths_without_losing_classification(
+    tmp_path: Path,
+) -> None:
+    """One bounded 64-path publication uses one ops commit and keeps every status."""
+    cursor = CursorStore(tmp_path / "live.sqlite")
+    cursor.initialize()
+    commits: list[str] = []
+
+    original_connect_ops = CursorStore._connect_ops
+
+    @contextmanager
+    def tracked_connect_ops(store: CursorStore) -> Iterator[sqlite3.Connection]:
+        with original_connect_ops(store) as conn:
+            conn.set_trace_callback(lambda statement: commits.append(statement) if statement == "COMMIT" else None)
+            yield conn
+
+    outcomes = []
+    for index in range(64):
+        path = tmp_path / f"source-{index:02}.jsonl"
+        deferred = index % 2 == 0
+        outcomes.append(
+            (
+                path,
+                (ConvergenceDebt(path, "fts", f"failure-{index}", deferred=deferred),),
+            )
+        )
+
+    with patch.object(CursorStore, "_connect_ops", tracked_connect_ops):
+        record_convergence_outcomes(cursor, outcomes)
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        rows = conn.execute(
+            "SELECT target_id, status FROM convergence_debt WHERE stage = 'fts' ORDER BY target_id"
+        ).fetchall()
+    assert len(rows) == 64
+    assert {status for _, status in rows} == {"failed", "deferred"}
+    assert sum(status == "deferred" for _, status in rows) == 32
+    assert len(commits) == 1
+
+
+def test_convergence_debt_batch_surfaces_exhausted_ops_lock_retries(
+    tmp_path: Path,
+) -> None:
+    """A held ops writer lock must refuse the caller instead of losing its debt."""
+    cursor = CursorStore(tmp_path / "live.sqlite")
+    cursor.initialize()
+    blocker = sqlite3.connect(cursor._ops_db_path, timeout=0.001)
+    blocker.execute("BEGIN IMMEDIATE")
+    try:
+        with patch(
+            "polylogue.sources.live.cursor.open_connection",
+            side_effect=lambda path, **_kwargs: sqlite3.connect(path, timeout=0.001),
+        ):
+            with pytest.raises(RuntimeError, match="convergence debt batch was not persisted"):
+                cursor.apply_convergence_debt_batch(
+                    (
+                        ConvergenceDebtBatchEntry(
+                            writes=(
+                                ConvergenceDebtWrite(
+                                    stage="fts",
+                                    subject_type="source_path",
+                                    subject_id="locked-source.jsonl",
+                                    error="retry me",
+                                ),
+                            ),
+                        ),
+                    )
+                )
+    finally:
+        blocker.rollback()
+        blocker.close()
+
+    with sqlite3.connect(cursor._ops_db_path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM convergence_debt WHERE target_id = 'locked-source.jsonl'"
+        ).fetchone() == (0,)
 
 
 def test_real_converger_outcomes_reach_status_and_read_surfaces(tmp_path: Path) -> None:

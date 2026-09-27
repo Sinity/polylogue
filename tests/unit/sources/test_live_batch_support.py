@@ -6,7 +6,7 @@ import json
 import os
 import sqlite3
 import zipfile
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -62,6 +62,7 @@ from polylogue.sources.live.batch_support import (
     sha256_range_from_path,
     tail_hash_from_path,
 )
+from polylogue.sources.live.convergence_debt import ConvergenceDebt
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.revision_backfill import (
@@ -592,6 +593,51 @@ def _seed_live_append_plan(
     plan = processor._append_plan(path)
     assert isinstance(plan, _AppendPlan)
     return path, plan, _append_owner(archive_root), processor
+
+
+def test_append_debt_lock_failure_keeps_frontier_replayable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused debt batch must leave the advanced append available to replay."""
+    path, _plan, _owner, processor = _seed_live_append_plan(tmp_path, native_id="debt-lock-replay")
+    cursor = processor._cursor
+    before = cursor.get_record(path)
+    assert before is not None
+    original_record_outcomes = processor._record_convergence_outcomes
+
+    def hold_ops_lock_then_record(outcomes: Iterable[tuple[Path, Iterable[ConvergenceDebt]]]) -> None:
+        blocker = sqlite3.connect(cursor._ops_db_path, timeout=0.001)
+        blocker.execute("BEGIN IMMEDIATE")
+        scope_conn = cast(Any, cursor._ops_scope).conn
+        assert scope_conn is not None
+        scope_conn.execute("PRAGMA busy_timeout = 1")
+        try:
+            original_record_outcomes(outcomes)
+        finally:
+            blocker.rollback()
+            blocker.close()
+
+    monkeypatch.setattr(processor, "_record_convergence_outcomes", hold_ops_lock_then_record)
+    with pytest.raises(RuntimeError, match="convergence debt batch was not persisted"):
+        asyncio.run(processor.ingest_files([path], emit_event=False))
+
+    after_refusal = cursor.get_record(path)
+    assert after_refusal is not None
+    assert after_refusal.byte_offset == before.byte_offset
+    assert processor._append_plan(path) is not None
+
+    monkeypatch.setattr(processor, "_record_convergence_outcomes", original_record_outcomes)
+    replayed = asyncio.run(processor.ingest_files([path], emit_event=False))
+
+    assert replayed.succeeded_file_count == 1
+    final_cursor = cursor.get_record(path)
+    assert final_cursor is not None
+    assert final_cursor.byte_offset == path.stat().st_size
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = 'codex-session:debt-lock-replay'"
+        ).fetchone() == (2,)
 
 
 def _seed_claude_live_append_plan(
@@ -8691,7 +8737,7 @@ async def test_live_append_plans_flush_in_bounded_groups(
         lambda paths, **kwargs: (paths, 0.0, {}, []),
     )
     monkeypatch.setattr(processor, "_record_append_cursor", lambda plan: True)
-    monkeypatch.setattr(processor, "_record_convergence_outcome", lambda path, debts: None)
+    monkeypatch.setattr(processor, "_record_convergence_outcomes", lambda outcomes: None)
     monkeypatch.setattr("polylogue.sources.live.batch._append_plan_group_ready", lambda plans: len(plans) >= 2)
 
     metrics = await processor.ingest_files(paths, emit_event=False)

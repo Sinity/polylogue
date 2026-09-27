@@ -888,6 +888,7 @@ def add_convergence_debt(
     created_at_ms: int,
     updated_at_ms: int | None = None,
     debt_id: str | None = None,
+    manage_transaction: bool = True,
 ) -> str:
     """Add or refresh one convergence-debt row and return its ``debt_id``."""
     require_literal(status, ConvergenceDebtStatus, name="convergence debt status")
@@ -935,7 +936,8 @@ def add_convergence_debt(
             updated_at_ms if updated_at_ms is not None else created_at_ms,
         ),
     )
-    conn.commit()
+    if manage_transaction:
+        conn.commit()
     return debt_id
 
 
