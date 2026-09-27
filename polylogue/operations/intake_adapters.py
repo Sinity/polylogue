@@ -327,11 +327,19 @@ class FileIntakeAdapter(IntakeAdapter):
                             self._overflow_rescan_due_at = due_at
                     self._fresh_retry_debt[retry_path] = due_at
             self._fresh_pending = [path for path in self._fresh_pending if path not in offered]
+        # Page items that were never attempted (the pass ran out of its time
+        # budget before reaching them) stay ordinary backlog even when a
+        # later-sorting sibling was acknowledged and advanced ``_after`` past
+        # them. Filtering them by position dropped them from the continuation;
+        # the resumed walk starts after ``_after`` too, so nothing offered them
+        # again until the exhausted-walk rescan ten minutes later.
+        unattempted = frozenset(self._fresh_page_paths) - self._fresh_attempted_paths
         self._fresh_page_pending = False
         self._fresh_page_paths = ()
         self._fresh_attempted_paths.clear()
         if self._after is not None:
-            self._fresh_pending = [path for path in self._fresh_pending if str(path) > self._after]
+            after = self._after
+            self._fresh_pending = [path for path in self._fresh_pending if str(path) > after or path in unattempted]
         # A vanished file is retryable when it disappears after discovery, but
         # retaining that stale page forever prevents both later paths and a
         # queued rescan from running. Recreated files return in a later scan.

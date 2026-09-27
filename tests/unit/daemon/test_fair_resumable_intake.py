@@ -2668,6 +2668,64 @@ async def test_acquisition_budget_retains_unattempted_file_page_tail(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_acquisition_budget_retains_unattempted_file_sorting_before_an_acknowledged_sibling(
+    tmp_path: Path,
+) -> None:
+    """A batch admits in its own order, not path order.
+
+    When the budget runs out on ``a.json`` after ``b.json`` succeeded, the
+    acknowledgement of ``b`` advances the walk cursor past ``a``. Filtering the
+    continuation by that cursor alone dropped ``a`` until the exhausted-walk
+    rescan; removing the unattempted carve-out makes the second pass admit
+    nothing.
+    """
+    paths = [tmp_path / name for name in ("a.json", "b.json", "c.json")]
+    for path in paths:
+        path.write_text("{}")
+    source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
+
+    class BudgetWatcher:
+        def __init__(self) -> None:
+            self.batches: list[list[Path]] = []
+
+        def intake_revision(self, _source: WatchSource) -> int:
+            return 0
+
+        async def _ingest_files(self, batch: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+            self.batches.append(list(batch))
+            if len(self.batches) == 1:
+                return SimpleNamespace(
+                    succeeded_paths=(str(paths[1]),),
+                    excluded_paths={
+                        str(paths[0]): REFUSED_UNATTEMPTED_TIME_BUDGET,
+                        str(paths[2]): REFUSED_UNATTEMPTED_TIME_BUDGET,
+                    },
+                    time_budget_exceeded=True,
+                    source_payload_read_bytes=2,
+                )
+            return SimpleNamespace(
+                succeeded_paths=tuple(str(path) for path in batch),
+                source_payload_read_bytes=2 * len(batch),
+            )
+
+    watcher = BudgetWatcher()
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    dispatcher = FairIntakeDispatcher(
+        [IntakeClassSpec(name="capture", adapter=adapter, page_size=3, retry_cooldown_s=0)]
+    )
+
+    first = await dispatcher.run_once()
+    assert (first.require_report("capture").admitted, first.require_report("capture").retried) == (1, 2)
+    assert adapter._after == str(paths[1])
+    second = await dispatcher.run_once()
+    assert second.require_report("capture").admitted == 2
+    assert watcher.batches == [paths, [paths[0], paths[2]]]
+
+
+@pytest.mark.asyncio
 async def test_dispatcher_byte_budget_reoffers_unplanned_fresh_page_tail(tmp_path: Path) -> None:
     paths = [tmp_path / name for name in ("a.json", "b.json", "c.json")]
     for path in paths:
