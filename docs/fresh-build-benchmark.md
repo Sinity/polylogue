@@ -49,9 +49,9 @@ open, and every required readiness domain is ready. Raw rows that were never
 parsed are reported but do not gate: a retained non-session artifact is never
 parsed as a session, and the `raw_artifacts` readiness domain is the daemon's
 own verdict on raw completeness. A receipt is **qualified** when the build is terminal, every check in
-`checks` holds (including zero raw parse failures, exact FTS, and a candidate
-tree whose commit and cleanliness did not change during the run), and every
-asserted budget passes; the command exits non-zero otherwise. A large single
+`checks` holds (including zero raw parse failures, exact FTS, a clean daemon
+shutdown, and a candidate whose commit and tracked edits did not change during
+the run), and every asserted budget passes; the command exits non-zero otherwise. A large single
 source (the former 419 MB and 1.6 GB qualifications) is a `files` corpus run
 with `--max-rss-mib`.
 
@@ -76,7 +76,7 @@ summarises it or writes flame-graph input.
 
 `compare BEFORE AFTER` prints the deltas and whether the per-table output
 digests are identical, and exits non-zero unless the receipts are comparable:
-same corpus, same run configuration, and both qualified.
+same corpus, same run configuration and interpreter, and both qualified.
 `--allow-unqualified` admits a run that promoted but did not settle, with a
 warning. An optimisation claims equivalence only on identical digests from
 comparable receipts.
@@ -90,6 +90,9 @@ seconds; the end-to-end run proves the total.
 
 ## Reading the numbers
 
+All times in a receipt are seconds from the driver's launch of the daemon;
+event milestones, observations and process samples share that clock. Process
+CPU and I/O totals keep the counters of worker processes that exited.
 Receipts record the host's load average at start. Wall time on a shared host
 moves with load; CPU seconds, writer holds and per-stage timers move less.
 The intake projection scales per-origin rates to the population and says so;

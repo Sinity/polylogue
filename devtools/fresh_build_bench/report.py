@@ -60,17 +60,29 @@ def _percentile(values: list[float], fraction: float) -> float:
 # event log
 
 
-def analyse_events(path: Path) -> dict[str, Any]:
+def analyse_events(path: Path, *, origin_unix: float | None = None) -> dict[str, Any]:
+    """Reduce the daemon's event log.
+
+    Times are seconds from ``origin_unix`` -- the driver's launch, so event
+    milestones share a clock with the driver's own observations and process
+    samples -- or from ``daemon.run.start`` when no origin is given.
+    """
     events: list[dict[str, Any]] = []
-    with path.open(encoding="utf-8") as stream:
-        for line in stream:
-            try:
-                events.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+    # A daemon that dies before configuring logging leaves no event file.
+    if path.exists():
+        with path.open(encoding="utf-8") as stream:
+            for line in stream:
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
     if not events:
         return {"event_count": 0}
-    start = next((_ts(e["ts"]) for e in events if e.get("event") == "daemon.run.start"), _ts(events[0]["ts"]))
+    start = (
+        origin_unix
+        if origin_unix is not None
+        else next((_ts(e["ts"]) for e in events if e.get("event") == "daemon.run.start"), _ts(events[0]["ts"]))
+    )
 
     def rel(event: dict[str, Any]) -> float:
         return round(_ts(event["ts"]) - start, 3)
@@ -83,6 +95,7 @@ def analyse_events(path: Path) -> dict[str, Any]:
     chunks: list[dict[str, Any]] = []
     pages: dict[str, dict[str, float]] = defaultdict(lambda: {"pages": 0, "files": 0, "bytes": 0, "seconds": 0.0})
     by_source: dict[str, dict[str, float]] = defaultdict(lambda: {"groups": 0, "files": 0, "seconds": 0.0})
+    source_groups: list[tuple[float, str, int, float]] = []
     problems: Counter[str] = Counter()
     milestones: dict[str, float] = {}
     preparation: list[float] = []
@@ -116,10 +129,14 @@ def analyse_events(path: Path) -> dict[str, Any]:
             entry["bytes"] += int(event.get("bytes") or 0)
             entry["seconds"] += float(event.get("duration_ms") or 0) / 1000
         elif name == "live.ingest.source_group":
-            entry = by_source[str(event.get("source_name"))]
-            entry["groups"] += 1
-            entry["files"] += int(event.get("files") or 0)
-            entry["seconds"] += float(event.get("duration_ms") or 0) / 1000
+            source_groups.append(
+                (
+                    rel(event),
+                    str(event.get("source_name")),
+                    int(event.get("files") or 0),
+                    float(event.get("duration_ms") or 0) / 1000,
+                )
+            )
         elif name == "daemon.cold_build.preparation":
             preparation.append(rel(event))
         elif name == "daemon.cold_build.generation_created":
@@ -139,6 +156,16 @@ def analyse_events(path: Path) -> dict[str, Any]:
     if intake_chunks:
         milestones["last_chunk_done_s"] = max(intake_chunks)
     milestones["post_promotion_chunks"] = len(chunks) - len(intake_chunks)
+    # Per-origin intake rates cover the same window as the intake wall they
+    # are scaled against: groups re-offered after promotion are derived-phase
+    # passes, like the chunks above.
+    for t, source, files, seconds in source_groups:
+        if "promoted_s" in milestones and t > milestones["promoted_s"]:
+            continue
+        entry = by_source[source]
+        entry["groups"] += 1
+        entry["files"] += files
+        entry["seconds"] += seconds
     last = rel(events[-1])
     build_end = milestones.get("promoted_s", last)
     busy_build = sum(max(0.0, min(end, build_end) - max(begin, 0.0)) for begin, end in holds if begin < build_end)
@@ -329,7 +356,13 @@ def _tree_summary(samples: list[tuple[float, int, float, int, int, int]], build_
 
 
 #: Watch-source names whose batches carry each corpus origin.
-_SOURCE_ORIGIN = {"claude-code": "claude-code", "codex": "codex", "gemini-cli": "gemini-cli", "chatgpt": "chatgpt"}
+_SOURCE_ORIGIN = {
+    "claude-code": "claude-code",
+    "codex": "codex",
+    "gemini-cli": "gemini-cli",
+    "chatgpt": "chatgpt",
+    "claude-ai": "claude-ai",
+}
 
 
 def projection(manifest: dict[str, Any], by_source: dict[str, Any], intake_wall_s: float | None) -> dict[str, Any]:
@@ -442,6 +475,7 @@ def config_digest(config: Any) -> str:
     """What must match, besides the corpus, for two receipts to compare."""
     payload = {
         "profile": config.profile,
+        "profile_interval_s": config.profile_interval_s if config.profile else None,
         "extra_env": sorted(config.extra_env),
         "daemon_argv": ["run", "--no-browser-capture", "--no-api", "--cold-build-index"],
     }
@@ -498,7 +532,7 @@ def build_receipt(
     final: Any,
     tree_samples: list[tuple[float, int, float, int, int, int]],
 ) -> dict[str, Any]:
-    events = analyse_events(paths["events"])
+    events = analyse_events(paths["events"], origin_unix=started_wall)
     batches = analyse_batches(paths["archive"] / "ops.db")
     milestones = events.get("milestones_s", {})
     promoted = milestones.get("promoted_s")
@@ -520,6 +554,9 @@ def build_receipt(
         "fts_exact": census.get("messages_fts_rows") is not None
         and census.get("messages_fts_rows") == census.get("fts_indexable_rows"),
         "candidate_unchanged": identity["unchanged_during_run"],
+        # A daemon that reached terminal but had to be killed on shutdown is
+        # not a finished build.
+        "clean_shutdown": exit_code == 0,
     }
     receipt: dict[str, Any] = {
         "format": RECEIPT_FORMAT,
@@ -710,6 +747,9 @@ def comparability_problems(before: dict[str, Any], after: dict[str, Any]) -> lis
         problems.append("different corpora")
     if before["config"]["digest"] != after["config"]["digest"]:
         problems.append("different run configurations (profile, overrides or budgets)")
+    for key in ("python", "gil_enabled"):
+        if before["environment"].get(key) != after["environment"].get(key):
+            problems.append(f"different interpreter ({key})")
     for side, receipt in (("before", before), ("after", after)):
         if not receipt.get("qualified"):
             problems.append(f"{side} run is not qualified (outcome {receipt.get('outcome')})")
@@ -784,7 +824,7 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
 
     receipt: dict[str, Any] = json.loads(receipt_path.read_text(encoding="utf-8"))
     work = receipt_path.parent
-    events = analyse_events(work / "events.jsonl")
+    events = analyse_events(work / "events.jsonl", origin_unix=receipt["started_at_unix"])
     milestones = events.get("milestones_s", {})
     receipt["stages"] = analyse_batches(work / "archive" / "ops.db")
     for key in ("writer", "chunks", "intake_pages_by_class", "by_source", "warnings_and_errors"):

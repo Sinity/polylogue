@@ -18,6 +18,7 @@ own process-tree samples and an output fingerprint into one receipt.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
@@ -127,29 +128,34 @@ def _proc_io(pid: int) -> tuple[int, int]:
 class TreeSampler:
     """One-second samples of the daemon process tree: RSS, CPU and block I/O."""
 
-    def __init__(self, pid: int, *, interval_s: float = 1.0) -> None:
+    def __init__(self, pid: int, *, origin: float, interval_s: float = 1.0) -> None:
         self.pid = pid
         self.interval_s = interval_s
         self.samples: list[tuple[float, int, float, int, int, int]] = []
         self._stop = threading.Event()
-        self._started = time.monotonic()
+        #: The driver's launch instant, so samples share the receipt's clock.
+        self._started = origin
+        #: Last cumulative (cpu ticks, read bytes, write bytes) per process
+        #: ever seen: a parse worker that exits keeps its share of the totals.
+        self._cumulative: dict[int, tuple[int, int, int]] = {}
         self._thread = threading.Thread(target=self._run, name="fresh-build-tree-sampler", daemon=True)
 
     def start(self) -> None:
         self._thread.start()
 
     def _sample(self) -> None:
-        cpu_ticks = rss = threads = read_bytes = write_bytes = 0
+        rss = threads = 0
         for pid in _tree(self.pid):
             stat = _proc_stat(pid)
             if stat is None:
                 continue
-            cpu_ticks += stat[0]
             rss += stat[1]
             threads += stat[2]
             io = _proc_io(pid)
-            read_bytes += io[0]
-            write_bytes += io[1]
+            self._cumulative[pid] = (stat[0], io[0], io[1])
+        cpu_ticks = sum(value[0] for value in self._cumulative.values())
+        read_bytes = sum(value[1] for value in self._cumulative.values())
+        write_bytes = sum(value[2] for value in self._cumulative.values())
         if rss:
             self.samples.append(
                 (
@@ -354,8 +360,14 @@ def environment(config: RunConfig) -> dict[str, Any]:
 
 def candidate_identity(candidate: Path) -> dict[str, Any]:
     head = _git(candidate, "rev-parse", "HEAD")
-    dirty = bool(_git(candidate, "status", "--porcelain", "--untracked-files=no"))
-    return {"git_sha": head, "dirty": dirty}
+    diff = _git(candidate, "diff", "HEAD", "--binary")
+    return {
+        "git_sha": head,
+        "dirty": bool(diff),
+        # Tracked edits are part of what runs: a dirty tree edited again
+        # during the build must not compare equal to itself.
+        "tracked_diff_sha256": hashlib.sha256(diff.encode()).hexdigest() if diff else None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -483,7 +495,7 @@ def run_build(config: RunConfig, *, progress: Callable[[str], None] = print) -> 
     process = subprocess.Popen(
         command, cwd=config.candidate, env=daemon_env, stdout=log_stream, stderr=subprocess.STDOUT
     )
-    sampler = TreeSampler(process.pid)
+    sampler = TreeSampler(process.pid, origin=started)
     sampler.start()
     observations: list[Observation] = []
     outcome = "timeout"
@@ -519,6 +531,9 @@ def run_build(config: RunConfig, *, progress: Callable[[str], None] = print) -> 
                 observation.memberships_pending,
                 observation.open_debt,
                 observation.promoted_index,
+                # Derived convergence after promotion may move nothing but
+                # readiness; each domain turning ready is progress.
+                tuple(sorted(observation.readiness.items())),
             )
             if progress_key != last_progress_key:
                 last_progress_key, last_progress_at = progress_key, observation.t
@@ -562,8 +577,7 @@ def run_build(config: RunConfig, *, progress: Callable[[str], None] = print) -> 
     # Lazy imports run whatever the candidate tree holds when they execute; a
     # checkout or commit during the build makes the recorded SHA a guess.
     identity["unchanged_during_run"] = candidate_identity(config.candidate) == {
-        "git_sha": identity["git_sha"],
-        "dirty": identity["dirty"],
+        key: identity[key] for key in ("git_sha", "dirty", "tracked_diff_sha256")
     }
     receipt = build_receipt(
         config=config,

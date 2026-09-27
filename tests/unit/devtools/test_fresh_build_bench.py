@@ -197,6 +197,7 @@ def _receipt(**overrides: object) -> dict[str, Any]:
         "candidate": {"git_sha": "0" * 40},
         "corpus": {"digest": "c", "total_bytes": 10 << 20, "file_count": 10},
         "config": {"digest": "k"},
+        "environment": {"python": "3.14.4", "gil_enabled": False},
         "timing_s": {"promotion": 10.0, "terminal": 20.0},
         "process_tree": {"rss_peak_bytes": 1 << 30},
         "checks": {"promoted": True},
@@ -232,6 +233,8 @@ def test_compare_refuses_different_configs_and_unqualified_runs() -> None:
     assert ok and "IDENTICAL" in text
     ok, text = compare(before, _receipt(qualified=True, config={"digest": "profiled"}))
     assert not ok and "IDENTICAL" not in text
+    ok, _text = compare(before, _receipt(qualified=True, environment={"python": "3.14.4", "gil_enabled": True}))
+    assert not ok
     unqualified = _receipt(qualified=False, outcome="settle_timeout")
     ok, _text = compare(before, unqualified)
     assert not ok
@@ -301,3 +304,43 @@ def test_thread_cpu_separates_writer_actors_from_other_threads() -> None:
     assert summary["writer_total"] == 4.0
     assert summary["writer_by_actor"] == [["watcher.live_ingest.full", 3.0], ["derivation.session_profile", 1.0]]
     assert summary["other_threads"] == [["MainThread", 0.5]]
+
+
+def test_event_times_share_the_driver_clock_and_stop_at_promotion(tmp_path: Path) -> None:
+    """Anti-vacuity: measuring from ``daemon.run.start`` shifts promotion to
+    18 s; charging the post-promotion group doubles codex's seconds."""
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        "\n".join(
+            [
+                _event("02.000", "daemon.run.start"),
+                _event("10.000", "live.ingest.source_group", source_name="codex", files=1, duration_ms=3000),
+                _event("20.000", "daemon.cold_build.generation_promoted"),
+                _event("30.000", "live.ingest.source_group", source_name="codex", files=1, duration_ms=3000),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    origin = _ts("2026-09-27T10:00:00.000000Z")
+    summary = analyse_events(events, origin_unix=origin)
+    assert summary["milestones_s"]["promoted_s"] == 20.0
+    assert summary["by_source"]["codex"] == {"groups": 1, "files": 1, "seconds": 3.0}
+    assert analyse_events(tmp_path / "absent.jsonl") == {"event_count": 0}
+
+
+def test_stratum_boundary_is_one_draw(tmp_path: Path) -> None:
+    """Anti-vacuity: redrawing the boundary on every later unit selects a
+    file in nearly every seed instead of about one in ten."""
+    root = tmp_path / "src"
+    root.mkdir()
+    for index in range(50):
+        (root / f"f{index:02d}.jsonl").write_bytes(b"x" * 1000)
+    sources = (SampleSource("codex", root, "home/.codex/sessions", (".jsonl",)),)
+    seeds = 60
+    selected = sum(
+        sample_real(tmp_path / f"s{seed}", seed=seed, fraction=0.002, sources=sources)["file_count"]
+        for seed in range(seeds)
+    )
+    # Expected 0.1 per seed; allow generous noise, far below "every seed".
+    assert selected <= seeds * 0.35

@@ -243,11 +243,17 @@ def sample_real(
                     break
                 # Stochastic rounding keeps each stratum's expected sampled
                 # bytes at its fraction, so rare large buckets are not
-                # over-represented by a forced minimum of one unit.
-                if taken + size > goal and rng.random() > (goal - taken) / size:
-                    continue
+                # over-represented by a forced minimum of one unit. The unit
+                # that crosses the goal is the one boundary draw: accepted or
+                # not, the stratum ends there. Redrawing on every later unit
+                # would make selection near certain.
+                boundary = taken + size > goal
+                if boundary and rng.random() > (goal - taken) / size:
+                    break
                 if size >= whale_bytes:
                     if whales >= max_whales_per_origin:
+                        if boundary:
+                            break
                         continue
                     whales += 1
                 for path in paths:
@@ -255,6 +261,8 @@ def sample_real(
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(path, destination)
                 taken += size
+                if boundary:
+                    break
     return seal(
         out,
         kind="sample",
