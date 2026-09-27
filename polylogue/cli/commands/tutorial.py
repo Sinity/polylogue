@@ -80,9 +80,9 @@ def _stage_first_search() -> tuple[bool, str]:
     if db is None:
         return False, "No archive yet — ingest must run before search."
     try:
-        import sqlite3
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)
+        conn = open_readonly_connection(db, timeout=0.5)
         try:
             count = _count_searchable_sessions(conn)
         finally:
