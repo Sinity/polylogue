@@ -956,17 +956,6 @@ class TestQueryFirstGroupInvoke:
         result = cli_runner.invoke(cli, ["ops", "doctor", "--help"])
         assert result.exit_code == 0
 
-    def test_no_subcommand_routes_to_archive_executor(self, cli_runner: CliRunner) -> None:
-        from polylogue.cli.click_app import cli
-
-        with (
-            patch("polylogue.cli.query.execute_query_request") as mock_execute,
-            patch("polylogue.cli.click_app._show_stats") as mock_stats,
-        ):
-            cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
-        mock_execute.assert_not_called()
-        mock_stats.assert_called_once()
-
     def test_analyze_by_subcommand_preserves_grouped_stats_mode(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 

@@ -54,15 +54,6 @@ def test_continue_emits_interactive_resume_command(cli_workspace: dict[str, Path
     assert result.output == "codex resume ext-cli-continue-root\n"
 
 
-def test_continue_defaults_to_printing_not_executing(cli_workspace: dict[str, Path]) -> None:
-    _seed_continuation_session(cli_workspace["db_path"])
-
-    result = CliRunner().invoke(cli, ["--id", NID_CONTINUE_ROOT, "continue"], catch_exceptions=False)
-
-    assert result.exit_code == 0
-    assert result.output == "codex resume ext-cli-continue-root\n"
-
-
 def test_continue_missing_session_exits_with_clear_message(cli_workspace: dict[str, Path]) -> None:
     result = CliRunner().invoke(cli, ["--id", "missing-session", "continue"], catch_exceptions=False)
 
