@@ -56,11 +56,13 @@ def test_provider_completeness_reports_representative_modes() -> None:
 
     assert hermes.schema_package.owner_path == ("polylogue/schemas/providers/hermes/state_db_v16.contract.json")
     assert hermes.schema_package.status == "complete"
+    # Grok has a parser but no admitted export evidence, so no schema package
+    # (polylogue-n61h5): the row names that gap rather than reporting complete.
     assert grok.maturity == "accepted"
-    assert grok.status == "complete"
     assert grok.parser.status == "complete"
-    assert grok.schema_package.status == "complete"
-    assert not grok.blockers
+    assert grok.schema_package.status == "missing"
+    assert grok.status == "partial"
+    assert grok.blockers == ("schema_package is missing",)
 
 
 def test_provider_completeness_is_a_projection_of_every_origin_spec() -> None:
@@ -150,5 +152,5 @@ def test_schema_subject_diagnostics_catches_added_or_removed_package(tmp_path: P
     diagnostics = schema_subject_diagnostics(tmp_path)
     assert "undeclared schema package directory: unexpected" in diagnostics
 
-    (tmp_path / "grok" / "catalog.json").unlink()
-    assert "declared schema package is missing: grok" in schema_subject_diagnostics(tmp_path)
+    (tmp_path / "codex" / "catalog.json").unlink()
+    assert "declared schema package is missing: codex" in schema_subject_diagnostics(tmp_path)

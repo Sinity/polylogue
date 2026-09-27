@@ -204,23 +204,42 @@ def test_resource_probe_peak_is_the_interval(tmp_path: Path) -> None:
     unconditional on purpose -- accepting the fallback here would make the
     test pass under exactly that mutation.
     """
-    import resource as resource_module
+    # Run in a fresh interpreter: the lifetime mark it must exceed is then
+    # this probe's own 256 MB allocation, not whatever an earlier test in the
+    # same worker peaked at -- which could make an in-process allocation
+    # either land below that mark or, sized above it, exhaust the worker.
+    script = (
+        "import gc, json, resource, sys\n"
+        "from pathlib import Path\n"
+        "from tests.infra.workload_artifacts import FinishedBuildResourceProbe\n"
+        "candidate = Path(sys.argv[1])\n"
+        "candidate.mkdir()\n"
+        "(candidate / 'index.db').write_bytes(b'index')\n"
+        # An anonymous mapping, not a bytearray: the free-threaded build's
+        # allocator may keep a freed buffer resident, and a retained buffer
+        # would make the interval peak equal the mark it must stay below.
+        "import mmap\n"
+        "released = mmap.mmap(-1, 256 * 1024 * 1024)\n"
+        "for offset in range(0, len(released), 4096):\n"
+        "    released[offset] = 1\n"
+        "mark = max(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, 0) * 1024\n"
+        "released.close()\n"
+        "gc.collect()\n"
+        "m = FinishedBuildResourceProbe.start().finish(candidate)\n"
+        "print(json.dumps({'mark': mark, 'peak': m.peak_rss_self_bytes, 'source': m.peak_rss_source}))\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path / "candidate")],
+        cwd=Path(__file__).resolve().parents[3],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=True,
+    )
+    result = json.loads(completed.stdout.strip().splitlines()[-1])
 
-    candidate = tmp_path / "candidate"
-    candidate.mkdir()
-    (candidate / "index.db").write_bytes(b"index")
-
-    released = bytearray(256 * 1024 * 1024)
-    for offset in range(0, len(released), 4096):
-        released[offset] = 1
-    lifetime_mark_bytes = max(resource_module.getrusage(resource_module.RUSAGE_SELF).ru_maxrss, 0) * 1024
-    del released
-    gc.collect()
-
-    measurement = FinishedBuildResourceProbe.start().finish(candidate)
-
-    assert measurement.peak_rss_source == "interval"
-    assert measurement.peak_rss_self_bytes < lifetime_mark_bytes - 128 * 1024 * 1024
+    assert result["source"] == "interval"
+    assert result["peak"] < result["mark"] - 128 * 1024 * 1024
 
 
 def test_a_refused_watermark_reset_is_labelled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

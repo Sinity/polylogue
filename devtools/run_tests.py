@@ -520,6 +520,28 @@ def _publish_last_focused_pytest_report(report_path: Path) -> None:
         shutil.copyfile(report_path, destination)
 
 
+def _certain_selections(selection: list[str]) -> list[str]:
+    """The arguments that cannot be an option's value.
+
+    An argument directly after a space-separated option (``--ignore
+    tests/test_x.py``, ``-p plugin``) may be that option's value, and pytest's
+    option table is open-ended, so it is left to pytest. Missing one here only
+    defers the refusal to pytest; refusing a value would block a valid run.
+    """
+    certain: list[str] = []
+    for index, argument in enumerate(selection):
+        previous = selection[index - 1] if index else ""
+        if previous.startswith("-") and "=" not in previous:
+            continue
+        certain.append(argument)
+    return certain
+
+
+def _is_test_module_name(name: str) -> bool:
+    """Whether ``name`` follows pytest's default test-module naming."""
+    return name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py"))
+
+
 def absent_selection_paths(selection: list[str], *, root: Path) -> list[str]:
     """The path selections that name nothing in the checkout.
 
@@ -569,6 +591,26 @@ def main(argv: list[str] | None = None) -> int:
             "For the full pre-PR gate use `devtools verify`.\n"
         )
         return 2
+
+    # Refuse a missing path before queueing for the host pytest slot: pytest
+    # fails such a run at collection anyway, but only after it has waited out
+    # the pool admission, which on a contended pool is many minutes.
+    absent_before_admission = [
+        argument
+        for argument in absent_selection_paths(_certain_selections(selection), root=ROOT)
+        # Only a node id or a test module is certain to be a selection: an
+        # option value (``--junit-xml reports/out.xml``, ``--log-file
+        # reports/out.py``) also contains a slash and legitimately does not
+        # exist before the run.
+        if "::" in argument or _is_test_module_name(Path(argument).name)
+    ]
+    if absent_before_admission:
+        sys.stderr.write(
+            "devtools test: these selected paths do not exist, so nothing was queued: "
+            + ", ".join(absent_before_admission)
+            + "\n"
+        )
+        return 4
 
     run = VerifyRun(
         tier="focused-test",

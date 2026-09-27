@@ -3290,10 +3290,16 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
                 "tests/unit/sources/parsers/test_grok.py",
                 "tests/unit/sources/parsers/test_origin_regression_pack.py",
             ),
-            schema_paths=("polylogue/schemas/providers/grok/catalog.json",),
+            # No schema package: the one committed under ``grok`` was Claude.ai's
+            # export folded in by a source-selection defect and was removed
+            # (polylogue-n61h5). It returns only when regenerated from real
+            # Grok artifacts, so the row reports the gap instead of citing a
+            # file that no longer exists.
+            schema_paths=(),
             docs_paths=("docs/provider-origin-identity.md", "docs/architecture.md"),
             caveats=(
-                "The package is a structural parser contract; broader export sampling remains separately tracked.",
+                "The parser is a structural contract reconstructed from secondary sources; no Grok export "
+                "evidence has been admitted, so no schema package exists yet.",
             ),
         ),
     ),

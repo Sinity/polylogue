@@ -7,12 +7,19 @@ import json
 import sqlite3
 import sys
 from enum import StrEnum
+from functools import lru_cache
 
 from polylogue.core.sqlite_introspection import table_exists
 
 
+@lru_cache(maxsize=8192)
 def _normalize_schema_sql(value: str | None) -> str:
-    """Normalize one sqlite_master SQL definition for semantic comparison."""
+    """Normalize one sqlite_master SQL definition for semantic comparison.
+
+    Memoized: every archive open compares its whole ``sqlite_master``
+    projection, so the same few hundred definitions are re-normalized on each
+    open, and this character-level tokenizer dominated opening an archive.
+    """
     source = value or ""
     tokens: list[tuple[str, bool]] = []
     i = 0

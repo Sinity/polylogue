@@ -106,16 +106,31 @@ class TestColumnSpecReordering:
         assert spec.writable_columns[0].name == "session_id"
         assert reordered.writable_columns[0].name == spec.writable_columns[-1].name
 
-    def test_index_ddl_uses_every_declared_table_spec(self) -> None:
-        """The executable index schema must render every table declaration."""
+    def test_each_tier_ddl_uses_every_table_spec_it_declares(self) -> None:
+        """Every table declaration renders into the executable schema of its own tier.
+
+        ``TABLE_SPECS`` spans the index and embeddings tiers, so each spec is
+        checked against the tier that owns it, and together the per-tier maps
+        must cover the whole declaration set.
+        """
         from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
+        from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import (
+            EMBEDDINGS_TABLE_SPECS,
+            INDEX_TABLE_SPECS,
+        )
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
-        _, _, table_specs = self._specs()
-        index_ddl = ARCHIVE_DDL_BY_TIER[ArchiveTier.INDEX]
+        blocks_spec, messages_spec, table_specs = self._specs()
+        specs_by_tier = {
+            ArchiveTier.INDEX: {"messages": messages_spec, "blocks": blocks_spec, **INDEX_TABLE_SPECS},
+            ArchiveTier.EMBEDDINGS: EMBEDDINGS_TABLE_SPECS,
+        }
 
-        for spec in table_specs.values():
-            assert spec.ddl_body in index_ddl
+        assert {name for specs in specs_by_tier.values() for name in specs} == set(table_specs)
+        for tier, specs in specs_by_tier.items():
+            tier_ddl = ARCHIVE_DDL_BY_TIER[tier]
+            for name, spec in specs.items():
+                assert spec.ddl_body in tier_ddl, f"{name} does not render into the {tier.value} tier"
 
     def test_archive_ddl_mapping_exposes_each_tier_script(self) -> None:
         """The public archive DDL map must preserve every tier's fresh-create script."""

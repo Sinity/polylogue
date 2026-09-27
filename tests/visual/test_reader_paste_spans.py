@@ -65,7 +65,8 @@ def test_paste_browser_has_an_honest_empty_state(reader_workspace: ReaderWorkspa
     assert "text/html" in content_type
     assert "<h1>Paste evidence</h1>" in page
     assert "No paste evidence is available in this archive." in page
-    assert payload == {"items": [], "total": 0}
+    # The envelope states its count honestly: an empty archive is an exact zero.
+    assert payload == {"items": [], "total": 0, "total_is_exact": True, "total_lower_bound": 0}
 
     write_evidence_manifest(
         tmp_path / "typed-webui-paste-empty-evidence.json",

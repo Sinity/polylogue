@@ -747,6 +747,40 @@ def test_absent_paths_are_resolved_against_the_checkout_not_the_caller_cwd(
     assert run_tests.absent_selection_paths(selection, root=checkout) == ["tests/unit/test_deleted.py"]
 
 
+def test_main_refuses_a_missing_path_before_queueing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A missing selection path is refused before pool admission.
+
+    Anti-vacuity: drop the pre-admission check in ``main`` and the fake slot
+    below is reached, failing the test, which is the minutes-long queue wait a
+    typo'd path used to cost.
+    """
+
+    def must_not_queue(*_args: Any, **_kwargs: Any) -> SlotOutcome:
+        raise AssertionError("a selection with a missing path was queued for the pytest slot")
+
+    monkeypatch.setattr("devtools.run_tests.run_pytest", must_not_queue)
+
+    assert run_tests.main(["tests/unit/devtools/test_run_tests.py", "tests/unit/test_no_such_file.py"]) == 4
+    assert "tests/unit/test_no_such_file.py" in capsys.readouterr().err
+
+
+def test_pre_admission_gate_ignores_option_values_that_look_like_paths() -> None:
+    """Output paths passed to options are not selections, even when they end in ``.py``.
+
+    Anti-vacuity: treat every absent ``*.py`` argument as a selection and the
+    ``--log-file`` value below is refused before pytest runs.
+    """
+    assert not run_tests._is_test_module_name("output.py")
+    assert not run_tests._is_test_module_name("results.xml")
+    assert run_tests._is_test_module_name("test_widget.py")
+    assert run_tests._is_test_module_name("widget_test.py")
+    assert run_tests._certain_selections(
+        ["--ignore", "tests/unit/test_retired.py", "tests/unit/test_a.py", "--junit-xml=out.xml", "tests/test_b.py"]
+    ) == ["--ignore", "tests/unit/test_a.py", "--junit-xml=out.xml", "tests/test_b.py"]
+
+
 def test_focused_run_never_loads_or_names_a_testmon_graph(tmp_path: Path) -> None:
     """Focused checks preserve the broad graph rather than making a scratch one."""
     run = VerifyRun(tier="focused-test", argv=["tests"], git_head="head", root=tmp_path)

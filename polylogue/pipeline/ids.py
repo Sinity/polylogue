@@ -23,6 +23,7 @@ from polylogue.core.hashing import hash_bytes, hash_payload
 from polylogue.core.json import JSONValue, dumps
 from polylogue.core.message_owner import MessageOwnerAmbiguityError, MessageOwnerCoordinate
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.sqlite_scratch import connect_scratch_database
 from polylogue.core.text_identity import nfc
 from polylogue.core.types import ContentHash, MessageId, SessionId
 
@@ -869,7 +870,7 @@ def disk_message_content_identities(
     directory = Path(parent).parent if parent is not None else None
     with (
         tempfile.TemporaryDirectory(prefix="polylogue-ids-", dir=directory) as scratch,
-        closing(sqlite3.connect(Path(scratch) / "identities.db")) as conn,
+        closing(connect_scratch_database(Path(scratch) / "identities.db")) as conn,
     ):
         conn.execute("CREATE TABLE count (digest TEXT PRIMARY KEY, value INTEGER NOT NULL) WITHOUT ROWID")
         conn.execute(

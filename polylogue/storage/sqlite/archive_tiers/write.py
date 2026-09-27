@@ -60,6 +60,7 @@ from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
 from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.sqlite_scratch import connect_scratch_database
 from polylogue.core.timestamp_authority import producer_timestamp_flags, session_evidence_timestamps
 from polylogue.core.timestamps import parse_timestamp, to_epoch_ms
 from polylogue.core.types import AttachmentDirection, LineageInheritance, require_literal
@@ -7990,7 +7991,7 @@ class _DiskMessageEventIndex(Mapping[str, str]):
 
     def __init__(self, directory: Path) -> None:
         self._scratch = tempfile.TemporaryDirectory(prefix="polylogue-event-owners-", dir=directory)
-        self._conn = sqlite3.connect(Path(self._scratch.name) / "owners.db")
+        self._conn = connect_scratch_database(Path(self._scratch.name) / "owners.db")
         self._conn.execute("CREATE TABLE owner (provider_id TEXT PRIMARY KEY, message_id TEXT NOT NULL) WITHOUT ROWID")
         self._conn.execute("CREATE TABLE boundary (position INTEGER PRIMARY KEY, message_id TEXT NOT NULL)")
 
@@ -9181,7 +9182,7 @@ def _assert_unique_message_coordinates(
         if isinstance(source, SqliteMessageSink):
             with (
                 tempfile.TemporaryDirectory(prefix="polylogue-coordinates-", dir=source.path.parent) as scratch,
-                sqlite3.connect(Path(scratch) / "coordinates.db") as index,
+                closing(connect_scratch_database(Path(scratch) / "coordinates.db")) as index,
             ):
                 index.execute(
                     "CREATE TABLE coordinate (position INTEGER NOT NULL, variant_index INTEGER NOT NULL, "
@@ -11377,7 +11378,7 @@ class _DiskDuplicateNativeIds(frozenset[str]):
         # The prepared context moves from the read-only preparation thread to
         # the writer, then may be released by a third thread. Every access to
         # this shared handle, including close, is serialized by _lock.
-        self._conn: sqlite3.Connection | None = sqlite3.connect(
+        self._conn: sqlite3.Connection | None = connect_scratch_database(
             Path(self._scratch.name) / "native-ids.db", check_same_thread=False
         )
         self._conn.execute("CREATE TABLE ids (native_id TEXT PRIMARY KEY, n INTEGER NOT NULL) WITHOUT ROWID")

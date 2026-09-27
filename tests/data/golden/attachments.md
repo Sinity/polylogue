@@ -8,4 +8,4 @@ _Timestamp: 2024-05-01T11:00:00+00:00_
 
 Here's a screenshot
 
-- Attachment: screenshot.png (assets/cf/cf5802b5850b1d19cebca745978042f59207ebc316dc5cb813808d320511d498)
+- Attachment: screenshot.png (assets/b2/b24c89534b54d95f6ab835dd3b0c6e445e5ebf1a318cfc32b3dd72c686ba203e)

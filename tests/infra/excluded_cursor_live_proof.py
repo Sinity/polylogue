@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
+from polylogue.operations.operation_context import open_operation_read
 from polylogue.pipeline.ids import session_content_hash, session_id
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.live.cursor import CursorStore
@@ -293,7 +294,14 @@ def _run_case(
     bypass_frontier_gate: bool = False,
 ) -> dict[str, Any]:
     polylogue = SimpleNamespace(archive_root=root, backend=SimpleNamespace(db_path=root / "index.db"))
-    watcher = LiveWatcher(cast(Any, polylogue), (WatchSource(name="codex", root=source_root),), cursor=cursor)
+    # The daemon wires a read snapshot for off-writer existing-session
+    # preparation; without it every prepared path stays deferred.
+    watcher = LiveWatcher(
+        cast(Any, polylogue),
+        (WatchSource(name="codex", root=source_root),),
+        cursor=cursor,
+        read_snapshot=open_operation_read,
+    )
     try:
         record = cursor.get_record(path)
         fingerprint_changed_before_catch_up = (

@@ -145,6 +145,7 @@ from polylogue.core.raw_failure_evidence import (
     raw_failure_classification_reason,
 )
 from polylogue.core.sources import origin_from_provider, provider_from_origin
+from polylogue.core.sqlite_scratch import connect_scratch_database
 from polylogue.core.timestamp_authority import (
     normalize_session_timestamps,
     session_evidence_timestamps,
@@ -2492,7 +2493,7 @@ def _file_backed_parser_census_keys(
 ) -> tuple[bool, bool, int, str]:
     """Compare parser and durable identities without a Python cohort-sized set."""
     with tempfile.TemporaryDirectory(prefix="polylogue-parser-census-") as directory:
-        scratch = sqlite3.connect(Path(directory) / "identities.sqlite")
+        scratch = connect_scratch_database(Path(directory) / "identities.sqlite")
         try:
             scratch.execute("PRAGMA cache_size = -2048")
             scratch.execute("PRAGMA temp_store = FILE")
