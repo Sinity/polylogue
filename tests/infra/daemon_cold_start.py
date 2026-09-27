@@ -102,6 +102,8 @@ def write_retained_measurement_receipt(receipt: dict[str, object], report_file: 
     candidate = receipt.get("candidate")
     if not isinstance(discovery, dict) or not isinstance(intake, dict) or not isinstance(candidate, dict):
         raise AssertionError("4096-sibling receipt is missing retained measurement evidence")
+    survivors = receipt.get("process_tree_survivors")
+    survivor_count = len(survivors) if isinstance(survivors, list) else None
 
     retained = {
         "format": "polylogue.daemon-cold-discovery-retained.v1",
@@ -145,9 +147,7 @@ def write_retained_measurement_receipt(receipt: dict[str, object], report_file: 
             "limits": receipt.get("process_tree_rss_limits"),
         },
         "process_tree_survivor_check": receipt.get("process_tree_survivor_check"),
-        "process_tree_survivor_count": len(receipt.get("process_tree_survivors", []))
-        if isinstance(receipt.get("process_tree_survivors"), list)
-        else None,
+        "process_tree_survivor_count": survivor_count,
         "process_tree_survivor_check_missing_reason": receipt.get("process_tree_survivor_check_missing_reason"),
     }
     path = report_file.with_name("cold-daemon-4096-measurement.json")
