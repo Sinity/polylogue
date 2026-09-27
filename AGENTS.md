@@ -152,9 +152,9 @@ command needs its `CommandSpec` and `devtools render devtools-reference`).
   tasks. The hosted quick gate covers static checks, so a local
   `verify --quick` before pushing is optional.
 - `devtools verify --quick` runs the fast static gates; slower invariant gates
-  run on their own tiers (`docs/devtools.md` lists them). `devtools verify` selects
-  affected tests from a usable testmon graph and refuses when it cannot; it
-  never silently becomes a corpus run. Broad or complete-corpus runs need an
+  run on their own tiers (`devtools gate --list` enumerates the gates).
+  `devtools verify` selects affected tests from a usable testmon graph and
+  refuses when it cannot; it never silently becomes a corpus run. Broad or complete-corpus runs need an
   explicit request.
 - `devtools why` and the run receipt show what ran. A zero-test or quick-gate
   green does not prove behavior. `.agentctl/project.toml` on the candidate
