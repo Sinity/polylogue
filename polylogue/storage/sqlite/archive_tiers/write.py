@@ -10220,6 +10220,9 @@ _SOURCE_MESSAGE_REF_TABLES: tuple[str, ...] = (
 
 _GUARD_PREFIX = "polylogue_prefix_guard_"
 
+#: SQLite parameter chunk for the guard's keyed lookups.
+_GUARD_ID_CHUNK = 500
+
 
 @dataclass(slots=True)
 class _InheritedPrefixGuard:
@@ -10310,18 +10313,21 @@ def _capture_inherited_prefixes(conn: sqlite3.Connection, session_id: str) -> _I
         inherited = tuple(message_id for message_id, _ in composed if not message_id.startswith(own_prefix))
         inherited_ids[child] = inherited
         signatures[child] = tuple(signature for _, signature in composed)
-        owned_here = [message_id for message_id in inherited if message_id.startswith(owned_prefix)]
-        rewritten_owned.update(owned_here)
+        rewritten_owned.update(message_id for message_id in inherited if message_id.startswith(owned_prefix))
+        # Every inherited row, not only the rewritten session's: a
+        # materialized child owns copies of its whole prefix, and a reference
+        # left on an ancestor row would name a message outside its transcript.
         refs: list[tuple[str, int, str]] = []
-        if owned_here:
-            placeholders = ",".join("?" for _ in owned_here)
+        for start in range(0, len(inherited), _GUARD_ID_CHUNK):
+            chunk = inherited[start : start + _GUARD_ID_CHUNK]
+            placeholders = ",".join("?" for _ in chunk)
             for table in _SOURCE_MESSAGE_REF_TABLES:
                 refs.extend(
                     (table, int(row[0]), str(row[1]))
                     for row in conn.execute(
                         f"""SELECT rowid, source_message_id FROM {table}
                             WHERE session_id = ? AND source_message_id IN ({placeholders})""",
-                        (child, *owned_here),
+                        (child, *chunk),
                     )
                 )
         source_refs[child] = tuple(refs)
@@ -10511,13 +10517,12 @@ def _restore_dispatch_refs(
                    WHERE src_session_id = ? AND dst_origin = ? AND dst_native_id = ? AND link_type = ?""",
                 (src, dst_origin, dst_native_id, link_type),
             ).fetchone()
-            owners = sorted(materialized, key=lambda owner: owner != (resolved[0] if resolved else None))
-            for owner in owners:
-                new_message_id = materialized[owner].get(message_id)
-                if new_message_id is not None:
-                    target = new_message_id + block_id[len(message_id) :]
-                    refreshed.add(owner)
-                    break
+            owner = _materialized_owner_in_lineage(
+                conn, None if resolved is None or resolved[0] is None else str(resolved[0]), message_id, materialized
+            )
+            if owner is not None:
+                target = materialized[owner][message_id] + block_id[len(message_id) :]
+                refreshed.add(owner)
         if target is None:
             continue
         conn.execute(
@@ -10529,6 +10534,34 @@ def _restore_dispatch_refs(
     if not bulk_build:
         for owner in sorted(refreshed):
             refresh_delegation_facts_for_session(conn, owner)
+
+
+def _materialized_owner_in_lineage(
+    conn: sqlite3.Connection,
+    dispatcher: str | None,
+    message_id: str,
+    materialized: Mapping[str, Mapping[str, str]],
+) -> str | None:
+    """The materialized session, on the dispatcher's own lineage, that copied ``message_id``.
+
+    The dispatcher saw the block through its composed transcript, so the copy
+    it now sees is the one its nearest materialized ancestor (or itself) holds.
+    A copy held by an unrelated sibling is never chosen.
+    """
+    seen: set[str] = set()
+    cursor = dispatcher
+    while cursor is not None and cursor not in seen:
+        seen.add(cursor)
+        if message_id in materialized.get(cursor, {}):
+            return cursor
+        row = conn.execute(
+            """SELECT resolved_dst_session_id FROM session_links
+               WHERE src_session_id = ? AND resolved_dst_session_id IS NOT NULL
+               ORDER BY link_type, dst_origin, dst_native_id LIMIT 1""",
+            (cursor,),
+        ).fetchone()
+        cursor = None if row is None else str(row[0])
+    return None
 
 
 def _prefix_positions(
@@ -10641,7 +10674,16 @@ def _materialize_inherited_prefix(
                position INTEGER NOT NULL)"""
     )
     conn.executemany(f"INSERT INTO temp.{_GUARD_PREFIX}plan VALUES (?, ?, ?, ?, ?, ?, ?, ?)", plan)
-    _make_room_below(conn, "messages", child, slots)
+    shifted = _make_room_below(conn, "messages", child, slots)
+    if shifted:
+        # Compaction boundaries address the child's own message positions.
+        conn.execute(
+            """UPDATE session_events
+               SET boundary_start_position = boundary_start_position + ?,
+                   boundary_end_position = boundary_end_position + ?
+               WHERE session_id = ?""",
+            (shifted, shifted, child),
+        )
 
     overrides = {
         "session_id": ":child",
@@ -10665,9 +10707,18 @@ def _materialize_inherited_prefix(
             _copy_planned_rows(conn, table, _DEPENDENT_OVERRIDES[table], params)
         _copy_attachment_native_ids(conn, params)
     _copy_prefix_usage_events(conn, params)
+    # Every attachment the copy references gained a ref, including ones an
+    # ancestor still owns; the snapshotted ones may also need to be swept back.
     refresh_and_sweep_attachment_rows(
         conn,
-        {str(row[0]) for row in conn.execute(f"SELECT attachment_id FROM {_snapshot_table('attachments')}")},
+        {str(row[0]) for row in conn.execute(f"SELECT attachment_id FROM {_snapshot_table('attachments')}")}
+        | {
+            str(row[0])
+            for row in conn.execute(
+                f"""SELECT r.attachment_id FROM attachment_refs AS r
+                    JOIN temp.{_GUARD_PREFIX}plan AS p ON p.new_id = r.message_id"""
+            )
+        },
     )
     _keep_an_active_leaf(conn, child)
     stored = {
@@ -10832,19 +10883,21 @@ def _copy_prefix_usage_events(conn: sqlite3.Connection, params: Mapping[str, str
     )
 
 
-def _make_room_below(conn: sqlite3.Connection, table: str, session_id: str, count: int) -> None:
+def _make_room_below(conn: sqlite3.Connection, table: str, session_id: str, count: int) -> int:
     """Shift ``session_id``'s rows in ``table`` so positions ``0..count-1`` are free.
 
-    Two steps through a disjoint range, because a one-step shift would collide
+    Returns the shift applied (0 when the rows already sit high enough). Two
+    steps through a disjoint range, because a one-step shift would collide
     with the session's own unique ``(session_id, position)`` key mid-update.
     """
     row = conn.execute(f"SELECT MIN(position) FROM {table} WHERE session_id = ?", (session_id,)).fetchone()
     if count <= 0 or row is None or row[0] is None or int(row[0]) >= count:
-        return
+        return 0
     delta = count - int(row[0])
     staging = 1 << 40
     conn.execute(f"UPDATE {table} SET position = position + ? WHERE session_id = ?", (staging, session_id))
     conn.execute(f"UPDATE {table} SET position = position - ? WHERE session_id = ?", (staging - delta, session_id))
+    return delta
 
 
 def _repair_stale_prefix_branch_points_db(

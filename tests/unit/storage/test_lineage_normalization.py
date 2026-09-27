@@ -3631,6 +3631,163 @@ def test_materialized_dispatch_block_keeps_its_subagent_edge(tmp_path: Path) -> 
     conn.close()
 
 
+def test_materialized_prefix_across_ancestors_keeps_counts_and_references(tmp_path: Path) -> None:
+    """``gp -> parent -> child``: materializing the child copies a gp-owned row
+    as well as parent-owned ones. The copied gp attachment ref raises that
+    attachment's ``ref_count``, and the child's event pointing at the gp row
+    follows the row into the child.
+
+    Anti-vacuity: refresh only the snapshotted attachments and ``ref_count``
+    stays 1 beside two refs; capture references only to parent-owned rows and
+    the event keeps naming the gp row, outside the child's transcript.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    child_id = write_parsed_session_to_archive(
+        conn,
+        _codex_session("child", ["m0", "m1", "p2", "x3"], parent="parent").model_copy(
+            update={
+                "session_events": [
+                    ParsedSessionEvent(
+                        event_type="capture_gap", source_message_provider_id="m1", payload={"summary": "gp event"}
+                    )
+                ]
+            }
+        ),
+    )
+    gp = _codex_session("gp", ["m0", "m1"]).model_copy(
+        update={
+            "attachments": [
+                ParsedAttachment(
+                    provider_attachment_id="gp-attachment", message_provider_id="m1", name="gp.txt", path="gp.txt"
+                )
+            ]
+        }
+    )
+    gp_id = write_parsed_session_to_archive(conn, gp)
+    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1", "p2", "p3"], parent="gp"))
+    conn.commit()
+    events = "SELECT source_message_id FROM session_events WHERE session_id = ?"
+    assert [tuple(row) for row in conn.execute(events, (child_id,))] == [(f"{gp_id}:n:m1",)]
+
+    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1", "p3"], parent="gp"))
+    conn.commit()
+
+    assert _composed_texts(conn, child_id) == ["m0", "m1", "p2", "x3"]
+    assert _edge_state(conn, child_id)[1:] == ("spawned-fresh", None)
+    assert [tuple(row) for row in conn.execute(events, (child_id,))] == [(f"{child_id}:n:m1",)]
+    assert [tuple(row) for row in conn.execute("SELECT COUNT(*) FROM attachment_refs")] == [(2,)]
+    assert [tuple(row) for row in conn.execute("SELECT ref_count FROM attachments")] == [(2,)]
+    conn.close()
+
+
+def test_renumbered_tail_moves_its_compaction_boundary(tmp_path: Path) -> None:
+    """When the copied prefix cannot fit below the child's own positions, the
+    tail shifts, and a compaction boundary addressing the tail shifts with it.
+
+    Anti-vacuity: shift messages without the boundaries and the boundary keeps
+    addressing position 0, now a copied prefix row.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        title="parent",
+        messages=[_msg("m0", Role.USER, "m0", 0), _msg("m1", Role.ASSISTANT, "m1", 1)],
+    )
+    write_parsed_session_to_archive(conn, parent)
+    child_id = write_parsed_session_to_archive(
+        conn,
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="child",
+            title="child",
+            parent_session_provider_id="parent",
+            branch_type=BranchType.FORK,
+            messages=[
+                _msg("m0", Role.USER, "m0", 5),
+                _msg("m1", Role.ASSISTANT, "m1", 6),
+                _msg("x", Role.USER, "tail", 0),
+            ],
+            session_events=[
+                ParsedSessionEvent(event_type="compaction", boundary_start_position=0, boundary_end_position=0)
+            ],
+        ),
+    )
+    conn.commit()
+    tail = "SELECT position FROM messages WHERE session_id = ? AND native_id = 'x'"
+    assert [tuple(row) for row in conn.execute(tail, (child_id,))] == [(0,)]
+
+    write_parsed_session_to_archive(conn, parent.model_copy(update={"messages": [_msg("m0", Role.USER, "m0", 0)]}))
+    conn.commit()
+
+    assert _edge_state(conn, child_id)[1:] == ("spawned-fresh", None)
+    assert [tuple(row) for row in conn.execute(tail, (child_id,))] == [(2,)]
+    boundary = conn.execute(
+        "SELECT boundary_start_position, boundary_end_position FROM session_events WHERE session_id = ?", (child_id,)
+    )
+    assert [tuple(row) for row in boundary] == [(2, 2)]
+    conn.close()
+
+
+def test_dispatch_pointer_follows_the_dispatchers_own_lineage(tmp_path: Path) -> None:
+    """Two children of the rewritten parent materialize the same tool call;
+    the subagent dispatched through ``c``'s descendant must point at ``c``'s
+    copy, not at the lexicographically first sibling's.
+
+    Anti-vacuity: pick any materialized owner and the pointer lands in
+    ``b-sibling``.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    dispatch = ParsedMessage(
+        provider_message_id="m1",
+        role=Role.ASSISTANT,
+        text="",
+        position=1,
+        blocks=[ParsedContentBlock(type=BlockType.TOOL_USE, tool_name="Task", tool_id="task-1", tool_input={})],
+    )
+
+    def session(name: str, parent: str | None, tail: list[tuple[str, str]]) -> ParsedSession:
+        messages = [_msg("m0", Role.USER, "go", 0), dispatch]
+        messages += [_msg(native, Role.USER, text, index + 2) for index, (native, text) in enumerate(tail)]
+        return ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=name,
+            title=name,
+            parent_session_provider_id=parent,
+            branch_type=BranchType.FORK if parent else None,
+            messages=messages,
+        )
+
+    parent = session("parent", None, [])
+    parent_id = write_parsed_session_to_archive(conn, parent)
+    write_parsed_session_to_archive(conn, session("b-sibling", "parent", [("b2", "sibling tail")]))
+    c_id = write_parsed_session_to_archive(conn, session("c", "parent", [("c2", "c tail")]))
+    d_id = write_parsed_session_to_archive(conn, session("d", "c", [("c2", "c tail"), ("d3", "d tail")]))
+    worker_id = write_parsed_session_to_archive(conn, _codex_session("worker", ["w0"]))
+    conn.execute(
+        """
+        INSERT INTO session_links(
+            src_session_id, dst_origin, dst_native_id, link_type, resolved_dst_session_id,
+            inheritance, status, parent_tool_use_block_id, confidence, evidence_json, observed_at_ms
+        ) VALUES (?, 'codex-session', 'd', 'subagent', ?, 'spawned-fresh', NULL, ?, 1.0, '[]', 0)
+        """,
+        (worker_id, d_id, f"{parent_id}:n:m1:0"),
+    )
+    conn.commit()
+
+    write_parsed_session_to_archive(conn, parent.model_copy(update={"messages": [_msg("m0", Role.USER, "go", 0)]}))
+    conn.commit()
+
+    pointer = conn.execute(
+        "SELECT parent_tool_use_block_id FROM session_links WHERE src_session_id = ?", (worker_id,)
+    ).fetchone()
+    assert tuple(pointer) == (f"{c_id}:n:m1:0",)
+    conn.close()
+
+
 def test_anchored_branch_point_lookup_uses_the_branch_index(tmp_path: Path) -> None:
     """Every session write runs this lookup, so it must not scan ``session_links``.
 
