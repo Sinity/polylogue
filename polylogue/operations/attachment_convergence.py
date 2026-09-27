@@ -235,14 +235,11 @@ def _download_prepared(
 ) -> PreparedBlob:
     """Stream one provider file into this archive's blob staging area.
 
-    The download lands in an anonymous spool file beside the staging root and
-    is then prepared (hashed and staged) from it, so neither step holds the
-    attachment in memory whatever its size.
+    The download lands directly in the private staging file that becomes the
+    prepared blob, so an attachment of any size costs bounded memory and one
+    staged copy on disk.
     """
-    with publisher.spool_file() as spool:
-        download_into(provider_file_id, spool)
-        spool.seek(0)
-        return publisher.prepare_from_fileobj(spool)
+    return publisher.prepare_from_writer(lambda handle: download_into(provider_file_id, handle))
 
 
 def converge_drive_attachments(

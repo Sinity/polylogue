@@ -291,14 +291,38 @@ class BlobStore:
                 self.discard_staging_path(temporary_path)
             raise
 
-    def spool_file(self) -> IO[bytes]:
-        """Return an anonymous read/write file in the private staging area.
+    def prepare_from_writer(self, write: Callable[[IO[bytes]], None]) -> PreparedBlob:
+        """Stage the bytes a producer writes, then hash them in place.
 
-        For a producer that can only write (a streaming download) ahead of
-        :meth:`prepare_from_fileobj`: the bytes stay on the archive's
-        filesystem, owner-only, and vanish when the file is closed.
+        For a producer that can only write, such as a streaming download that
+        may restart itself (``seek(0)`` + ``truncate()``) on retry. The bytes
+        land once, directly in the private staging file that becomes the
+        prepared blob, so staging an object costs one copy on disk however
+        large it is. The digest is taken from the staged file after the
+        producer finishes, so a restarted write is hashed as finally written.
         """
-        return tempfile.TemporaryFile(dir=self._ensure_private_staging_root())
+        staging_root = self._ensure_private_staging_root()
+        temporary_path: Path | None = None
+        try:
+            fd, temporary_name = tempfile.mkstemp(dir=staging_root, prefix=".blob.")
+            temporary_path = Path(temporary_name)
+            with os.fdopen(fd, "w+b") as handle:
+                write(handle)
+                handle.flush()
+                with timed_io_phase("source", "blob_file_fsync"):
+                    os.fsync(handle.fileno())
+                handle.seek(0)
+                hasher = hashlib.sha256()
+                size = 0
+                while chunk := handle.read(_CHUNK_SIZE):
+                    hasher.update(chunk)
+                    size += len(chunk)
+            os.chmod(temporary_path, 0o600)
+            return PreparedBlob(hasher.hexdigest(), size, temporary_path)
+        except BaseException:
+            if temporary_path is not None:
+                self.discard_staging_path(temporary_path)
+            raise
 
     def prepare_from_bytes(self, data: bytes) -> PreparedBlob:
         """Stage in-memory bytes without exposing their final hash path."""

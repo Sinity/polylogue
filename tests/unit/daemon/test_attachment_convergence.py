@@ -199,9 +199,9 @@ def test_attachment_convergence_keeps_retryable_provider_failure_as_debt(tmp_pat
 def test_attachment_download_streams_to_disk_and_has_no_size_cap(tmp_path: Path) -> None:
     """An attachment of any size is acquired through a real file, never a buffer.
 
-    Anti-vacuity: buffer the download in memory (hand the fake an
-    ``io.BytesIO``) and ``fileno()`` raises; reinstate a size cap below the
-    payload and the row becomes ``unavailable`` instead of ``acquired``.
+    Anti-vacuity: stage the download through an in-memory buffer and
+    ``fileno()`` raises; reinstate a size cap below the payload and the row
+    becomes ``unavailable`` instead of ``acquired``.
     """
     initialize_active_archive_root(tmp_path)
     index = _open_index(tmp_path / "index.db")
