@@ -603,9 +603,20 @@ def _write_step_result(label: str, pytest_step: bool, verdict: str, detail: str 
 
 
 def _run_gate_process(command: list[str], *, env: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
-    """Run one gate to completion, registered so an interruption can stop it."""
+    """Run one gate to completion, registered so an interruption can stop it.
+
+    Each gate leads its own process group: a gate that runs its checker as a
+    child (``devtools.mypy_gate`` runs ``mypy``) is stopped with that child,
+    which would otherwise hold the output pipes open after its parent died.
+    """
     process = subprocess.Popen(
-        command, cwd=ROOT, env=dict(env), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        command,
+        cwd=ROOT,
+        env=dict(env),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
     )
     with _STEP_LOCK:
         _LIVE_GATE_PROCESSES.add(process)
@@ -624,13 +635,13 @@ def _stop_gate_processes() -> None:
         live = tuple(_LIVE_GATE_PROCESSES)
     for process in live:
         with contextlib.suppress(OSError):
-            process.terminate()
+            os.killpg(process.pid, signal.SIGTERM)
     for process in live:
         try:
             process.wait(timeout=10)
         except subprocess.TimeoutExpired:
             with contextlib.suppress(OSError):
-                process.kill()
+                os.killpg(process.pid, signal.SIGKILL)
 
 
 def _run_steps(

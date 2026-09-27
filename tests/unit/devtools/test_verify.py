@@ -141,8 +141,11 @@ def test_an_interrupted_run_stops_and_joins_its_running_gates(tmp_path: Path) ->
     Anti-vacuity: drop ``_stop_gate_processes`` from the interruption path and
     the sleeping gate outlives the run; shut the pool down without waiting and
     the interrupted gate's worker is still running when ``_run_steps`` raises;
-    let a stopped gate return normally and it is recorded as an ordinary result.
+    let a stopped gate return normally and it is recorded as an ordinary result;
+    signal only the gate process, not its group, and the checker it started
+    (as ``devtools.mypy_gate`` starts ``mypy``) keeps running.
     """
+    grandchild_pid = tmp_path / "grandchild.pid"
     spawned: list[subprocess.Popen[str]] = []
     worker_outcomes: list[str] = []
     real_popen = subprocess.Popen
@@ -164,7 +167,7 @@ def test_an_interrupted_run_stops_and_joins_its_running_gates(tmp_path: Path) ->
             worker_outcomes.append("recorded")
             return completed.returncode, 0.0, {}
         for _ in range(1000):
-            if verify._LIVE_GATE_PROCESSES:
+            if verify._LIVE_GATE_PROCESSES and grandchild_pid.exists() and grandchild_pid.read_text().strip():
                 break
             time.sleep(0.01)
         raise verify.VerificationInterrupted(signal.SIGTERM)
@@ -175,12 +178,25 @@ def test_an_interrupted_run_stops_and_joins_its_running_gates(tmp_path: Path) ->
         patch.setattr(verify, "_run", interrupting_run)
         with pytest.raises(verify.VerificationInterrupted):
             verify._run_steps(
-                [("gate slow", ["sleep", "30"]), ("gate interrupted", ["true"])],
+                [
+                    ("gate slow", ["sh", "-c", f'sleep 30 & echo $! > "{grandchild_pid}"; wait']),
+                    ("gate interrupted", ["true"]),
+                ],
                 run=None,  # type: ignore[arg-type]
                 runner="managed",
             )
 
     assert len(spawned) == 1
+    pid = int(grandchild_pid.read_text(encoding="utf-8"))
+    for _ in range(500):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.01)
+    else:
+        os.kill(pid, signal.SIGKILL)
+        pytest.fail("the gate's child process outlived the interruption")
     # Terminated by the interruption, not left to sleep out its 30 seconds.
     assert spawned[0].poll() is not None
     # Joined before the interruption propagated, and never recorded as a result.
