@@ -269,6 +269,41 @@ def test_raw_fanout_continuation_keeps_pending_source_and_global_timeline_order(
     assert stamps == [4_000_000_000, 3_000_000_000, 2_000_000_000, 1_000_000_000]
 
 
+def test_raw_memory_and_timeline_respect_explicit_source_configuration(tmp_path: Path) -> None:
+    """An empty config stays empty, and a Codex-only config reports Claude unavailable."""
+    codex_root = tmp_path / "codex"
+    codex_root.mkdir()
+    (codex_root / "session.jsonl").write_text('{"text":"needle"}\n')
+    codex_only = (SessionSource("codex", codex_root),)
+
+    memory = raw_operation(RawMemorySearch(query="needle"), sources=codex_only)
+    timeline = raw_operation(RawTimeline(), sources=codex_only)
+    assert memory.outcome == "ok"
+    assert [row.origin for row in memory.sources] == ["codex-session"]
+    assert memory.items
+    assert timeline.outcome == "ok"
+    assert [row.origin for row in timeline.sources] == ["codex-session"]
+    assert timeline.items
+
+    requested_memory = raw_operation(
+        RawMemorySearch(query="needle", origins=["claude-code-session"]), sources=codex_only
+    )
+    requested_timeline = raw_operation(RawTimeline(origins=["claude-code-session"]), sources=codex_only)
+    assert requested_memory.outcome == requested_timeline.outcome == "degraded"
+    assert not requested_memory.items and not requested_timeline.items
+    assert [row.origin for row in requested_memory.sources if row.availability == "unavailable"] == [
+        "claude-code-session"
+    ]
+    assert [row.origin for row in requested_timeline.sources if row.availability == "unavailable"] == [
+        "claude-code-session"
+    ]
+
+    empty_memory = raw_operation(RawMemorySearch(query="needle"), sources=())
+    empty_timeline = raw_operation(RawTimeline(), sources=())
+    assert empty_memory.outcome == empty_timeline.outcome == "empty"
+    assert not empty_memory.items and not empty_timeline.items
+
+
 def test_raw_timeline_observes_each_provider_once_per_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     roots = [tmp_path / name for name in ("claude", "codex")]
     sources = tuple(

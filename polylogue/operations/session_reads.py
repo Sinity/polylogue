@@ -355,7 +355,7 @@ def raw_operation(
         cursors = {_provider(k): v for k, v in request.source_cursors.items()} if request.source_cursors else None
         result = MemoryService(service).search(
             request.query,
-            [_provider(o) for o in request.origins],
+            [_provider(o) for o in request.origins] if request.origins is not None else None,
             request.limit,
             source_cursors=cursors,
             cursor_key=key,
@@ -367,7 +367,7 @@ def raw_operation(
             request.since,
             request.until,
             request.query,
-            [_provider(o) for o in request.origins],
+            [_provider(o) for o in request.origins] if request.origins is not None else None,
             request.limit,
             cursor=request.continuation,
             cursor_key=key,

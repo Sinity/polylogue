@@ -110,7 +110,9 @@ class SessionLogService:
     ):
         self.max_result_bytes = max_result_bytes
         self.scope = scope
-        configured_sources = sources or self.default_sources()
+        # An explicitly empty source tuple is a meaningful isolated config.
+        # Truthiness here silently re-enables the host's default locations.
+        configured_sources = self.default_sources() if sources is None else sources
         self.sources = tuple(SessionSource(source.provider, source.root.resolve()) for source in configured_sources)
 
     def _source(self, provider: str) -> SessionSource:

@@ -28,8 +28,8 @@ def resolve_providers(providers: Any, *, error: type[Exception], noun: str) -> l
     known = {*RAW_PROVIDERS, *UNAVAILABLE_SOURCES}
     if providers is None:
         return list(RAW_PROVIDERS)
-    if not isinstance(providers, list) or not providers or any(not isinstance(provider, str) for provider in providers):
-        raise error("providers must be a non-empty list of source names")
+    if not isinstance(providers, list) or any(not isinstance(provider, str) for provider in providers):
+        raise error("providers must be a list of source names")
     unknown = sorted(set(providers) - known)
     if unknown:
         raise error(f"unknown {noun} source(s): {unknown}")

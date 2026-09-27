@@ -37,7 +37,10 @@ class MemoryService:
         query = self._query(query)
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
             raise MemoryError("limit must be positive")
-        requested = resolve_providers(providers, error=MemoryError, noun="memory")
+        configured = [source.provider for source in self.sessions.sources]
+        requested = resolve_providers(
+            providers if providers is not None else configured, error=MemoryError, noun="memory"
+        )
         if source_cursors is not None and (
             not isinstance(source_cursors, dict)
             or set(source_cursors) - {"claude-code", "codex"}
@@ -60,7 +63,17 @@ class MemoryService:
                     }
                 )
                 continue
-            source = next(candidate for candidate in self.sessions.sources if candidate.provider == provider)
+            source = next((candidate for candidate in self.sessions.sources if candidate.provider == provider), None)
+            if source is None:
+                sources.append(
+                    {
+                        "source": provider,
+                        "authority": LOCAL_AUTHORITY,
+                        "availability": "unavailable",
+                        "reason": "session source is not configured",
+                    }
+                )
+                continue
             if not source.root.is_dir():
                 sources.append(
                     {
