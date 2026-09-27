@@ -147,13 +147,10 @@ from polylogue.sources.live.batch_support import (
     tail_hash_from_path,
 )
 from polylogue.sources.live.batch_support import (
-    _LARGE_FULL_PARSE_PROGRESS_BYTES as _LARGE_FULL_PARSE_PROGRESS_BYTES,
+    _FULL_PARSE_PROGRESS_MAX_BYTES as _FULL_PARSE_PROGRESS_MAX_BYTES,
 )
 from polylogue.sources.live.batch_support import (
-    _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES as _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES,
-)
-from polylogue.sources.live.batch_support import (
-    _SMALL_FULL_PARSE_PROGRESS_MAX_FILES as _SMALL_FULL_PARSE_PROGRESS_MAX_FILES,
+    _FULL_PARSE_PROGRESS_MAX_FILES as _FULL_PARSE_PROGRESS_MAX_FILES,
 )
 from polylogue.sources.live.convergence_debt import (
     ConvergenceDebt,
@@ -3966,11 +3963,9 @@ class LiveBatchProcessor:
                             continue
                         if path_preparation.error is not None:
                             raise RuntimeError(f"off-writer preparation failed: {path_preparation.error}")
-                        cached_sessions = (
-                            path_preparation.session_sequence()
-                            if path_preparation.positive_evidence_filtered
-                            else path_preparation.load_sessions()
-                        )
+                        if not path_preparation.positive_evidence_filtered:
+                            raise RuntimeError("off-writer preparation did not filter conversational evidence")
+                        cached_sessions = path_preparation.session_sequence()
                         if path_preparation.shard_path is not None and shard_paths_by_raw_id is not None:
                             shard_paths_by_raw_id[source_raw_id] = path_preparation.shard_path
                     prepared_writes = (
@@ -4090,7 +4085,7 @@ class LiveBatchProcessor:
                     # that produced none: a recorded, bounded
                     # mark_raw_parse_failed outcome below, never a silently
                     # written phantom session.
-                    if path_preparation is None or not path_preparation.positive_evidence_filtered:
+                    if path_preparation is None:
                         sessions = require_positive_conversational_evidence(
                             cast(list[ParsedSession], sessions),
                             provider=provider,
@@ -6502,10 +6497,9 @@ __all__ = [
     "LiveBatchMetrics",
     "LiveBatchProcessor",
     "_FullIngestResult",
-    "_LARGE_FULL_PARSE_PROGRESS_BYTES",
+    "_FULL_PARSE_PROGRESS_MAX_BYTES",
+    "_FULL_PARSE_PROGRESS_MAX_FILES",
     "_MAX_APPEND_PLAN_PAYLOAD_BYTES",
-    "_SMALL_FULL_PARSE_PROGRESS_MAX_BYTES",
-    "_SMALL_FULL_PARSE_PROGRESS_MAX_FILES",
     "_STREAMING_FULL_INGEST_BYTES",
     "_full_ingest_worker_count",
     "_full_parse_progress_groups",

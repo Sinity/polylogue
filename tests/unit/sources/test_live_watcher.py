@@ -34,8 +34,8 @@ from polylogue.operations.intake_adapters import (
 from polylogue.readiness.capability import raw_frontier_integrity_projection
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.batch import (
-    _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES,
-    _SMALL_FULL_PARSE_PROGRESS_MAX_FILES,
+    _FULL_PARSE_PROGRESS_MAX_BYTES,
+    _FULL_PARSE_PROGRESS_MAX_FILES,
     _STREAMING_FULL_INGEST_BYTES,
     CursorAuthorityBlockedError,
     LiveBatchProcessor,
@@ -2178,30 +2178,40 @@ async def test_live_batch_processor_records_cursor_after_each_converged_group(
     assert "second-session" in debt[0].subject_id
 
 
-def test_full_parse_progress_groups_bounds_small_files_by_count(
+def test_full_parse_progress_groups_bounds_files_by_count(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths = [tmp_path / f"{index}.jsonl" for index in range(_SMALL_FULL_PARSE_PROGRESS_MAX_FILES + 1)]
+    paths = [tmp_path / f"{index}.jsonl" for index in range(_FULL_PARSE_PROGRESS_MAX_FILES + 1)]
     monkeypatch.setattr("polylogue.sources.live.batch_support._path_size", lambda path: 1)
 
     groups = list(_full_parse_progress_groups(paths))
 
-    assert groups == [paths[:_SMALL_FULL_PARSE_PROGRESS_MAX_FILES], paths[_SMALL_FULL_PARSE_PROGRESS_MAX_FILES:]]
+    assert groups == [paths[:_FULL_PARSE_PROGRESS_MAX_FILES], paths[_FULL_PARSE_PROGRESS_MAX_FILES:]]
 
 
-def test_full_parse_progress_groups_bounds_small_files_by_bytes(
+def test_full_parse_progress_groups_bounds_files_by_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     paths = [tmp_path / f"{index}.jsonl" for index in range(5)]
-    byte_size = (_SMALL_FULL_PARSE_PROGRESS_MAX_BYTES // 3) + 1
+    byte_size = (_FULL_PARSE_PROGRESS_MAX_BYTES // 3) + 1
     monkeypatch.setattr("polylogue.sources.live.batch_support._path_size", lambda path: byte_size)
 
     groups = list(_full_parse_progress_groups(paths))
 
-    assert sum(byte_size for _ in groups[0]) <= _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES
+    assert sum(byte_size for _ in groups[0]) <= _FULL_PARSE_PROGRESS_MAX_BYTES
     assert groups == [paths[:2], paths[2:4], paths[4:]]
+
+
+def test_full_parse_progress_groups_admits_a_file_over_group_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = [tmp_path / f"{index}.jsonl" for index in range(3)]
+    sizes = {paths[0]: 1, paths[1]: _FULL_PARSE_PROGRESS_MAX_BYTES * 2, paths[2]: 1}
+    monkeypatch.setattr("polylogue.sources.live.batch_support._path_size", sizes.__getitem__)
+
+    assert list(_full_parse_progress_groups(paths)) == [[paths[0]], [paths[1]], [paths[2]]]
 
 
 @pytest.mark.asyncio
