@@ -152,7 +152,9 @@ def test_refused_memberships_cannot_coexist_with_a_source_complete_claim() -> No
     validator and this ``pytest.raises`` stops raising.
     """
     with pytest.raises(ValueError, match="source-complete while memberships were refused"):
-        _history(source_complete=True, refused_membership_count=1)
+        # The refusal is named, so the count validator passes and only the
+        # source-complete contradiction remains to reject the receipt.
+        _history(source_complete=True, refused_membership_count=1, refused_memberships=[_refusal(0)])
 
 
 def _refusal(index: int) -> IngestRefusedMembershipHistorical:
