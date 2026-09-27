@@ -377,15 +377,33 @@ def raw_operation(
     else:
         provider = _provider(request.origin)
         if isinstance(request, RawSearch):
-            result = service.search(
-                provider,
-                request.query,
-                request.limit,
-                reference=request.reference,
-                cursor=request.continuation,
-                cursor_key=key,
-                scan_bytes=request.scan_bytes,
-            )
+            from polylogue.operations.raw_sessions.sessions import SessionError
+
+            try:
+                result = service.search(
+                    provider,
+                    request.query,
+                    request.limit,
+                    reference=request.reference,
+                    cursor=request.continuation,
+                    cursor_key=key,
+                    scan_bytes=request.scan_bytes,
+                )
+            except SessionError as exc:
+                if "selected search snapshot" not in str(exc):
+                    raise
+                reason = str(exc)
+                return RawPage(
+                    items=[],
+                    sources=[RawSourceCoverage(origin=request.origin, availability="unavailable", reason=reason)],
+                    coverage=Coverage(
+                        authority="original-local-session-jsonl",
+                        complete=False,
+                        gaps=[reason],
+                    ),
+                    continuation=None,
+                    outcome="degraded",
+                )
             rows = result["matches"]
         else:
             result = service.timeline(

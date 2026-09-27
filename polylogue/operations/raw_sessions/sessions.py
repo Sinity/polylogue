@@ -9,6 +9,7 @@ import hmac
 import json
 import os
 import stat
+import zlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,7 @@ class SessionError(ValueError):
 _SCAN_BLOCK_BYTES = 64 * 1_024
 DEFAULT_SCAN_BYTES = 8 * 1_024 * 1_024
 MAX_CURSOR_BYTES = 8_192
+MAX_CURSOR_STATE_BYTES = 1_000_000
 
 
 class OpaqueSessionCursor:
@@ -44,7 +46,10 @@ class OpaqueSessionCursor:
 
     def encode(self, scope: dict[str, Any], state: dict[str, Any]) -> str:
         body = {"v": 1, "scope": scope, "state": state}
-        payload = base64.urlsafe_b64encode(self._canonical(body)).decode().rstrip("=")
+        canonical = self._canonical(body)
+        if len(canonical) > MAX_CURSOR_STATE_BYTES:
+            raise SessionError("session continuation state exceeds its size bound")
+        payload = base64.urlsafe_b64encode(zlib.compress(canonical, level=9)).decode().rstrip("=")
         mac = hmac.new(self._key, payload.encode(), hashlib.sha256).hexdigest()
         value = f"{payload}.{mac}"
         if len(value.encode()) > MAX_CURSOR_BYTES:
@@ -60,7 +65,20 @@ class OpaqueSessionCursor:
             raise SessionError("session continuation cursor is stale")
         try:
             padded = payload + "=" * (-len(payload) % 4)
-            body = json.loads(base64.urlsafe_b64decode(padded).decode())
+            raw = base64.urlsafe_b64decode(padded)
+            try:
+                decoder = zlib.decompressobj()
+                expanded = decoder.decompress(raw, MAX_CURSOR_STATE_BYTES + 1)
+                if len(expanded) > MAX_CURSOR_STATE_BYTES or decoder.unconsumed_tail:
+                    raise ValueError("session continuation state exceeds its size bound")
+                expanded += decoder.flush()
+                if len(expanded) > MAX_CURSOR_STATE_BYTES:
+                    raise ValueError("session continuation state exceeds its size bound")
+                raw = expanded
+            except zlib.error:
+                # Accept already-issued uncompressed v1 cursors.
+                pass
+            body = json.loads(raw.decode())
         except (
             ValueError,
             UnicodeDecodeError,
@@ -110,7 +128,9 @@ class SessionLogService:
     ):
         self.max_result_bytes = max_result_bytes
         self.scope = scope
-        configured_sources = sources or self.default_sources()
+        # An explicitly empty source tuple is a meaningful isolated config.
+        # Truthiness here silently re-enables the host's default locations.
+        configured_sources = self.default_sources() if sources is None else sources
         self.sources = tuple(SessionSource(source.provider, source.root.resolve()) for source in configured_sources)
 
     def _source(self, provider: str) -> SessionSource:
@@ -278,22 +298,71 @@ class SessionLogService:
         source_revision: str | None = None,
     ) -> dict[str, Any]:
         query_bytes = query.encode("utf-8")
-        revision = source_revision if source_revision is not None else self._source_revision(source, files)
         scope = {
             "principal": self.scope,
             "provider": source.provider,
             "query_sha256": hashlib.sha256(query_bytes).hexdigest(),
-            "source_revision": revision,
         }
+        if source_revision is not None:
+            scope["source_revision"] = source_revision
         if cursor is not None:
             if cursor_key is None:
                 raise SessionError("session continuation cursor is unavailable")
             state = OpaqueSessionCursor(self.scope, cursor_key, purpose).decode(cursor, scope)
         else:
             state = {"file": 0, "offset": 0, "line": 1, "line_start": 0}
+        snapshot: list[Any] | None = None
+        snapshot_ends: dict[str, int] = {}
+        if purpose == "session-search":
+
+            def file_key(path: Path) -> str:
+                relative = path.relative_to(source.root).as_posix().encode()
+                return hashlib.sha256(relative).hexdigest()
+
+            snapshot = state.get("snapshot")
+            if cursor is None:
+                snapshot = [
+                    [file_key(path), info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns] for path, info in files
+                ]
+                state["snapshot"] = snapshot
+            if not isinstance(snapshot, list):
+                raise SessionError("session continuation cursor is malformed")
+            current = {file_key(path): (path, info) for path, info in files}
+            selected: list[tuple[Path, os.stat_result]] = []
+            for item in snapshot:
+                if (
+                    not isinstance(item, list)
+                    or len(item) != 5
+                    or not isinstance(item[0], str)
+                    or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in item[1:])
+                ):
+                    raise SessionError("session continuation cursor is malformed")
+                candidate = current.get(item[0])
+                if candidate is None:
+                    raise SessionError("session source changed within the selected search snapshot")
+                path, info = candidate
+                if (info.st_dev, info.st_ino) != tuple(item[1:3]) or info.st_size < item[3]:
+                    raise SessionError("session source changed within the selected search snapshot")
+                if info.st_size == item[3] and info.st_mtime_ns != item[4]:
+                    raise SessionError("session source changed within the selected search snapshot")
+                snapshot_ends[item[0]] = item[3]
+                selected.append((path, info))
+            files = selected
+
+        def cursor_state(value: dict[str, Any]) -> dict[str, Any]:
+            return {**value, "snapshot": snapshot} if snapshot is not None else value
+
         if (
-            set(state) != {"file", "offset", "line", "line_start"}
-            or any(isinstance(state[key], bool) or not isinstance(state[key], int) or state[key] < 0 for key in state)
+            set(state)
+            != (
+                {"file", "offset", "line", "line_start", "snapshot"}
+                if purpose == "session-search"
+                else {"file", "offset", "line", "line_start"}
+            )
+            or any(
+                isinstance(state[key], bool) or not isinstance(state[key], int) or state[key] < 0
+                for key in ("file", "offset", "line", "line_start")
+            )
             or state["file"] > len(files)
         ):
             raise SessionError("session continuation cursor is malformed")
@@ -303,6 +372,8 @@ class SessionLogService:
         resume_after_last: dict[str, int] | None = None
         while state["file"] < len(files) and scanned < scan_bytes:
             path, info = files[state["file"]]
+            relative = path.relative_to(source.root).as_posix().encode()
+            scan_end = snapshot_ends.get(hashlib.sha256(relative).hexdigest(), info.st_size)
             try:
                 current = path.stat(follow_symlinks=False)
             except OSError as exc:
@@ -314,7 +385,7 @@ class SessionLogService:
                 current.st_mtime_ns,
             ) != (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns):
                 raise SessionError("session source changed during search")
-            if state["offset"] >= info.st_size:
+            if state["offset"] >= scan_end:
                 state = {
                     "file": state["file"] + 1,
                     "offset": 0,
@@ -325,7 +396,7 @@ class SessionLogService:
             remaining = min(
                 _SCAN_BLOCK_BYTES,
                 scan_bytes - scanned,
-                info.st_size - state["offset"],
+                scan_end - state["offset"],
             )
             with path.open("rb") as handle:
                 handle.seek(state["offset"])
@@ -377,7 +448,9 @@ class SessionLogService:
                         "rows": rows,
                         "scanned_bytes": scanned,
                         "truncated": True,
-                        "next_cursor": OpaqueSessionCursor(self.scope, cursor_key, purpose).encode(scope, next_state),
+                        "next_cursor": OpaqueSessionCursor(self.scope, cursor_key, purpose).encode(
+                            scope, cursor_state(next_state)
+                        ),
                     }
                 rows.append(row)
                 found = True
@@ -395,7 +468,7 @@ class SessionLogService:
             if found and one_per_file:
                 continue
             self._advance_line(state, data)
-            if state["offset"] >= info.st_size:
+            if state["offset"] >= scan_end:
                 state = {
                     "file": state["file"] + 1,
                     "offset": 0,
@@ -405,7 +478,7 @@ class SessionLogService:
         truncated = state["file"] < len(files)
         next_cursor = None
         if truncated and cursor_key is not None:
-            next_cursor = OpaqueSessionCursor(self.scope, cursor_key, purpose).encode(scope, state)
+            next_cursor = OpaqueSessionCursor(self.scope, cursor_key, purpose).encode(scope, cursor_state(state))
         return {
             "rows": rows,
             "scanned_bytes": scanned,

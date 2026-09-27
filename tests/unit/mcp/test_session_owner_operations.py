@@ -206,6 +206,71 @@ def test_raw_scan_budget_advances_and_fanout_reports_unavailable(tmp_path: Path)
     assert [row.mtime_ns for row in timeline.items] == sorted([row.mtime_ns for row in timeline.items], reverse=True)
 
 
+def test_raw_search_continuation_ignores_files_added_after_its_snapshot(tmp_path: Path) -> None:
+    """Live appends outside the captured population and byte range cannot stale a cursor."""
+    sources = raw_sources(tmp_path)
+    root = sources[0].root
+    large = root / "large.jsonl"
+    large.write_text("x" * 20_000 + " needle\n")
+    first = raw_operation(RawSearch(origin="codex-session", query="needle", scan_bytes=4), sources=sources)
+    assert first.continuation
+
+    with large.open("a") as handle:
+        handle.write(" appended needle")
+    (root / "new-live-log.jsonl").write_text('{"text":"unrelated needle"}\n')
+    page = raw_operation(
+        RawSearch(
+            origin="codex-session",
+            query="needle",
+            scan_bytes=4,
+            continuation=first.continuation,
+        ),
+        sources=sources,
+    )
+    matches = list(page.items)
+    for _ in range(100):
+        if page.continuation is None:
+            break
+        page = raw_operation(
+            RawSearch(
+                origin="codex-session",
+                query="needle",
+                scan_bytes=4_096,
+                continuation=page.continuation,
+            ),
+            sources=sources,
+        )
+        matches.extend(page.items)
+    references = {match.reference for match in matches}
+    assert references == {
+        "codex:large.jsonl",
+        "codex:original-0.jsonl",
+        "codex:original-1.jsonl",
+        "codex:original-2.jsonl",
+    }
+
+
+def test_raw_search_reports_a_gap_when_a_selected_snapshot_changes(tmp_path: Path) -> None:
+    sources = raw_sources(tmp_path)
+    large = sources[0].root / "large.jsonl"
+    large.write_text("x" * 20_000 + " needle\n")
+    first = raw_operation(RawSearch(origin="codex-session", query="needle", scan_bytes=4), sources=sources)
+    assert first.continuation
+
+    original = large.stat()
+    large.write_text("y" * original.st_size)
+    os.utime(large, ns=(original.st_atime_ns, original.st_mtime_ns + 1_000_000))
+    resumed = raw_operation(
+        RawSearch(origin="codex-session", query="needle", scan_bytes=4, continuation=first.continuation),
+        sources=sources,
+    )
+
+    assert resumed.outcome == "degraded"
+    assert not resumed.items and resumed.continuation is None
+    assert not resumed.coverage.complete
+    assert "selected search snapshot" in resumed.coverage.gaps[0]
+
+
 def test_operation_contracts_validate_real_results(tmp_path: Path) -> None:
     """Generating declarations from unrelated tool signatures loses per-operation bounds."""
     contracts = session_operation_contracts()["operations"]
@@ -267,6 +332,29 @@ def test_raw_fanout_continuation_keeps_pending_source_and_global_timeline_order(
             break
         timeline = raw_operation(RawTimeline(limit=1, continuation=timeline.continuation), sources=sources)
     assert stamps == [4_000_000_000, 3_000_000_000, 2_000_000_000, 1_000_000_000]
+
+
+def test_raw_memory_and_timeline_respect_explicit_source_configuration(tmp_path: Path) -> None:
+    """An empty config stays empty, and a Codex-only config reports Claude unavailable."""
+    codex_root = tmp_path / "codex"
+    codex_root.mkdir()
+    (codex_root / "session.jsonl").write_text('{"text":"needle"}\n')
+    codex_only = (SessionSource("codex", codex_root),)
+
+    memory = raw_operation(RawMemorySearch(query="needle"), sources=codex_only)
+    timeline = raw_operation(RawTimeline(), sources=codex_only)
+    assert memory.outcome == "degraded"
+    assert [row.origin for row in memory.sources if row.availability == "unavailable"] == ["claude-code-session"]
+    assert memory.items
+    assert timeline.outcome == "degraded"
+    assert [row.origin for row in timeline.sources if row.availability == "unavailable"] == ["claude-code-session"]
+    assert timeline.items
+
+    empty_memory = raw_operation(RawMemorySearch(query="needle"), sources=())
+    empty_timeline = raw_operation(RawTimeline(), sources=())
+    assert empty_memory.outcome == empty_timeline.outcome == "degraded"
+    assert not empty_memory.items and not empty_timeline.items
+    assert len(empty_memory.coverage.gaps) == len(empty_timeline.coverage.gaps) == 2
 
 
 def test_raw_timeline_observes_each_provider_once_per_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

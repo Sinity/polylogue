@@ -101,7 +101,19 @@ class TimelineService:
                     }
                 )
                 continue
-            source = next(candidate for candidate in self.sessions.sources if candidate.provider == provider)
+            source = next((candidate for candidate in self.sessions.sources if candidate.provider == provider), None)
+            if source is None:
+                sources.append(
+                    {
+                        "source": provider,
+                        "authority": LOCAL_AUTHORITY,
+                        "availability": "unavailable",
+                        "reason": "session source is not configured",
+                    }
+                )
+                if provider not in state["done"]:
+                    state["done"].append(provider)
+                continue
             if not source.root.is_dir():
                 sources.append(
                     {
