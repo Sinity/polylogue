@@ -16,6 +16,7 @@ from polylogue.scenarios import (
     DEMO_CODEX_ANTI_GREP_SESSION_ID,
     DEMO_CODEX_RECEIPTS_SESSION_ID,
 )
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 _EXPECTED_CLAIM = "All tests pass. The clock fix is complete."
 _COMPLETION_CLAIM_SAMPLE_SIZE = 250
@@ -200,7 +201,7 @@ class CompletionClaimExperimentResult:
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn = open_readonly_connection(path)
     conn.row_factory = sqlite3.Row
     return conn
 

@@ -138,7 +138,11 @@ def schema_drift_status(active_root: Path, *, now_ms: int, window_ms: int = SCHE
     if not ops_db.exists():
         return {"available": False, "reason": "missing_ops_tier"}
     try:
-        conn = sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True)
+        # Keep this import local: the daemon health module deliberately stays
+        # light unless it has to open its own fallback reader.
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+        conn = open_readonly_connection(ops_db, validate_schema=False)
     except sqlite3.Error as exc:
         return {"available": False, "reason": str(exc)}
     try:

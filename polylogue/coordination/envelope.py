@@ -49,6 +49,7 @@ from polylogue.operations.status_protocol import StatusComponentRegistry, Status
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.derived.topology import TopologyNodeInput, compose_session_topology
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.run_projection_relations import (
     context_snapshot_relation_sql,
     observed_event_relation_sql,
@@ -1791,7 +1792,7 @@ def _assertion_handoff_payloads(
     if not user_db.exists() or limit <= 0:
         return ()
     try:
-        with closing(sqlite3.connect(f"file:{user_db}?mode=ro", uri=True, timeout=0.2)) as conn:
+        with closing(open_readonly_connection(user_db, timeout=0.2, validate_schema=False)) as conn:
             tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if "assertions" not in tables:
                 return ()
@@ -1902,9 +1903,8 @@ def _archive_payload(resources: tuple[CoordinationResourceEpisodePayload, ...]) 
 def _sqlite_user_version(path: Path) -> int | None:
     if not path.exists():
         return None
-    uri = f"file:{path}?mode=ro"
     try:
-        with closing(sqlite3.connect(uri, uri=True, timeout=0.2)) as conn:
+        with closing(open_readonly_connection(path, timeout=0.2, validate_schema=False)) as conn:
             row = conn.execute("PRAGMA user_version").fetchone()
     except sqlite3.Error as exc:
         logger.warning("coordination user_version probe failed for %s: %s", path, exc, exc_info=True)
@@ -1946,12 +1946,12 @@ def _archive_evidence_payloads(
         return (*empty, None)
     index = Path(archive.index_db)
     try:
-        conn = sqlite3.connect(f"file:{index}?mode=ro", uri=True, timeout=0.2)
-        conn.row_factory = sqlite3.Row
+        conn = open_readonly_connection(index, timeout=0.2, validate_schema=False)
     except sqlite3.Error as exc:
         logger.warning("coordination archive-evidence connect failed: %s", exc, exc_info=True)
         return (*empty, f"archive-evidence connect failed: {exc}")
     try:
+        conn.row_factory = sqlite3.Row
         # polylogue-dab/itvd: session_runs/session_observed_events/
         # session_context_snapshots are source-derived CTE relations
         # (run_projection_relations.py), not tables -- they can never appear

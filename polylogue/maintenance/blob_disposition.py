@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import IO, TYPE_CHECKING, Protocol
 
 from polylogue.storage.blob_store import BlobNamespaceEntry, BlobNamespaceEntryKind, BlobStore
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 if TYPE_CHECKING:
     from zipfile import ZipFile
@@ -952,7 +953,9 @@ class BlobDispositionContext:
 
 
 def _open_ro(path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    # This transition planner accepts older and partial archive shapes, then
+    # validates each relation at the point where it contributes evidence.
+    return open_readonly_connection(path, validate_schema=False)
 
 
 def referenced_blob_hashes(source_db: Path, index_db: Path | None = None) -> frozenset[str]:
