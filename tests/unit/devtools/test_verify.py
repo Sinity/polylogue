@@ -1852,8 +1852,8 @@ def test_stopping_gates_shares_one_grace_period(monkeypatch: pytest.MonkeyPatch)
             clock[0] += timeout
             raise subprocess.TimeoutExpired("gate", timeout)
 
-    monkeypatch.setattr(verify.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(verify.os, "killpg", lambda *_args: None)
+    monkeypatch.setattr("devtools.verify.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("devtools.verify.os.killpg", lambda *_args: None)
     monkeypatch.setattr(verify, "_LIVE_GATE_PROCESSES", {_Stuck(), _Stuck()})
 
     verify._stop_gate_processes()
