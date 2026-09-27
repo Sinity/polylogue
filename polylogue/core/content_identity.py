@@ -22,7 +22,7 @@ from decimal import Decimal
 from functools import lru_cache
 from hashlib import sha256
 from math import isfinite
-from typing import IO
+from typing import IO, Protocol
 
 from polylogue.core.text_identity import nfc
 
@@ -73,7 +73,7 @@ def _encode(value: object, sink: _Sink) -> None:
     raise TypeError(f"value of type {type(value).__name__} has no structural content identity")
 
 
-class _Sink:
+class _Sink(Protocol):
     """Anything with ``update(bytes)``: a hashlib object in practice."""
 
     def update(self, data: bytes, /) -> None: ...

@@ -43,7 +43,7 @@ _json_values = st.recursive(
     | st.booleans()
     | st.integers(min_value=-(10**30), max_value=10**30)
     | st.floats(allow_nan=False, allow_infinity=False)
-    | st.text(alphabet=st.characters(blacklist_categories=("Cs",)), max_size=12),
+    | st.text(alphabet=st.characters(codec="utf-8"), max_size=12),
     lambda children: (
         st.lists(children, max_size=5) | st.dictionaries(st.text(alphabet="abéé", max_size=3), children, max_size=5)
     ),
