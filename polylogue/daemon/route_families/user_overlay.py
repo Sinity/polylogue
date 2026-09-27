@@ -429,12 +429,20 @@ def handle_post(handler: Any, path: list[str], params: dict[str, list[str]]) -> 
         ):
             handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
-        from polylogue.archive.query.spec import SessionQuerySpec
+        from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec
 
-        # A malformed query is the caller's request error (QuerySpecError is a
-        # 400 with its field), not a failed daemon operation; the handler
-        # repeats this check as the write boundary.
-        SessionQuerySpec.from_params(cast("dict[str, object]", payload["query"]), strict=True)
+        # A malformed query is the caller's request error, not a failed daemon
+        # operation; the handler repeats this check as the write boundary.
+        # QuerySpecError is already a 400 naming its field. A value the spec
+        # parser cannot even coerce (``limit="x"`` raises a plain ValueError)
+        # is the same caller error, so it must not surface as a 500.
+        try:
+            SessionQuerySpec.from_params(cast("dict[str, object]", payload["query"]), strict=True)
+        except QuerySpecError:
+            raise
+        except (TypeError, ValueError):
+            handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
     elif name == "user.recall_pack.save":
         body = payload.get("payload", {})
         if (
