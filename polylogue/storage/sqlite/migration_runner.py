@@ -1814,6 +1814,25 @@ class DurableChangeTrainError(MigrationError):
     """Raised when durable change-train authority or evidence is invalid."""
 
 
+class DurableTierNewerThanRuntimeError(DurableChangeTrainError):
+    """A durable tier stands at a schema version this runtime cannot read.
+
+    Only a newer Polylogue release can have written it. Opening it is refused
+    outright rather than parked: every durable reader and writer would be
+    operating on a schema it does not know (polylogue-w6nrl).
+    """
+
+    def __init__(self, tier: ArchiveTier, *, live_version: int, runtime_version: int) -> None:
+        super().__init__(
+            f"{tier.value}.db is at schema v{live_version}, newer than this runtime supports "
+            f"(v{runtime_version}); install the Polylogue release that wrote it. "
+            "Do not move the database aside."
+        )
+        self.tier = tier
+        self.live_version = live_version
+        self.runtime_version = runtime_version
+
+
 class DurableChangeTrainApplyError(DurableChangeTrainError):
     """Apply failure carrying the machine-readable failed train manifest."""
 
@@ -4284,6 +4303,7 @@ __all__ = [
     "DurableChangeTrain",
     "DurableChangeTrainApplyError",
     "DurableChangeTrainError",
+    "DurableTierNewerThanRuntimeError",
     "DurableChangeTrainRecoveryError",
     "DurableChangeTrainState",
     "DurableDatabaseEvidence",

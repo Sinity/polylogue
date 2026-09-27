@@ -38,6 +38,7 @@ from polylogue.storage.sqlite.migration_runner import (
     DurableFreshDDLParityProof,
     DurableMigrationClaim,
     DurableRuntimeConsumerResult,
+    DurableTierNewerThanRuntimeError,
     MigrationResult,
     _assert_durable_database_continuity,
     _canonical_json_sha256,
@@ -660,39 +661,19 @@ def _fresh_durable_bootstrap_tier_version_skew(archive_root: Path, tier: Archive
     return live_version != version
 
 
-def _version_skewed_granting_tiers(archive_root: Path, versions: dict[ArchiveTier, int]) -> set[ArchiveTier]:
-    """Return the above-floor tiers whose live version denies the marker."""
-    return {
-        tier
-        for tier, version in versions.items()
-        if version > DURABLE_MIGRATION_ADOPTION_FLOORS[tier]
-        and _fresh_durable_bootstrap_tier_version_skew(archive_root, tier, version)
-    }
-
-
 def _assert_fresh_durable_bootstrap_is_own(
     archive_root: Path,
     manifest_root: Path,
     versions: dict[ArchiveTier, int],
-    *,
-    legacy_identity_digest: object = None,
 ) -> set[ArchiveTier]:
     """Refuse a bootstrap marker this archive's own durable content denies.
 
-    ``legacy_identity_digest`` is the path-and-inode seal markers written by
-    earlier revisions still carry. It is never required, but an archive that
-    still matches its own legacy seal is exactly the archive that opens today,
-    so honouring it keeps this change from turning any currently-opening
-    archive into a refusal.
+    Ownership is proved only from the archive's durable content. Markers
+    written by earlier revisions may still carry a path-and-inode
+    ``durable_identity_digest`` seal; it is ignored, because honouring it
+    short-circuited the released-train proof and refused a tier that had
+    legitimately migrated away from its bootstrap version (polylogue-zukcl).
     """
-    if isinstance(legacy_identity_digest, str):
-        from polylogue.storage.archive_identity import ArchiveIdentity
-
-        if legacy_identity_digest == _durable_identity_digest(ArchiveIdentity.resolve(archive_root)):
-            # The seal proves the marker is this archive's own, so no tier is
-            # transplanted -- but a tier standing at a different version still
-            # grants nothing, exactly as it does without the seal.
-            return _version_skewed_granting_tiers(archive_root, versions)
     ungranted: set[ArchiveTier] = set()
     for tier, version in versions.items():
         if version <= DURABLE_MIGRATION_ADOPTION_FLOORS[tier]:
@@ -738,91 +719,8 @@ def _fresh_durable_bootstrap_versions(archive_root: Path, marker_root: Path) -> 
         if not isinstance(raw_version, int) or raw_version < 0:
             raise DurableChangeTrainError(f"fresh durable bootstrap marker version is invalid: {marker_path}")
         versions[tier] = raw_version
-    ungranted = _assert_fresh_durable_bootstrap_is_own(
-        archive_root,
-        marker_root,
-        versions,
-        legacy_identity_digest=payload.get("durable_identity_digest"),
-    )
+    ungranted = _assert_fresh_durable_bootstrap_is_own(archive_root, marker_root, versions)
     return {tier: version for tier, version in versions.items() if tier not in ungranted}
-
-
-def _load_fresh_durable_bootstrap_marker(archive_root: Path) -> tuple[Path, dict[str, object]] | None:
-    """Read the direct-bootstrap marker and authenticate its own digest."""
-    marker_root = archive_root.resolve() / ".maintenance-state" / "durable-change-trains"
-    marker_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_MARKER
-    if not marker_path.is_file():
-        return None
-    try:
-        payload = json.loads(marker_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise DurableChangeTrainError(f"invalid fresh durable bootstrap marker: {marker_path}") from exc
-    if not isinstance(payload, dict) or payload.get("format") != _FRESH_DURABLE_BOOTSTRAP_FORMAT:
-        raise DurableChangeTrainError(f"fresh durable bootstrap marker format mismatch: {marker_path}")
-    marker_digest = payload.get("marker_digest")
-    unsigned = dict(payload)
-    unsigned.pop("marker_digest", None)
-    if not isinstance(marker_digest, str) or marker_digest != _bootstrap_marker_digest(unsigned):
-        raise DurableChangeTrainError("fresh durable bootstrap marker digest mismatch")
-    return marker_path, payload
-
-
-def fresh_durable_bootstrap_sealed_identity(archive_root: Path) -> str | None:
-    """Return the bootstrap seal a durable rewrite must carry forward, if any."""
-    from polylogue.storage.archive_identity import ArchiveIdentity
-
-    loaded = _load_fresh_durable_bootstrap_marker(archive_root)
-    if loaded is None:
-        return None
-    sealed = loaded[1].get("durable_identity_digest")
-    if not isinstance(sealed, str) or sealed != _durable_identity_digest(
-        ArchiveIdentity.resolve(archive_root.resolve())
-    ):
-        return None
-    return sealed
-
-
-def reseal_fresh_durable_bootstrap_marker(archive_root: Path, *, sealed_digest: str) -> None:
-    """Carry a direct-bootstrap marker across one durable rewrite of its tiers.
-
-    The marker seals the archive's durable inode identity, which a released
-    durable migration legitimately rewrites.  ``sealed_digest`` must have been
-    observed before the rewrite, while the archive still matched the seal, so
-    only the archive the marker belongs to can re-seal it.  The recorded
-    bootstrap versions -- the marker's actual authority -- are unchanged.
-    """
-    from polylogue.storage.archive_identity import ArchiveIdentity
-
-    archive_root = archive_root.resolve()
-    loaded = _load_fresh_durable_bootstrap_marker(archive_root)
-    if loaded is None:
-        return
-    marker_path, payload = loaded
-    if payload.get("durable_identity_digest") != sealed_digest:
-        raise DurableChangeTrainError("fresh durable bootstrap marker does not continue its sealed identity")
-    current = _durable_identity_digest(ArchiveIdentity.resolve(archive_root))
-    if current == sealed_digest:
-        return
-    resealed: dict[str, object] = {
-        "format": payload["format"],
-        "durable_identity_digest": current,
-        "versions": payload["versions"],
-    }
-    resealed["marker_digest"] = _bootstrap_marker_digest(resealed)
-    _write_bootstrap_receipt(marker_path, resealed)
-
-
-def _durable_identity_digest(identity: object) -> str:
-    """Digest the durable source/user/audit identity for bootstrap receipts."""
-    from polylogue.storage.archive_identity import ArchiveIdentity
-
-    if not isinstance(identity, ArchiveIdentity):
-        raise TypeError("durable identity digest requires an ArchiveIdentity")
-    payload = {
-        "configured_root": str(identity.configured_root.absolute()),
-        "durable_id": identity.durable_id,
-    }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def _bootstrap_marker_digest(payload: dict[str, object]) -> str:
@@ -3013,6 +2911,12 @@ def _reconcile_durable_change_train_startup_locked(
             continue
         with _open_existing_tier(tier_path) as live:
             current_version = int(live.execute("PRAGMA user_version").fetchone()[0] or 0)
+        runtime_version = cast(dict[ArchiveTier, int], vars(_migration_runner)["ARCHIVE_VERSION_BY_TIER"])[tier]
+        if current_version > runtime_version:
+            # Only a newer release can have written this tier. No chain of
+            # this runtime's trains can admit it, so say that plainly rather
+            # than as missing train evidence (polylogue-w6nrl).
+            raise DurableTierNewerThanRuntimeError(tier, live_version=current_version, runtime_version=runtime_version)
         if current_version <= adoption_floor:
             continue
         manifests_by_tier[tier] = _released_train_manifests_by_target(manifest_root, tier)
@@ -3126,6 +3030,7 @@ __all__ = [
     "DurableChangeTrainError",
     "DurableChangeTrainApplyError",
     "DurableChangeTrainRecoveryError",
+    "DurableTierNewerThanRuntimeError",
     "DurableMigrationClaim",
     "durable_migration_claim_for_sql",
     "durable_migration_claims",

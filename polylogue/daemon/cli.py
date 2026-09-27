@@ -2019,6 +2019,7 @@ async def _run_daemon_services_under_active_writer_lease(
     # authority used to exclude a concurrent migration or startup.
     from polylogue.core.write_lease import write_lease
     from polylogue.operations.durable_change_train import (
+        DurableChangeTrainError,
         acquire_durable_archive_ownership,
         reconcile_durable_change_trains_on_startup,
     )
@@ -2034,7 +2035,19 @@ async def _run_daemon_services_under_active_writer_lease(
             "daemon.durable_change_train.startup",
             archive_root=archive_root_path,
         ):
-            recovered_train_paths = reconcile_durable_change_trains_on_startup(archive_root_path)
+            try:
+                recovered_train_paths = reconcile_durable_change_trains_on_startup(archive_root_path)
+            except DurableChangeTrainError as exc:
+                # A typed refusal, not a crash: the archive cannot be admitted
+                # by this runtime, so nothing else may start (polylogue-w6nrl).
+                emit(
+                    "daemon.startup.refused",
+                    level=ERROR,
+                    outcome="refused",
+                    reason="durable_change_train_admission",
+                    error_detail=str(exc),
+                )
+                raise
         if recovered_train_paths:
             emit(
                 "daemon.change_train.reconciled",
@@ -3824,6 +3837,7 @@ def run_command(
     emit("daemon.run.start", pid=os.getpid())
 
     from polylogue.config import resolve_runtime_config
+    from polylogue.operations.durable_change_train import DurableChangeTrainError
 
     runtime = resolve_runtime_config()
     cfg = runtime.settings
@@ -3918,6 +3932,8 @@ def run_command(
         )
     except KeyboardInterrupt:
         click.echo("Stopping polylogued.", err=True)
+    except DurableChangeTrainError as exc:
+        raise click.ClickException(f"polylogued refused to open the archive: {exc}") from exc
     finally:
         # The CLI configured the process-global queued event sink. Drain it
         # after the daemon's final stop event; embedded callers of
@@ -3947,7 +3963,7 @@ def run_command(
 )
 def watch_command(roots: tuple[Path, ...], no_default_sources: bool, default_source_names: tuple[str, ...]) -> None:
     from polylogue.config import resolve_runtime_config
-    from polylogue.operations.durable_change_train import ArchiveOwnershipError
+    from polylogue.operations.durable_change_train import ArchiveOwnershipError, DurableChangeTrainError
     from polylogue.paths import archive_root
 
     if no_default_sources and not roots:
@@ -3984,6 +4000,8 @@ def watch_command(roots: tuple[Path, ...], no_default_sources: bool, default_sou
         )
     except ArchiveOwnershipError as exc:
         raise click.ClickException(f"watch could not acquire exclusive archive ownership: {exc}") from exc
+    except DurableChangeTrainError as exc:
+        raise click.ClickException(f"watch refused to open the archive: {exc}") from exc
 
 
 __all__ = [

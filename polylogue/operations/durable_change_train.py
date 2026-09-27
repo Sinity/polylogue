@@ -37,6 +37,7 @@ from polylogue.storage.sqlite.durable_change_train import (
     reconcile_durable_change_train_startup as _reconcile_durable_change_train_startup,
 )
 from polylogue.storage.sqlite.migration_runner import (
+    DurableChangeTrainError,
     DurableRuntimeConsumerResult,
     MigrationError,
     _canonical_json_sha256,
@@ -1743,18 +1744,13 @@ def execute_durable_change_train(
     release_archive_ownership: Callable[[], None],
 ) -> DurableChangeTrainExecution:
     """Run one durable migration through the storage authority contract."""
-    from polylogue.storage.sqlite.durable_change_train import (
-        fresh_durable_bootstrap_sealed_identity,
-        reseal_fresh_durable_bootstrap_marker,
-    )
-
     # A durable migration rewrites the tier file, so the archive's durable
-    # identity legitimately changes.  Observe every seal bound to that identity
-    # while the archive still carries it: only this archive can, and carrying
-    # them across the rewrite is what keeps an ordinary released migration from
-    # stranding its own adoption receipt or bootstrap marker.
+    # identity legitimately changes.  Observe the adoption seal bound to that
+    # identity while the archive still carries it: only this archive can, and
+    # carrying it across the rewrite is what keeps an ordinary released
+    # migration from stranding its own adoption receipt.  The bootstrap marker
+    # carries no identity seal; its ownership is proved from durable content.
     sealed_digest = audit_adoption_sealed_authority_digest(archive_root)
-    sealed_bootstrap = fresh_durable_bootstrap_sealed_identity(archive_root)
     execution = _execute_durable_change_train(
         archive_root,
         tier,
@@ -1770,8 +1766,6 @@ def execute_durable_change_train(
             sealed_digest=sealed_digest,
             proof_ref=f"proof:durable-change-train:{tier.value}",
         )
-    if sealed_bootstrap is not None:
-        reseal_fresh_durable_bootstrap_marker(archive_root, sealed_digest=sealed_bootstrap)
     return execution
 
 
@@ -1922,6 +1916,7 @@ __all__ = [
     "audit_adoption_receipt_path",
     "AuditContinuityError",
     "ArchiveOwnershipError",
+    "DurableChangeTrainError",
     "execute_durable_change_train",
     "initialize_missing_durable_tier",
     "reconcile_durable_change_trains_on_startup",
