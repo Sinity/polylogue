@@ -2472,6 +2472,36 @@ def test_event_sink_batch_insert_matches_sequential_inserts(tmp_path: Path) -> N
         store.close()
 
 
+def test_event_sink_early_batch_insert_renumbers_in_linear_time(tmp_path: Path) -> None:
+    """An early compaction's many contexts ahead of many later events stays fast.
+
+    Anti-vacuity: renumber each existing event by counting the insertions
+    before it and this case visits ~9e8 index entries, taking minutes.
+    """
+    import time
+
+    from polylogue.sources.parsers.base import ParsedSessionEvent
+    from polylogue.sources.prepared_message_sink import SqliteMessageStore
+
+    count = 30_000
+    store = SqliteMessageStore(tmp_path / "events.db")
+    try:
+        sink = store.new_event_sink()
+        for index in range(count):
+            sink.append(ParsedSessionEvent(event_type=f"e{index}", payload={}))
+        started = time.perf_counter()
+        sink.insert_sorted(
+            (index // 2, ParsedSessionEvent(event_type=f"c{index}", payload={})) for index in range(count)
+        )
+        assert time.perf_counter() - started < 30
+        events = [event.event_type for event in sink]
+        assert len(events) == 2 * count
+        assert events[:3] == ["c0", "c1", "e0"]
+        assert events[-1] == f"e{count - 1}"
+    finally:
+        store.close()
+
+
 def test_sink_json_keeps_literal_escape_text_and_json_mode_fields(tmp_path: Path) -> None:
     """Literal ``\\ud800`` text is not a surrogate escape, and a real one keeps
     JSON-mode conversions such as hex digests.

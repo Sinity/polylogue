@@ -48,9 +48,24 @@ def sql_coalesced_json_extract(column: str, keys: tuple[str, ...]) -> str:
 
     Generated columns and the FTS projection are built from this so the stored
     authority cannot carry a narrower key set than the Python readers.
+
+    The stored JSON keeps a lone surrogate as an exact ``\\uXXXX`` escape,
+    but ``json_extract`` would decode it into text that is not valid UTF-8, and
+    reading that column then fails. Such a string is projected in its escaped
+    JSON spelling instead; the JSON column stays the exact authority.
     """
-    extracts = ", ".join(f"json_extract({column}, '$.{key}')" for key in keys)
+    extracts = ", ".join(_sql_text_projection(column, key) for key in keys)
     return f"COALESCE({extracts})" if len(keys) > 1 else extracts
+
+
+def _sql_text_projection(column: str, key: str) -> str:
+    path = f"'$.{key}'"
+    quoted = f"({column} -> {path})"
+    return (
+        f"CASE WHEN json_type({column}, {path}) = 'text' AND {quoted} GLOB '*\\u[dD][89a-fA-F]*' "
+        f"THEN substr({quoted}, 2, length({quoted}) - 2) "
+        f"ELSE json_extract({column}, {path}) END"
+    )
 
 
 @dataclass(frozen=True, slots=True)

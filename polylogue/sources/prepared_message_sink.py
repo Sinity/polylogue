@@ -610,13 +610,24 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
             )
             added += 1
         if added:
-            writer.execute("CREATE INDEX temp.prepared_event_insert_idx ON prepared_event_insert(idx)")
+            # Cumulative insertions per distinct index: an existing event at
+            # ordinal ``o`` moves by the count at the largest index <= ``o``,
+            # found by one primary-key seek rather than a scan of every
+            # insertion before it.
+            writer.execute("DROP TABLE IF EXISTS temp.prepared_event_shift")
+            writer.execute("CREATE TEMP TABLE prepared_event_shift (idx INTEGER PRIMARY KEY, cum INTEGER NOT NULL)")
+            writer.execute(
+                "INSERT INTO temp.prepared_event_shift "
+                "SELECT idx, SUM(COUNT(*)) OVER (ORDER BY idx) FROM temp.prepared_event_insert GROUP BY idx"
+            )
             writer.execute(
                 "UPDATE prepared_event SET event_ordinal = -1 - (event_ordinal + "
-                "(SELECT COUNT(*) FROM temp.prepared_event_insert AS i WHERE i.idx <= prepared_event.event_ordinal)) "
-                "WHERE session_ordinal = ?",
+                "(SELECT s.cum FROM temp.prepared_event_shift AS s WHERE s.idx <= prepared_event.event_ordinal "
+                "ORDER BY s.idx DESC LIMIT 1)) "
+                "WHERE session_ordinal = ? AND event_ordinal >= (SELECT MIN(idx) FROM temp.prepared_event_shift)",
                 (self.session_ordinal,),
             )
+            writer.execute("DROP TABLE temp.prepared_event_shift")
             writer.execute(
                 "UPDATE prepared_event SET event_ordinal = -1 - event_ordinal "
                 "WHERE session_ordinal = ? AND event_ordinal < 0",
