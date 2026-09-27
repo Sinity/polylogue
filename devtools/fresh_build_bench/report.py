@@ -432,8 +432,10 @@ def evaluate_budgets(limits: dict[str, float], observed: dict[str, float | None]
     return rows
 
 
-def _progress_timeline(observations: list[Any]) -> list[tuple[float, int, int, int, bool]]:
-    rows: list[tuple[float, int, int, int, bool]] = []
+def _progress_timeline(observations: list[Any]) -> list[tuple[Any, ...]]:
+    """One row per observable change: (t, cursors complete, raw rows, open
+    debt, promoted, ready domains, open debt by stage)."""
+    rows: list[tuple[Any, ...]] = []
     for observation in observations:
         row = (
             observation.t,
@@ -441,6 +443,8 @@ def _progress_timeline(observations: list[Any]) -> list[tuple[float, int, int, i
             observation.raw_rows,
             observation.open_debt,
             observation.promoted_index is not None,
+            sorted(domain for domain, ready in observation.readiness.items() if ready),
+            dict(sorted(observation.debt_by_stage.items())),
         )
         if not rows or rows[-1][1:] != row[1:]:
             rows.append(row)
@@ -624,8 +628,6 @@ def build_receipt(
         "warnings_and_errors": events.get("warnings_and_errors"),
         "daemon_exit_code": exit_code,
         "observation_count": len(observations),
-        # Compact progress timeline: (t, cursors complete, raw rows, open debt,
-        # promoted), one row per change.
         "progress": _progress_timeline(observations),
         "started_at_unix": round(started_wall, 3),
     }
