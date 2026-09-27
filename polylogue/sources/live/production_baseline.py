@@ -359,6 +359,10 @@ def merge_pending_production_baseline(
     return _seal(current.operation_id, current.source_signature, tuple(rows))
 
 
+BaselineProgress = Callable[..., None]
+"""``progress(phase, *, inspected=0, revisions=0, hashed_bytes=0)``: cheap counters, no I/O."""
+
+
 def _revision(path: Path, *, cancelled: Callable[[], bool] | None = None) -> tuple[str, int]:
     _check_observation_cancelled(cancelled)
     if is_sqlite_path(path):
@@ -374,7 +378,11 @@ def _revision(path: Path, *, cancelled: Callable[[], bool] | None = None) -> tup
 
 
 def _archive_members(
-    path: Path, source_name: str, *, cancelled: Callable[[], bool] | None = None
+    path: Path,
+    source_name: str,
+    *,
+    cancelled: Callable[[], bool] | None = None,
+    progress: BaselineProgress | None = None,
 ) -> tuple[SourceDecision, ...]:
     members: list[SourceDecision] = []
     with zipfile.ZipFile(path) as archive:
@@ -435,15 +443,13 @@ def _archive_members(
                             len(payload.payload_bytes),
                         )
                     )
+                    if progress is not None:
+                        progress("baseline_hash", revisions=1, hashed_bytes=len(payload.payload_bytes))
             except (OSError, UnicodeError, ValueError, ZipBombError, zipfile.BadZipFile) as exc:
                 reason = "revision_io_unavailable" if _retryable_read_fault(exc) else "archive_member_unreadable"
                 fault(info, f"{reason}:{exc}")
                 continue
     return tuple(members)
-
-
-BaselineProgress = Callable[..., None]
-"""``progress(phase, *, inspected=0, revisions=0, hashed_bytes=0)``: cheap counters, no I/O."""
 
 
 def capture_production_source_baseline(
@@ -557,18 +563,15 @@ def capture_production_source_baseline(
                 else:
                     disposition, reason = "fault", "alias_target_not_independently_accepted"
         if disposition == "accepted":
+            # Enter the hash phase before reading: one large file or ZIP can
+            # take long enough that status must not still say ``baseline_walk``.
+            if progress is not None:
+                progress("baseline_hash")
             try:
                 if path.suffix.lower() == ".zip":
-                    members = _archive_members(path, source_name, cancelled=cancelled)
+                    members = _archive_members(path, source_name, cancelled=cancelled, progress=progress)
                     decisions.append(SourceDecision(source_name, str(path), "excluded", "expanded_to_members"))
                     decisions.extend(members)
-                    if progress is not None:
-                        accepted_members = [member for member in members if member.disposition == "accepted"]
-                        progress(
-                            "baseline_hash",
-                            revisions=len(accepted_members),
-                            hashed_bytes=sum(member.material_bytes or 0 for member in accepted_members),
-                        )
                     continue
                 revision, material_bytes = _revision(path, cancelled=cancelled)
                 if progress is not None:

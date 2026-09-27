@@ -419,3 +419,28 @@ def test_old_required_root_fault_only_clears_when_current_watch_observes_it(tmp_
     assert not any(
         row.reason == "absent_root" for row in merge_pending_production_baseline(recovered, previous).decisions
     )
+
+
+def test_hash_phase_starts_before_each_accepted_revision_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reporting the phase only after the read leaves a long hash labelled as the walk."""
+    from polylogue.sources.live import production_baseline as module
+
+    root = tmp_path / "source"
+    root.mkdir()
+    (root / "one.jsonl").write_bytes(b"{}\n")
+    calls: list[tuple[str, dict[str, int]]] = []
+    real_revision = module._revision
+
+    def observed_revision(path: Path, **kwargs: Any) -> tuple[str, int]:
+        assert calls[-1] == ("baseline_hash", {}), "the read began before the hash phase was entered"
+        return real_revision(path, **kwargs)
+
+    monkeypatch.setattr(module, "_revision", observed_revision)
+    capture_production_source_baseline(
+        (WatchSource("codex", root, suffixes=(".jsonl",)),),
+        operation_id="phase",
+        progress=lambda phase, **counts: calls.append((phase, counts)),
+    )
+    assert calls[-1] == ("baseline_hash", {"revisions": 1, "hashed_bytes": 3})

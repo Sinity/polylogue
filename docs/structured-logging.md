@@ -289,11 +289,13 @@ a stdlib logger. That is not the only legacy form, and today it is no longer
 the dominant one.
 
 Roughly 140 modules acquire their logger through
-`polylogue.logging.get_logger`, which the rule does not match. Those call sites
-still emit prose through `_StdlibBoundLogger`, whose `bind()` is a no-op and
-which discards every structured keyword it is given. Converting the two largest
-daemon modules (59 and 31 prose sites) eliminated **zero** baseline entries for
-exactly this reason: neither had ever used `logging.getLogger`.
+`polylogue.logging.get_logger`, which the rule does not match. Before
+structlog is configured those call sites go through `_StdlibBoundLogger`. It
+keeps validated `bind()` context and structured keywords and passes them to
+the stdlib bridge, so the fields reach the event sink, but the message is
+still prose carried in `error_detail`. Converting the two largest daemon
+modules (59 and 31 prose sites) eliminated **zero** baseline entries because
+neither had ever used `logging.getLogger`.
 
 So a green `legacy-stdlib-logger` means "no module acquires a stdlib logger
 directly", not "no module logs prose". Do not read the former as the latter.

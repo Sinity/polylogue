@@ -20,12 +20,15 @@ and it matches only the *acquisition* of a stdlib logger
 (`devtools/patterns/legacy-stdlib-logger.yml:1`). Green therefore means "no
 module acquires a stdlib logger directly" — not "no module logs prose". 100
 modules still log through the `get_logger` wrapper, which the rule does not
-match; when structlog is unconfigured that wrapper is `_StdlibBoundLogger`,
-whose `bind()` is a no-op and which forwards only `exc_info`/`stack_info`/
-`stacklevel`/`extra`, discarding every other structured keyword
-(`polylogue/logging.py:165-166`; `polylogue/logging.py:184-186`). Closing that
-gap needs a second rule with its own baseline; see
-`docs/structured-logging.md:261`.
+match; when structlog is unconfigured that wrapper is `_StdlibBoundLogger`.
+Its `bind()` keeps validated context, and each call validates its keywords
+(only when the record is enabled and at or above the event threshold) and
+hands the accepted fields to the stdlib bridge, which emits them on the
+`stdlib.record` event (`polylogue/logging.py:213-251`;
+`polylogue/logging.py:1065-1098`). The message itself is still prose in
+`error_detail`, so a module logging through this wrapper is not converted;
+detecting those call sites needs a second rule with its own baseline; see
+`docs/structured-logging.md:285`.
 
 ## Domain derivations
 

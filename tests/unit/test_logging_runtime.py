@@ -242,3 +242,43 @@ def test_pre_configuration_logger_checks_level_before_field_validation(monkeypat
     assert rejections[0]["field"] == "unregistered_probe_field"
     assert rejections[0]["source_event"] == "Probe failed"
     assert rejections[0]["logger"] == "polylogue.tests.level-first"
+
+
+def test_pre_configuration_logger_skips_fields_below_the_event_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Validating an INFO call the event threshold discards makes it warn."""
+    import json
+
+    monkeypatch.setattr(logging_mod, "_structlog_configured", False)
+    bound = logging_mod.get_logger("polylogue.tests.threshold-first")
+    stream = io.StringIO()
+    try:
+        logging_mod.configure_events(stream=stream, fmt="json", level="warning")
+        bound.info("Routine detail", unregistered_probe_field="x")
+        logging_mod.flush_events(timeout_s=1)
+    finally:
+        logging_mod.reset_events()
+    records = [json.loads(line) for line in stream.getvalue().splitlines()]
+    assert not [record for record in records if record["event"] == "log.field_rejected"]
+
+
+def test_bridge_keeps_an_explicit_error_type_without_exc_info(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reserving ``error_type`` in the bridge drops the caller's classification."""
+    import json
+
+    monkeypatch.setattr(logging_mod, "_structlog_configured", False)
+    bound = logging_mod.get_logger("polylogue.tests.error-type")
+    stream = io.StringIO()
+    try:
+        logging_mod.configure_events(stream=stream, fmt="json")
+        bound.warning("Detection failed", error_type="ValueError")
+        try:
+            raise KeyError("probe")
+        except KeyError:
+            bound.warning("Traceback wins", error_type="ValueError", exc_info=True)
+        logging_mod.flush_events(timeout_s=1)
+    finally:
+        logging_mod.reset_events()
+    records = [json.loads(line) for line in stream.getvalue().splitlines()]
+    bridged = {record["error_detail"]: record for record in records if record["event"] == "stdlib.record"}
+    assert bridged["Detection failed"]["error_type"] == "ValueError"
+    assert bridged["Traceback wins"]["error_type"] == "KeyError"

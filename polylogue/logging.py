@@ -229,6 +229,12 @@ class _StdlibBoundLogger:
         if not self._logger.isEnabledFor(level):
             return
         stdlib_kwargs = _stdlib_log_kwargs(event_kw)
+        if level < _threshold:
+            # The event sink drops this record (the bridge filters at the same
+            # threshold), so its fields are neither validated nor reported;
+            # other stdlib handlers still receive the plain record.
+            method(message, *args, **stdlib_kwargs)
+            return
         supplied_extra = event_kw.get("extra")
         structured_extra = supplied_extra if isinstance(supplied_extra, Mapping) else {}
         structured = {
@@ -1039,7 +1045,9 @@ def flush_events(*, timeout_s: float = 0.25) -> bool:
 
 # ``level`` is emit()'s own keyword; the other two are the bridge's record
 # envelope. A bound or ``extra`` field of the same name must not restate them.
-_BRIDGE_OWNED_FIELDS = frozenset({"level", "logger", "error_detail", "error_type"})
+# ``error_type`` is not reserved: a caller's explicit classification survives
+# unless the record carries exc_info, whose exception type then replaces it.
+_BRIDGE_OWNED_FIELDS = frozenset({"level", "logger", "error_detail"})
 _LOG_RECORD_ATTRIBUTES = frozenset(
     {*logging.LogRecord("", logging.INFO, "", 0, "", (), None).__dict__, "message", "asctime"}
 )
