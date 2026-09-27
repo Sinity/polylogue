@@ -205,3 +205,23 @@ def test_the_register_answers_identically_whatever_its_size(revisions: int) -> N
 
     assert len(register) == revisions
     assert register.values() == tuple(f"revision {index}" for index in range(revisions))
+
+
+def test_a_lone_surrogate_survives_the_archive_write(tmp_path: Path) -> None:
+    """The stored event payload equals the parsed value the content hash covers.
+
+    Anti-vacuity: replace the surrogate with U+FFFD in the writer's JSON and
+    the stored content differs from the parsed content.
+    """
+    from polylogue.pipeline.ids import session_content_hash
+    from polylogue.storage.sqlite.archive_tiers.write import _json_dumps
+
+    encoded = json.dumps(_compacted("tail \\ud800")).replace("\\\\ud800", "\\ud800")
+    session = parse(_rollout(json.loads(encoded)), "xdr8w")
+    context = next(event for event in session.session_events if event.event_type == "codex_replacement_context")
+
+    stored = json.loads(_json_dumps(context.payload))
+
+    assert stored == context.payload
+    assert stored["content"].endswith("\ud800")
+    assert session_content_hash(session)

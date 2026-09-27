@@ -2449,3 +2449,39 @@ def test_retained_claude_design_object_uses_streamed_replay_route(
     assert len(actual.session_events) == 300
     assert actual.created_at == "2026-01-01T00:00:00+00:00"
     assert actual.updated_at == "2026-01-01T00:00:59+00:00"
+
+
+def test_event_sink_batch_insert_matches_sequential_inserts(tmp_path: Path) -> None:
+    """Anti-vacuity: number batch insertions from the post-insert sequence and
+    the order differs from sequential ``insert`` calls at shifted indices."""
+    from polylogue.sources.parsers.base import ParsedSessionEvent
+    from polylogue.sources.prepared_message_sink import SqliteMessageStore
+
+    store = SqliteMessageStore(tmp_path / "events.db")
+    try:
+        sink = store.new_event_sink()
+        expected = [ParsedSessionEvent(event_type=f"e{index}", payload={}) for index in range(6)]
+        for event in expected:
+            sink.append(event)
+        insertions = [(0, "a"), (2, "b"), (2, "c"), (6, "d")]
+        sink.insert_sorted((index, ParsedSessionEvent(event_type=name, payload={})) for index, name in insertions)
+        for offset, (index, name) in enumerate(insertions):
+            expected.insert(index + offset, ParsedSessionEvent(event_type=name, payload={}))
+        assert [event.event_type for event in sink] == [event.event_type for event in expected]
+    finally:
+        store.close()
+
+
+def test_sink_json_keeps_literal_escape_text_and_json_mode_fields(tmp_path: Path) -> None:
+    """Literal ``\\ud800`` text is not a surrogate escape, and a real one keeps
+    JSON-mode conversions such as hex digests.
+
+    Anti-vacuity: treat the literal text as an escape and validate in Python
+    mode, and the paste evidence digest comes back as its hex text.
+    """
+    from polylogue.sources.parsers.base_models import ParsedPasteEvidence
+    from polylogue.sources.prepared_message_sink import _from_text_json, _text_json
+
+    for text in ("literal \\ud800 text", "real \ud800 surrogate"):
+        evidence = ParsedPasteEvidence(content_hash=b"\x01" * 32, source_marker=text)
+        assert _from_text_json(ParsedPasteEvidence, _text_json(evidence.model_dump(mode="json"))) == evidence
