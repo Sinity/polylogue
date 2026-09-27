@@ -2893,6 +2893,11 @@ async def _run_daemon_services_under_active_writer_lease(
                     # Generation bootstrap opens a writable index directly;
                     # keep its probe inside the same coordinator as every
                     # other daemon archive writer.
+                    await write_coordinator.run_sync(
+                        "daemon.cold_build.reconcile_interrupted",
+                        ColdBuildGeneration.reconcile_interrupted_promotions,
+                        archive_root_path,
+                    )
                     active_generation_empty = await write_coordinator.run_sync(
                         "daemon.cold_build.probe",
                         active_index_generation_is_empty,
@@ -2967,7 +2972,11 @@ async def _run_daemon_services_under_active_writer_lease(
                             reason, retryable = classification
                             previous = (generation.settlement_state, generation.settlement_reason)
                             state: Literal["retryable", "blocked"] = "retryable" if retryable else "blocked"
-                            retry_at = time.monotonic() + 5.0 if retryable else None
+                            retry_at = (
+                                time.monotonic() + (60.0 if reason == "source_integrity" else 5.0)
+                                if retryable
+                                else None
+                            )
                             generation.record_settlement(
                                 state,
                                 reason=reason,

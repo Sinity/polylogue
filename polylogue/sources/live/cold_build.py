@@ -31,6 +31,7 @@ afterwards.
 from __future__ import annotations
 
 import errno
+import json
 import os
 import sqlite3
 import threading
@@ -113,6 +114,7 @@ def _reclaim_abandoned_cold_generations(store: IndexGenerationStore) -> None:
     live = active_cold_build_generation(store.archive_root)
     if live is not None and not live.settled:
         raise RuntimeError("cannot reclaim cold builds while a generation is registered")
+    ColdBuildGeneration.reconcile_interrupted_promotions(store.archive_root)
     if not store.generations_root.exists():
         return
     active_target = store.active_pointer.resolve(strict=False)
@@ -491,11 +493,11 @@ class ColdBuildGeneration:
         )
         from polylogue.sources.live.production_baseline import (
             MATERIAL_BYTE_DEFINITION,
-            ProductionBaselineError,
             capture_production_source_baseline,
             load_pending_production_baseline,
             merge_pending_production_baseline,
             publish_pending_production_baseline,
+            unretained_source_material,
         )
 
         # Existing manual receipts remain historical evidence. Validate any
@@ -508,22 +510,17 @@ class ColdBuildGeneration:
             load_pending_production_baseline(archive_root),
         )
         publish_pending_production_baseline(archive_root, baseline)
-        prospective_material_bytes = baseline.prospective_material_bytes
-        if prospective_material_bytes is None:
-            raise ProductionBaselineError("accepted production material has unknown retained byte size")
         blob_block_bytes, source_db_block_bytes = evidence_allocation_block_bytes(archive_root)
-        prospective_retained_allocation_bytes = baseline.prospective_retained_allocation_bytes(blob_block_bytes)
-        if prospective_retained_allocation_bytes is None:
-            raise ProductionBaselineError("accepted production material has unknown retained allocation")
+        prospective_material_bytes, prospective_retained_allocation_bytes, prospective_source_db_allocation_bytes = (
+            unretained_source_material(baseline, archive_root / "source.db", blob_block_bytes, source_db_block_bytes)
+        )
         try:
             require_candidate_capacity(
                 archive_root,
                 operation_id=operation_id,
                 prospective_material_bytes=prospective_material_bytes,
                 prospective_retained_allocation_bytes=prospective_retained_allocation_bytes,
-                prospective_source_db_allocation_bytes=baseline.prospective_source_db_allocation_bytes(
-                    source_db_block_bytes
-                ),
+                prospective_source_db_allocation_bytes=prospective_source_db_allocation_bytes,
                 baseline_digest=baseline.digest,
                 material_byte_definition=MATERIAL_BYTE_DEFINITION,
             )
@@ -575,6 +572,63 @@ class ColdBuildGeneration:
             _store=store,
             source_baseline=baseline,
         )
+
+    @classmethod
+    def reconcile_interrupted_promotions(cls, archive_root: Path) -> None:
+        """Finish a cold pointer swap or matching pending receipt left by process exit."""
+        from polylogue.sources.live.production_baseline import (
+            ProductionBaselineError,
+            ProductionSourceBaseline,
+            load_pending_production_baseline,
+        )
+
+        store = IndexGenerationStore.for_archive_root(archive_root)
+        if not store.generations_root.exists():
+            return
+        active_target = store.active_pointer.resolve(strict=False)
+        for root in sorted(store.generations_root.iterdir()):
+            if not root.name.startswith("gen-"):
+                continue
+            generation = store.load(root.name)
+            if generation.state not in {"promoting", "active"} or not generation.owner_id.startswith("cold-build:"):
+                continue
+            if Path(generation.index_path).resolve(strict=False) != active_target:
+                continue
+            pending = load_pending_production_baseline(Path(archive_root)) if generation.state == "active" else None
+            if generation.state == "active" and pending is None:
+                continue
+            binding = root / "source-baseline.json"
+            try:
+                fd = os.open(binding, os.O_RDONLY | os.O_NOFOLLOW)
+                with os.fdopen(fd, encoding="utf-8") as stream:
+                    payload = json.load(stream)
+                if not isinstance(payload, dict) or payload.get("generation_id") != generation.generation_id:
+                    raise ProductionBaselineError("interrupted cold-build baseline binding mismatch")
+                baseline_payload = payload.get("baseline")
+                if not isinstance(baseline_payload, dict):
+                    raise ProductionBaselineError("interrupted cold-build baseline binding is unavailable")
+                baseline = ProductionSourceBaseline.from_dict(baseline_payload)
+                if payload != {"generation_id": generation.generation_id, "baseline": baseline.as_dict()}:
+                    raise ProductionBaselineError("interrupted cold-build baseline binding changed")
+            except (OSError, ValueError, TypeError) as exc:
+                raise ProductionBaselineError("interrupted cold-build baseline binding is unavailable") from exc
+            if generation.state == "active" and pending is not None and pending.digest != baseline.digest:
+                continue  # a newer inactive build owns the pending receipt
+            candidate = cls(
+                archive_root=Path(archive_root),
+                generation=generation,
+                reason="interrupted promotion",
+                operation_id=baseline.operation_id,
+                _store=store,
+                source_baseline=baseline,
+                _promoted=True,
+            )
+            candidate.reconcile_promoted()
+            emit(
+                "daemon.cold_build.interrupted_promotion_reconciled",
+                outcome="ok",
+                generation_id=generation.generation_id,
+            )
 
     @property
     def generation_root(self) -> Path:

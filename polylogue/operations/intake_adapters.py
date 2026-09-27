@@ -48,7 +48,7 @@ from polylogue.sources.live.metrics import (
     REFUSED_UNATTEMPTED,
     REFUSED_UNATTEMPTED_TIME_BUDGET,
 )
-from polylogue.sources.live.production_baseline import ProductionBaselineError
+from polylogue.sources.live.production_baseline import ProductionBaselineError, ProductionBaselineReadUnavailableError
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource, _log_ingest_metrics
 from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
@@ -93,6 +93,8 @@ def classify_cold_build_settlement_failure(exc: Exception) -> tuple[str, bool] |
         exc.__cause__, Exception
     ):
         exc = exc.__cause__
+    if isinstance(exc, ProductionBaselineReadUnavailableError):
+        return "source_integrity", True
     if isinstance(exc, ProductionBaselineError):
         return "source_integrity", False
     if isinstance(exc, InsufficientCapacityError):

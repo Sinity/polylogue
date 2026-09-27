@@ -48,6 +48,10 @@ class ProductionBaselineError(RuntimeError):
     """The build cannot prove its discovered source revisions were retained."""
 
 
+class ProductionBaselineReadUnavailableError(ProductionBaselineError):
+    """Every unresolved source fault is a read observation worth retrying."""
+
+
 class ProductionBaselineObservationCancelledError(Exception):
     """A superseded read-only source observation stopped cooperatively."""
 
@@ -131,6 +135,10 @@ class ProductionSourceBaseline:
         self.verify_integrity()
         faults = [row for row in self.decisions if row.disposition == "fault"]
         if faults:
+            if all(row.reason.startswith("revision_unreadable:") for row in faults):
+                raise ProductionBaselineReadUnavailableError(
+                    f"production source baseline has {len(faults)} unreadable revision(s)"
+                )
             raise ProductionBaselineError(f"production source baseline has {len(faults)} unresolved discovery fault(s)")
         missing = unretained_source_decisions(self, source_db)
         if missing:

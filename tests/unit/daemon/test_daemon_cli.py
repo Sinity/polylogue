@@ -4054,11 +4054,18 @@ async def test_cold_build_busy_readiness_retries_in_running_daemon(tmp_path: Pat
 def test_cold_build_settlement_classifies_typed_faults(tmp_path: Path) -> None:
     from polylogue.core.durable_fs import DurableFilesystemError
     from polylogue.daemon.intake_adapters import classify_cold_build_settlement_failure
-    from polylogue.sources.live.production_baseline import ProductionBaselineError
+    from polylogue.sources.live.production_baseline import (
+        ProductionBaselineError,
+        ProductionBaselineReadUnavailableError,
+    )
 
     assert classify_cold_build_settlement_failure(ProductionBaselineError("missing source revision")) == (
         "source_integrity",
         False,
+    )
+    assert classify_cold_build_settlement_failure(ProductionBaselineReadUnavailableError("read failed")) == (
+        "source_integrity",
+        True,
     )
     assert classify_cold_build_settlement_failure(RuntimeError("database is locked")) is None
     not_database = tmp_path / "not-a-database.db"

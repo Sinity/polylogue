@@ -182,6 +182,74 @@ def test_pointer_swapped_before_metadata_failure_recovers_once(
     assert promotions == 1
 
 
+def test_restart_completes_pointer_swapped_cold_promotion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.sources.live.production_baseline import load_pending_production_baseline
+    from polylogue.storage.index_generation import IndexGenerationStore
+
+    archive = _fresh_archive_root(tmp_path)
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    member = source_root / "one.jsonl"
+    member.write_bytes(_codex_session("one", "interrupted"))
+    source = WatchSource("codex", source_root, suffixes=(".jsonl",), required=True)
+    generation = ColdBuildGeneration.begin(archive, reason="first", sources=(source,))
+    register_cold_build_generation(generation)
+    try:
+        assert (
+            asyncio.run(_processor(archive, source_root).ingest_files([member], emit_event=False)).succeeded_file_count
+            == 1
+        )
+        with generation.open_writer() as candidate:
+            candidate.run_generation_readiness_pass()
+        generation.source_baseline.verify(archive / "source.db")
+        original_write = IndexGenerationStore._write
+
+        def interrupt_active_metadata(self: IndexGenerationStore, row: Any) -> None:
+            if row.generation_id == generation.generation_id and row.state == "active":
+                raise OSError(errno.ENOSPC, "interrupted after pointer swap")
+            original_write(self, row)
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(IndexGenerationStore, "_write", interrupt_active_metadata)
+            with pytest.raises(OSError, match="interrupted after pointer swap"):
+                generation._store.promote(generation.generation)
+        assert generation._store.load(generation.generation_id).state == "promoting"
+        assert (archive / "index.db").resolve() == Path(generation.generation.index_path).resolve()
+        assert load_pending_production_baseline(archive) is not None
+    finally:
+        clear_cold_build_generation()
+        generation._release_ops_checkpoint_holder()
+
+    ColdBuildGeneration.reconcile_interrupted_promotions(archive)
+    assert generation._store.load(generation.generation_id).state == "active"
+    assert load_pending_production_baseline(archive) is None
+    assert _active_session_count(archive) == 1
+    ColdBuildGeneration.reconcile_interrupted_promotions(archive)
+
+
+def test_restart_clears_matching_receipt_after_active_metadata(
+    tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.sources.live import production_baseline
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    _ingest(tmp_path, root, "one.jsonl", "receipt-tail")
+
+    def interrupt_receipt_tail(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError(errno.ENOSPC, "receipt tail interrupted")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(production_baseline, "clear_pending_production_baseline", interrupt_receipt_tail)
+        with pytest.raises(OSError, match="receipt tail interrupted"):
+            cold_build.promote()
+    assert cold_build._store.load(cold_build.generation_id).state == "active"
+    assert production_baseline.load_pending_production_baseline(tmp_path) is not None
+    clear_cold_build_generation()
+    ColdBuildGeneration.reconcile_interrupted_promotions(tmp_path)
+    assert production_baseline.load_pending_production_baseline(tmp_path) is None
+
+
 def test_pre_swap_storage_fault_restores_same_inactive_candidate(
     tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -947,6 +1015,48 @@ def test_next_build_reclaims_abandoned_inactive_candidate_before_capacity(tmp_pa
         assert not abandoned_root.exists()
         assert replacement.generation_root.exists()
         assert replacement.generation_id != abandoned.generation_id
+    finally:
+        replacement.discard()
+
+
+def test_orphan_replacement_does_not_charge_already_retained_source_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.maintenance.candidate_capacity import require_candidate_capacity as original_require
+    from polylogue.sources.live import cold_build as cold_build_module
+
+    archive = _fresh_archive_root(tmp_path)
+    source_root = tmp_path / "account"
+    source_root.mkdir()
+    member = source_root / "one.jsonl"
+    member.write_bytes(_codex_session("one", "retained"))
+    source = WatchSource("codex", source_root, suffixes=(".jsonl",), required=True)
+    orphan = ColdBuildGeneration.begin(archive, reason="first", sources=(source,))
+    register_cold_build_generation(orphan)
+    try:
+        assert (
+            asyncio.run(_processor(archive, source_root).ingest_files([member], emit_event=False)).succeeded_file_count
+            == 1
+        )
+    finally:
+        clear_cold_build_generation()
+    old_root = orphan.generation_root
+    admissions = 0
+
+    def require_only_new_evidence(*args: Any, **kwargs: Any) -> Any:
+        nonlocal admissions
+        admissions += 1
+        assert kwargs["prospective_material_bytes"] == 0
+        assert kwargs["prospective_retained_allocation_bytes"] == 0
+        assert kwargs["prospective_source_db_allocation_bytes"] == 0
+        return original_require(*args, **kwargs)
+
+    monkeypatch.setattr(cold_build_module, "require_candidate_capacity", require_only_new_evidence)
+    replacement = ColdBuildGeneration.begin(archive, reason="restart", sources=(source,))
+    try:
+        assert admissions == 1
+        assert not old_root.exists()
+        assert replacement.generation_id != orphan.generation_id
     finally:
         replacement.discard()
 

@@ -13,8 +13,10 @@ import pytest
 from polylogue.sources.live.production_baseline import (
     ProductionBaselineError,
     ProductionBaselineObservationCancelledError,
+    ProductionBaselineReadUnavailableError,
     SourceDecision,
     _revision,
+    _seal,
     capture_production_source_baseline,
     merge_pending_production_baseline,
 )
@@ -58,6 +60,16 @@ def test_large_source_revision_stops_between_chunks_on_cancel(tmp_path: Path) ->
     with pytest.raises(ProductionBaselineObservationCancelledError):
         _revision(source, cancelled=cancelled)
     assert checks == 3
+
+
+def test_unreadable_revision_is_a_typed_retryable_baseline_fault(tmp_path: Path) -> None:
+    baseline = _seal(
+        "build",
+        "sources",
+        (SourceDecision("account", str(tmp_path / "large.json"), "fault", "revision_unreadable:input/output error"),),
+    )
+    with pytest.raises(ProductionBaselineReadUnavailableError):
+        baseline.verify(tmp_path / "source.db")
 
 
 def test_baseline_uses_typed_acceptance_before_cursor_and_requires_retained_revision(tmp_path: Path) -> None:
