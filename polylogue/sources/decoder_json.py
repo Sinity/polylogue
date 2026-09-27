@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from decimal import Decimal
 from typing import IO, Protocol, TypeAlias, TypeGuard, cast
 
@@ -478,6 +478,177 @@ def generic_message_object_envelope(handle: JsonReadable) -> dict[str, JsonValue
     finally:
         handle.seek(0)
     return envelope if message_arrays == 1 else None
+
+
+def grok_export_item_count(handle: JsonReadable, *, on_item: Callable[[int, bool], None] | None = None) -> int | None:
+    """Validate a Grok object and report each member's shape without decoding it."""
+    count = 0
+    keys = 0
+    arrays = 0
+    member_keys: set[str] = set()
+    member_is_map = False
+    member_conversation = False
+    member_responses = False
+    valid_members = 0
+
+    def finish_member() -> None:
+        nonlocal valid_members
+        valid = member_is_map and member_conversation and member_responses
+        valid_members += int(valid)
+        if on_item is not None:
+            on_item(count - 1, valid)
+
+    try:
+        events = ijson.parse(handle)
+        if next(events, None) != ("", "start_map", None):
+            return None
+        for prefix, event, value in events:
+            if (
+                event == "string"
+                and prefix.rsplit(".", 1)[-1] in {"type", "content_type", "kind", "record_type"}
+                and isinstance(value, str)
+                and (
+                    value.startswith(("future_", "unknown_", "unsupported_"))
+                    or value in {"future", "unknown", "unsupported"}
+                )
+            ):
+                # The ordinary admission wrapper emits an evidence event for
+                # future wire types; retain that exact path for such exports.
+                return None
+            if prefix == "" and event == "map_key":
+                if value in {"sessions", "polylogue_capture_kind"}:
+                    # Dispatch gives these envelopes precedence over Grok.
+                    return None
+                if value == "conversations":
+                    keys += 1
+            elif prefix == "conversations" and event == "start_array":
+                arrays += 1
+            elif prefix == "conversations.item" and event in {
+                "start_map",
+                "start_array",
+                "string",
+                "number",
+                "boolean",
+                "null",
+            }:
+                count += 1
+                member_keys.clear()
+                member_is_map = event == "start_map"
+                member_conversation = False
+                member_responses = False
+                if event not in {"start_map", "start_array"}:
+                    finish_member()
+            elif prefix == "conversations.item" and event == "map_key" and value in {"conversation", "responses"}:
+                if value in member_keys:
+                    return None
+                member_keys.add(value)
+            elif prefix == "conversations.item.conversation" and event == "start_map":
+                member_conversation = True
+            elif prefix == "conversations.item.responses" and event == "start_array":
+                member_responses = True
+            elif prefix == "conversations.item" and event in {"end_map", "end_array"}:
+                finish_member()
+    except ijson.common.JSONError:
+        return None
+    finally:
+        handle.seek(0)
+    return count if keys == arrays == 1 and (count == 0 or valid_members > 0) else None
+
+
+def _json_subtree(events: Iterable[tuple[str, str, object]], event: str, value: object) -> object:
+    if event not in {"start_map", "start_array"}:
+        return normalize_ijson_stdlib_numbers(value)
+    builder = ijson.common.ObjectBuilder()
+    builder.event(event, value)
+    depth = 1
+    for _prefix, child_event, child_value in events:
+        builder.event(child_event, child_value)
+        if child_event in {"start_map", "start_array"}:
+            depth += 1
+        elif child_event in {"end_map", "end_array"}:
+            depth -= 1
+            if depth == 0:
+                return normalize_ijson_stdlib_numbers(builder.value)
+    raise ValueError("incomplete Grok JSON member")
+
+
+def _skip_json_subtree(events: Iterable[tuple[str, str, object]], event: str) -> None:
+    if event not in {"start_map", "start_array"}:
+        return
+    depth = 1
+    for _prefix, child_event, _value in events:
+        if child_event in {"start_map", "start_array"}:
+            depth += 1
+        elif child_event in {"end_map", "end_array"}:
+            depth -= 1
+            if depth == 0:
+                return
+    raise ValueError("incomplete Grok JSON member")
+
+
+def _grok_conversation_fields(events: Iterable[tuple[str, str, object]]) -> dict[str, object]:
+    """Read only metadata consumed by the Grok parser, skipping other fields."""
+    fields: dict[str, object] = {}
+    for prefix, event, value in events:
+        if prefix == "conversations.item.conversation" and event == "end_map":
+            return fields
+        if prefix == "conversations.item.conversation" and event == "map_key" and value in {"title", "create_time"}:
+            fields.pop(value, None)
+        if prefix == "conversations.item.conversation.title" and event in {"string", "number", "boolean", "null"}:
+            fields["title"] = normalize_ijson_stdlib_numbers(value)
+        elif prefix == "conversations.item.conversation.create_time" and event in {
+            "start_map",
+            "string",
+            "number",
+            "boolean",
+            "null",
+        }:
+            fields["create_time"] = _json_subtree(events, event, value)
+    raise ValueError("incomplete Grok conversation metadata")
+
+
+def iter_grok_export_events(
+    handle: JsonReadable, *, include_item: Callable[[int], bool] | None = None
+) -> Iterable[tuple[str, object | None]]:
+    """Yield conversation boundaries, metadata and individual responses."""
+    events = iter(ijson.parse(handle))
+    member_index = -1
+    included = True
+    for prefix, event, value in events:
+        if prefix == "conversations.item" and event in {
+            "start_map",
+            "start_array",
+            "string",
+            "number",
+            "boolean",
+            "null",
+        }:
+            member_index += 1
+            included = include_item(member_index) if include_item is not None else True
+            yield "begin", None
+            if event not in {"start_map", "start_array"}:
+                yield "end", None
+        elif prefix == "conversations.item" and event in {"end_map", "end_array"}:
+            yield "end", None
+        elif prefix == "conversations.item.conversation" and event == "start_map":
+            if included:
+                yield "conversation", _grok_conversation_fields(events)
+            else:
+                _skip_json_subtree(events, event)
+        elif prefix == "conversations.item.responses" and event == "start_array":
+            yield "responses", None
+        elif prefix == "conversations.item.responses.item" and event in {
+            "start_map",
+            "start_array",
+            "string",
+            "number",
+            "boolean",
+            "null",
+        }:
+            if included:
+                yield "response", _json_subtree(events, event, value)
+            else:
+                _skip_json_subtree(events, event)
 
 
 def iter_json_container_records(handle: JsonReadable, prefix: str) -> Iterable[JsonValue]:

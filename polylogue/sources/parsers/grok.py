@@ -40,7 +40,7 @@ conversations exported from files that happen to share a stem
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, MutableSequence
 
 from polylogue.archive.message.artifacts import classify_material_origin
 from polylogue.archive.message.roles import Role
@@ -54,7 +54,6 @@ from .base import (
     ParsedMessage,
     ParsedSession,
     human_authored_override,
-    mark_last_occurrence_as_active_leaf,
     parser_admission,
     synthetic_message_id,
 )
@@ -138,7 +137,7 @@ def looks_like_export(payload: object) -> bool:
     return any(looks_like_conversation(item) for item in conversations)
 
 
-def _session_identity(messages: list[ParsedMessage], created_at: str | None, fallback_id: str) -> str:
+def _session_identity(messages: Iterable[ParsedMessage], created_at: str | None, fallback_id: str) -> str:
     """Derive this conversation's content-derived provider session id.
 
     The one narrow exception is a conversation that genuinely carries nothing
@@ -153,7 +152,7 @@ def _session_identity(messages: list[ParsedMessage], created_at: str | None, fal
     # timestamp, ties broken by the (content-derived) message id. Taking
     # ``messages[0]`` would reintroduce exactly the array-order sensitivity
     # this identity exists to remove.
-    opening = min(messages, key=lambda m: (m.timestamp or "", m.provider_message_id)) if messages else None
+    opening = min(messages, key=lambda m: (m.timestamp or "", m.provider_message_id), default=None)
     if opening is None and created_at is None:
         return fallback_id
     return idless_session_identity(
@@ -169,52 +168,70 @@ def parse_conversation(payload: Mapping[str, object], fallback_id: str) -> Parse
     conversation = _mapping(payload.get("conversation"))
     responses_raw = payload.get("responses")
     responses = responses_raw if isinstance(responses_raw, list) else []
+    return parse_conversation_stream(conversation, responses, fallback_id, messages=[])
 
+
+def parse_conversation_stream(
+    conversation: Mapping[str, object],
+    responses: Iterable[object],
+    fallback_id: str,
+    *,
+    messages: MutableSequence[ParsedMessage],
+) -> ParsedSession:
+    """Normalize responses one at a time into a list or a disk-backed sink."""
+    for entry in responses:
+        append_conversation_response(messages, entry)
+    return finish_conversation(conversation, fallback_id, messages)
+
+
+def append_conversation_response(messages: MutableSequence[ParsedMessage], entry: object) -> None:
+    """Normalize one Grok response with a stable admitted-message position."""
+    fields = _response_fields(entry)
+    text_raw = fields.get("message")
+    text = text_raw if isinstance(text_raw, str) else None
+    if not text:
+        return
+    grok_role = _role_for_sender(fields.get("sender"))
+    timestamp = _timestamp_text(fields.get("create_time"))
+    provider_message_id = synthetic_message_id(
+        namespace=_MESSAGE_ID_NAMESPACE,
+        role=grok_role,
+        text=text,
+        timestamp=timestamp,
+        kind="grok-response",
+    )
+    messages.append(
+        ParsedMessage(
+            provider_message_id=provider_message_id,
+            role=grok_role,
+            text=text,
+            timestamp=timestamp,
+            blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+            position=len(messages),
+            variant_index=0,
+            is_active_path=True,
+            is_active_leaf=False,
+            material_origin=human_authored_override(
+                grok_role,
+                MessageType.MESSAGE,
+                classify_material_origin(role=grok_role, message_type=MessageType.MESSAGE, text=text),
+            ),
+        )
+    )
+
+
+def finish_conversation(
+    conversation: Mapping[str, object], fallback_id: str, messages: MutableSequence[ParsedMessage]
+) -> ParsedSession:
+    """Derive session fields from a complete list or scratch-backed response sink."""
     title_raw = conversation.get("title")
     provider_title = title_raw if isinstance(title_raw, str) and title_raw else None
     title = provider_title or fallback_id
     created_at = _timestamp_text(conversation.get("create_time"))
 
-    messages: list[ParsedMessage] = []
-    for _index, entry in enumerate(responses):
-        fields = _response_fields(entry)
-        text_raw = fields.get("message")
-        text = text_raw if isinstance(text_raw, str) else None
-        if not text:
-            continue
-        grok_role = _role_for_sender(fields.get("sender"))
-        timestamp = _timestamp_text(fields.get("create_time"))
-        provider_message_id = synthetic_message_id(
-            namespace=_MESSAGE_ID_NAMESPACE,
-            role=grok_role,
-            text=text,
-            timestamp=timestamp,
-            kind="grok-response",
-        )
-        messages.append(
-            ParsedMessage(
-                provider_message_id=provider_message_id,
-                role=grok_role,
-                text=text,
-                timestamp=timestamp,
-                blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
-                position=len(messages),
-                variant_index=0,
-                is_active_path=True,
-                # polylogue-gzgyl: a Grok export response entry has no
-                # agent/subagent artifact ambiguity for a plain user turn --
-                # positive-evidence override for the shared
-                # classify_material_origin no-fallthrough (#2502).
-                material_origin=human_authored_override(
-                    grok_role,
-                    MessageType.MESSAGE,
-                    classify_material_origin(role=grok_role, message_type=MessageType.MESSAGE, text=text),
-                ),
-            )
-        )
-
     active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
-    messages = mark_last_occurrence_as_active_leaf(messages)
+    if messages:
+        messages[-1] = messages[-1].model_copy(update={"is_active_leaf": True})
     updated_at = messages[-1].timestamp if messages and messages[-1].timestamp else created_at
 
     provider_session_id = _session_identity(messages, created_at, fallback_id)
@@ -226,9 +243,9 @@ def parse_conversation(payload: Mapping[str, object], fallback_id: str) -> Parse
         title_source=TitleSource.ORIGIN if provider_title else None,
         created_at=created_at,
         updated_at=updated_at,
-        messages=messages,
+        messages=[],
         active_leaf_message_provider_id=active_leaf_message_provider_id,
-    )
+    ).model_copy(update={"messages": messages})
 
 
 __all__ = [

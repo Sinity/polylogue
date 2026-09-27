@@ -27,6 +27,8 @@ from polylogue.logging import WARNING, emit
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import (
     generic_message_object_envelope,
+    grok_export_item_count,
+    iter_grok_export_events,
     iter_json_container_records,
     json_record_container,
     normalize_ijson_stdlib_numbers,
@@ -40,7 +42,7 @@ from polylogue.sources.dispatch import (
     parse_stream_payload,
     require_positive_conversational_evidence,
 )
-from polylogue.sources.parsers import browser_capture
+from polylogue.sources.parsers import browser_capture, grok
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.prepared_message_sink import (
     SqliteMessageSink,
@@ -556,8 +558,26 @@ def prepare_jsonl_blob(
         before_hash = _source_digest(source)
         stream_prefix: str | None = None
         generic_envelope: dict[str, JSONValue] | None = None
+        grok_count: int | None = None
         # Cohort callbacks may inspect or rewrite the entire parse result.
         # The direct worker route can publish independent bundle members.
+        if (
+            not is_stream
+            and provider is Provider.GROK
+            and prepare_sessions is None
+            and prepare_records is None
+            and Path(source_path).name.lower().endswith(".json")
+        ):
+            store.conn.execute("CREATE TABLE grok_member_valid (ordinal INTEGER PRIMARY KEY, valid INTEGER NOT NULL)")
+            grok_probe_conn = store.conn
+
+            def record_grok_member(index: int, valid: bool) -> None:
+                grok_probe_conn.execute("INSERT INTO grok_member_valid VALUES (?, ?)", (index, int(valid)))
+
+            with source.open("rb") as handle:
+                grok_count = grok_export_item_count(handle, on_item=record_grok_member)
+            if grok_count is None:
+                store.conn.execute("DROP TABLE grok_member_valid")
         if (
             not is_stream
             and provider in BUNDLE_PROVIDERS
@@ -599,6 +619,74 @@ def prepare_jsonl_blob(
                 append_session_to_shard(shard_builder, session)
                 _append_artifact_session(store, session_count, session)
                 session_count += 1
+            after_hash = _source_digest(source)
+            if before_hash != after_hash:
+                raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
+            enrichment_digest, enrichment_index_path = (
+                preparation_dependency() if preparation_dependency is not None else (None, None)
+            )
+            _seal_artifact(store.conn, after_hash, session_count, enrichment_digest, enrichment_index_path)
+            store.conn.commit()
+            shard_path = shard_builder.seal().path
+            shard_builder = None
+        elif grok_count is not None:
+            _create_artifact_tables(store.conn)
+            shard_builder = SessionShardBuilder(directory / f"shard-{uuid.uuid4().hex}.db")
+            grok_member_conn = store.conn
+
+            def include_grok_member(index: int) -> bool:
+                row = grok_member_conn.execute(
+                    "SELECT valid FROM grok_member_valid WHERE ordinal = ?", (index,)
+                ).fetchone()
+                if row is None:
+                    raise _SourceChangedDuringPreparationError("Grok member changed during preparation")
+                return bool(row[0])
+
+            session_count = 0
+            member_index = -1
+            member_conversation: dict[str, object] | None = None
+            member_responses = False
+            member_messages: SqliteMessageSink | None = None
+            with source.open("rb") as handle:
+                for event, value in iter_grok_export_events(handle, include_item=include_grok_member):
+                    if event == "begin":
+                        member_index += 1
+                        member_conversation = None
+                        member_responses = False
+                        member_messages = store.new_sink() if include_grok_member(member_index) else None
+                    elif event == "conversation" and isinstance(value, dict):
+                        member_conversation = value
+                    elif event == "responses":
+                        member_responses = True
+                    elif event == "response" and member_messages is not None:
+                        grok.append_conversation_response(member_messages, value)
+                    elif event == "end" and member_conversation is not None and member_responses:
+                        assert member_messages is not None
+                        session = grok.finish_conversation(
+                            member_conversation,
+                            fallback_id if grok_count == 1 else f"{fallback_id}-{member_index}",
+                            member_messages,
+                        )
+                        # The event probe leaves future wire types on the
+                        # ordinary parser path. Admit this known outer record
+                        # through the same wrapper without reloading responses.
+                        admitted = grok.parse_conversation(
+                            {"conversation": {}, "responses": []}, session.provider_session_id
+                        )
+                        session = session.model_copy(update={"unit_accounting": admitted.unit_accounting})
+                        if prepare_session is not None:
+                            if not require_positive_conversational_evidence(
+                                [session], provider=provider, source_path=source_path
+                            ):
+                                continue
+                            session = prepare_session(session)
+                        session.content_hash = session_content_hash(session)
+                        append_session_to_shard(shard_builder, session)
+                        _append_artifact_session(store, session_count, session)
+                        session_count += 1
+            if member_index + 1 != grok_count:
+                raise _SourceChangedDuringPreparationError("Grok conversation count changed during preparation")
+            store.conn.execute("DROP TABLE grok_member_valid")
             after_hash = _source_digest(source)
             if before_hash != after_hash:
                 raise _SourceChangedDuringPreparationError("blob changed during worker preparation")

@@ -6,9 +6,11 @@ import json
 import os
 import shutil
 import sqlite3
+from collections.abc import Callable
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
+from typing import IO
 
 import ijson
 import pytest
@@ -17,6 +19,7 @@ from polylogue.core.enums import Provider, Role
 from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.ids import session_content_hash
+from polylogue.sources.decoder_json import iter_grok_export_events
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
@@ -347,6 +350,189 @@ def test_generic_single_object_stream_discards_corrupt_suffix(tmp_path: Path) ->
     assert artifact.error is not None
     assert artifact.sessions_path is None
     assert list(directory.glob("*.db")) == []
+
+
+def test_grok_single_object_streams_responses_with_parser_parity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    responses: list[dict[str, object]] = [
+        {"response": {"sender": "human" if index % 2 == 0 else "grok", "message": f"Turn {index}"}}
+        for index in range(350)
+    ]
+    responses.extend([dict(responses[-1]), {"sender": "human", "message": ""}])
+    record = {
+        "conversations": [
+            {
+                "conversation": {"title": "First", "create_time": 1712000000, "ignored": {"values": list(range(1000))}},
+                "responses": responses,
+            },
+            {"responses": responses},
+            {"responses": [{"sender": "human", "message": "After metadata"}], "conversation": {"title": "Last"}},
+        ]
+    }
+    source = tmp_path / "grok.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+    expected = parse_payload(Provider.GROK, record, "fallback")
+    for session in expected:
+        session.content_hash = session_content_hash(session)
+    expected_shard = prepare_session_shard(tmp_path / "expected", expected)
+
+    def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("Grok object decoded as a whole document")
+
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
+    decoded = 0
+    first_append_after: int | None = None
+    original_events = iter_grok_export_events
+    original_append = SqliteMessageSink.append
+
+    def tracked_events(handle: IO[bytes], *, include_item: Callable[[int], bool] | None = None) -> object:
+        nonlocal decoded
+        for event, value in original_events(handle, include_item=include_item):
+            if event == "response":
+                decoded += 1
+            yield event, value
+
+    def tracked_append(self: SqliteMessageSink, value: ParsedMessage) -> None:
+        nonlocal first_append_after
+        if first_append_after is None:
+            first_append_after = decoded
+        original_append(self, value)
+
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_grok_export_events", tracked_events)
+    monkeypatch.setattr(SqliteMessageSink, "append", tracked_append)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.GROK.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert artifact.error is None
+    assert first_append_after == 1
+    actual = list(artifact.iter_sessions())
+    assert [(session.provider_session_id, session.content_hash) for session in actual] == [
+        (session.provider_session_id, session.content_hash) for session in expected
+    ]
+    assert artifact.shard_path is not None
+    with sqlite3.connect(expected_shard.path) as baseline, sqlite3.connect(artifact.shard_path) as prepared:
+        for table in ("messages", "blocks", "shard_session"):
+            assert (
+                prepared.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+                == baseline.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+            )
+    assert artifact.sessions_path is not None
+    with sqlite3.connect(artifact.sessions_path) as prepared:
+        assert prepared.execute("SELECT COUNT(*) FROM prepared_message").fetchone()[0] == sum(
+            len(session.messages) for session in expected
+        )
+    artifact.discard()
+
+
+def test_grok_single_object_corrupt_suffix_leaves_no_artifact(tmp_path: Path) -> None:
+    source = tmp_path / "damaged-grok.json"
+    source.write_text(
+        '{"conversations":[{"conversation":{"title":"T"},"responses":[{"sender":"human","message":"Hi"}]}]} trailing',
+        encoding="utf-8",
+    )
+    directory = tmp_path / "prepared"
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.GROK.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(directory),
+    )
+    assert artifact.error is not None
+    assert list(directory.glob("*.db")) == []
+
+
+def test_grok_empty_conversation_keeps_direct_parse_session(tmp_path: Path) -> None:
+    record = {"conversations": [{"conversation": {"title": "Empty"}, "responses": []}]}
+    source = tmp_path / "empty-grok.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.GROK.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert artifact.error is None
+    assert artifact.positive_evidence_filtered is False
+    [actual] = artifact.iter_sessions()
+    [expected] = parse_payload(Provider.GROK, record, "fallback")
+    assert (actual.provider_session_id, actual.title, list(actual.messages)) == (
+        expected.provider_session_id,
+        expected.title,
+        expected.messages,
+    )
+    artifact.discard()
+
+
+def test_grok_single_object_changed_during_stream_defers_and_discards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "changing-grok.json"
+    source.write_text(
+        json.dumps(
+            {"conversations": [{"conversation": {"title": "T"}, "responses": [{"sender": "human", "message": "Hi"}]}]}
+        ),
+        encoding="utf-8",
+    )
+    original_events = iter_grok_export_events
+
+    def changing_events(handle: IO[bytes], *, include_item: Callable[[int], bool] | None = None) -> object:
+        for event, value in original_events(handle, include_item=include_item):
+            yield event, value
+            if event == "response":
+                with source.open("a", encoding="utf-8") as writer:
+                    writer.write(" ")
+
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_grok_export_events", changing_events)
+    directory = tmp_path / "prepared"
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.GROK.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(directory),
+    )
+    assert artifact.deferred is True
+    assert artifact.error is not None
+    assert list(directory.glob("*.db")) == []
+
+
+def test_grok_future_wire_type_keeps_parser_admission_event(tmp_path: Path) -> None:
+    record = {
+        "conversations": [
+            {
+                "conversation": {"title": "T"},
+                "responses": [{"sender": "human", "message": "Hi", "type": "future_response"}],
+            }
+        ]
+    }
+    source = tmp_path / "future-grok.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.GROK.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert artifact.error is None
+    [actual] = artifact.iter_sessions()
+    [expected] = parse_payload(Provider.GROK, record, "fallback")
+    assert list(actual.session_events) == expected.session_events
+    assert [event.event_type for event in actual.session_events] == ["grok_unknown_input"]
+    artifact.discard()
 
 
 def test_chatgpt_bundle_worker_keeps_original_positions_after_skipped_siblings(tmp_path: Path) -> None:
