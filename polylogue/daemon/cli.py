@@ -120,6 +120,7 @@ def validate_api_bind_policy(*, enabled: bool, host: str, allow_remote: bool, au
 if TYPE_CHECKING:
     from polylogue.daemon.fts_convergence import FtsConvergenceOwner
     from polylogue.daemon.http import DaemonAPIHTTPServer
+    from polylogue.daemon.intake_adapters import ColdBuildGeneration
     from polylogue.daemon.lifecycle import DaemonLifecycle
     from polylogue.daemon.session_profile_composition import SessionProfileCallback
     from polylogue.maintenance.raw_authority import ArchiveWriterRebuildExclusion
@@ -1862,6 +1863,39 @@ async def run_daemon_services(
         )
 
 
+async def _observe_faulted_baseline_cancellable(
+    generation: ColdBuildGeneration, sources: tuple[WatchSource, ...]
+) -> Any:
+    """Keep a source scan off the writer without joining it at loop shutdown."""
+    loop = asyncio.get_running_loop()
+    completed: asyncio.Future[Any] = loop.create_future()
+    cancel = threading.Event()
+
+    def deliver(result: Any = None, error: BaseException | None = None) -> None:
+        if completed.done():
+            return
+        if error is not None:
+            completed.set_exception(error)
+        else:
+            completed.set_result(result)
+
+    def observe() -> None:
+        try:
+            result = generation.observe_faulted_baseline(sources, cancel=cancel)
+        except BaseException as exc:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(deliver, None, exc)
+        else:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(deliver, result)
+
+    threading.Thread(target=observe, name="cold-source-observation", daemon=True).start()
+    try:
+        return await completed
+    finally:
+        cancel.set()
+
+
 async def _run_daemon_services_under_active_writer_lease(
     *,
     rebuild_exclusion: ArchiveWriterRebuildExclusion,
@@ -2903,9 +2937,7 @@ async def _run_daemon_services_under_active_writer_lease(
                                 )
                                 promoted = True
                             else:
-                                observed_baseline = await asyncio.to_thread(
-                                    generation.observe_faulted_baseline, sources
-                                )
+                                observed_baseline = await _observe_faulted_baseline_cancellable(generation, sources)
                                 if observed_baseline is not None:
                                     await write_coordinator.run_sync(
                                         "daemon.cold_build.refresh_faulted_baseline",

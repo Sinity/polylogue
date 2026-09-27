@@ -647,6 +647,21 @@ class ColdBuildGeneration:
                 revision.extend((*unavailable(exc), -1))
             else:
                 revision.extend((metadata.st_ino, metadata.st_size, metadata.st_mtime_ns, metadata.st_mode))
+        # Receipt publication/unlink can fail on parent permissions even when
+        # the child file's own metadata does not move. Include the two owned
+        # directories so restoring their access wakes a blocked settlement.
+        for directory in (
+            self.archive_root / MAINTENANCE_STATE_DIRNAME / "production-source-baseline",
+            self.generation_root,
+        ):
+            try:
+                metadata = directory.stat()
+            except FileNotFoundError:
+                revision.extend((-1, -1, -1, -1))
+            except OSError as exc:
+                revision.extend((*unavailable(exc), -1))
+            else:
+                revision.extend((metadata.st_ino, metadata.st_mode, metadata.st_ctime_ns, metadata.st_mtime_ns))
         if self.settlement_reason == "capacity_unavailable":
             try:
                 space = os.statvfs(self.archive_root)
@@ -675,13 +690,17 @@ class ColdBuildGeneration:
                 revision.extend((metadata.st_ino, metadata.st_size, metadata.st_mtime_ns))
         return tuple(revision)
 
-    def observe_faulted_baseline(self, sources: tuple[WatchSource, ...]) -> ProductionSourceBaseline | None:
+    def observe_faulted_baseline(
+        self, sources: tuple[WatchSource, ...], *, cancel: threading.Event | None = None
+    ) -> ProductionSourceBaseline | None:
         """Recapture source bytes off the writer worker before binding them."""
         if not any(row.disposition == "fault" for row in self.source_baseline.decisions):
             return None
         from polylogue.sources.live.production_baseline import capture_production_source_baseline
 
-        return capture_production_source_baseline(sources, operation_id=self.operation_id)
+        return capture_production_source_baseline(
+            sources, operation_id=self.operation_id, cancelled=cancel.is_set if cancel is not None else None
+        )
 
     def refresh_faulted_baseline(self, observed: ProductionSourceBaseline) -> bool:
         """Replace a faulted observation while retaining its accepted revisions.

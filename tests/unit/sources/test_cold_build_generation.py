@@ -15,6 +15,7 @@ import errno
 import json
 import os
 import sqlite3
+import stat
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -328,6 +329,25 @@ def test_blocked_settlement_revision_tracks_receipt_and_source_evidence(
     assert cold_build.settlement_evidence_revision((source,)) != missing
 
 
+def test_blocked_settlement_revision_tracks_receipt_parent_permission_repair(
+    tmp_path: Path, cold_build: ColdBuildGeneration
+) -> None:
+    directories = (
+        tmp_path / MAINTENANCE_STATE_DIRNAME / "production-source-baseline",
+        cold_build.generation_root,
+    )
+    for directory in directories:
+        mode = stat.S_IMODE(directory.stat().st_mode)
+        unavailable = cold_build.settlement_evidence_revision()
+        try:
+            directory.chmod(mode ^ stat.S_IWUSR)
+            assert cold_build.settlement_evidence_revision() != unavailable
+            unavailable = cold_build.settlement_evidence_revision()
+        finally:
+            directory.chmod(mode)
+        assert cold_build.settlement_evidence_revision() != unavailable
+
+
 def test_blocked_settlement_revision_survives_unavailable_evidence(
     tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -603,10 +623,10 @@ def test_fresh_capacity_uses_sealed_material_without_a_second_source_read(
     real_revision = production_baseline._revision
     reads = 0
 
-    def measured_revision(path: Path) -> tuple[str, int]:
+    def measured_revision(path: Path, *, cancelled: Any = None) -> tuple[str, int]:
         nonlocal reads
         reads += 1
-        digest, _size = real_revision(path)
+        digest, _size = real_revision(path, cancelled=cancelled)
         return digest, 2 * 1024**3
 
     monkeypatch.setattr(production_baseline, "_revision", measured_revision)

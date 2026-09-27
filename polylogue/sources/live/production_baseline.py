@@ -6,9 +6,8 @@ import hashlib
 import json
 import os
 import sqlite3
-import sys
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,7 +28,7 @@ from polylogue.sources.decoder_zip import (
     is_declared_artifact_path,
     provider_detection_path,
 )
-from polylogue.sources.live.discovery import _bounded_source_paths
+from polylogue.sources.live.discovery import _source_path_steps
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
@@ -47,6 +46,15 @@ MATERIAL_BYTE_DEFINITION = "retained-canonical-payload-v1"
 
 class ProductionBaselineError(RuntimeError):
     """The build cannot prove its discovered source revisions were retained."""
+
+
+class ProductionBaselineObservationCancelledError(Exception):
+    """A superseded read-only source observation stopped cooperatively."""
+
+
+def _check_observation_cancelled(cancelled: Callable[[], bool] | None) -> None:
+    if cancelled is not None and cancelled():
+        raise ProductionBaselineObservationCancelledError
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,19 +317,23 @@ def merge_pending_production_baseline(
     return _seal(current.operation_id, current.source_signature, tuple(rows))
 
 
-def _revision(path: Path) -> tuple[str, int]:
+def _revision(path: Path, *, cancelled: Callable[[], bool] | None = None) -> tuple[str, int]:
+    _check_observation_cancelled(cancelled)
     if is_sqlite_path(path):
         return sqlite_member_revision_and_size(path)
     digest = hashlib.sha256()
     size = 0
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            _check_observation_cancelled(cancelled)
             digest.update(chunk)
             size += len(chunk)
     return digest.hexdigest(), size
 
 
-def _archive_members(path: Path, source_name: str) -> tuple[SourceDecision, ...]:
+def _archive_members(
+    path: Path, source_name: str, *, cancelled: Callable[[], bool] | None = None
+) -> tuple[SourceDecision, ...]:
     members: list[SourceDecision] = []
     with zipfile.ZipFile(path) as archive:
         central_directory = archive.infolist()
@@ -351,6 +363,7 @@ def _archive_members(path: Path, source_name: str) -> tuple[SourceDecision, ...]
             on_unselected=excluded,
         )
         for info in entries:
+            _check_observation_cancelled(cancelled)
             if info.file_size == 0:
                 excluded(info, "empty_member")
                 continue
@@ -367,6 +380,7 @@ def _archive_members(path: Path, source_name: str) -> tuple[SourceDecision, ...]
                     None,  # type: ignore[arg-type]
                 )
                 for payload in replay_zip_entry_acquisition_payloads(archive, context):
+                    _check_observation_cancelled(cancelled)
                     split = payload.source_index or 0
                     members.append(
                         SourceDecision(
@@ -386,7 +400,7 @@ def _archive_members(path: Path, source_name: str) -> tuple[SourceDecision, ...]
 
 
 def capture_production_source_baseline(
-    sources: tuple[WatchSource, ...], *, operation_id: str
+    sources: tuple[WatchSource, ...], *, operation_id: str, cancelled: Callable[[], bool] | None = None
 ) -> ProductionSourceBaseline:
     """Observe the exact typed sources through the same walker as file intake.
 
@@ -415,6 +429,7 @@ def capture_production_source_baseline(
     decisions: list[SourceDecision] = []
     observed: list[tuple[str, Path, str, str]] = []
     for source in sources:
+        _check_observation_cancelled(cancelled)
         if not source.root.is_dir():
             decisions.append(
                 SourceDecision(
@@ -431,7 +446,14 @@ def capture_production_source_baseline(
             observed.append((source_name, path, disposition, reason))
 
         try:
-            _bounded_source_paths(source, sources, limit=sys.maxsize, after=None, on_disposition=record, collect=False)
+            for _ in _source_path_steps(
+                source,
+                sources,
+                after=None,
+                on_disposition=record,
+                on_inspected=lambda: _check_observation_cancelled(cancelled),
+            ):
+                _check_observation_cancelled(cancelled)
         except WalkRefusedError as exc:
             decisions.append(SourceDecision(source.name, str(source.root), "fault", str(exc)))
             continue
@@ -446,6 +468,7 @@ def capture_production_source_baseline(
         if source.root.is_dir() and not source.root.is_symlink()
     }
     for source_name, path, disposition, reason in observed:
+        _check_observation_cancelled(cancelled)
         if path.is_symlink():
             target = str(path.resolve())
             independently_accepted = (
@@ -472,9 +495,9 @@ def capture_production_source_baseline(
             try:
                 if path.suffix.lower() == ".zip":
                     decisions.append(SourceDecision(source_name, str(path), "excluded", "expanded_to_members"))
-                    decisions.extend(_archive_members(path, source_name))
+                    decisions.extend(_archive_members(path, source_name, cancelled=cancelled))
                     continue
-                revision, material_bytes = _revision(path)
+                revision, material_bytes = _revision(path, cancelled=cancelled)
             except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as exc:
                 decisions.append(SourceDecision(source_name, str(path), "fault", f"revision_unreadable:{exc}"))
                 continue

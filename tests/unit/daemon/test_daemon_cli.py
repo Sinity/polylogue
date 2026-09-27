@@ -4157,6 +4157,32 @@ async def test_cold_build_integrity_fault_stays_blocked_in_running_daemon(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_cold_baseline_observation_cancel_stops_owned_worker() -> None:
+    """Cancelling fair intake must not join an archive-sized source scan at exit."""
+    from polylogue.daemon.cli import _observe_faulted_baseline_cancellable
+
+    started = threading.Event()
+    stopped = threading.Event()
+
+    def observe(_sources: tuple[WatchSource, ...], *, cancel: threading.Event) -> None:
+        started.set()
+        cancel.wait(timeout=2.0)
+        stopped.set()
+
+    generation = cast(Any, SimpleNamespace(observe_faulted_baseline=observe))
+    task = asyncio.create_task(_observe_faulted_baseline_cancellable(generation, ()))
+    async with asyncio.timeout(1):
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    async with asyncio.timeout(1):
+        while not stopped.is_set():
+            await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
 async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: Path) -> None:
     from polylogue import Polylogue as RealPolylogue
     from polylogue.daemon import cli as daemon_cli
@@ -4188,21 +4214,23 @@ async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: P
     real_capture = production_baseline.capture_production_source_baseline
     real_observe = ColdBuildGeneration.observe_faulted_baseline
     real_refresh = ColdBuildGeneration.refresh_faulted_baseline
-    observation_threads: list[int] = []
-    binding_threads: list[int] = []
+    observation_threads: list[str] = []
+    binding_threads: list[str] = []
 
-    def observe_off_writer(self: ColdBuildGeneration, sources: tuple[WatchSource, ...]) -> Any:
-        observation_threads.append(threading.get_ident())
-        return real_observe(self, sources)
+    def observe_off_writer(
+        self: ColdBuildGeneration, sources: tuple[WatchSource, ...], *, cancel: threading.Event | None = None
+    ) -> Any:
+        observation_threads.append(threading.current_thread().name)
+        return real_observe(self, sources, cancel=cancel)
 
     def bind_on_writer(self: ColdBuildGeneration, observed: Any) -> bool:
-        binding_threads.append(threading.get_ident())
+        binding_threads.append(threading.current_thread().name)
         return real_refresh(self, observed)
 
     def capture_with_transient_fault(
-        sources: tuple[WatchSource, ...], *, operation_id: str
+        sources: tuple[WatchSource, ...], *, operation_id: str, cancelled: Callable[[], bool] | None = None
     ) -> production_baseline.ProductionSourceBaseline:
-        baseline = real_capture(sources, operation_id=operation_id)
+        baseline = real_capture(sources, operation_id=operation_id, cancelled=cancelled)
         if repaired:
             return baseline
         rows = tuple(
@@ -4272,6 +4300,7 @@ async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: P
                         await asyncio.sleep(0.05)
                 assert candidate.generation_id == candidate_id
                 assert observation_threads and binding_threads
+                assert set(observation_threads) == {"cold-source-observation"}
                 assert set(observation_threads).isdisjoint(binding_threads)
                 assert _cold_build_settlement()["cold_build_settlement_state"] == "complete"
                 assert not task.done()

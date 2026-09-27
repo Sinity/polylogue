@@ -12,7 +12,9 @@ import pytest
 
 from polylogue.sources.live.production_baseline import (
     ProductionBaselineError,
+    ProductionBaselineObservationCancelledError,
     SourceDecision,
+    _revision,
     capture_production_source_baseline,
     merge_pending_production_baseline,
 )
@@ -41,6 +43,21 @@ def _zip_row(row: SourceDecision) -> tuple[str, int, str]:
     assert row.source_index is not None
     assert row.revision is not None
     return row.path, row.source_index, row.revision
+
+
+def test_large_source_revision_stops_between_chunks_on_cancel(tmp_path: Path) -> None:
+    source = tmp_path / "large.json"
+    source.write_bytes(b"x" * (3 * 1024 * 1024))
+    checks = 0
+
+    def cancelled() -> bool:
+        nonlocal checks
+        checks += 1
+        return checks >= 3
+
+    with pytest.raises(ProductionBaselineObservationCancelledError):
+        _revision(source, cancelled=cancelled)
+    assert checks == 3
 
 
 def test_baseline_uses_typed_acceptance_before_cursor_and_requires_retained_revision(tmp_path: Path) -> None:
