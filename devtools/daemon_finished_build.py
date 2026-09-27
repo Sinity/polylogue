@@ -409,7 +409,7 @@ def _observe(
             work_identity = {
                 "source_sha256": input_digest,
                 "source_bytes": expected_bytes,
-                "profile": "polylogued-run:cold-build-index:standalone-off:no-default-sources",
+                "profile": "polylogued-run:cold-build-index:standalone-off:isolated-home",
             }
             output_equivalence_key = hashlib.sha256(
                 json.dumps(
@@ -450,13 +450,23 @@ def _observe(
     )
 
 
+#: Provider directories the daemon watches under a home. The qualification
+#: presents its input where the provider's own tool writes it.
+_CANONICAL_INPUT_DIRECTORIES = (Path(".codex") / "sessions", Path(".claude") / "projects")
+
+
 def _verify_args(args: argparse.Namespace) -> tuple[Path, Path, str]:
     if args.receipt.exists():
         raise FileExistsError(f"refusing to overwrite existing qualification receipt: {args.receipt}")
     candidate = args.candidate.resolve(strict=True)
     source_root = args.source_root.resolve(strict=True)
     source = args.input.resolve(strict=True)
-    source.relative_to(source_root)
+    relative = source.relative_to(source_root)
+    if not any(relative.is_relative_to(directory) for directory in _CANONICAL_INPUT_DIRECTORIES):
+        raise ValueError(
+            "input must sit under a canonical provider directory of the source root: "
+            + ", ".join(str(directory) for directory in _CANONICAL_INPUT_DIRECTORIES)
+        )
     if not source.is_file() or source.stat().st_size != args.expected_bytes:
         raise ValueError("input size does not match --expected-bytes")
     digest = _sha256(source)
@@ -495,6 +505,9 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
     archive = args.archive_root.absolute()
     archive.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
+    # Sources are acquired only from canonical locations: the source root is
+    # the isolated home whose provider directory holds the input.
+    env["HOME"] = str(args.source_root.resolve())
     env["POLYLOGUE_ARCHIVE_ROOT"] = str(archive)
     # The qualification's required domains are local archive convergence. Keep
     # externally backed Sinex publication explicitly off for this scratch run.
@@ -507,9 +520,6 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
         "-c",
         "from polylogue.daemon.cli import main; main()",
         "run",
-        "--root",
-        str(args.source_root.resolve()),
-        "--no-default-sources",
         "--no-browser-capture",
         "--no-api",
         "--cold-build-index",
@@ -659,7 +669,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidate", type=Path, required=True, help="frozen Polylogue worktree")
     parser.add_argument("--candidate-sha", required=True, help="expected immutable HEAD commit")
     parser.add_argument("--archive-root", type=Path, required=True, help="new private scratch archive root")
-    parser.add_argument("--source-root", type=Path, required=True, help="directory containing only --input")
+    parser.add_argument(
+        "--source-root",
+        type=Path,
+        required=True,
+        help="isolated home whose canonical provider directory (e.g. .codex/sessions) contains only --input",
+    )
     parser.add_argument("--input", type=Path, required=True, help="one ordinary provider export under source root")
     parser.add_argument("--expected-bytes", type=int, required=True)
     parser.add_argument("--expected-sha256", required=True)

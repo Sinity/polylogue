@@ -1364,25 +1364,6 @@ class LiveWatcher:
         )
 
 
-def _legacy_data_home_inbox_sources() -> tuple[WatchSource, ...]:
-    """Return the XDG data-home inbox when the archive root has moved away.
-
-    ``archive_root()`` defaults to ``data_home()``, so an archive whose root
-    was later pointed elsewhere leaves its inbox behind under no watch root at
-    all: exports staged there before the move are acquired by nothing, and a
-    wipe-and-reconverge never reads them. Same finite legacy-root topology the
-    hook spools already carry. Inert where the two inboxes coincide.
-    """
-    from polylogue.paths import archive_root, data_home
-
-    legacy_root = data_home() / "inbox"
-    if legacy_root.resolve() == (archive_root() / "inbox").resolve():
-        return ()
-    # Named apart from the archive inbox: two watch sources may not share a
-    # name, or every by-name lookup silently sees only the last one.
-    return (WatchSource(name="inbox-legacy", root=legacy_root, suffixes=INBOX_SOURCE_SUFFIXES),)
-
-
 def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ...]:
     """Discover the default live-source roots from XDG/home conventions.
 
@@ -1486,7 +1467,6 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
         # #1683: inbox accepts archive, zip, and json-line formats so that
         # GDPR exports (typically .zip) and raw .json dumps are observed.
         WatchSource(name="inbox", root=archive_root() / "inbox", suffixes=INBOX_SOURCE_SUFFIXES),
-        *_legacy_data_home_inbox_sources(),
         *hook_carrier_watch_sources(hook_spool_sources()),
     )
 

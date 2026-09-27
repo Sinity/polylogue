@@ -230,8 +230,6 @@ async def test_import_demo_converges_through_live_daemon_path(
                 "-c",
                 "from polylogue.daemon.cli import main; main()",
                 "run",
-                "--root",
-                str(inbox),
                 "--no-browser-capture",
                 "--api-port",
                 str(api_port),

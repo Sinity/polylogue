@@ -450,95 +450,6 @@ def test_drain_convergence_debt_preserves_error_for_unimplemented_stage(
     assert row.last_error == "alias collision truncated child prefix at message 42"
 
 
-def test_no_default_sources_makes_root_the_complete_watch_set(tmp_path: Path) -> None:
-    """``--no-default-sources`` drops the typed defaults; the default stays additive.
-
-    Anti-vacuity: keeping ``default_sources()`` in the list when
-    ``include_defaults=False`` leaves the hermes/inbox/browser-capture roots in
-    the watch set, so the isolated-root assertion fails; dropping them
-    unconditionally makes the additive assertion fail.
-    """
-    from polylogue.daemon import cli as daemon_cli
-
-    isolated = tmp_path / "isolated"
-    isolated.mkdir()
-
-    with patch("polylogue.paths.archive_root", return_value=tmp_path / "archive"):
-        additive = daemon_cli._watch_sources_from_roots((isolated,))
-        exclusive = daemon_cli._watch_sources_from_roots((isolated,), include_defaults=False)
-
-    assert len(additive) > 1
-    assert isolated in {source.root for source in additive}
-    assert [source.root for source in exclusive] == [isolated]
-
-    # The flag is wired onto the daemon entry points, not just the helper.
-    for command in (daemon_cli.run_command, daemon_cli.watch_command):
-        assert "no_default_sources" in {param.name for param in command.params}
-
-
-@pytest.mark.parametrize("command", ("run", "watch"))
-def test_named_default_sources_keep_typed_rules_and_explicit_roots(
-    workspace_env: dict[str, Path], tmp_path: Path, command: str
-) -> None:
-    """Selecting provider defaults excludes internal roots without widening provider rules."""
-    from polylogue.daemon import cli as daemon_cli
-
-    selected_names = (
-        "claude-code",
-        "claude-code-todos",
-        "claude-code-history",
-        "codex",
-        "codex-state",
-        "codex-memories",
-        "gemini-cli",
-        "hermes",
-        "antigravity",
-    )
-    external_root = tmp_path / "account-export"
-    defaults = {source.name: source for source in daemon_cli.default_sources()}
-    recorded: dict[str, object] = {}
-
-    async def fake_run_daemon_services(**kwargs: object) -> None:
-        recorded.update(kwargs)
-
-    args = [command]
-    for name in selected_names:
-        args.extend(("--default-source", name))
-    args.extend(("--root", str(external_root)))
-    if command == "run":
-        args.extend(("--spool", str(tmp_path / "old-browser-spool"), "--no-browser-capture", "--no-api"))
-    with patch("polylogue.daemon.cli.run_daemon_services", side_effect=fake_run_daemon_services):
-        result = CliRunner().invoke(main, args)
-
-    assert result.exit_code == 0, result.output
-    sources = recorded["sources"]
-    assert isinstance(sources, tuple)
-    assert tuple(source for source in sources if source.name in defaults) == tuple(
-        defaults[name] for name in selected_names
-    )
-    assert sources[-1] == WatchSource(
-        name="account-export",
-        root=external_root,
-        suffixes=(".json", ".jsonl", ".ndjson", ".zip"),
-        required=True,
-    )
-    assert {source.name for source in sources} == {*selected_names, "account-export"}
-
-
-@pytest.mark.parametrize("command", ("run", "watch"))
-def test_named_default_source_rejects_unknown_and_conflicting_selection(command: str) -> None:
-    unknown = CliRunner().invoke(main, [command, "--default-source", "claud-code"])
-    assert unknown.exit_code != 0
-    assert "unknown default source(s): claud-code" in unknown.output
-
-    conflicting = CliRunner().invoke(
-        main,
-        [command, "--root", "/tmp/account-export", "--no-default-sources", "--default-source", "codex"],
-    )
-    assert conflicting.exit_code != 0
-    assert "--default-source cannot be used with --no-default-sources" in conflicting.output
-
-
 def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path: Path) -> None:
     from polylogue.daemon import cli as daemon_cli
 
@@ -890,7 +801,7 @@ def test_spool_override_replaces_default_browser_capture_source() -> None:
     )
 
     with patch("polylogue.daemon.cli.default_sources", return_value=sources):
-        resolved = daemon_cli._watch_sources_from_roots((), browser_capture_spool_path=override_spool)
+        resolved = daemon_cli._watch_sources(browser_capture_spool_path=override_spool)
 
     assert resolved == (
         WatchSource(name="codex", root=Path("/tmp/codex")),
@@ -909,8 +820,6 @@ def test_polylogued_run_can_skip_configured_source_catchup() -> None:
             main,
             [
                 "run",
-                "--root",
-                "/tmp/codex",
                 "--no-source-catchup",
                 "--no-browser-capture",
                 "--no-api",
@@ -922,8 +831,6 @@ def test_polylogued_run_can_skip_configured_source_catchup() -> None:
     assert recorded["enable_source_catchup"] is False
     recorded_sources = recorded["sources"]
     assert isinstance(recorded_sources, tuple)
-    roots = {source.root for source in recorded_sources}
-    assert Path("/tmp/codex") in roots
     assert {source.name for source in recorded_sources} >= {
         "claude-code",
         "claude-code-todos",
@@ -1005,33 +912,6 @@ def test_polylogued_watch_reports_archive_ownership_conflict_as_click_error(
     assert "archive location already owned" in result.output
     assert "Watching" not in result.output
     assert "Traceback" not in result.output
-
-
-def test_polylogued_watch_builds_sources_from_roots(workspace_env: dict[str, Path], tmp_path: Path) -> None:
-    root_a = tmp_path / "claude-code"
-    root_b = tmp_path / "codex"
-
-    typed_default = WatchSource(name="typed-default", root=tmp_path / "typed-default")
-    with (
-        patch("polylogue.daemon.cli.default_sources", return_value=(typed_default,)),
-        patch("polylogue.daemon.cli.asyncio.run") as run,
-    ):
-        result = CliRunner().invoke(
-            main,
-            [
-                "watch",
-                "--root",
-                str(root_a),
-                "--root",
-                str(root_b),
-            ],
-        )
-
-    assert result.exit_code == 0
-    coroutine = run.call_args.kwargs.get("main") or run.call_args.args[0]
-    assert inspect.iscoroutine(coroutine)
-    coroutine.close()
-    assert "Watching" not in result.stderr
 
 
 def test_drive_source_catchup_skips_when_no_drive_sources(tmp_path: Path) -> None:
@@ -1201,79 +1081,6 @@ def test_drive_source_catchup_safe_wrapper_logs_failure() -> None:
     assert "drive unavailable" in str(failures[0]["error_detail"])
 
 
-def test_explicit_archive_inbox_root_keeps_import_suffixes(workspace_env: dict[str, Path]) -> None:
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.sources.live.watcher import INBOX_SOURCE_SUFFIXES
-
-    inbox = workspace_env["archive_root"] / "inbox"
-    ordinary = workspace_env["archive_root"] / "ordinary-jsonl-root"
-
-    sources = daemon_cli._watch_sources_from_roots((inbox, ordinary))
-
-    assert next(source for source in sources if source.root == inbox) == WatchSource(
-        name="inbox", root=inbox, suffixes=INBOX_SOURCE_SUFFIXES, required=True
-    )
-    assert next(source for source in sources if source.root == ordinary) == WatchSource(
-        name="ordinary-jsonl-root",
-        root=ordinary,
-        suffixes=(".json", ".jsonl", ".ndjson", ".zip"),
-        required=True,
-    )
-    assert {source.name for source in sources} >= {
-        "claude-code",
-        "claude-code-todos",
-        "codex",
-        "gemini-cli",
-        "hermes",
-        "antigravity",
-        "browser-capture",
-    }
-
-
-def test_configured_root_does_not_duplicate_typed_default(workspace_env: dict[str, Path]) -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    default_root = next(source.root for source in daemon_cli.default_sources() if source.name == "codex")
-    sources = daemon_cli._watch_sources_from_roots((default_root,))
-
-    assert sum(source.root == default_root for source in sources) == 1
-    assert next(source for source in sources if source.root == default_root).name == "codex"
-    assert next(source for source in sources if source.root == default_root).required
-
-
-def test_configured_missing_default_root_remains_a_required_baseline_fault(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.sources.live.production_baseline import capture_production_source_baseline
-    from polylogue.sources.live.watcher import WatchSource
-
-    missing = tmp_path / "codex"
-    monkeypatch.setattr(daemon_cli, "default_sources", lambda **_kwargs: (WatchSource("codex", missing),))
-    source = daemon_cli._watch_sources_from_roots((missing,))[0]
-    assert source.required
-    baseline = capture_production_source_baseline((source,), operation_id="missing")
-    assert any(row.path == str(missing) and row.disposition == "fault" for row in baseline.decisions)
-
-
-def test_default_sources_watch_the_legacy_data_home_inbox(workspace_env: dict[str, Path]) -> None:
-    """An archive root moved off the XDG data home leaves an inbox behind it,
-    and exports staged there before the move are under no other watch root.
-
-    Anti-vacuity: drop ``_legacy_data_home_inbox_sources`` and the only inbox
-    root is the archive one, so a wipe-and-reconverge never reads the older
-    inbox at all.
-    """
-    from polylogue.daemon import cli as daemon_cli
-
-    inbox_roots = {source.root for source in daemon_cli.default_sources() if source.name in {"inbox", "inbox-legacy"}}
-
-    assert inbox_roots == {
-        workspace_env["archive_root"] / "inbox",
-        workspace_env["data_root"] / "polylogue" / "inbox",
-    }
-
-
 def test_default_sources_name_one_inbox_when_the_archive_lives_in_the_data_home(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -1322,72 +1129,6 @@ def test_hook_carrier_sources_are_named_apart_but_owned_by_their_provider(worksp
     for provider in HOOK_CARRIER_PROVIDERS:
         assert f"{provider}-hooks" in names
         assert canonical_runtime_provider(f"{provider}-hooks") == provider
-
-
-def test_additional_root_excludes_provider_state_suffixes(workspace_env: dict[str, Path]) -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    root = workspace_env["archive_root"] / "export-root"
-    source = next(source for source in daemon_cli._watch_sources_from_roots((root,)) if source.root == root)
-
-    assert source.suffixes == (".json", ".jsonl", ".ndjson", ".zip")
-    assert ".db" not in source.suffixes
-    assert ".sqlite" not in source.suffixes
-
-
-def test_explicit_browser_capture_root_keeps_capture_suffixes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import polylogue.paths as polylogue_paths
-    from polylogue.daemon import cli as daemon_cli
-
-    spool = tmp_path / "polylogue" / "browser-capture"
-    ordinary = tmp_path / "ordinary-jsonl-root"
-    monkeypatch.setattr(polylogue_paths, "browser_capture_spool_root", lambda: spool)
-
-    sources = daemon_cli._watch_sources_from_roots((spool, ordinary))
-
-    assert next(source for source in sources if source.root == spool) == WatchSource(
-        name="browser-capture", root=spool, suffixes=(".json",), required=True
-    )
-    assert next(source for source in sources if source.root == ordinary).suffixes == (
-        ".json",
-        ".jsonl",
-        ".ndjson",
-        ".zip",
-    )
-    assert {source.name for source in sources} >= {
-        "claude-code",
-        "claude-code-todos",
-        "codex",
-        "gemini-cli",
-        "hermes",
-        "antigravity",
-        "browser-capture",
-    }
-
-
-def test_explicit_browser_capture_root_uses_spool_override_classifier(tmp_path: Path) -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    override_spool = tmp_path / "override-browser-capture"
-    ordinary = tmp_path / "ordinary-jsonl-root"
-
-    sources = daemon_cli._watch_sources_from_roots(
-        (override_spool, ordinary),
-        browser_capture_spool_path=override_spool,
-    )
-
-    assert next(source for source in sources if source.root == override_spool) == WatchSource(
-        name="browser-capture", root=override_spool, suffixes=(".json",), required=True
-    )
-    assert next(source for source in sources if source.root == ordinary).suffixes == (
-        ".json",
-        ".jsonl",
-        ".ndjson",
-        ".zip",
-    )
 
 
 def test_periodic_db_optimize_does_not_run_on_startup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -5162,3 +4903,17 @@ async def test_an_orphaned_service_retains_archive_ownership_on_the_production_r
     # exists because the one thing shutdown must not do with a live child is
     # claim the process stopped cleanly.
     assert [record for record in events if record.get("event") == "daemon.stopped"] == []
+
+
+@pytest.mark.parametrize("command", ("run", "watch"))
+@pytest.mark.parametrize("flag", ("--root", "--default-source", "--no-default-sources"))
+def test_daemon_has_no_custom_source_roots_or_source_narrowing(command: str, flag: str) -> None:
+    """Every origin is acquired only from its canonical location.
+
+    Anti-vacuity: restoring any of the three options lets it parse instead of
+    failing as an unknown option.
+    """
+    result = CliRunner().invoke(main, [command, flag, "/tmp/elsewhere", "--help"])
+
+    assert result.exit_code != 0
+    assert f"No such option '{flag}'" in result.output

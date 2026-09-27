@@ -159,8 +159,9 @@ Polylogue auto-discovers these directories:
 ~/.codex/sessions/         Codex sessions
 ```
 
-Custom watch roots can be given to the daemon with `--root`. For an explicit
-one-time import request, keep the daemon running and use:
+Sources are read only from these canonical locations; a tool that keeps its
+logs elsewhere is followed by a symlink at its canonical path. Account
+exports are imported deliberately, with the daemon running:
 
 ```bash
 polylogue import /path/to/exports
