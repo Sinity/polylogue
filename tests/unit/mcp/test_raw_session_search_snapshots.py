@@ -748,7 +748,7 @@ def test_memory_fanout_refuses_to_continue_when_it_cannot_retain_owed_skips(
     finally:
         locked.chmod(0o600)
     assert page.outcome == "degraded"
-    assert not any((page.source_cursors or {}).values())
+    assert page.source_cursors is None
     assert any("continuation unavailable" in gap and "restart the search" in gap for gap in page.coverage.gaps)
 
 
@@ -819,7 +819,7 @@ def test_memory_fanout_ends_when_an_unfinished_provider_loses_its_continuation(
     monkeypatch.setattr(snapshot_store.SnapshotStore, "create", create_fails_for_claude)
     page = raw_operation(RawMemorySearch(query="needle", limit=5, scan_bytes=8), sources=sources)
     assert page.outcome == "degraded" and not page.coverage.complete
-    assert not any((page.source_cursors or {}).values())
+    assert page.source_cursors is None
     assert any("continuation unavailable" in gap for gap in page.coverage.gaps)
 
 
@@ -863,7 +863,7 @@ def test_memory_fanout_ends_when_a_providers_snapshot_was_evicted(tmp_path: Path
             snapshot.unlink()
     second = raw_operation(request.model_copy(update={"source_cursors": first.source_cursors}), sources=sources)
     assert second.outcome == "degraded"
-    assert not any((second.source_cursors or {}).values())
+    assert second.source_cursors is None
     assert any("expired or was evicted" in gap for gap in second.coverage.gaps)
 
 

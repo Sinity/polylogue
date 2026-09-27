@@ -172,7 +172,7 @@ class MemoryService:
         # started; reaching ``limit`` exactly on a provider's last match is not truncation.
         truncated = any(source.get("coverage", {}).get("truncated") is True for source in sources)
         if continuation_lost:
-            next_cursors = dict.fromkeys(next_cursors)
+            next_cursors = {}  # no replayable map: every slot would read as finished
         elif truncated and cursor_key is not None:
             # A finished provider's skips must survive to the fan-out's terminal
             # page, which a ``None`` slot would forget.
@@ -187,7 +187,7 @@ class MemoryService:
                         f"{provider}: continuation unavailable: its {owed} skipped files could not be retained; "
                         "restart the search"
                     )
-                    next_cursors = dict.fromkeys(next_cursors)
+                    next_cursors = {}  # no replayable map: every slot would read as finished
                     break
                 next_cursors[provider] = token
         elif not truncated and earlier_skips:
