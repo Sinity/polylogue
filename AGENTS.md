@@ -143,7 +143,8 @@ command needs its `CommandSpec` and `devtools render devtools-reference`).
 - `devtools test <selection>` runs focused tests through the managed host
   pool; never run bare `pytest`. Run one combined selection after a coherent
   change and reuse its receipt across related tasks.
-- `devtools verify --quick` runs static gates only. `devtools verify` selects
+- `devtools verify --quick` runs the fast static gates; slower invariant gates
+  run on their own tiers (`docs/devtools.md` lists them). `devtools verify` selects
   affected tests from a usable testmon graph and refuses when it cannot; it
   never silently becomes a corpus run. Broad or complete-corpus runs need an
   explicit request.
