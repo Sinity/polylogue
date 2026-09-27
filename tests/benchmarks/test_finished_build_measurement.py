@@ -19,10 +19,12 @@ import resource
 import sqlite3
 import subprocess
 import threading
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from time import perf_counter
 from typing import cast
+from unittest.mock import patch
 
 import pytest
 
@@ -37,6 +39,7 @@ from polylogue.sources.revision_backfill import (
     split_parse_and_apply_seconds,
 )
 from polylogue.storage.index_generation import IndexGenerationStore
+from polylogue.storage.sqlite import runtime_indexes
 from tests.infra.archive_templates import (
     bootstrap_archive_root,
     finalize_archive_template,
@@ -54,7 +57,11 @@ from tests.infra.reindex_differential import (
     finished_build_work_identity,
     seal_raw_input,
 )
-from tests.infra.revision_backfill_benchmark import build_independent_raw_corpus
+from tests.infra.revision_backfill_benchmark import (
+    LARGE_PARENT_SHARED_PREFIX_SHAPE,
+    build_independent_raw_corpus,
+    build_large_parent_shared_prefix_raw_corpus,
+)
 from tests.infra.workload_artifacts import FinishedBuildResourceMeasurement, FinishedBuildResourceProbe
 
 #: The committed-baseline name this arm records under.  ``devtools bench
@@ -107,6 +114,7 @@ class _ArmReceipt:
     metrics: dict[str, object]
     fresh_build: bool
     deferred_secondary_indexes: bool
+    deferred_secondary_index_names: tuple[str, ...]
     derived_table_census: tuple[str, ...]
     schema_object_census: tuple[tuple[str, str], ...]
     schema_identity: str
@@ -198,6 +206,7 @@ def _receipt_payload(receipt: _ArmReceipt) -> dict[str, object]:
         "metrics_scope": "LiveBatchMetrics compatibility projection; convergence_time_s is non-decode backfill time, and archive_write_bytes_delta is final archive file size, not written bytes",
         "fresh_build": receipt.fresh_build,
         "deferred_secondary_indexes": receipt.deferred_secondary_indexes,
+        "deferred_secondary_index_names": receipt.deferred_secondary_index_names,
         "derived_table_census": receipt.derived_table_census,
         "schema_object_census": receipt.schema_object_census,
         "schema_identity": receipt.schema_identity,
@@ -232,6 +241,18 @@ _RETAINED_INDEX_CONTROL = _Arm(
     uses_shard_transport=True,
     defer_secondary_indexes=False,
 )
+_DEFERRED_INDEX_INLINE_COMPARISON = _Arm(
+    "deferred-index-fresh-inline",
+    uses_owned_inactive_generation=True,
+    uses_shard_transport=False,
+    defer_secondary_indexes=True,
+)
+_RETAINED_INDEX_INLINE_COMPARISON = _Arm(
+    "retained-index-fresh-inline",
+    uses_owned_inactive_generation=True,
+    uses_shard_transport=False,
+    defer_secondary_indexes=False,
+)
 # These are declared non-cells, not a benchmark matrix.  The receipt keeps the
 # decision boundary auditable without executing a direct-writer arm or a
 # process mode the production backfill dispatcher does not own.
@@ -241,12 +262,6 @@ _REJECTED_ALTERNATIVES = (
         uses_owned_inactive_generation=False,
         uses_shard_transport=False,
         refusal_reason="not the selected fresh-build transport profile",
-    ),
-    _Arm(
-        "deferred-index-fresh-inline",
-        uses_owned_inactive_generation=True,
-        uses_shard_transport=False,
-        refusal_reason="does not exercise the selected sealed-shard transport",
     ),
     _Arm(
         "deferred-index-fresh-shard-process",
@@ -401,12 +416,20 @@ def _completed_generation_index_path(root: Path, receipt: _ArmReceipt) -> Path:
     return Path(IndexGenerationStore.for_archive_root(root, repair_anchor=False).load(generation_id).index_path)
 
 
-def _work_identity(sealed: SealedRawInput) -> FinishedBuildWorkIdentity:
+def _work_identity(sealed: SealedRawInput, *, uses_shard_transport: bool) -> FinishedBuildWorkIdentity:
     """Bind the sealed source, exact route code, and one selected profile."""
+    routes: tuple[Callable[..., object] | type, ...]
+    if uses_shard_transport:
+        routes = (backfill_historical_revision_evidence, revision_backfill._FrozenReplayShardTransport)
+    else:
+        routes = (backfill_historical_revision_evidence,)
     return finished_build_work_identity(
         sealed,
-        profile=(f"finished-build:sealed-{sealed.raw_count}-raw:thread-4:owned-inactive-generation:session-shard"),
-        routes=(backfill_historical_revision_evidence, revision_backfill._FrozenReplayShardTransport),
+        profile=(
+            f"finished-build:sealed-{sealed.raw_count}-raw:thread-4:owned-inactive-generation:"
+            f"{'session-shard' if uses_shard_transport else 'inline-replay'}"
+        ),
+        routes=routes,
     )
 
 
@@ -458,28 +481,59 @@ def _run_arm(
     *,
     worker_count: int,
 ) -> _ArmReceipt:
-    if arm not in (_SELECTED_ARM, _RETAINED_INDEX_CONTROL):
+    if arm not in (
+        _SELECTED_ARM,
+        _RETAINED_INDEX_CONTROL,
+        _DEFERRED_INDEX_INLINE_COMPARISON,
+        _RETAINED_INDEX_INLINE_COMPARISON,
+    ):
         raise RuntimeError("finished-build measurement runs only the declared selected arm")
     destination, owned_generation = _candidate_root(root, arm)
     index_path = destination / "index.db"
     wal_sampler = _SampledWalSize(index_path)
     resource_probe = FinishedBuildResourceProbe.start()
     wal_sampler.start()
-    try:
-        result = backfill_historical_revision_evidence(
-            destination,
-            owned_inactive_generation=owned_generation,
-            ingest_workers=worker_count,
-            use_session_shards=arm.uses_shard_transport,
-            defer_secondary_indexes=arm.defer_secondary_indexes,
+    observed_deferred_indexes: list[tuple[str, ...]] = []
+    observed_restored_indexes: list[tuple[str, ...]] = []
+    original_defer = runtime_indexes.defer_secondary_indexes_sync
+    original_restore = runtime_indexes.restore_deferred_secondary_indexes_sync
+
+    def record_defer(conn: sqlite3.Connection) -> tuple[str, ...]:
+        dropped = original_defer(conn)
+        remaining = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+        if remaining.intersection(dropped):
+            raise AssertionError("deferred reader indexes remained present during the write phase")
+        observed_deferred_indexes.append(dropped)
+        return dropped
+
+    def record_restore(conn: sqlite3.Connection) -> None:
+        original_restore(conn)
+        names = tuple(
+            str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name")
         )
+        if observed_deferred_indexes and not set(observed_deferred_indexes[-1]) <= set(names):
+            raise AssertionError("the index boundary returned before every deferred index was recreated")
+        observed_restored_indexes.append(names)
+
+    try:
+        with (
+            patch.object(runtime_indexes, "defer_secondary_indexes_sync", record_defer),
+            patch.object(runtime_indexes, "restore_deferred_secondary_indexes_sync", record_restore),
+        ):
+            result = backfill_historical_revision_evidence(
+                destination,
+                owned_inactive_generation=owned_generation,
+                ingest_workers=worker_count,
+                use_session_shards=arm.uses_shard_transport,
+                defer_secondary_indexes=arm.defer_secondary_indexes,
+            )
         ids = _session_ids(index_path)
         if len(ids) != sealed.raw_count:
             raise AssertionError(f"{arm.name} lost population: sessions={len(ids)} expected={sealed.raw_count}")
         output = capture_finished_build_output(
             destination,
             index_path,
-            work=_work_identity(sealed),
+            work=_work_identity(sealed, uses_shard_transport=arm.uses_shard_transport),
             route=FinishedBuildRoute.from_production_callable(arm.name, backfill_historical_revision_evidence),
             resource_probe=resource_probe,
             session_ids=ids[:3],
@@ -517,6 +571,13 @@ def _run_arm(
         )
     if non_decode_backfill_seconds <= 0:
         raise AssertionError("selected frozen replay reported no non-decode backfill time")
+    if len(observed_deferred_indexes) > 1 or len(observed_restored_indexes) > 1:
+        raise AssertionError(f"{arm.name} crossed the index boundary more than once")
+    deferred_index_names = observed_deferred_indexes[0] if observed_deferred_indexes else ()
+    if bool(deferred_index_names) != bool(observed_restored_indexes):
+        raise AssertionError(f"{arm.name} did not restore exactly the indexes observed as deferred")
+    if arm.defer_secondary_indexes is True and deferred_index_names != runtime_indexes.DEFERRED_SECONDARY_INDEX_NAMES:
+        raise AssertionError(f"{arm.name} deferred unexpected indexes: {deferred_index_names!r}")
     candidate_git_sha, candidate_checkout_dirty = _candidate_checkout()
     return _ArmReceipt(
         arm=arm.name,
@@ -538,7 +599,8 @@ def _run_arm(
         stage_timings_s=dict(result.stage_timings_s),
         metrics=metrics.to_payload(),
         fresh_build=arm.uses_owned_inactive_generation,
-        deferred_secondary_indexes=arm.defer_secondary_indexes is not False and arm.uses_owned_inactive_generation,
+        deferred_secondary_indexes=bool(deferred_index_names),
+        deferred_secondary_index_names=deferred_index_names,
         derived_table_census=tuple(table for table, _projection in output.snapshot.tables),
         schema_object_census=output.schema_object_census,
         schema_identity=output.schema_identity,
@@ -576,7 +638,6 @@ def test_finished_build_measurement_declares_capability_boundary() -> None:
     )
     assert {arm.name for arm in _REJECTED_ALTERNATIVES} == {
         "retained-index-inline",
-        "deferred-index-fresh-inline",
         "deferred-index-fresh-shard-process",
     }
     assert all(arm.refusal_reason for arm in _REJECTED_ALTERNATIVES)
@@ -615,6 +676,7 @@ def test_finished_build_measurement_compacts_projection_before_rendering() -> No
         metrics={},
         fresh_build=False,
         deferred_secondary_indexes=False,
+        deferred_secondary_index_names=(),
         derived_table_census=(),
         schema_object_census=(),
         schema_identity="schema",
@@ -690,11 +752,12 @@ def test_streamed_fingerprint_reads_completed_inactive_generation(tmp_path: Path
 
 
 def test_index_deferral_comparison_repeats_interleaved_finished_builds(tmp_path: Path) -> None:
-    """Compare index maintenance alone while holding the cold shard route fixed.
+    """Compare retained and deferred indexes on independent and shared-prefix input.
 
-    The four runs use one immutable, small input and alternate the index policy
-    so each policy is repeated on both sides of the other. Each run times the
-    complete backfill and finished-output checks, including boundary index
+    The input combines eight independent raws with a bounded parent and eight
+    children that each repeat its 24-message prefix. The four runs alternate
+    index policy so each is repeated on both sides of the other. Each run times
+    the complete backfill and finished-output checks, including boundary index
     restoration, FTS and derived finalization, schema identity, and commit.
     """
     template = tmp_path / "sealed-input"
@@ -705,8 +768,10 @@ def test_index_deferral_comparison_repeats_interleaved_finished_builds(tmp_path:
         avg_payload_bytes=2_000,
         authoritative_source=True,
     )
+    build_large_parent_shared_prefix_raw_corpus(template)
     census = census_historical_revision_evidence(template)
-    assert census.scanned == 8
+    expected_raw_count = 8 + LARGE_PARENT_SHARED_PREFIX_SHAPE["child_count"] + 1
+    assert census.scanned == expected_raw_count
     assert census.quarantined == 0
     sealed = seal_raw_input(template)
     finalize_archive_template(template)
@@ -729,10 +794,10 @@ def test_index_deferral_comparison_repeats_interleaved_finished_builds(tmp_path:
     expected_schema_identity = str(expected_schema_identity_row[0])
 
     order = (
-        _SELECTED_ARM,
-        _RETAINED_INDEX_CONTROL,
-        _RETAINED_INDEX_CONTROL,
-        _SELECTED_ARM,
+        _DEFERRED_INDEX_INLINE_COMPARISON,
+        _RETAINED_INDEX_INLINE_COMPARISON,
+        _RETAINED_INDEX_INLINE_COMPARISON,
+        _DEFERRED_INDEX_INLINE_COMPARISON,
     )
     receipts = [
         _run_arm(
@@ -767,6 +832,12 @@ def test_index_deferral_comparison_repeats_interleaved_finished_builds(tmp_path:
     assert streamed.output_block_count == reference.output_block_count
 
     assert [receipt.deferred_secondary_indexes for receipt in receipts] == [True, False, False, True]
+    assert [receipt.deferred_secondary_index_names for receipt in receipts] == [
+        runtime_indexes.DEFERRED_SECONDARY_INDEX_NAMES,
+        (),
+        (),
+        runtime_indexes.DEFERRED_SECONDARY_INDEX_NAMES,
+    ]
     assert all(receipt.fresh_build for receipt in receipts)
     assert all(receipt.offered_raw_count == receipt.ingested_raw_count == sealed.raw_count for receipt in receipts)
     assert all(
@@ -785,6 +856,23 @@ def test_index_deferral_comparison_repeats_interleaved_finished_builds(tmp_path:
     assert all(receipt.canonical_logical_digest == reference.canonical_logical_digest for receipt in receipts)
     assert all(receipt.schema_object_census == expected_schema_objects for receipt in receipts)
     assert all(receipt.schema_identity == expected_schema_identity for receipt in receipts)
+    assert sealed.raw_count == expected_raw_count
+    assert reference.output_session_count == expected_raw_count
+    assert reference.output_message_count == (
+        8 + LARGE_PARENT_SHARED_PREFIX_SHAPE["parent_message_count"] + LARGE_PARENT_SHARED_PREFIX_SHAPE["child_count"]
+    )
+    with sqlite3.connect(streamed_index_path) as conn:
+        prefix_links = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) FROM session_links
+                WHERE inheritance = 'prefix-sharing'
+                  AND resolved_dst_session_id IS NOT NULL
+                  AND branch_point_message_id IS NOT NULL
+                """
+            ).fetchone()[0]
+        )
+    assert prefix_links == LARGE_PARENT_SHARED_PREFIX_SHAPE["child_count"]
     emitted = emit_receipt(
         "finished-build-index-deferral-comparison",
         {

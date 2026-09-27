@@ -256,6 +256,90 @@ def build_independent_raw_corpus(
     return raw_ids
 
 
+def build_large_parent_shared_prefix_raw_corpus(
+    archive_root: Path,
+    *,
+    parent_message_count: int = LARGE_PARENT_SHARED_PREFIX_SHAPE["parent_message_count"],
+    child_count: int = LARGE_PARENT_SHARED_PREFIX_SHAPE["child_count"],
+    shared_message_bytes: int = LARGE_PARENT_SHARED_PREFIX_SHAPE["shared_message_bytes"],
+) -> list[str]:
+    """Write byte-proven Codex raws for a parent and prefix-sharing children.
+
+    Children are admitted before their parent, and each child physically
+    repeats every parent message before adding one divergent tail. The bounded
+    default shape is shared with the direct writer lifecycle measurements.
+    """
+    if parent_message_count < 1 or child_count < 1 or shared_message_bytes < 1:
+        raise ValueError("large-parent/shared-prefix fixture dimensions must be positive")
+
+    parent_native_id = "measurement-zparent"
+    prefix = [
+        f"measurement-prefix-{index:04d}-" + ("x" * shared_message_bytes) for index in range(parent_message_count)
+    ]
+
+    def payload(session_id: str, messages: list[tuple[str, str]], *, parent_id: str | None = None) -> bytes:
+        meta: dict[str, object] = {"id": session_id, "timestamp": "2026-06-01T00:00:00Z"}
+        if parent_id is not None:
+            meta["parent_thread_id"] = parent_id
+        records: list[dict[str, object]] = [{"type": "session_meta", "payload": meta}]
+        for index, (message_id, text) in enumerate(messages):
+            role = "user" if index % 2 == 0 else "assistant"
+            content_type = "input_text" if role == "user" else "output_text"
+            records.append(
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "id": message_id,
+                        "role": role,
+                        "content": [{"type": content_type, "text": text}],
+                    },
+                }
+            )
+        return b"".join(json.dumps(record, separators=(",", ":")).encode() + b"\n" for record in records)
+
+    cohorts: list[tuple[str, list[tuple[str, str]], str | None]] = [
+        (
+            f"measurement-achild-{index:04d}",
+            [(f"measurement-prefix-id-{message_index:04d}", text) for message_index, text in enumerate(prefix)]
+            + [(f"measurement-child-tail-{index:04d}", f"child-tail-{index:04d}")],
+            parent_native_id,
+        )
+        for index in range(child_count)
+    ]
+    cohorts.append(
+        (
+            parent_native_id,
+            [(f"measurement-prefix-id-{message_index:04d}", text) for message_index, text in enumerate(prefix)],
+            None,
+        )
+    )
+
+    raw_ids: list[str] = []
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        for index, (native_id, messages, parent_id) in enumerate(cohorts):
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=payload(native_id, messages, parent_id=parent_id),
+                source_path=f"synthetic-amg1/lineage-{index:04d}.jsonl",
+                acquired_at_ms=10_000 + index,
+                native_id=native_id,
+            )
+            archive.bind_raw_revision(
+                raw_id,
+                RawRevisionEnvelope(
+                    logical_source_key=f"codex-session:{native_id}",
+                    kind=RawRevisionKind.FULL,
+                    source_revision=f"synthetic-amg1-lineage:{index:04d}",
+                    acquisition_generation=0,
+                    baseline_raw_id=raw_id,
+                    authority=RawRevisionAuthority.BYTE_PROVEN,
+                ),
+            )
+            raw_ids.append(raw_id)
+    return raw_ids
+
+
 def build_revision_chain_corpus(
     archive_root: Path,
     *,
@@ -356,6 +440,7 @@ __all__ = [
     "WHALE_BEARING_SHAPE",
     "FinishedBuildMeasurement",
     "build_independent_raw_corpus",
+    "build_large_parent_shared_prefix_raw_corpus",
     "build_large_parent_shared_prefix_sessions",
     "build_revision_chain_corpus",
     "build_whale_bearing_corpus",
