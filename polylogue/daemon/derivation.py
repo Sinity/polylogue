@@ -390,10 +390,11 @@ class DerivationAdapter(Protocol):
     """One domain's derivation. The domain owns its storage, SQL, and atomicity.
 
     A domain whose output derives from session content may also implement
-    ``barrier_sessions(frame, keys) -> Mapping[key, session_id]``. A pass run
-    with a publication barrier consults it and holds every key whose session
-    the barrier names as pending; a domain without it is not session-derived
-    and is never held.
+    ``barrier_sessions(frame, keys) -> Mapping[key, session_id | session_ids]``.
+    A pass run with a publication barrier consults it for required keys and
+    holds every key any of whose sessions the barrier names as pending; a
+    domain without it is not session-derived and is never held. Retiring an
+    excess key derives nothing from new content, so retirement is never held.
     """
 
     @property
@@ -670,7 +671,9 @@ class _Pass:
 
     # ── publication barrier ────────────────────────────────────────
 
-    def barrier_blocks(self, adapter: DerivationAdapter, keys: Sequence[str]) -> dict[str, str]:
+    def barrier_blocks(
+        self, adapter: DerivationAdapter, keys: Sequence[str], *, phase: DiscoveryPhase
+    ) -> dict[str, str]:
         """Map each candidate key held by the publication barrier to its reason.
 
         A held key is PENDING, not FAILED: it becomes derivable as soon as its
@@ -680,11 +683,14 @@ class _Pass:
         exactly the ordering violation it exists to prevent.
         """
         mapper = getattr(adapter, "barrier_sessions", None)
-        if self.barrier is None or mapper is None or not keys:
+        if self.barrier is None or mapper is None or not keys or phase is not DiscoveryPhase.REQUIRED:
             return {}
         try:
-            sessions = {str(key): str(session) for key, session in dict(mapper(self.frame, keys)).items()}
-            blocked = self.barrier(tuple(dict.fromkeys(sessions.values())))
+            sessions: dict[str, tuple[str, ...]] = {
+                str(key): (str(value),) if isinstance(value, str) else tuple(str(item) for item in value)
+                for key, value in dict(mapper(self.frame, keys)).items()
+            }
+            blocked = self.barrier(tuple(dict.fromkeys(session for group in sessions.values() for session in group)))
         except Exception as exc:
             emit(
                 "daemon.derivation.barrier_failed",
@@ -697,11 +703,12 @@ class _Pass:
                 error_detail=str(exc),
             )
             return dict.fromkeys(keys, f"publication barrier unreadable: {exc}")
-        return {
-            key: f"session {session} awaits primary publication"
-            for key, session in sessions.items()
-            if session in blocked
-        }
+        held: dict[str, str] = {}
+        for key, group in sessions.items():
+            waiting = sorted(session for session in group if session in blocked)
+            if waiting:
+                held[key] = f"session {', '.join(waiting)} awaits primary publication"
+        return held
 
     # ── prerequisites ──────────────────────────────────────────────
 
@@ -1035,6 +1042,7 @@ class _Pass:
                     if self.verdicts.get(DerivationKey(domain, key)) is not Outcome.FAILED
                     and statuses.get(key, KeyStatus.MISSING) is not KeyStatus.VALID
                 ],
+                phase=position.phase,
             )
             stopped_at: int | None = None
             for index, key in enumerate(keys):

@@ -356,7 +356,9 @@ class EmbeddingDerivationAdapter:
             return {}
         sessions: dict[str, str] = {}
         ids = tuple(message_keys)
-        with open_readonly_connection(index_path, timeout_class="background-read", validate_schema=False) as conn:
+        with contextlib.closing(
+            open_readonly_connection(index_path, timeout_class="background-read", validate_schema=False)
+        ) as conn:
             for start in range(0, len(ids), _MESSAGE_LOOKUP_CHUNK):
                 chunk = ids[start : start + _MESSAGE_LOOKUP_CHUNK]
                 for message_id, session_id in conn.execute(

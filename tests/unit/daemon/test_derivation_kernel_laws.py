@@ -1008,3 +1008,36 @@ def test_a_domain_that_is_not_session_derived_ignores_the_barrier() -> None:
     converge(DerivationRegistry([adapter]), FRAME, barrier=lambda sessions: set(sessions) | {"a"})
 
     assert adapter.published == ["a"]
+
+
+class CarrierKeyedDerivation(RecordingDerivation):
+    """One key per carrier, each naming several sessions."""
+
+    def barrier_sessions(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, tuple[str, ...]]:
+        return {"batch": ("s1", "s2")}
+
+
+def test_a_key_naming_several_sessions_is_held_when_any_one_waits() -> None:
+    """Anti-vacuity: holding only single-session keys lets the batch lower s2's markers."""
+    adapter = CarrierKeyedDerivation("markers", required=("batch",))
+
+    report = converge(DerivationRegistry([adapter]), FRAME, barrier=lambda sessions: {"s2"} & set(sessions))
+
+    assert adapter.published == []
+    assert report.outcomes[0].reason is PendingReason.BLOCKED
+
+
+def test_retiring_excess_output_is_never_held_by_the_barrier() -> None:
+    """Retirement derives nothing from new content.
+
+    Anti-vacuity (polylogue-wtfyv review): applying the barrier in the excess
+    phase leaves a deleted session's orphaned output behind an obligation that
+    may never publish.
+    """
+    adapter = SessionKeyedDerivation("d", required=())
+    adapter.output["orphan"] = "b0"
+
+    converge(DerivationRegistry([adapter]), FRAME, barrier=lambda sessions: set(sessions))
+
+    assert adapter.published == ["orphan"]
+    assert "orphan" not in adapter.output

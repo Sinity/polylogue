@@ -13,7 +13,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from collections.abc import Sequence
-from functools import partial
+from contextlib import closing
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -639,8 +639,33 @@ def configured_derivation_barrier(archive_root: Path) -> PublicationBarrier | No
 
     if PublicationMode.from_string(load_polylogue_config().sinex_mode) is not PublicationMode.PRIMARY:
         return None
-    source_db = ArchiveLocation.resolve(archive_root).configured_tier("source").configured_path
-    return partial(primary_blocking_object_ids, source_db)
+    location = ArchiveLocation.resolve(archive_root)
+    source_db = location.configured_tier("source").configured_path
+
+    def barrier(session_ids: Sequence[str]) -> set[str]:
+        blocked = primary_blocking_object_ids(source_db, session_ids)
+        if not blocked:
+            return blocked
+        # A session the archive no longer holds has nothing to derive; its
+        # leftover demand or bindings only retire, and holding them behind an
+        # obligation that may never publish would strand them for good.
+        return blocked & _archived_session_ids(location.active_index_path, tuple(blocked))
+
+    return barrier
+
+
+def _archived_session_ids(index_path: Path, session_ids: Sequence[str]) -> set[str]:
+    present: set[str] = set()
+    with closing(open_readonly_connection(index_path, timeout_class="background-read", validate_schema=False)) as conn:
+        for start in range(0, len(session_ids), 900):
+            chunk = session_ids[start : start + 900]
+            present.update(
+                str(row[0])
+                for row in conn.execute(
+                    f"SELECT session_id FROM sessions WHERE session_id IN ({', '.join('?' for _ in chunk)})", chunk
+                )
+            )
+    return present
 
 
 def make_default_convergence_stages(

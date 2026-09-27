@@ -201,8 +201,10 @@ def test_derivation_barrier_exists_only_in_primary_mode_and_reads_configured_sou
         read.append((source_db_path, ids))
         return {"held"} & set(ids)
 
+    archived = {"held"}
     monkeypatch.setattr(stages, "load_polylogue_config", lambda: SimpleNamespace(sinex_mode=mode))
     monkeypatch.setattr(sinex_service, "primary_blocking_object_ids", blocking)
+    monkeypatch.setattr(stages, "_archived_session_ids", lambda _index, ids: archived & set(ids))
 
     barrier = stages.configured_derivation_barrier(configured_root)
 
@@ -212,6 +214,9 @@ def test_derivation_barrier_exists_only_in_primary_mode_and_reads_configured_sou
     assert barrier is not None
     assert barrier(("held", "free")) == {"held"}
     assert read == [(configured_root / "source.db", ("held", "free"))]
+    # A deleted session has nothing to derive; its leftovers only retire.
+    archived.clear()
+    assert barrier(("held",)) == set()
 
 
 def test_claude_workflow_stage_event_replaces_its_snapshot_rather_than_appending(tmp_path: Path) -> None:
