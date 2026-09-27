@@ -30,6 +30,12 @@ from devtools.verify_runs import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_receipt_reuse(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``main`` tests exercise the run path, never a reused receipt from this checkout."""
+    monkeypatch.setenv(run_tests.REUSE_ENV, "0")
+
+
 def _write_passing_evidence(root: Path, run: VerifyRun) -> None:
     step = run._payload["steps"][-1]
     step_dir = run.run_dir / "steps" / step["step_id"]
@@ -1033,3 +1039,72 @@ def test_an_unfinishable_focused_run_is_never_adjudicated(monkeypatch: pytest.Mo
 
     assert exit_code == 3
     assert "rerun" not in metadata
+
+
+def _green_receipt(runs: Path, name: str, *, argv: list[str], digest: str, **overrides: Any) -> Path:
+    import platform
+    import sys
+
+    run_dir = runs / name
+    run_dir.mkdir(parents=True)
+    payload: dict[str, Any] = {
+        "status": "success",
+        "exit_code": 0,
+        "argv": argv,
+        "git_worktree_content_sha256": digest,
+        "pytest_aggregate": {"terminal_green": True},
+        "environment_fingerprint": {"python_executable": sys.executable, "python_version": platform.python_version()},
+    }
+    payload.update(overrides)
+    (run_dir / "run.json").write_text(json.dumps(payload), encoding="utf-8")
+    return run_dir / "run.json"
+
+
+def test_a_green_run_of_the_same_selection_and_tree_is_reused(tmp_path: Path) -> None:
+    """Only an exact match on selection, tree digest and interpreter is reused.
+
+    Anti-vacuity: drop any one comparison in ``reusable_green_receipt`` and one
+    of the near-miss receipts below is returned instead of ``None``.
+    """
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py"]
+    expected = _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
+
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") == expected
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d2") is None
+    assert run_tests.reusable_green_receipt(["tests/unit/test_b.py"], root=tmp_path, content_sha256="d1") is None
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256=None) is None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"status": "failed", "exit_code": 1},
+        {"pytest_aggregate": {"terminal_green": False}},
+        {"environment_fingerprint": {"python_executable": "/other/python", "python_version": "3.0.0"}},
+    ],
+)
+def test_a_red_or_foreign_run_is_never_reused(tmp_path: Path, overrides: dict[str, Any]) -> None:
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py"]
+    _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1", **overrides)
+
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
+
+
+def test_main_reuses_a_green_receipt_without_queueing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """Anti-vacuity: without the reuse branch ``main`` reaches the fake slot and fails."""
+    monkeypatch.setenv(run_tests.REUSE_ENV, "1")
+    receipt = tmp_path / "run.json"
+    monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: receipt)
+    monkeypatch.setattr(run_tests, "git_worktree_content_sha256", lambda _root: "d1")
+
+    def must_not_queue(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("a reusable green run was queued again")
+
+    monkeypatch.setattr("devtools.run_tests.run_pytest", must_not_queue)
+
+    assert run_tests.main(["tests/unit/devtools/test_run_tests.py"]) == 0
+    assert f"receipt={receipt}" in capsys.readouterr().err

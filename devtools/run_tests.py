@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -64,6 +65,7 @@ from devtools.verify_runs import (
     append_verify_history,
     env_for_pytest_step,
     git_head,
+    git_worktree_content_sha256,
     prune_successful_verify_runs,
     pytest_command_worker_request,
 )
@@ -190,6 +192,58 @@ def _parse_outliers(selection: list[str]) -> tuple[int | None, list[str]]:
     if limit < 1:
         raise ValueError("--outliers expects a positive integer")
     return limit, remaining
+
+
+#: How many recent run directories a reuse lookup reads. Successful detail is
+#: already pruned to a small bound, so this only caps a pathological backlog.
+REUSE_LOOKUP_LIMIT = 50
+#: Set to ``0`` to always run, even when an identical green run exists.
+REUSE_ENV = "POLYLOGUE_TEST_REUSE"
+
+
+def _parse_rerun(selection: list[str]) -> tuple[bool, list[str]]:
+    """Consume ``--rerun`` (always run) without forwarding it to pytest."""
+    return "--rerun" in selection, [argument for argument in selection if argument != "--rerun"]
+
+
+def reusable_green_receipt(selection: list[str], *, root: Path, content_sha256: str | None) -> Path | None:
+    """A green focused run of exactly this selection over exactly this tree.
+
+    Keyed on the declared inputs only: the normalized selection, the
+    worktree content digest the run was bound to at slot start, and the
+    interpreter identity. A match means rerunning would execute the same
+    tests over the same bytes with the same interpreter, so its receipt
+    answers the question and the pool admission is skipped.
+    """
+    if content_sha256 is None:
+        return None
+    runs_root = root / ".cache" / "verify" / "runs"
+    try:
+        candidates = sorted(
+            (entry for entry in runs_root.iterdir() if "-focused-test-" in entry.name),
+            reverse=True,
+        )[:REUSE_LOOKUP_LIMIT]
+    except OSError:
+        return None
+    interpreter = (sys.executable, platform.python_version())
+    for entry in candidates:
+        receipt = entry / "run.json"
+        try:
+            payload = json.loads(receipt.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        fingerprint = payload.get("environment_fingerprint") or {}
+        if (
+            payload.get("status") == "success"
+            and payload.get("exit_code") == 0
+            and payload.get("argv") == selection
+            and payload.get("git_worktree_content_sha256") == content_sha256
+            and (payload.get("pytest_aggregate") or {}).get("terminal_green") is True
+            and (str(Path(fingerprint.get("python_executable", "")).resolve()), fingerprint.get("python_version"))
+            == (str(Path(interpreter[0]).resolve()), interpreter[1])
+        ):
+            return receipt
+    return None
 
 
 def _parse_runner(selection: list[str]) -> tuple[str, list[str]]:
@@ -571,6 +625,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         outlier_count, selection = _parse_outliers(selection)
         runner, selection = _parse_runner(selection)
+        force_rerun, selection = _parse_rerun(selection)
     except ValueError as exc:
         sys.stderr.write(f"devtools test: {exc}\n")
         return 2
@@ -616,6 +671,16 @@ def main(argv: list[str] | None = None) -> int:
             + "\n"
         )
         return 4
+
+    if not force_rerun and os.environ.get(REUSE_ENV, "1") != "0":
+        reused = reusable_green_receipt(selection, root=ROOT, content_sha256=git_worktree_content_sha256(ROOT))
+        if reused is not None:
+            sys.stderr.write(
+                "devtools test: this selection already passed on this exact tree; not queueing again "
+                "(--rerun to force).\n"
+                f"\ndevtools test: PASSED exit=0 diagnosis=pytest_passed_reused receipt={reused}\n"
+            )
+            return 0
 
     run = VerifyRun(
         tier="focused-test",
