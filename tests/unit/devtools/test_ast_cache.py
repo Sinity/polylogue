@@ -52,3 +52,22 @@ def test_a_tree_the_cache_does_not_own_is_walked_but_not_memoized() -> None:
 
     assert ast_cache.walk_module(tree) == tuple(ast.walk(tree))
     assert id(tree) not in ast_cache._NODES
+
+
+def test_source_and_tree_come_from_the_same_read(tmp_path: Path) -> None:
+    """A handler digest slices the text its tree was parsed from.
+
+    Anti-vacuity: return a cached tree with a fresh read of the file (the old
+    two-read shape) and, after the rewrite, the text holds ``b`` while the
+    tree still holds ``a``.
+    """
+    source_path = tmp_path / "module.py"
+    source_path.write_text("a = 1\n", encoding="utf-8")
+    ast_cache.parse_source(source_path)
+    source_path.write_text("b = 2\n", encoding="utf-8")
+
+    source, tree = ast_cache.parse_source(source_path)
+
+    names = [node.id for node in ast_cache.walk_module(tree) if isinstance(node, ast.Name)]
+    assert source == "b = 2\n"
+    assert names == ["b"]

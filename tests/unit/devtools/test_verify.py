@@ -182,6 +182,55 @@ def test_no_gate_started_around_the_interruption_runs_to_completion(tmp_path: Pa
     assert all(process.returncode is not None and process.returncode < 0 for process in spawned)
 
 
+def _process_alive(pid: int) -> bool:
+    """Whether *pid* is running; a zombie awaiting its reaper counts as dead."""
+    try:
+        status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return "\nState:\tZ" not in status
+
+
+def test_an_interruption_kills_a_gate_child_that_ignores_sigterm(tmp_path: Path) -> None:
+    """The group is killed even when its leader exits on SIGTERM and a child does not.
+
+    Anti-vacuity: send SIGKILL only when the leader outlives the grace period
+    and the TERM-ignoring child keeps running (and keeps the gate's pipes open).
+    """
+    child_pid = tmp_path / "child.pid"
+    ignoring_child = f'sh -c \'trap "" TERM; echo $$ > "{child_pid}"; exec sleep 30\' & wait'
+
+    def interrupting_run(label: str, command: list[str], *, run: Any, runner: str) -> tuple[int, float, dict[str, Any]]:
+        del run, runner
+        if label == "gate slow":
+            completed = verify._run_gate_process(command, env=dict(os.environ))
+            return completed.returncode, 0.0, {}
+        for _ in range(1000):
+            if verify._LIVE_GATE_PROCESSES and child_pid.exists() and child_pid.read_text().strip():
+                break
+            time.sleep(0.01)
+        raise verify.VerificationInterrupted(signal.SIGTERM)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(verify, "ROOT", tmp_path)
+        patch.setattr(verify, "_run", interrupting_run)
+        with pytest.raises(verify.VerificationInterrupted):
+            verify._run_steps(
+                [("gate slow", ["sh", "-c", ignoring_child]), ("gate interrupted", ["true"])],
+                run=None,  # type: ignore[arg-type]
+                runner="managed",
+            )
+
+    pid = int(child_pid.read_text(encoding="utf-8"))
+    for _ in range(500):
+        if not _process_alive(pid):
+            break
+        time.sleep(0.01)
+    else:
+        os.kill(pid, signal.SIGKILL)
+        pytest.fail("a TERM-ignoring gate child survived the interruption")
+
+
 def test_an_interrupted_run_stops_and_joins_its_running_gates(tmp_path: Path) -> None:
     """An interruption terminates live gates and returns only after their workers.
 
@@ -236,9 +285,7 @@ def test_an_interrupted_run_stops_and_joins_its_running_gates(tmp_path: Path) ->
     assert len(spawned) == 1
     pid = int(grandchild_pid.read_text(encoding="utf-8"))
     for _ in range(500):
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not _process_alive(pid):
             break
         time.sleep(0.01)
     else:

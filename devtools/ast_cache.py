@@ -18,8 +18,8 @@ import ast
 import hashlib
 from pathlib import Path
 
-#: The latest parse of each path, with the digest of the source it came from.
-_TREES: dict[Path, tuple[bytes, ast.Module]] = {}
+#: The latest parse of each path, with the digest and text it came from.
+_TREES: dict[Path, tuple[bytes, str, ast.Module]] = {}
 #: ``ast.walk`` order of each cached tree. Each entry holds its tree, so the
 #: ``id`` key cannot be reused by another object while the entry exists.
 _NODES: dict[int, tuple[ast.AST, tuple[ast.AST, ...]]] = {}
@@ -30,20 +30,30 @@ def read_source(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def parse_path(path: Path) -> ast.Module:
-    """Return the parsed module for *path*, reusing the parse of identical source."""
+def parse_source(path: Path) -> tuple[str, ast.Module]:
+    """Return *path*'s text and its parse, both from one read of the file.
+
+    A caller that slices source segments out of the tree needs the text the
+    tree was parsed from; reading the file a second time could pair a new
+    tree with old text.
+    """
     source = read_source(path)
     digest = hashlib.blake2b(source.encode("utf-8"), digest_size=16).digest()
     key = path.resolve()
     cached = _TREES.get(key)
     if cached is not None and cached[0] == digest:
-        return cached[1]
+        return cached[1], cached[2]
     tree = ast.parse(source)
     if cached is not None:
-        _NODES.pop(id(cached[1]), None)
-    _TREES[key] = (digest, tree)
+        _NODES.pop(id(cached[2]), None)
+    _TREES[key] = (digest, source, tree)
     _NODES[id(tree)] = (tree, ())
-    return tree
+    return source, tree
+
+
+def parse_path(path: Path) -> ast.Module:
+    """Return the parsed module for *path*, reusing the parse of identical source."""
+    return parse_source(path)[1]
 
 
 def walk_module(tree: ast.AST) -> tuple[ast.AST, ...]:
@@ -57,4 +67,4 @@ def walk_module(tree: ast.AST) -> tuple[ast.AST, ...]:
     return memo[1]
 
 
-__all__ = ["parse_path", "read_source", "walk_module"]
+__all__ = ["parse_path", "parse_source", "read_source", "walk_module"]
