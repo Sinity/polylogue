@@ -21,11 +21,11 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 
 from polylogue.operations.durable_change_train import (
+    OwnedArchiveLocation,
     PendingDurableMigration,
     execute_durable_change_train,
     pending_durable_migrations,
 )
-from polylogue.storage.archive_identity import OwnedArchiveLocation
 
 
 def _backup_profile(tier: str) -> str:
@@ -67,7 +67,10 @@ def apply_declared_durable_migrations(
     archive_owner: OwnedArchiveLocation,
     write_lease: Callable[[str], AbstractContextManager[object]],
 ) -> tuple[PendingDurableMigration, ...]:
-    """Apply every pending durable migration; return what was applied.
+    """Apply every pending numbered step until each tier reaches its declared version.
+
+    Each step is one train; a data-changing step gets its own backup of the
+    bytes it is about to change. Returns the steps applied, in order.
 
     The caller holds exclusive archive ownership for the whole call and keeps
     it afterwards, so the train's ownership release is a no-op here. Each
@@ -76,23 +79,38 @@ def apply_declared_durable_migrations(
     """
 
     applied: list[PendingDurableMigration] = []
-    for migration in pending_durable_migrations(archive_root):
-        with write_lease("daemon.durable_migration.apply"):
-            manifest = (
-                pre_migration_backup(archive_root, migration, archive_owner=archive_owner)
-                if migration.requires_backup
-                else None
-            )
-            execute_durable_change_train(
-                archive_root,
-                migration.tier,
-                backup_manifest=manifest,
-                daemon_stopped_evidence_ref="proof:daemon-open-before-serving",
-                single_writer_evidence_ref="proof:archive-ownership-lock",
-                release_archive_ownership=lambda: None,
-            )
-        applied.append(migration)
+    while pending := pending_durable_migrations(archive_root):
+        for migration in pending:
+            if migration in applied:
+                raise RuntimeError(
+                    f"{migration.tier.value}.db did not advance past v{migration.current_version}; refusing to loop"
+                )
+            _apply_step(archive_root, migration, archive_owner=archive_owner, write_lease=write_lease)
+            applied.append(migration)
     return tuple(applied)
+
+
+def _apply_step(
+    archive_root: Path,
+    migration: PendingDurableMigration,
+    *,
+    archive_owner: OwnedArchiveLocation,
+    write_lease: Callable[[str], AbstractContextManager[object]],
+) -> None:
+    with write_lease("daemon.durable_migration.apply"):
+        manifest = (
+            pre_migration_backup(archive_root, migration, archive_owner=archive_owner)
+            if migration.requires_backup
+            else None
+        )
+        execute_durable_change_train(
+            archive_root,
+            migration.tier,
+            backup_manifest=manifest,
+            daemon_stopped_evidence_ref="proof:daemon-open-before-serving",
+            single_writer_evidence_ref="proof:archive-ownership-lock",
+            release_archive_ownership=lambda: None,
+        )
 
 
 __all__ = ["apply_declared_durable_migrations", "pre_migration_backup"]

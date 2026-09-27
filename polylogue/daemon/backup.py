@@ -55,8 +55,8 @@ from polylogue.storage.blob_store import BlobStore
 
 if TYPE_CHECKING:
     from polylogue.operations.daemon_protocol import DaemonOperationEnvelope, DaemonOperationRequest
+    from polylogue.operations.durable_change_train import OwnedArchiveLocation
     from polylogue.operations.operation_context import OperationContext
-    from polylogue.storage.archive_identity import OwnedArchiveLocation
 
 BackupProfile = Literal["full_evidence", "user_overlays", "rebuildable_cache_exclude", "diagnostics_bundle"]
 BACKUP_PROFILES: tuple[BackupProfile, ...] = (
@@ -1382,9 +1382,9 @@ def backup_archive(
     # Python caller pins both the daemon pidfile and durable anchor until its
     # checkpointing copies finish, so a later daemon cannot race this check.
     if archive_owner is not None:
-        from polylogue.storage.archive_identity import ArchiveLocation, assert_owns_archive_location
+        from polylogue.operations.durable_change_train import assert_holds_archive_ownership
 
-        assert_owns_archive_location(archive_owner, ArchiveLocation.resolve(root))
+        assert_holds_archive_ownership(archive_owner, root)
     owner_scope = (
         nullcontext()
         if daemon_write_lease_active() or archive_owner is not None

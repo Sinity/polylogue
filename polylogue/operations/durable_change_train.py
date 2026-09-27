@@ -1743,8 +1743,16 @@ class PendingDurableMigration:
     requires_backup: bool
 
 
+def assert_holds_archive_ownership(owner: OwnedArchiveLocation, archive_root: Path) -> None:
+    """Refuse unless ``owner`` is the live exclusive ownership of ``archive_root``."""
+
+    from polylogue.storage.archive_identity import assert_owns_archive_location
+
+    assert_owns_archive_location(owner, ArchiveLocation.resolve(archive_root))
+
+
 def pending_durable_migrations(archive_root: Path) -> tuple[PendingDurableMigration, ...]:
-    """Name every durable tier standing below this runtime's declared version."""
+    """Name the next numbered step for every durable tier below this runtime's version."""
 
     from polylogue.storage.sqlite import migration_runner
 
@@ -1767,12 +1775,15 @@ def pending_durable_migrations(archive_root: Path) -> tuple[PendingDurableMigrat
             # No declared route from this version: schema preflight reports
             # the skew; there is nothing to apply.
             continue
+        # One numbered step at a time: each train advances exactly one slot,
+        # and each data-changing step needs a backup of the bytes it changes.
+        step = next(step for step in steps if step.target_version == current + 1)
         pending.append(
             PendingDurableMigration(
                 tier=tier,
                 current_version=current,
-                target_version=target,
-                requires_backup=any(step.requires_backup for step in steps),
+                target_version=current + 1,
+                requires_backup=step.requires_backup,
             )
         )
     return tuple(pending)
@@ -1931,7 +1942,9 @@ __all__ = [
     "AuditContinuityError",
     "ArchiveOwnershipError",
     "DurableChangeTrainError",
+    "OwnedArchiveLocation",
     "PendingDurableMigration",
+    "assert_holds_archive_ownership",
     "execute_durable_change_train",
     "pending_durable_migrations",
     "initialize_missing_durable_tier",
