@@ -2052,15 +2052,19 @@ class CursorStore:
                 released = int(cursor.rowcount or 0)
                 conn.commit()
 
-        best_effort_cursor_write("archive ops convergence debt release", write)
+        if not best_effort_cursor_write("archive ops convergence debt release", write):
+            # The rows keep their backoff; say so rather than reporting a
+            # release of zero rows as success.
+            raise RuntimeError("deferred convergence debt was not released: ops.db stayed locked")
         return released
 
-    def clear_stage_convergence_debt(self, *, stage: str, recorded_at_or_before_ms: int) -> int:
+    def clear_stage_convergence_debt(self, *, stage: str, recorded_before_ms: int) -> int:
         """Clear every subject's debt for one archive-wide stage.
 
         A stage whose work is a function of the whole archive converges for
-        all of its subjects at once. Rows recorded after the converging run
-        started describe later changes and are kept.
+        all of its subjects at once. Rows recorded at or after the instant the
+        converging run started may describe changes it did not see (the clock
+        has millisecond resolution), so they are kept.
         """
         cleared = 0
 
@@ -2068,8 +2072,8 @@ class CursorStore:
             nonlocal cleared
             with self._connect_ops() as conn:
                 cursor = conn.execute(
-                    "DELETE FROM convergence_debt WHERE stage = ? AND updated_at_ms <= ?",
-                    (stage, recorded_at_or_before_ms),
+                    "DELETE FROM convergence_debt WHERE stage = ? AND updated_at_ms < ?",
+                    (stage, recorded_before_ms),
                 )
                 cleared = int(cursor.rowcount or 0)
                 conn.commit()

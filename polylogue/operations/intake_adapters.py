@@ -37,6 +37,7 @@ from polylogue.maintenance.candidate_capacity import ArchiveCapacityError, Insuf
 from polylogue.maintenance.receipt_fs import MaintenanceReceiptPathError
 from polylogue.sources.live.cold_build import (
     ColdBuildGeneration,
+    active_cold_build_generation,
     active_index_generation_is_empty,
     clear_cold_build_generation,
     is_transient_cold_storage_errno,
@@ -70,6 +71,7 @@ __all__ = [
     "active_index_generation_is_empty",
     "build_intake_adapters",
     "clear_cold_build_generation",
+    "active_cold_build_generation",
     "discover_pending_raw_ids",
     "register_cold_build_generation",
 ]

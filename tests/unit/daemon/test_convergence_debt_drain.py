@@ -146,12 +146,12 @@ def test_debt_waits_while_a_cold_build_is_unsettled(archive: Path, monkeypatch: 
     against the empty active generation and clears the candidate's rows."""
     import asyncio
 
-    from polylogue.sources.live import cold_build
+    from polylogue.daemon import intake_adapters
 
     stage = _Stage("archive_wide", subject_independent=True)
     _install(monkeypatch, stage)
     _seed(archive, "archive_wide", 3)
-    monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root=None: object())
+    monkeypatch.setattr(intake_adapters, "active_cold_build_generation", lambda _root=None: object())
 
     asyncio.run(daemon_cli._retry_convergence_debt_once(archive / "index.db"))
 
@@ -180,3 +180,37 @@ def test_promotion_release_makes_deferred_rows_due_and_keeps_failure_backoff(arc
     with sqlite3.connect(archive / "ops.db") as conn:
         retry = dict(conn.execute("SELECT stage, next_retry_at FROM convergence_debt"))
     assert retry == {"deferred_stage": None, "failed_stage": "2999-01-01T00:00:00+00:00"}
+
+
+def test_stage_clear_keeps_rows_recorded_in_the_run_start_millisecond(archive: Path) -> None:
+    """Anti-vacuity: an inclusive cutoff deletes the row written in the same
+    millisecond the converging run started, which that run may not have seen."""
+    cursor = CursorStore(archive / "index.db")
+    for name in ("before", "same"):
+        cursor.record_convergence_debt(
+            stage="archive_stage",
+            subject_type="source_path",
+            subject_id=str(archive / "sources" / f"{name}.jsonl"),
+            error="waiting",
+        )
+    with sqlite3.connect(archive / "ops.db") as conn:
+        conn.execute("UPDATE convergence_debt SET updated_at_ms = 1000 WHERE target_id LIKE '%before.jsonl'")
+        conn.execute("UPDATE convergence_debt SET updated_at_ms = 2000 WHERE target_id LIKE '%same.jsonl'")
+        conn.commit()
+
+    assert cursor.clear_stage_convergence_debt(stage="archive_stage", recorded_before_ms=2000) == 1
+
+    with sqlite3.connect(archive / "ops.db") as conn:
+        remaining = [row[0] for row in conn.execute("SELECT target_id FROM convergence_debt")]
+    assert [Path(target).name for target in remaining] == ["same.jsonl"]
+
+
+def test_a_release_that_could_not_write_raises(archive: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: returning zero on a skipped write reports a release that
+    never happened as success, and the rows keep their backoff."""
+    import polylogue.sources.live.cursor as cursor_module
+
+    cursor = CursorStore(archive / "index.db")
+    monkeypatch.setattr(cursor_module, "best_effort_cursor_write", lambda _label, _write: False)
+    with pytest.raises(RuntimeError, match="not released"):
+        cursor.release_deferred_convergence_debt()

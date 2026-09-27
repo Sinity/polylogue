@@ -164,19 +164,25 @@ def watchsource_name_to_family(name: str) -> str:
     return _WATCHSOURCE_TO_FAMILY.get(name, "unknown")
 
 
-#: Environment that decides where the typed default sources live.
-_DEFAULT_SOURCE_ENVIRONMENT = (
-    "HOME",
-    "XDG_CONFIG_HOME",
-    "XDG_DATA_HOME",
-    "XDG_STATE_HOME",
-    "POLYLOGUE_ARCHIVE_ROOT",
-    "POLYLOGUE_CONFIG",
-)
+def _default_source_environment() -> tuple[tuple[str, str], ...]:
+    """Every environment value that can move the typed default sources.
+
+    The whole ``POLYLOGUE_*`` and ``XDG_*`` families plus ``HOME``, rather
+    than a hand-kept list of the names read today: a selector added later
+    (a site-config file, a new root override) cannot silently serve roots
+    resolved under the previous configuration.
+    """
+    return tuple(
+        sorted(
+            (name, value)
+            for name, value in os.environ.items()
+            if name == "HOME" or name.startswith(("POLYLOGUE_", "XDG_"))
+        )
+    )
 
 
 @lru_cache(maxsize=4)
-def _default_source_families(environment: tuple[str | None, ...]) -> tuple[tuple[Path, str], ...]:
+def _default_source_families(environment: tuple[tuple[str, str], ...]) -> tuple[tuple[Path, str], ...]:
     """Resolved default-source roots and their families for one environment.
 
     Status projections classify every debt row and cursor through this; built
@@ -203,7 +209,7 @@ def source_family_for_path(path: Path | str) -> str:
     or the watch-source name is not recognized.
     """
     try:
-        families = _default_source_families(tuple(os.environ.get(name) for name in _DEFAULT_SOURCE_ENVIRONMENT))
+        families = _default_source_families(_default_source_environment())
     except Exception:
         return "unknown"
 

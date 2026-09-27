@@ -975,7 +975,7 @@ async def _periodic_convergence_check(
 
 async def _retry_convergence_debt_once(db: Path) -> None:
     """Run one logged derived-debt retry pass when the archive exists."""
-    from polylogue.sources.live.cold_build import active_cold_build_generation
+    from polylogue.daemon.intake_adapters import active_cold_build_generation
 
     if active_cold_build_generation() is not None:
         # Debt recorded during a cold build describes the unpromoted candidate,
@@ -1481,7 +1481,7 @@ def _record_convergence_debt_retries(
 
     retried = 0
     for stage_name, started_ms in (converged_whole_archive or {}).items():
-        cleared = cursor.clear_stage_convergence_debt(stage=stage_name, recorded_at_or_before_ms=started_ms)
+        cleared = cursor.clear_stage_convergence_debt(stage=stage_name, recorded_before_ms=started_ms)
         emit(
             "daemon.convergence_debt.stage_cleared",
             outcome="ok",
@@ -3084,11 +3084,12 @@ async def _run_daemon_services_under_active_writer_lease(
                                     reason="promoted" if promoted else "discarded",
                                     generation_id=generation.generation_id,
                                 )
-                        if promoted and watcher is not None:
-                            # Work deferred behind the unpromoted candidate
-                            # (stages the build could not run, retention it
-                            # could not apply) accrued retry backoff while it
-                            # waited, though nothing failed. It is due now.
+                        if watcher is not None:
+                            # Work deferred behind the candidate (stages the
+                            # build could not run, retention it could not
+                            # apply) accrued retry backoff while it waited,
+                            # though nothing failed. Whether the candidate was
+                            # promoted or discarded, the deferral has ended.
                             try:
                                 released = await write_coordinator.run_sync(
                                     "daemon.cold_build.release_deferred_debt",
