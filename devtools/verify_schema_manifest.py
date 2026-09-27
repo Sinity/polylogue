@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import hashlib
 import io
 import json
 import os
@@ -117,11 +119,52 @@ def _current_schema_state() -> _SchemaState:
     )
 
 
+#: Rendered schema states of past commits. A commit's tree cannot change, so a
+#: rendering keyed by commit, renderer and interpreter is computed once per
+#: checkout instead of on every gate run; rendering a commit extracts and
+#: cold-imports its whole package, which is most of this gate's cost.
+_SCHEMA_STATE_CACHE = ROOT / ".cache" / "verify" / "schema-state"
+
+_RENDER_SCRIPT = (
+    "import json\n"
+    "from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER\n"
+    "from polylogue.storage.sqlite.archive_tiers.archive_plan import ARCHIVE_FORMAT_LINEAGE\n"
+    "print(json.dumps({'ddl': {tier.value: ddl for tier, ddl in ARCHIVE_DDL_BY_TIER.items()}, "
+    "'versions': {tier.value: version for tier, version in ARCHIVE_VERSION_BY_TIER.items()}, "
+    "'lineage': ARCHIVE_FORMAT_LINEAGE}))\n"
+)
+
+
 def _render_schema_state(ref: str | None) -> _SchemaState:
     """Render the effective archive state from a commit or this checkout."""
     if ref is None:
         return _current_schema_state()
+    commit = _git_text("rev-parse", "--verify", f"{ref}^{{commit}}").strip()
+    key = hashlib.sha256(f"{commit}\0{sys.version}\0{_RENDER_SCRIPT}".encode()).hexdigest()
+    cached = _SCHEMA_STATE_CACHE / f"{key}.json"
+    try:
+        payload = json.loads(cached.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        payload = _render_commit_payload(commit)
+        with contextlib.suppress(OSError):
+            _SCHEMA_STATE_CACHE.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", dir=_SCHEMA_STATE_CACHE, suffix=".tmp", delete=False
+            ) as handle:
+                json.dump(payload, handle)
+            os.replace(handle.name, cached)
+    return _SchemaState(
+        ddl={ArchiveTier(tier): str(ddl) for tier, ddl in cast(dict[str, object], payload["ddl"]).items()},
+        versions={
+            ArchiveTier(tier): cast(int, version)
+            for tier, version in cast(dict[str, object], payload["versions"]).items()
+        },
+        lineage=str(payload["lineage"]),
+    )
 
+
+def _render_commit_payload(ref: str) -> dict[str, Any]:
+    """Extract *ref* to scratch and print its effective schema from a fresh interpreter."""
     archive = subprocess.run(["git", "archive", ref], check=True, capture_output=True, cwd=ROOT).stdout
     scratch_root = "/realm/tmp/work"
     with tempfile.TemporaryDirectory(
@@ -131,35 +174,35 @@ def _render_schema_state(ref: str | None) -> _SchemaState:
             tar.extractall(checkout, filter="data")
         build_info = Path(checkout) / "polylogue" / "_build_info.py"
         build_info.write_text(f'BUILD_COMMIT = "{ref}"\nBUILD_DIRTY = False\n', encoding="utf-8")
-        script = (
-            "import json\n"
-            "from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER\n"
-            "from polylogue.storage.sqlite.archive_tiers.archive_plan import ARCHIVE_FORMAT_LINEAGE\n"
-            "print(json.dumps({'ddl': {tier.value: ddl for tier, ddl in ARCHIVE_DDL_BY_TIER.items()}, "
-            "'versions': {tier.value: version for tier, version in ARCHIVE_VERSION_BY_TIER.items()}, "
-            "'lineage': ARCHIVE_FORMAT_LINEAGE}))\n"
-        )
         environment = os.environ.copy()
         environment["PYTHONPATH"] = checkout
         for name in ("_PYTHON_SYSCONFIGDATA_NAME", "_PYTHON_HOST_PLATFORM", "PYTHONHOME"):
             environment.pop(name, None)
         result = subprocess.run(
-            [sys.executable, "-c", script],
+            [sys.executable, "-c", _RENDER_SCRIPT],
             check=True,
             capture_output=True,
             cwd=checkout,
             env=environment,
             text=True,
         )
-    payload = json.loads(result.stdout)
-    return _SchemaState(
-        ddl={ArchiveTier(tier): str(ddl) for tier, ddl in cast(dict[str, object], payload["ddl"]).items()},
-        versions={
-            ArchiveTier(tier): cast(int, version)
-            for tier, version in cast(dict[str, object], payload["versions"]).items()
-        },
-        lineage=str(payload["lineage"]),
-    )
+    return cast(dict[str, Any], json.loads(result.stdout))
+
+
+def _package_unchanged_since(base: str) -> bool:
+    """Whether this checkout's ``polylogue/`` is byte-identical to *base*'s.
+
+    The effective schema is a function of the package source alone, so an
+    unchanged package renders the base state exactly and needs no extraction.
+    """
+    try:
+        changed = subprocess.run(
+            ["git", "diff", "--quiet", base, "--", "polylogue"], capture_output=True, cwd=ROOT, check=False
+        )
+        untracked = _git_text("ls-files", "--others", "--exclude-standard", "--", "polylogue")
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return changed.returncode == 0 and not untracked.strip()
 
 
 def _git_text(*args: str) -> str:
@@ -335,8 +378,8 @@ def _is_retirement_only(old_ddl: str, new_ddl: str, tier: ArchiveTier) -> bool:
 def _durable_ddl_evolution_violations(explicit_base: str | None = None) -> list[str]:
     """Require effective durable schema changes to use an exact migration chain."""
     base = _merge_base(explicit_base)
-    previous = _render_schema_state(base)
     current = _render_schema_state(None)
+    previous = current if _package_unchanged_since(base) else _render_schema_state(base)
     violations: list[str] = []
 
     # A reset to v1 is valid only as one complete archive-format transition.

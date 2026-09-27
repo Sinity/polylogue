@@ -9,6 +9,8 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -102,8 +104,197 @@ def test_quick_steps_are_static_gates() -> None:
     labels = [label for label, _command in verify.build_verify_steps(quick=True)]
 
     assert "gate lint" in labels
-    assert "gate oracle-integrity" in labels
+    assert "gate layering" in labels
     assert not any(label.startswith("pytest") for label in labels)
+
+
+def test_static_gates_run_side_by_side_and_report_in_declared_order(tmp_path: Path) -> None:
+    """Gates overlap in time, and their outcomes keep the declared order.
+
+    Anti-vacuity: run the gates one after another and the rendezvous below
+    times out; return outcomes in completion order and the first gate, which
+    finishes last, is reported last.
+    """
+    rendezvous = threading.Barrier(2, timeout=10)
+    finished: list[str] = []
+
+    def fake_run(label: str, command: list[str], *, run: Any, runner: str) -> tuple[int, float, dict[str, Any]]:
+        del command, run, runner
+        rendezvous.wait()
+        if label == "gate first":
+            time.sleep(0.05)
+        finished.append(label)
+        return 0, 0.0, {"diagnosis": "gate_passed"}
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(verify, "_run", fake_run)
+        patch.setattr(verify, "GATE_PARALLELISM", 2)
+        outcomes = verify._run_steps([("gate first", ["a"]), ("gate second", ["b"])], run=None, runner="managed")  # type: ignore[arg-type]
+
+    assert finished == ["gate second", "gate first"]
+    assert [label for label, _outcome in outcomes] == ["gate first", "gate second"]
+
+
+def test_no_gate_started_around_the_interruption_runs_to_completion(tmp_path: Path) -> None:
+    """With more gates than workers, every gate process is stopped, none awaited.
+
+    A queued gate is either cancelled before it starts or, if a freed worker
+    picks it up first, registered before the interruption's snapshot of live
+    processes, so it is terminated rather than waited for.
+
+    Anti-vacuity: snapshot the live processes before cancelling queued gates,
+    or register a process without checking the interruption under the same
+    lock, and a gate launched after the snapshot runs its ``sleep`` to a
+    natural exit, so a return code is 0 instead of a signal.
+    """
+    spawned: list[subprocess.Popen[str]] = []
+    real_popen = subprocess.Popen
+
+    def tracking_popen(*args: Any, **kwargs: Any) -> subprocess.Popen[str]:
+        process = real_popen(*args, **kwargs)
+        spawned.append(process)
+        return process
+
+    def run_gate(label: str, command: list[str], *, run: Any, runner: str) -> tuple[int, float, dict[str, Any]]:
+        del run, runner
+        if label == "gate interrupting":
+            for _ in range(1000):
+                if verify._LIVE_GATE_PROCESSES:
+                    break
+                time.sleep(0.01)
+            raise verify.VerificationInterrupted(signal.SIGTERM)
+        completed = verify._run_gate_process(command, env=dict(os.environ))
+        return completed.returncode, 0.0, {}
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(verify, "ROOT", tmp_path)
+        patch.setattr(verify, "GATE_PARALLELISM", 2)
+        patch.setattr(subprocess, "Popen", tracking_popen)
+        patch.setattr(verify, "_run", run_gate)
+        with pytest.raises(verify.VerificationInterrupted):
+            verify._run_steps(
+                [("gate running", ["sleep", "3"]), ("gate interrupting", ["true"]), ("gate queued", ["sleep", "3"])],
+                run=None,  # type: ignore[arg-type]
+                runner="managed",
+            )
+
+    assert spawned
+    assert all(process.returncode is not None and process.returncode < 0 for process in spawned)
+
+
+def _process_alive(pid: int) -> bool:
+    """Whether *pid* is running; a zombie awaiting its reaper counts as dead."""
+    try:
+        status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return "\nState:\tZ" not in status
+
+
+def test_an_interruption_kills_a_gate_child_that_ignores_sigterm(tmp_path: Path) -> None:
+    """The group is killed even when its leader exits on SIGTERM and a child does not.
+
+    Anti-vacuity: send SIGKILL only when the leader outlives the grace period
+    and the TERM-ignoring child keeps running (and keeps the gate's pipes open).
+    """
+    child_pid = tmp_path / "child.pid"
+    ignoring_child = f'sh -c \'trap "" TERM; echo $$ > "{child_pid}"; exec sleep 30\' & wait'
+
+    def interrupting_run(label: str, command: list[str], *, run: Any, runner: str) -> tuple[int, float, dict[str, Any]]:
+        del run, runner
+        if label == "gate slow":
+            completed = verify._run_gate_process(command, env=dict(os.environ))
+            return completed.returncode, 0.0, {}
+        for _ in range(1000):
+            if verify._LIVE_GATE_PROCESSES and child_pid.exists() and child_pid.read_text().strip():
+                break
+            time.sleep(0.01)
+        raise verify.VerificationInterrupted(signal.SIGTERM)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(verify, "ROOT", tmp_path)
+        patch.setattr(verify, "_run", interrupting_run)
+        with pytest.raises(verify.VerificationInterrupted):
+            verify._run_steps(
+                [("gate slow", ["sh", "-c", ignoring_child]), ("gate interrupted", ["true"])],
+                run=None,  # type: ignore[arg-type]
+                runner="managed",
+            )
+
+    pid = int(child_pid.read_text(encoding="utf-8"))
+    for _ in range(500):
+        if not _process_alive(pid):
+            break
+        time.sleep(0.01)
+    else:
+        os.kill(pid, signal.SIGKILL)
+        pytest.fail("a TERM-ignoring gate child survived the interruption")
+
+
+def test_an_interrupted_run_stops_and_joins_its_running_gates(tmp_path: Path) -> None:
+    """An interruption terminates live gates and returns only after their workers.
+
+    Anti-vacuity: drop ``_stop_gate_processes`` from the interruption path and
+    the sleeping gate outlives the run; shut the pool down without waiting and
+    the interrupted gate's worker is still running when ``_run_steps`` raises;
+    let a stopped gate return normally and it is recorded as an ordinary result;
+    signal only the gate process, not its group, and the checker it started
+    (as ``devtools.mypy_gate`` starts ``mypy``) keeps running.
+    """
+    grandchild_pid = tmp_path / "grandchild.pid"
+    spawned: list[subprocess.Popen[str]] = []
+    worker_outcomes: list[str] = []
+    real_popen = subprocess.Popen
+
+    def tracking_popen(*args: Any, **kwargs: Any) -> subprocess.Popen[str]:
+        process = real_popen(*args, **kwargs)
+        spawned.append(process)
+        return process
+
+    def interrupting_run(label: str, command: list[str], *, run: Any, runner: str) -> tuple[int, float, dict[str, Any]]:
+        del run, runner
+        if label == "gate slow":
+            try:
+                completed = verify._run_gate_process(command, env=dict(os.environ))
+            except verify._GateInterruptedError:
+                time.sleep(0.2)
+                worker_outcomes.append("interrupted")
+                raise
+            worker_outcomes.append("recorded")
+            return completed.returncode, 0.0, {}
+        for _ in range(1000):
+            if verify._LIVE_GATE_PROCESSES and grandchild_pid.exists() and grandchild_pid.read_text().strip():
+                break
+            time.sleep(0.01)
+        raise verify.VerificationInterrupted(signal.SIGTERM)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(verify, "ROOT", tmp_path)
+        patch.setattr(subprocess, "Popen", tracking_popen)
+        patch.setattr(verify, "_run", interrupting_run)
+        with pytest.raises(verify.VerificationInterrupted):
+            verify._run_steps(
+                [
+                    ("gate slow", ["sh", "-c", f'sleep 30 & echo $! > "{grandchild_pid}"; wait']),
+                    ("gate interrupted", ["true"]),
+                ],
+                run=None,  # type: ignore[arg-type]
+                runner="managed",
+            )
+
+    assert len(spawned) == 1
+    pid = int(grandchild_pid.read_text(encoding="utf-8"))
+    for _ in range(500):
+        if not _process_alive(pid):
+            break
+        time.sleep(0.01)
+    else:
+        os.kill(pid, signal.SIGKILL)
+        pytest.fail("the gate's child process outlived the interruption")
+    # Terminated by the interruption, not left to sleep out its 30 seconds.
+    assert spawned[0].poll() is not None
+    # Joined before the interruption propagated, and never recorded as a result.
+    assert worker_outcomes == ["interrupted"]
 
 
 def test_verification_tools_are_absolute_paths_in_checkout_venv() -> None:
@@ -114,7 +305,7 @@ def test_verification_tools_are_absolute_paths_in_checkout_venv() -> None:
     assert commands["gate lint"][0] == str(verify.ROOT / ".venv/bin/ruff")
     assert commands["gate mypy"][0].startswith(str(verify.ROOT / ".venv/bin/"))
     assert commands["gate generated-surfaces"][0] == str(verify.ROOT / ".venv/bin/python")
-    assert commands["gate schema-privacy"][0] == str(verify.ROOT / ".venv/bin/python")
+    assert commands["gate schema-closure"][0] == str(verify.ROOT / ".venv/bin/python")
 
 
 @pytest.mark.parametrize(
@@ -205,7 +396,7 @@ def test_required_gate_subprocess_launch_failure_is_typed(monkeypatch: pytest.Mo
     monkeypatch.setattr(required_gate.shutil, "which", lambda *_args, **_kwargs: "/bin/ruff")  # type: ignore[attr-defined]
     monkeypatch.setattr(
         subprocess,
-        "run",
+        "Popen",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("ruff")),
     )
     monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
@@ -1620,3 +1811,51 @@ def test_a_json_verdict_line_stays_off_the_machine_contract(
     captured = capsys.readouterr()
     assert json.loads(captured.out)["exit_code"] == 1
     assert captured.err.strip().splitlines()[-1].startswith("verify: FAILED exit=1")
+
+
+def test_interruption_cleanup_defers_a_second_signal() -> None:
+    """A repeated SIGTERM during gate cleanup does not escape it.
+
+    Anti-vacuity: run the cleanup without ``_signals_deferred`` and the
+    SIGTERM raised inside it reaches the installed handler, which raises.
+    """
+
+    class _RaisedError(Exception):
+        pass
+
+    def raising(_signum: int, _frame: object) -> None:
+        raise _RaisedError
+
+    previous = signal.signal(signal.SIGTERM, raising)
+    try:
+        with verify._signals_deferred():
+            os.kill(os.getpid(), signal.SIGTERM)
+        assert signal.getsignal(signal.SIGTERM) is raising
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def test_stopping_gates_shares_one_grace_period(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every stuck gate gets the same deadline, not ten seconds each in turn.
+
+    Anti-vacuity: wait ``timeout=10`` per process and the second wait is
+    asked for the full ten seconds again.
+    """
+    clock = [0.0]
+    waits: list[float] = []
+
+    class _Stuck:
+        pid = 0
+
+        def wait(self, timeout: float) -> int:
+            waits.append(timeout)
+            clock[0] += timeout
+            raise subprocess.TimeoutExpired("gate", timeout)
+
+    monkeypatch.setattr("devtools.verify.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("devtools.verify.os.killpg", lambda *_args: None)
+    monkeypatch.setattr(verify, "_LIVE_GATE_PROCESSES", {_Stuck(), _Stuck()})
+
+    verify._stop_gate_processes()
+
+    assert waits == [10.0, 0.0]

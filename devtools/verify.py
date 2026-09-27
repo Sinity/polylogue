@@ -13,8 +13,10 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
@@ -248,7 +250,9 @@ def _pytest_steps(
 
 
 #: Labels whose verdict is recorded but does not decide the verifier's exit.
-NON_BLOCKING_LABELS: frozenset[str] = frozenset(gate.label for gate in quick_gates() if not gate.blocking)
+#: Static gates are independent processes, so they run side by side; the
+#: quick tier then costs its slowest gate rather than the sum of all of them.
+GATE_PARALLELISM = max(1, min(8, os.cpu_count() or 1))
 
 
 def build_verify_steps(
@@ -568,13 +572,148 @@ def _subprocess_env() -> dict[str, str]:
     return {**os.environ, "POLYLOGUE_ROOT": str(ROOT), "PYTHONPYCACHEPREFIX": str(ROOT / ".cache" / "pycache")}
 
 
+#: Serializes the output lines of gates running side by side.
+_STEP_LOCK = threading.RLock()
+#: Gate processes still running, so an interrupted run can stop them.
+_LIVE_GATE_PROCESSES: set[subprocess.Popen[str]] = set()
+#: Set while an interruption stops the gates, so a gate whose process it
+#: terminated is left for the interrupted-run bookkeeping instead of being
+#: recorded as an ordinary failure.
+_GATES_INTERRUPTED = threading.Event()
+
+
+class _GateInterruptedError(Exception):
+    """A gate process ended because the run was interrupted."""
+
+
+def _write_step_line(text: str, *, end: str = "\n") -> None:
+    with _STEP_LOCK:
+        sys.stderr.write(text + end)
+        sys.stderr.flush()
+
+
+def _write_step_result(label: str, pytest_step: bool, verdict: str, detail: str = "") -> None:
+    """Write one step's verdict, and any failure output, as one uninterrupted block.
+
+    A gate's line is written only when it finishes, so parallel gates never
+    interleave a verdict with another gate's name.
+    """
+    prefix = "" if pytest_step else f"  {label} ... "
+    _write_step_line(prefix + verdict + "\n" + detail, end="")
+
+
+def _run_gate_process(command: list[str], *, env: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
+    """Run one gate to completion, registered so an interruption can stop it.
+
+    Each gate leads its own process group: a gate that runs its checker as a
+    child (``devtools.mypy_gate`` runs ``mypy``) is stopped with that child,
+    which would otherwise hold the output pipes open after its parent died.
+    """
+    # Checking the interruption and registering the process are one step, so a
+    # gate either starts before the interruption's snapshot of live processes,
+    # and is stopped with them, or sees the interruption and never starts.
+    with _STEP_LOCK:
+        if _GATES_INTERRUPTED.is_set():
+            raise _GateInterruptedError(command[0])
+        process = subprocess.Popen(
+            command,
+            cwd=ROOT,
+            env=dict(env),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        _LIVE_GATE_PROCESSES.add(process)
+    try:
+        stdout, stderr = process.communicate()
+    finally:
+        with _STEP_LOCK:
+            _LIVE_GATE_PROCESSES.discard(process)
+    if _GATES_INTERRUPTED.is_set():
+        raise _GateInterruptedError(command[0])
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def _stop_gate_processes() -> None:
+    with _STEP_LOCK:
+        live = tuple(_LIVE_GATE_PROCESSES)
+    for process in live:
+        with contextlib.suppress(OSError):
+            os.killpg(process.pid, signal.SIGTERM)
+    # One grace period for all of them, not one per gate.
+    deadline = time.monotonic() + 10
+    for process in live:
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=max(0.0, deadline - time.monotonic()))
+    # The leader exiting does not mean its group did: a child that delays or
+    # ignores SIGTERM still holds the gate's output pipes. Whatever of each
+    # group survived the grace period is killed.
+    for process in live:
+        with contextlib.suppress(OSError):
+            os.killpg(process.pid, signal.SIGKILL)
+
+
+@contextlib.contextmanager
+def _signals_deferred() -> Iterator[None]:
+    """Ignore SIGINT and SIGTERM for the duration; restore the handlers after."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = {signum: signal.signal(signum, signal.SIG_IGN) for signum in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def _run_steps(
+    steps: Sequence[tuple[str, list[str]]], *, run: VerifyRun, runner: str
+) -> list[tuple[str, tuple[int, float, dict[str, Any]]]]:
+    """Run the static gates side by side, then any pytest step alone.
+
+    Outcomes come back in declared order whatever order the gates finish in.
+    An interruption stops the running gate processes and joins their workers
+    before it propagates, so nothing records or prints a gate after the run's
+    interrupted verdict; the stopped gates stay ``running`` for that verdict.
+    """
+    _GATES_INTERRUPTED.clear()
+    gates = [(label, command) for label, command in steps if not label.startswith("pytest")]
+    tests = [(label, command) for label, command in steps if label.startswith("pytest")]
+    outcomes: list[tuple[str, tuple[int, float, dict[str, Any]]]] = []
+    if gates:
+        pool = ThreadPoolExecutor(max_workers=min(GATE_PARALLELISM, len(gates)), thread_name_prefix="gate")
+        try:
+            futures = [pool.submit(_run, label, command, run=run, runner=runner) for label, command in gates]
+            done, _pending = wait(futures, return_when=FIRST_EXCEPTION)
+            for future in done:
+                future.result()
+            outcomes.extend((label, future.result()) for (label, _command), future in zip(gates, futures, strict=True))
+        except BaseException:
+            # A second SIGINT/SIGTERM during cleanup must not abandon it: the
+            # verdict would be written while gate processes still run.
+            with _signals_deferred():
+                with _STEP_LOCK:
+                    _GATES_INTERRUPTED.set()
+                pool.shutdown(wait=False, cancel_futures=True)
+                _stop_gate_processes()
+                pool.shutdown(wait=True)
+            raise
+        pool.shutdown(wait=True)
+    for label, command in tests:
+        outcomes.append((label, _run(label, command, run=run, runner=runner)))
+    return outcomes
+
+
 def _run(
     label: str, command: list[str], *, run: VerifyRun, runner: str = "managed"
 ) -> tuple[int, float, dict[str, Any]]:
     started = time.monotonic()
-    sys.stderr.write(f"  {label} ... ")
-    sys.stderr.flush()
     pytest_step = label.startswith("pytest")
+    if pytest_step:
+        # A pytest step streams its own output; name it before that begins.
+        _write_step_line(f"  {label} ... ", end="")
     artifacts = run.start_step(label=label, cmd=command)
     env = _subprocess_env()
     hypothesis_profile: str | None = None
@@ -591,9 +730,12 @@ def _run(
             step_id=artifacts.step_id,
             result=_early_gate_failure_result(started, early_metadata),
         )
-        sys.stderr.write(f"FAILED ({executable_result.diagnosis})\n")
-        for detail in executable_result.details:
-            sys.stderr.write(f"    {detail}\n")
+        _write_step_result(
+            label,
+            pytest_step,
+            f"FAILED ({executable_result.diagnosis})",
+            "".join(f"    {detail}\n" for detail in executable_result.details),
+        )
         return 127, time.monotonic() - started, early_metadata
     slot = None
     metadata_receipt = None
@@ -628,7 +770,7 @@ def _run(
                 step_id=artifacts.step_id,
                 result=_early_gate_failure_result(started, early_metadata),
             )
-            sys.stderr.write(f"FAILED ({exc})\n")
+            _write_step_result(label, pytest_step, f"FAILED ({exc})")
             return 125, time.monotonic() - started, early_metadata
         slot = outcome.slot
         completed = subprocess.CompletedProcess(command, outcome.returncode)
@@ -653,14 +795,14 @@ def _run(
         )
     else:
         try:
-            completed = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True)
+            completed = _run_gate_process(command, env=env)
         except OSError as exc:
             early_metadata = {"diagnosis": "gate_subprocess_launch_failed", "error": str(exc)}
             run.finish_step(
                 step_id=artifacts.step_id,
                 result=_early_gate_failure_result(started, early_metadata),
             )
-            sys.stderr.write("FAILED (subprocess launch)\n")
+            _write_step_result(label, pytest_step, "FAILED (subprocess launch)")
             return 127, time.monotonic() - started, early_metadata
     elapsed = time.monotonic() - started
     metadata: dict[str, Any] = {
@@ -736,11 +878,12 @@ def _run(
     if pytest_step and step is not None:
         effective_exit = int(step["exit"])
         metadata = step
-    sys.stderr.write(f"{'ok' if effective_exit == 0 else 'FAILED'} ({elapsed:.1f}s)\n")
+    detail = ""
     if not pytest_step and effective_exit and isinstance(completed.stdout, str):
-        sys.stderr.write(completed.stdout)
+        detail += completed.stdout
     if not pytest_step and completed.returncode and isinstance(completed.stderr, str):
-        sys.stderr.write(completed.stderr)
+        detail += completed.stderr
+    _write_step_result(label, pytest_step, f"{'ok' if effective_exit == 0 else 'FAILED'} ({elapsed:.1f}s)", detail)
     return effective_exit, elapsed, metadata
 
 
@@ -1110,15 +1253,9 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     try:
         results: list[dict[str, Any]] = []
         exit_code = 0
-        for label, command in steps:
-            rc, elapsed, metadata = _run(label, command, run=run, runner=args.runner)
-            blocking = label not in NON_BLOCKING_LABELS
-            results.append(
-                {"name": label, "duration_s": round(elapsed, 2), "exit": rc, "blocking": blocking, **metadata}
-            )
-            if rc and not blocking:
-                sys.stderr.write(f"  {label}: report-only, not blocking this run\n")
-            if rc and blocking:
+        for label, (rc, elapsed, metadata) in _run_steps(steps, run=run, runner=args.runner):
+            results.append({"name": label, "duration_s": round(elapsed, 2), "exit": rc, **metadata})
+            if rc:
                 exit_code = exit_code or rc
     except VerificationInterrupted as exc:
         return _finish_interrupted_verification(
@@ -1180,7 +1317,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     )
     # The retained exit code is the first failure's; its diagnosis must be too.
     diagnosis = next(
-        (str(result["diagnosis"]) for result in results if result["exit"] != 0 and result.get("blocking", True)),
+        (str(result["diagnosis"]) for result in results if result["exit"] != 0),
         None,
     )
     if checkout_moved:

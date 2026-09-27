@@ -4,8 +4,7 @@ Gate classification: **not a gate**. This is a place to put evidence, not a
 new obligation to produce it, and nothing schedules it.
 
 The static verification gates already own their committed evidence:
-``devtools/verify_schema_closure.py`` writes ``docs/plans/schema-closure-baseline.json``
-and ``devtools/verify_oracle_integrity.py`` writes its hermeticity baseline.
+``devtools/verify_schema_closure.py`` writes ``docs/plans/schema-closure-baseline.json``.
 Measurement evidence had no equivalent owner, so
 ``tests/benchmarks/baselines/`` held a single ``.gitkeep`` while
 ``tests/benchmarks/test_finished_build_measurement.py`` built a complete typed

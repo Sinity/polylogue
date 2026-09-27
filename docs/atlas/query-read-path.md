@@ -45,12 +45,9 @@ reintroduced the ambiguity the type removes.
 A read may open the archive itself only through one of the two declared
 read-boundary owners; every other direct open is an explicit writer-lease
 open. The invariant, its owners and its change procedure are one stanza in
-`doctrine.md`. What an area reader needs here: `devtools gate controlled-read`
-censuses every `ArchiveStore.open_existing` in `polylogue/` against
-`docs/plans/controlled-read-census.yaml`, names an undeclared one by
-`file:line`, and prints the whole classification with `--census`. At this head
-the verdict is 3 read-boundary owners, 23 licensed writers, 0 uncontrolled
-reads.
+`doctrine.md`. No gate censuses direct opens any longer;
+`tests/unit/daemon/test_surface_data_boundary.py` refuses connection openers in
+the surface packages.
 
 A read view that computes its own answer in-process is a different question
 from this one: those are declared, and shrink-only, in
@@ -81,6 +78,5 @@ an exact zero or infer tool failure from prose.
 
 Begin with the focused query or surface test through `devtools test`. For a
 cross-surface change, run the relevant CLI/API/MCP parity tests, pagination and
-cancellation coverage, then `devtools gate doc-commands` and the generated
-surface check. Use `devtools why` to inspect a managed verification refusal or
+cancellation coverage, then the generated surface check. Use `devtools why` to inspect a managed verification refusal or
 failure before interpreting a receipt.

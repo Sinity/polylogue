@@ -154,10 +154,9 @@ class TestClosureRatchetGate:
     """
 
     def test_the_gate_is_registered_in_the_quick_path(self) -> None:
-        from devtools.gate import GATES_BY_NAME, quick_gates
+        from devtools.gate import quick_gates
 
         assert "schema-closure" in {gate.name for gate in quick_gates()}
-        assert GATES_BY_NAME["schema-closure"].blocking is True
 
     def test_the_checked_in_baseline_matches_the_live_closure(self) -> None:
         """A green gate on master means the baseline is the real membership."""

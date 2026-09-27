@@ -445,3 +445,43 @@ def test_benign_ddl_registry_rejects_a_data_producing_create_table(monkeypatch: 
 def test_live_benign_ddl_registries_are_idempotent_and_non_transforming() -> None:
     """Every registered same-version statement passes the shape validator."""
     assert verify_schema_manifest._benign_ddl_violations() == []
+
+
+def test_a_commit_schema_state_is_rendered_once_per_checkout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: read the base state without consulting the commit-keyed
+    cache and the second render extracts the commit again."""
+    renders: list[str] = []
+
+    def render(commit: str) -> dict[str, object]:
+        renders.append(commit)
+        return {"ddl": {"source": "CREATE TABLE t(x)"}, "versions": {"source": 1}, "lineage": "v1"}
+
+    monkeypatch.setattr(verify_schema_manifest, "_SCHEMA_STATE_CACHE", tmp_path / "schema-state")
+    monkeypatch.setattr(verify_schema_manifest, "_render_commit_payload", render)
+    monkeypatch.setattr(verify_schema_manifest, "_git_text", lambda *_args: "a" * 40 + "\n")
+
+    first = verify_schema_manifest._render_schema_state("origin/master")
+    second = verify_schema_manifest._render_schema_state("origin/master")
+
+    assert renders == ["a" * 40]
+    assert first == second
+    assert first.versions == {ArchiveTier.SOURCE: 1}
+
+
+def test_an_unchanged_package_compares_against_itself_without_rendering_the_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anti-vacuity: drop the unchanged-package shortcut and the base is rendered."""
+    rendered: list[str | None] = []
+
+    def render(ref: str | None) -> object:
+        rendered.append(ref)
+        return _schema_state(source_version=1)
+
+    monkeypatch.setattr(verify_schema_manifest, "_merge_base", lambda _explicit=None: "base")
+    monkeypatch.setattr(verify_schema_manifest, "_package_unchanged_since", lambda _base: True)
+    monkeypatch.setattr(verify_schema_manifest, "_render_schema_state", render)
+    monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: ())
+
+    assert verify_schema_manifest._durable_ddl_evolution_violations() == []
+    assert rendered == [None]

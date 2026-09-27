@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from devtools import repo_root as _get_root
+from devtools.ast_cache import parse_path, walk_module
 from devtools.derived_sweep_census import collect_violations as collect_derived_sweep_violations
 from devtools.durable_write_census import collect_violations as collect_durable_write_violations
 from devtools.manifest_models import validate_layering_manifest
@@ -248,7 +249,7 @@ def _top_level_package_docstring_violations(repo_root: Path) -> list[dict[str, o
             continue
         rel = init_path.relative_to(repo_root).as_posix()
         try:
-            tree = ast.parse(init_path.read_text(encoding="utf-8"))
+            tree = parse_path(init_path)
         except (SyntaxError, UnicodeDecodeError) as exc:
             violations.append(
                 {
@@ -273,7 +274,7 @@ def _collect_imports(package_dir: Path, *, repo_root: Path) -> tuple[dict[str, s
         return imports, (f"{package_dir.relative_to(repo_root).as_posix()}: {exc}",)
     for py_file in candidates:
         try:
-            tree = ast.parse(py_file.read_text(encoding="utf-8"))
+            tree = parse_path(py_file)
         except (OSError, UnicodeError) as exc:
             unreadable.append(f"{py_file.relative_to(repo_root).as_posix()}: {exc}")
             continue
@@ -281,7 +282,7 @@ def _collect_imports(package_dir: Path, *, repo_root: Path) -> tuple[dict[str, s
             continue
         rel = py_file.relative_to(repo_root).as_posix()
         imports.setdefault(rel, set())
-        for node in ast.walk(tree):
+        for node in walk_module(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     imports[rel].add(alias.name)
@@ -517,7 +518,7 @@ def _string_fragments(expression: ast.expr, values: dict[str, tuple[str, ...]] |
 def _string_assignments(tree: ast.AST) -> dict[str, tuple[str, ...]]:
     values: dict[str, tuple[str, ...]] = {}
     for _ in range(3):
-        for node in ast.walk(tree):
+        for node in walk_module(tree):
             if not isinstance(node, ast.Assign) or len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
                 continue
             fragments = _string_fragments(node.value, values)
@@ -552,7 +553,9 @@ def _archive_table_tiers() -> dict[str, str]:
 def _mutation_calls(tree: ast.AST) -> tuple[ast.Call, ...]:
     values = _string_assignments(tree)
     return tuple(
-        node for node in ast.walk(tree) if isinstance(node, ast.Call) and _mutation_sql(node, values=values) is not None
+        node
+        for node in walk_module(tree)
+        if isinstance(node, ast.Call) and _mutation_sql(node, values=values) is not None
     )
 
 
@@ -560,7 +563,7 @@ def _mutation_tiers(tree: ast.AST) -> frozenset[str]:
     values = _string_assignments(tree)
     table_tiers = _archive_table_tiers()
     tiers: set[str] = set()
-    for node in ast.walk(tree):
+    for node in walk_module(tree):
         if not isinstance(node, ast.Call):
             continue
         sql = _mutation_sql(node, values=values)
@@ -612,7 +615,7 @@ def _writer_module_files(repo_root: Path, policy: WriterModulePolicy) -> dict[st
             continue
         for py_file in root_path.rglob("*.py"):
             try:
-                tree = ast.parse(py_file.read_text(encoding="utf-8"))
+                tree = parse_path(py_file)
             except (SyntaxError, UnicodeDecodeError):
                 continue
             rel = py_file.relative_to(repo_root).as_posix()
@@ -621,12 +624,12 @@ def _writer_module_files(repo_root: Path, policy: WriterModulePolicy) -> dict[st
 
 
 def _function_definitions(tree: ast.Module) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
-    return {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)}
+    return {node.name: node for node in walk_module(tree) if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)}
 
 
 def _imported_writer_modules(tree: ast.Module) -> dict[str, str]:
     imports: dict[str, str] = {}
-    for node in ast.walk(tree):
+    for node in walk_module(tree):
         if not isinstance(node, ast.ImportFrom) or node.module is None:
             continue
         if not node.module.startswith("polylogue.storage.sqlite.archive_tiers."):
@@ -639,7 +642,7 @@ def _imported_writer_modules(tree: ast.Module) -> dict[str, str]:
 
 def _imported_names(tree: ast.Module) -> set[str]:
     names: set[str] = set()
-    for node in ast.walk(tree):
+    for node in walk_module(tree):
         if isinstance(node, ast.Import):
             names.update(alias.asname or alias.name.split(".", maxsplit=1)[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
@@ -657,7 +660,7 @@ def _imported_sql_execution_lines(tree: ast.Module) -> list[int]:
     imported = _imported_names(tree)
     return sorted(
         node.lineno
-        for node in ast.walk(tree)
+        for node in walk_module(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr in _SQL_EXECUTION_METHODS
@@ -787,7 +790,7 @@ def _census_mutation_files(repo_root: Path, policy: WriterModulePolicy) -> dict[
             if rel in inventoried or rel.startswith(in_root):
                 continue
             try:
-                tree = ast.parse(py_file.read_text(encoding="utf-8"))
+                tree = parse_path(py_file)
             except (SyntaxError, UnicodeDecodeError):
                 continue
             if not _mutation_calls(tree):
