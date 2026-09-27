@@ -505,13 +505,18 @@ def grok_export_item_count(
     envelope_keys = {"uuid", "sessionId", "parentUuid", "message", "payload", "cwd", "version"}
     provenance_keys = {"file", "source_file", "source_path", "transcript", "session_file"}
     content_keys = {"content", "text", "message_text", "body"}
-    required_string_keys = {"event_type", "session_id", "timestamp"}
+    required_string_keys = {"id", "kind", "created_at", "issue_id", "event_type", "session_id", "timestamp"}
     taxonomy_fields = (
         recordish_keys
         | envelope_keys
         | provenance_keys
         | content_keys
         | {
+            "id",
+            "kind",
+            "created_at",
+            "issue_id",
+            "extra",
             "event_type",
             "session_id",
             "timestamp",
@@ -581,7 +586,7 @@ def grok_export_item_count(
                 elif prefix in {"cascadeId", "markdown"} or prefix in required_string_keys:
                     taxonomy_values[prefix] = True
             elif prefix in taxonomy_keys and event == "start_map":
-                if prefix in {"mapping", "chunkedPrompt"}:
+                if prefix in {"mapping", "chunkedPrompt", "extra"}:
                     taxonomy_values[prefix] = True
             elif prefix in taxonomy_keys and event == "start_array":
                 if prefix in {"chat_messages", "chunks"}:
@@ -656,8 +661,9 @@ def grok_export_item_count(
         or (messages_array and messages_positive)
         or all(taxonomy_values.get(key, False) for key in ("source", "cascadeId", "markdown"))
     )
+    beads_overlap = all(taxonomy_values.get(key, False) for key in ("id", "kind", "created_at", "issue_id", "extra"))
     if on_positive_marker is not None:
-        on_positive_marker(bool(record_marker or session_marker))
+        on_positive_marker(bool(record_marker or session_marker) and not beads_overlap)
     return count if keys == arrays == 1 and (count == 0 or valid_members > 0) else None
 
 

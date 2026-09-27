@@ -693,6 +693,23 @@ def test_retained_grok_streams_responses_with_replay_parity(tmp_path: Path, monk
     ]
     beads_artifact.discard()
 
+    beads_analysis_artifact = revision_backfill.prepare_retained_jsonl_artifact(
+        "synthetic-grok-beads-analysis-path",
+        Provider.GROK.value,
+        beads_hash,
+        str(tmp_path / "analysis" / "prod-grok-backend.json"),
+        "full",
+        None,
+        str(blob_root),
+        str(source_db),
+        str(index_db),
+        str(tmp_path / "beads-analysis-prepared"),
+        fallback_timestamp,
+    )
+    assert beads_analysis_artifact.error is None
+    assert list(beads_analysis_artifact.iter_sessions()) == []
+    beads_analysis_artifact.discard()
+
     messages_record = {key: value for key, value in record.items() if key not in {"type", "version"}}
     messages_record["messages"] = [{"role": "user", "content": "Root metadata"}]
     messages_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(messages_record).encode("utf-8"))
