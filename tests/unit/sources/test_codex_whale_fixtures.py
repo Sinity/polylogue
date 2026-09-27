@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 
 from polylogue.sources.parsers.base import AdmissionDisposition, AdmissionUnit, ParsedSession
 from tests.infra.whale_fixtures import WHALE_FIXTURE_DIMENSIONS, multi_million_codex_stream
@@ -163,7 +164,7 @@ _CODE_MODE_ITEM_COUNT = 200_000
 # Head with ``_CodexExecItemRecord`` retaining the whole ``payload.item``:
 # 794.9 MB traced peak for this shape. With the append-time reduction: 367.2 MB.
 _CODE_MODE_ITEM_PEAK_BYTES_MAX = 600 * 1024 * 1024
-_REPLACEMENT_CONTEXT_COUNT = 20_000
+_REPLACEMENT_CONTEXT_COUNT = 200_000
 # Head with no aggregate ceiling: 461.7 MB traced peak and 200_002 session
 # events. With the ceiling: 219.3 MB and 515 events.
 
@@ -256,27 +257,59 @@ def _replacement_history_stream() -> Iterator[dict[str, object]]:
     }
 
 
-def test_every_distinct_replacement_only_value_is_stored_exactly_once() -> None:
+def test_every_distinct_replacement_only_value_is_stored_once_in_bounded_memory(tmp_path: Path) -> None:
     """Replacement-only text is content the session holds nowhere else.
 
-    Anti-vacuity: reinstate a count or size ceiling on replacement contexts and
-    fewer than ``_REPLACEMENT_CONTEXT_COUNT`` distinct values survive.
+    Every distinct value is stored exactly once, and the candidates wait in the
+    parse's scratch index, not in memory.
+
+    The bound is twice the traced size of the input records themselves: the
+    parser may hold the compacted record it is reading, but not a second copy
+    of every candidate beside it.
+
+    Anti-vacuity: reinstate a count ceiling and fewer than
+    ``_REPLACEMENT_CONTEXT_COUNT`` values survive; hold the candidates in a
+    Python dict again and the traced peak exceeds the bound (measured
+    461.7 MB against a 98 MB input before the scratch index held them).
     """
-    from polylogue.sources.dispatch import parse_stream_payload
+    import tracemalloc
+
+    tracemalloc.start()
+    try:
+        input_bytes = tracemalloc.get_traced_memory()[0]
+        records = list(_replacement_history_stream())
+        input_bytes = tracemalloc.get_traced_memory()[0] - input_bytes
+        del records
+    finally:
+        tracemalloc.stop()
+
     from polylogue.sources.parsers import codex
+    from polylogue.sources.prepared_message_sink import SqliteMessageStore
 
-    sessions = parse_stream_payload(
-        "codex",
-        _replacement_history_stream(),
-        "replacement-flood",
-        source_path="replacement-flood.jsonl",
-    )
+    store = SqliteMessageStore(tmp_path / "replacement-flood.db")
+    try:
+        events = store.new_event_sink()
+        tracemalloc.start()
+        try:
+            codex.parse_stream(
+                _replacement_history_stream(), "replacement-flood", message_sink=store.new_sink(), event_sink=events
+            )
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        stored = 0
+        seen: set[str] = set()
+        compaction_text_count = None
+        for event in events:
+            if event.event_type == codex._CODEX_REPLACEMENT_CONTEXT_EVENT_TYPE:
+                stored += 1
+                seen.add(str(event.payload["content"]))
+            elif event.event_type == "compaction":
+                compaction_text_count = event.payload["replacement_history_text_count"]
+    finally:
+        store.close()
 
-    assert len(sessions) == 1
-    events = sessions[0].session_events
-    contexts = [event for event in events if event.event_type == codex._CODEX_REPLACEMENT_CONTEXT_EVENT_TYPE]
-    stored = [str(event.payload["content"]) for event in contexts]
-    assert len(stored) == len(set(stored)) == _REPLACEMENT_CONTEXT_COUNT
-    assert "retained" not in stored
-    compaction = next(event for event in events if event.event_type == "compaction")
-    assert compaction.payload["replacement_history_text_count"] == _REPLACEMENT_CONTEXT_COUNT
+    assert peak < 2 * input_bytes, f"traced peak {peak} against input {input_bytes}"
+    assert stored == len(seen) == _REPLACEMENT_CONTEXT_COUNT
+    assert "retained" not in seen
+    assert compaction_text_count == _REPLACEMENT_CONTEXT_COUNT

@@ -16,6 +16,7 @@ writes rather than as a guess at internal state:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -73,26 +74,32 @@ def test_the_compacted_branch_stores_large_replacement_history_whole() -> None:
     assert contexts[0].payload["content_chars"] == len(_OVERSIZED)
 
 
-def test_a_lone_surrogate_in_replacement_history_does_not_break_the_parse() -> None:
-    """polylogue-xdr8w criterion 2.
+def test_a_lone_surrogate_in_replacement_history_survives_the_sqlite_sinks(tmp_path: Path) -> None:
+    """polylogue-xdr8w criterion 2, through the prepared production sinks.
 
     ``json.loads`` admits a lone surrogate as a ``str``. The text is built by
     decoding real JSON bytes carrying a ``\\ud800`` escape, so this is a
     rollout the provider could write, not a hand-assembled Python string.
 
-    Anti-vacuity: encode the text as strict UTF-8 anywhere on the parse route
-    and this raises ``UnicodeEncodeError`` instead of parsing.
+    Anti-vacuity: store the event JSON without escaping lone surrogates and
+    the SQLite event sink raises ``UnicodeEncodeError`` on insert.
     """
+    from polylogue.sources.parsers.codex import parse_stream
+    from polylogue.sources.prepared_message_sink import SqliteMessageStore
 
     encoded = json.dumps(_compacted(_OVERSIZED + "\\ud800")).replace("\\\\ud800", "\\ud800")
     record = json.loads(encoded)
     text = record["payload"]["replacement_history"][0]["content"][0]["text"]
     assert text.endswith("\ud800")
 
-    session = parse(_rollout(record), "xdr8w")
-
-    contexts = [event for event in session.session_events if event.event_type == "codex_replacement_context"]
-    assert [event.payload["content"] for event in contexts] == [text]
+    store = SqliteMessageStore(tmp_path / "surrogate-sinks.db")
+    try:
+        events = store.new_event_sink()
+        parse_stream(iter(_rollout(record)), "xdr8w", message_sink=store.new_sink(), event_sink=events)
+        contexts = [event for event in events if event.event_type == "codex_replacement_context"]
+        assert [event.payload["content"] for event in contexts] == [text]
+    finally:
+        store.close()
 
 
 def test_the_turn_context_branch_is_reachable_and_numbers_revisions() -> None:

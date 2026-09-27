@@ -164,6 +164,19 @@ class _CodexLookaheadIndex:
                 event_index INTEGER PRIMARY KEY, key BLOB NOT NULL,
                 text_chars INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS codex_replacement_texts (
+                key BLOB PRIMARY KEY, text BLOB NOT NULL, text_chars INTEGER NOT NULL,
+                occurrences INTEGER NOT NULL DEFAULT 1,
+                retained INTEGER NOT NULL DEFAULT 0, stored INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS codex_replacement_keys (
+                value BLOB PRIMARY KEY, candidate_key BLOB NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS codex_replacement_contexts (
+                ordinal INTEGER PRIMARY KEY, insert_at INTEGER NOT NULL, key BLOB NOT NULL,
+                timestamp TEXT, source_index INTEGER NOT NULL,
+                entry_type TEXT, role TEXT, phase TEXT
+            );
             """
         )
 
@@ -1445,48 +1458,42 @@ class _CodexInstructionRevisions:
         return tuple(self._order)
 
 
-@dataclass
-class _CodexTextCandidate:
-    """One text value awaiting proof the session already retains it."""
-
-    text: str
-    occurrences: int = 1
-    retained: bool = False
-    stored: bool = False
-
-
 class _CodexTextConservation:
     """Decides which candidate texts a parsed session does not already hold.
 
     Candidates are registered while parsing and resolved in one pass at the
     end, against every text the parser emits -- message text, block text, tool
-    inputs, session-event payloads, the session's instructions. Only the
-    candidates are indexed, so resolution costs one walk over the retained
-    content and memory proportional to the candidates, not to the session.
+    inputs, session-event payloads, the session's instructions. Candidates live
+    in the parse's scratch index, so resolution costs one walk over the
+    retained content and no memory proportional to the candidates.
 
     Resolution must run after the last event is appended: ``replacement_history``
     re-embeds records that may be parsed either before or after the compaction
     that carries them.
     """
 
-    def __init__(self, index: _CodexLookaheadIndex | None = None) -> None:
-        self._by_text: dict[str, _CodexTextCandidate] = {}
+    def __init__(self, index: _CodexLookaheadIndex) -> None:
         self._unresolved = 0
         self._index = index
         self._task_unresolved = 0
+        self._contexts = 0
 
-    def _candidate(self, text: str) -> _CodexTextCandidate | None:
-        candidate = self._by_text.get(text)
-        if candidate is None and not text.isascii():
-            candidate = self._by_text.get(unicodedata.normalize("NFC", text))
-        return candidate
+    def _candidate(self, text: str, *, normalize: bool = True) -> bytes | None:
+        connection = self._index.connection
+        row = connection.execute(
+            "SELECT candidate_key FROM codex_replacement_keys WHERE value = ?", (_sql_key(text),)
+        ).fetchone()
+        if row is None and normalize and not text.isascii():
+            row = connection.execute(
+                "SELECT candidate_key FROM codex_replacement_keys WHERE value = ?",
+                (_sql_key(unicodedata.normalize("NFC", text)),),
+            ).fetchone()
+        return row[0] if row is not None else None
 
     def _task_key(self, text: str) -> bytes:
         return _sql_key(text)
 
     def _task_lookup(self, text: str, *, normalize: bool) -> bytes | None:
-        if self._index is None:
-            return None
         connection = self._index.connection
         row = connection.execute(
             "SELECT candidate_key FROM codex_task_keys WHERE value = ?", (self._task_key(text),)
@@ -1499,8 +1506,6 @@ class _CodexTextConservation:
         return row[0] if row is not None else None
 
     def add_task_completion(self, text: str, event_index: int) -> None:
-        if self._index is None:
-            raise RuntimeError("task completion scratch index is required")
         key = self._task_lookup(text, normalize=False)
         connection = self._index.connection
         if key is None:
@@ -1517,8 +1522,6 @@ class _CodexTextConservation:
         connection.execute("INSERT INTO codex_task_events VALUES (?, ?, ?)", (event_index, key, len(text)))
 
     def finish_task_completions(self, events: MutableSequence[ParsedSessionEvent]) -> None:
-        if self._index is None:
-            return
         connection = self._index.connection
         for event_index, key, text_chars in connection.execute(
             "SELECT event_index, key, text_chars FROM codex_task_events ORDER BY event_index"
@@ -1529,52 +1532,134 @@ class _CodexTextConservation:
             assert row is not None
             text = pickle.loads(row[0])
             retained, stored = row[1], row[2]
-            candidate = self._by_text.get(text)
+            candidate_key = self._candidate(text, normalize=False)
+            candidate = (
+                connection.execute(
+                    "SELECT retained, stored FROM codex_replacement_texts WHERE key = ?", (candidate_key,)
+                ).fetchone()
+                if candidate_key is not None
+                else None
+            )
             event = events[event_index]
             event.payload["last_agent_message_chars"] = text_chars
-            if retained or stored or (candidate is not None and (candidate.retained or candidate.stored)):
+            if retained or stored or (candidate is not None and (candidate[0] or candidate[1])):
                 event.payload["last_agent_message_retained"] = True
             else:
                 event.payload["last_agent_message"] = text
                 connection.execute("UPDATE codex_task_texts SET stored = 1 WHERE key = ?", (key,))
-                if candidate is not None:
-                    candidate.stored = True
+                if candidate_key is not None:
+                    connection.execute("UPDATE codex_replacement_texts SET stored = 1 WHERE key = ?", (candidate_key,))
             events[event_index] = event
 
-    def contains(self, text: str) -> bool:
-        """Report whether ``text`` is already a registered candidate."""
-        if self._candidate(text) is not None:
-            return True
-        return self._task_lookup(text, normalize=True) is not None
+    def add(self, text: str) -> tuple[bytes | None, bool]:
+        """Register ``text``; returns its candidate key and whether it is new.
 
-    def add(self, text: str) -> tuple[_CodexTextCandidate, bool]:
-        """Register ``text``; the flag reports whether this value is new."""
-        existing = self._by_text.get(text)
+        A value already registered only gains an occurrence. A value the
+        session keeps as a task-completion text has no candidate of its own.
+        """
+        connection = self._index.connection
+        existing = self._candidate(text, normalize=False)
         if existing is not None:
-            existing.occurrences += 1
+            connection.execute(
+                "UPDATE codex_replacement_texts SET occurrences = occurrences + 1 WHERE key = ?", (existing,)
+            )
             return existing, False
         if self._task_lookup(text, normalize=False) is not None:
-            return _CodexTextCandidate(text=text, retained=True), False
-        candidate = _CodexTextCandidate(text=text)
-        self._by_text[text] = candidate
+            return None, False
+        key = _sql_key(text)
+        connection.execute(
+            "INSERT INTO codex_replacement_texts(key, text, text_chars) VALUES (?, ?, ?)", (key, key, len(text))
+        )
+        connection.execute("INSERT INTO codex_replacement_keys VALUES (?, ?)", (key, key))
         # A value normalized differently on the two sides would otherwise read
         # as absent and be stored a second time. Only the candidates are
         # normalized; retained text is looked up as written, then normalized
         # only when it is not pure ASCII.
         normalized = unicodedata.normalize("NFC", text)
         if normalized != text:
-            self._by_text.setdefault(normalized, candidate)
+            connection.execute(
+                "INSERT OR IGNORE INTO codex_replacement_keys VALUES (?, ?)", (_sql_key(normalized), key)
+            )
         self._unresolved += 1
-        return candidate, True
+        return key, True
+
+    def add_context(
+        self,
+        key: bytes,
+        *,
+        insert_at: int,
+        timestamp: str | None,
+        source_index: int,
+        entry_type: str | None,
+        role: str | None,
+        phase: str | None,
+    ) -> None:
+        """Record where a new candidate is stored if the session keeps it nowhere else."""
+        self._index.connection.execute(
+            "INSERT INTO codex_replacement_contexts VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (self._contexts, insert_at, key, timestamp, source_index, entry_type, role, phase),
+        )
+        self._contexts += 1
+
+    def finish_replacement_contexts(self, events: MutableSequence[ParsedSessionEvent]) -> None:
+        """Splice each unretained candidate's event in after its compaction, once."""
+        if not self._contexts:
+            return
+        connection = self._index.connection
+        stored = """
+            FROM codex_replacement_contexts AS context
+            JOIN codex_replacement_texts AS text ON text.key = context.key
+            WHERE text.retained = 0 AND text.stored = 0
+        """
+        for insert_at, count in connection.execute(
+            f"SELECT context.insert_at, COUNT(*) {stored} GROUP BY context.insert_at"
+        ).fetchall():
+            compaction = events[insert_at - 1]
+            previous = compaction.payload.get("replacement_history_context_count")
+            compaction.payload["replacement_history_context_count"] = (
+                previous if isinstance(previous, int) else 0
+            ) + count
+            events[insert_at - 1] = compaction
+        rows = connection.execute(
+            "SELECT context.insert_at, context.timestamp, context.source_index, context.entry_type, "
+            f"context.role, context.phase, text.text, text.occurrences {stored} "
+            "ORDER BY context.insert_at, context.ordinal"
+        )
+        # The cursor streams rows; inserting into the sink does not touch the
+        # scratch index it reads from.
+        for offset, (insert_at, timestamp, source_index, entry_type, role, phase, text, occurrences) in enumerate(rows):
+            content = pickle.loads(text)
+            payload: dict[str, object] = {
+                "source_index": source_index,
+                "context_kind": "replacement_history",
+                "content": content,
+                "content_chars": len(content),
+                "occurrences": occurrences,
+            }
+            if entry_type:
+                payload["entry_type"] = entry_type
+            if role:
+                payload["role"] = role
+            if phase:
+                payload["phase"] = phase
+            events.insert(
+                insert_at + offset,
+                ParsedSessionEvent(
+                    event_type=_CODEX_REPLACEMENT_CONTEXT_EVENT_TYPE, timestamp=timestamp, payload=payload
+                ),
+            )
 
     def _mark(self, text: str) -> None:
         if not text or not (self._unresolved or self._task_unresolved):
             return
-        candidate = self._candidate(text)
-        if candidate is not None and not candidate.retained:
-            candidate.retained = True
-            self._unresolved -= 1
-        if self._index is not None and self._task_unresolved:
+        if self._unresolved:
+            candidate_key = self._candidate(text)
+            if candidate_key is not None:
+                updated = self._index.connection.execute(
+                    "UPDATE codex_replacement_texts SET retained = 1 WHERE key = ? AND retained = 0", (candidate_key,)
+                )
+                self._unresolved -= updated.rowcount
+        if self._task_unresolved:
             task_key = self._task_lookup(text, normalize=True)
             if task_key is not None:
                 updated = self._index.connection.execute(
@@ -1617,41 +1702,6 @@ class _CodexTextConservation:
             self._mark_nested(event.payload)
             if not (self._unresolved or self._task_unresolved):
                 return
-
-
-@dataclass
-class _CodexReplacementContext:
-    """A replacement_history text value pending the conservation verdict."""
-
-    insert_at: int
-    compaction_event: ParsedSessionEvent
-    timestamp: str | None
-    source_index: int
-    entry_type: str | None
-    role: str | None
-    phase: str | None
-    candidate: _CodexTextCandidate
-
-
-def _codex_replacement_context_event(context: _CodexReplacementContext) -> ParsedSessionEvent:
-    payload: dict[str, object] = {
-        "source_index": context.source_index,
-        "context_kind": "replacement_history",
-        "content": context.candidate.text,
-        "content_chars": len(context.candidate.text),
-        "occurrences": context.candidate.occurrences,
-    }
-    if context.entry_type:
-        payload["entry_type"] = context.entry_type
-    if context.role:
-        payload["role"] = context.role
-    if context.phase:
-        payload["phase"] = context.phase
-    return ParsedSessionEvent(
-        event_type=_CODEX_REPLACEMENT_CONTEXT_EVENT_TYPE,
-        timestamp=context.timestamp,
-        payload=payload,
-    )
 
 
 def _codex_response_item_event_type(inner_type: str | None, record_type: str | None) -> str:
@@ -3979,7 +4029,6 @@ def _parse_records(
     # registered here as it is met and resolved once, after the last event, so
     # only a value the session retains nowhere else is stored again.
     conservation = _CodexTextConservation(_index)
-    pending_replacement_context: list[_CodexReplacementContext] = []
     admission = AdmissionLedger()
 
     for idx, item in enumerate(records, start=1):
@@ -4029,7 +4078,6 @@ def _parse_records(
             # The compaction is appended below; context events must
             # splice immediately after it, matching the historical ordering.
             insert_at = len(session_events) + 1
-            history_contexts: list[tuple[_CodexTextCandidate, str | None, str | None, str | None]] = []
             for entry in history_list:
                 if not isinstance(entry, dict):
                     continue
@@ -4052,9 +4100,17 @@ def _parse_records(
                         if not isinstance(content_text, str) or not content_text:
                             continue
                         history_text_count += 1
-                        candidate, is_new = conservation.add(content_text)
-                        if is_new:
-                            history_contexts.append((candidate, entry_type, entry_role, entry_phase))
+                        candidate_key, is_new = conservation.add(content_text)
+                        if is_new and candidate_key is not None:
+                            conservation.add_context(
+                                candidate_key,
+                                insert_at=insert_at,
+                                timestamp=timestamp,
+                                source_index=idx,
+                                entry_type=entry_type,
+                                role=entry_role,
+                                phase=entry_phase,
+                            )
             if history_text_count:
                 compaction_event.payload["replacement_history_text_count"] = history_text_count
             if phase_counts:
@@ -4066,19 +4122,6 @@ def _parse_records(
             session_events.append(compaction_event)
             # Context events are spliced in directly after their own compaction
             # event, so a reader meets the text where the compaction dropped it.
-            for candidate, entry_type, entry_role, entry_phase in history_contexts:
-                pending_replacement_context.append(
-                    _CodexReplacementContext(
-                        insert_at=insert_at,
-                        compaction_event=compaction_event,
-                        timestamp=timestamp,
-                        source_index=idx,
-                        entry_type=entry_type,
-                        role=entry_role,
-                        phase=entry_phase,
-                        candidate=candidate,
-                    )
-                )
             # Materialize the compaction summary as a real message at the
             # boundary, mirroring Claude Code, so both providers present a uniform
             # summary message that replaces the prior context (#2467). The
@@ -4607,24 +4650,7 @@ def _parse_records(
         instructions_text=session_instructions,
     )
     conservation.finish_task_completions(session_events)
-    if pending_replacement_context:
-        context_insertions: dict[int, list[ParsedSessionEvent]] = {}
-        for context in pending_replacement_context:
-            if context.candidate.retained or context.candidate.stored:
-                continue
-            context.candidate.stored = True
-            context_insertions.setdefault(context.insert_at, []).append(_codex_replacement_context_event(context))
-            stored_here = context.compaction_event.payload.get("replacement_history_context_count")
-            context.compaction_event.payload["replacement_history_context_count"] = (
-                stored_here if isinstance(stored_here, int) else 0
-            ) + 1
-            session_events[context.insert_at - 1] = context.compaction_event
-        if context_insertions:
-            offset = 0
-            for event_index, insertions in sorted(context_insertions.items()):
-                for insertion in insertions:
-                    session_events.insert(event_index + offset, insertion)
-                    offset += 1
+    conservation.finish_replacement_contexts(session_events)
 
     # Lineage: prefer the explicit markers on the child's own session_meta.
     #   - `source.subagent.thread_spawn` → spawned subagent (positive evidence

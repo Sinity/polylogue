@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import sqlite3
 import uuid
 from collections.abc import Iterable, Iterator, Mapping, MutableSequence, Set
 from contextlib import closing, contextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import BinaryIO, overload
+from typing import BinaryIO, TypeVar, overload
 from urllib.parse import quote
 
 import ijson
@@ -24,6 +25,32 @@ _ACTIVE_PARENT_LOOKUP_SQL = (
 )
 
 
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def _text_json(value: object) -> str:
+    """JSON text SQLite can store: a lone surrogate stays a ``\\uXXXX`` escape.
+
+    Provider JSON admits lone surrogate escapes and decoding keeps them as
+    code points, which are not valid UTF-8. Escaping them keeps the value
+    exact through a round trip instead of failing the insert.
+    """
+    encoded = json.dumps(value, ensure_ascii=False)
+    if encoded.isascii():
+        return encoded
+    return _LONE_SURROGATE.sub(lambda match: f"\\u{ord(match.group()):04x}", encoded)
+
+
+_ModelT = TypeVar("_ModelT", ParsedMessage, ParsedSessionEvent)
+
+
+def _from_text_json(model: type[_ModelT], encoded: str) -> _ModelT:
+    """Decode sink JSON; an escaped lone surrogate needs the stdlib decoder."""
+    if "\\ud" in encoded or "\\uD" in encoded:
+        return model.model_validate(json.loads(encoded))
+    return model.model_validate_json(encoded)
+
+
 def _read_uri(path: Path) -> str:
     return f"file:{quote(str(path))}?mode=ro"
 
@@ -32,13 +59,13 @@ def _message_json(value: ParsedMessage) -> str:
     payload = value.model_dump(mode="json")
     payload["parent_message_position"] = value.parent_message_position
     payload["owner_coordinate"] = asdict(value.owner_coordinate) if value.owner_coordinate is not None else None
-    return json.dumps(payload, ensure_ascii=False)
+    return _text_json(payload)
 
 
 def _event_json(value: ParsedSessionEvent) -> str:
     payload = value.model_dump(mode="json")
     payload["boundary_message_position"] = value.boundary_message_position
-    return json.dumps(payload, ensure_ascii=False)
+    return _text_json(payload)
 
 
 def _attachment_json(value: ParsedAttachment) -> str:
@@ -50,7 +77,7 @@ def _attachment_json(value: ParsedAttachment) -> str:
     payload["_prepared_inline_bytes"] = (
         base64.b64encode(value.inline_bytes).decode("ascii") if value.inline_bytes is not None else None
     )
-    return json.dumps(payload, ensure_ascii=False)
+    return _text_json(payload)
 
 
 def _decode_attachment(encoded: str, path: Path, session_ordinal: int, attachment_ordinal: int) -> ParsedAttachment:
@@ -111,7 +138,7 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
                 ).fetchone()
         if row is None:
             raise ValueError("prepared message row disappeared")
-        return ParsedMessage.model_validate_json(row[0])
+        return _from_text_json(ParsedMessage, row[0])
 
     @overload
     def __setitem__(self, index: int, value: ParsedMessage) -> None: ...
@@ -179,7 +206,7 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
                 (self.session_ordinal, start),
             )
             for row in cursor:
-                yield ParsedMessage.model_validate_json(row[0])
+                yield _from_text_json(ParsedMessage, row[0])
             return
         with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
             cursor = conn.execute(
@@ -188,7 +215,7 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
                 (self.session_ordinal, start),
             )
             for row in cursor:
-                yield ParsedMessage.model_validate_json(row[0])
+                yield _from_text_json(ParsedMessage, row[0])
 
     def normalize_active_path(self) -> SqliteMessageSink:
         """Apply the writer's leaf/path normalization without a message list."""
@@ -482,7 +509,7 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
             ).fetchone()
         if row is None:
             raise ValueError("prepared event row disappeared")
-        return ParsedSessionEvent.model_validate_json(row[0])
+        return _from_text_json(ParsedSessionEvent, row[0])
 
     @overload
     def __setitem__(self, index: int, value: ParsedSessionEvent) -> None: ...
@@ -538,11 +565,11 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
         if self._writer is not None:
             cursor = self._writer.execute(sql, (self.session_ordinal, *parameters))
             for row in cursor:
-                yield ParsedSessionEvent.model_validate_json(row[0])
+                yield _from_text_json(ParsedSessionEvent, row[0])
             return
         with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
             for row in conn.execute(sql, (self.session_ordinal, *parameters)):
-                yield ParsedSessionEvent.model_validate_json(row[0])
+                yield _from_text_json(ParsedSessionEvent, row[0])
 
     def iter_ordered(self, type_order_tier: Mapping[str, int]) -> Iterator[ParsedSessionEvent]:
         clauses = " ".join("WHEN ? THEN ?" for _ in type_order_tier)
@@ -649,7 +676,7 @@ class ChatGPTNodeMapping(Mapping[str, object]):
         )
 
     def put(self, key: str, node: object, ordinal: int) -> None:
-        encoded = json.dumps(node, ensure_ascii=False)
+        encoded = _text_json(node)
         previous = self.conn.execute("SELECT child_ordinal FROM chatgpt_node WHERE node_key = ?", (key,)).fetchone()
         if previous is not None and previous[0] is not None:
             self.conn.execute("DELETE FROM chatgpt_child WHERE node_ordinal = ?", (previous[0],))
@@ -665,7 +692,7 @@ class ChatGPTNodeMapping(Mapping[str, object]):
             (
                 node_ordinal,
                 item_ordinal,
-                json.dumps(child, ensure_ascii=False),
+                _text_json(child),
                 child if isinstance(child, str) else None,
             ),
         )
@@ -975,7 +1002,7 @@ def prepare_simple_chatgpt_mapping(
     for _node_key, encoded, parent_key in conn.execute(
         f"SELECT node_key, message_json, parent_key FROM chatgpt_simple_message {order}"
     ):
-        message = ParsedMessage.model_validate_json(encoded)
+        message = _from_text_json(ParsedMessage, encoded)
         if parent_key:
             owner = conn.execute(
                 "SELECT provider_id FROM chatgpt_simple_message WHERE node_key = ?", (parent_key,)
