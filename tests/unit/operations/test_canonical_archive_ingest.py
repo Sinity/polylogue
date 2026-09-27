@@ -221,6 +221,49 @@ async def test_canonical_ingest_keeps_sibling_provider_file_ownership_exact(
 
 
 @pytest.mark.asyncio
+async def test_canonical_ingest_prefers_declared_file_over_equal_depth_directory_root(
+    tmp_path: Path,
+    one_shot_workspace_env: dict[str, Path],
+) -> None:
+    root = tmp_path / "capture-root"
+    root.mkdir()
+    codex_path = root / "session.jsonl"
+    codex_path.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in (
+                {"type": "session_meta", "payload": {"id": "explicit-codex", "timestamp": "2026-01-01T00:00:00Z"}},
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "id": "message-1",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "Codex input"}],
+                    },
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    archive_root = one_shot_workspace_env["archive_root"]
+    result = await parse_sources_archive(
+        archive_root,
+        [Source(name="antigravity", path=root), Source(name="codex", path=codex_path)],
+        parse_workers=1,
+    )
+
+    assert result.counts.get("sessions", 0) == 1
+    assert result.processed_ids == {"codex-session:explicit-codex"}
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        [origin] = conn.execute("SELECT origin FROM sessions").fetchone()
+    assert origin == "codex-session"
+    assert _source_conservation(archive_root).term("source_missing").count == 0
+
+
+@pytest.mark.asyncio
 async def test_canonical_ingest_records_a_resolvable_path_for_relative_session_jsonl(
     tmp_path: Path,
     one_shot_workspace_env: dict[str, Path],
