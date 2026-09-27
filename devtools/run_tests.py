@@ -520,6 +520,11 @@ def _publish_last_focused_pytest_report(report_path: Path) -> None:
         shutil.copyfile(report_path, destination)
 
 
+def _is_test_module_name(name: str) -> bool:
+    """Whether ``name`` follows pytest's default test-module naming."""
+    return name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py"))
+
+
 def absent_selection_paths(selection: list[str], *, root: Path) -> list[str]:
     """The path selections that name nothing in the checkout.
 
@@ -576,10 +581,11 @@ def main(argv: list[str] | None = None) -> int:
     absent_before_admission = [
         argument
         for argument in absent_selection_paths(selection, root=ROOT)
-        # Only a test module or node id is certain to be a selection: an
-        # option value such as ``--junit-xml reports/out.xml`` also contains a
-        # slash and legitimately does not exist before the run.
-        if argument.split("::", 1)[0].endswith(".py")
+        # Only a node id or a test module is certain to be a selection: an
+        # option value (``--junit-xml reports/out.xml``, ``--log-file
+        # reports/out.py``) also contains a slash and legitimately does not
+        # exist before the run.
+        if "::" in argument or _is_test_module_name(Path(argument).name)
     ]
     if absent_before_admission:
         sys.stderr.write(

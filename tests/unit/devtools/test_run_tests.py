@@ -762,8 +762,20 @@ def test_main_refuses_a_missing_path_before_queueing(
 
     monkeypatch.setattr("devtools.run_tests.run_pytest", must_not_queue)
 
-    assert run_tests.main(["tests/unit/devtools/test_run_tests.py", "tests/unit/no_such_test_file.py"]) == 4
-    assert "tests/unit/no_such_test_file.py" in capsys.readouterr().err
+    assert run_tests.main(["tests/unit/devtools/test_run_tests.py", "tests/unit/test_no_such_file.py"]) == 4
+    assert "tests/unit/test_no_such_file.py" in capsys.readouterr().err
+
+
+def test_pre_admission_gate_ignores_option_values_that_look_like_paths() -> None:
+    """Output paths passed to options are not selections, even when they end in ``.py``.
+
+    Anti-vacuity: treat every absent ``*.py`` argument as a selection and the
+    ``--log-file`` value below is refused before pytest runs.
+    """
+    assert not run_tests._is_test_module_name("output.py")
+    assert not run_tests._is_test_module_name("results.xml")
+    assert run_tests._is_test_module_name("test_widget.py")
+    assert run_tests._is_test_module_name("widget_test.py")
 
 
 def test_focused_run_never_loads_or_names_a_testmon_graph(tmp_path: Path) -> None:
