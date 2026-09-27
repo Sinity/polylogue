@@ -434,9 +434,7 @@ def read_capture_mode_resolution(conn: sqlite3.Connection, raw_id: str) -> Captu
         """,
         (raw_id,),
     ).fetchall()
-    modes = tuple(
-        cast(Provider, require_vocabulary(row["capture_mode"], Provider, field="capture_mode")) for row in rows
-    )
+    modes = tuple(Provider(require_vocabulary(row["capture_mode"], Provider, field="capture_mode")) for row in rows)
     status: CaptureModeResolutionStatus
     if not modes:
         status = "unknown"
