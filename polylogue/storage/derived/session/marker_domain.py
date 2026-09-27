@@ -261,6 +261,23 @@ class SessionMarkerDerivation:
         del frame, key
         return False
 
+    def barrier_sessions(self, frame: object, keys: Sequence[str]) -> Mapping[str, tuple[str, ...]]:
+        """Map each carrier key to every session its accepted batch names.
+
+        A carrier lowers markers for several sessions at once, so the
+        publication barrier holds the whole batch when any of them waits.
+        """
+        from polylogue.storage.accepted_marker_inputs import marker_input_session_ids
+
+        del frame
+        sessions: dict[str, tuple[str, ...]] = {}
+        for key in dict.fromkeys(keys):
+            stream_id, sequence = _parse_key(key)
+            page = self._accepted_page(after_sequence=sequence - 1, limit=1)
+            if len(page) == 1 and page[0].stream_id == stream_id and page[0].sequence == sequence:
+                sessions[key] = tuple(sorted(marker_input_session_ids(page[0].batch)))
+        return sessions
+
     def inspect(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
         """The user cursor, not current assertions or index rows, is authority."""
         del frame

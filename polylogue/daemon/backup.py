@@ -538,37 +538,19 @@ def _backup_sqlite(src: Path, dst: Path, *, archive_root_path: Path) -> tuple[in
 
 
 def _source_blob_liveness_projection(
-    source_db: Path, *, index_db: Path | None = None, source_generation_id: str | None = None
+    source_db: Path, *, index_db: Path | None = None
 ) -> tuple[BlobLivenessProjection, set[str]]:
-    """Read complete source evidence or refuse the backup before copying blobs."""
+    """Read complete source evidence or refuse the backup before copying blobs.
 
-    projection = project_source_blob_liveness(
-        source_db,
-        index_db=index_db,
-        immutable=True,
-        source_generation_id=source_generation_id,
-    )
+    The copied ``source.db`` keeps every source generation's rows, so the blob
+    set is every generation's live bytes. Narrowing it to the newest sealed
+    generation left earlier generations' rows restored without their blobs,
+    and the debt report, computed from the same narrowed set, could not see
+    the gap.
+    """
+
+    projection = project_source_blob_liveness(source_db, index_db=index_db, immutable=True)
     return projection, _source_blob_reservations(source_db)
-
-
-def _latest_sealed_source_generation(source_db: Path) -> str | None:
-    """Return the newest complete source generation, if this tier has them."""
-    with closing(_open_backup_readonly_connection(source_db, immutable=True, timeout_class="offline-bulk")) as conn:
-        if not _source_generation_tables_exist(conn):
-            return None
-        row = conn.execute(
-            """SELECT g.source_generation_id
-               FROM source_generations AS g
-              WHERE g.sealed_at_ms IS NOT NULL
-                AND NOT EXISTS (
-                    SELECT 1 FROM source_item_reconciliation AS r
-                     WHERE r.source_generation_id = g.source_generation_id
-                       AND NOT r.sealable
-                )
-              ORDER BY g.sealed_at_ms DESC, g.source_generation_id DESC
-              LIMIT 1"""
-        ).fetchone()
-        return str(row[0]) if row is not None else None
 
 
 def _source_generation_tables_exist(conn: sqlite3.Connection) -> bool:
@@ -606,14 +588,10 @@ def _source_blob_reservations(source_db: Path, *, immutable: bool = True) -> set
         return reservations
 
 
-def _source_blob_hashes_from_restored_source(source_db: Path, *, source_generation_id: str | None) -> set[str]:
+def _source_blob_hashes_from_restored_source(source_db: Path) -> set[str]:
     """Re-derive source-owned hashes from the restored source tier."""
 
-    projection = project_source_blob_liveness(
-        source_db,
-        immutable=True,
-        source_generation_id=source_generation_id,
-    )
+    projection = project_source_blob_liveness(source_db, immutable=True)
     if projection.blockers:
         raise RuntimeError("restored source blob reference projection is blocked: " + "; ".join(projection.blockers))
     return set(projection.live_hashes)
@@ -702,7 +680,6 @@ def _blob_reference_evidence(
     projection: BlobLivenessProjection,
     *,
     index_db: Path | None,
-    source_generation_id: str | None = None,
 ) -> dict[str, object]:
     """Persist source resolution plus an independent index-attachment oracle.
 
@@ -723,7 +700,6 @@ def _blob_reference_evidence(
         raise RuntimeError(f"canonical blob liveness projection omitted independent attachment evidence: {sample}")
     return {
         "format": "polylogue-blob-reference-evidence-v1",
-        "source_generation_id": source_generation_id,
         "source_owner_hashes": source_owners,
         "index_attachment_evidence": attachment_evidence_state,
         "index_attachment_hashes": sorted(attachment_hashes),
@@ -1171,17 +1147,9 @@ def _copy_referenced_blobs(
     index_db: Path | None,
     backup_root: Path,
     warnings: list[str],
-    source_generation_id: str | None = None,
 ) -> tuple[int, int, BlobReferenceDebtReport]:
-    if source_generation_id is None:
-        projection, reservations = _source_blob_liveness_projection(source_db, index_db=index_db)
-    else:
-        projection, reservations = _source_blob_liveness_projection(
-            source_db, index_db=index_db, source_generation_id=source_generation_id
-        )
-    reference_evidence = _blob_reference_evidence(
-        projection, index_db=index_db, source_generation_id=source_generation_id
-    )
+    projection, reservations = _source_blob_liveness_projection(source_db, index_db=index_db)
+    reference_evidence = _blob_reference_evidence(projection, index_db=index_db)
     inventory = _inventory_from_liveness(projection, reservations)
     hashes = set(inventory)
     store = BlobStore(source_blob_root)
@@ -1280,7 +1248,6 @@ def _write_manifest(
     tier_source_fingerprints: dict[str, dict[str, object]],
     archive_authority_files: list[str],
     blob_reference_debt: BlobReferenceDebtReport | None = None,
-    source_generation_id: str | None = None,
 ) -> None:
     manifest = {
         "format": "polylogue-backup-v1",
@@ -1298,7 +1265,6 @@ def _write_manifest(
         "tier_source_fingerprints": tier_source_fingerprints,
         "archive_authority_files": archive_authority_files,
         "warnings": warnings,
-        "source_generation_id": source_generation_id,
     }
     if blob_reference_debt is not None:
         manifest["blob_reference_debt"] = blob_reference_debt.to_dict()
@@ -1535,9 +1501,6 @@ def _backup_archive(
         )
 
         blob_reference_debt: BlobReferenceDebtReport | None = None
-        source_generation_id = (
-            _latest_sealed_source_generation(backup_root / "source.db") if "source" in included_tiers else None
-        )
         if "source" in included_tiers:
             blob_count, blob_size, blob_reference_debt = _copy_referenced_blobs(
                 source_db=backup_root / "source.db",
@@ -1545,7 +1508,6 @@ def _backup_archive(
                 index_db=(backup_root / "index.db" if "index" in included_tiers else None),
                 backup_root=backup_root,
                 warnings=warnings,
-                source_generation_id=source_generation_id,
             )
         else:
             blob_count = 0
@@ -1591,7 +1553,6 @@ def _backup_archive(
         tier_source_fingerprints=tier_source_fingerprints,
         archive_authority_files=archive_authority_files,
         blob_reference_debt=blob_reference_debt,
-        source_generation_id=source_generation_id,
     )
     backed_up_files.append(str(backup_root / "manifest.json"))
     if (backup_root / "blob-inventory.json").exists():
@@ -1901,22 +1862,14 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
                 reference_evidence_ok = (
                     reference_evidence_ok and observed_attachment_hashes == expected_attachment_hashes
                 )
-            source_generation_id = evidence.get("source_generation_id")
-            if source_generation_id is not None and not isinstance(source_generation_id, str):
-                raise RuntimeError("backup blob reference evidence has invalid source generation identity")
             assertion_path = restored / _SOURCE_DECLARED_ABSENT_FILE
             with closing(
                 _open_backup_readonly_connection(restored / "source.db", immutable=True, timeout_class="offline-bulk")
             ) as source_conn:
                 source_generation_tables_exist = _source_generation_tables_exist(source_conn)
-            if (assertion_path.exists() or assertion_path.is_symlink()) and (
-                source_generation_id is not None or source_generation_tables_exist
-            ):
+            if (assertion_path.exists() or assertion_path.is_symlink()) and source_generation_tables_exist:
                 raise RuntimeError("source declared-absent assertion is only valid before source generations exist")
-            restored_source_hashes = _source_blob_hashes_from_restored_source(
-                restored / "source.db",
-                source_generation_id=source_generation_id,
-            )
+            restored_source_hashes = _source_blob_hashes_from_restored_source(restored / "source.db")
             reference_evidence_ok = reference_evidence_ok and restored_source_hashes == source_evidence_hashes
             declared_absent: set[str] = set()
             if assertion_path.exists() or assertion_path.is_symlink():

@@ -694,6 +694,79 @@ def test_restart_recovers_indeterminate_mutation_without_replaying_it(
     assert all(not restarted.session_exists(session_id) for session_id in session_ids)
 
 
+def test_restart_resumes_an_accepted_request_whose_daemon_died_before_its_first_part(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An accepted-but-unstarted execution resumes on retry after a restart.
+
+    The first daemon durably accepts the execution batch and then loses its
+    handler before any part starts, leaving every part unattempted. Anti-vacuity
+    (polylogue-4xhzs): returning the durable ``accepted`` state on retry instead
+    of re-dispatching the handler leaves the request at ``accepted`` forever and
+    the session undeleted.
+    """
+    from polylogue.operations import daemon_mutations
+
+    root = tmp_path / "archive"
+    session_ids: tuple[str, ...] = ()
+
+    def seed(root: Path) -> None:
+        nonlocal session_ids
+        session_ids = _seed_sessions(root, count=1)
+
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    real_store = ArchiveStore
+    crash = {"armed": False}
+
+    class _DiesAfterAcceptance:
+        @staticmethod
+        def open_existing(*args: object, **kwargs: object) -> object:
+            if crash["armed"]:
+                raise RuntimeError("synthetic handler death after acceptance")
+            return real_store.open_existing(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(daemon_mutations, "ArchiveStore", _DiesAfterAcceptance)
+    request_id = "accepted-before-first-part"
+    with running_daemon_operations(root, seed_archive=seed) as first:
+        preview = first.client.operation_to_completion(
+            "mutation.session.delete.preview",
+            {"session_ids": list(session_ids)},
+            archive_root=str(root),
+        )
+        assert preview is not None
+        authorization = first.client.operation_to_completion(
+            "mutation.session.delete.authorize",
+            {"preview_refs": preview["result"]["preview_refs"]},
+            archive_root=str(root),
+        )
+        assert authorization is not None
+        crash["armed"] = True
+        stranded = first.client.operation(
+            "mutation.session.delete.execute",
+            {"authorization_refs": authorization["result"]["authorization_refs"]},
+            archive_root=str(root),
+            request_id=request_id,
+        )
+        assert stranded is not None
+        assert stranded["outcome"] == "accepted"
+        assert stranded["result"]["not_attempted"] == [0]
+    crash["armed"] = False
+
+    with running_daemon_operations(root) as restarted:
+        resumed = restarted.client.operation_to_completion(
+            "mutation.session.delete.execute",
+            {"authorization_refs": authorization["result"]["authorization_refs"]},
+            archive_root=str(root),
+            request_id=request_id,
+        )
+        assert resumed is not None
+        assert resumed["outcome"] == "completed"
+        assert resumed["accepted_reference"] == stranded["accepted_reference"]
+        assert resumed["result"]["completed_chunks"] == 1
+        assert all(not restarted.session_exists(session_id) for session_id in session_ids)
+
+
 def test_disconnected_after_durable_acceptance_recovers_without_replaying_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

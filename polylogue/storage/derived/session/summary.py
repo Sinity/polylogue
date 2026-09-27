@@ -471,6 +471,15 @@ class SessionSummaryDerivation:
         del frame, key
         return ()
 
+    def barrier_sessions(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
+        """Each key is a session id; only an archived session can be held."""
+        del frame
+        conn = self._read_connection()
+        try:
+            return present_session_keys(conn, keys)
+        finally:
+            conn.close()
+
     def inspect(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
         generation = self._generation_binding() if self._generation_binding is not None else None
         if generation is not None and getattr(frame, "source_revision", None) != f"index-generation:{generation}":
@@ -574,3 +583,21 @@ class SessionSummaryDerivation:
                 raise
             finally:
                 conn.close()
+
+
+def present_session_keys(conn: sqlite3.Connection, keys: Sequence[str]) -> dict[str, str]:
+    """Map each key that names an archived session to that session.
+
+    Used by the publication barrier: a session the index no longer holds has
+    nothing to derive, so its leftover demand or bindings only retire and must
+    not wait behind an obligation that may never publish.
+    """
+    wanted = tuple(dict.fromkeys(str(key) for key in keys))
+    present: dict[str, str] = {}
+    for start in range(0, len(wanted), 900):
+        chunk = wanted[start : start + 900]
+        for (session_id,) in conn.execute(
+            f"SELECT session_id FROM sessions WHERE session_id IN ({', '.join('?' for _ in chunk)})", chunk
+        ):
+            present[str(session_id)] = str(session_id)
+    return present

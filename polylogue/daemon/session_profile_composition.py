@@ -67,8 +67,14 @@ def compose_session_profile_callback(
     # this domain's work pending without invalidating the index family
     # (polylogue-ylh7v).
     markers = make_session_marker_derivation(index_path, archive_root=archive_root)
+    from polylogue.daemon.convergence_stages import configured_derivation_barrier
+
     owner = SessionProfileConvergenceOwner(
-        DaemonConverger(stages=(), derivations=(summary, usage_rollup, profile, markers)),
+        DaemonConverger(
+            stages=(),
+            derivations=(summary, usage_rollup, profile, markers),
+            derivation_barrier=configured_derivation_barrier(archive_root),
+        ),
         compute_adapter=compute_adapter,
         write_bridge=write_bridge,
     )

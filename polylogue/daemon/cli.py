@@ -2535,13 +2535,18 @@ async def _run_daemon_services_under_active_writer_lease(
             )
 
             from polylogue.daemon.convergence import DerivationConvergenceOwner
+            from polylogue.daemon.convergence_stages import configured_derivation_barrier
             from polylogue.daemon.fts_convergence import FtsConvergenceOwner
             from polylogue.operations.fts_derivation import make_fts_derivation, make_fts_frame
 
             fts_index = archive_root_path / "index.db"
             fts_owner = FtsConvergenceOwner(
                 DerivationConvergenceOwner(
-                    DaemonConverger((), derivations=(make_fts_derivation(fts_index, archive_root=archive_root_path),)),
+                    DaemonConverger(
+                        (),
+                        derivations=(make_fts_derivation(fts_index, archive_root=archive_root_path),),
+                        derivation_barrier=configured_derivation_barrier(archive_root_path),
+                    ),
                     compute_adapter=daemon_compute,
                     write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
                 ),

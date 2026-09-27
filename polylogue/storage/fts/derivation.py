@@ -708,6 +708,11 @@ class FtsDerivationAdapter:
         del frame, key
         return ()
 
+    def barrier_sessions(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
+        """Each key is a session id, so the publication barrier holds it by itself."""
+        del frame
+        return {str(key): str(key) for key in keys}
+
     def inspect(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
         """Classify keys against the bound generation and each partition's output."""
         if not self._frame_current(frame) or not self._frame_recipe_current(frame):
