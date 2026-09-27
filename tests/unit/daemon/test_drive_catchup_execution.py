@@ -147,7 +147,14 @@ async def test_drive_preparation_leaves_real_writer_available(
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE parsed_at_ms IS NOT NULL").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM attachments WHERE blob_hash IS NOT NULL").fetchone()[0] == 1
+        # Drive-hosted bytes are fetched later by the attachment convergence
+        # stage; ingest stores the reference only.
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM attachments WHERE blob_hash IS NULL AND acquisition_status = 'unfetched'"
+            ).fetchone()[0]
+            == 1
+        )
         assert conn.execute("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'Neutral'").fetchone()[0] == 2
 
 

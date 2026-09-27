@@ -90,18 +90,25 @@ def drive_cache_file_path(dest_dir: Path, name: str) -> Path:
     return dest_dir / safe_name
 
 
-#: Marker of a cache file an earlier acquisition rewrote with fetched
-#: attachment bytes embedded. Such a file is not the provider's document, so
-#: it is not a valid cache: re-downloading replaces it with the real bytes.
-_REWRITTEN_CACHE_KEY = "_polylogue_drive_live_bytes_b64"
-_REWRITTEN_CACHE_MARKER = f'"{_REWRITTEN_CACHE_KEY}"'.encode()
+def _cache_revision_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}.revision")
 
 
-def _read_valid_cache(path: Path) -> bytes | None:
-    """Return cached bytes only when they are the provider's complete, readable document."""
+def _read_valid_cache(path: Path, revision: str | None) -> bytes | None:
+    """Return cached bytes only when they are the provider's complete, readable document at ``revision``.
+
+    A cache is keyed by file name, so without its revision a document that
+    changed on Drive would be served from the stale copy forever. A revision
+    that cannot be proven (no provider ``modifiedTime``, or no record of the
+    cached one) is a miss.
+    """
+    if revision is None:
+        return None
     try:
+        if _cache_revision_path(path).read_text(encoding="utf-8") != revision:
+            return None
         raw = path.read_bytes()
-        if not raw.strip() or _REWRITTEN_CACHE_MARKER in raw:
+        if not raw.strip():
             return None
         if path.suffix.lower() in {".jsonl", ".ndjson"}:
             if not all(line.strip() and json.loads(line) is not None for line in raw.splitlines() if line.strip()):
@@ -123,8 +130,7 @@ def _cache_document_is_readable(path: Path) -> bool:
     times the file size -- on every scan, which is what this memory-bounded
     route exists to avoid. ``ijson`` and a line iterator prove the same thing
     in bounded memory, and admit exactly the same documents
-    ``_read_valid_cache`` returns bytes for -- including refusing a cache an
-    earlier acquisition rewrote with embedded attachment bytes.
+    ``_read_valid_cache`` returns bytes for.
     """
     try:
         if path.suffix.lower() in {".jsonl", ".ndjson"}:
@@ -134,7 +140,7 @@ def _cache_document_is_readable(path: Path) -> bool:
                     if not line.strip():
                         continue
                     saw_record = True
-                    if _REWRITTEN_CACHE_MARKER in line or json.loads(line) is None:
+                    if json.loads(line) is None:
                         return False
             return saw_record
         with path.open("rb") as handle:
@@ -142,16 +148,14 @@ def _cache_document_is_readable(path: Path) -> bool:
             # accept a truncated document, which is exactly the cache
             # ``_read_valid_cache`` refuses to hand back.
             events = 0
-            for _prefix, event, value in ijson.parse(handle, use_float=True):
-                if event == "map_key" and value == _REWRITTEN_CACHE_KEY:
-                    return False
+            for _event in ijson.parse(handle, use_float=True):
                 events += 1
             return events > 0
     except (OSError, UnicodeDecodeError, ValueError, ijson.JSONError):
         return False
 
 
-def _write_cache_atomically(path: Path, raw: bytes) -> None:
+def _replace_atomically(path: Path, raw: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
         temporary = Path(handle.name)
@@ -161,6 +165,29 @@ def _write_cache_atomically(path: Path, raw: bytes) -> None:
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def _cache_holds_readable_revision(path: Path, revision: str) -> bool:
+    """Whether the cache is ``revision``'s document and still decodes, without materializing it."""
+    try:
+        if _cache_revision_path(path).read_text(encoding="utf-8") != revision:
+            return False
+    except OSError:
+        return False
+    return _cache_document_is_readable(path)
+
+
+def _write_cache_atomically(path: Path, raw: bytes, revision: str | None) -> None:
+    """Replace the cache, then record the revision it holds.
+
+    The document is written first: a crash between the two writes leaves the
+    previous revision recorded against new bytes, which reads as a miss and
+    re-downloads, never as a stale hit.
+    """
+    _cache_revision_path(path).unlink(missing_ok=True)
+    _replace_atomically(path, raw)
+    if revision is not None:
+        _replace_atomically(_cache_revision_path(path), revision.encode("utf-8"))
 
 
 def download_drive_files(
@@ -259,13 +286,13 @@ def iter_drive_raw_data(
             known_mtimes is not None
             and file_meta.modified_time is not None
             and known_mtimes.get(source_path) == file_meta.modified_time
-            and (not cache_exists or _cache_document_is_readable(cache_path))
+            and (not cache_exists or _cache_holds_readable_revision(cache_path, file_meta.modified_time))
         ):
             # Unchanged revision with a still-decodable cache: nothing here
             # needs the payload, so nothing here reads it.
             continue
 
-        raw_bytes = _read_valid_cache(cache_path) if cache_exists else None
+        raw_bytes = _read_valid_cache(cache_path, file_meta.modified_time) if cache_exists else None
         if raw_bytes is None:
             try:
                 raw_bytes = drive_client.download_bytes(file_meta.file_id)
@@ -278,7 +305,7 @@ def iter_drive_raw_data(
                     exc,
                 )
                 continue
-            _write_cache_atomically(cache_path, raw_bytes)
+            _write_cache_atomically(cache_path, raw_bytes, file_meta.modified_time)
 
         blob_hash, blob_size = blob_store.write_from_bytes(raw_bytes)
         del raw_bytes

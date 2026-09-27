@@ -128,11 +128,13 @@ def test_iter_drive_raw_data_replaces_torn_cache_even_when_revision_is_unchanged
 
 
 def test_iter_drive_raw_data_replaces_a_cache_rewritten_with_attachment_bytes(tmp_path: Path) -> None:
-    """A cache an earlier acquisition rewrote with embedded bytes is re-downloaded.
+    """A cache with no recorded revision is re-downloaded, even on the unchanged path.
 
-    Anti-vacuity: drop the marker check in ``_read_valid_cache`` and the
-    rewritten document (valid JSON) is served as the raw, carrying the base64
-    sidecar into the archive.
+    Caches written before revisions were recorded include ones an earlier
+    acquisition rewrote with embedded attachment bytes. Anti-vacuity: drop the
+    revision check in ``_cache_holds_readable_revision`` and the rewritten
+    (valid JSON) document satisfies the unchanged-revision skip, so nothing
+    is re-downloaded.
     """
     payload = {"chunkedPrompt": {"chunks": [{"role": "user", "text": "fresh"}]}}
     rewritten = {
