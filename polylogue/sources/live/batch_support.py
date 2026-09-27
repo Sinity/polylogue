@@ -907,6 +907,14 @@ def _detect_provider_from_path_sample(
         browser_capture, capture_provider = _browser_capture_prefix_probe(path)
         if browser_capture and capture_provider is not None:
             return capture_provider
+        from polylogue.sources.decoder_json import grok_export_item_count
+
+        try:
+            with path.open("rb") as handle:
+                if grok_export_item_count(handle) is not None:
+                    return Provider.GROK
+        except OSError:
+            return fallback_provider
         from polylogue.sources.decoders import _iter_json_stream
 
         sample: list[JSONValue] = []

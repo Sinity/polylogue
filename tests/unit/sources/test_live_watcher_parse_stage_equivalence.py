@@ -55,6 +55,46 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
 }
 
 
+def test_live_path_worker_detects_grok_without_whole_object_decode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.sources.live.parse_prefetch import live_parse_path_worker
+
+    source = tmp_path / "prod-grok-backend.json"
+    source.write_text(
+        json.dumps(
+            {
+                "conversations": [
+                    {
+                        "conversation": {"title": "Neutral"},
+                        "responses": [{"sender": "human", "message": f"Prompt {index}"} for index in range(200)],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("live Grok provider detection decoded the whole object")
+
+    monkeypatch.setattr("polylogue.sources.decoders._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
+    artifact = live_parse_path_worker(
+        Provider.UNKNOWN.value,
+        str(source),
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert artifact.error is None
+    assert artifact.resolved_provider is Provider.GROK
+    [session] = artifact.iter_sessions()
+    assert len(session.messages) == 200
+    artifact.discard()
+
+
 def _stalled_process_worker(marker: str) -> None:
     Path(marker).write_text("started")
     time.sleep(30)

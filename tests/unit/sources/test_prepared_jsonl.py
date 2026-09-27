@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import sqlite3
+from collections.abc import Callable
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
@@ -359,7 +360,7 @@ def test_grok_single_object_streams_responses_with_parser_parity(
                 "conversation": {"title": "First", "create_time": 1712000000, "ignored": {"values": list(range(1000))}},
                 "responses": responses,
             },
-            {"not": "a conversation"},
+            {"responses": responses},
             {"responses": [{"sender": "human", "message": "After metadata"}], "conversation": {"title": "Last"}},
         ]
     }
@@ -380,9 +381,9 @@ def test_grok_single_object_streams_responses_with_parser_parity(
     original_events = iter_grok_export_events
     original_append = SqliteMessageSink.append
 
-    def tracked_events(handle: IO[bytes]) -> object:
+    def tracked_events(handle: IO[bytes], *, include_item: Callable[[int], bool] | None = None) -> object:
         nonlocal decoded
-        for event, value in original_events(handle):
+        for event, value in original_events(handle, include_item=include_item):
             if event == "response":
                 decoded += 1
             yield event, value
@@ -416,6 +417,11 @@ def test_grok_single_object_streams_responses_with_parser_parity(
                 prepared.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
                 == baseline.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
             )
+    assert artifact.sessions_path is not None
+    with sqlite3.connect(artifact.sessions_path) as prepared:
+        assert prepared.execute("SELECT COUNT(*) FROM prepared_message").fetchone()[0] == sum(
+            len(session.messages) for session in expected
+        )
     artifact.discard()
 
 
@@ -474,8 +480,8 @@ def test_grok_single_object_changed_during_stream_defers_and_discards(
     )
     original_events = iter_grok_export_events
 
-    def changing_events(handle: IO[bytes]) -> object:
-        for event, value in original_events(handle):
+    def changing_events(handle: IO[bytes], *, include_item: Callable[[int], bool] | None = None) -> object:
+        for event, value in original_events(handle, include_item=include_item):
             yield event, value
             if event == "response":
                 with source.open("a", encoding="utf-8") as writer:

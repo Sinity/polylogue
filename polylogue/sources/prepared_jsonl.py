@@ -544,8 +544,16 @@ def prepare_jsonl_blob(
             and prepare_records is None
             and Path(source_path).name.lower().endswith(".json")
         ):
+            store.conn.execute("CREATE TABLE grok_member_valid (ordinal INTEGER PRIMARY KEY, valid INTEGER NOT NULL)")
+            grok_probe_conn = store.conn
+
+            def record_grok_member(index: int, valid: bool) -> None:
+                grok_probe_conn.execute("INSERT INTO grok_member_valid VALUES (?, ?)", (index, int(valid)))
+
             with source.open("rb") as handle:
-                grok_count = grok_export_item_count(handle)
+                grok_count = grok_export_item_count(handle, on_item=record_grok_member)
+            if grok_count is None:
+                store.conn.execute("DROP TABLE grok_member_valid")
         if (
             not is_stream
             and provider in BUNDLE_PROVIDERS
@@ -600,18 +608,28 @@ def prepare_jsonl_blob(
         elif grok_count is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(directory / f"shard-{uuid.uuid4().hex}.db")
+            grok_member_conn = store.conn
+
+            def include_grok_member(index: int) -> bool:
+                row = grok_member_conn.execute(
+                    "SELECT valid FROM grok_member_valid WHERE ordinal = ?", (index,)
+                ).fetchone()
+                if row is None:
+                    raise _SourceChangedDuringPreparationError("Grok member changed during preparation")
+                return bool(row[0])
+
             session_count = 0
             member_index = -1
             member_conversation: dict[str, object] | None = None
             member_responses = False
             member_messages: SqliteMessageSink | None = None
             with source.open("rb") as handle:
-                for event, value in iter_grok_export_events(handle):
+                for event, value in iter_grok_export_events(handle, include_item=include_grok_member):
                     if event == "begin":
                         member_index += 1
                         member_conversation = None
                         member_responses = False
-                        member_messages = store.new_sink()
+                        member_messages = store.new_sink() if include_grok_member(member_index) else None
                     elif event == "conversation" and isinstance(value, dict):
                         member_conversation = value
                     elif event == "responses":
@@ -644,6 +662,7 @@ def prepare_jsonl_blob(
                         session_count += 1
             if member_index + 1 != grok_count:
                 raise _SourceChangedDuringPreparationError("Grok conversation count changed during preparation")
+            store.conn.execute("DROP TABLE grok_member_valid")
             after_hash = _source_digest(source)
             if before_hash != after_hash:
                 raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
