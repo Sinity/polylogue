@@ -788,6 +788,10 @@ class FileIntakeAdapter(IntakeAdapter):
             if not batch:
                 return outcomes
             paths = [Path(cast(Any, item.payload)) for item in batch]
+            page = set(paths)
+            await self._prefetch_fresh_paths(
+                [*paths, *(path for path in self._fresh_pending if path not in page)][: 2 * len(paths)]
+            )
             metrics = await self.context.watcher._ingest_files(
                 paths,
                 queued_file_count=len(paths) + len(skipped),
@@ -938,6 +942,41 @@ class FileIntakeAdapter(IntakeAdapter):
             if callable(converge_profiles):
                 await converge_profiles(tuple(getattr(metrics, "changed_session_ids", ()) or ()))
         return outcomes
+
+    async def prefetch(self, items: Sequence[IntakeItem]) -> None:
+        """Start parsing this page's never-ingested files before its turn."""
+        await self._prefetch_fresh_paths(
+            [Path(item.payload) for item in items if isinstance(item.payload, (str, Path))]
+        )
+
+    async def _prefetch_fresh_paths(self, paths: Sequence[Path]) -> None:
+        """Hand files with no cursor yet to the parse stage, ahead of their batch.
+
+        Only a file with no cursor row is certain to be ingested in full, so
+        only those are prepared early; an append or an unchanged file would be
+        parse work nobody claims. A failure here costs the overlap, never the
+        admission: the batch's own warm prepares whatever is missing.
+        """
+        prefetch = getattr(self.context.watcher, "prefetch_parse_paths", None)
+        if not callable(prefetch) or not paths:
+            return
+        cursor = getattr(self.context.watcher, "_cursor", None)
+        get_records = getattr(cursor, "get_records", None)
+        try:
+            records = await asyncio.to_thread(get_records, tuple(paths)) if callable(get_records) else {}
+            fresh = [path for path in paths if records.get(path) is None]
+            if fresh:
+                await prefetch(fresh, source_name=self.source.name)
+        except Exception as exc:
+            emit(
+                "daemon.intake.prefetch_failed",
+                level=WARNING,
+                outcome="degraded",
+                reason="prefetch_failed",
+                component=self.class_name,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
 
     async def acknowledge(self, item: IntakeItem) -> None:
         # Files remain retained source carriers.  The live batch's durable
@@ -1135,6 +1174,12 @@ class MultiplexIntakeAdapter(IntakeAdapter):
                 )
                 continue
             groups.setdefault(id(adapter), (adapter, []))[1].append(item)
+        # Every group's files start parsing now, so a later group's parse
+        # overlaps the earlier groups' publication instead of following it.
+        for adapter, group in groups.values():
+            prefetch = getattr(adapter, "prefetch", None)
+            if callable(prefetch):
+                await prefetch(tuple(group))
         for adapter, group in groups.values():
             admit_page = getattr(adapter, "admit_page", None)
             if admit_page is None:

@@ -54,6 +54,7 @@ class PreparedReadSnapshot(Protocol):
 ReadSnapshot = Callable[[Path], AbstractContextManager[PreparedReadSnapshot]]
 
 _DEFAULT_WORKER_COUNT_FLOOR = 1
+_DEFAULT_PROCESS_WORKER_CAP = 8
 _DEFAULT_WARM_TIMEOUT_SECONDS = 60.0
 
 # The dispatcher's per-pass byte budget already caps one admitted page at
@@ -79,6 +80,13 @@ def live_watcher_parse_stage_worker_count() -> int:
     from polylogue.runtime import available_cpus
 
     return max(_DEFAULT_WORKER_COUNT_FLOOR, (available_cpus() or 2) - 1)
+
+
+def _parse_stage_workers_configured() -> bool:
+    from polylogue.config import load_polylogue_config
+
+    configured = load_polylogue_config().live_watcher_parse_stage_workers
+    return configured is not None and configured > 0
 
 
 def live_watcher_parse_stage_max_inflight_bytes() -> int:
@@ -422,8 +430,19 @@ class LiveParseStage:
         else:
             self._attempt_root = None
         worker_count = max_workers if max_workers is not None else live_watcher_parse_stage_worker_count()
+        if use_processes and max_workers is None and not _parse_stage_workers_configured():
+            # Each worker process is its own interpreter: about 120-150 MiB
+            # resident once the parsers are imported. The default pool is
+            # sized to what keeps the single writer fed, not to every core --
+            # an unconfigured 24-core host otherwise spent ~3 GiB on idle
+            # parser processes.
+            worker_count = min(worker_count, _DEFAULT_PROCESS_WORKER_CAP)
         self._worker_count = worker_count
-        self._max_path_pending = max(1, min(worker_count, 2))
+        # Every worker may hold a path. Memory is bounded by the in-flight
+        # source-byte budget below (a whale still runs alone once it fills
+        # it); a fixed two-path cap left the rest of the pool idle and put
+        # parsing on the fresh build's critical path.
+        self._max_path_pending = max(1, worker_count)
         if use_processes:
             # The ordinary watcher route runs on the supported GIL build too.
             # A process pool is the only way for its CPU-bound parser to make
@@ -476,49 +495,7 @@ class LiveParseStage:
         deadline = time.monotonic() + self._warm_timeout_seconds
         remaining = list(candidates)
         while remaining:
-            for source_path, future in tuple(self._path_futures.items()):
-                if future.done():
-                    self._collect_path_future(source_path, future)
-            next_wave: list[tuple[str, Provider, bool]] = []
-            for source_path, provider, is_stream in remaining:
-                if source_path in self._path_results or source_path in self._path_futures:
-                    continue
-                try:
-                    source_bytes = Path(source_path).stat().st_size
-                except OSError as exc:
-                    self._path_results[source_path] = LivePathPreparation(
-                        None, None, None, f"source stat failed: {type(exc).__name__}"[:500], deferred=True
-                    )
-                    continue
-                if len(self._path_futures) >= self._max_path_pending or (
-                    self._path_futures and self._path_inflight_bytes + source_bytes > self._max_path_bytes
-                ):
-                    next_wave.append((source_path, provider, is_stream))
-                    continue
-                attempt_directory: Path | None = None
-                try:
-                    attempt_directory = self._new_attempt_directory()
-                    future = self._executor.submit(
-                        live_parse_path_worker,
-                        provider.value,
-                        source_path,
-                        Path(source_path).stem,
-                        is_stream=is_stream,
-                        shard_directory=str(self._attempt_root),
-                        attempt_directory=str(attempt_directory),
-                    )
-                except Exception as exc:
-                    if attempt_directory is not None:
-                        self._remove_attempt_directory(attempt_directory)
-                    self._path_results[source_path] = LivePathPreparation(
-                        None, None, None, f"worker submission failed: {type(exc).__name__}"[:500], deferred=True
-                    )
-                    continue
-                self._path_futures[source_path] = future
-                self._path_attempt_dirs[source_path] = attempt_directory
-                self._path_sizes[source_path] = source_bytes
-                self._path_inflight_bytes += source_bytes
-            remaining = next_wave
+            remaining = self._submit_path_candidates(remaining)
             if not remaining:
                 break
             available = max(0.0, deadline - time.monotonic())
@@ -562,6 +539,69 @@ class LiveParseStage:
                 source_index=source_index,
             )
         return len(candidates)
+
+    def prefetch_paths(self, candidates: Sequence[tuple[str, Provider, bool]]) -> int:
+        """Start preparing paths a later ``warm_paths`` will ask for, without waiting.
+
+        The writer publishes one source group (and one page) while the next
+        is still unparsed; submitting the upcoming paths now lets their
+        parsing overlap that publication instead of following it. Capacity is
+        the same worker and in-flight byte budget ``warm_paths`` uses, so a
+        path that does not fit is simply left for the warm that needs it.
+        Results are claimed and verified by the ordinary ``warm_paths`` and
+        ``pop_path`` route. Returns the number of paths newly submitted.
+        """
+        if self._shard_directory is None or self._cleanup_blocked or self._closing:
+            return 0
+        before = len(self._path_futures)
+        self._submit_path_candidates(list(candidates))
+        return max(0, len(self._path_futures) - before)
+
+    def _submit_path_candidates(self, candidates: list[tuple[str, Provider, bool]]) -> list[tuple[str, Provider, bool]]:
+        """Submit every candidate that fits the worker and byte budget; return the rest."""
+        for source_path, future in tuple(self._path_futures.items()):
+            if future.done():
+                self._collect_path_future(source_path, future)
+        next_wave: list[tuple[str, Provider, bool]] = []
+        for source_path, provider, is_stream in candidates:
+            if source_path in self._path_results or source_path in self._path_futures:
+                continue
+            try:
+                source_bytes = Path(source_path).stat().st_size
+            except OSError as exc:
+                self._path_results[source_path] = LivePathPreparation(
+                    None, None, None, f"source stat failed: {type(exc).__name__}"[:500], deferred=True
+                )
+                continue
+            if len(self._path_futures) >= self._max_path_pending or (
+                self._path_futures and self._path_inflight_bytes + source_bytes > self._max_path_bytes
+            ):
+                next_wave.append((source_path, provider, is_stream))
+                continue
+            attempt_directory: Path | None = None
+            try:
+                attempt_directory = self._new_attempt_directory()
+                future = self._executor.submit(
+                    live_parse_path_worker,
+                    provider.value,
+                    source_path,
+                    Path(source_path).stem,
+                    is_stream=is_stream,
+                    shard_directory=str(self._attempt_root),
+                    attempt_directory=str(attempt_directory),
+                )
+            except Exception as exc:
+                if attempt_directory is not None:
+                    self._remove_attempt_directory(attempt_directory)
+                self._path_results[source_path] = LivePathPreparation(
+                    None, None, None, f"worker submission failed: {type(exc).__name__}"[:500], deferred=True
+                )
+                continue
+            self._path_futures[source_path] = future
+            self._path_attempt_dirs[source_path] = attempt_directory
+            self._path_sizes[source_path] = source_bytes
+            self._path_inflight_bytes += source_bytes
+        return next_wave
 
     def _prepare_existing_session_writes(
         self,

@@ -1005,6 +1005,63 @@ async def test_unchanged_preparation_defer_retries_through_fair_intake(
         stage.shutdown()
 
 
+def test_prefetch_submits_without_waiting_and_warm_claims_the_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A prefetched path is parsed once: the later warm waits on the same work.
+
+    Anti-vacuity: if ``prefetch_paths`` blocked, the call would not return
+    while the worker is held; if ``warm_paths`` resubmitted, the worker would
+    run twice.
+    """
+    import hashlib
+    import threading
+
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    paths = _write_fixture_corpus(tmp_path / "sessions", count=2)
+    released = threading.Event()
+    original_worker = parse_prefetch.live_parse_path_worker
+    calls: list[str] = []
+
+    def held_worker(provider_value: str, source_path: str, *args: object, **kwargs: object) -> object:
+        calls.append(source_path)
+        released.wait(timeout=5)
+        return original_worker(provider_value, source_path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", held_worker)
+    stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards")
+    candidates = [(str(path), Provider.CODEX, True) for path in paths]
+    try:
+        assert stage.prefetch_paths(candidates) == 2
+        # Returned while both workers are still held: nothing waited on them.
+        assert len(stage._path_futures) == 2
+        assert not any(future.done() for future in stage._path_futures.values())
+        released.set()
+        assert stage.warm_paths(candidates) == 2
+        assert sorted(calls) == sorted(str(path) for path in paths)
+        for path in paths:
+            result = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+            assert result is not None and result.error is None
+    finally:
+        released.set()
+        stage.shutdown()
+
+
+def test_default_process_pool_is_sized_for_the_writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: an uncapped default gives the process pool every core."""
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    monkeypatch.setattr(parse_prefetch, "live_watcher_parse_stage_worker_count", lambda: 23)
+    monkeypatch.setattr(parse_prefetch, "_parse_stage_workers_configured", lambda: False)
+    stage = LiveParseStage(shard_directory=tmp_path / "parse-shards", use_processes=True)
+    try:
+        assert stage._worker_count == parse_prefetch._DEFAULT_PROCESS_WORKER_CAP
+        assert stage._max_path_pending == stage._worker_count
+    finally:
+        stage.shutdown()
+
+
 @pytest.mark.uses_real_clock("measures concurrent worker wait against the configured timeout")
 def test_path_workers_share_one_wait_and_reuse_late_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import hashlib

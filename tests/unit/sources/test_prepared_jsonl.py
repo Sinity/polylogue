@@ -192,6 +192,59 @@ def test_prepared_artifact_refuses_same_count_row_change_and_file_replacement(tm
         artifact.verify_files(full=False)
 
 
+def _count_message_decodes(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    decodes = [0]
+    real = ParsedMessage.model_validate_json
+
+    def counting(data: str | bytes, *args: object, **kwargs: object) -> ParsedMessage:
+        decodes[0] += 1
+        return real(data, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ParsedMessage, "model_validate_json", counting)
+    return decodes
+
+
+def test_sealed_session_decodes_once_across_walks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Publication walks a session's messages many times; each walk after the
+    first reuses the decoded messages.
+
+    Anti-vacuity: without the retained decode, the second and third walks
+    validate every message again, so the count is 3 instead of 1.
+    """
+    artifact, coordinate = _prepared_artifact(tmp_path)
+    (session,) = list(artifact.iter_sessions())
+    decodes = _count_message_decodes(monkeypatch)
+    first = list(session.messages)
+    second = list(session.messages)
+    assert isinstance(session.messages, SqliteMessageSink)
+    third = list(session.messages.iter_from(0))
+    assert decodes[0] == 1
+    assert [message.model_dump() for message in second] == [message.model_dump() for message in first]
+    assert third[0].owner_coordinate == coordinate
+    assert session.messages[0] is first[0]
+
+
+def test_discarded_or_oversized_sessions_are_decoded_again(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A discarded carrier releases its decode, and a session above half the
+    budget is never retained, so memory stays bounded by the budget."""
+    from polylogue.sources import prepared_message_sink
+
+    artifact, _coordinate = _prepared_artifact(tmp_path)
+    assert artifact.sessions_path is not None
+    (session,) = list(artifact.iter_sessions())
+    decodes = _count_message_decodes(monkeypatch)
+    list(session.messages)
+    prepared_message_sink.discard_decoded_sessions(artifact.sessions_path)
+    list(session.messages)
+    assert decodes[0] == 2
+
+    prepared_message_sink.discard_decoded_sessions(artifact.sessions_path)
+    monkeypatch.setattr(prepared_message_sink._DECODED_SESSIONS, "budget_bytes", 8)
+    list(session.messages)
+    list(session.messages)
+    assert decodes[0] == 4
+
+
 def _claude_document(session_id: str) -> dict[str, object]:
     return {
         "uuid": session_id,

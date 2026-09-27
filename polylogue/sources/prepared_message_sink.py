@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import sqlite3
+import threading
 import uuid
+from collections import OrderedDict
 from collections.abc import Iterable, Iterator, Mapping, MutableSequence, Set
 from contextlib import closing, contextmanager
 from dataclasses import asdict
@@ -26,6 +29,72 @@ _ACTIVE_PARENT_LOOKUP_SQL = (
 
 def _read_uri(path: Path) -> str:
     return f"file:{quote(str(path))}?mode=ro"
+
+
+#: Byte budget, counted in sealed ``message_json`` bytes, for decoded sessions
+#: kept across passes. A session larger than half of it is never retained and
+#: keeps streaming from disk, so whale memory stays bounded as before.
+DECODED_SESSION_BUDGET_BYTES = 64 * 1024 * 1024
+
+_DecodedKey = tuple[str, int, int, int, int, int, int]
+
+
+class _DecodedSessions:
+    """A small process-wide LRU of fully decoded sealed sessions.
+
+    Publishing one session walks its messages about twenty times (content
+    identities, timestamps, messages, blocks, file edits, events, links,
+    paste spans, ...). Each walk re-read the sealed carrier and re-ran pydantic
+    validation of every message: on the fresh-build benchmark that was 45% of
+    the ingest writer's CPU. A sealed carrier is immutable, so its first
+    complete walk is retained for the following ones.
+
+    Retained messages are shared between walks. The writer treats parsed
+    messages as values -- it derives rows and ``model_copy`` for changes --
+    and never assigns to one in place.
+    """
+
+    def __init__(self, budget_bytes: int) -> None:
+        self.budget_bytes = budget_bytes
+        self._entries: OrderedDict[_DecodedKey, tuple[tuple[ParsedMessage, ...], int]] = OrderedDict()
+        self._bytes = 0
+        self._lock = threading.Lock()
+
+    def get(self, key: _DecodedKey) -> tuple[ParsedMessage, ...] | None:
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            self._entries.move_to_end(key)
+            return entry[0]
+
+    def put(self, key: _DecodedKey, messages: tuple[ParsedMessage, ...], size: int) -> None:
+        with self._lock:
+            if key in self._entries or size > self.budget_bytes // 2:
+                return
+            self._entries[key] = (messages, size)
+            self._bytes += size
+            while self._bytes > self.budget_bytes and self._entries:
+                _key, (_messages, evicted) = self._entries.popitem(last=False)
+                self._bytes -= evicted
+
+    def discard_path(self, path: str) -> None:
+        with self._lock:
+            for key in [key for key in self._entries if key[0] == path]:
+                self._bytes -= self._entries.pop(key)[1]
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._bytes = 0
+
+
+_DECODED_SESSIONS = _DecodedSessions(DECODED_SESSION_BUDGET_BYTES)
+
+
+def discard_decoded_sessions(path: Path) -> None:
+    """Release retained decodes of one sealed carrier before it is removed."""
+    _DECODED_SESSIONS.discard_path(str(path))
 
 
 def _message_json(value: ParsedMessage) -> str:
@@ -104,6 +173,10 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
                 (self.session_ordinal, ordinal),
             ).fetchone()
         else:
+            key = self._decoded_key()
+            decoded = _DECODED_SESSIONS.get(key) if key is not None else None
+            if decoded is not None:
+                return decoded[ordinal]
             with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
                 row = conn.execute(
                     "SELECT message_json FROM prepared_message WHERE session_ordinal = ? AND message_ordinal = ?",
@@ -181,6 +254,13 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
             for row in cursor:
                 yield ParsedMessage.model_validate_json(row[0])
             return
+        key = self._decoded_key()
+        decoded = _DECODED_SESSIONS.get(key) if key is not None else None
+        if decoded is not None:
+            yield from decoded[start:]
+            return
+        retained: list[ParsedMessage] | None = [] if key is not None and start == 0 else None
+        retained_bytes = 0
         with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
             cursor = conn.execute(
                 "SELECT message_json FROM prepared_message WHERE session_ordinal = ? "
@@ -188,7 +268,33 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
                 (self.session_ordinal, start),
             )
             for row in cursor:
-                yield ParsedMessage.model_validate_json(row[0])
+                message = ParsedMessage.model_validate_json(row[0])
+                if retained is not None:
+                    retained_bytes += len(row[0])
+                    if retained_bytes > _DECODED_SESSIONS.budget_bytes // 2:
+                        retained = None
+                    else:
+                        retained.append(message)
+                yield message
+        # Only a walk that reached the end holds the whole session.
+        if key is not None and retained is not None and len(retained) == self._count:
+            _DECODED_SESSIONS.put(key, tuple(retained), retained_bytes)
+
+    def _decoded_key(self) -> _DecodedKey | None:
+        """Identify this sealed session's bytes, or ``None`` when unreadable."""
+        try:
+            stat = os.stat(self.path)
+        except OSError:
+            return None
+        return (
+            str(self.path),
+            self.session_ordinal,
+            stat.st_dev,
+            stat.st_ino,
+            stat.st_mtime_ns,
+            stat.st_ctime_ns,
+            stat.st_size,
+        )
 
     def normalize_active_path(self) -> SqliteMessageSink:
         """Apply the writer's leaf/path normalization without a message list."""

@@ -63,6 +63,7 @@ from polylogue.sources.prepared_message_sink import (
     SqliteMessageSink,
     SqliteMessageStore,
     SqliteSessionEventSink,
+    discard_decoded_sessions,
     prepare_simple_chatgpt_mapping,
     read_chatgpt_mapping_object,
 )
@@ -255,6 +256,8 @@ class PreparedJsonl:
     def discard(self) -> None:
         for prepared in self.prepared_writes:
             prepared.close()
+        if self.sessions_path is not None:
+            discard_decoded_sessions(self.sessions_path)
         if self.attempt_directory is not None:
             try:
                 shutil.rmtree(self.attempt_directory)

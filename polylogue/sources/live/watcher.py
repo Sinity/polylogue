@@ -1179,6 +1179,15 @@ class LiveWatcher:
         logger.info("live.watcher: reconciled cursor from archive source row for %s", path)
         return _ArchivedCursorReconciliation.RECONCILED
 
+    async def prefetch_parse_paths(self, paths: Sequence[Path], *, source_name: str) -> int:
+        """Start off-writer preparation of paths an upcoming batch will ingest in full.
+
+        Taken under the ingest lock: the parse stage's bookkeeping is owned by
+        one caller at a time, and a batch's own warm must never run beside it.
+        """
+        async with self._ingest_lock:
+            return await self._batch_processor.prefetch_full_paths(paths, source_name=source_name)
+
     async def _ingest_files(
         self,
         paths: list[Path],

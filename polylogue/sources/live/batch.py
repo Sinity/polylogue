@@ -2821,6 +2821,24 @@ class LiveBatchProcessor:
         backend = getattr(self._polylogue, "backend", None)
         return isinstance(getattr(backend, "db_path", None), Path)
 
+    async def prefetch_full_paths(self, paths: Sequence[Path], *, source_name: str) -> int:
+        """Submit upcoming full-ingest paths to the parse stage without waiting.
+
+        The same candidates ``_ingest_full_paths`` warms for itself; submitting
+        them early lets a later group's or page's parsing overlap the current
+        writer publication. The warm that needs them claims and verifies the
+        results exactly as it would its own.
+        """
+        if self._parse_stage is None or not paths or _source_tier_acquisition_required():
+            return 0
+        fallback_provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
+        candidates = await asyncio.to_thread(
+            _live_parse_stage_path_candidates, list(paths), fallback_provider=fallback_provider
+        )
+        if not candidates:
+            return 0
+        return await asyncio.to_thread(self._parse_stage.prefetch_paths, candidates)
+
     async def _ingest_full_paths(
         self,
         paths: list[Path],
