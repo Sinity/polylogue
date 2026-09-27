@@ -1189,7 +1189,7 @@ def raw_frontier_blocked_raw_ids(archive_root: Path, raw_ids: Sequence[str]) -> 
     from polylogue.core.evidence import Measured, Unavailable
     from polylogue.storage.archive_identity import resolve_active_index_path
     from polylogue.storage.sqlite.archive_tiers.revision_governance import expand_raw_membership_selection_sync
-    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+    from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
     from polylogue.storage.tier_access import capture_sqlite_read
 
     if not raw_ids:
@@ -1198,9 +1198,7 @@ def raw_frontier_blocked_raw_ids(archive_root: Path, raw_ids: Sequence[str]) -> 
     def read_selected() -> RawFrontierBlockedPaths:
         with closing(open_readonly_connection(archive_root / "source.db", validate_schema=False)) as conn:
             conn.row_factory = sqlite3.Row
-            conn.execute(
-                "ATTACH DATABASE ? AS index_tier", (resolve_active_index_path(archive_root).as_uri() + "?mode=ro",)
-            )
+            attach_readonly_database(conn, resolve_active_index_path(archive_root), alias="index_tier")
             conn.execute("BEGIN")
             component, logical_keys = expand_raw_membership_selection_sync(conn, list(raw_ids))
             paths_by_raw = _source_paths_for_raw_ids(conn, set(component))
