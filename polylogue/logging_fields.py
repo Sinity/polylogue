@@ -122,6 +122,10 @@ def _fields() -> dict[str, FieldKind]:
         "cursor_id",
         "tool_id",
         "generation_id",
+        # the process-scoped holder of an index generation (``cold-build:<pid>``);
+        # promotion checks it, so a generation event without it cannot be
+        # attributed to the daemon that owns the candidate.
+        "owner_id",
         "branch_point_message_id",
         "derivation_key",
         "candidate_ref",

@@ -1760,9 +1760,20 @@ def _render_build_monitor(catchup: object, snapshot: object) -> str:
         )
 
     source_markup = html.escape(str(source)) if isinstance(source, str) and source else "Unknown"
+    preparation_markup = ""
+    if progress.get("mode") == "cold_build_preparing":
+        # Before the first intake page the baseline walk is the only work in
+        # flight, and it is also what will become the denominator.
+        preparation_markup = f"""<dl class="monitor-facts" aria-label="Cold build preparation">
+        <div><dt>Baseline paths inspected</dt><dd data-preparation="inspected">{number("preparation_inspected_count", integer=True)}</dd></div>
+        <div><dt>Baseline revisions hashed</dt><dd data-preparation="revisions">{number("preparation_revision_count", integer=True)}</dd></div>
+        <div><dt>Baseline bytes hashed</dt><dd>{number("preparation_hashed_bytes", integer=True)}</dd></div>
+        <div><dt>Preparation elapsed</dt><dd>{age(progress.get("preparation_age_s"))}</dd></div>
+      </dl>"""
     return f"""<h2 id="build-monitor-title">Live build monitor</h2>
       <p data-monitor-connection="checking">Browser connection: not checked yet</p>
       <p data-monitor-phase="{html.escape(str(phase), quote=True)}">Phase: {html.escape(str(phase))} · source: {source_markup}</p>
+      {preparation_markup}
       <dl class="monitor-facts">
         <div><dt>Accepted revisions</dt><dd data-progress="revisions">{completed_value}</dd></div>
         <div><dt>Discovery inspected</dt><dd>{number("discovery_inspected_count", integer=True)}</dd></div>

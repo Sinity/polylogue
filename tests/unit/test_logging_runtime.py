@@ -210,4 +210,35 @@ def test_stdlib_bound_logger_forwards_exc_info_before_structlog_configured(
 
     bound.warning("probe failed", exc_info=True, extra={"stage": "fts"}, unsupported_kw="dropped")
 
-    assert captured["kwargs"] == {"exc_info": True, "extra": {"stage": "fts"}}
+    forwarded = captured["kwargs"]
+    assert isinstance(forwarded, dict)
+    assert forwarded["exc_info"] is True
+    forwarded_extra = forwarded["extra"]
+    assert isinstance(forwarded_extra, dict)
+    assert forwarded_extra["stage"] == "fts"
+    assert forwarded_extra["_polylogue_event_fields"] == {"stage": "fts"}
+
+
+def test_pre_configuration_logger_checks_level_before_field_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Validating before the level check makes the discarded debug call warn."""
+    import json
+
+    monkeypatch.setattr(logging_mod, "_structlog_configured", False)
+    stdlib_logger = logging.getLogger("polylogue.tests.level-first")
+    monkeypatch.setattr(stdlib_logger, "level", logging.INFO)
+    with patch("polylogue.logging.logging.getLogger", return_value=stdlib_logger):
+        bound = logging_mod.get_logger("polylogue.tests.level-first")
+    stream = io.StringIO()
+    sink = logging_mod.add_sink(logging_mod.make_stream_sink(stream, fmt="json"))
+    try:
+        bound.debug("Scanning source", unregistered_probe_field="x")
+        assert stream.getvalue() == ""
+        bound.warning("Probe failed", unregistered_probe_field="x")
+    finally:
+        logging_mod.remove_sink(sink)
+    records = [json.loads(line) for line in stream.getvalue().splitlines()]
+    rejections = [record for record in records if record["event"] == "log.field_rejected"]
+    assert len(rejections) == 1
+    assert rejections[0]["field"] == "unregistered_probe_field"
+    assert rejections[0]["source_event"] == "Probe failed"
+    assert rejections[0]["logger"] == "polylogue.tests.level-first"

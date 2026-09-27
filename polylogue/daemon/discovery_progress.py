@@ -7,7 +7,7 @@ import time
 import weakref
 from dataclasses import dataclass
 
-from polylogue.logging import emit
+from polylogue.logging import ERROR, INFO, emit
 
 _LOG_INTERVAL_S = 15.0
 
@@ -31,6 +31,29 @@ _running: dict[object, _ActiveDiscovery] = {}
 _pending: dict[object, _ActiveDiscovery] = {}
 _last_begin_log: dict[str, float] = {}
 _last_end_state: dict[str, tuple[int, int, int, bool, bool]] = {}
+
+
+@dataclass(slots=True)
+class _ColdBuildPreparation:
+    """Work a cold build does before its dispatcher exists.
+
+    Baseline enumeration and revision hashing, capacity projection, the
+    source snapshot and generation creation all run inside one writer call
+    before the first intake page. Without this state, status reports idle for
+    that whole interval.
+    """
+
+    phase: str
+    started: float
+    phase_started: float
+    last_advanced: float
+    last_logged: float
+    inspected: int = 0
+    revisions: int = 0
+    hashed_bytes: int = 0
+
+
+_preparation: _ColdBuildPreparation | None = None
 
 
 def _prune_dead_pending() -> None:
@@ -136,6 +159,114 @@ def end_discovery(token: object, *, failed: bool = False, pending: bool = False)
         )
 
 
+def begin_cold_build_preparation(phase: str = "baseline_walk") -> None:
+    """Mark the start of a cold build's pre-dispatcher preparation."""
+    global _preparation
+    now = time.monotonic()
+    with _lock:
+        _preparation = _ColdBuildPreparation(phase, now, now, now, now)
+    _emit_preparation(phase, 0, 0, 0, 0.0, 0.0, outcome="ok")
+
+
+def advance_cold_build_preparation(
+    phase: str, *, inspected: int = 0, revisions: int = 0, hashed_bytes: int = 0
+) -> None:
+    """Count preparation work; a phase change or a timed interval emits INFO."""
+    with _lock:
+        state = _preparation
+        if state is None:
+            return
+        now = time.monotonic()
+        changed = phase != state.phase
+        if changed:
+            state.phase = phase
+            state.phase_started = now
+        state.inspected += max(0, inspected)
+        state.revisions += max(0, revisions)
+        state.hashed_bytes += max(0, hashed_bytes)
+        state.last_advanced = now
+        if not changed and now - state.last_logged < _LOG_INTERVAL_S:
+            return
+        state.last_logged = now
+        snapshot = (state.phase, state.inspected, state.revisions, state.hashed_bytes, (now - state.started) * 1000)
+    _emit_preparation(*snapshot, 0.0, outcome="ok")
+
+
+def end_cold_build_preparation(*, failed: bool = False, cancelled: bool = False) -> None:
+    """Clear the preparation phase.
+
+    ``cancelled`` is a shutdown or task cancellation: the phase stops without
+    having failed, so it is reported at INFO as skipped rather than as an error.
+    """
+    global _preparation
+    with _lock:
+        state = _preparation
+        _preparation = None
+        if state is None:
+            return
+        now = time.monotonic()
+        snapshot = (
+            state.phase if failed or cancelled else "prepared",
+            state.inspected,
+            state.revisions,
+            state.hashed_bytes,
+            (now - state.started) * 1000,
+            (now - state.last_advanced) * 1000,
+        )
+    if cancelled:
+        _emit_preparation(*snapshot, outcome="skipped", reason="cancelled")
+    else:
+        _emit_preparation(*snapshot, outcome="error" if failed else "ok")
+
+
+def _emit_preparation(
+    phase: str,
+    inspected: int,
+    revisions: int,
+    hashed_bytes: int,
+    duration_ms: float,
+    age_ms: float,
+    *,
+    outcome: str,
+    reason: str | None = None,
+) -> None:
+    fields: dict[str, object] = {} if reason is None else {"reason": reason}
+    emit(
+        "daemon.cold_build.preparation",
+        level=ERROR if outcome == "error" else INFO,
+        outcome=outcome,
+        phase=phase,
+        considered=inspected,
+        files=revisions,
+        bytes=hashed_bytes,
+        duration_ms=duration_ms,
+        age_ms=age_ms,
+        **fields,
+    )
+
+
+def _preparation_payload(now: float) -> dict[str, object] | None:
+    state = _preparation
+    if state is None:
+        return None
+    return {
+        "mode": "cold_build_preparing",
+        "current_phase": state.phase,
+        "current_source": None,
+        "current_path": None,
+        "last_advanced_age_s": round(max(0.0, now - state.last_advanced), 3),
+        "preparation_age_s": round(max(0.0, now - state.started), 3),
+        "preparation_phase_age_s": round(max(0.0, now - state.phase_started), 3),
+        "preparation_inspected_count": state.inspected,
+        "preparation_revision_count": state.revisions,
+        "preparation_hashed_bytes": state.hashed_bytes,
+        # The baseline being enumerated IS the denominator; until it is
+        # sealed there is nothing to project completion against.
+        "planned_file_count": None,
+        "eta_s": None,
+    }
+
+
 def active_discovery_payload() -> dict[str, object] | None:
     """Read counters without filesystem or database I/O."""
     with _lock:
@@ -144,7 +275,7 @@ def active_discovery_payload() -> dict[str, object] | None:
         pending = tuple(_pending.values())
         candidates = running + pending
         if not candidates:
-            return None
+            return _preparation_payload(time.monotonic())
         current = min(running or pending, key=lambda state: state.started)
         now = time.monotonic()
         payload: dict[str, object] = {
@@ -154,7 +285,11 @@ def active_discovery_payload() -> dict[str, object] | None:
             "current_path": None,
             "discovery_pending": True,
             "discovery_age_s": round(max(0.0, now - min(state.started for state in candidates)), 3),
-            "discovery_last_advanced_age_s": round(max(0.0, now - min(state.last_advanced for state in candidates)), 3),
+            # This field describes the aggregate walk population (as do the
+            # counters below), so any advancing walk proves recent progress.
+            # Using the oldest timestamp made one stale pending walk mask
+            # progress from every active walk.
+            "discovery_last_advanced_age_s": round(max(0.0, now - max(state.last_advanced for state in candidates)), 3),
             "discovery_inspected_count": sum(state.inspected for state in candidates),
             "discovery_accepted_count": sum(state.accepted for state in candidates),
             "discovery_rejected_count": sum(state.rejected for state in candidates),
@@ -164,7 +299,11 @@ def active_discovery_payload() -> dict[str, object] | None:
             "planned_file_count": None,
             "eta_s": None,
         }
-    return payload
+        preparation = _preparation_payload(now)
+    # Preparation runs before the dispatcher walks anything, so a running
+    # preparation describes the current phase even if an earlier walk left
+    # pending counters behind.
+    return {**payload, **preparation} if preparation is not None else payload
 
 
 def log_discovery_progress_if_due() -> None:
@@ -188,6 +327,20 @@ def log_discovery_progress_if_due() -> None:
                     (now - active.last_advanced) * 1000,
                 )
             )
+        preparation_due = None
+        state = _preparation
+        if state is not None and now - state.last_logged >= _LOG_INTERVAL_S:
+            state.last_logged = now
+            preparation_due = (
+                state.phase,
+                state.inspected,
+                state.revisions,
+                state.hashed_bytes,
+                (now - state.started) * 1000,
+                (now - state.last_advanced) * 1000,
+            )
+    if preparation_due is not None:
+        _emit_preparation(*preparation_due, outcome="ok")
     for source, running, considered, accepted, rejected, duration_ms, age_ms in due:
         emit(
             "daemon.intake.discovery",
@@ -204,7 +357,9 @@ def log_discovery_progress_if_due() -> None:
 
 def reset_discovery_progress() -> None:
     """Clear process-local state when a daemon/test status lifecycle resets."""
+    global _preparation
     with _lock:
+        _preparation = None
         _running.clear()
         _pending.clear()
         _last_begin_log.clear()

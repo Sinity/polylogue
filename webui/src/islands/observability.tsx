@@ -82,6 +82,12 @@ function LiveBuildMonitor({ observation }: { readonly observation: MonitorObserv
     <h2 id="build-monitor-title">Live build monitor</h2>
     <p data-monitor-connection={stalled ? 'stale' : observation.connection}>{connectionLabel}</p>
     <p data-monitor-phase={phase}>Phase: {phase} · source: {source}</p>
+    {catchup.mode === 'cold_build_preparing' ? <dl class="monitor-facts" aria-label="Cold build preparation">
+      <div><dt>Baseline paths inspected</dt><dd data-preparation="inspected">{countText(catchup.preparation_inspected_count)}</dd></div>
+      <div><dt>Baseline revisions hashed</dt><dd data-preparation="revisions">{countText(catchup.preparation_revision_count)}</dd></div>
+      <div><dt>Baseline bytes hashed</dt><dd>{countText(catchup.preparation_hashed_bytes)}</dd></div>
+      <div><dt>Preparation elapsed</dt><dd>{durationText(catchup.preparation_age_s)}</dd></div>
+    </dl> : null}
     <dl class="monitor-facts">
       <div><dt>Accepted raw revisions</dt><dd data-progress="revisions">{progressText(catchup)}</dd></div>
       <div><dt>Discovery inspected</dt><dd>{countText(catchup.discovery_inspected_count)}</dd></div>

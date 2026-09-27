@@ -809,14 +809,16 @@ def test_pre_and_post_configuration_loggers_share_one_sink(json_logs: bool, monk
     # Another test may have configured structlog already; force this first
     # logger through the pre-configuration stdlib compatibility path.
     monkeypatch.setattr(plog, "_structlog_configured", False)
-    before = plog.get_logger("test.before")
+    # ``level`` is a catalog name and emit()'s own keyword: binding it must not
+    # collide with the bridge's call and lose the record.
+    before = plog.get_logger("test.before").bind(source_name="preconfigured-source", level="debug")
     stream = io.StringIO()
     try:
         plog.configure_logging(json_logs=json_logs)
         plog.configure_events(stream=stream, fmt="json")
-        before.warning("before record")
+        before.warning("before record", stage_timings_ms={"parse": 1.25})
         plog.get_logger("test.after").warning("after record")
-        logging.getLogger("third.party").warning("third record")
+        logging.getLogger("third.party").warning("third record", extra={"stage": "fts"})
         plog.emit("direct.record")
         deadline = time.monotonic() + 2
         while plog.diagnostic_snapshot()["delivered"] < 4 and time.monotonic() < deadline:
@@ -827,5 +829,15 @@ def test_pre_and_post_configuration_loggers_share_one_sink(json_logs: bool, monk
         assert events.count("stdlib.record") == 2
         assert events.count("structlog.record") == 1
         assert all("error_detail" in record for record in records if record["event"] != "direct.record")
+        before_record = next(record for record in records if record.get("logger") == "test.before")
+        assert before_record["source_name"] == "preconfigured-source"
+        assert before_record["stage_timings_ms"] == {"parse": 1.25}
+        assert before_record["level"] == "warning"
+        third_record = next(record for record in records if record.get("logger") == "third.party")
+        assert third_record["stage"] == "fts"
+        # LogRecord.thread is an integer attribute that happens to share a
+        # catalog name; it is not a field the caller supplied.
+        assert "thread" not in third_record
+        assert not any(record.get("event") == "log.field_rejected" for record in records)
     finally:
         plog.reset_events()

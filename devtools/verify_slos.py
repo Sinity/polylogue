@@ -2,7 +2,8 @@
 
 Reads the SLO catalog from docs/plans/slo-catalog.yaml, runs the
 referenced benchmark tests with pytest-benchmark, then compares the
-measured p50 and p95 latencies against the declared targets.
+measured p50 and a modeled p95 estimate (mean + 1.645 stddev, not an observed
+percentile) against the declared targets.
 
 The benchmark run goes through the managed pytest harness, so it is reachable
 from an agent job, where bare pytest is refused.

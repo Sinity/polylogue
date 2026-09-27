@@ -4282,9 +4282,13 @@ async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: P
         return real_refresh(self, observed)
 
     def capture_with_transient_fault(
-        sources: tuple[WatchSource, ...], *, operation_id: str, cancelled: Callable[[], bool] | None = None
+        sources: tuple[WatchSource, ...],
+        *,
+        operation_id: str,
+        cancelled: Callable[[], bool] | None = None,
+        progress: production_baseline.BaselineProgress | None = None,
     ) -> production_baseline.ProductionSourceBaseline:
-        baseline = real_capture(sources, operation_id=operation_id, cancelled=cancelled)
+        baseline = real_capture(sources, operation_id=operation_id, cancelled=cancelled, progress=progress)
         if repaired:
             return baseline
         rows = tuple(
