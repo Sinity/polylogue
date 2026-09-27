@@ -19,6 +19,7 @@ from polylogue.storage.archive_identity import ArchiveLocation, TierFileIdentity
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 SchemaObjectType = Literal["table", "index", "trigger", "view", "column"]
@@ -270,14 +271,13 @@ def _open_read_only(path: Path, *, tier: ArchiveTier) -> sqlite3.Connection:
     if not path.is_file():
         raise SchemaCensusError(f"tier file is missing: {path.name}")
     try:
-        connection = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
+        connection = open_readonly_connection(path.resolve(), validate_schema=False)
         connection.row_factory = sqlite3.Row
         if tier is ArchiveTier.EMBEDDINGS:
             loaded, error = try_load_sqlite_vec(connection)
             if not loaded:
                 connection.close()
                 raise SchemaCensusError(f"embeddings: sqlite-vec unavailable: {error or 'not loadable'}")
-        connection.execute("PRAGMA query_only = ON")
         return connection
     except sqlite3.Error as exc:
         raise SchemaCensusError(f"tier file is unreadable: {path.name}: {exc}") from exc
