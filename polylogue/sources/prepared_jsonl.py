@@ -54,9 +54,11 @@ from polylogue.sources.parsers import (
 )
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.prepared_message_sink import (
+    ChatGPTNodeMapping,
     SqliteMessageSink,
     SqliteMessageStore,
     SqliteSessionEventSink,
+    prepare_simple_chatgpt_mapping,
     read_chatgpt_mapping_object,
 )
 from polylogue.sources.sidecar_evidence import SidecarResolver
@@ -574,13 +576,14 @@ def prepare_jsonl_blob(
         generic_envelope: dict[str, JSONValue] | None = None
         hermes_envelope: dict[str, JSONValue] | None = None
         chatgpt_envelope: dict[str, object] | None = None
+        chatgpt_mapping: ChatGPTNodeMapping | None = None
         grok_count: int | None = None
         grok_positive_marker = False
         if not is_stream and provider is Provider.CHATGPT and Path(source_path).name.lower().endswith(".json"):
             with source.open("rb") as handle:
                 read_result = read_chatgpt_mapping_object(handle, store.conn)
             if read_result is not None and chatgpt._mapping_nodes_are_valid(read_result[1]):
-                chatgpt_envelope, _mapping = read_result
+                chatgpt_envelope, chatgpt_mapping = read_result
             else:
                 store.conn.execute("DROP TABLE chatgpt_node")
         # Cohort callbacks may inspect or rewrite the entire parse result.
@@ -646,13 +649,19 @@ def prepare_jsonl_blob(
             if candidate is not None and isinstance(asserted_id, str) and asserted_id.strip():
                 generic_envelope = candidate
         if chatgpt_envelope is not None:
+            assert chatgpt_mapping is not None
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
             chatgpt_admitted = (
                 classify_chatgpt_object(chatgpt_envelope) if classify_chatgpt_object is not None else True
             )
             session: ParsedSession | None = (
-                chatgpt.parse(chatgpt_envelope, f"{fallback_id}-0") if chatgpt_admitted else None
+                (
+                    prepare_simple_chatgpt_mapping(chatgpt_envelope, chatgpt_mapping, store, f"{fallback_id}-0")
+                    or chatgpt.parse(chatgpt_envelope, f"{fallback_id}-0")
+                )
+                if chatgpt_admitted
+                else None
             )
             if session is not None and not require_positive_conversational_evidence(
                 [session], provider=provider, source_path=source_path
@@ -673,6 +682,14 @@ def prepare_jsonl_blob(
                 _append_artifact_session(store, session_count, session)
                 session_count += 1
             store.conn.execute("DROP TABLE chatgpt_node")
+            for table in (
+                "chatgpt_simple_node",
+                "chatgpt_simple_sibling",
+                "chatgpt_simple_child",
+                "chatgpt_simple_active",
+                "chatgpt_simple_message",
+            ):
+                store.conn.execute(f"DROP TABLE IF EXISTS {table}")
             after_hash = _source_digest(source)
             if before_hash != after_hash:
                 raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
