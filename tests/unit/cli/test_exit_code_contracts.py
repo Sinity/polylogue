@@ -339,3 +339,25 @@ def test_facets_exit_status_follows_the_reported_outcome() -> None:
     with pytest.raises(SystemExit) as exc_info:
         emit_facets_response(cast(Any, response(0)), output_format="json")
     assert exc_info.value.code == 2
+
+
+@pytest.mark.parametrize(("warning", "state"), [(None, "ok"), ("results may be partial", "degraded")])
+def test_stats_outcome_is_degraded_while_the_archive_converges(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], warning: str | None, state: str
+) -> None:
+    """Totals over a partially materialized archive are an undercount.
+
+    Red if ``_emit_stats`` decides its outcome from the session total alone
+    and reports ``ok`` beside a convergence warning.
+    """
+    import json
+
+    from polylogue.archive.stats import ArchiveStats
+    from polylogue.cli import archive_query
+    from polylogue.cli.render import outcome
+
+    monkeypatch.setattr(outcome, "convergence_warning_line", lambda *_args: warning)
+    archive_query._emit_stats(
+        ArchiveStats(total_sessions=3, total_messages=9), output_format="json", origin=None, query="", fields=None
+    )
+    assert json.loads(capsys.readouterr().out)["outcome"]["state"] == state

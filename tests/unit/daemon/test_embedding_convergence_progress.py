@@ -21,6 +21,7 @@ class _EmbeddingConfig:
     voyage_api_key = "pa-test"
     embedding_model = "voyage-4"
     embedding_dimension = 1024
+    sinex_mode = "off"
 
     def get(self, key: str, default: object = None) -> object:
         return {"voyage_api_key": self.voyage_api_key, "embedding_max_cost_usd": 5.0}.get(key, default)

@@ -174,4 +174,4 @@ async def test_filter_only_structured_spec_lists_sessions_with_absolute_ranks(
     envelope = await build_search_envelope_for_spec(operations, spec, limit=2, offset=5)
 
     operations.list_sessions_for_spec.assert_awaited_once()
-    assert [hit.rank for hit in envelope.hits] == [6, 7]
+    assert [hit.match.rank for hit in envelope.hits] == [6, 7]
