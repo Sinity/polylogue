@@ -85,6 +85,7 @@ from polylogue.pipeline.ingest_outcomes import (
     classify_archive_write_exception,
     downstream_failure_disposition,
     success_disposition,
+    transient_error_disposition,
 )
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
 from polylogue.sources.artifact_observations import record_session_artifact_observation
@@ -1023,7 +1024,14 @@ class LiveBatchProcessor:
         """
         if attempt.attempt_id is None or attempt.finished:
             return
-        disposition = classify_archive_write_exception(exc)
+        # A spent writer hold is a property of the pass, not of these inputs
+        # (the adapter reports the page retryable); record it that way rather
+        # than as the non-retryable parser-defect fallback.
+        disposition = (
+            transient_error_disposition(evidence_ref="write_hold_budget", diagnostic=str(exc))
+            if isinstance(exc, WriteHoldBudgetError)
+            else classify_archive_write_exception(exc)
+        )
         fault = storage_fault_kind(exc)
         emit(
             "live.ingest.attempt_escaped",
@@ -5204,6 +5212,10 @@ class LiveBatchProcessor:
                     except ZipBombError as exc:
                         logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
         except (zipfile.BadZipFile, OSError) as exc:
+            # Members stream into the archive's blob staging: a full or
+            # read-only archive is not a property of this ZIP, and reporting
+            # "no admissible record" would exclude the unchanged file for good.
+            raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
             logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
             return [], 0
         return records, total_bytes
@@ -5289,6 +5301,7 @@ class LiveBatchProcessor:
                         )
                     )
         except (zipfile.BadZipFile, OSError) as exc:
+            raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
             logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
             # A transport/read failure is not evidence that the archive has no
             # admissible members. Keep it distinct from a successful empty

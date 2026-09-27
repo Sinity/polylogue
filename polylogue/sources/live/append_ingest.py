@@ -20,8 +20,8 @@ from polylogue.archive.revision_authority import (
 from polylogue.core.degraded import degraded_reason
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
-from polylogue.core.storage_faults import raise_if_storage_fault
-from polylogue.logging import get_logger
+from polylogue.core.storage_faults import raise_if_storage_fault, storage_fault_kind
+from polylogue.logging import ERROR, emit, get_logger
 from polylogue.sources.artifact_observations import record_session_artifact_observation
 from polylogue.sources.live.archive_open import _open_archive_for_live_write, _source_tier_acquisition_required
 from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
@@ -465,10 +465,27 @@ def _ingest_append_plans_archive(
                         if provider is not None and raw_id is not None:
                             reset_transient_raw_parse_state(archive, raw_id, provider=provider)
                         raise
-                    # A full disk, I/O error or corrupt page is not this
-                    # append's defect: marking the raw failed would pin it on
-                    # the input (and write to the storage that just failed).
-                    raise_if_storage_fault(exc)
+                    if storage_fault_kind(exc) is not None:
+                        # A full disk, I/O error or corrupt page is not this
+                        # append's defect. The index write may already have
+                        # recorded a failure state on the raw; leave it
+                        # pending, as for contention. If the same storage
+                        # refuses that too, the original fault is still the
+                        # one reported.
+                        if provider is not None and raw_id is not None:
+                            try:
+                                reset_transient_raw_parse_state(archive, raw_id, provider=provider)
+                            except Exception as reset_exc:
+                                emit(
+                                    "live.ingest.raw_state_reset_failed",
+                                    level=ERROR,
+                                    outcome="error",
+                                    reason="storage_fault",
+                                    raw_id=raw_id,
+                                    error_type=type(reset_exc).__name__,
+                                    error_detail=str(reset_exc),
+                                )
+                        raise_if_storage_fault(exc)
                     if provider is not None and raw_id is not None:
                         archive.mark_raw_parse_failed(
                             raw_id,

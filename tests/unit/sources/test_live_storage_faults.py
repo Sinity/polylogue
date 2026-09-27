@@ -278,3 +278,124 @@ async def test_a_cancelled_attempt_is_named_and_cancellation_propagates(
     finally:
         watcher.stop()
         await archive.close()
+
+
+def test_zip_member_publication_on_a_full_archive_escapes_instead_of_excluding(tmp_path: Path) -> None:
+    """A ZIP whose members stream into a full archive is not "a ZIP with no
+    admissible record". Anti-vacuity: without the escape both helpers turn
+    ENOSPC into an empty/None extraction, and the caller acknowledges the
+    unchanged ZIP as excluded."""
+    import zipfile
+    from types import SimpleNamespace
+    from typing import cast
+
+    from polylogue.core.enums import Provider
+    from polylogue.core.storage_faults import ArchiveStorageFaultError
+    from polylogue.sources.live.batch import LiveBatchProcessor
+    from polylogue.storage.blob_store import BlobStore
+
+    bundle = tmp_path / "claude-export.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr(
+            "projects/project/session.jsonl",
+            b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"kept"},'
+            b'"uuid":"u1","timestamp":"2025-01-01T00:00:00Z"}\n',
+        )
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="claude-code", root=tmp_path),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    class _FullBlobStore(BlobStore):
+        def prepare_from_fileobj(self, *args: Any, **kwargs: Any) -> Any:
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        def write_from_fileobj(self, *args: Any, **kwargs: Any) -> Any:
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+    full = _FullBlobStore(tmp_path / "blob")
+    with pytest.raises(ArchiveStorageFaultError):
+        processor._extract_zip_member_records(
+            bundle, blob_store=full, fallback_provider=Provider.CLAUDE_CODE, file_mtime="2026-09-04T00:00:00+00:00"
+        )
+    with pytest.raises(ArchiveStorageFaultError):
+        processor._extract_source_only_zip_member_records(
+            bundle, blob_store=full, fallback_provider=Provider.CLAUDE_CODE, file_mtime="2026-09-04T00:00:00+00:00"
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_spent_writer_hold_closes_the_attempt_as_retryable(
+    storage_env: tuple[Polylogue, LiveWatcher, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The adapter requeues a page whose writer hold ran out; its attempt row
+    must agree. Anti-vacuity: through the generic classification the row
+    records ``parser_defect`` with ``retryable=0``."""
+    from polylogue.core.write_hold import WriteHoldBudgetError
+    from polylogue.sources.live.batch import LiveBatchProcessor
+
+    archive, watcher, source_path = storage_env
+    original = LiveBatchProcessor._ingest_files
+
+    async def spend_hold(self: LiveBatchProcessor, paths: list[Path], **kwargs: Any) -> Any:
+        attempt = kwargs["open_attempt"]
+        attempt_id = await self._run_ops_write(
+            "attempt_start", self._cursor.begin_ingest_attempt, paths=paths, input_bytes=0, queued_file_count=1
+        )
+        attempt.opened(attempt_id)
+        raise WriteHoldBudgetError(actor="test", checkpoint="full_acquisition_complete", hold_seconds=2.0, budget_s=1.0)
+
+    monkeypatch.setattr(LiveBatchProcessor, "_ingest_files", spend_hold)
+    try:
+        with pytest.raises(WriteHoldBudgetError):
+            await watcher._batch_processor.ingest_files([source_path])
+        with sqlite3.connect(watcher._cursor._ops_db_path) as conn:
+            row = conn.execute(
+                "SELECT status, outcome_code, retryable, evidence_ref FROM ingest_attempts "
+                "ORDER BY started_at_ms DESC, rowid DESC LIMIT 1"
+            ).fetchone()
+        assert tuple(row) == ("failed", "transient_error", 1, "write_hold_budget")
+    finally:
+        monkeypatch.setattr(LiveBatchProcessor, "_ingest_files", original)
+        watcher.stop()
+        await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_append_storage_fault_leaves_the_append_raw_unmarked(
+    storage_env: tuple[Polylogue, LiveWatcher, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The append index write can record a failure state on the raw before
+    the fault reaches the append handler; the handler resets it, as it does
+    for contention. Anti-vacuity: without the reset the append raw keeps a
+    ``parse_error`` naming the full disk."""
+    archive, watcher, source_path = storage_env
+    try:
+        first = await _admit(watcher)
+        assert {result.outcome for result in first.values()} == {AdmissionOutcome.ADMITTED}
+        with source_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "uuid": "message-2",
+                        "parentUuid": "message-1",
+                        "sessionId": "storage-fault",
+                        "timestamp": "2026-07-10T00:00:01Z",
+                        "message": {"role": "assistant", "content": [{"type": "text", "text": "appended"}]},
+                    }
+                )
+                + "\n"
+            )
+        _fail_first_index_write(monkeypatch, _full_disk())
+        outcomes = await _admit(watcher)
+        assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.RETRYABLE}
+        assert all(error is None for _parsed, error in _raw_parse_states(archive.archive_root, source_path))
+    finally:
+        watcher.stop()
+        await archive.close()
