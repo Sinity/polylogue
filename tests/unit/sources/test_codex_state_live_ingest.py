@@ -457,6 +457,77 @@ async def test_codex_goals_and_memories_survive_as_scoped_public_materials(
 
 
 @pytest.mark.asyncio
+async def test_codex_state_embedded_nul_and_utf8_boundary_reach_complete_materials(
+    workspace_env: dict[str, Path],
+) -> None:
+    """An embedded NUL and a split UTF-8 codepoint cannot hide a text suffix.
+
+    Anti-vacuity: SQLite TEXT length/substr truncates at NUL, so using either
+    for chunking loses the suffix while falsely writing a complete terminal.
+    """
+    from polylogue.storage.materials import list_materials_page, read_material
+
+    archive, codex_root, codex_state_root = _make_processor(workspace_env, "codex-home-nul", "codex-state-nul.db")
+    processor = LiveBatchProcessor(
+        archive,
+        (
+            WatchSource(name="codex", root=codex_root),
+            WatchSource(name="codex-state", root=codex_state_root, suffixes=(".sqlite", ".db")),
+        ),
+        cursor=CursorStore(workspace_env["data_root"] / "codex-state-nul.db"),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    archive_root = workspace_env["archive_root"]
+    # Ω straddles the reader's 64 KiB byte window; the NUL is after it.
+    goal_text = "a" * 65_535 + "Ω\x00goal-tail"
+    memory_text = "b" * 65_535 + "Ω\x00memory-tail"
+    summary_text = "summary\x00summary-tail"
+    try:
+        goals_path = codex_state_root / "goals_1.sqlite"
+        memories_path = codex_state_root / "memories_1.sqlite"
+        _write_goals_1_sqlite(goals_path, objective=goal_text)
+        _write_memories_1_sqlite(memories_path, raw_memory=memory_text, rollout_summary=summary_text)
+        result = await processor.ingest_files([goals_path, memories_path], emit_event=False)
+        assert result.failed_file_count == 0
+
+        with sqlite3.connect(archive_root / "source.db") as conn:
+            page = list_materials_page(conn, evidence_ref=_CODEX_SESSION_ID, limit=10)
+            assert page.next_cursor is None
+            parts = [
+                json.loads(read_material(conn, item.material_id, blob_store=BlobStore(archive_root / "blob")))
+                for item in page.items
+            ]
+            terminals = conn.execute(
+                """
+                SELECT r.source_path, c.status, c.detail, r.parse_error
+                FROM raw_sessions AS r
+                JOIN raw_membership_census AS c ON c.raw_id = r.raw_id
+                WHERE r.source_path IN (?, ?)
+                """,
+                (str(goals_path), str(memories_path)),
+            ).fetchall()
+
+        goal = next(part for part in parts if part.get("goal_id") == "goal-1")
+        memory = next(part for part in parts if "raw_memory" in part)
+        chunks = {(part["record_type"], part["field"]): part for part in parts if "field" in part}
+        assert goal["objective"] + chunks[("goals", "objective")]["text"] == goal_text
+        assert memory["raw_memory"] + chunks[("memories", "raw_memory")]["text"] == memory_text
+        assert memory["rollout_summary"] == summary_text
+        assert goal["text_continuation"]["objective"]["length_chars"] == len(goal_text)
+        assert memory["text_continuation"]["raw_memory"]["length_chars"] == len(memory_text)
+        assert chunks[("goals", "objective")]["offset_chars"] == 64_000
+        assert chunks[("memories", "raw_memory")]["offset_chars"] == 64_000
+        assert all(chunk["final"] for chunk in chunks.values())
+        assert len(terminals) == 2
+        assert all(
+            status == "non_session" and "complete" in detail and error is None
+            for _path, status, detail, error in terminals
+        )
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
 async def test_codex_goal_materials_do_not_cross_supersede_source_roots(
     workspace_env: dict[str, Path],
 ) -> None:

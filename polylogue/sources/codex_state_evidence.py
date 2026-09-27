@@ -6,7 +6,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 from polylogue.core.enums import Origin, Provider
@@ -47,9 +47,12 @@ def _upsert_codex_material(
     )
     referrer_ref = f"codex-session:{thread_id}"
     previous = conn.execute(
-        "SELECT material_id FROM material_observations WHERE source_uri = ? AND referrer_ref = ? "
-        "AND acquisition_state != 'superseded' ORDER BY created_at_ms DESC, material_id DESC LIMIT 1",
-        (source_uri, referrer_ref),
+        "SELECT m.material_id FROM material_evidence_links AS l "
+        "JOIN material_observations AS m USING(material_id) "
+        "WHERE l.evidence_ref = ? AND l.relation = 'refers_to' "
+        "AND m.source_uri = ? AND m.acquisition_state != 'superseded' "
+        "ORDER BY m.created_at_ms DESC, m.material_id DESC LIMIT 1",
+        (referrer_ref, source_uri),
     ).fetchone()
     material = admit_material(
         conn,
@@ -62,6 +65,7 @@ def _upsert_codex_material(
         filename=f"{kind}-{item_id}.json",
         privacy_classification="private",
         supersedes_material_id=str(previous[0]) if previous is not None else None,
+        commit=False,
     )
     if previous is not None and str(previous[0]) != material.material_id:
         conn.execute(
@@ -76,6 +80,7 @@ def _upsert_codex_material(
         authority="provider",
         observed_at_ms=observed_at_ms,
         source_diagnostic=f"Codex {kind} retained export {raw_id}",
+        commit=False,
     )
     link_material(
         conn,
@@ -85,33 +90,26 @@ def _upsert_codex_material(
         authority="provider",
         observed_at_ms=observed_at_ms,
         source_diagnostic="Codex provider-generated state associated with its thread",
+        commit=False,
     )
 
 
 @dataclass(frozen=True, slots=True)
 class CodexStateMaterializationReceipt:
-    """Typed truncation receipt for one bounded state materialization.
-
-    A bounded materialization that does not say what it declined is
-    indistinguishable from a state export that never held those rows, so the
-    caps and the receipt are one mechanism: every row or text the caps
-    declined is counted here, and the caller folds the summary into the
-    raw's durable membership census detail (polylogue-xrba4).
-    """
+    """Typed completion receipt for one paged state materialization."""
 
     kind: str
     rows_available: int
     rows_materialized: int
-    #: Rows the declared row cap never read out of the export at all.
+    #: Compatibility counters. Complete projection leaves both at zero.
     rows_declined_row_cap: int
-    #: Rows read but not admitted because the aggregate byte cap was reached.
     rows_declined_byte_cap: int
-    #: Item ids whose text the per-payload cap clipped.
     clipped_item_ids: tuple[str, ...]
     bytes_materialized: int
     row_cap: int
     text_char_cap: int
     aggregate_byte_cap: int
+    rows_skipped_invalid: int = 0
 
     @property
     def rows_declined(self) -> int:
@@ -119,11 +117,23 @@ class CodexStateMaterializationReceipt:
 
     @property
     def bounded(self) -> bool:
-        """Whether a declared cap actually declined or clipped anything."""
-        return bool(self.rows_declined or self.clipped_item_ids)
+        """Whether projection skipped any source content."""
+        return bool(self.rows_declined or self.clipped_item_ids or self.rows_skipped_invalid)
 
     def as_detail(self) -> str:
         """One-line durable summary for the membership census detail."""
+        if self.rows_skipped_invalid:
+            return (
+                f"partial {self.kind} materialization: "
+                f"{self.rows_materialized}/{self.rows_available} rows, "
+                f"{self.rows_skipped_invalid} invalid row(s) skipped"
+            )
+        if not self.bounded:
+            return (
+                f"complete {self.kind} materialization: "
+                f"{self.rows_materialized}/{self.rows_available} rows, "
+                f"{self.bytes_materialized} encoded bytes in bounded parts"
+            )
         return (
             f"bounded {self.kind} materialization: "
             f"{self.rows_materialized}/{self.rows_available} rows materialized, "
@@ -147,116 +157,83 @@ def materialize_codex_state_content(
     source_path: str,
     state_kind: str,
     acquired_at_ms: int,
-    row_limit: int = codex_state.CODEX_STATE_MAX_ROWS,
+    row_limit: int = codex_state.CODEX_STATE_PAGE_ROWS,
     text_char_limit: int = codex_state.CODEX_STATE_MAX_TEXT_CHARS,
     aggregate_byte_limit: int = codex_state.CODEX_STATE_MAX_AGGREGATE_BYTES,
 ) -> CodexStateMaterializationReceipt | None:
-    """Project retained goals/memories into the existing material read model.
-
-    Bounded by the declared caps in ``parsers/codex_state`` and returns the
-    typed truncation receipt describing what they declined, or ``None`` for a
-    kind this function does not materialize.
-    """
-    payloads: list[tuple[str, str, dict[str, object]]]
+    """Project the complete retained export through bounded row and text pages."""
     if state_kind == "goals":
-        goals, bound = codex_state.parse_codex_goals_db(
-            state_path, immutable=True, row_limit=row_limit, text_char_limit=text_char_limit
-        )
-        payloads = [
-            (
-                goal.thread_id,
-                goal.goal_id,
-                {
-                    "thread_id": goal.thread_id,
-                    "goal_id": goal.goal_id,
-                    "objective": goal.objective,
-                    "status": goal.status,
-                    "token_budget": goal.token_budget,
-                    "tokens_used": goal.tokens_used,
-                    "time_used_seconds": goal.time_used_seconds,
-                    "created_at_ms": goal.created_at_ms,
-                    "updated_at_ms": goal.updated_at_ms,
-                    "provider": "codex",
-                    "generated": False,
-                },
-            )
-            for goal in goals
-        ]
         kind = "goal"
+        parsed_kind: Literal["goals", "memories"] = "goals"
     elif state_kind == "memories":
-        memories, bound = codex_state.parse_codex_memories_db(
-            state_path, immutable=True, row_limit=row_limit, text_char_limit=text_char_limit
-        )
-        payloads = [
-            (
-                memory.thread_id,
-                memory.thread_id,
-                {
-                    "thread_id": memory.thread_id,
-                    "raw_memory": memory.raw_memory,
-                    "rollout_summary": memory.rollout_summary,
-                    "source_updated_at_ms": memory.source_updated_at_ms,
-                    "generated_at_ms": memory.generated_at_ms,
-                    "usage_count": memory.usage_count,
-                    "has_rollout_slug": memory.has_rollout_slug,
-                    "selected_for_phase2": memory.selected_for_phase2,
-                    "provider": "codex",
-                    "generated": True,
-                },
-            )
-            for memory in memories
-        ]
         kind = "memory"
+        parsed_kind = "memories"
     else:
         return None
-
+    rows_available = 0
     materialized = 0
     total_bytes = 0
-    declined_bytes = 0
-    for index, (thread_id, item_id, payload) in enumerate(payloads):
-        encoded = _encode_state_payload(payload)
-        if total_bytes + len(encoded) > aggregate_byte_limit:
-            # Every remaining row is declined: admitting a later, smaller row
-            # would make the receipt's count right but the retained set an
-            # arbitrary subset of the export.
-            declined_bytes = len(payloads) - index
-            break
+    window_bytes = 0
+    for part in codex_state.iter_codex_state_parts(
+        state_path,
+        state_kind=parsed_kind,
+        page_size=row_limit,
+        text_chars=text_char_limit,
+        immutable=True,
+    ):
+        if part.part_kind == "invalid":
+            rows_available += 1
+            continue
+        if part.part_kind == "record" and materialized and materialized % row_limit == 0:
+            archive.commit()
+            window_bytes = 0
+        encoded = _encode_state_payload(part.payload)
+        if len(encoded) > aggregate_byte_limit:
+            raise ValueError("one Codex state part exceeds the materialization byte window")
+        if window_bytes + len(encoded) > aggregate_byte_limit:
+            archive.commit()
+            window_bytes = 0
         _upsert_codex_material(
             archive,
             raw_id=raw_id,
             source_path=source_path,
-            thread_id=thread_id,
-            kind=kind,
-            item_id=item_id,
+            thread_id=part.thread_id,
+            kind=kind if part.part_kind == "record" else f"{kind}-text",
+            item_id=part.item_id,
             observed_at_ms=acquired_at_ms,
             encoded=encoded,
         )
-        materialized += 1
+        if part.part_kind == "record":
+            materialized += 1
+            rows_available += 1
         total_bytes += len(encoded)
+        window_bytes += len(encoded)
 
     receipt = CodexStateMaterializationReceipt(
         kind=kind,
-        rows_available=bound.rows_available,
+        rows_available=rows_available,
         rows_materialized=materialized,
-        rows_declined_row_cap=bound.rows_declined,
-        rows_declined_byte_cap=declined_bytes,
-        clipped_item_ids=bound.clipped_item_ids,
+        rows_declined_row_cap=0,
+        rows_declined_byte_cap=0,
+        clipped_item_ids=(),
         bytes_materialized=total_bytes,
-        row_cap=bound.row_cap,
-        text_char_cap=bound.text_char_cap,
+        row_cap=int(row_limit),
+        text_char_cap=int(text_char_limit),
         aggregate_byte_cap=int(aggregate_byte_limit),
+        rows_skipped_invalid=max(0, rows_available - materialized),
     )
     if receipt.bounded:
         emit(
             "sources.codex_state.materialization_truncated",
             outcome="degraded",
-            reason="declared_cap_reached",
+            reason="invalid_state_rows" if receipt.rows_skipped_invalid else "declared_cap_reached",
             raw_id=raw_id,
             kind=receipt.kind,
             rows_available=receipt.rows_available,
             rows_materialized=receipt.rows_materialized,
             rows_declined_row_cap=receipt.rows_declined_row_cap,
             rows_declined_byte_cap=receipt.rows_declined_byte_cap,
+            rows_skipped_invalid=receipt.rows_skipped_invalid,
             payloads_clipped=len(receipt.clipped_item_ids),
             row_cap=receipt.row_cap,
             text_char_cap=receipt.text_char_cap,
@@ -314,9 +291,7 @@ def record_codex_state_snapshot_terminal(
         parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
         censused_at_ms=censused_at_ms,
         detail=(
-            f"{CODEX_STATE_CENSUS_DETAIL}; {receipt.as_detail()}"
-            if receipt is not None and receipt.bounded
-            else CODEX_STATE_CENSUS_DETAIL
+            f"{CODEX_STATE_CENSUS_DETAIL}; {receipt.as_detail()}" if receipt is not None else CODEX_STATE_CENSUS_DETAIL
         ),
         retire_full_revision_governance=True,
     )

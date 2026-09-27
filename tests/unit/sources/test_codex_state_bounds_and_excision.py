@@ -1,14 +1,8 @@
-"""Codex state exports must materialize under declared bounds, and the
-thread-scoped evidence they produce must be reachable by session excision.
+"""Codex state exports must materialize completely with bounded working sets.
 
 Two defects, one logical export (polylogue-xrba4):
 
-1. ``materialize_codex_state_content`` read every ``thread_goals`` /
-   ``stage1_outputs`` row with no cap and serialized each one into its own
-   durable blob. A state database is an untrusted provider artifact, so this
-   was both an OOM surface and a durable amplification surface -- and because
-   materialization precedes terminal parse marking, it retriggered on every
-   restart.
+1. State rows and long text need bounded pages with addressable continuation.
 2. The materials that route produces carry ``referrer_ref =
    codex-session:<thread>`` and own their bytes through
    ``material_observations.blob_hash`` alone -- no ``sessions`` row, no
@@ -22,8 +16,13 @@ operator paths and no transcript bytes.
 
 from __future__ import annotations
 
+import json
 import sqlite3
+import tracemalloc
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from polylogue.security.excision import (
     apply_session_excision,
@@ -34,7 +33,7 @@ from polylogue.sources.codex_state_evidence import (
     CodexStateMaterializationReceipt,
     materialize_codex_state_content,
 )
-from polylogue.storage.materials import list_materials
+from polylogue.storage.materials import MaterialObservation, list_materials, list_materials_page, read_material
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 _THREAD_A = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
@@ -83,17 +82,8 @@ def _materialize(root: Path, goals_path: Path, **limits: int) -> CodexStateMater
     return receipt
 
 
-def test_state_materialization_is_bounded_and_receipts_what_it_declined(tmp_path: Path) -> None:
-    """Declared caps must bound the materialization AND name the remainder.
-
-    Anti-vacuity: dropping the ``LIMIT ?`` from ``parse_codex_goals_db``, the
-    ``substr`` clip on ``objective``, or the aggregate-byte break in
-    ``materialize_codex_state_content`` each makes one of these assertions
-    red -- and deleting the receipt (returning ``None``, or reporting
-    ``rows_materialized == rows_available``) makes the truncation
-    indistinguishable from an export that held only two rows, which the
-    ``rows_available``/``rows_declined`` assertions reject.
-    """
+def test_state_materialization_continues_past_each_work_window(tmp_path: Path) -> None:
+    """A small row and byte window must still publish every row and text part."""
     root = tmp_path / "archive"
     root.mkdir()
     goals_path = tmp_path / "goals_1.sqlite"
@@ -102,35 +92,147 @@ def test_state_materialization_is_bounded_and_receipts_what_it_declined(tmp_path
         [(f"thread-{index:02d}", f"goal-{index:02d}", "x" * 500) for index in range(6)],
     )
 
-    receipt = _materialize(root, goals_path, row_limit=2, text_char_limit=16)
+    receipt = _materialize(root, goals_path, row_limit=2, text_char_limit=16, aggregate_byte_limit=1024)
     assert receipt is not None
     assert receipt.rows_available == 6
-    assert receipt.rows_materialized == 2
-    assert receipt.rows_declined_row_cap == 4
+    assert receipt.rows_materialized == 6
+    assert receipt.rows_declined_row_cap == 0
     assert receipt.rows_declined_byte_cap == 0
-    # The oversized objective is clipped, not dropped, and it is named.
-    assert receipt.clipped_item_ids == ("goal-00", "goal-01")
-    assert receipt.bounded is True
-    assert "4 declined by row cap 2" in receipt.as_detail()
-
-    # Only the rows the row cap admitted became durable blobs.
+    assert receipt.clipped_item_ids == ()
+    assert receipt.bounded is False
+    assert receipt.bytes_materialized > receipt.aggregate_byte_cap
     with sqlite3.connect(root / "source.db") as conn:
-        assert int(conn.execute("SELECT COUNT(*) FROM material_observations").fetchone()[0]) == 2
+        cursor = None
+        observed: list[MaterialObservation] = []
+        while True:
+            page = list_materials_page(conn, after=cursor, limit=3)
+            observed.extend(page.items)
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+        assert len(observed) == 6 * (1 + 31)
+        chunks = [json.loads(read_material(conn, item.material_id)) for item in observed]
+        assert any(part.get("item_id") == "goal-05" and part.get("offset_chars") == 496 for part in chunks)
+        assert all(part.get("text_continuation") or part.get("record_type") == "goals" for part in chunks)
 
-    # The aggregate byte cap is a second, independent bound: the rows were
-    # read but never admitted, and the receipt separates the two reasons.
-    byte_capped_root = tmp_path / "archive-bytes"
-    byte_capped_root.mkdir()
-    byte_receipt = _materialize(
-        byte_capped_root, goals_path, row_limit=100, text_char_limit=1000, aggregate_byte_limit=700
+
+@pytest.mark.timeout(300)
+def test_large_goal_export_last_row_is_reachable(tmp_path: Path) -> None:
+    """A valid row after the old 10,000-row limit survives materialization."""
+    root = tmp_path / "archive"
+    root.mkdir()
+    goals_path = tmp_path / "goals_1.sqlite"
+    _write_goals_db(
+        goals_path,
+        [(f"thread-{index:05d}", f"goal-{index:05d}", "objective") for index in range(10_001)],
     )
-    assert byte_receipt is not None
-    assert byte_receipt.rows_declined_row_cap == 0
-    assert byte_receipt.rows_declined_byte_cap > 0
-    assert byte_receipt.rows_materialized + byte_receipt.rows_declined_byte_cap == 6
-    with sqlite3.connect(byte_capped_root / "source.db") as conn:
-        admitted = int(conn.execute("SELECT COUNT(*) FROM material_observations").fetchone()[0])
-    assert admitted == byte_receipt.rows_materialized
+    receipt = _materialize(root, goals_path)
+    assert receipt is not None and receipt.rows_materialized == 10_001
+    with sqlite3.connect(root / "source.db") as conn:
+        last = list_materials_page(conn, evidence_ref="codex-session:thread-10000", limit=2)
+        assert len(last.items) == 1
+        assert json.loads(read_material(conn, last.items[0].material_id))["goal_id"] == "goal-10000"
+
+
+def test_long_memory_text_reassembles_from_material_pages(tmp_path: Path) -> None:
+    """Every character after the old clip is addressable through material reads."""
+    root = tmp_path / "archive"
+    root.mkdir()
+    memory_path = tmp_path / "memories_1.sqlite"
+    memory = "Ω" * 65_001
+    with sqlite3.connect(memory_path) as conn:
+        conn.execute(
+            "CREATE TABLE stage1_outputs (thread_id TEXT PRIMARY KEY, source_updated_at INTEGER, "
+            "generated_at INTEGER, raw_memory TEXT, rollout_summary TEXT, usage_count INTEGER, "
+            "rollout_slug TEXT, selected_for_phase2 INTEGER)"
+        )
+        conn.execute(
+            "INSERT INTO stage1_outputs VALUES (?, 1, 2, ?, 'summary', 3, 'slug', 1)", ("thread-memory", memory)
+        )
+    with ArchiveStore(root) as archive:
+        receipt = materialize_codex_state_content(
+            archive,
+            "raw-memory",
+            state_path=memory_path,
+            source_path="/synthetic/codex/memories_1.sqlite",
+            state_kind="memories",
+            acquired_at_ms=5_000,
+        )
+        archive.commit()
+    assert receipt is not None and receipt.rows_materialized == 1 and not receipt.bounded
+    with sqlite3.connect(root / "source.db") as conn:
+        page = list_materials_page(conn, evidence_ref="codex-session:thread-memory", limit=2)
+        assert len(page.items) == 2
+        parts = [json.loads(read_material(conn, item.material_id)) for item in page.items]
+    header = next(part for part in parts if "raw_memory" in part)
+    suffix = next(part for part in parts if part.get("field") == "raw_memory")
+    assert header["raw_memory"] + suffix["text"] == memory
+    assert suffix["offset_chars"] == 64_000 and suffix["final"] is True
+
+
+def test_parser_row_pages_do_not_retain_the_export(tmp_path: Path) -> None:
+    """A larger export must not become one tuple or one retained payload list."""
+    from polylogue.sources.parsers.codex_state import iter_codex_state_parts
+
+    goals_path = tmp_path / "goals_1.sqlite"
+    _write_goals_db(
+        goals_path,
+        [(f"thread-{i:04d}", f"goal-{i:04d}", "x" * 10_000) for i in range(1000)],
+    )
+    tracemalloc.start()
+    try:
+        count = sum(1 for _ in iter_codex_state_parts(goals_path, state_kind="goals", page_size=8))
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert count == 1000
+    assert peak < 8 * 1024 * 1024
+
+
+def test_invalid_goal_row_is_named_as_partial(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    goals_path = tmp_path / "goals_1.sqlite"
+    _write_goals_db(goals_path, [("valid-thread", "valid-goal", "objective"), ("", "invalid-goal", "objective")])
+    receipt = _materialize(root, goals_path, row_limit=1)
+    assert receipt is not None
+    assert receipt.rows_available == 2
+    assert receipt.rows_materialized == 1
+    assert receipt.rows_skipped_invalid == 1
+    assert receipt.bounded
+    assert "partial goal materialization" in receipt.as_detail()
+
+
+def test_interrupted_state_projection_resumes_without_duplicate_materials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed page leaves no terminal receipt and replay fills the suffix."""
+    from polylogue.sources import codex_state_evidence
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    goals_path = tmp_path / "goals_1.sqlite"
+    _write_goals_db(goals_path, [(f"thread-{i}", f"goal-{i}", "objective") for i in range(8)])
+    original = codex_state_evidence._upsert_codex_material
+    calls = 0
+
+    def interrupted(*args: Any, **kwargs: Any) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 4:
+            raise RuntimeError("synthetic interruption")
+        original(*args, **kwargs)
+
+    monkeypatch.setattr(codex_state_evidence, "_upsert_codex_material", interrupted)
+    with pytest.raises(RuntimeError, match="synthetic interruption"):
+        _materialize(root, goals_path, row_limit=2)
+    with sqlite3.connect(root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM material_observations").fetchone()[0] == 2
+    monkeypatch.setattr(codex_state_evidence, "_upsert_codex_material", original)
+    receipt = _materialize(root, goals_path, row_limit=2)
+    assert receipt is not None and receipt.rows_materialized == 8
+    with sqlite3.connect(root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM material_observations").fetchone()[0] == 8
 
 
 def test_excising_a_thread_removes_its_codex_state_materials(tmp_path: Path) -> None:

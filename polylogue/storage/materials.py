@@ -72,6 +72,14 @@ class MaterialEvidenceLink:
     source_diagnostic: str
 
 
+@dataclass(frozen=True, slots=True)
+class MaterialPage:
+    """A stable keyset page of material observations."""
+
+    items: tuple[MaterialObservation, ...]
+    next_cursor: tuple[int, str] | None
+
+
 def _material_id(source_uri: str, referrer_ref: str, payload: bytes | None) -> str:
     digest = hashlib.sha256()
     digest.update(source_uri.encode("utf-8"))
@@ -312,6 +320,7 @@ def admit_material(
     retryable: bool = False,
     privacy_classification: MaterialPrivacy = "private",
     supersedes_material_id: str | None = None,
+    commit: bool = True,
 ) -> MaterialObservation:
     """Record one claim/acquisition, publishing bytes before durable linkage."""
     if not source_uri.strip() or not referrer_ref.strip():
@@ -380,7 +389,8 @@ def admit_material(
             now,
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return MaterialObservation(
         material_id,
         referrer_ref,
@@ -628,6 +638,7 @@ def link_material(
     confidence: float = 1.0,
     observed_at_ms: int,
     source_diagnostic: str = "",
+    commit: bool = True,
 ) -> None:
     if not material_id.strip() or not evidence_ref.strip():
         raise ValueError("material_id and evidence_ref are required")
@@ -644,7 +655,8 @@ def link_material(
         observed_at_ms=excluded.observed_at_ms, source_diagnostic=excluded.source_diagnostic""",
         (material_id, evidence_ref, relation, authority, confidence, observed_at_ms, source_diagnostic[:4096]),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def get_material(conn: sqlite3.Connection, material_id: str) -> MaterialObservation | None:
@@ -707,6 +719,39 @@ def list_materials(conn: sqlite3.Connection, *, evidence_ref: str | None = None)
     return observations
 
 
+def list_materials_page(
+    conn: sqlite3.Connection,
+    *,
+    evidence_ref: str | None = None,
+    after: tuple[int, str] | None = None,
+    limit: int = 256,
+) -> MaterialPage:
+    """Page observations in creation order, including Codex text chunks."""
+    if not 1 <= limit <= 1000:
+        raise ValueError("limit must be between 1 and 1000")
+    where = []
+    params: list[object] = []
+    if evidence_ref is not None:
+        where.append(
+            "EXISTS (SELECT 1 FROM material_evidence_links l WHERE l.material_id = m.material_id AND l.evidence_ref = ?)"
+        )
+        params.append(evidence_ref)
+    if after is not None:
+        where.append("(m.created_at_ms, m.material_id) > (?, ?)")
+        params.extend(after)
+    predicate = " WHERE " + " AND ".join(where) if where else ""
+    rows = conn.execute(
+        "SELECT m.material_id, m.created_at_ms FROM material_observations m"
+        + predicate
+        + " ORDER BY m.created_at_ms, m.material_id LIMIT ?",
+        (*params, limit + 1),
+    ).fetchall()
+    ids = rows[:limit]
+    items = tuple(observation for row in ids if (observation := get_material(conn, str(row[0]))) is not None)
+    cursor = (int(ids[-1][1]), str(ids[-1][0])) if len(rows) > limit else None
+    return MaterialPage(items=items, next_cursor=cursor)
+
+
 def list_material_links(conn: sqlite3.Connection, material_id: str) -> list[MaterialEvidenceLink]:
     """Return direct provenance/effect edges for one retained or claimed material."""
     rows = conn.execute(
@@ -732,6 +777,7 @@ def list_material_links(conn: sqlite3.Connection, material_id: str) -> list[Mate
 __all__ = [
     "MaterialDestinationRefusedError",
     "MaterialObservation",
+    "MaterialPage",
     "admit_material",
     "admit_material_file",
     "acquire_material",
@@ -740,6 +786,7 @@ __all__ = [
     "link_material",
     "list_material_links",
     "list_materials",
+    "list_materials_page",
     "read_material",
     "MaterialEvidenceLink",
 ]
