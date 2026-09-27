@@ -52,6 +52,7 @@ from devtools.pytest_invocation import (
 )
 from devtools.pytest_rerun import rerun_failed_once
 from devtools.pytest_slot import (
+    WORKTREE_PROVENANCE_ENV,
     PytestSlotObservationUnavailableError,
     PytestSlotUnavailableError,
     basetemp_root,
@@ -417,7 +418,7 @@ def _run(
     started = time.monotonic()
     try:
         executor = run_pytest if runner == "managed" else run_pytest_isolated
-        env["POLYLOGUE_FOCUSED_WORKTREE_PROVENANCE"] = "1"
+        env[WORKTREE_PROVENANCE_ENV] = "1"
         outcome = executor(command, cwd=cwd, env=env, root=ROOT)
     except PytestSlotUnavailableError as exc:
         sys.stderr.write(f"devtools test: {exc}\n")
@@ -570,7 +571,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         assert_polylogue_matches_checkout(ROOT, context="devtools test")
     except CheckoutImportMismatchError as exc:
+        # The detail first: the verdict, naming the checkout, is the last line.
         sys.stderr.write(f"{exc}\n")
+        sys.stderr.write(f"devtools test: FAILED exit=125 diagnosis=checkout_import_mismatch {identity.describe()}\n")
         return 125
     use_json = "--json" in selection
     # The control-plane dispatch may append a bare ``--json`` machine-readable

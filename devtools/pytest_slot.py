@@ -942,8 +942,13 @@ def _slot_receipt(
     return receipt
 
 
+#: Asks the slot to identify, at the moment pytest starts, the worktree content
+#: and branch it is about to run.
+WORKTREE_PROVENANCE_ENV = "POLYLOGUE_FOCUSED_WORKTREE_PROVENANCE"
+
+
 def _focused_worktree_provenance(cwd: str, environment: Mapping[str, str]) -> dict[str, Any] | None:
-    if environment.get("POLYLOGUE_FOCUSED_WORKTREE_PROVENANCE") != "1":
+    if environment.get(WORKTREE_PROVENANCE_ENV) != "1":
         return None
     from devtools.checkout_identity import ALLOW_DEFAULT_BRANCH_ENV, checkout_identity, default_branch_refusal
     from devtools.verify_runs import git_dirty, git_head, git_worktree_content_sha256

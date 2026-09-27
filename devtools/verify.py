@@ -21,6 +21,7 @@ from typing import Any
 from devtools.agent_env import refuse_verify_tier, runtime_env
 from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
 from devtools.checkout_identity import (
+    ALLOW_DEFAULT_BRANCH_ENV,
     ON_DEFAULT_BRANCH_FLAG,
     REFUSAL_DIAGNOSIS,
     REFUSAL_EXIT,
@@ -39,6 +40,7 @@ from devtools.pytest_invocation import (
 )
 from devtools.pytest_rerun import rerun_failed_once
 from devtools.pytest_slot import (
+    WORKTREE_PROVENANCE_ENV,
     PytestSlotObservationUnavailableError,
     PytestSlotUnavailableError,
     run_pytest,
@@ -599,6 +601,10 @@ def _run(
         _clear_pytest_report(command)
         _normalize_managed_pytest_environment(env)
         env = env_for_pytest_step(env, run=run, artifacts=artifacts)
+        # The pytest slot re-checks the branch and records what it executed
+        # when the run starts, as it does for focused runs: the checkout can
+        # switch branch while the run waits for the slot.
+        env[WORKTREE_PROVENANCE_ENV] = "1"
         hypothesis_profile, hypothesis_profile_source = effective_hypothesis_profile(command, env, default="default")
         try:
             executor = run_pytest if runner == "managed" else run_pytest_isolated
@@ -1006,6 +1012,9 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         else:
             sys.stderr.write(branch_refusal + "\n")
         return REFUSAL_EXIT
+    if args.on_default_branch:
+        # Carried to the pytest slot, which re-checks the branch at start.
+        os.environ[ALLOW_DEFAULT_BRANCH_ENV] = "1"
     sys.stderr.write(f"verify: {identity.describe()}\n")
     # Before this run writes its own ``running`` receipt, give a terminal state
     # to any earlier one whose process is gone. A verification killed outright
@@ -1125,6 +1134,12 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             exit_code=130,
             termination_reason="operator_interrupt",
         )
+    for result in results:
+        slot_receipt = result.get("pytest_slot_receipt")
+        provenance = slot_receipt.get("worktree_provenance") if isinstance(slot_receipt, Mapping) else None
+        if isinstance(provenance, Mapping):
+            # The receipt and verdict name what pytest executed, not what was admitted.
+            run.record_execution_worktree(provenance)
     aggregate = _aggregate_pytest_results(
         results,
         expected_step_count=sum(label.startswith("pytest") for label, _command in steps),

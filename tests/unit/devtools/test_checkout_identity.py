@@ -161,3 +161,34 @@ def test_a_queued_run_rechecks_the_branch_when_its_slot_starts(tmp_path: Path) -
 
     provenance = pytest_slot._focused_worktree_provenance(str(root), {**environment, ALLOW_DEFAULT_BRANCH_ENV: "1"})
     assert provenance is not None and provenance["git_branch"] == "master"
+
+
+def test_verify_pytest_steps_ask_the_slot_to_recheck_the_branch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A verifier pytest step, like a focused run, is identified when its slot starts.
+
+    Anti-vacuity: drop the provenance request from ``verify._run`` and the
+    slot never re-checks the branch, so a checkout that switched to the
+    default branch while the run queued is tested.
+    """
+    from types import SimpleNamespace
+
+    from devtools.pytest_slot import WORKTREE_PROVENANCE_ENV
+
+    captured: dict[str, str] = {}
+
+    def managed(*_args: object, env: dict[str, str], **_kwargs: object) -> SimpleNamespace:
+        captured.update(env)
+        return SimpleNamespace(returncode=0, slot="managed", receipt=None)
+
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "_clear_pytest_report", lambda _command: None)
+    monkeypatch.setattr(verify, "executable_gate_result", lambda *_args, **_kwargs: SimpleNamespace(ok=True))
+    monkeypatch.setattr(verify, "run_pytest", managed)
+    run = VerifyRun(tier="test", argv=[], git_head=None, root=tmp_path, mirror_current=False)
+
+    verify._run("pytest selected", ["pytest"], run=run, runner="managed")
+
+    assert captured[WORKTREE_PROVENANCE_ENV] == "1"
