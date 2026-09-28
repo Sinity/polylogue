@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, TypeGuard, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeGuard, cast, runtime_checkable
 
 from polylogue.daemon.derivation import (
     Budget,
@@ -282,6 +282,7 @@ class SessionProfileConvergenceOwner(DerivationConvergenceOwner):
                     stop_requested=stop_requested,
                     admission=admission,
                     barrier=self._converger._derivation_barrier,
+                    prerequisite_lookup=self._converger._derivation_adapter,
                 )
             ),
             admission_class="incremental-background",
@@ -391,6 +392,87 @@ def _selected_recipe_is_current(
     return frame.recipe_version("session_profile") == expected_recipe and adapter.recipe_version == expected_recipe
 
 
+def _converge_selected_prerequisites(
+    frame: DerivationFrame,
+    adapter: object,
+    key: str,
+    *,
+    lookup: Callable[[str], object],
+    admission: _DerivationAdmission,
+    session_id: str,
+    barrier: PublicationBarrier | None,
+    stop_requested: Callable[[], str | None],
+) -> str | None:
+    """Converge the exact upstream keys one selected target reads.
+
+    A recurring pass converges upstream domains before their dependants; a
+    sealed selected target never runs that pass, so the keys it declares in
+    ``prerequisite_keys`` are made valid here first, recursively and each at
+    most once. Returns why the target must wait, or ``None`` when every
+    prerequisite is valid -- the same verdict the kernel's
+    ``prerequisite_block`` gives, never a silent partial.
+    """
+    from polylogue.daemon.derivation import KeyStatus, _as_key, _coerce_statuses
+
+    visited: set[tuple[str, str]] = set()
+
+    def status_of(upstream: Any, upstream_key: str) -> KeyStatus:
+        statuses = _coerce_statuses(dict(upstream.inspect(frame, (upstream_key,))))
+        return statuses.get(upstream_key, KeyStatus.MISSING)
+
+    def ensure(dependant: object, dependant_key: str) -> str | None:
+        mapping = getattr(dependant, "prerequisite_keys", None)
+        if not callable(mapping):
+            return None
+        for item in mapping(frame, dependant_key):
+            binding = _as_key(item)
+            if (binding.domain, binding.key) in visited:
+                continue
+            visited.add((binding.domain, binding.key))
+            try:
+                upstream: Any = lookup(binding.domain)
+            except KeyError:
+                return f"prerequisite {binding} names a domain that is not registered"
+            if (reason := ensure(upstream, binding.key)) is not None:
+                return reason
+            if upstream.quiet(frame, binding.key):
+                return f"prerequisite {binding} is quiet"
+            if status_of(upstream, binding.key) is KeyStatus.VALID:
+                continue
+            replacement = upstream.compute(frame, binding.key)
+            if (stopped := stop_requested()) is not None:
+                return f"stopped before prerequisite {binding}: {stopped}"
+            held: list[str] = []
+
+            def publish_unless_held(
+                upstream: Any = upstream, replacement: object = replacement, held: list[str] = held
+            ) -> bool:
+                # Re-decide the primary-publication barrier inside the writer
+                # admission, as the target's own publish does: compute ran
+                # outside it, so a newer revision may have been staged since.
+                if barrier is not None:
+                    try:
+                        waiting = session_id in barrier((session_id,))
+                    except Exception as exc:
+                        held.append(f"publication barrier unreadable: {exc}")
+                        return False
+                    if waiting:
+                        held.append("awaits primary publication")
+                        return False
+                return bool(upstream.publish(frame, replacement))
+
+            accepted = admission(binding.domain, publish_unless_held)
+            if held:
+                return held[0]
+            status = status_of(upstream, binding.key)
+            if status is not KeyStatus.VALID:
+                refused = "" if accepted else "; its publication was refused"
+                return f"prerequisite {binding} is {status.value}{refused}"
+        return None
+
+    return ensure(adapter, key)
+
+
 def _converge_selected_session_parts_sync(
     frame: DerivationFrame,
     *,
@@ -402,6 +484,7 @@ def _converge_selected_session_parts_sync(
     stop_requested: Callable[[], str | None],
     admission: _DerivationAdmission,
     barrier: PublicationBarrier | None = None,
+    prerequisite_lookup: Callable[[str], object] | None = None,
 ) -> tuple[SelectedSessionOutcome, ...]:
     """Compute and certify only sealed session targets on the shared worker.
 
@@ -476,7 +559,26 @@ def _converge_selected_session_parts_sync(
         except Exception as exc:
             outcomes.append(_selected_outcome(target, "failed", before, reason=f"quiet: {exc}"))
             continue
+        if target.expected == "required" and prerequisite_lookup is not None:
+            try:
+                blocked = _converge_selected_prerequisites(
+                    frame,
+                    adapter,
+                    target.session_id,
+                    lookup=prerequisite_lookup,
+                    admission=admission,
+                    session_id=target.session_id,
+                    barrier=barrier,
+                    stop_requested=stop_requested,
+                )
+            except Exception as exc:
+                outcomes.append(_selected_outcome(target, "failed", before, reason=f"prerequisite: {exc}"))
+                continue
+            if blocked is not None:
+                outcomes.append(_selected_outcome(target, "pending", before, reason=blocked))
+                continue
 
+        refused_publication = False
         for attempt in range(MAX_SELECTED_BINDING_RETRIES + 1):
             if stop_requested() is not None:
                 return tuple(outcomes)
@@ -679,6 +781,7 @@ def _converge_selected_session_parts_sync(
                     )
                 )
                 break
+            refused_publication = refused_publication or after.input_binding == prepared_binding
             if attempt == MAX_SELECTED_BINDING_RETRIES:
                 outcomes.append(
                     _selected_outcome(
@@ -686,7 +789,9 @@ def _converge_selected_session_parts_sync(
                         "pending",
                         after,
                         input_binding=prepared_binding,
-                        reason="binding_moved",
+                        # An unchanged binding means the publisher refused the
+                        # prepared output, not that its input moved.
+                        reason="publication_refused" if refused_publication else "binding_moved",
                     )
                 )
                 break
@@ -879,6 +984,15 @@ class DaemonConverger:
         self._session_states: dict[str, SessionState] = {}
         self._derivations = DerivationRegistry(cast("Iterable[DerivationAdapter]", derivations))
         self._derivation_cursor = PassCursor()
+        #: The demand-only sweep pages the demand keyspace, not the archive:
+        #: sharing one cursor let a demand pass resume (and finish) the
+        #: archive audit's partial position, so the audit wrapped to its
+        #: first slice on every tick and never reached the tail.
+        self._demand_cursor = PassCursor()
+        #: The index generation the demand cursor's keyset position belongs
+        #: to. A promotion changes ``frame.source_revision``; resuming the old
+        #: generation's position would skip demanded keys that sort before it.
+        self._demand_cursor_revision: str | None = None
 
     @property
     def derivation_domains(self) -> tuple[str, ...]:
@@ -919,7 +1033,7 @@ class DaemonConverger:
             budget=budget,
             deadline_s=deadline_s,
             domains=domains,
-            cursor=self._derivation_cursor if resume else None,
+            cursor=self._resume_cursor(frame) if resume else None,
             publisher=publisher,
             barrier=self._derivation_barrier,
         )
@@ -928,9 +1042,19 @@ class DaemonConverger:
         # the archive sweep's retained position alone: replacing it with the
         # targeted frame's terminal cursor would discard fairness for the
         # no-hint pass that follows.
-        if frame.scope is None:
+        if frame.scope is None and frame.profile_demand_only:
+            self._demand_cursor = report.cursor
+            self._demand_cursor_revision = frame.source_revision
+        elif frame.scope is None:
             self._derivation_cursor = report.cursor
         return report
+
+    def _resume_cursor(self, frame: DerivationFrame) -> PassCursor:
+        if not frame.profile_demand_only:
+            return self._derivation_cursor
+        if frame.source_revision != self._demand_cursor_revision:
+            return PassCursor()
+        return self._demand_cursor
 
     @property
     def stage_names(self) -> list[str]:

@@ -122,25 +122,31 @@ def blocks_prerequisites(record: Mapping[str, Any]) -> list[str]:
             continue
         if edge.get("type") != BLOCKS:
             continue
-        # An export can carry an edge on either endpoint's record; only the
-        # one whose issue_id is this record states *this* record's prerequisite.
-        if edge.get("issue_id") != own_id:
-            continue
-        target = edge.get("depends_on_id")
-        if isinstance(target, str) and target:
+        issue_id, target = edge.get("issue_id"), edge.get("depends_on_id")
+        # Edge can be attached to either endpoint's record. It always means
+        # issue_id depends on depends_on_id, regardless of its container.
+        if issue_id == own_id and isinstance(target, str) and target:
             prerequisites.append(target)
     return prerequisites
 
 
 def _prerequisite_index(records: Sequence[Mapping[str, Any]]) -> dict[str, list[str]]:
     """id -> the ids it depends on via ``blocks``."""
-
     index: dict[str, list[str]] = {}
     for record in records:
         own_id = record.get("id")
         if not isinstance(own_id, str):
             continue
-        index[own_id] = blocks_prerequisites(record)
+        index.setdefault(own_id, [])
+        edges = record.get("dependencies")
+        if not isinstance(edges, list):
+            continue
+        for edge in edges:
+            if not isinstance(edge, Mapping) or edge.get("type") != BLOCKS:
+                continue
+            issue_id, prerequisite = edge.get("issue_id"), edge.get("depends_on_id")
+            if isinstance(issue_id, str) and isinstance(prerequisite, str) and prerequisite:
+                index.setdefault(issue_id, []).append(prerequisite)
     return index
 
 
@@ -317,7 +323,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(render_text(report))
     # Nonzero when the population still holds undispositioned actionable work,
     # so the check is an assertion rather than a printout.
-    return 1 if report.violations else 0
+    return 1 if report.violations or report.missing else 0
 
 
 if __name__ == "__main__":  # pragma: no cover - module entry point

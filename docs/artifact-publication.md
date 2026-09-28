@@ -8,7 +8,6 @@ The cache and reusable-fixture routes use the same filesystem contract:
 | `tests.infra.workload_artifacts.build_immutable_tree` | `_publish_sealed_staging` + pinned tree validation | protocol/key manifest, closed file set, SHA-256 content, read-only modes | `clone_immutable_tree` reauthenticates after fast/fallback copy |
 | `tests.infra.archive_templates.clone_archive_template` | fixture-owned SQLite quiescence and clone validation | SQLite snapshot plus detached clone file set | private writable clone; bootstrap identity is rebound |
 | `tests.infra.whale_fixtures.clone_blob_tree` | `clone_archive_template` | same as archive-template clone | private writable clone |
-| `devtools.clone_support.reflink_clone` | authenticated single-file fast/fallback helper | regular single-linked file, sidecar-free, size and SHA-256 | caller receives only after post-copy identity check |
 
 The no-promote canary route intentionally has different semantics. It does
 not clone a reusable package: `IndexGenerationStore.create` creates an

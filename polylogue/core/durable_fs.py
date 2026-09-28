@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import os
+import shutil
+import stat
 import tempfile
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
+
+#: ``FICLONE`` ioctl: share the source's extents instead of copying bytes.
+_FICLONE = 0x40049409
+_REFLINK_UNSUPPORTED = frozenset({errno.EOPNOTSUPP, errno.ENOTTY, errno.EINVAL, errno.EXDEV})
 
 
 class DurableFilesystemError(OSError):
@@ -88,3 +97,59 @@ def append_line(path: Path, line: str | bytes) -> None:
 
 
 __all__ = ["DurableFilesystemError", "append_line", "atomic_replace", "sync_directory", "write_once"]
+
+
+def reflink_into(source_fd: int, destination_fd: int) -> bool:
+    """Clone ``source_fd``'s contents into ``destination_fd``; ``False`` when unsupported."""
+    try:
+        fcntl.ioctl(destination_fd, _FICLONE, source_fd)
+    except OSError as exc:
+        if exc.errno in _REFLINK_UNSUPPORTED:
+            return False
+        raise
+    return True
+
+
+def clone_or_copy_replace(source: Path, destination: Path, *, before_publish: Callable[[], None] | None = None) -> None:
+    """Place a copy of regular file ``source`` at ``destination``.
+
+    The bytes are cloned by reflink where the filesystem supports it and
+    copied otherwise, into a temporary sibling that replaces ``destination``
+    only once complete: a failure leaves any earlier ``destination`` intact.
+    ``before_publish`` runs after the copy is complete and durable, directly
+    before the rename, for state that describes the earlier ``destination``
+    and must stay with it until the replacement is published.
+    Anything but a regular file (a FIFO, socket or device) is refused before
+    it is opened, since opening a FIFO for reading blocks.
+    """
+    info = source.stat()
+    if not stat.S_ISREG(info.st_mode):
+        raise OSError(errno.EINVAL, f"not a regular file: {source}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    # A short fixed prefix: embedding the destination name could push a valid
+    # 255-byte member name past the filesystem's component limit.
+    handle, temporary = tempfile.mkstemp(prefix=".stage-", dir=destination.parent)
+    temporary_path = Path(temporary)
+    try:
+        with source.open("rb") as stream:
+            if not reflink_into(stream.fileno(), handle):
+                with os.fdopen(os.dup(handle), "wb") as target:
+                    shutil.copyfileobj(stream, target)
+        # Mode and timestamps only, and before the barrier so they are as
+        # durable as the bytes: copystat would also copy BSD/macOS file
+        # flags, and an immutable temporary could be neither renamed into
+        # place nor cleaned up.
+        os.fchmod(handle, stat.S_IMODE(info.st_mode))
+        os.utime(handle, ns=(info.st_atime_ns, info.st_mtime_ns))
+        os.fsync(handle)
+        os.close(handle)
+        handle = -1
+        if before_publish is not None:
+            before_publish()
+        os.replace(temporary_path, destination)
+        _fsync_directory(destination.parent)
+    except BaseException:
+        if handle >= 0:
+            os.close(handle)
+        temporary_path.unlink(missing_ok=True)
+        raise

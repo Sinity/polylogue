@@ -71,7 +71,7 @@ def test_measure_emits_expected_shape(provider: str, tmp_path: Path) -> None:
     receipt = report["workload_receipt"]
     assert receipt["spec"]["measurement_scope"] == "process"
     phase = receipt["phases"][0]
-    assert phase["peak_rss_bytes"] == round(report["peak_rss_mb"] * 1024 * 1024)
+    assert phase["peak_rss_bytes"] == report["peak_rss_bytes"]
     assert phase["cpu_ms"] == report["cpu_seconds_total"] * 1000.0
     assert phase["progress_completed"] == report["total_messages"]
     assert phase["progress_total"] == report["expected_messages"]
@@ -204,6 +204,13 @@ def test_receipt_build_identity_uses_the_imported_checkout(tmp_path: Path, monke
     build_id = probe._current_build_id()
     assert build_id is not None
     assert build_id.startswith(f"git:{expected_head}:tracked-diff:")
+
+
+def test_ru_maxrss_conversion_uses_platform_units() -> None:
+    from devtools.ingest_throughput_probe import _ru_maxrss_bytes
+
+    assert _ru_maxrss_bytes(8 * 1024 * 1024, platform_name="darwin") == 8 * 1024 * 1024
+    assert _ru_maxrss_bytes(8192, platform_name="linux") == 8192 * 1024
 
 
 def test_unreportable_private_failure_cleans_its_scratch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

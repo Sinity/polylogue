@@ -151,7 +151,10 @@ def apply_full_filters(
         results = [c for c in results if len(c.messages) <= plan.max_messages]
     if plan.min_words is not None:
         results = [c for c in results if sum(len((m.text or "").split()) for m in c.messages) >= plan.min_words]
-    if plan.since_session_id:
+    # The archive candidate SQL already applies this relational boundary.
+    # Re-evaluating it against a post-filter chunk loses the reference row and
+    # therefore incorrectly empties otherwise valid candidates.
+    if plan.since_session_id and not sql_pushed:
         scoped_ids = {str(session.id) for session in _apply_since_session(sessions, plan.since_session_id)}
         results = [session for session in results if str(session.id) in scoped_ids]
 

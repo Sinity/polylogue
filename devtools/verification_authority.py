@@ -17,7 +17,7 @@ VERIFICATION_AUTHORITY: Final[dict[str, Authority]] = {
     "checkout_identity": "devtools",
     "selection_graph": "devtools",
     "pytest_lanes": "devtools",
-    "child_process_interpretation": "pytest-child",
+    "child_process_interpretation": "devtools",
     "scratch": "agentctl",
     "cgroup": "agentctl",
     "resource_admission": "agentctl",

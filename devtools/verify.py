@@ -85,6 +85,7 @@ from devtools.verify_runs import (
     git_worktree_content_sha256,
     prune_successful_verify_runs,
     reconcile_and_record_abandoned_verify_runs,
+    verify_history_path,
 )
 from devtools.verify_test_collection import count_collected
 from devtools.worker_memory import CORPUS_MAX_WORKERS
@@ -134,6 +135,15 @@ DESCRIPTOR_CONTRACT_TESTS = (
     "tests/unit/devtools/test_agent_env.py::test_every_declared_pytest_pool_operation_classifies_its_own_worker",
     "tests/unit/devtools/test_verify.py::test_verify_quick_descriptor_accepts_the_declared_json_projection",
 )
+#: Tests that read a tracked document through ``git grep`` rather than a traced
+#: Python import, so testmon never selects them for a change to that document.
+#: A retired name reintroduced in AGENTS.md would otherwise pass the verifier.
+CONTRACT_DOCUMENT_TESTS = (
+    "tests/unit/architecture/test_retired_analysis_modules.py::test_no_tracked_reference_to_a_retired_analysis_name",
+)
+#: Documentation that a contract test reads. A change touching one of these
+#: runs ``CONTRACT_DOCUMENT_TESTS`` whatever else the change selects.
+_CONTRACT_READ_DOCUMENTS = frozenset({"AGENTS.md"})
 _UNMEASURED_WORKLOAD_DIMENSIONS = (
     "cpu_ms",
     "current_rss_bytes",
@@ -208,7 +218,11 @@ def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
 
 
 def _pytest_steps(
-    *, selection: str, worker_args: Sequence[str], hypothesis_profile: str | None = None
+    *,
+    selection: str,
+    worker_args: Sequence[str],
+    hypothesis_profile: str | None = None,
+    contract_documents_changed: bool = False,
 ) -> list[tuple[str, list[str]]]:
     """Build one complete collection, or an affected collection, both tracing.
 
@@ -217,7 +231,47 @@ def _pytest_steps(
     and records what it traced, which is what makes the next affected run
     selectable. Only ``descriptor`` opts out: it collects a contract slice, not
     a corpus, so its fingerprints would describe a collection no later run has.
+
+    An affected run whose change touches a contract document adds a second,
+    untraced step for ``CONTRACT_DOCUMENT_TESTS``: testmon cannot select them,
+    and a positional test id under ``--testmon-forceselect`` would only
+    intersect the affected selection.
     """
+    steps = [
+        (
+            f"pytest ({selection})",
+            _pytest_command(
+                selection=selection,
+                worker_args=worker_args,
+                hypothesis_profile=hypothesis_profile,
+                explicit_tests=(
+                    (*DESCRIPTOR_CONTRACT_TESTS, *CONTRACT_DOCUMENT_TESTS) if selection == "descriptor" else ()
+                ),
+            ),
+        )
+    ]
+    if selection == "affected" and contract_documents_changed:
+        steps.append(
+            (
+                "pytest (contract documents)",
+                _pytest_command(
+                    selection="descriptor",
+                    worker_args=worker_args,
+                    hypothesis_profile=hypothesis_profile,
+                    explicit_tests=CONTRACT_DOCUMENT_TESTS,
+                ),
+            )
+        )
+    return steps
+
+
+def _pytest_command(
+    *,
+    selection: str,
+    worker_args: Sequence[str],
+    hypothesis_profile: str | None,
+    explicit_tests: Sequence[str],
+) -> list[str]:
     testmon = selection != "descriptor"
     select_flag = "--testmon-noselect" if selection == "all" else "--testmon-forceselect"
     collection_args = CLOSED_WORLD_COLLECTION_ARGS[:-1] if selection == "descriptor" else CLOSED_WORLD_COLLECTION_ARGS
@@ -241,11 +295,11 @@ def _pytest_steps(
         "no:randomly",
         *([f"--hypothesis-profile={hypothesis_profile}"] if hypothesis_profile else []),
         *worker_args,
-        *(DESCRIPTOR_CONTRACT_TESTS if selection == "descriptor" else []),
+        *explicit_tests,
         # Never under pytest-cov: testmon owns the tracer, and refuses to share
         # it with branch coverage.
     ]
-    return [(f"pytest ({selection})", command)]
+    return command
 
 
 #: Labels whose verdict is recorded but does not decide the verifier's exit.
@@ -255,7 +309,11 @@ GATE_PARALLELISM = max(1, min(8, os.cpu_count() or 1))
 
 
 def build_verify_steps(
-    *, quick: bool, selection: str = "all", hypothesis_profile: str | None = None
+    *,
+    quick: bool,
+    selection: str = "all",
+    hypothesis_profile: str | None = None,
+    changed_paths: frozenset[str] | None = None,
 ) -> list[tuple[str, list[str]]]:
     steps: list[tuple[str, list[str]]] = [(gate.label, gate.command(root=ROOT)) for gate in quick_gates()]
     if not quick and selection != "none":
@@ -266,6 +324,7 @@ def build_verify_steps(
                 maximum=AFFECTED_MAX_WORKERS if selection == "affected" else CORPUS_MAX_WORKERS
             ),
             hypothesis_profile=hypothesis_profile,
+            contract_documents_changed=_contract_documents_changed(changed_paths),
         )
     return steps
 
@@ -334,10 +393,21 @@ def _selection_for_changes(changed_paths: frozenset[str] | None) -> str:
     """
     if not changed_paths or not all(_no_test_path(path) for path in changed_paths):
         return "affected"
-    return "descriptor" if _PROJECT_DESCRIPTOR in changed_paths else "none"
+    if _PROJECT_DESCRIPTOR in changed_paths or changed_paths & _CONTRACT_READ_DOCUMENTS:
+        return "descriptor"
+    return "none"
 
 
-def _selection_reason(selection: str) -> str | None:
+def _contract_documents_changed(changed_paths: frozenset[str] | None) -> bool:
+    return bool(changed_paths and changed_paths & _CONTRACT_READ_DOCUMENTS)
+
+
+def _forced_tests(selection: str, changed_paths: frozenset[str] | None) -> tuple[str, ...]:
+    """Tests an affected run adds beyond the testmon selection."""
+    return CONTRACT_DOCUMENT_TESTS if selection == "affected" and _contract_documents_changed(changed_paths) else ()
+
+
+def _selection_reason(selection: str, changed_paths: frozenset[str] | None = None) -> str | None:
     if selection == "none":
         return (
             "every changed path is orchestration metadata, documentation or a hosted workflow "
@@ -346,6 +416,9 @@ def _selection_reason(selection: str) -> str | None:
             f"outside {_TEST_TREE_PREFIX}**); no test exercises them"
         )
     if selection == "descriptor":
+        if changed_paths is not None and _PROJECT_DESCRIPTOR not in changed_paths:
+            documents = ", ".join(sorted(changed_paths & _CONTRACT_READ_DOCUMENTS))
+            return f"the change stays inside documentation and includes a contract document a test reads ({documents})"
         return "the change stays inside orchestration metadata and includes the AgentCTL descriptor"
     return None
 
@@ -380,7 +453,9 @@ def _unrecorded_selection_term(root: Path) -> tuple[int | None, str | None]:
     return counted, None
 
 
-def _estimate_affected_selection(root: Path, graph: Any) -> tuple[int | None, float | None, str | None, int | None]:
+def _estimate_affected_selection(
+    root: Path, graph: Any, forced_tests: Sequence[str] = ()
+) -> tuple[int | None, float | None, str | None, int | None]:
     """Estimate the exact testmon selection without launching pytest.
 
     Testmon mutates its database while it determines stable tests, so this
@@ -391,6 +466,11 @@ def _estimate_affected_selection(root: Path, graph: Any) -> tuple[int | None, fl
     The fourth element is how much of the count is unrecorded-and-therefore-
     unknown tests, kept separate so the receipt can say where the plan's size
     came from.
+
+    ``forced_tests`` are node ids the run adds outside testmon (the contract
+    document step). Their recorded items -- every parametrization -- count
+    toward the plan; a forced node the graph never recorded makes the plan
+    unmeasured rather than silently smaller.
     """
     if getattr(graph, "status", None) is not TestmonGraphStatus.USABLE:
         return None, None, None, None
@@ -417,7 +497,16 @@ def _estimate_affected_selection(root: Path, graph: Any) -> tuple[int | None, fl
                     return None, None, "the testmon environment changed; affected selection is unbounded", None
                 data.determine_stable()
                 selected = set(data.unstable_test_names) | set(data.failing_tests)
-                durations = [data.all_tests[name].get("duration") for name in selected]
+                # The forced step runs its tests again even when the affected
+                # step also selected them, so each launch is counted: a list,
+                # not a union with ``selected``.
+                launched = list(selected)
+                for nodeid in forced_tests:
+                    recorded = {name for name in data.all_tests if name == nodeid or name.startswith(f"{nodeid}[")}
+                    if not recorded:
+                        return None, None, f"the forced test {nodeid} has no recorded execution", None
+                    launched.extend(recorded)
+                durations = [data.all_tests[name].get("duration") for name in launched]
                 estimated = (
                     None if any(value is None for value in durations) else sum(float(value) for value in durations)
                 )
@@ -425,16 +514,18 @@ def _estimate_affected_selection(root: Path, graph: Any) -> tuple[int | None, fl
                 # of the count the cap is applied to. They have no recorded
                 # duration, so the seconds estimate stays the graph's alone and
                 # is a floor rather than a prediction.
-                return len(selected) + unrecorded_tests, estimated, None, unrecorded_tests
+                return len(launched) + unrecorded_tests, estimated, None, unrecorded_tests
             finally:
                 database.con.close()
     except (ImportError, OSError, RuntimeError, TypeError, ValueError, sqlite3.Error):
         return None, None, "the affected selection could not be measured from the graph", None
 
 
-def _affected_admission(*, root: Path, graph: Any) -> AffectedAdmission:
+def _affected_admission(*, root: Path, graph: Any, forced_tests: Sequence[str] = ()) -> AffectedAdmission:
     """Build the bounded affected admission decision and its measurement note."""
-    selected_count, estimated_seconds, measurement_error, unrecorded_tests = _estimate_affected_selection(root, graph)
+    selected_count, estimated_seconds, measurement_error, unrecorded_tests = _estimate_affected_selection(
+        root, graph, forced_tests
+    )
     decision = admit_affected_selection(
         graph_status=str(getattr(graph, "status", "unknown")),
         graph_reason=str(getattr(graph, "reason", "graph state unavailable")),
@@ -470,7 +561,7 @@ def _affected_admission(*, root: Path, graph: Any) -> AffectedAdmission:
     return decision
 
 
-def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
+def _normalize_managed_pytest_environment(env: dict[str, str], command: Sequence[str] = ()) -> None:
     env.pop("PYTEST_ADDOPTS", None)
     env.pop("PYTEST_PLUGINS", None)
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
@@ -483,7 +574,10 @@ def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
     # This opt-in is the BROAD verifier's alone: `devtools.run_tests` defines
     # a function of the same name that deliberately does not set it, because a
     # focused selection would pay the warm-up for archives it never opens.
-    env["POLYLOGUE_BROAD_PREWARM"] = "1"
+    if all(nodeid in command for nodeid in DESCRIPTOR_CONTRACT_TESTS):
+        env.pop("POLYLOGUE_BROAD_PREWARM", None)
+    else:
+        env["POLYLOGUE_BROAD_PREWARM"] = "1"
     env["COVERAGE_CORE"] = TESTMON_COVERAGE_CORE
     env.pop("POLYLOGUE_CI", None)
 
@@ -504,6 +598,15 @@ def _clear_pytest_report(command: Sequence[str]) -> None:
         else:
             with contextlib.suppress(FileNotFoundError):
                 path.unlink()
+
+
+def _clear_full_run_shards() -> None:
+    """Prevent stale full-corpus shards from being attributed to this run."""
+    for report in (ROOT / Path(".cache/verify")).glob("last-pytest-*.json"):
+        if report.name == "last-pytest.json":
+            continue
+        with contextlib.suppress(FileNotFoundError):
+            report.unlink()
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -741,7 +844,7 @@ def _run(
     if pytest_step:
         command = _bind_pytest_reports_to_step(command, artifacts)
         _clear_pytest_report(command)
-        _normalize_managed_pytest_environment(env)
+        _normalize_managed_pytest_environment(env, command)
         env = env_for_pytest_step(env, run=run, artifacts=artifacts)
         # The pytest slot re-checks the branch and records what it executed
         # when the run starts, as it does for focused runs: the checkout can
@@ -758,7 +861,7 @@ def _run(
                 early_metadata["pytest_slot_terminal"] = runtime_evidence
             run.finish_step(
                 step_id=artifacts.step_id,
-                result=_early_gate_failure_result(started, early_metadata),
+                result={**_early_gate_failure_result(started, early_metadata), "exit": 125},
             )
             _write_step_result(label, pytest_step, f"FAILED ({exc})")
             return 125, time.monotonic() - started, early_metadata
@@ -890,13 +993,14 @@ def _scope(*, quick: bool, selection: str) -> VerificationScope:
 
 def _emit(payload: Mapping[str, Any], *, use_json: bool, operation: str | None) -> None:
     result = declared_verification_result(payload, operation=operation) if operation else dict(payload)
-    if operation:
+    if operation and payload.get("run_id"):
         # The operation result carries the same bounded receipt as the
         # evidence lane.  AgentCTL lifecycle fields remain outside this
         # projection and cannot turn process completion into semantic success.
         result["semantic_receipt"] = canonical_verification_receipt(payload)
     if use_json or operation:
         print(json.dumps(result, sort_keys=True, ensure_ascii=False))
+        sys.stdout.flush()
     _write_verdict_line(payload, stream=sys.stderr)
 
 
@@ -922,7 +1026,8 @@ def _write_verdict_line(payload: Mapping[str, Any], *, stream: Any) -> None:
     diagnosis = payload.get("diagnosis")
     named = f" diagnosis={diagnosis}" if diagnosis else ""
     artifact_dir = payload.get("artifact_dir")
-    receipt = f" receipt={Path(str(artifact_dir)) / 'run.json'}" if artifact_dir else ""
+    receipt_path = (ROOT / str(artifact_dir) / "run.json").resolve() if artifact_dir else None
+    receipt = f" receipt={receipt_path}" if receipt_path else ""
     # The checkout this run tested, so the line that is cited says what it proves.
     head = payload.get("git_head")
     branch = payload.get("git_branch")
@@ -1000,6 +1105,7 @@ def _finish_interrupted_verification(
     agentctl_operation: str | None,
     exit_code: int,
     termination_reason: str,
+    results: Sequence[Mapping[str, Any]] = (),
 ) -> int:
     """Persist the terminal state when an outer runtime ends verification."""
     run.finish_interrupted_steps(
@@ -1015,12 +1121,19 @@ def _finish_interrupted_verification(
         verification_scope=scope.value,
         final_git_head=git_head(ROOT),
         pytest_aggregate={
-            "selection_mode": "quick" if args.quick else selection,
-            "outcomes": {},
+            **_aggregate_pytest_results(
+                results, expected_step_count=3, mode="quick" if args.quick else selection, exit_code=exit_code
+            ),
             "terminal_green": False,
             "complete_corpus_covered": False,
             "termination_reason": termination_reason,
         },
+        workload_receipt=_verification_workload_receipt(
+            tier="quick" if args.quick else selection,
+            git_head=git_head(ROOT),
+            results=(),
+            exit_code=exit_code,
+        ),
     )
     _emit(payload, use_json=args.json, operation=agentctl_operation)
     return exit_code
@@ -1047,9 +1160,10 @@ def _finish_and_record_verification(
         pytest_aggregate=pytest_aggregate,
         workload_receipt=workload_receipt,
     )
-    append_verify_history(payload)
+    history_path = verify_history_path(root=ROOT)
+    append_verify_history(payload, path=history_path)
     append_verification_evidence(payload)
-    prune_successful_verify_runs(root=ROOT)
+    prune_successful_verify_runs(root=ROOT, history_path=history_path)
     if exit_code != 0:
         try:
             from polylogue.context.failure_seed import write_failure_seed
@@ -1065,6 +1179,7 @@ def _aggregate_pytest_results(
 ) -> dict[str, Any]:
     pytest_results = [result for result in results if str(result.get("name", "")).startswith("pytest")]
     outcomes: dict[str, int] = {}
+    flaky: list[str] = []
     selected_counts: list[int] = []
     terminal_counts: list[int] = []
     for result in pytest_results:
@@ -1078,14 +1193,18 @@ def _aggregate_pytest_results(
             terminal_counts.append(terminal)
         for outcome, count in (statistics.get("outcomes") or {}).items():
             outcomes[str(outcome)] = outcomes.get(str(outcome), 0) + int(count)
+        rerun = result.get("rerun")
+        if isinstance(rerun, Mapping):
+            flaky.extend(str(nodeid) for nodeid in rerun.get("flaky") or ())
     complete = mode == "all" and exit_code == 0 and len(pytest_results) == expected_step_count
     return {
         "selection_mode": mode,
         # Full-corpus verification partitions the collection across managed
         # pytest steps, so these are disjoint populations and must be summed.
-        "selected_union_count": sum(selected_counts),
-        "terminal_union_count": sum(terminal_counts),
+        "selected_union_count": sum(selected_counts) if selected_counts else None,
+        "terminal_union_count": sum(terminal_counts) if terminal_counts else None,
         "outcomes": outcomes,
+        "flaky": flaky,
         "terminal_green": exit_code == 0,
         "complete_corpus_covered": complete,
     }
@@ -1130,6 +1249,17 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         help="run on the default branch deliberately (a base comparison, or the hosted gate on a push)",
     )
     args = parser.parse_args(argv)
+    if sys.flags.optimize > 0:
+        message = (
+            "devtools verify refuses optimized Python; run with the standard interpreter (sys.flags.optimize must be 0)"
+        )
+        if args.json:
+            print(
+                json.dumps({"status": "refused", "diagnosis": "optimized_python", "message": message, "exit_code": 125})
+            )
+        else:
+            sys.stderr.write(message + "\n")
+        return 125
     _anchor_verification_paths()
     identity = checkout_identity(ROOT)
     branch_refusal = default_branch_refusal(identity, command="devtools verify", allowed=args.on_default_branch)
@@ -1165,8 +1295,12 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     validate_authority_matrix()
     started = time.monotonic()
     selection = "all" if args.all_tests else "affected"
+    if args.all_tests:
+        _clear_full_run_shards()
+    changed_paths: frozenset[str] | None = None
     if not args.quick and not args.all_tests:
-        selection = _selection_for_changes(_git_changed_paths(ROOT))
+        changed_paths = _git_changed_paths(ROOT)
+        selection = _selection_for_changes(changed_paths)
     seeded_from_primary = sync_testmon_graph(ROOT)
     graph = inspect_testmon_graph(ROOT)
     scope = _scope(quick=args.quick, selection=selection)
@@ -1199,7 +1333,9 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     if not args.quick:
         admission: AffectedAdmission | None = None
         if selection == "affected":
-            admission = _affected_admission(root=ROOT, graph=graph)
+            admission = _affected_admission(
+                root=ROOT, graph=graph, forced_tests=_forced_tests(selection, changed_paths)
+            )
         run.record_selection(
             selection_mode=selection,
             graph_status=str(graph.status),
@@ -1211,13 +1347,15 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             seed_source_mtime_ns=(
                 testmon_datafile(primary_worktree()).stat().st_mtime_ns if seeded_from_primary else None
             ),
-            selection_reason=(admission.reason if admission is not None else _selection_reason(selection)),
+            selection_reason=(
+                admission.reason if admission is not None else _selection_reason(selection, changed_paths)
+            ),
             selected_count=admission.selected_count if admission is not None else None,
             estimated_seconds=admission.estimated_seconds if admission is not None else None,
             admission=admission.to_payload() if admission is not None else None,
         )
         if selection == "none":
-            sys.stderr.write("verify: no pytest step: " + str(_selection_reason(selection)) + "\n")
+            sys.stderr.write("verify: no pytest step: " + str(_selection_reason(selection, changed_paths)) + "\n")
         if admission is not None and not admission.admitted:
             payload = _finish_and_record_verification(
                 run=run,
@@ -1239,9 +1377,14 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             _emit_affected_admission_refusal(graph=graph, decision=admission)
             _emit(payload, use_json=args.json, operation=agentctl_operation)
             return 2
-    steps = build_verify_steps(quick=args.quick, selection=selection, hypothesis_profile=args.hypothesis_profile)
+    steps = build_verify_steps(
+        quick=args.quick,
+        selection=selection,
+        hypothesis_profile=args.hypothesis_profile,
+        changed_paths=changed_paths,
+    )
+    results: list[dict[str, Any]] = []
     try:
-        results: list[dict[str, Any]] = []
         exit_code = 0
         for label, (rc, elapsed, metadata) in _run_steps(steps, run=run, runner=args.runner):
             results.append({"name": label, "duration_s": round(elapsed, 2), "exit": rc, **metadata})
@@ -1257,6 +1400,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             agentctl_operation=agentctl_operation,
             exit_code=128 + exc.signum,
             termination_reason=signal.Signals(exc.signum).name.lower(),
+            results=results,
         )
     except KeyboardInterrupt:
         return _finish_interrupted_verification(
@@ -1268,6 +1412,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             agentctl_operation=agentctl_operation,
             exit_code=130,
             termination_reason="operator_interrupt",
+            results=results,
         )
     executed: set[tuple[object, object, object]] = set()
     for result in results:

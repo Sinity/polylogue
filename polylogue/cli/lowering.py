@@ -181,8 +181,8 @@ def lower_session_read(
 ) -> OperationRequest:
     """Lower one bounded read for an exact reference onto ``session.read``.
 
-    A continuation supersedes the window coordinates it was minted from, so
-    passing both is a caller error rather than a silently ignored argument.
+    A continuation carries its offset and snapshot. A smaller explicit limit
+    may narrow its next page; widening it or supplying another offset is refused.
     Whole-evidence kinds take no window at all; passing one is a caller error
     for the same reason.
 
@@ -205,8 +205,8 @@ def lower_session_read(
     )
 
     windowed = WINDOWED_SESSION_READ_KINDS | WINDOWED_EVIDENCE_KINDS
-    if continuation is not None and (limit is not None or offset):
-        raise click.UsageError("A read continuation already carries its window coordinates.")
+    if continuation is not None and offset:
+        raise click.UsageError("A read continuation already carries its offset.")
     if kind not in windowed and (limit is not None or offset):
         raise click.UsageError(f"A {kind} read is answered whole and takes no window coordinates.")
     if kind not in CONTINUABLE_SESSION_READ_KINDS and continuation is not None:

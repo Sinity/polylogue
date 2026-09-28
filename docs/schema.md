@@ -119,6 +119,10 @@ Rebuildable, but re-embedding costs Voyage API calls — content-addressing is
 what makes a rebuild (index reset, lineage renormalization) NOT imply a
 re-embed for text that has not changed.
 
+### `audit.db` — durable authorization and continuity evidence
+
+Stores mutation previews, authorizations, attempts, receipts, and continuity-chain state. This tier preserves who authorized a durable change, what exact plan was applied, and whether its receipt chain remains continuous. It is durable, requires backup, and evolves only through additive numbered migrations with the audit-tier migration policy described above.
+
 ### `user.db` — irreplaceable human input (back up this one)
 
 The only tier that is not rebuildable from source. Its canonical table is

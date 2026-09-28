@@ -601,8 +601,8 @@ writes:
     table: "raw_authority_verdicts"
     kind: "delete"
     tier: "source"
-    classification: row_supersession
-    reason: "raw_authority_verdicts is a cohort-scoped projection cache: write_raw_authority_verdict_cache deletes the cohort's complete prior row set and reinserts the full recomputed verdict dict in one transaction, stamping cohort_fingerprint (a digest of the cohort's current rows) so a stale row is detected rather than trusted. Its docstring forbids partial writes for exactly that reason"
+    classification: unclassified
+    reason: "raw_authority_verdicts is a cohort-scoped projection cache. Its cohort_fingerprint covers cohort rows, not the derive_raw_authority_verdict implementation, so producer changes can leave cached judgments stale. Do not classify delete-and-reinsert as content-keyed row_supersession unless cache validity is also bound to the derivation version or fingerprint."
   - file: "polylogue/storage/raw_reconciler.py"
     function: "_reconcile_frontier_obligations"
     table: "raw_authority_blockers"

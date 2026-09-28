@@ -501,8 +501,6 @@ def test_authentication_refusal_is_not_an_indeterminate_mutation(tmp_path: Path)
         stack.server.auth_token = "synthetic-test-credential"
         with pytest.raises(DaemonOperationRejectedError) as rejected:
             stack.client.operation("mutation.session.delete.preview", {"session_ids": ["codex:absent"]})
-        # The relayed refusal keeps its code as the outcome; the message is
-        # the ingress's own detail (#5705).
         assert rejected.value.outcome == "unauthorized"
         assert not stack.runtime._exchanges
 
@@ -617,7 +615,14 @@ def test_kernel_authenticated_uid_reference_survives_client_and_daemon_restart(t
 def test_restart_recovers_indeterminate_mutation_without_replaying_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A durable unknown effect is returned after restart, never submitted again."""
+    """A durable unknown effect converges once at startup; a retry never resubmits it.
+
+    Since #5688 startup recovery resolves a dead or unknown run by convergent
+    replay, so the restarted daemon applies the plan exactly once more (a
+    no-op against the already-deleted target). Anti-vacuity: re-dispatching
+    the handler for the retried request id raises ``apply_calls`` past the
+    startup count.
+    """
     root = tmp_path / "archive"
     session_ids: tuple[str, ...] = ()
 
@@ -665,12 +670,11 @@ def test_restart_recovers_indeterminate_mutation_without_replaying_it(
 
     assert apply_calls == 1
     with running_daemon_operations(root) as restarted:
-        # Startup recovery resolves the dead operation from durable state by
-        # re-applying its plan convergently (#5688): the targets are already
-        # deleted, so that replay changes nothing. What must never replay is
-        # the client's resend below. Re-introduce the persisted unknown
-        # outcome after startup so the route is tested against a durable
-        # indeterminate record, exactly as a crashed domain writer leaves it.
+        # Startup recovery replays the unknown run once, convergently.
+        # Re-introduce the persisted unknown outcome after startup so the
+        # retry route is tested against a durable indeterminate record,
+        # exactly as a crashed domain writer leaves it.
+        assert apply_calls == 2
         with sqlite3.connect(root / "audit.db") as connection:
             connection.execute(
                 """
@@ -684,7 +688,6 @@ def test_restart_recovers_indeterminate_mutation_without_replaying_it(
                 ("synthetic lost outcome", "indeterminate-execute"),
             )
             connection.commit()
-        applied_by_startup = apply_calls
         recovered = restarted.client.operation(
             "mutation.session.delete.execute",
             {"authorization_refs": authorization["result"]["authorization_refs"]},
@@ -696,7 +699,7 @@ def test_restart_recovers_indeterminate_mutation_without_replaying_it(
         assert recovered["accepted_reference"] == accepted_reference
         assert recovered["result"]["reference"] == accepted_reference
 
-    assert apply_calls == applied_by_startup
+    assert apply_calls == 2
     assert all(not restarted.session_exists(session_id) for session_id in session_ids)
 
 

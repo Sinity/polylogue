@@ -126,7 +126,14 @@ async def test_session_listing_agrees_across_the_generic_and_owner_read_routes(t
     """
 
     root = tmp_path / "archive"
-    seeded = _seed(root)
+    seeded = _seed(root, count=25)
+
+    # Anti-vacuity: 25 rows make the omitted-limit page boundary observable.
+    first_owner = await _owner_list(root, origin=Origin.CODEX_SESSION)
+    first_generic = _generic_list(root, origin="codex-session")
+    assert first_owner == first_generic
+    assert first_owner[2] == 20
+    assert first_owner[4] == 20
 
     first_owner = await _owner_list(root, origin=Origin.CODEX_SESSION, limit=2)
     first_generic = _generic_list(root, origin="codex-session", limit=2)

@@ -34,6 +34,7 @@ from polylogue.operations.raw_existence_journal import make_raw_existence_journa
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.connection_profile import (
+    attach_database,
     open_daemon_connection,
     open_readonly_connection,
 )
@@ -761,7 +762,7 @@ def _ensure_source_tier_attached(conn: sqlite3.Connection, *, archive_root: Path
     source_db = _attached_source_db_path(conn, archive_root=archive_root)
     if not source_db.exists():
         return False
-    conn.execute("ATTACH DATABASE ? AS source_tier", (str(source_db),))
+    attach_database(conn, source_db, alias="source_tier")
     return True
 
 
