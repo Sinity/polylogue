@@ -11,7 +11,7 @@ from typing import Any, Literal, cast
 import click
 
 from polylogue.archive.query.spec import DEFAULT_MESSAGE_PAGE_LIMIT
-from polylogue.cli.operation_kernel import OperationKernelError
+from polylogue.cli.operation_kernel import OperationFailedError, OperationKernelError
 from polylogue.cli.read_dispatch import ServedBy, daemon_route_disabled, dispatch_read
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
@@ -83,17 +83,39 @@ def read_message_windows(
     remaining: int | None = None if full else max(limit, 0)
     delivered = 0
     anchor = around
+    window_ceiling = _MESSAGE_READ_WINDOW
+    anchor_window_limit = min(limit, 2000)
     while True:
         if remaining is not None and remaining <= 0:
             return
-        window_limit = _MESSAGE_READ_WINDOW if remaining is None else min(remaining, _MESSAGE_READ_WINDOW)
+        window_limit = (
+            anchor_window_limit
+            if anchor is not None
+            else min(window_ceiling, remaining)
+            if remaining is not None
+            else window_ceiling
+        )
         if token is not None:
             request = lower_session_read(session_id, kind="messages", continuation=token)
         elif anchor is not None:
             request = lower_session_read(session_id, kind="messages", limit=window_limit, around=anchor)
         else:
             request = lower_session_read(session_id, kind="messages", limit=window_limit, offset=offset + delivered)
-        payload, served_by = dispatch_read(config, request, daemon_disabled=daemon_disabled)
+        try:
+            payload, served_by = dispatch_read(config, request, daemon_disabled=daemon_disabled)
+        except OperationFailedError as exc:
+            # A wide initial page can be valid as rows yet exceed the bounded
+            # operation envelope. Retry that same coordinate with a smaller
+            # window; the successful page then mints a continuation for the
+            # smaller bound used by all following windows.
+            if exc.code != "result_too_large" or token is not None or window_limit <= 1:
+                raise
+            reduced = max(1, window_limit // 2)
+            if anchor is not None:
+                anchor_window_limit = reduced
+            else:
+                window_ceiling = reduced
+            continue
         raw_rows = payload.get("messages")
         rows = [row for row in raw_rows if isinstance(row, Mapping)] if isinstance(raw_rows, list) else []
         session = payload.get("session")
@@ -186,10 +208,13 @@ def run_messages(
     """
 
     started_at = monotonic()
+    if around is not None and (continuation is not None or offset):
+        raise click.UsageError("--around cannot be combined with --continuation or a nonzero --offset.")
     config = cast(Config, request.config())
     daemon_disabled = daemon_route_disabled(flag=bool(request.params.get("no_daemon")))
 
     windows: list[_MessageWindow] = []
+    executor_identity: str | None = None
     try:
         for window in read_message_windows(
             config,
@@ -201,6 +226,12 @@ def run_messages(
             daemon_disabled=daemon_disabled,
             around=around,
         ):
+            if executor_identity is not None and window.served_by.identity != executor_identity:
+                raise OperationFailedError(
+                    "executor_changed",
+                    "The read executor changed while composing message windows; retry the read.",
+                )
+            executor_identity = window.served_by.identity
             windows.append(window)
     except OperationKernelError as exc:
         message_read_failure(env, exc, session_id=session_id)

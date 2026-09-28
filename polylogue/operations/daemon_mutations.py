@@ -23,12 +23,24 @@ from polylogue.operations.mutation_actuators import (
 )
 from polylogue.operations.mutation_transaction import (
     MAX_MUTATION_PLAN_TARGETS,
+    ConfirmationRequiredError,
     MutationPreview,
     OperationExecutor,
     compute_parameter_digest,
 )
 from polylogue.operations.operation_context import OperationContext, OperationControlRead, PinnedOperationRead
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+_CONFIRMATION_REQUIRED_OPERATIONS = frozenset(
+    {
+        "mutation.session.excision",
+        "mutation.session.lifecycle-request",
+        "mutation.identity-reset",
+        "mutation.raw-authority-blocker.resolve",
+        "maintenance.reset",
+        "maintenance.blob-publications.abandon",
+    }
+)
 
 
 def _execute_named_mutation(
@@ -42,6 +54,12 @@ def _execute_named_mutation(
     """Run one legacy domain actuator under the daemon's write authority."""
     assert context.runtime is not None
     binding = runtime_operation_binding(actuator)
+    if (
+        request.operation in _CONFIRMATION_REQUIRED_OPERATIONS
+        and binding.actuator.required_confirmation != "role_only"
+        and request.payload.get("confirm") is not True
+    ):
+        raise ConfirmationRequiredError(f"{request.operation} requires explicit confirmation")
     executor = OperationExecutor(audit=audit, archive_root=context.archive_root)
     preview = executor.prepare_bound_for_archive(binding, args, context.principal, archive_root=context.archive_root)
     authorization = executor.authorize_bound(binding, preview, context.principal, confirmation_strength="bound_token")
@@ -152,6 +170,14 @@ def _reset_targets(root: Path, payload: dict[str, object]) -> list[tuple[str, Pa
             raise ValueError("reset is unsafe for a managed active generation")
         names = [("index database", "index.db")] if flags["index"] else []
         if flags["database"]:
+            if bool(payload.get("include_source_db", False)):
+                from polylogue.operations.reset_safety import unresolvable_raw_source_count
+
+                at_risk = unresolvable_raw_source_count(root)
+                if at_risk:
+                    raise ValueError(
+                        f"refusing to delete source.db: {at_risk} raw row(s) reference source paths that no longer exist"
+                    )
             # ``embeddings.db`` is absent deliberately: bootstrap classifies it
             # ``expensive_rebuild`` because nothing replays its vectors from
             # source.db -- they are re-purchased from the embedding provider.
@@ -202,6 +228,14 @@ def _reset_targets(root: Path, payload: dict[str, object]) -> list[tuple[str, Pa
         path = state_home() / "last-source.json"
         if path.exists():
             targets.append(("last-source state", path))
+    expected = payload.get("expected_targets")
+    if expected is not None:
+        if not isinstance(expected, list) or any(not isinstance(path, str) for path in expected):
+            raise ValueError("reset expected_targets must be a list of absolute paths")
+        resolved_expected = tuple(sorted(str(Path(path).resolve()) for path in expected))
+        resolved_actual = tuple(sorted(str(path.resolve()) for _name, path in targets))
+        if resolved_expected != resolved_actual:
+            raise ValueError("reset targets changed since confirmation; preview the targets again")
     return targets
 
 
@@ -1104,13 +1138,23 @@ def mutation_annotation_import_batch(
             return resolve_ref_against_archive(snapshot.archive, ref, archive_root=context.archive_root)
 
     delegation = delegate_write_lease()
+    runtime = context.runtime
+
+    def accept() -> None:
+        # Validation can outlive the exchange's deadline. Cross the acceptance
+        # boundary only if the exchange is still live, so the runtime never
+        # reports timed-out or disconnected-before-acceptance for a write that
+        # then commits.
+        runtime.begin_unbound_write(request)
 
     async def _run() -> AnnotationBatchImportResult:
         with adopt_write_lease(delegation):
             handle = cast(Any, _DaemonImportArchiveHandle())
             if registry is None:
-                return await import_annotation_batch(handle, product_request)
-            return await import_annotation_batch(handle, product_request, registry=registry)
+                return await import_annotation_batch(handle, product_request, before_durable_execution=accept)
+            return await import_annotation_batch(
+                handle, product_request, registry=registry, before_durable_execution=accept
+            )
 
     result = asyncio.run(_run())
     return {

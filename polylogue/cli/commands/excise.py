@@ -166,7 +166,7 @@ def excise_command(
         result = _submit(
             env,
             "mutation.session.lifecycle-request",
-            {"session_id": session_id, "mode": mode, "reason": reason, "actor": actor},
+            {"session_id": session_id, "mode": mode, "reason": reason, "actor": actor, "confirm": True},
         )
         detail_result = result.get("result")
         assertion_id = (
@@ -327,6 +327,7 @@ def excise_command(
             "reason": reason,
             "actor": actor,
             "cascade_lineage": cascade_lineage,
+            "confirm": True,
         },
     )
     domain_receipt = result.get("result")

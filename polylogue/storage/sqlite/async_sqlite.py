@@ -26,6 +26,7 @@ from polylogue.storage.fts.pl_fold import pl_fold
 from polylogue.storage.runtime import (
     SessionProfileRecord,
 )
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.async_sqlite_archive import SQLiteArchiveMixin
 from polylogue.storage.sqlite.async_sqlite_raw import SQLiteRawMixin
 from polylogue.storage.sqlite.connection_profile import (
@@ -41,6 +42,7 @@ from polylogue.storage.sqlite.queries import (
 )
 from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 from polylogue.storage.sqlite.schema import SCHEMA_DDL, ensure_schema_async
+from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec_async
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
 
@@ -62,6 +64,12 @@ _SIBLING_TIER_ATTACHMENTS: tuple[tuple[str, str], ...] = (
     ("embeddings", "embeddings.db"),
     ("ops_tier", "ops.db"),
 )
+_SIBLING_ARCHIVE_TIERS = {
+    "source_tier": ArchiveTier.SOURCE,
+    "user_tier": ArchiveTier.USER,
+    "embeddings": ArchiveTier.EMBEDDINGS,
+    "ops_tier": ArchiveTier.OPS,
+}
 
 
 async def _attach_sibling_tiers(conn: aiosqlite.Connection, *, read_only: bool = False) -> None:
@@ -85,6 +93,10 @@ async def _attach_sibling_tiers(conn: aiosqlite.Connection, *, read_only: bool =
         return
     from pathlib import Path as _Path
 
+    from polylogue.core.errors import SchemaSkew
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.schema_identity import DerivedTier, derived_schema_identity
+
     main = _Path(main_path)
     if main.name != "index.db":
         return
@@ -94,8 +106,35 @@ async def _attach_sibling_tiers(conn: aiosqlite.Connection, *, read_only: bool =
             continue
         sibling = root / filename
         if sibling.exists():
+            if schema_name == "embeddings":
+                # ``message_embeddings`` is a vec0 virtual table: without the
+                # extension every read of it fails with "no such module: vec0"
+                # and embedding coverage reads as unmeasurable. Load it before
+                # the attach and before a reader's authorizer is installed.
+                # A failed load leaves that honest unmeasurable outcome.
+                await try_load_sqlite_vec_async(conn)
             target = f"file:{quote(str(sibling))}?mode=ro" if read_only else str(sibling)
             await conn.execute(f"ATTACH DATABASE ? AS {schema_name}", (target,))
+            tier = _SIBLING_ARCHIVE_TIERS[schema_name]
+            cursor = await conn.execute(f"PRAGMA {schema_name}.user_version")
+            version_row = await cursor.fetchone()
+            found = int(version_row[0]) if version_row is not None else 0
+            expected = ARCHIVE_VERSION_BY_TIER[tier]
+            if found != expected:
+                raise SchemaSkew(tier.value, expected, found)
+            # Only the derived tiers carry a stamped schema identity
+            # (``DerivedTier``). ``embeddings.db`` is repurchased, never
+            # replayed, and has no identity row; its version check above is
+            # the whole contract.
+            if tier is ArchiveTier.OPS:
+                identity_cursor = await conn.execute(
+                    f"SELECT identity FROM {schema_name}.schema_identity WHERE tier = ?", (tier.value,)
+                )
+                identity_row = await identity_cursor.fetchone()
+                identity = str(identity_row[0]) if identity_row is not None else None
+                expected_identity = derived_schema_identity(DerivedTier(tier.value))
+                if identity != expected_identity:
+                    raise SchemaSkew(tier.value, expected_identity, identity)
 
 
 async def configure_connection(conn: aiosqlite.Connection) -> None:
@@ -155,13 +194,23 @@ def initialize_backend_state(backend: SQLiteBackend, db_path: Path | None) -> No
     """Initialize backend state and shared query accessors."""
     requested_path = Path(db_path) if db_path is not None else _paths.db_path()
     archive_root = requested_path.parent
+    if archive_root.name == ".index-generations":
+        archive_root = archive_root.parent
+    elif archive_root.parent.name == ".index-generations":
+        archive_root = archive_root.parent.parent
     backend._db_path = requested_path if requested_path.name == "index.db" else archive_root / "index.db"
     backend._source_db_path = archive_root / "source.db"
+    needs_bootstrap = not _is_initialized_archive_index(backend._db_path)
+    if needs_bootstrap:
+        # Bootstrap itself creates writable tier files. Enforce archive
+        # ownership before any directory or database mutation in constructor.
+        require_write_lease(f"async backend bootstrap({backend._db_path})", archive_root=archive_root)
     backend._db_path.parent.mkdir(parents=True, exist_ok=True)
-    if not _is_initialized_archive_index(backend._db_path):
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-        initialize_active_archive_root(archive_root)
+    # Existing tier files do not prove format lineage; admit the root through
+    # its marker before constructing sync or async connections.
+    initialize_active_archive_root(archive_root)
     if backend._db_path.exists():
         backend._db_path.chmod(0o600)
 
@@ -189,7 +238,9 @@ async def ensure_schema_once(backend: SQLiteBackend) -> None:
         if _is_initialized_archive_index(backend._db_path):
             backend._schema_ensured = True
             return
-        require_write_lease(f"async schema initialization({backend._db_path})")
+        require_write_lease(
+            f"async schema initialization({backend._db_path})", archive_root=backend._source_db_path.parent
+        )
         async with aiosqlite.connect(backend._db_path, timeout=DB_TIMEOUT) as init_conn:
             os.chmod(backend._db_path, 0o600)
             await configure_connection(init_conn)
@@ -227,7 +278,7 @@ async def _backend_transaction(backend: SQLiteBackend) -> AsyncIterator[None]:
 
     async with backend._write_lock:
         if backend._txn_conn is None:
-            require_write_lease(f"async transaction({backend._db_path})")
+            require_write_lease(f"async transaction({backend._db_path})", archive_root=backend._source_db_path.parent)
             backend._txn_conn = await aiosqlite.connect(backend._db_path, timeout=DB_TIMEOUT)
             await configure_connection(backend._txn_conn)
 
@@ -244,7 +295,7 @@ async def _backend_begin(backend: SQLiteBackend) -> None:
     """Begin a transaction or nested savepoint."""
     await backend._ensure_schema_once()
     if backend._txn_conn is None:
-        require_write_lease(f"async transaction begin({backend._db_path})")
+        require_write_lease(f"async transaction begin({backend._db_path})", archive_root=backend._source_db_path.parent)
         backend._txn_conn = await aiosqlite.connect(backend._db_path, timeout=DB_TIMEOUT)
         await configure_connection(backend._txn_conn)
 
@@ -321,7 +372,7 @@ async def _backend_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlite
 async def _bulk_connection(backend: SQLiteBackend) -> AsyncIterator[None]:
     """Keep a single connection alive for many sequential operations."""
     await backend._ensure_schema_once()
-    require_write_lease(f"async bulk transaction({backend._db_path})")
+    require_write_lease(f"async bulk transaction({backend._db_path})", archive_root=backend._source_db_path.parent)
     conn = await aiosqlite.connect(backend._db_path, timeout=DB_TIMEOUT)
     await configure_connection(conn)
     await conn.execute("BEGIN IMMEDIATE")

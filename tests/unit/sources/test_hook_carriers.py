@@ -519,15 +519,22 @@ def test_compact_quiesces_carrier_producer_and_defers_mid_drain_arrival(
 
     producer = threading.Thread(target=append_during_drain)
     producer.start()
-    assert not appended.wait(timeout=0.1)
+    # Anti-vacuity: restore the shared producer lock and this hook blocks
+    # behind a large legacy drain instead of admitting the event promptly.
+    assert appended.wait(timeout=0.1)
     release.set()
     drain.join(timeout=5)
     producer.join(timeout=5)
 
-    assert result["carrier_quiesced"] is True
-    assert result["carrier_arrivals_during_drain"] == 0
-    policy = result["carrier_arrival_policy"]
-    assert policy == "producer blocked by exclusive drain lock; post-release arrivals deferred"
+    assert result["carrier_compaction_serialized"] is True
+    policy = result["carrier_producer_policy"]
+    assert policy == "hook producers do not wait for the legacy drain lock"
+    # Anti-vacuity: restoring the old sorted path array grows the receipt with
+    # every carrier filename instead of keeping a fixed-size count.
+    scope = result["carrier_scope"]
+    assert isinstance(scope, dict)
+    assert set(scope) == {"before", "after"}
+    assert all(set(value) == {"file_count"} for value in scope.values())
     assert result["conservation_reconciliation"] == (
         "event_id basename; acknowledged day shard is destination metadata"
     )

@@ -449,6 +449,8 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
       ``detail`` set to the exception class name.
     * :class:`ArchiveWriterOwnershipError` → its typed refusal code and safe
       resident-writer identity, so callers can route the write correctly.
+    * :class:`FacadeDaemonRequiredError` → ``code="daemon_required"``: the
+      mutation needs ``polylogued run`` for this archive.
     * :class:`DaemonOperationRejectedError` → the daemon's typed rejection
       code, with its public rejection detail in ``message``.
     * Any other :class:`Exception` → ``code="internal_error"`` with ``detail``
@@ -456,6 +458,7 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
       deliberately not included so the surface cannot leak credentials, file
       paths, or other internal state.
     """
+    from polylogue.api.facade_client import FacadeDaemonRequiredError
     from polylogue.archive.query.expression import ExpressionCompileError
     from polylogue.maintenance.offline_guard import ArchiveWriterOwnershipError
     from polylogue.operations.daemon_errors import DaemonOperationRejectedError
@@ -521,6 +524,20 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
     elif isinstance(exc, ArchiveWriterOwnershipError):
         payload = MCPErrorPayload(
             message=f"{fn_name}: {exc.resident_writer or exc.code}",
+            code=exc.code,
+            error=exc.code,
+            detail=type(exc).__name__,
+            tool=fn_name,
+            archive_root=exc.archive_root,
+            resident_writer=exc.resident_writer,
+        )
+    elif isinstance(exc, FacadeDaemonRequiredError):
+        # A public mutation needs the resident writer and none is running.
+        # The typed code tells the client to start the daemon rather than
+        # retry, which the generic ``polylogue_error`` did not.
+        # The exception text names the archive root, so it is not relayed.
+        payload = MCPErrorPayload(
+            message=f"{fn_name}: start `polylogued run` for this archive to apply this mutation",
             code=exc.code,
             error=exc.code,
             detail=type(exc).__name__,

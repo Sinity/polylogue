@@ -5,9 +5,9 @@ controller, one worker or their sum exceeded the budget the width was chosen
 against, and therefore whether the next run should be narrower or the workload
 lighter.
 
-The unit of attribution is the process group the run owns: the managed pytest
-controller leads its own group and xdist's workers inherit it, so membership
-needs no bookkeeping the run could get wrong. ``smaps_rollup`` is read rather
+The unit of attribution is the managed pytest cgroup. This includes xdist
+workers and children that detach from the controller's process group while
+remaining charged to the same memory ceiling. ``smaps_rollup`` is read rather
 than ``statm`` because workers share the controller's pages: RSS counts every
 copy, and only PSS sums across processes to something the ceiling can be
 compared against.
@@ -51,8 +51,35 @@ _ROLLUP_FIELDS: Final[dict[str, str]] = {
 _MEASURES: Final[tuple[str, ...]] = ("rss_kib", "pss_kib", "private_kib", "swap_kib")
 
 
-def _process_group_members(pgid: int, *, proc: Path) -> list[int]:
-    """Every live pid in ``pgid``, this reader's own process excluded by nature."""
+def _cgroup_members(pgid: int, *, proc: Path, cgroup_root: Path) -> list[int]:
+    """Every live pid in the process's cgroup, including detached children."""
+    try:
+        cgroup_text = (proc / "self" / "cgroup").read_text(encoding="utf-8")
+    except OSError:
+        cgroup_text = ""
+    v2_path = next((line.rpartition(":")[2] for line in cgroup_text.splitlines() if line.startswith("0::")), None)
+    if v2_path is not None:
+        procs = cgroup_root / v2_path.lstrip("/") / "cgroup.procs"
+        try:
+            return [int(pid) for pid in procs.read_text().split() if pid.isdigit()]
+        except (OSError, ValueError):
+            return []
+    memory_path = next(
+        (
+            fields[2]
+            for line in cgroup_text.splitlines()
+            if len(fields := line.split(":", 2)) == 3 and "memory" in fields[1].split(",")
+        ),
+        None,
+    )
+    if memory_path is not None:
+        procs = cgroup_root / "memory" / memory_path.lstrip("/") / "cgroup.procs"
+        try:
+            return [int(pid) for pid in procs.read_text().split() if pid.isdigit()]
+        except (OSError, ValueError):
+            return []
+    # Synthetic procfs fixtures have no cgroup file; the process-group reader
+    # keeps those deterministic while real Linux procfs uses cgroup membership.
     members: list[int] = []
     try:
         entries = list(proc.iterdir())
@@ -124,6 +151,7 @@ class ProcessGroupMemorySampler:
         *,
         interval_s: float = SAMPLE_INTERVAL_S,
         proc: Path = Path("/proc"),
+        cgroup_root: Path = Path("/sys/fs/cgroup"),
         meminfo: Path = Path("/proc/meminfo"),
         snapshot_path: Path | None = None,
         snapshot_context: Callable[[], Mapping[str, Any]] | None = None,
@@ -131,6 +159,7 @@ class ProcessGroupMemorySampler:
         self._pgid = pgid
         self._interval_s = interval_s
         self._proc = proc
+        self._cgroup_root = cgroup_root
         self._meminfo = meminfo
         self._snapshot_path = snapshot_path
         self._snapshot_context = snapshot_context
@@ -174,7 +203,7 @@ class ProcessGroupMemorySampler:
         elapsed = time.monotonic() - self._started
         totals = dict.fromkeys(_MEASURES, 0)
         readings: list[tuple[int, dict[str, int]]] = []
-        for pid in _process_group_members(self._pgid, proc=self._proc):
+        for pid in _cgroup_members(self._pgid, proc=self._proc, cgroup_root=self._cgroup_root):
             rollup = _rollup(pid, proc=self._proc)
             if rollup is None:
                 continue

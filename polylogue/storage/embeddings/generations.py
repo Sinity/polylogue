@@ -60,11 +60,13 @@ class EmbeddingGeneration:
     promoted_at_ns: int = 0
     predecessor_generation_id: str | None = None
     # These fields are part of the generation identity, rather than advisory
-    # receipt data.  A generation whose computation contract or archive
-    # inputs cannot be proved is not safe to activate or reclaim.
+    # receipt data.  A generation whose computation contract cannot be proved
+    # from its own bytes is not safe to activate or reclaim.  The contract
+    # names no source.db or index.db identity: nothing in the database proves
+    # which archive tiers produced it, and index promotion replaces index.db
+    # while this tier stays in place.  Each vector is judged against the
+    # current index by its message derivation key and content hash instead.
     recipe_hash: str = ""
-    source_generation: str = ""
-    index_generation: str = ""
     schema_version: int = EMBEDDINGS_SCHEMA_VERSION
     physical_root: str = ""
     sealed: bool = False
@@ -195,10 +197,12 @@ class EmbeddingGenerationStore:
     """Own archive-local embedding pointers and bounded rollback retention."""
 
     def __init__(self, archive_root: str | Path, *, active_path: str | Path | None = None) -> None:
-        root = Path(archive_root).expanduser().absolute()
+        # A configured symlink alias is the same archive identity; anchor all
+        # lifecycle paths to its resolved directory before ownership checks.
+        root = Path(archive_root).expanduser().resolve(strict=True)
         if not root.is_absolute():
             raise EmbeddingGenerationError("archive root must be absolute")
-        if root.is_symlink() or not root.is_dir():
+        if not root.is_dir():
             raise EmbeddingGenerationError("embedding archive root must be an owned directory")
         self.archive_root = root
         self.root = root / _GENERATIONS
@@ -269,13 +273,7 @@ class EmbeddingGenerationStore:
             raise EmbeddingGenerationError(f"malformed embedding database: {path}") from exc
 
     def _database_contract(self, path: Path, *, physical_root: Path | None = None) -> dict[str, Any]:
-        """Derive the immutable contract carried by a published database.
-
-        The database is rebuildable, but its publication must still be
-        attributable.  In particular, an otherwise valid SQLite file copied
-        from another archive must not become an active generation merely
-        because its filename looks plausible.
-        """
+        """Derive the immutable contract carried by a published database."""
         self._validate_database(path)
         try:
             with sqlite_connection(f"file:{path}?mode=ro&immutable=1", uri=True) as conn:
@@ -319,19 +317,8 @@ class EmbeddingGenerationStore:
         if len(models) > 1 or len(dimensions) > 1 or len(output_contracts) > 1:
             raise EmbeddingGenerationError("embedding membership contains mixed vector contracts")
 
-        def stable(path_value: Path) -> str:
-            try:
-                stat = path_value.stat()
-            except OSError:
-                return f"missing:{path_value.absolute()}"
-            return f"dev:{stat.st_dev}:ino:{stat.st_ino}"
-
-        index = self.archive_root / "index.db"
-        source = self.archive_root / "source.db"
         return {
             "recipe_hash": _recipe_membership(contracts),
-            "source_generation": stable(source),
-            "index_generation": stable(index),
             "schema_version": EMBEDDINGS_SCHEMA_VERSION,
             "physical_root": str((physical_root or path.parent).absolute()),
             "sealed": True,
@@ -347,7 +334,10 @@ class EmbeddingGenerationStore:
         remains.  In particular, do not unlink a WAL or SHM file ourselves:
         SQLite remains the authority for recovery and lock safety.
         """
-        if self.active_path.is_symlink() or not self.active_path.exists():
+        if self.active_path.is_symlink():
+            self.prepare_active_database_for_writer()
+            return
+        if not self.active_path.exists():
             return
         if not _regular_file(self.active_path):
             raise EmbeddingGenerationError("embedding active path is not a regular file")
@@ -413,8 +403,6 @@ class EmbeddingGenerationStore:
                 raise ValueError("invalid generation chronology")
             if (
                 not generation.recipe_hash
-                or not generation.source_generation
-                or not generation.index_generation
                 or generation.schema_version != EMBEDDINGS_SCHEMA_VERSION
                 or Path(generation.physical_root) != expected_dir
                 or not _under(self.root, Path(generation.physical_root))
@@ -435,8 +423,6 @@ class EmbeddingGenerationStore:
             actual_contract = self._database_contract(expected_db, physical_root=expected_db.parent)
             for field in (
                 "recipe_hash",
-                "source_generation",
-                "index_generation",
                 "schema_version",
                 "physical_root",
                 "sealed",
@@ -768,7 +754,9 @@ class EmbeddingGenerationStore:
             raise EmbeddingGenerationError("embedding replacement candidate must be an archive-local regular file")
         if candidate == self.active_path or candidate.resolve(strict=False) == self.active_path.resolve(strict=False):
             raise EmbeddingGenerationError("embedding replacement candidate cannot be the active database")
-        self._validate_database(candidate)
+        # Validate the entire semantic contract before creating a gen-* child;
+        # a rejected mixed candidate must not poison subsequent inventory reads.
+        candidate_contract = self._database_contract(candidate)
         with self._lock():
             generations = self._generations()
             self._validate_receipts(generations)
@@ -779,13 +767,29 @@ class EmbeddingGenerationStore:
             now = self._next_ns()
             generation_id = f"gen-{now}-{uuid.uuid4().hex[:10]}"
             destination = self.root / generation_id / "embeddings.db"
+            owner = owner_id or uuid.uuid4().hex
+            if not _OWNER.fullmatch(owner):
+                raise EmbeddingGenerationError("embedding owner identity is invalid")
             destination.parent.mkdir(parents=True, exist_ok=False)
             shutil.copyfile(candidate, destination)
             _fsync_file(destination)
             _fsync_dir(destination.parent)
-            owner = owner_id or uuid.uuid4().hex
-            if not _OWNER.fullmatch(owner):
-                raise EmbeddingGenerationError("embedding owner identity is invalid")
+            try:
+                destination_contract = self._database_contract(destination, physical_root=destination.parent)
+                if any(
+                    candidate_contract[field] != destination_contract[field]
+                    for field in (
+                        "recipe_hash",
+                        "schema_version",
+                        "sealed",
+                        "membership_digest",
+                    )
+                ):
+                    raise EmbeddingGenerationError("embedding replacement candidate changed while staging")
+            except BaseException:
+                shutil.rmtree(destination.parent)
+                _fsync_dir(self.root)
+                raise
             generation = EmbeddingGeneration(
                 generation_id,
                 str(self.archive_root),
@@ -794,7 +798,7 @@ class EmbeddingGenerationStore:
                 "promoting",
                 now,
                 predecessor_generation_id=current.generation_id if current else None,
-                **self._database_contract(destination, physical_root=destination.parent),
+                **destination_contract,
             )
             self._write_generation(generation)
             _fsync_dir(self.root)

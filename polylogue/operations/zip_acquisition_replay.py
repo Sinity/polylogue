@@ -20,7 +20,7 @@ from polylogue.config import Source
 from polylogue.core.content_identity import STRUCTURAL_IDENTITY_MAX_BYTES, bounded_payload_content_identity
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.raw_coordinates import MemberAddressingMode
-from polylogue.core.sources import provider_from_origin
+from polylogue.core.sources import origin_provider_fiber
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
     replay_zip_entry_acquisition_payloads,
@@ -221,7 +221,13 @@ def zip_reacquisition_payload(
             if candidates is None:
                 provider = Provider.from_string(str(row.get("capture_mode") or ""))
                 if provider is Provider.UNKNOWN:
-                    provider = provider_from_origin(Origin.from_string(str(row.get("origin") or "")))
+                    # Recover the provider from the origin only when that
+                    # origin names exactly one provider; a non-injective
+                    # origin (AI Studio/Drive) must not be guessed.
+                    fiber = origin_provider_fiber(Origin.from_string(str(row.get("origin") or "")))
+                    if len(fiber) != 1:
+                        return None, "replay_provider_unrecorded"
+                    provider = fiber[0]
                 context = ZipEntryReadContext(
                     source=Source(name=provider.value, path=zip_path.parent),
                     zip_path=zip_path,

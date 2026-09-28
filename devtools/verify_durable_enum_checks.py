@@ -112,8 +112,23 @@ def scan_ddl_for_enum_membership_checks(
     directly, instead of temporarily corrupting the real tier DDL.
     """
     resolved = _reachable_enums() if enums_by_members is None else enums_by_members
+    # SQL comments and membership predicates in indexes/views are not table
+    # CHECK constraints. Strip comments first, then inspect balanced CHECK bodies.
+    executable = re.sub(r"--[^\n]*|/\*.*?\*/", " ", ddl, flags=re.DOTALL)
+    checks: list[str] = []
+    for marker in re.finditer(r"\bCHECK\s*\(", executable, re.IGNORECASE):
+        depth = 1
+        end = marker.end()
+        while end < len(executable) and depth:
+            if executable[end] == "(":
+                depth += 1
+            elif executable[end] == ")":
+                depth -= 1
+            end += 1
+        if depth == 0:
+            checks.append(executable[marker.end() : end - 1])
     violations: list[EnumCheckViolation] = []
-    for match in _MEMBERSHIP.finditer(ddl):
+    for match in (match for check_body in checks for match in _MEMBERSHIP.finditer(check_body)):
         column, body = match.group(1), match.group(2)
         literals = _STRING_LITERAL.findall(body)
         if not literals:
@@ -148,6 +163,19 @@ def _collect_durable_tier_violations() -> list[EnumCheckViolation]:
     violations: list[EnumCheckViolation] = []
     for tier, ddl in _durable_tier_ddl():
         violations.extend(scan_ddl_for_enum_membership_checks(ddl, tier=tier, enums_by_members=enums_by_members))
+        # Grandfathering applies only to literal SQL written into DDL. A
+        # generated helper call is a policy violation even if it renders the
+        # same historical column and member set.
+        module = __import__(f"polylogue.storage.sqlite.archive_tiers.{tier}", fromlist=["__file__"])
+        module_file = module.__file__
+        if module_file is None:
+            raise RuntimeError(f"module polylogue.storage.sqlite.archive_tiers.{tier} has no __file__")
+        with open(module_file, encoding="utf-8") as source_file:
+            source = source_file.read()
+        for _waived_tier, column, _members in GRANDFATHERED:
+            if _waived_tier == tier and re.search(rf"\b(?:nullable_)?check\(\s*['\"]{re.escape(column)}['\"]", source):
+                enum_name = enums_by_members.get(_members, "unknown")
+                violations.append(EnumCheckViolation(tier, column, enum_name, tuple(sorted(_members))))
     return violations
 
 

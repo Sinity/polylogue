@@ -22,6 +22,7 @@ import uuid
 from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Set
 from contextlib import closing, contextmanager, nullcontext, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass, fields
 from itertools import chain, islice
 from pathlib import Path
@@ -6238,6 +6239,7 @@ def _write_parent_links(
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> None:
     source = messages.messages if isinstance(messages, _MessageTail) else messages
+    updates = _ParentLinkUpdates(conn)
     if isinstance(source, SqliteMessageSink):
         disk_index = _DiskMessageEventIndex(source.path.parent)
         try:
@@ -6260,19 +6262,17 @@ def _write_parent_links(
                 if parent_message_id is None and message.parent_message_position is not None:
                     parent_message_id = disk_index.boundary_message_id(message.parent_message_position)
                 if parent_message_id is not None:
-                    conn.execute(
-                        "UPDATE messages SET parent_message_id = ? WHERE message_id = ?",
-                        (
-                            parent_message_id,
-                            _message_id(
-                                session_id,
-                                message,
-                                fallback_position,
-                                content_identities=content_identities,
-                                duplicate_native_ids=duplicate_native_ids,
-                            ),
+                    updates.add(
+                        parent_message_id,
+                        _message_id(
+                            session_id,
+                            message,
+                            fallback_position,
+                            content_identities=content_identities,
+                            duplicate_native_ids=duplicate_native_ids,
                         ),
                     )
+            updates.flush()
         finally:
             disk_index.close()
         return
@@ -6306,23 +6306,43 @@ def _write_parent_links(
             parent_message_id = by_message_position.get(message.parent_message_position)
         if parent_message_id is None:
             continue
-        conn.execute(
-            """
-            UPDATE messages
-            SET parent_message_id = ?
-            WHERE message_id = ?
-            """,
-            (
-                parent_message_id,
-                _message_id(
-                    session_id,
-                    message,
-                    fallback_position,
-                    content_identities=content_identities,
-                    duplicate_native_ids=duplicate_native_ids,
-                ),
+        updates.add(
+            parent_message_id,
+            _message_id(
+                session_id,
+                message,
+                fallback_position,
+                content_identities=content_identities,
+                duplicate_native_ids=duplicate_native_ids,
             ),
         )
+    updates.flush()
+
+
+class _ParentLinkUpdates:
+    """Parent-link updates applied in bounded ``executemany`` batches.
+
+    One statement per message was a Python-to-SQLite round trip per row on
+    the writer; each message's update is independent of every other's, so
+    batching changes only the cost, and the batch bound keeps memory flat
+    for a whale session.
+    """
+
+    _BATCH = 4096
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        self._rows: list[tuple[str, str]] = []
+
+    def add(self, parent_message_id: str, message_id: str) -> None:
+        self._rows.append((parent_message_id, message_id))
+        if len(self._rows) >= self._BATCH:
+            self.flush()
+
+    def flush(self) -> None:
+        if self._rows:
+            self._conn.executemany("UPDATE messages SET parent_message_id = ? WHERE message_id = ?", self._rows)
+            self._rows = []
 
 
 @dataclass(frozen=True, slots=True)
@@ -9819,6 +9839,29 @@ def _bulk_fts_session_guard(
         )
 
 
+_REEXTRACTED_PREFIX_BLOCK_SINK: ContextVar[Callable[[str, int, str], None] | None] = ContextVar(
+    "polylogue_reextracted_prefix_block_sink", default=None
+)
+
+
+@contextmanager
+def report_reextracted_prefix_blocks(sink: Callable[[str, int, str], None]) -> Iterator[None]:
+    """Stream text blocks a late parent removes from an earlier child's rows to ``sink``.
+
+    A child written before its parent was stored whole, so its accepted marker
+    carrier already holds candidates for the replayed prefix under the
+    child's own message ids. When this write re-extracts the child to its
+    tail, those blocks' canonical owner becomes the parent. Each removed
+    ``(message_id, position, text)`` row is handed to ``sink`` as it is read,
+    so the caller retains only what it derives, never the prefix text.
+    """
+    previous = _REEXTRACTED_PREFIX_BLOCK_SINK.set(sink)
+    try:
+        yield
+    finally:
+        _REEXTRACTED_PREFIX_BLOCK_SINK.reset(previous)
+
+
 def _reextract_prefix_tail_db(
     conn: sqlite3.Connection,
     child_session_id: str,
@@ -10026,6 +10069,15 @@ def _reextract_prefix_tail_db(
         prefix_message_ids=prefix_message_ids,
     )
     record_substage("provider_usage_tail", t0)
+    retired_block_sink = _REEXTRACTED_PREFIX_BLOCK_SINK.get()
+    if retired_block_sink is not None:
+        retired_placeholders = ",".join("?" for _ in prefix_message_ids)
+        for row in conn.execute(
+            f"SELECT message_id, position, text FROM blocks "
+            f"WHERE message_id IN ({retired_placeholders}) AND text IS NOT NULL",
+            tuple(prefix_message_ids),
+        ):
+            retired_block_sink(str(row[0]), int(row[1]), str(row[2]))
     t0 = time.perf_counter()
     with _bulk_fts_session_guard(conn, child_session_id, enabled=bulk_fts, bulk_build=bulk_build):
         if k == len(child_composed):

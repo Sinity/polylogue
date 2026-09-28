@@ -4,10 +4,31 @@ import click
 import pytest
 
 from polylogue.cli.machine_main import run_machine_entry
+from polylogue.cli.operation_kernel import OperationUnavailableError
 from polylogue.core.errors import DatabaseError
 from tests.infra.json_contracts import json_object, parse_json_object
 
 TRACEBACK_SENTINEL = "Traceback (most recent call last)"
+
+
+def test_daemon_required_envelope_preserves_resolved_archive_root(capsys: pytest.CaptureFixture[str]) -> None:
+    """Machine refusal retains the archive route already resolved by dispatch.
+
+    Anti-vacuity: dropping ``OperationUnavailableError.archive_root`` leaves
+    multi-archive clients unable to select the archive the daemon must serve.
+    """
+
+    def unavailable(*, standalone_mode: bool = False) -> None:
+        del standalone_mode
+        raise OperationUnavailableError("start daemon", operation="archive.facets", archive_root="/archives/old")
+
+    with pytest.raises(SystemExit) as exc_info:
+        run_machine_entry(unavailable, ["facets", "--format", "json"])
+
+    assert exc_info.value.code == 2
+    parsed = parse_json_object(capsys.readouterr().out, context="machine stdout")
+    details = json_object(parsed["details"], context="details")
+    assert details["archive_root"] == "/archives/old"
 
 
 def test_run_machine_entry_plain_polylogue_error_emits_click_style_error(

@@ -24,9 +24,9 @@ from typing import Any
 
 from devtools.verify_runs import (
     ABANDONED_DIAGNOSIS,
-    VERIFY_HISTORY_PATH,
     VERIFY_RUNS_DIR,
     reconcile_and_record_abandoned_verify_runs,
+    verify_history_path,
 )
 
 __all__ = ["main"]
@@ -115,8 +115,14 @@ _EXPLANATIONS: dict[str, Explanation] = {
         "(systemd-oomd, a hard cancel, a lost host), which no in-process handler can catch. "
         "This receipt was closed out from outside it, so its steps report what had finished, "
         "not what the run would have concluded.",
-        "Read the 'ended:' line above for the killer AgentCTL recorded; the receipt holds it, so "
-        "there is nothing to look up. Rerun the tier once the named cause is addressed.",
+        "If an 'ended:' line is present, use its recorded cause. If no ending was attributed, check the run and AgentCTL job records "
+        "for its cause. Rerun the tier once the cause is addressed.",
+    ),
+    "oom_killed": Explanation(
+        "systemd-oomd killed the queued pytest unit because its pool stayed under memory pressure. "
+        "oomd chooses by pressure, not size, so the killed run need not be the one that used the memory; "
+        "the step's 'ended:' line names the unit.",
+        "Check the pool's other runs at that time, then rerun. If this run grows, narrow the selection or its -n.",
     ),
     "checkout_import_mismatch": Explanation(
         "The resolved polylogue package was outside the checkout being verified.",
@@ -165,7 +171,18 @@ def _latest_run(runs_dir: Path) -> Path | None:
     candidates = [path for path in runs_dir.glob("*/run.json") if path.is_file()]
     if not candidates:
         return None
-    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+    def ordering(path: Path) -> tuple[str, float]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            started = payload.get("started_at") if isinstance(payload, dict) else None
+            if isinstance(started, str) and started:
+                return started, path.stat().st_mtime
+        except (OSError, json.JSONDecodeError):
+            pass
+        return "", path.stat().st_mtime
+
+    return max(candidates, key=ordering)
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -206,17 +223,9 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
     # How the process ended, when something outside it decided that. Without
     # this line an oom-kill, a cancel and an operation timeout all render as
     # one undifferentiated abandonment (polylogue-yk0zz).
-    reason = payload.get("termination_reason")
-    killer = payload.get("termination_killer")
-    if isinstance(reason, str) and reason or isinstance(killer, str) and killer:
-        parts = [str(reason)] if isinstance(reason, str) and reason else []
-        if isinstance(killer, str) and killer and killer != reason:
-            parts.append(f"systemd recorded {killer}")
-        line = f"  ended: {'; '.join(parts)}"
-        unit = payload.get("termination_unit")
-        if isinstance(unit, str) and unit:
-            line += f" (unit {unit})"
-        print(line, file=stream)
+    ending = _ending(payload)
+    if ending is not None:
+        print(f"  ended: {ending}", file=stream)
 
     diagnosis = payload.get("diagnosis") or payload.get("checkout_diagnosis")
     if diagnosis:
@@ -226,7 +235,15 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
             print("  (no recorded explanation for this diagnosis -- reporting it verbatim)", file=stream)
         else:
             print(f"  cause : {explanation.cause}", file=stream)
-            print(f"  do    : {explanation.remedy}", file=stream)
+            remedy = explanation.remedy
+            if diagnosis == ABANDONED_DIAGNOSIS and not (
+                payload.get("termination_reason") or payload.get("termination_killer")
+            ):
+                remedy = (
+                    "No ending was attributed to this run. Check the run and AgentCTL job records for its cause, "
+                    "then rerun the tier once the cause is addressed."
+                )
+            print(f"  do    : {remedy}", file=stream)
 
     selection = payload.get("testmon_selection")
     if isinstance(selection, dict):
@@ -268,6 +285,11 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
             print(
                 f"  - {step.get('step_id')} exit={step.get('exit')} {step.get('diagnosis') or ''}".rstrip(), file=stream
             )
+            # A queued pytest step records what ended its unit on the step:
+            # the run itself survived to write the receipt.
+            step_ending = _ending(step)
+            if step_ending is not None:
+                print(f"      ended: {step_ending}", file=stream)
             output_path = step.get("output_path")
             if isinstance(output_path, str) and Path(output_path).is_file():
                 tail = Path(output_path).read_text(encoding="utf-8", errors="replace").strip().splitlines()[-8:]
@@ -277,6 +299,22 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
     artifact_dir = payload.get("artifact_dir")
     if artifact_dir:
         print(f"\nartifacts: {artifact_dir}", file=stream)
+
+
+def _ending(record: Mapping[str, Any]) -> str | None:
+    """How something outside the run ended it, or ``None`` when nothing did."""
+    reason = record.get("termination_reason")
+    killer = record.get("termination_killer")
+    if not (isinstance(reason, str) and reason or isinstance(killer, str) and killer):
+        return None
+    parts = [str(reason)] if isinstance(reason, str) and reason else []
+    if isinstance(killer, str) and killer and killer != reason:
+        parts.append(f"systemd recorded {killer}")
+    ending = "; ".join(parts)
+    unit = record.get("termination_unit")
+    if isinstance(unit, str) and unit:
+        ending += f" (unit {unit})"
+    return ending
 
 
 def _aggregate(entry: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -306,9 +344,10 @@ def _history_projection(entry: Mapping[str, Any]) -> dict[str, Any]:
 def _history_rows(hours: float) -> list[dict[str, Any]]:
     cutoff = datetime.now(UTC) - timedelta(hours=hours)
     rows: list[dict[str, Any]] = []
-    if not VERIFY_HISTORY_PATH.exists():
+    history_path = verify_history_path()
+    if not history_path.exists():
         return rows
-    with VERIFY_HISTORY_PATH.open(encoding="utf-8") as handle:
+    with history_path.open(encoding="utf-8") as handle:
         for line in handle:
             try:
                 entry = json.loads(line)
@@ -322,6 +361,10 @@ def _history_rows(hours: float) -> list[dict[str, Any]]:
 
 def _render_history_json(hours: float, stream: Any) -> int:
     """Emit one stable JSON document suitable for rerunnable measurements."""
+    history_path = verify_history_path()
+    if not history_path.exists():
+        print(f"why: no run history at {history_path}", file=sys.stderr)
+        return 1
     rows = _history_rows(hours)
     json.dump([_history_projection(entry) for entry in rows], stream, indent=2, sort_keys=True)
     stream.write("\n")
@@ -336,8 +379,9 @@ def _render_history(hours: float, stream: Any) -> int:
     own cadence and was 17 hours stale when it mattered. The history file is
     current by construction.
     """
-    if not VERIFY_HISTORY_PATH.exists():
-        print(f"why: no run history at {VERIFY_HISTORY_PATH}", file=sys.stderr)
+    history_path = verify_history_path()
+    if not history_path.exists():
+        print(f"why: no run history at {history_path}", file=sys.stderr)
         return 1
     rows = _history_rows(hours)
 

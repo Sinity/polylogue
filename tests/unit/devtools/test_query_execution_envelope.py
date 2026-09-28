@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -9,11 +10,29 @@ import pytest
 import devtools.query_execution_envelope as envelope_module
 from devtools.query_execution_envelope import (
     ResourceProbeUnavailableError,
+    ResourceSample,
     _parse_proc_memory,
     _proc_memory,
     _temp_used_bytes,
     measure_query_envelope,
 )
+
+
+def test_concurrent_peak_observations_keep_every_independent_maximum() -> None:
+    """Concurrent updates retain each dimension's maximum, even from different samples."""
+    peak = envelope_module._ResourcePeak(ResourceSample(0, 0, 0, 0))
+    samples = [
+        ResourceSample(100, 10, 1, 4),
+        ResourceSample(20, 200, 2, 3),
+        ResourceSample(30, 30, 300, 2),
+        ResourceSample(40, 40, 4, 400),
+    ]
+    with ThreadPoolExecutor(max_workers=len(samples)) as pool:
+        list(pool.map(peak.observe, samples))
+
+    assert peak.snapshot() == ResourceSample(100, 200, 300, 400), (
+        "each dimension must retain its maximum even when another sample peaks elsewhere"
+    )
 
 
 def test_proc_memory_is_nonnegative() -> None:
@@ -23,8 +42,9 @@ def test_proc_memory_is_nonnegative() -> None:
     assert swap >= 0
 
 
-def test_temp_usage_missing_path_is_zero(tmp_path: Path) -> None:
-    assert _temp_used_bytes(tmp_path / "missing") == 0
+def test_temp_usage_missing_path_is_unmeasured(tmp_path: Path) -> None:
+    with pytest.raises(envelope_module.TempProbeUnavailableError):
+        _temp_used_bytes(tmp_path / "missing")
 
 
 def test_parse_proc_memory_reads_every_declared_field() -> None:
@@ -138,3 +158,96 @@ async def test_measure_query_envelope_fails_when_declared_rss_is_exceeded(
 
     assert receipt["status"] == "failed"
     assert receipt["absolute_checks"]["rss"] is False
+
+
+async def test_active_generation_is_pinned_for_open_and_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The opened DB and reported size must both name the promoted generation."""
+    active = tmp_path / ".index-generations" / "gen-active" / "index.db"
+    active.parent.mkdir(parents=True)
+    active.write_bytes(b"active-generation")
+    (tmp_path / "index.db").write_bytes(b"stale-shadow")
+    monkeypatch.setattr(envelope_module, "resolve_active_index_path", lambda _root: active)
+    opened: list[Path] = []
+
+    class FakeEnvelope:
+        def model_dump(self, *, mode: str) -> dict[str, object]:
+            return {"items": []}
+
+    class FakePolylogue:
+        def __init__(self, *, archive_root: Path, db_path: Path) -> None:
+            opened.append(db_path)
+
+        async def __aenter__(self) -> FakePolylogue:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def query_units(self, _expression: str, *, limit: int) -> FakeEnvelope:
+            return FakeEnvelope()
+
+    monkeypatch.setattr(envelope_module, "Polylogue", FakePolylogue)
+    monkeypatch.setattr(envelope_module, "_proc_memory", lambda: (100, 80, 0))
+    monkeypatch.setattr(envelope_module, "_temp_used_bytes", lambda _root: 100)
+    receipt = await measure_query_envelope(
+        tmp_path,
+        warmup=0,
+        baseline_rounds=1,
+        sample_interval_s=0,
+        max_rss_bytes=100,
+        max_pss_bytes=80,
+        max_swap_growth_bytes=0,
+        max_temp_growth_bytes=0,
+    )
+    assert opened == [active.resolve()]
+    assert receipt["archive_generation"] == "gen-active"
+
+
+async def test_background_probe_failure_is_not_lost(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed between-round sample blocks success even if later probes work."""
+    import asyncio
+
+    (tmp_path / "index.db").write_bytes(b"index")
+    calls = 0
+
+    class FakeEnvelope:
+        def model_dump(self, *, mode: str) -> dict[str, object]:
+            return {"items": []}
+
+    class FakePolylogue:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> FakePolylogue:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def query_units(self, _expression: str, *, limit: int) -> FakeEnvelope:
+            await asyncio.sleep(0.005)
+            return FakeEnvelope()
+
+    def probe() -> tuple[int, int, int]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ResourceProbeUnavailableError("transient procfs read failure")
+        return 100, 80, 0
+
+    monkeypatch.setattr(envelope_module, "Polylogue", FakePolylogue)
+    monkeypatch.setattr(envelope_module, "_proc_memory", probe)
+    monkeypatch.setattr(envelope_module, "_temp_used_bytes", lambda _root: 100)
+    with pytest.raises(ResourceProbeUnavailableError, match="background resource sample failed"):
+        await measure_query_envelope(
+            tmp_path,
+            warmup=0,
+            baseline_rounds=1,
+            sample_interval_s=0.001,
+            max_rss_bytes=100,
+            max_pss_bytes=80,
+            max_swap_growth_bytes=0,
+            max_temp_growth_bytes=0,
+        )

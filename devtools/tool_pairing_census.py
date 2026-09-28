@@ -17,6 +17,7 @@ census reporting that the taxonomy is incomplete, not a rounding error.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 import time
@@ -306,11 +307,12 @@ def _source_states(
         if has_raw_sessions is None:
             return {session_id: SourceState(SOURCE_UNCHECKED, COMPLETION_UNKNOWN) for session_id in sessions}
         mtime_expression = "file_mtime_ms" if "file_mtime_ms" in raw_session_columns else "NULL"
+        path_expression = "source_path" if "source_path" in raw_session_columns else "NULL"
         for session_id in sessions:
             origin, _, native_id = session_id.partition(":")
             row = conn.execute(
                 f"""
-                SELECT blob_hash, acquired_at_ms, {mtime_expression}
+                SELECT blob_hash, acquired_at_ms, {mtime_expression}, {path_expression}
                 FROM raw_sessions
                 WHERE origin = ? AND native_id = ?
                 ORDER BY acquired_at_ms DESC
@@ -321,9 +323,15 @@ def _source_states(
             if row is None:
                 states[session_id] = SourceState(SOURCE_RECORD_ABSENT, COMPLETION_UNKNOWN)
                 continue
-            blob_hash, acquired_at_ms, file_mtime_ms = row
+            blob_hash, acquired_at_ms, file_mtime_ms, source_path = row
             completion = COMPLETION_UNKNOWN
-            if isinstance(acquired_at_ms, int) and isinstance(file_mtime_ms, int):
+            current_mtime_ms = None
+            if isinstance(source_path, str) and source_path:
+                with contextlib.suppress(OSError):
+                    current_mtime_ms = int(Path(source_path).stat().st_mtime * 1000)
+            if isinstance(current_mtime_ms, int) and isinstance(acquired_at_ms, int):
+                completion = COMPLETION_SUPERSEDED if current_mtime_ms > acquired_at_ms else COMPLETION_SETTLED
+            elif isinstance(acquired_at_ms, int) and isinstance(file_mtime_ms, int):
                 completion = COMPLETION_SUPERSEDED if file_mtime_ms > acquired_at_ms else COMPLETION_SETTLED
             presence = SOURCE_PRESENT
             if blob_root is not None and isinstance(blob_hash, (bytes, bytearray)):
@@ -493,15 +501,14 @@ def build_report(args: CensusArgs) -> dict[str, object]:
             for offset in range(0, len(event_sessions), 900):
                 chunk = event_sessions[offset : offset + 900]
                 marks = ",".join("?" for _ in chunk)
-                event_rows = conn.execute(
-                    f"""
+                sql = f"""
                     SELECT session_id, payload_json
                     FROM session_events
-                    WHERE event_type IN ('claude_tool_result_sidecar', 'gemini_cli_tool_output_sidecar')
+                    WHERE event_type IN ('claude_tool_result_sidecar', 'gemini_cli_tool_output_sidecar', 'hook_tool_response_recovery')
                       AND session_id IN ({marks})
-                    """,
-                    chunk,
-                )
+                    """
+                event_rows, timing = _timed(conn, "session_event_sidecar_ownership", sql, chunk)
+                queries.append(timing)
                 for session_id, payload_json in event_rows:
                     try:
                         payload = json.loads(str(payload_json))

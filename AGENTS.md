@@ -1,21 +1,20 @@
 # Polylogue
 
-Polylogue is a local, single-writer archive for AI coding/chat sessions —
-Claude (web + Code), ChatGPT, Codex, Gemini/Drive, Antigravity, Hermes — that
-ingests heterogeneous exports and live captures into a split SQLite file set,
-derives rich read models, and serves them through a query-first CLI, an MCP
-server, a Python API, and an HTTP daemon. Pure Python.
+Polylogue is a local, single-writer archive of AI coding and chat sessions
+(Claude web and Code, ChatGPT, Codex, Gemini and Drive, Antigravity, Hermes).
+It ingests heterogeneous exports and live captures into a set of SQLite files,
+derives read models, and serves them through a query-first CLI, an MCP server,
+a Python API, and an HTTP daemon. Pure Python.
 
-This file carries repository semantics only. Task authority is external
-(`bd` redirects outside the checkout); generic workspace/job/publication
-mechanics are environment-level concerns, not Polylogue's.
+This file holds repository semantics. Tasks live in external Beads (`bd`
+redirects outside the checkout); job, worktree, and publication mechanics are
+environment-level.
 
 ## Public boundary
 
-Treat tracked content, commits, CI logs, and PR/review text as public. Never
+Tracked content, commits, CI logs, and PR and review text are public. Never
 commit operator archives, transcripts, private exports, local databases,
-receipts, or scratch state; tests use neutral synthetic fixtures. Review the
-complete staged diff before publication.
+receipts, or scratch state. Tests use neutral synthetic fixtures.
 
 ## Orientation
 
@@ -26,174 +25,186 @@ sources/ ─detect→ pipeline/ ─hash+write→ storage/{6 tiers} ─materializ
                             verification:   devtools/  tests/  schemas/
 ```
 
-New semantics go into the substrate (`storage`/`analysis`) or product layer
-first; surfaces adapt through `analysis`/`operations`/`api`. Surface→substrate
-imports are a ratchet enforced by `devtools gate layering` (baseline may
-shrink, never grow); substrate→surface imports are forbidden outright.
+New semantics go into the substrate (`storage`, `analysis`) or the product
+layer first; surfaces adapt through `analysis`, `operations`, or `api`.
+Surface-to-substrate imports are a ratchet (`devtools gate layering`: the
+baseline may shrink, never grow); substrate-to-surface imports are forbidden.
 
-## Identity and content model
+Before a storage, daemon, MCP, source, or query change, read its
+`docs/atlas/` sheet and confirm the claims you rely on against current code.
 
-Sessions → messages → blocks are `STRICT`. IDs are generated from source
-identity. A message uses a provider-native ID when present; otherwise its ID
-uses a digest of its own declared semantic fields plus an occurrence counter,
-never its ordinal position. This prevents an export insertion from silently
-reassigning a durable `user.db` reference. `messages.material_origin` is
-independent of role. `blocks.tool_outcome` is the structural outcome; a
-deliberate `unknown` is not success. See `pipeline/ids.py` and
-`docs/atlas/storage.md` for the exact formulas and field partition.
+## Identity and content
 
-**Lineage**: forks/resumes/subagents/compaction physically replay the parent's
-prefix; the writer stores only the child's divergent tail +
-`branch_point_message_id` + inheritance mode; reads recompose.
-`branch_point_message_id` is deliberately not an FK (parent full-replace must
-not null it). `session_links` is also the topology-edge table, persisting
-parser-asserted parent references resolved on each save through
-`write_parsed_session_to_archive` — the single choke point shared by live
-ingest and full replay/reindex.
+- Sessions, messages, and blocks are `STRICT` tables whose IDs are generated
+  from source identity. A message uses its provider-native ID when present;
+  otherwise a digest of its declared semantic fields plus an occurrence
+  counter, never its position, so an export that gains a message cannot
+  re-point a durable `user.db` reference. Formulas and the field partition are
+  in `pipeline/ids.py` and `docs/atlas/storage.md`.
+- `messages.material_origin` records who authored the content, independent of
+  role. `blocks.tool_outcome` is the structural outcome; a deliberate
+  `unknown` is never success.
+- Lineage: forks, resumes, subagents, and compaction replay the parent's
+  prefix. The writer stores only the child's divergent tail, its
+  `branch_point_message_id` (deliberately not a foreign key, so a parent's
+  full replace cannot null it), and the inheritance mode; reads recompose.
+  `session_links` also holds parser-asserted topology edges, resolved on every
+  save by `write_parsed_session_to_archive`, the one write path shared by live
+  ingest and replay.
+- Archive writes are idempotent by content hash (SHA-256 over the
+  NFC-normalized payload, excluding user metadata, so tagging never
+  re-imports). `pipeline/ids.py` declares which parser fields are hashed and
+  why each excluded field is excluded.
 
-## Six storage tiers (durability is the axis)
+## Storage tiers
 
-| Tier | durability | holds |
-| --- | --- | --- |
-| `source.db` | durable | raw acquired bytes, artifact taxonomy, blob/GC substrate, hook events, sidecars |
-| `index.db` | rebuildable | parsed tree, FTS, links, costs, materialized insights |
-| `embeddings.db` | expensive to rebuild | vectors, meta, status; vectors are repurchased, never replayed, so no product route replaces this tier |
-| `user.db` | durable, irreplaceable | unified `assertions`, settings, annotation schemas/provenance |
-| `audit.db` | durable, continuity-chained | previews, authorizations, attempts, continuity |
-| `ops.db` | disposable | cursors, attempts, convergence debt, daemon telemetry |
+| Tier            | Durability                  | Holds                                                                        |
+| --------------- | --------------------------- | ---------------------------------------------------------------------------- |
+| `source.db`     | durable                     | raw acquired bytes, artifact taxonomy, blob and GC substrate, hooks, sidecars |
+| `index.db`      | rebuildable                 | parsed tree, FTS, links, costs, materialized insights                         |
+| `embeddings.db` | expensive to rebuild        | vectors and their status; repurchased, never replayed, so no product route replaces this tier |
+| `user.db`       | durable, irreplaceable      | assertions, settings, annotation schemas and provenance                       |
+| `audit.db`      | durable, continuity-chained | previews, authorizations, attempts, continuity                                |
+| `ops.db`        | disposable                  | cursors, attempts, convergence debt, daemon telemetry                         |
 
-A mutable SQLite source is the one material that is not its own bytes: a
-declared database member is retained as the canonical logical export of its
-declared `logical_tables` (`sources/sqlite_export.py`), and that export's blob
-hash is the member's logical revision. A page image cannot be proven against a
-live database and re-snapshots on every commit.
+- Rebuildable state is never the authority for a durable mutation.
+- A mutable SQLite source is retained as the canonical logical export of its
+  declared `logical_tables` (`sources/sqlite_export.py`); that export's blob
+  hash is its revision. A page image cannot be proven against a live database.
+- The fresh archive format starts every tier at `PRAGMA user_version=1`.
+  Earlier Polylogue state is moved aside intact as salvage evidence only: no
+  migration, import, readback, or rollback. Explicitly declared external
+  source files may be ingested into the empty archive.
+- Later durable-tier changes (`source`, `user`, `audit`) are additive numbered
+  migrations under `storage/sqlite/migrations/`, one step at a time. Derived
+  tiers have no migration chain. For `index` and `ops`,
+  `archive_tiers/schema_identity.py` stamps an identity over their DDL plus
+  the lowering, materializer, and replay-routing fingerprints, every open
+  compares it, and a mismatch is a typed `SchemaSkew` resolved by
+  reconvergence through the daemon. `embeddings` carries no schema identity;
+  its DDL is versioned by `EMBEDDINGS_SCHEMA_VERSION`. Classify a schema
+  change before editing: metadata-only, index-only, additive-derived,
+  additive-durable, or semantic-reparse.
+- Those fingerprints are AST closures over imported source, so an ordinary
+  code edit (even a pure performance change) can move the derived identity;
+  comments cannot. Check membership on the candidate with
+  `devtools schema closure <file>`, and land every closure change before a
+  rebuild starts.
+- Durable DDL carries no enum-generated `CHECK (col IN …)`; vocabulary
+  membership is validated at the write boundary (`require_vocabulary` in
+  `archive_tiers/common.py`), so a new vocabulary member is not a migration.
 
-Never use rebuildable state as authority for durable mutation. Archive writes are
-idempotent by content hash (SHA-256 over NFC-normalized payload, excluding
-user metadata — tagging never re-imports). The parser-side hash vocabulary is
-declared and exhaustively partitioned in `pipeline/ids.py`: semantic session,
-message, and block fields are hashed; parser-only coordinates, provider
-signatures, and independently-owned usage/timing/cost measurements are
-excluded with reasons.
+## Correctness over repair
 
-**Schema regimes**: the fresh archive format starts all six tier files at
-`PRAGMA user_version=1`. Move previous Polylogue state aside intact solely as
-salvage evidence. Do not migrate, import, carry forward, roll back to, or read
-back from it. External source files explicitly declared for intake may be
-ingested into the empty archive.
+Derived read models converge from durable evidence; there is no repair
+product. A failure is either explicit and retryable or a typed permanent
+refusal. When a broken state appears, find the code that produces it: remove
+a repair or maintenance path whose producer is gone, and enforce the missing
+invariant at the write boundary where the producer remains. Compatibility,
+legacy, deprecated, and transitional shapes are removal targets: enumerate
+their readers and writers and give each a replacement path.
 
-Durable tiers (`source`, `user`, `audit`) may evolve in later formats by
-additive numbered migrations under `storage/sqlite/migrations/`, one step at a
-time. That future policy does not apply to the
-fresh start. Derived tiers (`index`, `embeddings`, `ops`) have no version
-migration chain. `storage/sqlite/archive_tiers/schema_identity.py` stamps an
-identity over their DDL and the lowering, materializer and replay-routing
-fingerprints; each open compares it and reports a typed `SchemaSkew` on
-mismatch. Recovery is reconvergence through the production daemon. Classify
-schema changes before editing: metadata-only, index-only, additive-derived,
-additive-durable, or semantic-reparse.
+An arbitrary limit that changes an outcome is a defect: a size or count cap
+that refuses, truncates, or drops valid input, and a timeout that turns slow
+but valid work into a failure, a skip, or a partial result. Bound memory by
+streaming or paging, and bound waiting by progress or cancellation, instead.
+Only a real physical limit (such as SQLite's maximum value length) justifies
+refusal, and that refusal is typed and visible, never silent.
 
-**Derived identity also moves on ordinary code edits, not just DDL.** The lowering, materializer and replay-routing fingerprints are AST closures over imported source, so a pure-performance change touching no schema can still move the identity. The closure follows the current import graph, not directory boundaries. Determine membership on the candidate with `devtools schema closure <file>`. Comments are absent from the AST. Land every closure change before a rebuild starts; a landing mid-run invalidates it.
+## Provider, Origin, Source
 
-Enum membership is not a schema constraint. Durable DDL carries no
-enum-generated `CHECK(col IN (...))`; vocabulary membership is validated at the
-write boundary (`require_vocabulary` in `archive_tiers/common.py`), so adding a
-vocabulary member is not a durable migration.
-
-## Provider vs Origin vs Source
-
-`Origin` is the public source-origin token on query surfaces and read payloads
-(**public filters use `origin`**). `Provider` is the older provider-wire token
-— legitimate at raw acquisition/parser/schema boundaries, a leak on public
-surfaces. `Source` carries richer acquisition identity. The GEMINI+DRIVE →
-AISTUDIO_DRIVE mapping is non-injective: never reverse an Origin into a
-guessed Provider. Full table: `docs/provider-origin-identity.md`.
-
-Detection (`sources/dispatch.py`) is shape-based in tightness order; insert new
-detectors at the tightness they deserve or an earlier parser claims their
-records.
+`Origin` is the public source token on query surfaces and read payloads;
+public filters use `origin`. `Provider` is the provider-wire token, legitimate
+at acquisition, parser, and schema boundaries and a leak on public surfaces.
+`Source` carries richer acquisition identity. GEMINI+DRIVE maps to
+AISTUDIO_DRIVE non-injectively, so never reverse an Origin into a guessed
+Provider (`docs/provider-origin-identity.md`). Detection in
+`sources/dispatch.py` is shape-based in tightness order; insert a new detector
+at its true tightness or an earlier parser claims its records.
 
 ## Runtime
 
-The required live-write owner is `polylogued run`, with one SQLite writer
-coordinating mutations. Process-local write-lease enforcement alone does not
-exclude external CLI/API writers; inspect the actual route before claiming
-sole-writer adoption. Remaining bypasses are completion work, not an alternate
-write policy.
-
-Ingest stages are acquire → parse → materialize → index. `DaemonConverger`
-drives ordered recovery and derivation stages; `make_default_convergence_stages`
-is the current stage list. Hot-file deferral and `convergence_debt` retain
-retryable backlog. Derived read models converge from durable evidence —
-there is no standing "repair" product concept; a failure state is either
-explicit-and-retryable or a typed permanent refusal.
+`polylogued run` is the required live-write owner, with one SQLite writer
+coordinating mutations. A process-local write lease does not exclude external
+CLI or API writers; inspect the actual route before claiming a surface writes
+only through the daemon. Ingest runs acquire, parse, materialize, index.
+`DaemonConverger` drives ordered recovery and derivation stages
+(`make_default_convergence_stages`); hot-file deferral and `convergence_debt`
+hold retryable backlog.
 
 ## Surfaces
 
-The CLI is query-first: root filters precede `find`, and verb options follow
-the action. A bare unquoted word is not query intent. New Click parameters on
-query verbs go last so positional arguments retain their meaning. MCP session
-operations have typed contracts in `docs/session-operations.md`; insights are
-driven by `analysis/registry.py`. Every row-bearing operation decides one
-terminal `outcome` at `surfaces/outcome.py`; a named gap is `degraded`, even
-with zero rows. See `docs/atlas/query-read-path.md` and `docs/atlas/mcp.md`
-for surface detail.
+- The CLI is query-first: root filters precede `find`, verb options follow
+  the action, and a bare unquoted word is not query intent. New Click
+  parameters on query verbs go last so positional arguments keep their
+  meaning.
+- MCP session operations have typed contracts (`docs/session-operations.md`);
+  insights are driven by `analysis/registry.py`.
+- Every row-bearing operation decides one terminal `outcome` in
+  `surfaces/outcome.py`. A named gap is `degraded` even with zero rows.
 
 ## Verification
 
-`devtools` owns repo readiness. The command surface is generated — consult
-`devtools --list-commands` or `docs/devtools.md` (catalog:
-`devtools/command_catalog.py`; add a command → add its `CommandSpec` +
-`render devtools-reference`).
+`devtools` owns repository readiness; `devtools --list-commands` and
+`docs/devtools.md` describe it (catalog in `devtools/command_catalog.py`; a new
+command needs its `CommandSpec` and `devtools render devtools-reference`).
 
-Use `devtools test <selection>` for focused behavior through the managed host
-pool; never bare `pytest`. Run one combined selection after a coherent source
-change, reusing its receipt across related Beads. `devtools verify --quick`
-runs static gates only. `devtools verify` makes a bounded affected selection
-from a usable testmon graph and refuses when it cannot; it never silently
-becomes a corpus run. Broad or complete-corpus verification requires an
-explicit request. `devtools why` and the run receipt show exactly
-what ran; a zero-test or quick-gate green does not prove behavior. Read
-`.agentctl/project.toml` on the candidate for hosted checks and review policy.
-Tests exercise the production route and name what would make them fail.
-Use `docs/devtools.md` for command details.
-
-Change cross-checks: parser/detection → origin specs + real fixtures + replay
-parity; storage/schema → fresh DDL + declared migration or moved identity +
-readers/writers + restart; query/read → equivalence between the generic read
-operation and the typed session-owner route + pagination + cancellation; daemon →
-lifecycle + cancellation + restart; MCP → registry + shared product route;
-fixture/harness → proves a production route.
+- `devtools test <selection>` runs focused tests through the managed host
+  pool; never run bare `pytest`. The pool is shared: run one selection per PR
+  head covering every affected file, and batch review-thread fixes into one
+  push. Re-running only the failing ids is diagnosis on an unchanged tree;
+  after a source change, re-run the complete affected selection. Reuse a receipt across related
+  tasks. The hosted quick gate covers static checks, so a local
+  `verify --quick` before pushing is optional.
+- `devtools verify --quick` runs the static gates (`devtools gate --list`
+  enumerates them; `devtools gate <name>` runs one).
+  `devtools verify` selects affected tests from a usable testmon graph and
+  refuses when it cannot; it never silently becomes a corpus run. Broad or complete-corpus runs need an
+  explicit request.
+- `devtools why` and the run receipt show what ran. A zero-test or quick-gate
+  green does not prove behavior. `.agentctl/project.toml` on the candidate
+  declares the hosted checks.
+- Tests exercise the production route and name the change that would turn
+  them red. Behaviour tests assert typed outcomes, stable event tokens, and
+  declared fields, not natural-language wording; rendered text is asserted
+  only where that text is itself the declared output contract. Timestamp-sensitive tests use
+  `frozen_clock`, except where the reference time comes from outside the process
+  (a Git commit, an OS wait, a benchmark), which opt out with `uses_real_clock`
+  as `TESTING.md` describes. Static fixture payloads live in
+  `tests/fixtures/`; fixture builders and shared harness code live in
+  `tests/infra/` and `conftest.py`.
+- Cross-check by change type: parser or detection → origin specs, real
+  fixtures, replay parity; storage or schema → fresh DDL, the migration or
+  moved identity, readers and writers, restart; query or read → equivalence of
+  the generic read and the typed session route, pagination, cancellation;
+  daemon → lifecycle, cancellation, restart; MCP → registry and the shared
+  product route.
 
 ## Code Review Rules
 
+Read and apply `docs/review/codex-review-guide.md` (checks, severity, noise)
+and the nested `AGENTS.md` beside each changed file.
+- A change to an interface, command, config key, schema, route, or file format
+  updates every consumer (callers, CLI/MCP, tests, docs, generated references,
+  configs, hooks) and deletes the predecessor in the same change; name a
+  missed consumer, P1 when a caller breaks.
+- A compatibility path in a diff (shim, alias, fallback, dual read/write,
+  deprecated wrapper) is a defect. A finding whose remedy keeps the old path,
+  or migrates prior archive state into fresh v1, is noise.
+- A cap, timeout, or truncation that refuses or cuts valid input is a defect;
+  ask for paging or streaming, never a new limit.
 - A finding names a concrete input at the reviewed head and the wrong
-  observable outcome; a scenario that needs the environment corrupted below
-  its own integrity contract (lockfile, provision stamp, environment digest,
-  tests) is out of scope.
-- Verification receipts and caches are keyed on declared inputs; do not ask
-  for filesystem enumeration (installed trees, example databases, every
-  executable) as a cache key.
-- A thread answered by a commit or a stated refutation is closed unless the
-  answer is wrong; do not restate an answered finding in a later round.
-- Judge a test by the anti-vacuity condition it names, not by whether it
-  could be stricter.
-- Publication text and lane metadata are not review targets.
+  observable outcome; environment corruption below its integrity contract is
+  out of scope.
+- A thread answered by a commit or refutation is closed unless the answer is
+  wrong. Publication text and task metadata are not review targets.
 
-## Commit / PR discipline
+## Commits and PRs
 
-Product code lands via feature branches + squash-merged PRs to protected
-`master`. Conventional subjects; PR title = the squash subject (≤72 chars,
-imperative). PR body: Summary, Problem (evidence), Solution, Verification
-(exact commands + the line that matters), honest residuals. No resolver
-keywords next to issue numbers unless the operator asks. Stage by path.
-Release-please owns version/CHANGELOG. Before writing "unified"/"complete",
-grep the diff and check both paths.
-
-## Documentation map
-
-Read the relevant `docs/atlas/` sheet for a storage, daemon, MCP, source, or
-query change; confirm its claims against current code. `docs/architecture.md`,
-`docs/internals.md`, `docs/devtools.md`, and `CONTRIBUTING.md` hold broader
-reference material. Keep campaign state, tracker rosters, and operational
-history in Beads and dated evidence, not in this always-loaded file.
+Product code lands through feature branches and squash-merged PRs to
+protected `master`. The PR title is the conventional squash subject (72
+characters or fewer, imperative). The body has Summary, Problem (with
+evidence), Solution, Verification (exact commands and the line that matters),
+and honest residuals. Put no resolver keywords beside issue numbers unless the
+operator asks. release-please owns the version and changelog. Before writing
+"unified" or "complete", grep the diff and check both paths.

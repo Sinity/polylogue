@@ -4,13 +4,27 @@ severity: warning
 message: "raw O_CREAT|O_EXCL write path; use a sanctioned receipt primitive; owners 0oyqi/ok65v"
 rule:
   all:
-    - pattern: os.open($$$)
-    - has:
-        pattern: O_CREAT
-        stopBy: end
-    - has:
-        pattern: O_EXCL
-        stopBy: end
+    - any:
+        - all:
+            - pattern: os.open($$$)
+            - has:
+                pattern: O_CREAT
+                stopBy: end
+            - has:
+                pattern: O_EXCL
+                stopBy: end
+        - all:
+            - pattern: os.open($PATH, $FLAGS)
+            - inside:
+                kind: function_definition
+                any:
+                  - has:
+                      pattern: $FLAGS = os.O_CREAT | os.O_EXCL
+                      stopBy: end
+                  - has:
+                      pattern: $FLAGS = O_CREAT | O_EXCL
+                      stopBy: end
+                stopBy: end
     - inside:
         kind: function_definition
         has:

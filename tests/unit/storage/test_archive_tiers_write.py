@@ -6332,3 +6332,35 @@ def test_thread_source_high_water_mark_compares_instants_not_storage_types(test_
 
     assert row["source_updated_at"] == "2026-01-01T00:00:00Z"
     assert row["input_high_water_mark"] == "2026-01-01T00:00:00Z"
+
+
+def test_parent_links_cross_the_update_batch_boundary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every parent link lands when the updates span several batches.
+
+    Anti-vacuity: dropping the final flush (or a mid-stream one) leaves the
+    tail of the chain with a NULL parent.
+    """
+    monkeypatch.setattr(archive_tier_write._ParentLinkUpdates, "_BATCH", 7)
+    conn = _connect(tmp_path / "index.db")
+    count = 30
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="chain",
+        messages=[
+            ParsedMessage(
+                provider_message_id=f"m{index}",
+                role=Role.USER if index % 2 == 0 else Role.ASSISTANT,
+                text=f"message {index}",
+                parent_message_provider_id=f"m{index - 1}" if index else None,
+                position=index,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"message {index}")],
+            )
+            for index in range(count)
+        ],
+    )
+    session_id = write_parsed_session_to_archive(conn, session)
+    rows = conn.execute(
+        "SELECT message_id, parent_message_id FROM messages WHERE session_id = ? ORDER BY position", (session_id,)
+    ).fetchall()
+    assert rows[0]["parent_message_id"] is None
+    assert [row["parent_message_id"] for row in rows[1:]] == [row["message_id"] for row in rows[:-1]]
