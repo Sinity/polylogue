@@ -171,7 +171,7 @@ Result semantics declared by the t46.8 source rows: `single_object, aggregate`.
 }
 ```
 
-Expected discipline: Archive identity, selected source coverage, freshness/readiness state, and explicit degraded reasons.
+Expected discipline: Archive session/message counts and origin totals only. These aggregate statistics do not establish archive identity, source coverage, freshness, or readiness.
 
 ## Continuation and result limits
 

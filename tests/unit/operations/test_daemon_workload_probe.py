@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 import polylogue.operations.daemon_workload_probe as workload_probe
+from polylogue.core.evidence import Measured
 from polylogue.operations.daemon_workload_probe import (
     REPORT_VERSION,
     UNKNOWN_TABLE_COUNT,
@@ -95,6 +96,31 @@ def _seed_minimal_archive(db: Path, source: Path) -> str:
         cursor_fingerprint_read_bytes=0,
     )
     return attempt_id
+
+
+def test_cost_bearing_profile_count_reads_canonical_usage_lanes() -> None:
+    """Removed profile mirrors cannot hide cost evidence from the workload probe.
+
+    Anti-vacuity: a provider cost lane must count even when session_profiles
+    has no cost columns.
+    """
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE session_profiles (session_id TEXT PRIMARY KEY);
+            CREATE TABLE session_model_usage (
+                session_id TEXT NOT NULL, provider_cost_usd REAL,
+                catalog_cost_usd REAL, cost_credits REAL
+            );
+            INSERT INTO session_profiles VALUES ('s1'), ('s2');
+            INSERT INTO session_model_usage VALUES ('s1', 0.0, NULL, NULL);
+            INSERT INTO session_model_usage VALUES ('s2', NULL, NULL, NULL);
+            """
+        )
+        assert workload_probe._cost_bearing_profile_count(conn) == Measured(1)
+    finally:
+        conn.close()
 
 
 def _minimal_compare_payload() -> dict[str, Any]:

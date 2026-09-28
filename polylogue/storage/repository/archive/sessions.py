@@ -317,14 +317,26 @@ class RepositoryArchiveSessionMixin:
         tags_by_id = await self._fetch_tags_by_session(ids)
         # Hydrate message_count from the current sessions aggregate.
         counts_by_id = await self.queries.get_message_counts_batch(ids) if ids else {}
-        return [
-            session_summary_from_record(
+        profiles_by_id = await self.get_session_profiles_batch(ids) if ids else {}
+        summaries: list[SessionSummary] = []
+        for record in conv_records:
+            session_id = str(record.session_id)
+            summary = session_summary_from_record(
                 record,
-                tags=tags_by_id.get(str(record.session_id), ()),
-                message_count=counts_by_id.get(str(record.session_id)),
+                tags=tags_by_id.get(session_id, ()),
+                message_count=counts_by_id.get(session_id),
             )
-            for record in conv_records
-        ]
+            profile = profiles_by_id.get(session_id)
+            if profile is not None:
+                summary = summary.model_copy(
+                    update={
+                        "terminal_state": profile.terminal_state,
+                        "total_cost_usd": profile.total_cost_usd,
+                        "cost_provenance": profile.cost_provenance,
+                    }
+                )
+            summaries.append(summary)
+        return summaries
 
     async def list_by_query(
         self,
