@@ -248,8 +248,14 @@ class FileIntakeAdapter(IntakeAdapter):
 
     @property
     def discovery_pending(self) -> bool:
-        return not self._root_refused_pending and (
-            self._fresh_walk is not None or bool(self._fresh_pending) or self._rescan_after_walk
+        from polylogue.core.degraded import is_fully_degraded
+
+        # A parked (degraded) adapter discovers nothing, so retained page state
+        # must not keep the intake service on its pending-work cadence.
+        return (
+            not is_fully_degraded()
+            and not self._root_refused_pending
+            and (self._fresh_walk is not None or bool(self._fresh_pending) or self._rescan_after_walk)
         )
 
     @property
@@ -688,12 +694,6 @@ class FileIntakeAdapter(IntakeAdapter):
         ``retry_after`` and isolation accounting are exactly what they were
         under per-file admission.
         """
-        for item in items:
-            self._consume_retry_item(item)
-            if not self._retry_page and isinstance(item.payload, (str, Path)):
-                fresh_path = Path(item.payload)
-                if fresh_path in self._fresh_page_paths:
-                    self._fresh_attempted_paths.add(fresh_path)
         from polylogue.core.degraded import degraded_reason, is_fully_degraded
 
         if is_fully_degraded():
@@ -702,14 +702,21 @@ class FileIntakeAdapter(IntakeAdapter):
             # cursor initialization, no selection. Every item stays retryable,
             # so nothing is lost once the degradation is cleared (#1003), and
             # costs nothing, so the class deficit is not charged for work that
-            # did not happen. Discovery normally returns no page while
-            # degraded; this covers a page discovered just before.
+            # did not happen, and before any page bookkeeping, so the page stays
+            # unattempted. Discovery normally returns no page while degraded;
+            # this covers a page discovered just before.
             degradation = degraded_reason()
             detail = f"archive ingest is degraded: {degradation.code if degradation is not None else 'unknown'}"
             return {
                 item.item_id: AdmissionResult(AdmissionOutcome.RETRYABLE, reason=detail, actual_cost=0)
                 for item in items
             }
+        for item in items:
+            self._consume_retry_item(item)
+            if not self._retry_page and isinstance(item.payload, (str, Path)):
+                fresh_path = Path(item.payload)
+                if fresh_path in self._fresh_page_paths:
+                    self._fresh_attempted_paths.add(fresh_path)
         outcomes: dict[str, AdmissionResult] = {}
         batch: list[IntakeItem] = []
         nonregular_paths: list[Path] = []
