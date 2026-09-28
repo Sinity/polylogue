@@ -60,7 +60,7 @@ def parse_message_window(handler: object, params: dict[str, list[str]]) -> Messa
 
     raw_limit = handler._get_int(params, "limit", WORKSPACE_MESSAGE_WINDOW)  # type: ignore[attr-defined]
     offset = max(0, handler._get_int(params, "offset", 0))  # type: ignore[attr-defined]
-    limit = None if raw_limit <= 0 else raw_limit
+    limit = None if raw_limit == 0 else (WORKSPACE_MESSAGE_WINDOW if raw_limit < 0 else raw_limit)
     return MessageWindow(limit=limit, offset=offset)
 
 

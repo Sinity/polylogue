@@ -18,7 +18,8 @@ import pytest
 
 from polylogue.daemon.compare import build_compare_envelope
 from polylogue.daemon.webui import _scalar_projection, render_compare_page
-from polylogue.daemon.workspace_routes import MessageWindow
+from polylogue.daemon.webui_data import detect_paste_spans
+from polylogue.daemon.workspace_routes import MessageWindow, parse_message_window
 from tests.infra.daemon_http_harness import make_daemon_handler
 
 _TEXT_FRAGMENT = "lorem ipsum dolor sit amet "
@@ -95,6 +96,50 @@ def test_compare_page_keeps_the_window_and_alignment() -> None:
     assert "sequential" in body or "anchor" in body
     assert 'class="compare-pairs"' in body
     assert 'class="compare-metadata"' in body
+
+
+def test_compare_without_payload_preserves_empty_guidance() -> None:
+    """Anti-vacuity: without this, fabricated Left/Right facts hide guidance."""
+    body = render_compare_page(_bundle(), payload=None, empty="choose two sessions")
+    assert "choose two sessions" in body
+    assert "unknown" not in body
+    assert "limit ? offset ?" not in body
+
+
+@pytest.mark.parametrize(
+    "diff",
+    [
+        "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new",
+        "--- a/x\n+++ b/x",
+    ],
+)
+def test_pasted_diff_span_includes_file_headers(diff: str) -> None:
+    """Anti-vacuity: starting at the hunk drops headers; header-only is rejected."""
+    spans = detect_paste_spans(diff)
+    assert len(spans) == 1
+    assert spans[0]["start"] == 0
+    assert diff[slice(spans[0]["start"], spans[0]["end"])] == diff
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("0", None), ("12", 12)])
+def test_workspace_window_preserves_valid_limit_values(raw: str, expected: int | None) -> None:
+    class Handler:
+        @staticmethod
+        def _get_int(params: dict[str, list[str]], key: str, default: int) -> int:
+            return int(params.get(key, [str(default)])[0])
+
+    assert parse_message_window(Handler(), {"limit": [raw]}).limit == expected
+
+
+def test_workspace_window_clamps_negative_limit_to_bounded_default() -> None:
+    """Anti-vacuity: treating <=0 as whole transcript makes -1 unbounded."""
+
+    class Handler:
+        @staticmethod
+        def _get_int(params: dict[str, list[str]], key: str, default: int) -> int:
+            return int(params.get(key, [str(default)])[0])
+
+    assert parse_message_window(Handler(), {"limit": ["-1"]}).limit == 50
 
 
 @pytest.mark.parametrize(
