@@ -4292,6 +4292,10 @@ class ArchiveStore:
         finally:
             user_conn.close()
         self._attach_user_tier_if_present()
+        if changed:
+            from polylogue.storage.search.cache import invalidate_search_cache
+
+            invalidate_search_cache()
         return changed
 
     def remove_user_tags(self, session_ids: tuple[str, ...], tags: tuple[str, ...]) -> int:
@@ -4326,6 +4330,10 @@ class ArchiveStore:
         finally:
             user_conn.close()
         self._attach_user_tier_if_present()
+        if removed:
+            from polylogue.storage.search.cache import invalidate_search_cache
+
+            invalidate_search_cache()
         return removed
 
     def list_user_tags(self, *, origin: str | None = None) -> dict[str, int]:
