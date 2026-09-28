@@ -3541,3 +3541,29 @@ async def test_degradation_during_a_pass_stops_the_remaining_classes() -> None:
 
     assert first.discover_calls
     assert second.discover_calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_pass_that_degrades_the_daemon_runs_no_post_pass_callback() -> None:
+    """Anti-vacuity: drop the post-pass degraded check from ``DaemonIntakeService.run``
+    and ``on_pass_complete`` runs for a pass that degraded the daemon."""
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    def degrade(_item: IntakeItem) -> AdmissionResult:
+        set_degraded(DegradedReason(code="database_layout_mismatch", message="structural error"))
+        return AdmissionResult(AdmissionOutcome.ADMITTED)
+
+    files = FakeAdapter("configured_local", ["file-00"], outcome_for=degrade)
+    dispatcher = FairIntakeDispatcher((IntakeClassSpec("configured_local", files, page_size=1),))
+    completed: list[object] = []
+    service = DaemonIntakeService(dispatcher, idle_delay_s=0.05, on_pass_complete=completed.append)
+    task = asyncio.create_task(service.run())
+    try:
+        await asyncio.sleep(0.3)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        clear_degraded()
+    assert files.admitted == ["file-00"]
+    assert completed == []

@@ -1526,6 +1526,10 @@ class DaemonIntakeService:
                     pass
                 continue
             result = await self.dispatcher.run_once(budget=self.budget)
+            if is_fully_degraded():
+                # The pass itself degraded the daemon; park before any
+                # post-pass callback touches the archive (next iteration).
+                continue
             schedulable = self.dispatcher.schedulable_classes()
             discovery_pending = any(bool(getattr(spec.adapter, "discovery_pending", False)) for spec in schedulable)
             retry_delays = tuple(
