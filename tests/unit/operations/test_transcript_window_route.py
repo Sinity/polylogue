@@ -143,3 +143,33 @@ def test_a_fresh_window_is_bound_to_the_snapshot_it_was_composed_against(
     assert not window.complete
     # The last window mints no token: nothing is left to resume.
     assert window_result(["c", "d"], 4, framed.next(offset=2)).continuation is None
+
+
+def test_legacy_session_read_token_resumes_with_its_original_arguments() -> None:
+    """The still-valid session-read-v1 token keeps its ref/projection shape.
+
+    Anti-vacuity: red if adding modern operation/filter defaults to the
+    reconstructed SessionRead makes a pre-upgrade continuation unusable.
+    """
+    from polylogue.archive.query.transaction import QueryContinuation, QueryTransactionRequest
+    from polylogue.operations.transcript_window import frame_request, window_request
+
+    transaction = QueryTransactionRequest(
+        operation="session.read",
+        arguments={"ref": "session:session-1", "projection": "transcript"},
+        page_size=1,
+        offset=1,
+        projection="session-read-v1",
+        stable_order="position",
+        archive_epoch="epoch-1",
+    )
+    token = QueryContinuation(transaction, transaction.result_ref).encode()
+    request, resumed = frame_request(
+        window_request("session:session-1", continuation=token),
+        transaction_operation="session.read",
+        projection="session-read-v1",
+    )
+
+    assert request.ref == "session:session-1"
+    assert resumed.offset == 1
+    assert resumed.arguments == {"ref": "session:session-1", "projection": "transcript"}

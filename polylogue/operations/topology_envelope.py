@@ -59,6 +59,7 @@ def topology_public_envelope(
     *,
     session_id: str | None = None,
     node_limit: int = MAX_NODE_LIMIT,
+    node_offset: int = 0,
 ) -> dict[str, object]:
     """Return the bounded canonical public topology envelope with its outcome.
 
@@ -70,13 +71,14 @@ def topology_public_envelope(
     payload = topology.public_payload(session_id)
     payload["outcome"] = topology_outcome(topology).to_dict()
     effective_limit = max(1, min(node_limit, MAX_NODE_LIMIT))
-    return bound_topology_envelope(payload, node_limit=effective_limit)
+    return bound_topology_envelope(payload, node_limit=effective_limit, source_node_offset=node_offset)
 
 
 def bound_topology_envelope(
     envelope: dict[str, object],
     *,
     node_limit: int,
+    source_node_offset: int = 0,
 ) -> dict[str, object]:
     """Narrow a canonical envelope to ``node_limit`` nodes, honestly.
 
@@ -108,12 +110,19 @@ def bound_topology_envelope(
     bounded = dict(envelope)
     bounded["nodes"] = kept_nodes
     bounded["edges"] = kept_edges
+    for key in ("ancestors", "descendants", "siblings", "thread"):
+        if key in envelope:
+            bounded[key] = [
+                item
+                for item in cast("list[object]", envelope[key])
+                if isinstance(item, dict) and str(item.get("session_id")) in kept_ids
+            ]
     bounded["nodes_complete"] = not truncated
     bounded["edges_complete"] = not truncated
     # A source page already carries the requested offset; only synthesize a
     # continuation when this bound is what did the narrowing.
     if envelope.get("continuation") is None and dropped > 0:
-        bounded["continuation"] = f"node-offset:{len(kept_nodes)}"
+        bounded["continuation"] = f"node-offset:{source_node_offset + len(kept_nodes)}"
 
     source_outcome = cast("dict[str, object]", envelope["outcome"])
     source_detail = cast("dict[str, object]", source_outcome.get("detail") or {})

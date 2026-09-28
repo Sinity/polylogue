@@ -4778,6 +4778,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                         "material_origin": tuple(material_origin),
                     },
                 ),
+                content_projection=content_projection,
             )
         except ValueError as exc:
             if str(exc).startswith("session not found:"):

@@ -119,7 +119,11 @@ def execute_topology_read(payload: Mapping[str, object], *, archive: ArchiveStor
         raise KeyError(f"Session not found: {session_id}")
     return {
         "view": "topology",
-        "payload": topology_public_envelope(topology, session_id=resolved),
+        "payload": topology_public_envelope(
+            topology,
+            session_id=resolved,
+            node_offset=_int_field(payload, "node_offset", 0) or 0,
+        ),
     }
 
 
