@@ -29,7 +29,7 @@ from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -278,22 +278,21 @@ class TestInsightsEndpointDispatch:
         ready = profile_panel()
         assert ready["readiness_tag"] == "q-ready"
         assert ready["materialized"] is True
-        # Model a writer replacing the row between the archive read and the
-        # partition read. A valid newer row cannot certify the older payload.
-        from polylogue.operations import session_profile_convergence
+        # Model a writer replacing the row between the record read and the
+        # stored-row read: the route compares the record it hydrated against
+        # the row's binding (operations/http_read_models.read_session_insights),
+        # so a valid newer row cannot certify the older payload.
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with sqlite3.connect(root / "index.db") as conn:
-            version = int(
-                conn.execute(
-                    "SELECT materializer_version FROM session_profiles WHERE session_id = ?", (session_id,)
-                ).fetchone()[0]
-            )
+        real_record = ArchiveStore.get_session_profile_record
+
+        def raced_record(self: ArchiveStore, sid: str) -> Any:
+            record = real_record(self, sid)
+            assert record is not None
+            return record.model_copy(update={"input_content_hash": "replacement-binding"})
+
         with monkeypatch.context() as patch:
-            patch.setattr(
-                session_profile_convergence,
-                "session_profile_partition_status",
-                lambda *_args: ("valid", "replacement-binding", version),
-            )
+            patch.setattr(ArchiveStore, "get_session_profile_record", raced_record)
             raced = profile_panel()
         assert raced["readiness_tag"] == "q-partial"
         assert raced["materialized"] is False
