@@ -512,11 +512,19 @@ def refuse_foreign_material(
 #: Read size for streaming a bound JSONL artifact through record validation.
 _RECORD_VALIDATION_CHUNK_BYTES = 1 << 20
 
+#: A per-record buffer bound: generous enough that a realistic padding
+#: field ahead of a discriminator (the 8 KiB prefix window this replaces)
+#: is always inside it, but still a real physical limit, so one pathological
+#: multi-gigabyte line cannot grow the buffer without bound.
+_RECORD_VALIDATION_MAX_LINE_BYTES = 16 * 1024 * 1024
+
 
 def refuse_foreign_records(handle: BinaryIO, path: Path | str, location: Provider | str | None) -> None:
-    """Validate every record of a bound JSONL stream against its location.
+    """Validate a bound JSON/JSONL stream against its location, record by record.
 
-    Reads ``handle`` to its end through :class:`BoundRecordValidator`.
+    A JSONL source is validated line by line; a single-document ``.json``
+    source is validated as one whole record. Reads ``handle`` to its end
+    through :class:`BoundRecordValidator`.
     """
     validator = BoundRecordValidator(path, location)
     if not validator.active:
@@ -527,52 +535,83 @@ def refuse_foreign_records(handle: BinaryIO, path: Path | str, location: Provide
 
 
 class BoundRecordValidator:
-    """Incremental per-record origin validation of a bound JSONL stream.
+    """Incremental per-record origin validation of a bound JSON/JSONL stream.
 
     The prefix check in :func:`refuse_foreign_material` sees only the leading
-    records; a foreign record anywhere later would otherwise be retained and
-    parsed as the location's origin. Fed the stream in chunks (so a caller
-    that is already reading the bytes, to hash or to capture them, validates
-    the same bytes in the same pass), it validates every line in full: each
-    line is buffered whole and decoded, so a discriminator anywhere in an
-    oversized record -- not only within a leading window -- is seen. A line
-    still incomplete at ``finish()`` (a truncated trailing record) falls back
-    to the completed structure of what was read. A malformed line is the
-    parser's typed concern, not a foreign-origin claim. ``feed`` and
-    ``finish`` raise :class:`ForeignOriginContentError`.
+    record (or, for a single JSON document, the leading bytes of the one
+    record): a foreign record -- or a foreign discriminator past that prefix
+    within one oversized record or document -- would otherwise be retained
+    and parsed as the location's origin. Fed the stream in chunks (so a
+    caller that is already reading the bytes, to hash or to capture them,
+    validates the same bytes in the same pass):
+
+    - A JSONL source is validated line by line: a line within
+      ``_RECORD_VALIDATION_MAX_LINE_BYTES`` is buffered whole and decoded.
+    - A single-document ``.json`` source has no record delimiter (its own
+      pretty-printing can carry literal newlines), so the whole stream is one
+      record, buffered and decoded once at ``finish()``.
+
+    A record or document that exceeds the bound, or is still incomplete at
+    ``finish()`` (a truncated trailing JSONL record), falls back to the
+    completed structure of what was buffered, so memory stays bounded
+    whatever a record's actual size. A malformed record is the parser's
+    typed concern, not a foreign-origin claim. ``feed`` and ``finish`` raise
+    :class:`ForeignOriginContentError`.
     """
 
     def __init__(self, path: Path | str, location: Provider | str | None) -> None:
         self._bound = bound_location_provider(location)
         source = Path(path)
-        active = self._bound is not None and is_jsonl_source_path(source.name)
+        name = source.name
+        self._is_jsonl = is_jsonl_source_path(name)
+        active = self._bound is not None and (self._is_jsonl or name.lower().endswith(".json"))
         if active and self._bound is not None:
             from .origin_specs import path_declaration_refuses_session
 
             active = not path_declaration_refuses_session(self._bound, source)
         self.active = active
         self._head = bytearray()
+        self._overflowed = False
 
     def feed(self, chunk: bytes) -> None:
         if not self.active:
+            return
+        window = _RECORD_VALIDATION_MAX_LINE_BYTES
+        if not self._is_jsonl:
+            # One whole document: buffer (bounded) and decode once at
+            # ``finish()``; there is no per-record newline delimiter to act on.
+            if not self._overflowed:
+                room = window - len(self._head)
+                self._head += chunk[:room]
+                self._overflowed = len(chunk) > room
             return
         start = 0
         while start < len(chunk):
             newline = chunk.find(b"\n", start)
             end = len(chunk) if newline == -1 else newline
-            self._head += chunk[start:end]
+            if not self._overflowed:
+                room = window - len(self._head)
+                piece = chunk[start:end]
+                self._head += piece[:room]
+                self._overflowed = len(piece) > room
             if newline == -1:
                 return
             self._validate_line()
             start = newline + 1
 
     def finish(self) -> None:
-        if self.active and self._head:
+        if self.active and (self._head or self._overflowed):
             self._validate_line()
 
     def _validate_line(self) -> None:
-        head = bytes(self._head)
+        head, complete = bytes(self._head), not self._overflowed
         self._head.clear()
+        self._overflowed = False
+        if not complete:
+            partial = _completed_prefix_structure(head)
+            if isinstance(partial, dict):
+                detect_provider_evidence([partial], expected=self._bound)
+            return
         if not head.strip():
             return
         try:

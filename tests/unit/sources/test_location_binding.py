@@ -660,3 +660,34 @@ def test_record_validation_inspects_a_whole_oversized_line(tmp_path: Path) -> No
     with pytest.raises(ForeignOriginContentError):
         capture_bound_source(publisher, source, Provider.CLAUDE_CODE, lambda: publisher.write_from_path(source))
     assert not publisher.has_pending
+
+
+def test_a_whole_json_document_is_validated_not_only_its_prefix(tmp_path: Path) -> None:
+    """A single ``.json`` document's foreign discriminator past the prefix is refused.
+
+    ``refuse_foreign_records``/``BoundRecordValidator`` validated every JSONL
+    line but skipped ``.json`` documents entirely (``is_jsonl_source_path``
+    gated ``active``), so a captured document whose discriminator sits past
+    the 8 KiB prefix window -- a large leading field before Codex's
+    type/payload keys -- was retained and durably recorded under the bound
+    location's origin.
+
+    Anti-vacuity: gating ``BoundRecordValidator.active`` on JSONL alone makes
+    this document, whose own prefix is inconclusive padding, pass capture.
+    """
+    from polylogue.sources.bound_capture import capture_bound_source
+    from polylogue.sources.dispatch import LOCATION_VALIDATION_PREFIX_BYTES
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+    oversized_codex_document = {
+        "pad": "x" * (LOCATION_VALIDATION_PREFIX_BYTES * 2),
+        **_CODEX_ROLLOUT[0],
+    }
+    source = tmp_path / "projects" / "proj" / "oversized-document.json"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(json.dumps(oversized_codex_document).encode("utf-8"))
+    publisher = ArchiveBlobPublisher(tmp_path / "source-3.db", tmp_path / "blob-3")
+
+    with pytest.raises(ForeignOriginContentError):
+        capture_bound_source(publisher, source, Provider.CLAUDE_CODE, lambda: publisher.write_from_path(source))
+    assert not publisher.has_pending
