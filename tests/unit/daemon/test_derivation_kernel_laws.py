@@ -1087,3 +1087,24 @@ def test_a_failed_key_says_whether_its_failure_can_clear_unchanged() -> None:
     locked = converge(DerivationRegistry([LockedDerivation("d", required=("a",))]), FRAME)
     assert [item.transient for item in poisoned.by_outcome(Outcome.FAILED)] == [False]
     assert [item.transient for item in locked.by_outcome(Outcome.FAILED)] == [True]
+
+
+def test_a_failure_signature_names_its_exception_type() -> None:
+    """Distinct exceptions in one phase are distinct failure signatures.
+
+    Anti-vacuity (Codex): a phase-first reason such as ``compute: ...`` gave
+    a KeyError and a TypeError the same signature, so alternating defects
+    extended one exhaustion streak and isolated the item.
+    """
+    from polylogue.daemon.intake import _failure_signature
+
+    class TypeErrorDerivation(RecordingDerivation):
+        def compute(self, frame: DerivationFrame, key: str) -> Replacement:
+            raise TypeError("wrong shape")
+
+    runtime = converge(DerivationRegistry([RecordingDerivation("d", required=("a",), poison=frozenset({"a"}))]), FRAME)
+    typed = converge(DerivationRegistry([TypeErrorDerivation("d", required=("a",))]), FRAME)
+    (runtime_failure,) = runtime.by_outcome(Outcome.FAILED)
+    (type_failure,) = typed.by_outcome(Outcome.FAILED)
+    assert _failure_signature(runtime_failure.error) == "compute RuntimeError"
+    assert _failure_signature(type_failure.error) == "compute TypeError"

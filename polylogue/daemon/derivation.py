@@ -846,7 +846,7 @@ class _Pass:
                 KeyOutcome(
                     key=derivation_key,
                     outcome=Outcome.FAILED,
-                    error=f"quiet: {exc}",
+                    error=f"quiet {type(exc).__name__}: {exc}",
                     transient=_is_transient_failure(exc),
                 )
             )
@@ -871,7 +871,7 @@ class _Pass:
                 KeyOutcome(
                     key=derivation_key,
                     outcome=Outcome.FAILED,
-                    error=f"compute: {exc}",
+                    error=f"compute {type(exc).__name__}: {exc}",
                     transient=_is_transient_failure(exc),
                     elapsed_s=time.monotonic() - started_key,
                 )
@@ -912,7 +912,7 @@ class _Pass:
                 KeyOutcome(
                     key=derivation_key,
                     outcome=Outcome.FAILED,
-                    error=f"publish: {exc}",
+                    error=f"publish {type(exc).__name__}: {exc}",
                     transient=_is_transient_failure(exc),
                     elapsed_s=time.monotonic() - started_key,
                 )
@@ -954,7 +954,7 @@ class _Pass:
                 KeyOutcome(
                     key=derivation_key,
                     outcome=Outcome.FAILED,
-                    error=f"reinspect: {exc}",
+                    error=f"reinspect {type(exc).__name__}: {exc}",
                     transient=_is_transient_failure(exc),
                     elapsed_s=elapsed,
                 )
@@ -1018,7 +1018,7 @@ class _Pass:
                     KeyOutcome(
                         key=DerivationKey(domain, "*"),
                         outcome=Outcome.FAILED,
-                        error=f"discover: {exc}",
+                        error=f"discover {type(exc).__name__}: {exc}",
                         transient=_is_transient_failure(exc),
                     )
                 )
