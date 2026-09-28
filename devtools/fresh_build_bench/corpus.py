@@ -105,6 +105,8 @@ def _hash_tree(root: Path) -> list[CorpusFile]:
 def seal(root: Path, *, kind: str, parameters: dict[str, Any]) -> dict[str, Any]:
     """Hash every file under ``home/`` and ``exports/`` and write the manifest."""
     _private_root(root)
+    # The run's stand-in ``$HOME`` exists even for an export-only corpus.
+    (root / "home").mkdir(mode=0o700, exist_ok=True)
     files = _hash_tree(root)
     by_origin: dict[str, dict[str, int]] = defaultdict(lambda: {"files": 0, "bytes": 0})
     for item in files:
@@ -154,19 +156,23 @@ def verify_manifest(root: Path, manifest: dict[str, Any]) -> None:
 
     Every file is re-hashed and the tree re-listed, so an edit that keeps a
     file's size, or a file added after sealing, is refused too.
+
+    Errors give counts, never paths: corpus paths carry private project and
+    session names, and these errors reach job and CI logs.
     """
     sealed = {row[0]: (row[1], row[2]) for row in manifest["files"]}
     current = _hash_tree(root)
     present = {item.path: (item.bytes, item.sha256) for item in current}
-    if added := sorted(set(present) - set(sealed)):
-        raise ValueError(f"corpus has files added since sealing: {', '.join(added[:5])}")
-    if missing := sorted(set(sealed) - set(present)):
-        raise ValueError(f"corpus lost files since sealing: {', '.join(missing[:5])}")
-    for relative, (size, sha256) in sealed.items():
-        if present[relative][0] != size:
-            raise ValueError(f"corpus file changed size since sealing: {relative}")
-        if present[relative][1] != sha256:
-            raise ValueError(f"corpus file changed content since sealing: {relative}")
+    if added := set(present) - set(sealed):
+        raise ValueError(f"corpus has {len(added)} file(s) added since sealing")
+    if missing := set(sealed) - set(present):
+        raise ValueError(f"corpus lost {len(missing)} file(s) since sealing")
+    resized = sum(present[relative][0] != size for relative, (size, _sha256) in sealed.items())
+    if resized:
+        raise ValueError(f"{resized} corpus file(s) changed size since sealing")
+    edited = sum(present[relative][1] != sha256 for relative, (_size, sha256) in sealed.items())
+    if edited:
+        raise ValueError(f"{edited} corpus file(s) changed content since sealing")
     if corpus_digest(current) != manifest["digest"]:
         raise ValueError("corpus manifest digest does not match its file list")
     # The digest covers the file rows only; the aggregates a receipt reads
@@ -358,9 +364,16 @@ def corpus_from_files(
         if resolved.suffix.lower() not in admitted[0]:
             raise ValueError(f"{file} is not a transcript its source root admits ({', '.join(admitted[0])})")
         _copy_private(resolved, out / "home" / resolved.relative_to(home))
+    staged: set[Path] = set()
     for origin, file in exports:
         if origin not in EXPORT_ORIGINS:
             raise ValueError(f"unknown export origin {origin!r}; known: {', '.join(EXPORT_ORIGINS)}")
         resolved = file.resolve(strict=True)
-        _copy_private(resolved, out / "exports" / origin / resolved.name)
+        destination = out / "exports" / origin / resolved.name
+        # Two exports with one basename would overwrite each other and seal
+        # fewer files than were declared.
+        if destination in staged:
+            raise ValueError(f"two --export {origin} files share the name {resolved.name!r}; rename one")
+        staged.add(destination)
+        _copy_private(resolved, destination)
     return seal(out, kind="files", parameters={"selection": "explicit", "files": len(files), "exports": len(exports)})

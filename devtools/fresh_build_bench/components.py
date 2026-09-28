@@ -12,7 +12,9 @@ function the daemon calls, on the corpus's own files:
   fsync + publish each admitted file pays.
 
 Results print as one JSON document per component with per-origin seconds,
-bytes and derived MiB/s.
+bytes and derived MiB/s. The corpus is verified against its seal before and
+after the timed work; a file that changed meanwhile fails the run, because the
+summary attributes throughput to the sealed byte counts.
 """
 
 from __future__ import annotations
@@ -39,8 +41,9 @@ _PROVIDER_BY_ORIGIN = {
 }
 
 
-def _corpus_files(corpus: Path, origins: Iterable[str] | None, limit: int | None) -> list[tuple[Path, str, int]]:
-    manifest = load_manifest(corpus)
+def _corpus_files(
+    corpus: Path, manifest: dict[str, Any], origins: Iterable[str] | None, limit: int | None
+) -> list[tuple[Path, str, int]]:
     verify_manifest(corpus, manifest)
     wanted = set(origins) if origins else None
     files = [
@@ -108,7 +111,8 @@ def bench_parse(
 ) -> dict[str, Any]:
     from polylogue.sources.live.parse_prefetch import live_parse_path_worker
 
-    files = _corpus_files(corpus, origins, limit)
+    manifest = load_manifest(corpus)
+    files = _corpus_files(corpus, manifest, origins, limit)
     shard_root = scratch / "parse-shards"
     shard_root.mkdir(parents=True, exist_ok=True)
 
@@ -135,6 +139,7 @@ def bench_parse(
             shutil.rmtree(attempt, ignore_errors=True)
 
     rows, wall, counts = _timed_map(work, files, workers)
+    verify_manifest(corpus, manifest)
     # Threads, not the daemon's process pool: this isolates one file's
     # preparation cost; pool start-up and IPC belong to the end-to-end run.
     return _summarise(rows, wall, {"component": "parse", "workers": workers, "executor": "threads", "counts": counts})
@@ -145,7 +150,8 @@ def bench_blob(
 ) -> dict[str, Any]:
     from polylogue.storage.blob_store import BlobStore
 
-    files = _corpus_files(corpus, origins, limit)
+    manifest = load_manifest(corpus)
+    files = _corpus_files(corpus, manifest, origins, limit)
     store = BlobStore(scratch / "blob")
 
     def work(item: tuple[Path, str, int]) -> dict[str, int]:
@@ -153,6 +159,7 @@ def bench_blob(
         return {}
 
     rows, wall, counts = _timed_map(work, files, workers)
+    verify_manifest(corpus, manifest)
     return _summarise(rows, wall, {"component": "blob", "workers": workers, "counts": counts})
 
 

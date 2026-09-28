@@ -29,9 +29,12 @@ STAGE_ROLLUP: Final[tuple[tuple[str, str], ...]] = (
     (r"^full\.source_|^raw_|blob|^source\.", "acquire"),
     (r"provider_parse|parse_stage|^census", "parse"),
     (r"^full\.index\.prepare", "materialize"),
+    # Derived work timed inside the index phase (``full.index.graph_resolve``,
+    # ``full.index.delegation_facts``) is its own bucket, so it must match
+    # before the generic index prefix.
+    (r"graph_resolve|lineage|delegation|hook_paste|paste", "derived_inline"),
     (r"^full\.index\.", "index"),
     (r"^full\.index_parsed_write$", "index_total"),
-    (r"graph_resolve|lineage|delegation|hook_paste|paste", "derived_inline"),
 )
 
 _TS_FORMAT: Final = "%Y-%m-%dT%H:%M:%S.%fZ"
@@ -278,44 +281,38 @@ def archive_census(archive: Path, promoted_index: str | None) -> dict[str, Any]:
     return result
 
 
-_PROBE_TOKEN = re.compile(r"[^\W_]{2,}")
+def _fts_postings(read: sqlite3.Connection) -> dict[str, Any]:
+    """Digest every posting ``messages_fts`` holds, keyed by block identity.
 
-
-def _fts_probe(read: sqlite3.Connection, *, probes: int = 64) -> dict[str, Any]:
-    """Digest what search returns, not just how many rows FTS holds.
-
-    ``messages_fts`` is contentless, so its postings cannot be read back and
-    the table census skips it. Instead a deterministic set of terms drawn
-    from ``blocks.search_text`` (every k-th block, its first word) is run
-    through MATCH, and the matching block ids are digested per term.
+    ``messages_fts`` is contentless, so its text cannot be read back and the
+    table census skips it. Its index can: ``fts5vocab`` in ``instance`` mode
+    lists every (term, document, column, offset) posting. Each posting is
+    named by its block's ``block_id`` (FTS rowids are not stable across
+    builds; a posting whose rowid names no block digests as ``null``), and
+    the postings are folded into an order-independent sum of SHA-256
+    digests, so the pass streams in constant memory whatever the archive
+    size and still sees a moved, dropped or added posting for any term.
     """
-    total = int(read.execute("SELECT COUNT(*) FROM blocks WHERE search_text IS NOT NULL").fetchone()[0])
-    if not total:
-        return {"rows": 0, "sha256": hashlib.sha256(b"").hexdigest()}
-    step = max(1, total // probes)
-    terms: list[str] = []
-    for index, (text,) in enumerate(
-        read.execute("SELECT search_text FROM blocks WHERE search_text IS NOT NULL ORDER BY block_id")
-    ):
-        if index % step:
-            continue
-        match = _PROBE_TOKEN.search(str(text))
-        if match and match.group(0).lower() not in terms:
-            terms.append(match.group(0).lower())
-    digest = hashlib.sha256()
-    hits = 0
-    for term in sorted(terms):
-        ids = [
-            str(row[0])
-            for row in read.execute(
-                "SELECT b.block_id FROM messages_fts JOIN blocks b ON b.rowid = messages_fts.rowid "
-                "WHERE messages_fts MATCH ? ORDER BY b.block_id",
-                ('"' + term.replace('"', '""') + '"',),
-            )
-        ]
-        hits += len(ids)
-        digest.update(json.dumps([term, ids]).encode())
-    return {"rows": hits, "terms": len(terms), "sha256": digest.hexdigest()}
+    read.execute("DROP TABLE IF EXISTS temp.bench_fts_postings")
+    read.execute("CREATE VIRTUAL TABLE temp.bench_fts_postings USING fts5vocab(main, messages_fts, instance)")
+    total = 0
+    postings = 0
+    terms = 0
+    previous: str | None = None
+    try:
+        for term, block_id, column, offset in read.execute(
+            "SELECT v.term, b.block_id, v.col, v.offset FROM temp.bench_fts_postings v "
+            "LEFT JOIN blocks b ON b.rowid = v.doc"
+        ):
+            payload = json.dumps([term, block_id, column, offset], ensure_ascii=True, separators=(",", ":"))
+            total = (total + int.from_bytes(hashlib.sha256(payload.encode()).digest(), "big")) % (1 << 256)
+            postings += 1
+            if term != previous:
+                terms += 1
+                previous = term
+    finally:
+        read.execute("DROP TABLE IF EXISTS temp.bench_fts_postings")
+    return {"rows": postings, "terms": terms, "sha256": f"{total:064x}"}
 
 
 def output_fingerprint(archive: Path, promoted_index: str, scratch: Path) -> dict[str, Any]:
@@ -365,7 +362,7 @@ def output_fingerprint(archive: Path, promoted_index: str, scratch: Path) -> dic
                 digest.update(payload.encode())
                 digest.update(b"\n")
             tables[table] = {"rows": rows, "sha256": digest.hexdigest()}
-        tables["messages_fts:search_probe"] = _fts_probe(read)
+        tables["messages_fts:postings"] = _fts_postings(read)
     spool_path.unlink(missing_ok=True)
     overall = hashlib.sha256(json.dumps(tables, sort_keys=True).encode()).hexdigest()
     return {"digest": overall, "tables": tables}
@@ -852,17 +849,30 @@ def comparability_problems(before: dict[str, Any], after: dict[str, Any]) -> lis
         if before["environment"].get(key) != after["environment"].get(key):
             problems.append(f"different host ({key})")
     for side, receipt in (("before", before), ("after", after)):
+        # Integrity failures mean the declared inputs or the measurement
+        # evidence are invalid; no waiver makes such a run's numbers or
+        # output digests admissible.
+        for check in INTEGRITY_CHECKS:
+            if (receipt.get("checks") or {}).get(check) is False:
+                problems.append(f"{side} run failed integrity check {check}")
         if not receipt.get("qualified"):
             problems.append(f"{side} run is not qualified (outcome {receipt.get('outcome')})")
     return problems
 
 
+#: Checks whose failure invalidates a receipt rather than leaving its build
+#: unsettled: the candidate or corpus changed under the run, or the event log
+#: the receipt reduces lost events. ``--allow-unqualified`` never waives them.
+INTEGRITY_CHECKS: Final = ("candidate_unchanged", "corpus_unchanged", "events_lossless")
+
+
 def compare(before: dict[str, Any], after: dict[str, Any], *, allow_unqualified: bool = False) -> tuple[bool, str]:
     """Render the deltas; the flag says whether the comparison is admissible.
 
-    Different corpora or configurations are never admissible. An unqualified
-    run is admissible only when asked for (``allow_unqualified``), for
-    example to read a promoted index's output digests from a build whose
+    Different corpora or configurations are never admissible, nor is a run
+    that failed an integrity check (:data:`INTEGRITY_CHECKS`). An otherwise
+    unqualified run is admissible only when asked for (``allow_unqualified``),
+    for example to read a promoted index's output digests from a build whose
     derived phase did not settle; the verdict line says so.
     """
     problems = comparability_problems(before, after)

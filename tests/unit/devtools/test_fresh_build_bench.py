@@ -73,7 +73,8 @@ def test_event_reduction_scopes_intake_and_writer_share_to_promotion(tmp_path: P
 
 def test_stage_rollup_counts_leaf_timers_once(tmp_path: Path) -> None:
     """Anti-vacuity: rolling up the parent ``full.index.full_replace`` as well
-    as its children doubles the ``index`` bucket."""
+    as its children doubles the ``index`` bucket; matching the generic index
+    prefix first charges ``full.index.graph_resolve`` to ``index``."""
     import sqlite3
 
     ops = tmp_path / "ops.db"
@@ -86,6 +87,7 @@ def test_stage_rollup_counts_leaf_timers_once(tmp_path: Path) -> None:
                 "full.index.full_replace.messages": 2.0,
                 "full.index.full_replace.blocks": 1.0,
                 "full.index.prepare": 4.0,
+                "full.index.graph_resolve": 5.0,
             },
         }
         conn.execute("INSERT INTO daemon_events VALUES ('ingestion_batch', ?)", (json.dumps(payload),))
@@ -93,6 +95,7 @@ def test_stage_rollup_counts_leaf_timers_once(tmp_path: Path) -> None:
     buckets = dict(batches["stage_buckets_seconds"])
     assert buckets["index"] == 3.0
     assert buckets["materialize"] == 4.0
+    assert buckets["derived_inline"] == 5.0
     assert batches["totals"]["total_time_s"] == 10.0
 
 
@@ -244,6 +247,17 @@ def test_compare_refuses_different_configs_and_unqualified_runs() -> None:
     assert not ok
     ok, text = compare(before, unqualified, allow_unqualified=True)
     assert ok and "WARNING" in text and "IDENTICAL" in text
+
+
+@pytest.mark.parametrize("check", ["candidate_unchanged", "corpus_unchanged", "events_lossless"])
+def test_allow_unqualified_never_waives_an_integrity_failure(check: str) -> None:
+    """Anti-vacuity: waiving every qualification problem admits a receipt
+    whose corpus, candidate or event log was invalid and prints IDENTICAL."""
+    invalid = _receipt(qualified=False, checks={"promoted": True, check: False})
+    ok, text = compare(_receipt(qualified=True), invalid, allow_unqualified=True)
+    assert not ok
+    assert "IDENTICAL" not in text
+    assert f"integrity check {check}" in text
 
 
 def test_overrides_cannot_redirect_the_isolated_archive(tmp_path: Path) -> None:
@@ -400,23 +414,110 @@ def test_a_ledgerless_ops_db_reduces_to_zero_batches(tmp_path: Path) -> None:
     assert analyse_batches(ops) == {"batches": 0}
 
 
-def test_search_probe_sees_postings_not_just_counts(tmp_path: Path) -> None:
-    """Anti-vacuity: two indexes with the same FTS row count but different
-    indexed text have different probe digests."""
+def test_postings_digest_sees_every_term(tmp_path: Path) -> None:
+    """Anti-vacuity: digesting only each sampled block's first token sees
+    ``common`` alone, so moving a ``uniqueNNN`` posting to another block
+    keeps the digest; the posting count alone misses the move too."""
     import sqlite3
 
-    from devtools.fresh_build_bench.report import _fts_probe
+    from devtools.fresh_build_bench.report import _fts_postings
 
-    def build(indexed: str) -> dict[str, object]:
-        path = tmp_path / f"{indexed}.db"
+    texts = {1: "common unique001", 2: "common unique002", 3: "common unique003"}
+
+    def build(name: str, indexed: dict[int, str]) -> dict[str, object]:
+        path = tmp_path / f"{name}.db"
         with sqlite3.connect(path) as conn:
             conn.execute("CREATE TABLE blocks (block_id TEXT, search_text TEXT)")
-            conn.execute("CREATE VIRTUAL TABLE messages_fts USING fts5(text, content='')")
-            conn.execute("INSERT INTO blocks (rowid, block_id, search_text) VALUES (1, 'b1', 'alpha beta')")
-            conn.execute("INSERT INTO messages_fts (rowid, text) VALUES (1, ?)", (indexed,))
-        with sqlite3.connect(path) as conn:
-            return _fts_probe(conn)
+            conn.execute("CREATE VIRTUAL TABLE messages_fts USING fts5(text, content='', contentless_delete=1)")
+            for rowid, text in texts.items():
+                conn.execute(
+                    "INSERT INTO blocks (rowid, block_id, search_text) VALUES (?, ?, ?)", (rowid, f"b{rowid}", text)
+                )
+                conn.execute("INSERT INTO messages_fts (rowid, text) VALUES (?, ?)", (rowid, indexed[rowid]))
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+            return _fts_postings(conn)
 
-    right, wrong = build("alpha beta"), build("gamma delta")
-    assert right["rows"] == 1 and wrong["rows"] == 0
-    assert right["sha256"] != wrong["sha256"]
+    right = build("right", texts)
+    again = build("again", dict(texts))
+    moved = build("moved", {**texts, 2: "common unique003", 3: "common unique002"})
+    assert right == again
+    assert right["rows"] == moved["rows"] == 6
+    assert right["terms"] == 4
+    assert right["sha256"] != moved["sha256"]
+
+
+def test_export_only_corpus_has_a_home_and_rejects_colliding_exports(tmp_path: Path) -> None:
+    """Anti-vacuity: without the stand-in home the run cannot resolve
+    ``home/``; without the collision check the second export overwrites the
+    first while the manifest counts two."""
+    first, second = tmp_path / "a" / "conversations.json", tmp_path / "b" / "conversations.json"
+    for path in (first, second):
+        path.parent.mkdir()
+        path.write_text("[]", encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    manifest = corpus_from_files(tmp_path / "exports-only", [], home=home, exports=[("chatgpt", first)])
+    assert manifest["file_count"] == 1
+    assert (tmp_path / "exports-only" / "home").is_dir()
+    with pytest.raises(ValueError, match="share the name"):
+        corpus_from_files(tmp_path / "collide", [], home=home, exports=[("chatgpt", first), ("chatgpt", second)])
+
+
+def test_verification_errors_name_no_corpus_path(tmp_path: Path) -> None:
+    """Anti-vacuity: naming the changed file puts a private project path in
+    the job log."""
+    corpus = tmp_path / "corpus"
+    transcript = corpus / "home" / ".claude" / "projects" / "private-project" / "session-secret.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text("{}\n", encoding="utf-8")
+    seal(corpus, kind="sample", parameters={})
+    transcript.write_text("{} \n", encoding="utf-8")
+    with pytest.raises(ValueError) as caught:
+        verify_manifest(corpus, load_manifest(corpus))
+    assert "1 corpus file(s) changed size" in str(caught.value)
+    assert "private-project" not in str(caught.value)
+    assert "session-secret" not in str(caught.value)
+
+
+def test_component_run_fails_when_the_corpus_changes_during_timing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: verifying only before timing reports throughput for the
+    sealed byte count although the worker read other bytes."""
+    from devtools.fresh_build_bench import components
+    from polylogue.storage.blob_store import BlobStore
+
+    corpus = tmp_path / "corpus"
+    transcript = corpus / "home" / ".codex" / "sessions" / "rollout.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text("{}\n", encoding="utf-8")
+    seal(corpus, kind="sample", parameters={})
+    original = BlobStore.write_from_path
+
+    def grow_then_write(self: BlobStore, path: Path) -> object:
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write("{}\n")
+        return original(self, path)
+
+    monkeypatch.setattr(BlobStore, "write_from_path", grow_then_write)
+    with pytest.raises(ValueError, match="changed size"):
+        components.bench_blob(corpus, tmp_path / "scratch", workers=1, origins=None, limit=None)
+
+
+def test_sampler_keeps_io_counters_of_a_process_that_vanished(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: treating unreadable counters as zeros drops the exited
+    worker's 300 read bytes from the totals."""
+    from devtools.fresh_build_bench import run
+
+    readable = {"io": True}
+    monkeypatch.setattr(run, "_tree", lambda pid: [pid, 42])
+    monkeypatch.setattr(run, "_proc_stat", lambda pid: (10, 4096, 1))
+    monkeypatch.setattr(run, "_proc_rss_hwm", lambda pid: 0)
+    monkeypatch.setattr(
+        run, "_proc_io", lambda pid: ((100, 0) if pid != 42 else (300, 7)) if readable["io"] or pid != 42 else None
+    )
+    sampler = run.TreeSampler(1, origin=0.0)
+    sampler._sample()
+    readable["io"] = False
+    sampler._sample()
+    assert sampler.samples[-1][4:] == (400, 7)

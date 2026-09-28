@@ -75,13 +75,14 @@ summarises it or writes flame-graph input.
 | `thread_cpu_s` | in-daemon sampler | CPU seconds per writer actor and per other thread group |
 | `process_tree` | driver samples | peak and p95 RSS, CPU seconds, mean cores, block I/O |
 | `checks`, `budgets`, `qualified` | archive, samples | terminal checks and asserted budgets |
-| `output_fingerprint` | promoted index | per-table digests over the differential harness's comparable relations |
+| `output_fingerprint` | promoted index | per-table digests over the differential harness's comparable relations, and a digest of every `messages_fts` posting by block |
 
 `compare BEFORE AFTER` prints the deltas and whether the per-table output
 digests are identical, and exits non-zero unless the receipts are comparable:
 same corpus, same run configuration, interpreter and host (architecture, CPU count, memory, work filesystem), and both qualified.
 `--allow-unqualified` admits a run that promoted but did not settle, with a
-warning. An optimisation claims equivalence only on identical digests from
+warning; it never admits a run whose candidate or corpus changed during the
+build or whose event log lost events. An optimisation claims equivalence only on identical digests from
 comparable receipts.
 
 ## Components
@@ -90,7 +91,8 @@ comparable receipts.
 production stage over the corpus's files: the off-writer parse and
 preparation a worker runs per file, or blob acquisition. Parse runs on
 threads, so it isolates per-file cost; process-pool start-up and IPC belong to
-the end-to-end run. Any worker error exits non-zero. They iterate in seconds;
+the end-to-end run. Any worker error, or a corpus file that changed during
+the timed work, exits non-zero. They iterate in seconds;
 the end-to-end run proves the total.
 
 ## Reading the numbers

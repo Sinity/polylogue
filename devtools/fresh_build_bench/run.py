@@ -29,7 +29,7 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import closing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
@@ -128,12 +128,13 @@ def _proc_rss_hwm(pid: int) -> int:
     return 0
 
 
-def _proc_io(pid: int) -> tuple[int, int]:
+def _proc_io(pid: int) -> tuple[int, int] | None:
+    """(read bytes, write bytes), or ``None`` when the counters are unreadable."""
     try:
         with open(f"/proc/{pid}/io", encoding="ascii") as stream:
             fields = dict(line.split(": ", 1) for line in stream.read().splitlines())
     except OSError:
-        return 0, 0
+        return None
     return int(fields.get("read_bytes", 0)), int(fields.get("write_bytes", 0))
 
 
@@ -167,6 +168,11 @@ class TreeSampler:
             rss += stat[1]
             threads += stat[2]
             io = _proc_io(pid)
+            if io is None:
+                # The process exited between the two reads: its last
+                # successful counters stand, not zeros.
+                previous = self._cumulative.get(pid)
+                io = (previous[1], previous[2]) if previous is not None else (0, 0)
             self._cumulative[pid] = (stat[0], io[0], io[1])
         self.daemon_rss_hwm_bytes = max(self.daemon_rss_hwm_bytes, _proc_rss_hwm(self.pid))
         cpu_ticks = sum(value[0] for value in self._cumulative.values())
@@ -522,14 +528,51 @@ def _stop(process: subprocess.Popen[bytes], timeout_s: float) -> tuple[int | Non
 
 
 def run_build(config: RunConfig, *, progress: Callable[[str], None] = print) -> dict[str, Any]:
-    from devtools.fresh_build_bench.report import build_receipt
-
     manifest = load_manifest(config.corpus)
     paths = _prepare_paths(config)
     identity = candidate_identity(config.candidate)
     env_summary = environment(config)
     command = _daemon_command(config)
     daemon_env = _daemon_env(config, paths)
+    interrupted: list[int] = []
+
+    def _interrupt(signum: int, _frame: object) -> None:
+        # A cancelled job still owes a receipt for the work it measured. The
+        # handler stays installed until the receipt is on disk.
+        interrupted.append(signum)
+
+    previous_handlers = {sig: signal.signal(sig, _interrupt) for sig in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        return _measure_and_write_receipt(
+            config,
+            manifest=manifest,
+            paths=paths,
+            identity=identity,
+            env_summary=env_summary,
+            command=command,
+            daemon_env=daemon_env,
+            interrupted=interrupted,
+            progress=progress,
+        )
+    finally:
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
+
+
+def _measure_and_write_receipt(
+    config: RunConfig,
+    *,
+    manifest: dict[str, Any],
+    paths: dict[str, Path],
+    identity: dict[str, Any],
+    env_summary: dict[str, Any],
+    command: list[str],
+    daemon_env: dict[str, str],
+    interrupted: list[int],
+    progress: Callable[[str], None],
+) -> dict[str, Any]:
+    from devtools.fresh_build_bench.report import build_receipt
+
     log_stream = paths["daemon_log"].open("wb")
     started_wall = time.time()
     started = time.monotonic()
@@ -546,13 +589,6 @@ def run_build(config: RunConfig, *, progress: Callable[[str], None] = print) -> 
     last_report = 0.0
     last_progress_key: tuple[object, ...] | None = None
     last_progress_at = 0.0
-    interrupted: list[int] = []
-
-    def _interrupt(signum: int, _frame: object) -> None:
-        # A cancelled job still owes a receipt for the work it measured.
-        interrupted.append(signum)
-
-    previous_handlers = {sig: signal.signal(sig, _interrupt) for sig in (signal.SIGTERM, signal.SIGINT)}
     try:
         deadline = started + config.timeout_s
         while time.monotonic() < deadline:
@@ -611,8 +647,6 @@ def run_build(config: RunConfig, *, progress: Callable[[str], None] = print) -> 
         exit_code, shutdown_s = _stop(process, 300.0)
         sampler.finish()
         log_stream.close()
-        for sig, handler in previous_handlers.items():
-            signal.signal(sig, handler)
     finished = time.monotonic()
     final = observe(paths["archive"], started)
     # The watcher may have read a file edited after the launch-time check.
@@ -626,8 +660,10 @@ def run_build(config: RunConfig, *, progress: Callable[[str], None] = print) -> 
     identity["unchanged_during_run"] = candidate_identity(config.candidate) == {
         key: identity[key] for key in ("git_sha", "dirty", "tracked_diff_sha256")
     }
+    # A cancellation that arrived after the loop skips the fingerprint, the
+    # one step that scales with the archive, as an in-loop one does.
     receipt = build_receipt(
-        config=config,
+        config=replace(config, fingerprint=False) if interrupted else config,
         manifest=manifest,
         paths=paths,
         identity=identity,
@@ -645,7 +681,10 @@ def run_build(config: RunConfig, *, progress: Callable[[str], None] = print) -> 
         daemon_rss_hwm_bytes=sampler.daemon_rss_hwm_bytes,
         corpus_unchanged=corpus_unchanged,
     )
-    paths["receipt"].write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    # Atomic: a receipt is either absent or complete.
+    staging = paths["receipt"].with_name(paths["receipt"].name + ".tmp")
+    staging.write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(staging, paths["receipt"])
     return receipt
 
 
