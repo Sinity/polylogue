@@ -335,10 +335,19 @@ def test_a_callers_plugin_load_survives_into_the_rerun() -> None:
 
 
 def test_the_suite_file_batch_is_dropped_with_its_value() -> None:
-    """Anti-vacuity: leave ``--polylogue-file-batch`` out of the table and its
+    """Anti-vacuity: read the option table without the suite's conftest and
     ``1/2`` is dropped as an operand, so the rerun gets a value-less option."""
     command = ["python", "-m", "pytest", "--polylogue-file-batch", "1/2", "-W", "error", "tests/test_w.py"]
     assert pytest_rerun.semantic_rerun_options(command) == ["-W", "error"]
+
+
+@pytest.mark.parametrize(("option", "value"), [("--assert", "plain"), ("--show-capture", "no"), ("--cov", "polylogue")])
+def test_an_option_pytest_reads_a_value_for_keeps_it_in_the_rerun(option: str, value: str) -> None:
+    """Anti-vacuity: classify arity from a hand-kept list that omits ``option``
+    and its value is dropped as an operand, so the rerun passes the failed node
+    id as the option's value and pytest exits with a usage error."""
+    command = ["python", "-m", "pytest", option, value, "tests/test_w.py"]
+    assert pytest_rerun.semantic_rerun_options(command) == [option, value]
 
 
 def test_the_first_attempts_descendants_are_reaped_before_a_rerun() -> None:

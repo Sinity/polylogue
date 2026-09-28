@@ -53,6 +53,7 @@ from devtools.pytest_invocation import (
     effective_hypothesis_profile,
     managed_plugin_args,
 )
+from devtools.pytest_options import operand_count
 from devtools.pytest_rerun import RERUN_IN_SLOT_ENV, rerun_failed_once, semantic_rerun_options
 from devtools.pytest_slot import (
     WORKTREE_PROVENANCE_ENV,
@@ -640,112 +641,17 @@ LARGE_SELECTION_MODULES = 8
 BROAD_SELECTION_MODULES = 100
 
 
-#: Pytest options whose next argument is their value, not a selection.
-_VALUE_TAKING_OPTIONS = frozenset(
-    {
-        "-k",
-        "-m",
-        "-p",
-        "-c",
-        "-o",
-        "-W",
-        "-n",
-        "--ignore",
-        "--ignore-glob",
-        "--deselect",
-        "--rootdir",
-        "--basetemp",
-        "--confcutdir",
-        "--junitxml",
-        "--junit-xml",
-        "--log-file",
-        "--maxfail",
-        "--tb",
-        "--dist",
-        "--numprocesses",
-        "--timeout",
-        "--hypothesis-profile",
-        "--hypothesis-seed",
-        "--override-ini",
-        "--config-file",
-        "--capture",
-        "--import-mode",
-        "-r",
-        "--color",
-        "--code-highlight",
-        "--durations",
-        "--durations-min",
-        "--verbosity",
-        "--pastebin",
-        "--junit-prefix",
-        "--report-log",
-        "--doctest-glob",
-        "--doctest-report",
-        "--last-failed-no-failures",
-        "--lfnf",
-        "--log-level",
-        "--log-format",
-        "--log-date-format",
-        "--log-cli-level",
-        "--log-cli-format",
-        "--log-cli-date-format",
-        "--log-file-level",
-        "--log-file-format",
-        "--log-file-date-format",
-        "--log-file-mode",
-        "--log-auto-indent",
-        "--log-disable",
-        "--maxprocesses",
-        "--max-worker-restart",
-        "--tx",
-        "--rsyncdir",
-        "--rsyncignore",
-        "--timeout-method",
-        "--hypothesis-verbosity",
-        "--randomly-seed",
-        "--cov",
-        "--cov-report",
-        "--cov-config",
-        "--cov-fail-under",
-        "--cov-context",
-        "--benchmark-sort",
-        "--benchmark-group-by",
-        "--benchmark-columns",
-        "--benchmark-name",
-        "--benchmark-save",
-        "--benchmark-autosave",
-        "--benchmark-compare",
-        "--benchmark-compare-fail",
-        "--benchmark-min-time",
-        "--benchmark-max-time",
-        "--benchmark-min-rounds",
-        "--benchmark-timer",
-        "--benchmark-calibration-precision",
-        "--benchmark-warmup",
-        "--benchmark-warmup-iterations",
-        "--benchmark-storage",
-        "--benchmark-json",
-        "--benchmark-histogram",
-        "--benchmark-cprofile",
-        "--benchmark-time-unit",
-        "--snapshot-update-dir",
-        "--snapshot-default-extension",
-        "--polylogue-file-batch",
-    }
-)
-
-
 def _selected_test_modules(selection: list[str]) -> int:
     """How many test modules the selection names, directories expanded."""
     modules: set[Path] = set()
-    # Only the operand of an option known to take one is skipped: pytest's
+    # An option's value is skipped exactly as pytest's parser consumes it:
     # standalone flags (``-x``, ``--strict-markers``, ...) take none, and the
     # path after them is still a selection.
-    certain = [
-        argument
-        for index, argument in enumerate(selection)
-        if not (index and selection[index - 1] in _VALUE_TAKING_OPTIONS)
-    ]
+    certain: list[str] = []
+    index = 0
+    while index < len(selection):
+        certain.append(selection[index])
+        index += 1 + operand_count(selection, index)
     if not any(not argument.startswith("-") for argument in certain):
         # No path operand: pytest collects its configured ``testpaths``, the
         # whole test tree, so the selection is counted as that tree.
@@ -767,10 +673,11 @@ def _xdist_disabled(selection: list[str]) -> bool:
     """Whether the caller disabled xdist or asked for output it cannot carry.
 
     ``-p no:xdist`` disables it outright; ``-s``/``--capture=no`` asks for
-    live output, which xdist workers cannot forward.
+    live output, and ``--pdb``/``--trace`` for an interactive debugger, neither
+    of which xdist workers can provide.
     """
     return any(
-        argument in {"-pno:xdist", "-p=no:xdist", "-s", "--capture=no"}
+        argument in {"-pno:xdist", "-p=no:xdist", "-s", "--capture=no", "--pdb", "--trace"}
         or (argument == "no:xdist" and index and selection[index - 1] == "-p")
         or (argument == "no" and index and selection[index - 1] == "--capture")
         for index, argument in enumerate(selection)
@@ -1098,12 +1005,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 4
 
+    if runner == "managed":
+        # Two callers in one checkout asking for the same selection share one
+        # run: the second waits here, then finds the first's receipt below. A
+        # forced or non-reusing run takes the lock too, so its new receipt can
+        # never land while another caller is answering from an older one.
+        _hold_selection_lock(selection)
     # An isolated run exists to execute outside the managed slot; a managed
     # receipt cannot stand in for it.
     if not force_rerun and runner == "managed" and os.environ.get(REUSE_ENV, "1") != "0":
-        # Two callers in one checkout asking for the same selection share one
-        # run: the second waits here, then finds the first's receipt below.
-        _hold_selection_lock(selection)
         # The wait for the lock can be long: the checkout may have changed
         # branch meanwhile, so admission is decided again before any reuse.
         identity = checkout_identity(ROOT)

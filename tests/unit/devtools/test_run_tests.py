@@ -30,11 +30,18 @@ from devtools.verify_runs import (
 )
 from devtools.worker_memory import CHARGE_PROFILE_ENV, FOCUSED_MAX_WORKERS
 
+_HOLD_SELECTION_LOCK = run_tests._hold_selection_lock
+
 
 @pytest.fixture(autouse=True)
 def _no_receipt_reuse(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``main`` tests exercise the run path, never a reused receipt from this checkout."""
+    """``main`` tests exercise the run path, never a reused receipt from this checkout.
+
+    The outer ``devtools test`` running this file holds the real checkout's
+    selection lock, so ``main`` here never takes it; the lock has its own law.
+    """
     monkeypatch.setenv(run_tests.REUSE_ENV, "0")
+    monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
 
 
 def _write_passing_evidence(root: Path, run: VerifyRun) -> None:
@@ -1215,9 +1222,6 @@ def test_main_reuses_a_green_receipt_without_queueing(
 ) -> None:
     """Anti-vacuity: without the reuse branch ``main`` reaches the fake slot and fails."""
     monkeypatch.setenv(run_tests.REUSE_ENV, "1")
-    # The outer ``devtools test`` running this file holds the real checkout's
-    # lock for this very selection; the lock has its own law below.
-    monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
     receipt = tmp_path / "run.json"
     receipt.write_text(json.dumps({"status": "success"}), encoding="utf-8")
     monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: receipt)
@@ -1254,7 +1258,7 @@ def test_identical_selections_in_one_checkout_share_one_run(tmp_path: Path, monk
     done = threading.Event()
 
     def second_caller() -> None:
-        run_tests._hold_selection_lock(selection)
+        _HOLD_SELECTION_LOCK(selection)
         done.set()
 
     thread = threading.Thread(target=second_caller, daemon=True)
@@ -1303,7 +1307,6 @@ def test_a_reused_receipt_is_emitted_as_json_when_asked(
 ) -> None:
     """Anti-vacuity: drop the ``use_json`` branch on reuse and stdout is empty."""
     monkeypatch.setenv(run_tests.REUSE_ENV, "1")
-    monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
     receipt = tmp_path / "run.json"
     receipt.write_text(json.dumps({"status": "success", "run_id": "r1"}), encoding="utf-8")
     monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: receipt)
@@ -1394,7 +1397,6 @@ def test_reuse_is_refused_when_the_tree_changes_during_lookup(monkeypatch: pytes
     reused receipt instead of reaching the (fake) slot.
     """
     monkeypatch.setenv(run_tests.REUSE_ENV, "1")
-    monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
     digests = iter(["before", "after", "after", "after", "after"])
     monkeypatch.setattr(run_tests, "git_worktree_content_sha256", lambda _root: next(digests, "after"))
     monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: tmp_path / "run.json")
@@ -1417,7 +1419,6 @@ def test_a_branch_switch_during_lookup_refuses_reuse(monkeypatch: pytest.MonkeyP
     from devtools.checkout_identity import CheckoutIdentity
 
     monkeypatch.setenv(run_tests.REUSE_ENV, "1")
-    monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
     monkeypatch.setattr(run_tests, "git_worktree_content_sha256", lambda _root: "same")
     feature = CheckoutIdentity(root=tmp_path, branch="feature", head="h1", default_branch="master")
     default = CheckoutIdentity(root=tmp_path, branch="master", head="h1", default_branch="master")
@@ -1459,17 +1460,50 @@ def test_uncaptured_output_keeps_a_large_selection_serial(capture: list[str]) ->
     assert "-n" not in cmd
 
 
-def test_the_report_chars_operand_is_not_a_path() -> None:
-    """Anti-vacuity: drop ``-r`` from the value-taking options and ``f`` is the
-    only (missing) path, so a pathless run counts zero modules."""
-    assert run_tests._selected_test_modules(["-r", "f"]) == run_tests._selected_test_modules([])
-    assert run_tests._selected_test_modules(["--color", "yes"]) == run_tests._selected_test_modules([])
+@pytest.mark.parametrize("value_option", [["-r", "f"], ["--color", "yes"], ["--show-capture", "no"]])
+def test_an_option_value_is_not_a_path(value_option: list[str]) -> None:
+    """Anti-vacuity: classify arity from a hand-kept list that omits the option
+    and its value is the only (missing) path, so a pathless run counts zero
+    modules and the whole suite runs serially."""
+    assert run_tests._selected_test_modules(value_option) == run_tests._selected_test_modules([])
+
+
+@pytest.mark.parametrize("debugger", ["--pdb", "--trace"])
+def test_an_interactive_debugger_keeps_a_large_selection_serial(debugger: str) -> None:
+    """Anti-vacuity: drop the debugger override and ``-n 4`` gives the
+    debugger a worker with no standard input."""
+    cmd = run_tests.build_pytest_cmd(["tests/unit/devtools", debugger])
+    assert "-n" not in cmd
+
+
+def test_a_forced_rerun_takes_the_selection_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``--rerun`` holds the same lock as a reusing caller, while skipping reuse.
+
+    Anti-vacuity: take the lock only on the reuse branch and ``--rerun`` never
+    reaches ``_hold_selection_lock``, so its red receipt can land while another
+    caller is still answering from an older green one.
+    """
+
+    class LockedError(Exception):
+        pass
+
+    held: list[list[str]] = []
+
+    def record(selection: list[str]) -> None:
+        held.append(list(selection))
+        raise LockedError
+
+    monkeypatch.setenv(run_tests.REUSE_ENV, "1")
+    monkeypatch.setattr(run_tests, "_hold_selection_lock", record)
+
+    with pytest.raises(LockedError):
+        run_tests.main(["tests/unit/devtools/test_run_tests.py", "--rerun"])
+    assert held == [["tests/unit/devtools/test_run_tests.py"]]
 
 
 def test_an_isolated_run_is_never_answered_from_a_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Anti-vacuity: allow reuse for ``--runner isolated`` and the managed receipt returns without running."""
     monkeypatch.setenv(run_tests.REUSE_ENV, "1")
-    monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
     monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: tmp_path / "run.json")
     ran: list[bool] = []
 
@@ -1489,7 +1523,6 @@ def test_reuse_is_refused_when_the_example_database_moves_during_lookup(
     """Anti-vacuity: recheck only the tree digest and a counterexample saved by
     a concurrent selection mid-lookup is never replayed."""
     monkeypatch.setenv(run_tests.REUSE_ENV, "1")
-    monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
     monkeypatch.setattr(run_tests, "git_worktree_content_sha256", lambda _root: "same")
     keys = iter(["d0", "d1"])
     monkeypatch.setattr(run_tests, "_reuse_environment_key", lambda: next(keys, "d1"))
@@ -1518,7 +1551,6 @@ def test_a_receipt_pruned_during_lookup_sends_the_selection_to_run(
 ) -> None:
     """Anti-vacuity: suppress the read error and ``--json`` exits 0 with empty stdout."""
     monkeypatch.setenv(run_tests.REUSE_ENV, "1")
-    monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
     monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: tmp_path / "pruned" / "run.json")
     queued: list[bool] = []
 
@@ -1535,7 +1567,6 @@ def test_a_receipt_pruned_during_lookup_sends_the_selection_to_run(
 def test_a_broad_selection_is_sized_by_the_corpus_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Anti-vacuity: keep the focused profile for any selection and ``tests``
     is admitted at four focused workers the corpus model says cannot fit."""
-    monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
     seen: dict[str, str | None] = {}
 
     def capture(_cmd: list[str], **kwargs: Any) -> Any:
