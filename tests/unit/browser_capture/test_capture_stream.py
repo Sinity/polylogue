@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.browser_capture import capture_stream
+from polylogue.browser_capture import capture_decode, capture_stream
 from polylogue.core.json import dumps_bytes
 
 
@@ -22,7 +22,7 @@ def test_numbers_parse_as_the_stdlib_decoder_reads_them() -> None:
     double, so it either overflows or comes back as an inexact float.
     """
     raw = b"[184467440737095516161234, 1.5, 1e2, -7]"
-    numbers = [value for event, value in capture_stream._json_events(io.BytesIO(raw)) if event == "number"]
+    numbers = [value for event, value in capture_decode._json_events(io.BytesIO(raw)) if event == "number"]
     assert numbers == json.loads(raw)
     assert [type(value) for value in numbers] == [int, float, float, int]
 
@@ -34,7 +34,7 @@ def test_raw_payload_shape_keeps_only_the_scalars_detection_reads() -> None:
     the shape beside its digest.
     """
     payload = {"padding": "x" * 4096, "polylogue_bridge_projection": "compact", "mapping": {"a": 1}, "items": [1]}
-    events = capture_stream._json_events(io.BytesIO(json.dumps(payload).encode()))
+    events = capture_decode._json_events(io.BytesIO(json.dumps(payload).encode()))
     event, value = next(events)
     fold = capture_stream._read_raw_payload(events, event, value)
     assert fold.shape == {"padding": None, "polylogue_bridge_projection": "compact", "mapping": {}, "items": []}
@@ -70,7 +70,7 @@ def test_a_carrier_digest_matches_a_one_shot_decode(monkeypatch: pytest.MonkeyPa
     Anti-vacuity: decoding without the 4-aligned step, or letting mid-carrier
     padding through a chunk boundary, changes the digest or the verdict.
     """
-    monkeypatch.setattr(capture_stream, "_CARRIER_DECODE_CHUNK_CHARS", 8)
+    monkeypatch.setattr(capture_decode, "_CARRIER_DECODE_CHUNK_CHARS", 8)
     data = carrier.split(";base64,", 1)[1] if carrier.startswith("data:") and ";base64," in carrier else carrier
     try:
         expected: bytes | None = hashlib.sha256(base64.b64decode(data, validate=True)).digest()

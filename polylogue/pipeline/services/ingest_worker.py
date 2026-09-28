@@ -1072,7 +1072,7 @@ def _browser_capture_payload(context: _IngestContext, blob_store: BlobStore) -> 
     of holding the bytes. A document that turns out not to be a capture
     envelope takes the ordinary decode.
     """
-    from polylogue.browser_capture.capture_stream import iter_carrier_bytes, load_capture_for_ingest
+    from polylogue.browser_capture.capture_decode import iter_carrier_bytes, load_capture_for_ingest
     from polylogue.browser_capture.models import SpilledCarrier, looks_like_browser_capture
 
     if context.raw_record.source_name != _BROWSER_CAPTURE_SOURCE_NAME or is_jsonl_source_path(
