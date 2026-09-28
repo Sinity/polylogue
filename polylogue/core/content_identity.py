@@ -818,7 +818,15 @@ class _Entries:
         normalized = nfc(key).encode("utf-8", "surrogatepass")
         if len(normalized) + _SCRATCH_ROW_OVERHEAD > physical_value_limit():
             # A raw key always normalizes to the same text, so its repeats
-            # land here too and last-key-wins still holds.
+            # land here too and last-key-wins still holds. Charged to the
+            # shared budget like every other retained entry -- this object
+            # already spilled and cannot spill an oversized key again, but
+            # the document's other objects still read this budget, so an
+            # uncharged pile here would let them stay unspilled too.
+            if key not in self._memory:
+                cost = len(key) + _ENTRY_OVERHEAD_BYTES
+                self._retained += cost
+                self._budget.retained += cost
             self._memory[key] = digest
             return
         key_hash = sha256(key.encode("utf-8", "surrogatepass")).digest()
@@ -863,9 +871,14 @@ class _Entries:
     def close(self) -> None:
         if self._id is None:
             self._budget.retained -= self._retained
-            self._retained = 0
         else:
             self._budget.connection().execute("DELETE FROM entries WHERE obj = ?", (self._id,))
+            # Oversized keys landed back in ``_memory`` after the spill and
+            # are charged to the shared budget in ``_put``; that charge is
+            # released here too, or a spilled object's memory would never
+            # come back off the document-wide total.
+            self._budget.retained -= self._retained
+        self._retained = 0
         self._memory.clear()
 
 
