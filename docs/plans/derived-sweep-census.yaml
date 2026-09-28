@@ -650,7 +650,7 @@ sites:
     function: "rederive_codex_spawn_parent_links"
     subject: "sessions"
     kind: "state_selected_subject"
-    scope: "state_predicate"
+    scope: "no_where"
     classification: producer_scoped_transaction
     reason: "runs inside the Codex thread-state projection write, over the children whose projected parent that write moved. The sessions read is the descendant closure seeded from exactly those rewritten children (json_each over their ids), followed through parent_session_id, so the subject set is the lineage the write changed and never archive state at large"
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
