@@ -290,6 +290,31 @@ def test_a_fully_qualified_call_is_reported(tmp_path: Path) -> None:
     assert undeclared[0]["entrypoints"] == ["pkg.rebuild.rebuild_index"]
 
 
+def test_a_route_through_a_method_on_self_is_reported(tmp_path: Path) -> None:
+    """``self._rebuild()`` reaches the entrypoint through a sibling method.
+
+    The graph reduces each module to its reference sites before the next module
+    is read, and a ``self`` reference resolves against the enclosing class.
+    Anti-vacuity: drop the ``self`` site kind from that reduction and the
+    method that calls ``self._rebuild()`` never reaches the entrypoint, so the
+    census stops reporting it as a new entry root.
+    """
+    modules = _base_modules()
+    modules["pkg/maintenance/__init__.py"] = ""
+    modules["pkg/maintenance/worker.py"] = (
+        "from pkg.rebuild import rebuild_index\n\n\n"
+        "class Worker:\n"
+        "    def run(self, conn):\n        self._rebuild(conn)\n\n"
+        "    def _rebuild(self, conn):\n        rebuild_index(conn)\n"
+    )
+
+    violations, observation = _run(tmp_path, modules, _base_routes())
+
+    assert "pkg.maintenance.worker.Worker.run" in observation.entry_roots
+    undeclared = {item["function"] for item in violations if item["rule"] == "rebuild_route_undeclared"}
+    assert undeclared == {"pkg.maintenance.worker.Worker.run", "pkg.maintenance.worker.Worker._rebuild"}
+
+
 def test_a_local_import_does_not_erase_another_route(tmp_path: Path) -> None:
     """Two functions, one name, two different imports.
 
