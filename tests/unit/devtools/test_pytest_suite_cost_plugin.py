@@ -385,6 +385,29 @@ def test_the_heap_census_is_off_unless_asked_for(tmp_path: Path) -> None:
     assert "rss_after_gc_kib" not in point
 
 
+def test_post_gc_rss_is_read_before_heap_census_allocations(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The post-collection RSS sample must precede allocations made by census."""
+    events: list[str] = []
+    rss_values = iter((500, 400))
+
+    def read_rss() -> int:
+        events.append("rss")
+        return next(rss_values)
+
+    def census(collected: int) -> dict[str, object]:
+        events.append("census")
+        return {"collected": collected, "objects": 1, "top": {}}
+
+    monkeypatch.setattr(suite_cost, "_read_rss_kib", read_rss)
+    monkeypatch.setattr(suite_cost, "_heap_census_after_collect", census)
+    recorder = suite_cost.SuiteCostRecorder(tmp_path, "gw0", None, sample_heap=True)
+    recorder.note_test("tests/unit/heap/test_probe.py::t")
+    recorder.sample_memory()
+
+    assert events == ["rss", "rss", "census"], "census allocation must not contaminate the post-GC RSS sample"
+    assert recorder.payload()["rss_trajectory"][-1]["rss_after_gc_kib"] == 400
+
+
 def test_heap_sampling_initializes_rss_baseline_from_effective_flag(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
