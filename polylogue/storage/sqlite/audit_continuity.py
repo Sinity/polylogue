@@ -23,7 +23,6 @@ from typing import TypeVar, cast
 
 from polylogue.storage.sqlite.audit_leaf import (
     AuditLeafError,
-    VerifiedAuditLeaf,
     open_verified_audit_connection,
     open_verified_audit_read_connection,
     open_verified_sqlite_read_connection,
@@ -213,7 +212,7 @@ class AuditContinuityCoordinator:
         prepared = self._prepare(mutation)
         self._phase("after_source_prepare", mutation)
         try:
-            result = self._apply_prepared(prepared, apply, allow_rebind=mutation.kind == "rebind")
+            result = self._apply_prepared(prepared, apply)
         except Exception:
             # _apply_prepared has exited its audit transaction before this
             # handler runs. Clear this exact source WAL entry only when the
@@ -265,41 +264,8 @@ class AuditContinuityCoordinator:
         if prepared is None:
             self._assert_committed_head_matches_audit()
             return
-        mutation = AuditMutation.from_command(prepared["command"])
-        self._apply_prepared(prepared, apply, allow_rebind=mutation.kind == "rebind")
+        self._apply_prepared(prepared, apply)
         self._promote(prepared)
-
-    def reconcile_pending_rebind(self, mutation_id: str) -> bool:
-        """Complete only the named operation-owned rebind command, if pending."""
-
-        with self._execution_lock:
-            return self._reconcile_pending_rebind_serialized(mutation_id)
-
-    def _reconcile_pending_rebind_serialized(self, mutation_id: str) -> bool:
-        """Resume one rebind while excluding ordinary continuity writes."""
-
-        prepared = self._pending()
-        if prepared is None:
-            return self.has_committed_mutation(mutation_id)
-        mutation = AuditMutation.from_command(prepared["command"])
-        if mutation.kind != "rebind" or mutation.mutation_id != mutation_id:
-            raise AuditContinuityError("pending audit continuity command does not belong to this restore rebind")
-        if not self.is_available():
-            raise AuditContinuityError("pending restore rebind lacks a readable audit continuity head")
-        self._apply_prepared(prepared, lambda _conn, _mutation: None, allow_rebind=True)
-        self._promote(prepared)
-        return True
-
-    def has_pending_rebind(self, mutation_id: str) -> bool:
-        """Return whether source.db has the named restore-owned rebind prepared."""
-
-        prepared = self._pending()
-        if prepared is None:
-            return False
-        mutation = AuditMutation.from_command(prepared["command"])
-        if mutation.kind != "rebind" or mutation.mutation_id != mutation_id:
-            raise AuditContinuityError("pending audit continuity command does not belong to this restore rebind")
-        return True
 
     def is_available(self) -> bool:
         """Return whether both continuity tiers exist; a present tier lacking its half is damage."""
@@ -342,98 +308,6 @@ class AuditContinuityCoordinator:
             raise AuditContinuityError("runtime probe found an unreconciled audit continuity command")
         self._assert_committed_head_matches_audit()
         return "reconciled matching source/audit continuity heads"
-
-    def seed_or_rebind(self, *, mutation_id: str, now_ms: int, evidence: Mapping[str, object]) -> None:
-        """Advance continuity after an authenticated adoption or verified restore.
-
-        This is intentionally a typed WAL command too.  The caller has already
-        authenticated the external publication; this method only binds that
-        exact evidence to the new audit image without trusting inode identity.
-        """
-
-        with self._execution_lock:
-            expected_image_sha256 = evidence.get("audit_image_sha256")
-            if not isinstance(expected_image_sha256, str) or len(expected_image_sha256) != 64:
-                raise AuditContinuityError("rebind requires an exact audit image sha256")
-            if self.has_committed_mutation(mutation_id):
-                return
-            # Adoption and restore publish their immutable evidence only after
-            # this machine head advances. Resume this exact source-WAL command on
-            # retry instead of treating it as an unrelated competing mutation.
-            if self.has_pending_rebind(mutation_id):
-                self.reconcile_pending_rebind(mutation_id)
-                return
-            mutation = AuditMutation("rebind", mutation_id, now_ms, dict(evidence))
-
-            # A verified restored image can contain an older audit head. Its
-            # authenticated image hash is the authority to rebind it.
-            self.execute(mutation, lambda _conn, _mutation: None)
-
-    def has_committed_mutation(self, mutation_id: str) -> bool:
-        """Return whether both tiers already committed this exact mutation id."""
-        self._require_paths()
-        try:
-            with (
-                _open_source_read_connection(self.source_path) as source,
-                open_verified_audit_read_connection(self.audit_path) as audit,
-            ):
-                source_row = source.execute(
-                    "SELECT committed_generation, committed_head_sha256 FROM audit_continuity_control WHERE singleton = 1"
-                ).fetchone()
-                audit_row = audit.execute(
-                    "SELECT generation, head_sha256, mutation_id FROM audit_continuity_head WHERE singleton = 1"
-                ).fetchone()
-        except sqlite3.DatabaseError as exc:
-            if "no such table" in str(exc).lower():
-                return False
-            raise AuditContinuityError("cannot read audit continuity commit state") from exc
-        if source_row is None or audit_row is None:
-            raise AuditContinuityError("audit continuity control row is missing")
-        if (int(source_row[0]), str(source_row[1])) != (int(audit_row[0]), str(audit_row[1])):
-            return False
-        return isinstance(audit_row[2], str) and audit_row[2] == mutation_id
-
-    def reconcile_restore_rebind(
-        self,
-        mutation: AuditMutation,
-        *,
-        prior_generation: int,
-        prior_head_sha256: str,
-    ) -> bool:
-        """Resume one exact restore rebind without minting a second source head."""
-
-        with self._execution_lock:
-            if mutation.kind != "rebind":
-                raise AuditContinuityError("restore continuity reconciliation requires a rebind mutation")
-            expected = prepared_audit_continuity_command(
-                mutation, prior_generation=prior_generation, prior_head_sha256=prior_head_sha256
-            )
-            pending = self._pending()
-            if pending is not None:
-                if pending != expected:
-                    raise AuditContinuityError("pending restore rebind does not match its immutable prepared evidence")
-                self._apply_prepared(pending, lambda _conn, _mutation: None, allow_rebind=True)
-                self._promote(pending)
-                return True
-            with _open_source_read_connection(self.source_path) as source:
-                row = source.execute(
-                    "SELECT committed_generation, committed_head_sha256 FROM audit_continuity_control WHERE singleton = 1"
-                ).fetchone()
-            if row is None:
-                raise AuditContinuityError("source audit continuity control is missing")
-            prior = (prior_generation, prior_head_sha256)
-            target_generation = expected["next_generation"]
-            target_head = expected["next_head_sha256"]
-            if not isinstance(target_generation, int) or not isinstance(target_head, str):
-                raise AuditContinuityError("restore rebind target is malformed")
-            target = (target_generation, target_head)
-            current = (int(row[0]), str(row[1]))
-            if current == prior:
-                return False
-            if current != target:
-                raise AuditContinuityError("promoted restore rebind does not match its immutable prepared evidence")
-            self._repair_promoted_rebind(expected)
-            return True
 
     def _phase(self, name: str, mutation: AuditMutation) -> None:
         if self._phase_hook is not None:
@@ -515,16 +389,9 @@ class AuditContinuityCoordinator:
         self,
         prepared: dict[str, object],
         apply: Callable[[sqlite3.Connection, AuditMutation], _T],
-        *,
-        allow_rebind: bool = False,
     ) -> _T:
         self._validate_prepared(prepared)
         mutation = AuditMutation.from_command(prepared["command"])
-        if mutation.kind == "rebind" and not self._audit_has_prepared_target(prepared, mutation):
-            # Writer setup persists WAL mode in the main header. Authenticate a
-            # restored image before opening that mutating connection, but do
-            # not re-hash an audit side that already committed this target.
-            self._assert_rebind_image(mutation)
         with open_verified_audit_connection(self.audit_path) as conn, conn:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON")
@@ -541,11 +408,8 @@ class AuditContinuityCoordinator:
                 conn.commit()
                 return cast(_T, None)
             if current[:2] != prior:
-                if allow_rebind and mutation.kind == "rebind":
-                    pass
-                else:
-                    raise AuditContinuityError("audit continuity head does not match the prepared source command")
-            result = cast(_T, None) if mutation.kind == "rebind" else apply(conn, mutation)
+                raise AuditContinuityError("audit continuity head does not match the prepared source command")
+            result = apply(conn, mutation)
             conn.execute(
                 "UPDATE audit_continuity_head SET generation = ?, head_sha256 = ?, mutation_id = ?, advanced_at_ms = ? WHERE singleton = 1",
                 (*target, mutation.mutation_id, mutation.created_at_ms),
@@ -629,44 +493,6 @@ class AuditContinuityCoordinator:
                     raise AuditContinuityError("source audit continuity abort lost its prepared command")
                 source.commit()
 
-    def _repair_promoted_rebind(self, prepared: Mapping[str, object]) -> None:
-        """Advance a restored audit head to an already-promoted exact target."""
-
-        mutation = AuditMutation.from_command(prepared["command"])
-        prior = (cast(int, prepared["prior_generation"]), str(prepared["prior_head_sha256"]))
-        target = (cast(int, prepared["next_generation"]), str(prepared["next_head_sha256"]))
-        self._assert_rebind_image(mutation)
-        with open_verified_audit_connection(self.audit_path) as audit, audit:
-            audit.execute("BEGIN IMMEDIATE")
-            row = audit.execute(
-                "SELECT generation, head_sha256, mutation_id FROM audit_continuity_head WHERE singleton = 1"
-            ).fetchone()
-            if row is None:
-                raise AuditContinuityError("audit continuity head is missing while repairing promoted rebind")
-            current = (int(row[0]), str(row[1]), row[2])
-            if current[:2] == target and current[2] == mutation.mutation_id:
-                audit.commit()
-                return
-            if current[:2] != prior:
-                raise AuditContinuityError("restored audit head does not match the exact promoted rebind prior")
-            audit.execute(
-                "UPDATE audit_continuity_head SET generation = ?, head_sha256 = ?, mutation_id = ?, advanced_at_ms = ? "
-                "WHERE singleton = 1",
-                (*target, mutation.mutation_id, mutation.created_at_ms),
-            )
-            audit.commit()
-
-    def _audit_has_prepared_target(self, prepared: Mapping[str, object], mutation: AuditMutation) -> bool:
-        target = (cast(int, prepared["next_generation"]), str(prepared["next_head_sha256"]))
-        try:
-            with open_verified_audit_read_connection(self.audit_path) as audit:
-                row = audit.execute(
-                    "SELECT generation, head_sha256, mutation_id FROM audit_continuity_head WHERE singleton = 1"
-                ).fetchone()
-        except (AuditLeafError, sqlite3.DatabaseError) as exc:
-            raise AuditContinuityError("cannot inspect audit continuity head before rebind") from exc
-        return row is not None and (int(row[0]), str(row[1])) == target and row[2] == mutation.mutation_id
-
     def _assert_committed_head_matches_audit(self) -> None:
         with (
             _open_source_read_connection(self.source_path) as source,
@@ -701,22 +527,6 @@ class AuditContinuityCoordinator:
         )
         if prepared.get("next_head_sha256") != expected_head:
             raise AuditContinuityError("audit continuity command head checksum mismatch")
-
-    def _assert_rebind_image(self, mutation: AuditMutation) -> None:
-        expected = mutation.payload.get("audit_image_sha256")
-        if not isinstance(expected, str) or len(expected) != 64:
-            raise AuditContinuityError("rebind command lacks an audit image sha256")
-        digest = hashlib.sha256()
-        try:
-            with VerifiedAuditLeaf(self.audit_path.parent, filename=self.audit_path.name) as leaf:
-                with leaf.anchored_path.open("rb") as stream:
-                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                        digest.update(chunk)
-                leaf.assert_unchanged()
-        except (AuditLeafError, OSError) as exc:
-            raise AuditContinuityError("cannot read audit image for rebind") from exc
-        if digest.hexdigest() != expected:
-            raise AuditContinuityError("audit image changed before continuity rebind")
 
     @staticmethod
     def _has_table(connection: sqlite3.Connection, name: str) -> bool:
