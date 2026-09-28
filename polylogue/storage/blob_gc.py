@@ -109,9 +109,11 @@ def _readonly(path: Path) -> sqlite3.Connection:
     return open_readonly_connection(path, timeout_class="background-read")
 
 
-def _writer(path: Path) -> sqlite3.Connection:
+def _writer(path: Path, *, archive_root: Path | None = None) -> sqlite3.Connection:
     """Open one lease-bound GC write tier without sibling attachments."""
-    return open_isolated_write_connection(path, purpose=f"blob GC({path})", archive_root=path.parent)
+    if archive_root is None:
+        archive_root = path.parent.parent.parent if path.parent.parent.name == ".index-generations" else path.parent
+    return open_isolated_write_connection(path, purpose=f"blob GC({path})", archive_root=archive_root)
 
 
 @dataclass
@@ -788,13 +790,22 @@ def _execute_gc_generation_members(
         ]
     deleted_now = 0
     reclaimed_bytes_now = 0
-    require_write_lease(f"blob GC({control_db_path})", archive_root=control_db_path.parent)
-    source_conn = _writer(control_db_path)
+    archive_root = (
+        control_db_path.parent
+        if control_db_path.name == "source.db"
+        else (
+            control_db_path.parent.parent.parent
+            if control_db_path.parent.parent.name == ".index-generations"
+            else control_db_path.parent
+        )
+    )
+    require_write_lease(f"blob GC({control_db_path})", archive_root=archive_root)
+    source_conn = _writer(control_db_path, archive_root=archive_root)
     index_conn: sqlite3.Connection | None = None
     try:
         source_conn.execute("BEGIN IMMEDIATE")
         if control_db_path != sibling_index_db:
-            index_conn = _writer(sibling_index_db)
+            index_conn = _writer(sibling_index_db, archive_root=archive_root)
             index_conn.execute("BEGIN IMMEDIATE")
         recheck_index = index_conn or (source_conn if control_db_path == sibling_index_db else None)
         preflight = inspect_blob_liveness(source_conn, "", index_conn=recheck_index, require_index=True)
@@ -1164,8 +1175,9 @@ def unlink_unreferenced_blob_hashes_without_generation_ledger(
             source_conn = stack.enter_context(closing(_readonly(source_db_path)))
             index_conn = stack.enter_context(closing(_readonly(index_db_path)))
         else:
-            source_conn = stack.enter_context(closing(_writer(source_db_path)))
-            index_conn = stack.enter_context(closing(_writer(index_db_path)))
+            archive_root = source_db_path.parent
+            source_conn = stack.enter_context(closing(_writer(source_db_path, archive_root=archive_root)))
+            index_conn = stack.enter_context(closing(_writer(index_db_path, archive_root=archive_root)))
         if not dry_run:
             source_conn.execute("BEGIN IMMEDIATE")
             index_conn.execute("BEGIN IMMEDIATE")

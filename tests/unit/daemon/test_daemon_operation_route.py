@@ -28,6 +28,25 @@ pytestmark = pytest.mark.uses_real_clock(
 )
 
 
+def test_failed_embedding_receipt_decodes_without_fabricated_counters() -> None:
+    """Anti-vacuity: requiring integer counters turns accepted failures into indeterminate replay."""
+    from polylogue.operations.daemon_protocol import EmbeddingBackfillResult
+    from polylogue.operations.machine_lifecycle import _embedding_terminal_receipt
+
+    receipt = {
+        "operation": "maintenance.embeddings.backfill",
+        "outcome": "failed",
+        "sequence": 1,
+        "effect": "indeterminate",
+        "affected_count": None,
+        "progress": {"state": "unknown", "computed": None, "failed": None, "estimated_cost_usd": None},
+        "result": {"done": None, "pending": None, "failed": None},
+        "error": {"code": "embedding_backfill_failed", "message": "provider unavailable"},
+    }
+    EmbeddingBackfillResult.model_validate(receipt)
+    assert _embedding_terminal_receipt("embedding_receipt:" + json.dumps(receipt)) == receipt
+
+
 def test_failed_backup_operation_retains_rejected_result_details(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

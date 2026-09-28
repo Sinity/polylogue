@@ -91,6 +91,8 @@ class OperationRuntime(Protocol):
 
     def emit_progress(self, request: DaemonOperationRequest, event: Mapping[str, object]) -> None: ...
 
+    embedding_convergence: object | None
+
 
 def operation_envelope(
     request: DaemonOperationRequest,

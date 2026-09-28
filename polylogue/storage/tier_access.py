@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
 
+from polylogue.core.errors import SchemaSkewError
 from polylogue.core.evidence import Evidence, Measured, Unavailable
 from polylogue.storage.archive_readiness import ArchiveTierProbe, probe_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -95,7 +96,16 @@ def acquire_tier_reader(tier: ArchiveTier, path: Path) -> TierHandle | TierRefus
             reason="tier_unreadable",
             detail=f"{path} could not be opened for a version probe",
         )
-    opened = capture_sqlite_read(lambda: open_readonly_connection(path))
+    try:
+        opened = capture_sqlite_read(lambda: open_readonly_connection(path, tier=tier))
+    except SchemaSkewError as exc:
+        return TierRefusal(
+            tier=tier,
+            path=path,
+            version_status=probe.version_status,
+            reason="schema_identity_mismatch",
+            detail=str(exc),
+        )
     if isinstance(opened, Unavailable):
         return TierRefusal(
             tier=tier,

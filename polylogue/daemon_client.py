@@ -256,6 +256,10 @@ class DaemonClient:
         if raw is None:
             return None
         status, response = raw
+        if status == 404 and (response is None or response.get("protocol") != DAEMON_OPERATION_PROTOCOL):
+            if spec.authority is DaemonAuthority.READ:
+                return None
+            raise DaemonMutationIndeterminateError(method="POST", path="/api/operation", request_id=request.request_id)
         if (
             isinstance(response, dict)
             and response.get("protocol") == DAEMON_OPERATION_PROTOCOL
@@ -289,7 +293,10 @@ class DaemonClient:
         status: int,
         response: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        if status not in {200, 202, 400, 404, 408, 409, 413, 429, 503} or response is None:
+        accepted_status = status in {200, 202, 400, 404, 408, 409, 413, 429, 503}
+        if response is not None and response.get("protocol") == DAEMON_OPERATION_PROTOCOL:
+            accepted_status = accepted_status or 500 <= status <= 599
+        if not accepted_status or response is None:
             raise DaemonOperationProtocolError(f"daemon returned an incompatible operation response (HTTP {status})")
         if response.get("protocol") != DAEMON_OPERATION_PROTOCOL:
             raise DaemonOperationProtocolError("daemon returned an invalid operation protocol envelope")

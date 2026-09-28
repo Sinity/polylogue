@@ -10,8 +10,8 @@ Choose the channel that fits the host:
 
 ```bash
 # Python CLI in an isolated environment
-pipx install polylogue
-# or: uv tool install polylogue
+pipx install --python python3.14t polylogue
+# or: uv tool install --python 3.14t polylogue
 
 # Homebrew on macOS or Linux
 brew tap sinity/polylogue

@@ -31,6 +31,7 @@ from polylogue.sources.decoder_zip import (
 )
 from polylogue.sources.dispatch import ForeignOriginContentError, bound_location_provider
 from polylogue.sources.live.batch_support import (
+    RetryableSourceReadError,
     classify_pre_acquisition,
     foreign_origin_exclusion,
     retryable_read_fault,
@@ -642,6 +643,11 @@ def capture_production_source_baseline(
                     continue
                 if progress is not None:
                     progress("baseline_hash", revisions=1, hashed_bytes=material_bytes)
+            except RetryableSourceReadError as exc:
+                decisions.append(
+                    SourceDecision(source_name, str(path), "fault", f"revision_io_unavailable:{exc.cause}")
+                )
+                continue
             except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as exc:
                 reason = "revision_io_unavailable" if retryable_read_fault(exc) else "revision_unreadable"
                 decisions.append(SourceDecision(source_name, str(path), "fault", f"{reason}:{exc}"))

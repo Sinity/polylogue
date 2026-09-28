@@ -9,6 +9,8 @@ and cannot turn that refused replacement into a current vector.
 from __future__ import annotations
 
 import sqlite3
+import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TypeVar
@@ -22,7 +24,7 @@ _REPLACEMENT_TEXT = "Different prose was written while the provider request was 
 T = TypeVar("T")
 
 
-def _write_single_message_session(root: Path, *, native_id: str, text: str) -> str:
+def _write_single_message_session(root: Path, *, native_id: str, text: str, message_id: str = "m1") -> str:
     from polylogue.archive.message.roles import Role
     from polylogue.core.enums import BlockType, MaterialOrigin, Provider
     from polylogue.sources.parsers.base import ParsedSession
@@ -38,7 +40,7 @@ def _write_single_message_session(root: Path, *, native_id: str, text: str) -> s
                 provider_session_id=native_id,
                 messages=[
                     ParsedMessage(
-                        provider_message_id="m1",
+                        provider_message_id=message_id,
                         role=Role.USER,
                         text=text,
                         blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
@@ -96,3 +98,93 @@ def test_message_publication_refuses_source_mutation_during_provider_call(tmp_pa
     with write_lease("test.embedding.publish", archive_root=root):
         assert adapter.publish(frame, replacement) is False
     assert adapter.inspect(frame, (key,))[key] == "missing"
+
+
+def test_message_publication_refuses_identity_change_with_same_prose(tmp_path: Path) -> None:
+    """A same-text replacement still invalidates IDs captured before provider work.
+
+    Anti-vacuity: dropping publication-time message-ID revalidation lets the
+    old ID be marked fresh even though the current index contains only the new ID.
+    """
+    from polylogue.operations.embedding_derivation import make_embedding_frame
+    from polylogue.storage.embeddings.derivation import EmbeddingDerivationAdapter
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+    root = tmp_path / "archive"
+    session_id = _write_single_message_session(root, native_id="identity-drift", text=_DRIFT_TEXT)
+    index_db = root / "index.db"
+    embeddings_db = root / "embeddings.db"
+    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
+    with sqlite3.connect(embeddings_db) as probe:
+        loaded, error = try_load_sqlite_vec(probe)
+    if not loaded:
+        pytest.skip(str(error) if error else "sqlite-vec extension is unavailable")
+
+    class _IdentityChangingProvider:
+        model = "voyage-4"
+        dimension = 1024
+
+        def _get_embeddings(self, texts: list[str], input_type: str = "document") -> list[list[float]]:
+            assert texts == [_DRIFT_TEXT]
+            assert input_type == "document"
+            assert (
+                _write_single_message_session(root, native_id="identity-drift", text=_DRIFT_TEXT, message_id="m2")
+                == session_id
+            )
+            return [[0.25] * self.dimension]
+
+    def admit(actor: str, function: Callable[[], T]) -> T:
+        with write_lease(actor, archive_root=root):
+            return function()
+
+    adapter = EmbeddingDerivationAdapter(index_db, _IdentityChangingProvider(), archive_root=root, reserve=admit)
+    frame = make_embedding_frame(index_db, archive_root=root, adapter=adapter, scope=(session_id,))
+    (key,), cursor = adapter.required_page(frame, cursor=None, limit=10)
+    assert cursor is None
+    replacement = adapter.compute(frame, key)
+
+    with write_lease("test.embedding.publish", archive_root=root):
+        assert adapter.publish(frame, replacement) is False
+    assert adapter.inspect(frame, (key,))[key] == "missing"
+
+
+def test_session_attempt_lock_serializes_owners_for_the_same_session() -> None:
+    """Two owners cannot overlap paid work for one pending session.
+
+    Anti-vacuity: removing the shared per-session lock lets both entrants be
+    active at once, matching the duplicate provider-call race.
+    """
+    from polylogue.storage.embeddings.materialization import _session_attempt_lock
+
+    entered = threading.Event()
+    release = threading.Event()
+    counts_lock = threading.Lock()
+    active = 0
+    maximum_active = 0
+
+    def work() -> None:
+        nonlocal active, maximum_active
+        with _session_attempt_lock("archive\0session"):
+            with counts_lock:
+                active += 1
+                maximum_active = max(maximum_active, active)
+                entered.set()
+            release.wait(timeout=2)
+            with counts_lock:
+                active -= 1
+
+    first = threading.Thread(target=work)
+    second = threading.Thread(target=work)
+    first.start()
+    assert entered.wait(timeout=2)
+    second.start()
+    time.sleep(0.05)
+    with counts_lock:
+        assert maximum_active == 1
+    release.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+    assert not first.is_alive() and not second.is_alive()
+    assert maximum_active == 1

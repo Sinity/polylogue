@@ -128,6 +128,7 @@ from polylogue.sources.live.batch_support import (
     _DEFER_APPEND,
     _MAX_APPEND_PLAN_PAYLOAD_BYTES,
     _STREAMING_FULL_INGEST_BYTES,
+    RetryableSourceReadError,
     _accumulate_stage_timings,
     _append_plan_group_ready,
     _AppendPlan,
@@ -160,7 +161,6 @@ from polylogue.sources.live.batch_support import (
     jsonl_complete_prefix,
     jsonl_complete_prefix_path,
     last_complete_newline_from_tail,
-    retryable_read_fault,
     sha256_range_from_path,
     tail_hash_from_path,
 )
@@ -711,6 +711,7 @@ class _ArchiveFullWriteResult:
     # the two apart (mirrors ParseResult.excised_skips on the CLI import
     # path in pipeline/services/archive_ingest.py).
     excised_skips: int = 0
+    excised_paths: set[Path] = field(default_factory=set)
     # polylogue-11cg9: raw ids never attempted this pass because the declared
     # wall-clock budget (``max_pass_seconds``) was already exceeded before
     # their turn. Not a failure and not a conveyor hand-off -- the record was
@@ -1689,13 +1690,16 @@ class LiveBatchProcessor:
                         if stale:
                             stale_cursor_write_count += 1
                 for path in full_result.failed:
-                    failed_paths.append(str(path))
-                    cursor_fingerprint_read_bytes += await self._run_ops_write(
-                        "cursor_failed",
-                        self._record_failed_cursor,
-                        path,
-                        attempted_observation=full_result.captured_file_observations.get(path),
-                    )
+                    if path in full_result.excised_paths:
+                        excluded_by_path[path] = "durably_excised"
+                    else:
+                        failed_paths.append(str(path))
+                        cursor_fingerprint_read_bytes += await self._run_ops_write(
+                            "cursor_failed",
+                            self._record_failed_cursor,
+                            path,
+                            attempted_observation=full_result.captured_file_observations.get(path),
+                        )
                 for path in full_result.preparation_deferred:
                     deferred_paths.append(path)
                     preparation_deferred_paths.add(path)
@@ -3171,9 +3175,7 @@ class LiveBatchProcessor:
                 admission = classify_pre_acquisition(
                     path, fallback_provider=fallback_provider, source_only=source_only, size_bytes=stat.st_size
                 )
-            except (OSError, sqlite3.Error) as exc:
-                if not retryable_read_fault(exc):
-                    raise
+            except RetryableSourceReadError:
                 # A database that could not be read now is retried on a
                 # later pass, never excluded as not-ours.
                 failed.append(path)
@@ -3907,6 +3909,7 @@ class LiveBatchProcessor:
             captured_file_observations=captured_file_observations,
             summary=summary,
             excised_skips=archive_write.excised_skips if archive_write is not None else 0,
+            excised_paths=tuple(archive_write.excised_paths) if archive_write is not None else (),
             time_budget_exceeded=time_budget_exceeded,
             write_hold_exhausted=write_hold_exhausted,
         )
@@ -4849,6 +4852,7 @@ class LiveBatchProcessor:
                     # caller's cursor bookkeeping treats it the same as any
                     # other unavailable content.
                     result.excised_skips += 1
+                    result.excised_paths.add(Path(record.source_path))
                     # The bytes were published (staged and reserved) before the
                     # write refused them. Nothing will ever reference them, so
                     # the success path's receipt consumption never runs and the
