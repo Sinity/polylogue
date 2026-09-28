@@ -83,7 +83,7 @@ def _provenance_from_envelope(conn: sqlite3.Connection, envelope: ArchiveAsserti
 
     declared_refs = [ref for ref in (query_ref, result_set_ref, baseline_ref, current_ref) if ref is not None]
     all_refs = list(dict.fromkeys([*declared_refs, *envelope.evidence_refs]))
-    resolutions = tuple(_resolve_evidence_ref(conn, ref) for ref in all_refs)
+    resolutions = tuple(resolve_evidence_ref(conn, ref) for ref in all_refs)
     resolved_by_ref = {resolution.ref: resolution.resolvable for resolution in resolutions}
 
     if not declared_refs:
@@ -113,7 +113,8 @@ def _provenance_from_envelope(conn: sqlite3.Connection, envelope: ArchiveAsserti
     )
 
 
-def _resolve_evidence_ref(conn: sqlite3.Connection, ref: str) -> FindingEvidenceResolution:
+def resolve_evidence_ref(conn: sqlite3.Connection, ref: str) -> FindingEvidenceResolution:
+    """Resolve one evidence ref fail-closed: unknown kinds are unresolvable."""
     try:
         parsed = ObjectRef.parse(ref)
     except ValueError:
@@ -246,6 +247,7 @@ def _required_str_list(value: object, *, field: str, assertion_id: str) -> tuple
 
 __all__ = [
     "FindingEvidenceResolution",
+    "resolve_evidence_ref",
     "FindingProvenance",
     "StalenessVerdict",
     "compute_finding_provenance",

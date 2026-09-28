@@ -49,7 +49,7 @@ FINDING_ANCESTRY_MAX_NODES = 512
 #: ancestry is other assertions is a closed loop, which is the evaluator's own
 #: ``authorities <= {"agent", "assertion"}`` rule and not a policy this module
 #: re-implements. An unlisted kind stays ``unknown`` -- ungrounded -- because
-#: ``_resolve_evidence_ref`` cannot resolve it either.
+#: ``resolve_evidence_ref`` cannot resolve it either.
 _REF_KIND_AUTHORITY: dict[str, EvidenceAuthority] = {
     "query": "tool",
     "result-set": "tool",
@@ -229,20 +229,13 @@ def build_finding_evidence_adapter(
 def _cited(conn: sqlite3.Connection, ref: str) -> FindingEvidenceResolution:
     """One ref discovered during ancestry expansion.
 
-    Assertion ancestry is checked at discovery so a missing transitive target
-    is represented by a missing node in the graph.
+    Every transitive ref goes through the same fail-closed resolver as a
+    direct one, so a missing session or unresolvable kind becomes a missing
+    node, never an ``ok`` grounding leaf.
     """
-    from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope
-    from polylogue.storage.sqlite.finding_provenance import FindingEvidenceResolution
+    from polylogue.storage.sqlite.finding_provenance import resolve_evidence_ref
 
-    try:
-        parsed = ObjectRef.parse(ref)
-    except ValueError:
-        return FindingEvidenceResolution(ref=ref, resolvable=False)
-    if parsed.kind != "assertion":
-        return FindingEvidenceResolution(ref=ref, resolvable=True)
-    exists = read_assertion_envelope(conn, parsed.object_id) is not None
-    return FindingEvidenceResolution(ref=ref, resolvable=exists)
+    return resolve_evidence_ref(conn, ref)
 
 
 def _ref_kind(ref: str) -> str:

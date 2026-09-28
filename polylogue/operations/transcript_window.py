@@ -357,30 +357,45 @@ async def message_transcript_window(
 
         resolved_session_id = await api.repository.resolve_id(session_id) or session_id
         if content_projection is not None and content_projection.filters_content():
-            from polylogue.archive.semantic.content_projection import project_message_content
+            # Stream raw pages through the projection so a bounded window
+            # never hydrates the whole transcript; only the requested window
+            # and one raw page are held at a time.
+            from polylogue.archive.semantic.content_projection import ContentProjectionStream
 
-            session = await api.get_session(resolved_session_id)
-            if session is None:
-                from polylogue.operations.archive_mutation import SessionNotFoundError
-
-                raise SessionNotFoundError(session_id)
-            projected = project_message_content(session.messages, content_projection)
-            projected = [
-                message
-                for message in projected
-                if not request.material_origin or message.material_origin in request.material_origin
-            ]
-            projected = [
-                message
-                for message in projected
-                if (not request.message_role or message.role in request.message_role)
-                and (
-                    request.message_type is None or message.message_type == MessageType.normalize(request.message_type)
+            stream = ContentProjectionStream(content_projection)
+            window: list[Any] = []
+            total = 0
+            raw_offset = 0
+            page_size = 500
+            completeness = None
+            while True:
+                raw, raw_total, completeness = await api.repository.get_messages_paginated(
+                    resolved_session_id,
+                    message_role=tuple(request.message_role),
+                    message_type=request.message_type,
+                    limit=page_size,
+                    offset=raw_offset,
                 )
-            ]
-            total = len(projected)
-            completeness = await api.repository.get_lineage_completeness(resolved_session_id)
-            return list(projected[offset : offset + limit]), total, completeness
+                if raw_offset == 0 and raw_total == 0 and await api.repository.resolve_id(session_id) is None:
+                    from polylogue.operations.archive_mutation import SessionNotFoundError
+
+                    raise SessionNotFoundError(session_id)
+                for message in stream.project_page(list(raw)):
+                    if request.material_origin and message.material_origin not in request.material_origin:
+                        continue
+                    if request.message_role and message.role not in request.message_role:
+                        continue
+                    if request.message_type is not None and message.message_type != MessageType.normalize(
+                        request.message_type
+                    ):
+                        continue
+                    if offset <= total < offset + limit:
+                        window.append(message)
+                    total += 1
+                raw_offset += len(raw)
+                if not raw or raw_offset >= raw_total:
+                    break
+            return window, total, completeness
         messages, total, completeness = await api.repository.get_messages_paginated(
             resolved_session_id,
             message_role=tuple(request.message_role),

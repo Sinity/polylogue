@@ -356,25 +356,40 @@ def _snapshot_regular_file(path: Path) -> tuple[str, int, str]:
     A concurrent append after ``fstat`` must not pair an old size with a digest
     read through EOF. Reading exactly the captured size gives one coherent
     append-log prefix, even if the path grows while the descriptor is read.
+    If the file changed while it was read (its ctime moved), the prefix is
+    hashed again: an append leaves it identical, while an in-place rewrite does
+    not and is refused rather than published as one observation.
     """
-    digest = hashlib.sha256()
     descriptor: int | None = None
     try:
         descriptor = os.open(path, os.O_RDONLY)
         info = os.fstat(descriptor)
-        remaining = info.st_size
-        while remaining:
-            chunk = os.read(descriptor, min(1024 * 1024, remaining))
-            if not chunk:
-                raise SourceSnapshotError(f"source member was truncated while reading: {path}")
-            digest.update(chunk)
-            remaining -= len(chunk)
+        first = _hash_prefix(descriptor, info.st_size, path)
+        after = os.fstat(descriptor)
+        truncated = after.st_size < info.st_size
+        changed = after.st_ctime_ns != info.st_ctime_ns
+        if truncated or (changed and _hash_prefix(descriptor, info.st_size, path) != first):
+            raise SourceSnapshotError(f"source member was rewritten while reading: {path}")
     except OSError as exc:
         raise SourceSnapshotError(f"source member is unreadable: {path}") from exc
     finally:
         if descriptor is not None:
             os.close(descriptor)
-    return digest.hexdigest(), info.st_size, _identity(info)
+    return first, info.st_size, _identity(info)
+
+
+def _hash_prefix(descriptor: int, size: int, path: Path) -> str:
+    """SHA-256 of the first ``size`` bytes of an open descriptor."""
+    digest = hashlib.sha256()
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    remaining = size
+    while remaining:
+        chunk = os.read(descriptor, min(1024 * 1024, remaining))
+        if not chunk:
+            raise SourceSnapshotError(f"source member was truncated while reading: {path}")
+        digest.update(chunk)
+        remaining -= len(chunk)
+    return digest.hexdigest()
 
 
 def _root_identity(root: Path) -> SourceRootIdentity:

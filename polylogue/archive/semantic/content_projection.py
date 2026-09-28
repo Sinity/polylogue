@@ -174,6 +174,29 @@ def project_message_content(
     ]
 
 
+class ContentProjectionStream:
+    """Project a transcript page by page with ``project_message_content`` semantics.
+
+    Tool-result projection depends on the tool_use blocks seen so far, so the
+    stream carries that mapping across pages instead of needing the whole
+    transcript in memory.
+    """
+
+    def __init__(self, projection: ContentProjectionSpec | Mapping[str, object] | None) -> None:
+        self._spec = coerce_content_projection_spec(projection)
+        self._tool_semantics: dict[str, str] = {}
+
+    def project_page(self, messages: Sequence[Message]) -> list[Message]:
+        if self._spec.is_default():
+            return list(messages)
+        self._tool_semantics.update(_tool_semantics_by_id(messages))
+        return [
+            projected
+            for message in messages
+            if (projected := _project_message_content(message, self._spec, self._tool_semantics)) is not None
+        ]
+
+
 def _tool_semantics_by_id(messages: Sequence[Message]) -> dict[str, str]:
     semantics: dict[str, str] = {}
     for message in messages:
@@ -440,6 +463,7 @@ def _render_segments_text(segments: Sequence[_Segment]) -> str:
 
 __all__ = [
     "ContentKind",
+    "ContentProjectionStream",
     "ContentProjectionSpec",
     "coerce_content_projection_spec",
     "project_message_content",
