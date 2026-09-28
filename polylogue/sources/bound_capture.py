@@ -23,6 +23,7 @@ from .dispatch import (
     ForeignOriginContentError,
     bound_location_provider,
     refuse_foreign_material,
+    refuse_foreign_records,
 )
 
 
@@ -42,6 +43,10 @@ def validate_captured_blob(
     prefix = blob_store.read_prefix(blob_hash, LOCATION_VALIDATION_PREFIX_BYTES)
     try:
         refuse_foreign_material(path, location, prefix=prefix)
+        # The captured blob is what is retained and what replay trusts, so a
+        # bound stream is validated record by record, not only its prefix.
+        with blob_store.blob_path(blob_hash).open("rb") as handle:
+            refuse_foreign_records(handle, path, location)
     except ForeignOriginContentError:
         discard_pending_blob(blob_store, blob_hash)
         raise

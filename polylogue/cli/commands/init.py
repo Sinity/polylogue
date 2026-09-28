@@ -41,26 +41,21 @@ class DetectedSource:
 def detect_chat_sources() -> tuple[DetectedSource, ...]:
     """Return the canonical chat-source candidates with presence flags.
 
-    The presence check is ``Path.is_dir()``. Symlinks count if they
-    resolve to a directory. The function never raises — missing
-    parents simply produce ``present=False`` entries so callers can
-    distinguish "didn't look" from "looked, nothing there".
+    The paths are the runtime's resolved source paths -- the same authority
+    the daemon's watch set uses, so a configured Hermes root is the one
+    checked. The presence check is ``Path.is_dir()``; symlinks count if they
+    resolve to a directory, and missing parents produce ``present=False``.
     """
-    from polylogue.paths import (
-        antigravity_path,
-        claude_code_path,
-        codex_path,
-        gemini_cli_path,
-        hermes_sessions_path,
-        hooks_sidecar_dir,
-    )
+    from polylogue.config import resolve_runtime_config
+    from polylogue.paths import hooks_sidecar_dir
 
+    source_paths = resolve_runtime_config().source_paths
     candidates: tuple[tuple[str, Path, str], ...] = (
-        ("claude-code", claude_code_path(), "Claude Code session JSONL"),
-        ("codex", codex_path(), "Codex session JSONL"),
-        ("gemini-cli", gemini_cli_path(), "Gemini CLI workspace exports"),
-        ("hermes", hermes_sessions_path(), "Hermes agent state.db and fallback session exports"),
-        ("antigravity", antigravity_path(), "Antigravity brain artifacts"),
+        ("claude-code", source_paths.claude_code, "Claude Code session JSONL"),
+        ("codex", source_paths.codex, "Codex session JSONL"),
+        ("gemini-cli", source_paths.gemini_cli, "Gemini CLI workspace exports"),
+        ("hermes", source_paths.hermes, "Hermes agent state.db and fallback session exports"),
+        ("antigravity", source_paths.antigravity, "Antigravity brain artifacts"),
         ("hooks", hooks_sidecar_dir(), "Agent hook sidecar spool"),
     )
     detected: list[DetectedSource] = []

@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from io import BytesIO
 from itertools import islice
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypeAlias, cast
+from typing import TYPE_CHECKING, BinaryIO, Literal, TypeAlias, cast
 
 from polylogue.browser_capture.models import BrowserCaptureEnvelope, has_chatgpt_native_payload
 from polylogue.core.binary_signatures import detect_binary_signature
@@ -507,6 +507,70 @@ def refuse_foreign_material(
             detect_provider_evidence([partial], expected=bound)
         elif truncated_document and isinstance(partial, (dict, list)) and partial:
             detect_provider_evidence(partial, expected=bound)
+
+
+#: Read size for streaming a bound JSONL artifact through record validation.
+_RECORD_VALIDATION_CHUNK_BYTES = 1 << 20
+
+
+def refuse_foreign_records(handle: BinaryIO, path: Path | str, location: Provider | str | None) -> None:
+    """Validate every record of a bound JSONL stream against its location.
+
+    The prefix check in :func:`refuse_foreign_material` sees only the leading
+    records; a foreign record anywhere later would otherwise be retained and
+    parsed as the location's origin. Every line is validated here: a line
+    that fits the validation window is decoded whole, and a longer one is
+    validated from the completed structure of its leading bytes, so memory
+    stays bounded by the window whatever a record's size. A malformed line
+    is the parser's typed concern, not a foreign-origin claim.
+    """
+    bound = bound_location_provider(location)
+    if bound is None:
+        return
+    source = Path(path)
+    if not is_jsonl_source_path(source.name):
+        return
+    from .origin_specs import path_declaration_refuses_session
+
+    if path_declaration_refuses_session(bound, source):
+        return
+    for head, complete in _iter_line_heads(handle, LOCATION_VALIDATION_PREFIX_BYTES):
+        if not head.strip():
+            continue
+        if complete:
+            try:
+                record = json.loads(head)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            detect_provider_evidence([record], expected=bound)
+            continue
+        partial = _completed_prefix_structure(head)
+        if isinstance(partial, dict):
+            detect_provider_evidence([partial], expected=bound)
+
+
+def _iter_line_heads(handle: BinaryIO, window: int) -> Iterator[tuple[bytes, bool]]:
+    """Yield each line's leading ``window`` bytes and whether the line fit whole."""
+    head = bytearray()
+    overflowed = False
+    while chunk := handle.read(_RECORD_VALIDATION_CHUNK_BYTES):
+        start = 0
+        while start < len(chunk):
+            newline = chunk.find(b"\n", start)
+            end = len(chunk) if newline == -1 else newline
+            if not overflowed:
+                room = window - len(head)
+                piece = chunk[start:end]
+                head += piece[:room]
+                overflowed = len(piece) > room
+            if newline == -1:
+                break
+            yield bytes(head), not overflowed
+            head.clear()
+            overflowed = False
+            start = newline + 1
+    if head or overflowed:
+        yield bytes(head), not overflowed
 
 
 def _completed_prefix_structure(prefix: bytes) -> object:
@@ -2411,6 +2475,7 @@ __all__ = [
     "same_origin",
     "refuse_foreign_material",
     "LOCATION_VALIDATION_PREFIX_BYTES",
+    "refuse_foreign_records",
     "detect_provider_evidence",
     "detect_provider_from_raw_bytes_evidence",
     "is_jsonl_source_path",

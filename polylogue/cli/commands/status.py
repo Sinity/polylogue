@@ -79,6 +79,23 @@ def _archive_snapshot_is_absent(archive_root: Path | None) -> bool:
         return False
 
 
+def _show_first_run_if_archive_absent(env: AppEnv, archive_root: Path | None, *, output_format: str | None) -> bool:
+    """Render the first-run diagnostic when the active index is absent.
+
+    Returns whether it rendered, so the caller stops before reporting an
+    unreachable daemon for an archive that does not exist yet.
+    """
+    from polylogue.cli.commands.status_diagnostics import diagnose_first_run
+
+    if not _archive_snapshot_is_absent(archive_root):
+        return False
+    diagnostic = diagnose_first_run(daemon_alive=False)
+    if diagnostic.kind != "no_archive":
+        return False
+    _show_direct_status_diagnostic(env, diagnostic, output_format=output_format)
+    return True
+
+
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value) if value is not None else default
@@ -281,6 +298,11 @@ def status_command(
                 _show_daemon_status_unavailable(env, compact=not full_payload)
             raise click.exceptions.Exit(1) from None
         except OperationKernelError:
+            # With no daemon to serve the read (--no-daemon or a daemon
+            # that never started), an absent archive is still a first run:
+            # the bounded diagnostic answers it without claiming liveness.
+            if _show_first_run_if_archive_absent(env, observed_archive_root, output_format=output_format):
+                return
             # A failed status read proves nothing about daemon liveness; it
             # must never be recorded or rendered as a reachable daemon.
             obs.attributes["daemon_reachable"] = False

@@ -411,6 +411,21 @@ def _watch_sources(
     return tuple(sources)
 
 
+#: Watch sources whose directory Polylogue itself creates and writes.
+_POLYLOGUE_OWNED_SOURCE_NAMES = frozenset({"browser-capture", "inbox"})
+
+
+def _is_polylogue_owned_source(source: WatchSource) -> bool:
+    """Whether Polylogue owns *source*'s directory, decided by role.
+
+    The browser-capture spool and the archive inbox are Polylogue's, and so
+    is the primary writable hook spool its installed hooks write. A
+    read-only legacy spool and every provider directory belong to someone
+    else and are never created here.
+    """
+    return source.name in _POLYLOGUE_OWNED_SOURCE_NAMES or source.role == "primary-writable"
+
+
 def _active_index_db_path() -> Path:
     """Return the archive-rooted ``index.db`` path for daemon maintenance.
 
@@ -2287,9 +2302,11 @@ async def _run_daemon_services_under_active_writer_lease(
         # to that tool: it is never created here, so an uninstalled tool or a
         # relocated directory whose symlink is currently dangling reads as an
         # unavailable source instead of being fabricated or failing startup.
-        owned_root = archive_root_path.resolve(strict=False)
+        # Ownership is the source's role, never where its path resolves: a
+        # provider directory relocated by a symlink into the archive tree
+        # still belongs to its tool, and a dangling one is a retryable gap.
         for src in sources:
-            if src.root.resolve(strict=False).is_relative_to(owned_root):
+            if _is_polylogue_owned_source(src):
                 src.root.mkdir(parents=True, exist_ok=True)
 
         if lifecycle_events_enabled:

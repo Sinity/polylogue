@@ -573,3 +573,34 @@ def test_refused_unit_releases_every_capture_even_identical_ones(tmp_path: Path)
                 captures.append((blob_hash, publisher.receipt_id(blob_hash)))
             raise ForeignOriginContentError(expected=Provider.CHATGPT, found=Provider.CLAUDE_AI, evidence="probe")
     assert [receipt.blob_hash for receipt, _ in publisher._pending] == [kept]
+
+
+def test_capture_validates_every_record_not_only_the_prefix(tmp_path: Path) -> None:
+    """A foreign record past the validation prefix is still refused.
+
+    The first Claude Code record is larger than the validation window, so the
+    prefix holds no complete record, and the Codex rollout follows it.
+
+    Anti-vacuity: validate only the captured prefix again and this blob is
+    retained as Claude Code, its Codex tail parsed as Claude content.
+    """
+    from polylogue.sources.bound_capture import capture_bound_source
+    from polylogue.sources.dispatch import LOCATION_VALIDATION_PREFIX_BYTES
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+    large_first = dict(_CLAUDE_CODE_TRANSCRIPT[0])
+    large_first["message"] = {"role": "user", "content": "x" * (LOCATION_VALIDATION_PREFIX_BYTES * 2)}
+    source = tmp_path / "projects" / "proj" / "bad69218-73bd-490a-869a-2b3a30bf421b.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(_jsonl([large_first, *_CODEX_ROLLOUT]))
+    publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+
+    with pytest.raises(ForeignOriginContentError):
+        capture_bound_source(publisher, source, Provider.CLAUDE_CODE, lambda: publisher.write_from_path(source))
+    assert not publisher.has_pending
+
+    # The same oversized first record followed by its own origin is admitted.
+    source.write_bytes(_jsonl([large_first, *_CLAUDE_CODE_TRANSCRIPT[1:]]))
+    capture_bound_source(publisher, source, Provider.CLAUDE_CODE, lambda: publisher.write_from_path(source))
+    assert publisher.has_pending
+    publisher.discard_pending()

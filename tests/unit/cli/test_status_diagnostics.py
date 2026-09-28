@@ -194,6 +194,20 @@ class TestDiagnoseNoSources:
         assert diag.kind == "no_sources"
         assert "polylogue import" in diag.next_action
 
+    def test_a_configured_hermes_root_is_a_source(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """The probe checks the runtime's resolved roots, as the daemon watches them.
+
+        Anti-vacuity: probe the default ``~/.hermes`` instead and this machine,
+        whose only source is the overridden Hermes root, reports ``no_sources``.
+        """
+        data_home, _ = _set_xdg(monkeypatch, tmp_path)
+        _create_index_db(data_home)
+        hermes = tmp_path / "elsewhere" / "hermes"
+        hermes.mkdir(parents=True)
+        monkeypatch.setenv("POLYLOGUE_HERMES_ROOT", str(hermes))
+        diag = diagnose_first_run(daemon_alive=False)
+        assert diag.kind == "no_daemon"
+
     def test_a_present_chat_tool_is_a_source(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         data_home, _ = _set_xdg(monkeypatch, tmp_path)
         _create_index_db(data_home)

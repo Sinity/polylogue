@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Literal
 
+from devtools.isolated_environment import isolated_home_environment
 from devtools.query_memory_budget import _read_process_tree_rss_kb
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -524,25 +525,7 @@ def qualification_environment(
     directory, or a Polylogue path override, would otherwise add the
     operator's real config and sources to the run.
     """
-    env = dict(inherited)
-    env["HOME"] = str(home)
-    for variable, relative in (
-        ("XDG_CONFIG_HOME", ".config"),
-        ("XDG_DATA_HOME", ".local/share"),
-        ("XDG_STATE_HOME", ".local/state"),
-        ("XDG_CACHE_HOME", ".cache"),
-    ):
-        env[variable] = str(home / relative)
-    env["POLYLOGUE_SITE_CONFIG"] = ""
-    for variable in (
-        "POLYLOGUE_CONFIG",
-        "POLYLOGUE_HERMES_ROOT",
-        "POLYLOGUE_BROWSER_CAPTURE_SPOOL_PATH",
-        "POLYLOGUE_HOOK_SIDECAR_DIR",
-        "POLYLOGUE_CREDENTIAL_PATH",
-        "POLYLOGUE_TOKEN_PATH",
-    ):
-        env.pop(variable, None)
+    env = isolated_home_environment(inherited, home=home)
     env["POLYLOGUE_ARCHIVE_ROOT"] = str(archive)
     # The qualification's required domains are local archive convergence. Keep
     # externally backed Sinex publication explicitly off for this scratch run.

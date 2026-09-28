@@ -4917,3 +4917,34 @@ def test_daemon_has_no_custom_source_roots_or_source_narrowing(command: str, fla
 
     assert result.exit_code != 0
     assert f"No such option '{flag}'" in result.output
+
+
+def test_owned_source_roots_are_decided_by_role_not_resolved_location(tmp_path: Path) -> None:
+    """A provider root relocated into the archive tree is still the provider's.
+
+    Anti-vacuity: classify by ``resolve(strict=False).is_relative_to(archive)``
+    again and the dangling ``claude-code`` symlink below is treated as owned,
+    so startup's ``mkdir(exist_ok=True)`` raises ``FileExistsError`` on it.
+    """
+    from polylogue.daemon.cli import _is_polylogue_owned_source, _watch_sources
+    from polylogue.sources.hooks import HookSpoolSourceSpec
+    from polylogue.sources.live.watcher import WatchSource, hook_carrier_watch_sources
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    relocated = tmp_path / "home" / ".claude" / "projects"
+    relocated.parent.mkdir(parents=True)
+    relocated.symlink_to(archive / "provider-data" / "claude")  # target absent: dangling
+    provider = WatchSource(name="claude-code", root=relocated)
+    assert not _is_polylogue_owned_source(provider)
+
+    owned_names = {source.name for source in _watch_sources() if _is_polylogue_owned_source(source)}
+    assert owned_names == {"browser-capture", "inbox"}
+    primary = hook_carrier_watch_sources(
+        (HookSpoolSourceSpec(source_id="hooks", role="primary-writable", root=tmp_path / "hooks"),)
+    )
+    legacy = hook_carrier_watch_sources(
+        (HookSpoolSourceSpec(source_id="old-hooks", role="legacy-read-only", root=tmp_path / "old"),)
+    )
+    assert primary and all(_is_polylogue_owned_source(source) for source in primary)
+    assert legacy and not any(_is_polylogue_owned_source(source) for source in legacy)
