@@ -73,9 +73,9 @@ needs a stats-table join, update `_needs_stats_join()` in
 goes in `cli/commands/`. The CLI shows fast daemon status on bare invocation
 and falls back to archive summary when the daemon is not running.
 
-**Adding a session insight**: Define the insight model in `insights/`. Add
-storage in `storage/derived/session/`. Wire rebuild logic and register in
-`insights/registry.py`.
+**Adding a session insight**: Define the insight model in `analysis/`. Add storage in
+`storage/derived/session/`. Wire rebuild logic and register it in
+`analysis/registry.py`.
 
 **Adding a devtools command**: Add a `CommandSpec` to
 `devtools/command_catalog.py`. Implementation goes in `devtools/<name>.py`.
@@ -366,7 +366,9 @@ Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered s
   85-99% `unknown`); `blocks.tool_result_outcome_unknown_reason`
   (distinguishes "provider emitted nothing" / "parser distrusts it" /
   "parser doesn't read this origin's field" instead of one flat `NULL`);
-  `sessions.display_name` (subagent slug display name);
+  `sessions.display_name` (subagent slug display name) and
+  `sessions.run_settings_json` (captured run settings; retired in index schema
+  version 95);
   `session_links.parent_tool_use_block_id` (the
   real join-key column replacing `delegation_facts`' cardinality-gated
   ordinal dispatch<->child pairing, 842,819 live records); the new
@@ -1101,8 +1103,8 @@ defense-in-depth and never proves a publisher is dead.
    or live referent/reservation retains the bytes.
 3. **Intent before unlink.** Commit `gc_generations` and one exact
    `gc_generation_members` row per candidate, including the observed namespace
-   identity, before an unlink is attempted. The member rows are the durable,
-   complete inventory for recovery, not a second owner of the blobs.
+   identity, before an unlink is attempted. The collection of member rows is the durable inventory for recovery, not a
+   second owner of the blobs.
 4. **Age floor.** A candidate must be older than
    `max(MIN_AGE_S, now - prev_generation.completed_at)`
    (`polylogue/storage/blob_gc.py:run_blob_gc_report`). `MIN_AGE_S` is 60
@@ -1334,7 +1336,7 @@ is hand-rolled.
 Cross-check adjacent surfaces after changes:
 
 - query: `cli/query*.py` ↔ `archive/filter/filters.py` ↔ `storage/search*.py`
-- pipeline: `daemon/` ↔ `pipeline/` ↔ `storage/` ↔ `insights/`
+- pipeline: `daemon/` ↔ `pipeline/` ↔ `storage/` ↔ `analysis/`
 - readiness: `cli/commands/check.py` ↔ `readiness/` ↔ `daemon/health.py`
 - publication: `rendering/` ↔ `site/` ↔ `devtools/`
 - schema: `schemas/` ↔ `sources/providers/` ↔ `pipeline/services/validation_*`

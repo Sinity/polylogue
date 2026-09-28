@@ -89,7 +89,7 @@ surfaces:
     tier: "cheap-local"
 
   daemon_convergence_single_file:
-    description: "Daemon ingest convergence for a single 1000-message synthetic session"
+    description: "Direct live-batch ingest timing for a single 1000-message synthetic session; does not measure watcher-to-search visibility"
     benchmark_test: "tests/benchmarks/test_daemon_convergence.py::test_convergence_single_file_perf"
     p50_ms: 30000
     p95_ms: 60000
@@ -424,13 +424,10 @@ surfaces:
     gate: "informational"
     tier: "lab"
 
-  ingest_to_searchable:
-    description: "Live daemon ingest through FTS publication until the new content is visible to find"
-    benchmark_test: "tests/benchmarks/test_daemon_convergence.py::test_convergence_single_file_perf"
-    p50_ms: 5000
-    p95_ms: 10000
-    gate: "informational"
-    tier: "lab"
+  # No ingest_to_searchable SLO is declared: the current single-file benchmark
+  # times direct LiveBatchProcessor ingestion and does not observe watcher
+  # detection or successful find visibility. Add this SLO with a benchmark that
+  # exercises that full production route.
 
   cli_status_cold:
     description: >-

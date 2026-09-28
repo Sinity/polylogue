@@ -8,6 +8,13 @@ operational incidents. Derived state (`index.db`, FTS, insights,
 embeddings) is rebuilt only by ordinary daemon convergence; there is no
 manual rebuild or repair verb.
 
+A rehearsal made by copying an archive tree must transition all copied authority
+state, not only `audit.db`. `.maintenance-state/durable-change-trains/.bootstrap`
+and released train manifests remain bound to the original root and durable-tier
+inode identities. The audit-adoption option creates audit authority only; it
+does not rebind those records. Use a complete clone transition that rebinds or
+retires copied train state before startup.
+
 ## Durable schema changes
 
 Durable tiers (`source.db`, `user.db`, `audit.db`) evolve only by numbered
