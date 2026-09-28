@@ -72,6 +72,7 @@ def test_overlapping_process_wide_arming_remains_until_last_exit() -> None:
     Anti-vacuity: restore a saved process-global boolean and exit the first
     context before the second; enforcement becomes false while still held.
     """
+    was_enforced = write_lease_enforced()
     first = arm_write_lease_enforcement(process_wide=True)
     second = arm_write_lease_enforcement(process_wide=True)
     first.__enter__()
@@ -81,7 +82,7 @@ def test_overlapping_process_wide_arming_remains_until_last_exit() -> None:
         assert write_lease_enforced()
     finally:
         second.__exit__(None, None, None)
-    assert not write_lease_enforced()
+    assert write_lease_enforced() is was_enforced
 
 
 def test_a_leased_write_open_succeeds(db_path: Path) -> None:

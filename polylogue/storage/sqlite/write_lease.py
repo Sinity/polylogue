@@ -228,6 +228,7 @@ _ENFORCEMENT_DEFAULT = False
 _PROCESS_ENFORCEMENT = False
 _PROCESS_ENFORCEMENT_LOCK = threading.RLock()
 _PROCESS_ENFORCEMENT_USERS = 0
+_PROCESS_ENFORCEMENT_SUPPRESSORS = 0
 
 
 def _current_task_id() -> int | None:
@@ -253,14 +254,16 @@ def arm_write_lease_enforcement(*, armed: bool = True, process_wide: bool = Fals
     The daemon opts into ``process_wide=True`` for its process-lifetime writer
     boundary; tests and one-shot callers keep the default local scope.
     """
-    global _PROCESS_ENFORCEMENT, _PROCESS_ENFORCEMENT_USERS
+    global _PROCESS_ENFORCEMENT, _PROCESS_ENFORCEMENT_USERS, _PROCESS_ENFORCEMENT_SUPPRESSORS
     previous = getattr(_ENFORCEMENT, "armed", _ENFORCEMENT_DEFAULT)
     _ENFORCEMENT.armed = armed
     if process_wide:
         with _PROCESS_ENFORCEMENT_LOCK:
             if armed:
                 _PROCESS_ENFORCEMENT_USERS += 1
-            _PROCESS_ENFORCEMENT = _PROCESS_ENFORCEMENT_USERS > 0
+            else:
+                _PROCESS_ENFORCEMENT_SUPPRESSORS += 1
+            _PROCESS_ENFORCEMENT = _PROCESS_ENFORCEMENT_USERS > 0 and _PROCESS_ENFORCEMENT_SUPPRESSORS == 0
     try:
         yield
     finally:
@@ -269,7 +272,9 @@ def arm_write_lease_enforcement(*, armed: bool = True, process_wide: bool = Fals
             with _PROCESS_ENFORCEMENT_LOCK:
                 if armed:
                     _PROCESS_ENFORCEMENT_USERS -= 1
-                _PROCESS_ENFORCEMENT = _PROCESS_ENFORCEMENT_USERS > 0
+                else:
+                    _PROCESS_ENFORCEMENT_SUPPRESSORS -= 1
+                _PROCESS_ENFORCEMENT = _PROCESS_ENFORCEMENT_USERS > 0 and _PROCESS_ENFORCEMENT_SUPPRESSORS == 0
 
 
 def current_write_lease() -> WriteLease | None:
