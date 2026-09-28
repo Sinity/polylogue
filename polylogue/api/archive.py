@@ -1602,6 +1602,8 @@ def _archive_hermes_integration_health(config: Config) -> HermesIntegrationHealt
     return build_hermes_integration_health(
         archive_root,
         hermes_root=hermes_root,
+        convergence_debt_available=debt.available,
+        convergence_debt_error=debt.error,
         convergence_debt_failed_count=convergence_debt_failed_count,
         convergence_debt_deferred_count=convergence_debt_deferred_count,
         convergence_debt_retry_due_count=convergence_debt_retry_due_count,
