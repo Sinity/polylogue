@@ -964,3 +964,191 @@ def test_claude_ai_catalog_parser_only_smoke() -> None:
         parsed = parse_ai(copy.deepcopy(payload), fallback_id=f"fb-{label}")
         assert parsed.source_name == "claude-ai", f"[{label}] wrong provider: {parsed.source_name}"
         assert parsed.messages, f"[{label}] parser produced no messages"
+
+
+def test_claude_ai_compaction_summary_persists_as_event() -> None:
+    """claude.ai's compaction summary is the context the model continued from.
+
+    Anti-vacuity: remove ``_compaction_summary_events`` from ``parse_ai`` and
+    the summary text is dropped; key events by native id alone and one of the
+    two retained ``m2`` messages loses its summary.
+    """
+    payload = {
+        "uuid": "claude-compacted",
+        "name": "Long Session",
+        "settings": {"effort_level": "high", "thinking_mode": "extended"},
+        "chat_messages": [
+            {"uuid": "m1", "sender": "human", "text": "hi", "created_at": "2026-01-01T00:00:00Z"},
+            {
+                "messageId": "m2",
+                "sender": "assistant",
+                "text": "continuing",
+                "created_at": "2026-01-01T00:05:00Z",
+                "compaction_summary": [
+                    {
+                        "type": "text",
+                        "text": "Earlier we planned the parser work.",
+                        "start_timestamp": "2026-01-01T00:04:00Z",
+                        "stop_timestamp": "2026-01-01T00:04:30Z",
+                        "citations": [],
+                    }
+                ],
+            },
+            {
+                "messageId": "m2",
+                "sender": "assistant",
+                "text": "continuing",
+                "created_at": "2026-01-01T00:05:00Z",
+                "compaction_summary": [{"type": "text", "text": "Earlier."}],
+            },
+        ],
+    }
+
+    session = parse_ai(payload, "fallback")
+
+    # The normalizer keeps a repeated native id as separate messages
+    # (occurrence-suffixed evidence keys), so each keeps its own summary.
+    assert [message.provider_message_id for message in session.messages].count("m2") == 2
+    summaries = [event for event in session.session_events if event.event_type == "claude_ai_compaction_summary"]
+    assert {event.source_message_provider_id for event in summaries} == {"m2"}
+    assert sorted(str(event.payload["summary"]) for event in summaries) == [
+        "Earlier we planned the parser work.",
+        "Earlier.",
+    ]
+    richest = next(event for event in summaries if event.payload["summary"] == "Earlier we planned the parser work.")
+    assert richest.payload["stop_timestamp"] == "2026-01-01T00:04:30Z"
+    assert any(message.model_effort == "high" for message in session.messages)
+
+
+def test_claude_ai_id_less_compaction_summaries_stay_distinct() -> None:
+    """Two ID-less carriers are two messages, so both summaries survive.
+
+    Anti-vacuity: key ID-less records under one shared key and one summary is lost.
+    """
+    payload = {
+        "uuid": "claude-id-less",
+        "chat_messages": [
+            {"sender": "assistant", "text": "a", "compaction_summary": [{"type": "text", "text": "first"}]},
+            {"sender": "assistant", "text": "b", "compaction_summary": [{"type": "text", "text": "second"}]},
+        ],
+    }
+
+    session = parse_ai(payload, "fallback")
+
+    summaries = [event for event in session.session_events if event.event_type == "claude_ai_compaction_summary"]
+    assert sorted(str(event.payload["summary"]) for event in summaries) == ["first", "second"]
+
+
+def test_claude_ai_compaction_summaries_follow_canonical_message_order() -> None:
+    """Reordering ``chat_messages`` leaves the summary events and hash unchanged.
+
+    Anti-vacuity: emit the events in raw array order and the reversed export
+    lists them reversed, changing ``session_content_hash``.
+    """
+    from polylogue.pipeline.ids import session_content_hash
+    from polylogue.sources.parsers.base import ParsedSession
+
+    chat_messages = [
+        {
+            "uuid": "m1",
+            "sender": "human",
+            "text": "first",
+            "created_at": "2026-01-01T00:00:00Z",
+            "compaction_summary": [{"type": "text", "text": "summary one"}],
+        },
+        {
+            "uuid": "m2",
+            "sender": "assistant",
+            "text": "second",
+            "created_at": "2026-01-01T00:01:00Z",
+            "compaction_summary": [{"type": "text", "text": "summary two"}],
+        },
+    ]
+    forward = parse_ai({"uuid": "claude-order", "chat_messages": chat_messages}, "fallback")
+    reverse = parse_ai({"uuid": "claude-order", "chat_messages": list(reversed(chat_messages))}, "fallback")
+
+    def summaries(session: ParsedSession) -> list[object]:
+        return [
+            event.payload["summary"]
+            for event in session.session_events
+            if event.event_type == "claude_ai_compaction_summary"
+        ]
+
+    assert summaries(forward) == summaries(reverse) == ["summary one", "summary two"]
+    assert session_content_hash(forward) == session_content_hash(reverse)
+
+
+def test_claude_ai_summary_only_records_order_by_content() -> None:
+    """ID-less summary-only records keep one event order under any array order.
+
+    Anti-vacuity: order these carriers by evidence key, whose occurrence
+    suffix follows array order, and the reversed export swaps the two events.
+    """
+    from polylogue.pipeline.ids import session_content_hash
+
+    chat_messages = [
+        {"sender": "assistant", "text": "kept", "created_at": "2026-01-01T00:00:00Z"},
+        {"sender": "assistant", "compaction_summary": [{"type": "text", "text": "alpha"}]},
+        {"sender": "assistant", "compaction_summary": [{"type": "text", "text": "beta"}]},
+    ]
+    forward = parse_ai({"uuid": "claude-summary-only", "chat_messages": chat_messages}, "fallback")
+    reverse = parse_ai({"uuid": "claude-summary-only", "chat_messages": list(reversed(chat_messages))}, "fallback")
+
+    def summaries(events: list[Any]) -> list[object]:
+        return [event.payload["summary"] for event in events if event.event_type == "claude_ai_compaction_summary"]
+
+    assert summaries(forward.session_events) == summaries(reverse.session_events) == ["alpha", "beta"]
+    assert session_content_hash(forward) == session_content_hash(reverse)
+
+
+def test_claude_ai_repeated_id_summaries_order_by_content() -> None:
+    """Identical repeated-id carriers keep one summary order under any array order.
+
+    Anti-vacuity: emit summaries in occurrence order, which follows array
+    order for otherwise identical records, and the reversed export swaps them.
+    """
+    from polylogue.pipeline.ids import session_content_hash
+
+    def carrier(summary: str) -> dict[str, object]:
+        return {
+            "uuid": "m1",
+            "sender": "assistant",
+            "text": "same",
+            "created_at": "2026-01-01T00:00:00Z",
+            "compaction_summary": [{"type": "text", "text": summary}],
+        }
+
+    chat_messages = [carrier("alpha"), carrier("beta")]
+    forward = parse_ai({"uuid": "claude-repeated", "chat_messages": chat_messages}, "fallback")
+    reverse = parse_ai({"uuid": "claude-repeated", "chat_messages": list(reversed(chat_messages))}, "fallback")
+
+    def summaries(events: list[Any]) -> list[object]:
+        return [event.payload["summary"] for event in events if event.event_type == "claude_ai_compaction_summary"]
+
+    assert summaries(forward.session_events) == summaries(reverse.session_events) == ["alpha", "beta"]
+    assert session_content_hash(forward) == session_content_hash(reverse)
+
+
+def test_claude_ai_effective_thinking_mode_reaches_the_model_configuration() -> None:
+    """The top-level effective thinking mode is the session's thinking configuration.
+
+    Anti-vacuity: read only ``settings.thinking_mode`` and an export carrying
+    just ``effective_thinking_mode`` emits no thinking configuration; read the
+    requested setting first and it overrides the effective mode.
+    """
+
+    def thinking(payload: dict[str, object]) -> object:
+        session = parse_ai(
+            {"uuid": "claude-thinking", "chat_messages": [{"sender": "human", "text": "hi"}], **payload}, "fallback"
+        )
+        (event,) = [
+            event
+            for event in session.session_events
+            if event.event_type == "model_configuration" and event.source_message_provider_id is None
+        ]
+        return event.payload.get("thinking")
+
+    assert thinking({"effective_thinking_mode": "extended"}) == {"mode": "extended"}
+    assert thinking({"effective_thinking_mode": "extended", "settings": {"thinking_mode": "normal"}}) == {
+        "mode": "extended"
+    }
