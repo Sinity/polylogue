@@ -49,6 +49,7 @@ from polylogue.daemon.web_auth import (
     WebCredentialFailurePayload,
     WebCredentialFailureState,
     WebCredentialRevocationPayload,
+    WebSignInTicketPayload,
 )
 from polylogue.surfaces.payloads import (
     RANKING_POLICY_MIXED,
@@ -81,6 +82,7 @@ _PUBLISHED_MODELS: tuple[type[BaseModel], ...] = (
     WebCredentialBootstrapPayload,
     WebCredentialRevocationPayload,
     WebCredentialFailurePayload,
+    WebSignInTicketPayload,
     QueryErrorPayload,
     QueryExpressionExplanationAst,
 )
@@ -435,6 +437,31 @@ def _build_openapi_document() -> dict[str, Any]:
                         "403": _web_credential_error_response("Credential origin or scope is not admitted."),
                     },
                     "x-polylogue-recoverable-states": _WEB_CREDENTIAL_FAILURE_STATES,
+                },
+            },
+            "/api/web-auth/ticket": {
+                "post": {
+                    "summary": "Mint a one-time browser sign-in ticket",
+                    "description": (
+                        "Bearer-authenticated, same-origin. Returns a short-lived single-use ticket that a "
+                        "browser presents as a bearer to POST /api/web-auth/session to obtain the first-party "
+                        "cookie. A web credential cookie is not accepted here."
+                    ),
+                    "operationId": "mintWebSignInTicket",
+                    "security": [{"machineBearer": []}],
+                    "responses": {
+                        "201": {
+                            "description": "Ticket minted.",
+                            "headers": {
+                                "Cache-Control": {"schema": {"type": "string", "const": "no-store"}},
+                            },
+                            "content": {
+                                "application/json": {"schema": {"$ref": "#/components/schemas/WebSignInTicketPayload"}}
+                            },
+                        },
+                        "401": _query_error_response("The daemon bearer is missing or invalid."),
+                        "403": _query_error_response("The request is not same-origin with the daemon."),
+                    },
                 },
             },
             "/api/status": {

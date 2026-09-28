@@ -437,3 +437,23 @@ def test_bookmark_navigation_with_a_valid_cookie_reads_the_shell() -> None:
     handler._serve_webui_session_list = MagicMock()  # type: ignore[method-assign]
     handler.do_GET()
     handler._serve_webui_session_list.assert_called_once()
+
+
+def test_the_exchange_page_is_served_even_to_a_credentialed_browser() -> None:
+    """Anti-vacuity: gate it like the shell and a credentialed browser gets archive HTML, leaving the ticket unspent in the URL."""
+    server = MockDaemonServer(auth_token="secret")
+    issued = server.web_credentials.issue("http://127.0.0.1:8766")
+    handler = _make_handler(
+        "GET",
+        "/web-auth/sign-in",
+        host="127.0.0.1:8766",
+        cookie=f"{WEB_CREDENTIAL_COOKIE}={issued.token}",
+        fetch_site="none",
+        server=server,
+    )
+    send_html = MagicMock()
+    handler._send_webui_html = send_html  # type: ignore[method-assign]
+    handler.do_GET()
+    status, body = send_html.call_args.args
+    assert status == HTTPStatus.OK
+    assert body == WEB_SIGN_IN_HTML

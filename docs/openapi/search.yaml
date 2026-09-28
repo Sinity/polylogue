@@ -147,6 +147,47 @@ paths:
         auth_policy: first_party_same_origin
         owner_path: polylogue/daemon/http.py
         migration_reason: First-party credential lifecycle is owned by the daemon credential registry.
+  /api/web-auth/ticket:
+    post:
+      summary: Mint a one-time browser sign-in ticket
+      description: Bearer-authenticated, same-origin. Returns a short-lived single-use ticket that a browser presents as a
+        bearer to POST /api/web-auth/session to obtain the first-party cookie. A web credential cookie is not accepted here.
+      operationId: mintWebSignInTicket
+      security:
+      - machineBearer: []
+      responses:
+        '201':
+          description: Ticket minted.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebSignInTicketPayload'
+        '401':
+          description: The daemon bearer is missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryErrorPayload'
+        '403':
+          description: The request is not same-origin with the daemon.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryErrorPayload'
+      x-polylogue-declaration:
+        declaration_id: daemon.http.post.api.web-auth.ticket
+        method: POST
+        path: /api/web-auth/ticket
+        request_contract: HTTP route request
+        response_contract: WebSignInTicketPayload
+        auth_policy: bearer_if_configured_and_same_origin
+        owner_path: polylogue/daemon/http.py
+        migration_reason: First-party credential lifecycle is owned by the daemon credential registry.
   /api/status:
     get:
       summary: Report daemon status and archive readiness
@@ -1695,30 +1736,6 @@ paths:
         auth_policy: bearer_if_configured_and_same_origin
         owner_path: polylogue/daemon/http.py
         domain_operation: maintenance.demo.augment
-  /api/web-auth/ticket:
-    post:
-      summary: Execute POST /api/web-auth/ticket through the daemon HTTP adapter.
-      responses:
-        default:
-          description: WebSignInTicketPayload
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-      x-polylogue-client-generation: false
-      operationId: routePostApiWebAuthTicket
-      security:
-      - machineBearer: []
-      x-polylogue-declaration:
-        declaration_id: daemon.http.post.api.web-auth.ticket
-        method: POST
-        path: /api/web-auth/ticket
-        request_contract: HTTP route request
-        response_contract: WebSignInTicketPayload
-        auth_policy: bearer_if_configured_and_same_origin
-        owner_path: polylogue/daemon/http.py
-        migration_reason: First-party credential lifecycle is owned by the daemon credential registry.
   /api/health/check:
     get:
       summary: Execute GET /api/health/check through the daemon HTTP adapter.
@@ -5204,6 +5221,27 @@ components:
       - error
       title: WebCredentialFailurePayload
       type: object
+    WebSignInTicketPayload:
+      additionalProperties: false
+      description: One-time browser sign-in ticket returned to a bearer-authenticated caller.
+      properties:
+        ok:
+          const: true
+          default: true
+          title: Ok
+          type: boolean
+        ticket:
+          title: Ticket
+          type: string
+        expires_at:
+          format: date-time
+          title: Expires At
+          type: string
+      required:
+      - ticket
+      - expires_at
+      title: WebSignInTicketPayload
+      type: object
     QueryErrorPayload:
       additionalProperties: false
       description: 'Shared error payload for daemon HTTP, MCP, and other surfaces.
@@ -6559,6 +6597,13 @@ x-polylogue-route-contracts:
   auth_policy: unauthenticated_loopback
   response_contract: static sign-in page script
   notes: Static script for the sign-in page an uncredentialed browser receives; carries no archive data.
+- method: GET
+  pattern: /web-auth/sign-in
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: unauthenticated_loopback
+  response_contract: static sign-in page HTML
+  notes: Ticket exchange page the CLI opens; always consumes the ticket fragment, then continues to a same-origin path.
 - method: GET
   pattern: /healthz/live
   kind: operational

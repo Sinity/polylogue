@@ -124,7 +124,14 @@ WEB_SIGN_IN_SCRIPT = """(() => {
       headers: { 'X-Polylogue-Web-Client': '1', Authorization: 'Bearer ' + secret },
     });
     if (response.status === 201) {
-      window.location.reload();
+      if (window.location.pathname === '/web-auth/sign-in') {
+        // Continue only to this origin: an open redirect would let a crafted
+        // link bounce a freshly signed-in browser anywhere.
+        const next = new URL(new URLSearchParams(window.location.search).get('next') || '/', window.location.origin);
+        window.location.replace(next.origin === window.location.origin ? next.pathname + next.search : '/');
+      } else {
+        window.location.reload();
+      }
       return;
     }
     status().textContent = 'Sign-in was refused (' + response.status + '). Open the archive from the CLI again.';

@@ -98,7 +98,8 @@ async function signedInUrl(route = '/'): Promise<string> {
   expect(response.status()).toBe(201);
   const { ticket } = await response.json() as { ticket: string };
   await machine.dispose();
-  return `${receipt.base_url}${route}#polylogue-ticket=${encodeURIComponent(ticket)}`;
+  // The CLI opens the exchange page, which consumes the ticket and continues to the route.
+  return `${receipt.base_url}/web-auth/sign-in?next=${encodeURIComponent(route)}#polylogue-ticket=${encodeURIComponent(ticket)}`;
 }
 
 async function issueCredential(page: Page): Promise<void> {

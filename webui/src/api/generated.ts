@@ -811,6 +811,12 @@ export type WebCredentialRevokedPayload = {
   readonly state?: "web_credential_revoked";
 };
 
+export type WebSignInTicketPayload = {
+  readonly expires_at: string;
+  readonly ok?: true;
+  readonly ticket: string;
+};
+
 export type BootstrapWebCredentialParameters = Record<string, never>;
 export type BootstrapWebCredentialResponse = WebCredentialBootstrapPayload;
 export type BootstrapWebCredentialError = QueryErrorPayload | WebCredentialFailurePayload;
@@ -845,6 +851,10 @@ export type ListAssertionClaimsParameters = {
 };
 export type ListAssertionClaimsResponse = AssertionClaimListPayload;
 export type ListAssertionClaimsError = QueryErrorPayload | WebCredentialFailurePayload;
+
+export type MintWebSignInTicketParameters = Record<string, never>;
+export type MintWebSignInTicketResponse = WebSignInTicketPayload;
+export type MintWebSignInTicketError = QueryErrorPayload;
 
 export type QueryUnitsParameters = {
   readonly action?: string;
@@ -1030,6 +1040,19 @@ export class PolylogueClient {
           status: parameters.status,
           target_ref: parameters.target_ref,
         },
+      },
+      options,
+    );
+  }
+
+  mintWebSignInTicket(
+    parameters: MintWebSignInTicketParameters = {},
+    options: RequestOptions = {},
+  ): Promise<MintWebSignInTicketResponse> {
+    return this.#transport.request<MintWebSignInTicketResponse, MintWebSignInTicketError>(
+      {
+        method: "POST",
+        path: "/api/web-auth/ticket",
       },
       options,
     );

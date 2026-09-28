@@ -4,14 +4,16 @@ Loopback is not identity, so the daemon serves shell HTML only to the owner's
 credential. The CLI can read the owner-only bearer token; it exchanges that
 for a one-time sign-in ticket and hands the ticket to the browser in the URL
 fragment, which never reaches a server log or a ``Referer`` header. The
-browser's sign-in page redeems it for the first-party cookie.
+ticket always opens the daemon's exchange page (``/web-auth/sign-in``), which
+consumes and clears the fragment even when the browser already holds a
+credential, then continues to the requested page.
 """
 
 from __future__ import annotations
 
 import json
 from urllib.error import URLError
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from polylogue.cli.shared.types import AppEnv
@@ -56,7 +58,12 @@ def signed_in_web_url(env: AppEnv, daemon_url: str, web_url: str) -> str:
     ticket = payload.get("ticket") if isinstance(payload, dict) else None
     if not isinstance(ticket, str) or not ticket:
         return web_url
-    return f"{web_url}#polylogue-ticket={quote(ticket, safe='')}"
+    target = urlsplit(web_url)
+    next_path = target.path or "/"
+    if target.query:
+        next_path = f"{next_path}?{target.query}"
+    exchange = urlunsplit((target.scheme, target.netloc, "/web-auth/sign-in", f"next={quote(next_path, safe='/')}", ""))
+    return f"{exchange}#polylogue-ticket={quote(ticket, safe='')}"
 
 
 __all__ = ["signed_in_web_url"]

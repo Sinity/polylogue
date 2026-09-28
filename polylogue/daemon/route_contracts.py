@@ -390,6 +390,15 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     ),
     RouteContract(
         "GET",
+        "/web-auth/sign-in",
+        "browser_shell",
+        "shell_supported",
+        "unauthenticated_loopback",
+        "static sign-in page HTML",
+        "Ticket exchange page the CLI opens; always consumes the ticket fragment, then continues to a same-origin path.",
+    ),
+    RouteContract(
+        "GET",
         "/healthz/live",
         "operational",
         "operational",

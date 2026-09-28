@@ -21,7 +21,8 @@ class _Response(io.BytesIO):
 
 
 def test_opened_url_carries_a_ticket_fragment_minted_with_the_bearer(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Anti-vacuity: open the bare URL and the browser lands on the sign-in page."""
+    """Anti-vacuity: open the bare URL and the browser lands on the sign-in page; append the
+    fragment to the archive URL and an already-credentialed browser never consumes it."""
     seen: list[Any] = []
 
     def fake_urlopen(request: Any, *, timeout: float) -> _Response:
@@ -34,7 +35,7 @@ def test_opened_url_carries_a_ticket_fragment_minted_with_the_bearer(monkeypatch
 
     url = web_sign_in.signed_in_web_url(object(), "http://127.0.0.1:8766/", "http://127.0.0.1:8766/s/abc")  # type: ignore[arg-type]
 
-    assert url == "http://127.0.0.1:8766/s/abc#polylogue-ticket=t%2F1"
+    assert url == "http://127.0.0.1:8766/web-auth/sign-in?next=/s/abc#polylogue-ticket=t%2F1"
     assert seen[0].full_url == "http://127.0.0.1:8766/api/web-auth/ticket"
     assert seen[0].get_header("Authorization") == "Bearer owner-token"
 

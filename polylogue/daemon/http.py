@@ -492,6 +492,7 @@ def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
         ("GET", "/healthz/ready"),
         ("GET", "/metrics"),
         ("GET", "/web-auth/sign-in.js"),
+        ("GET", "/web-auth/sign-in"),
     ]
     routes.extend(("GET", route.pattern) for route in _static_get_routes())
     routes.extend(("GET", route.pattern) for route in _parameterized_get_routes())
@@ -1880,6 +1881,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # authentication checks.
         if path == ["web-auth", "sign-in.js"]:
             self._serve_web_sign_in_script()
+            return
+        if path == ["web-auth", "sign-in"]:
+            # The ticket exchange page is served whether or not the browser is
+            # already credentialed, so a ticket fragment is always consumed and
+            # cleared rather than left in the address bar of an archive page.
+            self._send_webui_html(HTTPStatus.OK, WEB_SIGN_IN_HTML)
             return
         if path == [""]:
             if not self._check_shell_bootstrap_access():
