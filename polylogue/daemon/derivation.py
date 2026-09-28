@@ -78,6 +78,11 @@ __all__ = [
 DEFAULT_PAGE = 128
 
 
+def _pass_clock() -> float:
+    """The clock one pass's deadline is measured on (monotonic seconds)."""
+    return time.monotonic()
+
+
 class KeyStatus(Enum):
     """How one key's authoritative output relates to what is required."""
 
@@ -573,7 +578,7 @@ class _Pass:
         self.budget = budget
         self.publisher = publisher
         self.barrier = barrier
-        self.started = time.monotonic()
+        self.started = _pass_clock()
         self.counts: dict[Outcome, int] = {Outcome.DONE: 0, Outcome.PENDING: 0, Outcome.FAILED: 0}
         self.retained: list[KeyOutcome] = []
         self.truncated = False
@@ -618,7 +623,7 @@ class _Pass:
     # ── bounds ─────────────────────────────────────────────────────
 
     def out_of_time(self) -> bool:
-        now = time.monotonic()
+        now = _pass_clock()
         deadline = self.budget.deadline_s
         if deadline is not None and now - self.started >= deadline:
             return True

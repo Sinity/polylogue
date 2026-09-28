@@ -82,6 +82,7 @@ _LIVE_STATE_TABLES = frozenset(
         "rollout_migration_skipped_rollouts",
         "rollout_migration_state",
         "thread_artifacts",
+        "thread_attachments",
         "thread_dynamic_tools",
         "thread_sections",
         "thread_spawn_edges",

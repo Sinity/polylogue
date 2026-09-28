@@ -11,6 +11,7 @@ from click.testing import CliRunner
 from polylogue.cli.click_app import cli
 from polylogue.maintenance.archive_verification import archive_verification_names_for_route
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.archive_tiers import USER_TIER_VERSION
 
 
 def test_verify_archive_cli_plain_exits_zero_on_empty_archive(
@@ -47,7 +48,9 @@ def test_verify_archive_cli_exits_nonzero_on_schema_drift(
     root = cli_workspace["archive_root"]
     conn = sqlite3.connect(root / "user.db")
     try:
-        conn.execute("PRAGMA user_version = 1")
+        # A tier newer than the runtime is drift the check must block on. The
+        # fresh-v1 floor is version 1, so writing 1 would describe no drift.
+        conn.execute(f"PRAGMA user_version = {USER_TIER_VERSION + 1}")
         conn.commit()
     finally:
         conn.close()
