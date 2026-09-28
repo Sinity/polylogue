@@ -724,6 +724,118 @@ class _ShardRowSequence(Sequence[tuple[object, ...]]):
                 yield tuple(row)
 
 
+#: ``evidence_json`` key of the identity scope a materialized prefix records on
+#: its child's edge (polylogue-5gg3u).
+IDENTITY_SCOPE_EVIDENCE_KEY = "identity_scope"
+
+
+@dataclass(frozen=True, slots=True)
+class _IdentityScope:
+    """How a materialized child's stored message IDs were computed.
+
+    A child that inherited a prefix stored only its tail, identified over the
+    tail alone (duplicate native IDs and content occurrences counted within
+    it). When a parent rewrite materializes the prefix into the child, the
+    copies take native IDs except those listed in ``content_copies``: per
+    content identity, the prefix-relative occurrence ordinals of the copies
+    that took a content ID, numbered after the tail's occurrences. A replay of
+    the now spawned-fresh child reproduces every stored ID from this record,
+    so no ID moves (polylogue-5gg3u).
+    """
+
+    inherited_messages: int
+    content_copies: Mapping[str, tuple[int, ...]]
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "inherited_messages": self.inherited_messages,
+                "content_copies": {key: list(value) for key, value in sorted(self.content_copies.items())},
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    @classmethod
+    def from_json(cls, encoded: str) -> _IdentityScope | None:
+        try:
+            raw = json.loads(encoded)
+            count = int(raw["inherited_messages"])
+            copies = {
+                str(key): tuple(sorted(int(item) for item in value))
+                for key, value in dict(raw.get("content_copies") or {}).items()
+            }
+        except (TypeError, ValueError, KeyError):
+            return None
+        return cls(count, copies) if count > 0 else None
+
+
+def _record_identity_scope(conn: sqlite3.Connection, session_id: str, scope: _IdentityScope) -> None:
+    conn.execute(
+        f"""UPDATE session_links
+            SET evidence_json = json_set(
+                CASE WHEN json_type(evidence_json) = 'object' THEN evidence_json ELSE '{{}}' END,
+                '$.{IDENTITY_SCOPE_EVIDENCE_KEY}', json(?))
+            WHERE src_session_id = ? AND COALESCE(inheritance, '') != 'prefix-sharing'""",
+        (scope.to_json(), session_id),
+    )
+
+
+def _materialized_identity_scope(conn: sqlite3.Connection, session_id: str) -> _IdentityScope | None:
+    """The identity scope recorded on this child's composing edge, if any."""
+    row = conn.execute(
+        f"""SELECT evidence_json -> '$.{IDENTITY_SCOPE_EVIDENCE_KEY}' FROM session_links
+            WHERE src_session_id = ? AND json_valid(evidence_json)
+              AND json_type(evidence_json, '$.{IDENTITY_SCOPE_EVIDENCE_KEY}') = 'object'
+            ORDER BY link_type, dst_origin, dst_native_id
+            LIMIT 1""",
+        (session_id,),
+    ).fetchone()
+    return _IdentityScope.from_json(str(row[0])) if row is not None and row[0] is not None else None
+
+
+def _scoped_identities(
+    messages: Sequence[ParsedMessage], scope: _IdentityScope
+) -> tuple[tuple[ParsedMessage, ...], tuple[MessageContentIdentity, ...]]:
+    """Messages and content identities that reproduce a materialized child's IDs.
+
+    The tail keeps the identity it had while inheriting: duplicates and
+    occurrences over the tail alone. A prefix message takes its native ID
+    unless its prefix-relative occurrence is listed in the scope, or it has
+    none; a listed copy takes the content occurrence after the tail's. The
+    decision is carried by the message itself (an ID-less copy for a content
+    identity), so the rows need no duplicate set.
+    """
+    ordered = tuple(messages)
+    count = min(scope.inherited_messages, len(ordered))
+    prefix, tail = ordered[:count], ordered[count:]
+    tail_identities = message_content_identities(tail)
+    tail_duplicates = _duplicate_message_native_ids(tail)
+    tail_counts = Counter(digest for digest, _occurrence in tail_identities)
+    scoped_messages: list[ParsedMessage] = []
+    identities: list[MessageContentIdentity] = []
+    for message, (digest, ordinal) in zip(prefix, message_content_identities(prefix), strict=True):
+        copies = scope.content_copies.get(digest, ())
+        spare = tail_counts[digest] + len(copies) + ordinal
+        if ordinal in copies:
+            scoped_messages.append(message.model_copy(update={"provider_message_id": None}))
+            identities.append((digest, tail_counts[digest] + copies.index(ordinal)))
+        elif _normalized_message_native_id(message) is None:
+            scoped_messages.append(message)
+            identities.append((digest, spare))
+        else:
+            # Native: the occurrence does not enter the ID; it stays unique.
+            scoped_messages.append(message)
+            identities.append((digest, spare))
+    for message, identity in zip(tail, tail_identities, strict=True):
+        native = _normalized_message_native_id(message)
+        if native is not None and native in tail_duplicates:
+            message = message.model_copy(update={"provider_message_id": None})
+        scoped_messages.append(message)
+        identities.append(identity)
+    return tuple(scoped_messages), tuple(identities)
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedMessageContext:
     """The writer-visible result of normalizing and slicing one input session.
@@ -745,6 +857,11 @@ class PreparedMessageContext:
     lineage_inheritance: str | None
     lineage_prefix_digest: bytes | None
     inherited_source_message_ids: Mapping[str, str]
+    #: The identity scope a materialized prefix recorded on this child's edge
+    #: (``_IdentityScope``) and the content identities it assigns, index-aligned
+    #: with ``messages``. ``None`` for every other write.
+    identity_scope: _IdentityScope | None = None
+    content_identities: tuple[MessageContentIdentity, ...] | None = None
 
     def close(self) -> None:
         """Release duplicate-id indexes after the prepared write is consumed."""
@@ -987,6 +1104,10 @@ def _prepared_message_context(
     lineage_inheritance: str | None = None
     lineage_prefix_digest: bytes | None = None
     inherited_source_message_ids: Mapping[str, str] = {}
+    # A child whose prefix was materialized owns its whole transcript and the
+    # IDs recorded for it; a replay keeps it spawned-fresh rather than slicing
+    # it against whatever the parent holds now, which would move those IDs.
+    identity_scope = None if merge_append else _materialized_identity_scope(conn, session_id)
     if not merge_append:
         lineage_session = session
         if hook_parent_provider_id is not None:
@@ -1027,6 +1148,9 @@ def _prepared_message_context(
             # coincidental text.  Keep the topology edge and leave its
             # branch_point_message_id explicitly unresolved.
             drive_prompt_parent = origin is Origin.AISTUDIO_DRIVE and bool(session.parent_session_provider_id)
+            if identity_scope is not None:
+                lineage_inheritance = "spawned-fresh"
+                force_spawned_fresh = True
             if not force_spawned_fresh and not drive_prompt_parent:
                 (
                     branch_point_message_id,
@@ -1043,11 +1167,16 @@ def _prepared_message_context(
                 )
             if branch_point_message_id is not None:
                 branch_point_content_address = _message_content_address_for_id(conn, branch_point_message_id)
+    scoped_identities: tuple[MessageContentIdentity, ...] | None = None
+    if identity_scope is not None:
+        messages, scoped_identities = _scoped_identities(messages, identity_scope)
     return PreparedMessageContext(
         effective_session=effective_session,
         messages=messages if isinstance(messages, (SqliteMessageSink, _MessageTail)) else tuple(messages),
         event_duplicate_native_ids=event_duplicate_native_ids,
-        duplicate_native_ids=_duplicate_message_native_ids(messages),
+        duplicate_native_ids=frozenset() if scoped_identities is not None else _duplicate_message_native_ids(messages),
+        identity_scope=identity_scope,
+        content_identities=scoped_identities,
         effective_session_kind=effective_session_kind,
         hook_parent_native_id=hook_parent_provider_id,
         parent_session_id=parent_session_id,
@@ -1121,6 +1250,7 @@ def prepare_session_write(
     if (
         prepared_rows is not None
         and not merge_append
+        and context.content_identities is None
         and len(context.messages) == len(normalized.messages)
         and prepared_rows.session_id == session_id
         and prepared_rows.session_content_hash == _prepared_session_content_hash(normalized)
@@ -1172,7 +1302,11 @@ def prepare_session_write(
             scratch=scratch,
         )
     else:
-        content_identities = message_content_identities(context.messages, occurrence_offsets=content_occurrence_offsets)
+        content_identities = (
+            context.content_identities
+            if context.content_identities is not None
+            else message_content_identities(context.messages, occurrence_offsets=content_occurrence_offsets)
+        )
         rows = PreparedSessionRows(
             session_id=session_id,
             session_content_hash=_prepared_session_content_hash(normalized),
@@ -1631,6 +1765,7 @@ def write_parsed_session_to_archive(
         prepared is not None
         and not merge_append
         and lineage_inheritance != "prefix-sharing"
+        and context.content_identities is None
         and prepared.session_content_hash == pending_content_hash
     ):
         prepared_rows_to_use = prepared
@@ -1679,7 +1814,10 @@ def write_parsed_session_to_archive(
             )
         )
     identity_scope = None
-    if prepared_identity_carrier is not None:
+    content_identities: Sequence[MessageContentIdentity]
+    if context.content_identities is not None and prepared_write is None:
+        content_identities = context.content_identities
+    elif prepared_identity_carrier is not None:
         content_identities = _validated_prepared_content_identities(prepared_identity_carrier, messages)
     elif isinstance(messages, SqliteMessageSink) or (
         isinstance(messages, _MessageTail) and isinstance(messages.messages, SqliteMessageSink)
@@ -2133,6 +2271,10 @@ def write_parsed_session_to_archive(
                 inheritance=lineage_inheritance,
                 source_conn=source_conn,
             )
+            if context.identity_scope is not None:
+                # The replace above rewrote this child's edge; the scope its
+                # stored IDs follow must survive every later replay too.
+                _record_identity_scope(conn, session_id, context.identity_scope)
             add_timing("index.session_link", t0)
             t0 = time.perf_counter()
             event_position_offset = _next_session_event_position(conn, session_id)
@@ -10707,6 +10849,22 @@ def _materialize_inherited_prefix(
         )
         plan.append((ordinal, old_id, new_id, new_native, occurrence, identity_source, new_hash, position))
         remap[old_id] = new_id
+    # Record which copies took a content ID, by their occurrence among the
+    # prefix's messages of the same content identity, so a replay of the
+    # spawned-fresh child reproduces these IDs (``_IdentityScope``).
+    prefix_ordinals: Counter[str] = Counter()
+    content_copies: dict[str, list[int]] = defaultdict(list)
+    for (_old_id, row), planned in zip(sources, plan, strict=True):
+        identity = row[4]
+        if identity is None:
+            continue
+        ordinal_in_prefix = prefix_ordinals[str(identity)]
+        prefix_ordinals[str(identity)] += 1
+        if planned[5] == "content":
+            content_copies[str(identity)].append(ordinal_in_prefix)
+    identity_scope = _IdentityScope(
+        len(inherited_ids), {identity: tuple(ordinals) for identity, ordinals in content_copies.items()}
+    )
     conn.execute(
         f"""CREATE TEMP TABLE {_GUARD_PREFIX}plan (
                ordinal INTEGER PRIMARY KEY, old_id TEXT NOT NULL UNIQUE, new_id TEXT NOT NULL UNIQUE,
@@ -10840,9 +10998,10 @@ def _materialize_inherited_prefix(
            SET inheritance = 'spawned-fresh', branch_point_message_id = NULL, branch_point_content_address = NULL,
                evidence_json = json_set(
                    CASE WHEN json_type(evidence_json) = 'object' THEN evidence_json ELSE '{}' END,
-                   '$.inherited_prefix', 'materialized-after-parent-rewrite')
+                   '$.inherited_prefix', 'materialized-after-parent-rewrite',
+                   '$.identity_scope', json(?))
            WHERE src_session_id = ? AND resolved_dst_session_id = ? AND inheritance = 'prefix-sharing'""",
-        (child, parent_session_id),
+        (identity_scope.to_json(), child, parent_session_id),
     )
     refresh_action_pairs(conn, child)
     refresh_session_summary(conn, child)

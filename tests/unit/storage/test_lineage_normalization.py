@@ -4273,3 +4273,87 @@ def test_anchored_branch_point_lookup_uses_the_branch_index(tmp_path: Path) -> N
     assert "idx_session_links_branch_point" in detail, detail
     assert "SCAN" not in detail, detail
     conn.close()
+
+
+def _child_ids(conn: sqlite3.Connection, child_id: str) -> list[str]:
+    return [
+        str(row[0])
+        for row in conn.execute("SELECT message_id FROM messages WHERE session_id = ? ORDER BY position", (child_id,))
+    ]
+
+
+def _materialize_then_replay(
+    tmp_path: Path,
+    parent_messages: list[ParsedMessage],
+    child_messages: list[ParsedMessage],
+    rewritten: list[ParsedMessage],
+) -> tuple[list[str], list[str], list[str]]:
+    """Tail IDs while inheriting, IDs after the parent rewrite, IDs after a child replay."""
+    conn = _connect(tmp_path / "index.db")
+
+    def session(name: str, messages: list[ParsedMessage], parent: str | None = None) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=name,
+            title=name,
+            parent_session_provider_id=parent,
+            branch_type=BranchType.FORK if parent is not None else None,
+            messages=messages,
+        )
+
+    write_parsed_session_to_archive(conn, session("parent", parent_messages))
+    child_id = write_parsed_session_to_archive(conn, session("child", child_messages, parent="parent"))
+    conn.commit()
+    assert _edge_state(conn, child_id)[1] == "prefix-sharing"
+    inheriting = _child_ids(conn, child_id)
+
+    write_parsed_session_to_archive(conn, session("parent", rewritten))
+    conn.commit()
+    assert _edge_state(conn, child_id)[1] == "spawned-fresh"
+    materialized = _child_ids(conn, child_id)
+
+    write_parsed_session_to_archive(conn, session("child", child_messages, parent="parent"), force_replace=True)
+    conn.commit()
+    replayed = _child_ids(conn, child_id)
+    # A second replay reads the scope the first one carried forward.
+    write_parsed_session_to_archive(conn, session("child", child_messages, parent="parent"), force_replace=True)
+    conn.commit()
+    assert _child_ids(conn, child_id) == replayed
+    conn.close()
+    return inheriting, materialized, replayed
+
+
+def test_a_materialized_child_keeps_its_ids_when_prefix_and_tail_share_a_native_id(tmp_path: Path) -> None:
+    """polylogue-5gg3u: a stored message ID never moves across a parent rewrite and a replay.
+
+    The tail repeats the prefix's native id ``m1``. While inheriting, the tail
+    is identified over itself, so its row is ``n:m1``; the materialized copy of
+    the prefix's ``m1`` takes a content ID. Anti-vacuity: replay without the
+    recorded identity scope and the whole transcript treats ``m1`` as a
+    duplicate, moving the tail row to a content ID.
+    """
+    parent = [_msg("m0", Role.USER, "hello", 0), _msg("m1", Role.ASSISTANT, "hi there", 1)]
+    child = [*parent, _msg("m1", Role.USER, "child diverges here", 2)]
+    rewritten = [_msg("m0", Role.USER, "hello", 0)]
+    inheriting, materialized, replayed = _materialize_then_replay(tmp_path, parent, child, rewritten)
+
+    assert inheriting == [archive_message_id("codex-session:child", "m1")]
+    assert set(inheriting) <= set(materialized)
+    assert replayed == materialized
+
+
+def test_a_materialized_child_keeps_its_ids_for_id_less_duplicates(tmp_path: Path) -> None:
+    """ID-less duplicates across prefix and tail keep their content occurrences.
+
+    Anti-vacuity: number occurrences over the whole transcript on replay and
+    the tail's ``hi`` (occurrence 0 while inheriting) becomes occurrence 1.
+    """
+    parent = [_msg("", Role.USER, "hi", 0), _msg("", Role.ASSISTANT, "answer", 1)]
+    child = [*parent, _msg("", Role.USER, "hi", 2)]
+    rewritten = [_msg("", Role.USER, "hi", 0), _msg("", Role.ASSISTANT, "another answer", 1)]
+    inheriting, materialized, replayed = _materialize_then_replay(tmp_path, parent, child, rewritten)
+
+    assert len(inheriting) == 1
+    assert set(inheriting) <= set(materialized)
+    assert len(materialized) == 3
+    assert replayed == materialized
