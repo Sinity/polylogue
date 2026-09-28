@@ -1090,6 +1090,8 @@ def test_an_oomd_killed_queued_run_is_typed_oom_killed(monkeypatch: pytest.Monke
     assert metadata["diagnosis"] == "oom_killed"
     assert metadata["termination_killer"] == "oom-kill"
     assert metadata["termination_unit"] == "unit.service"
+    # The kill took the slot receipt, so the tested tree is unknown.
+    assert metadata["worktree_provenance_unknown"] is True
 
 
 def test_an_oom_killed_step_keeps_its_diagnosis_over_the_missing_evidence(
@@ -1100,9 +1102,31 @@ def test_an_oom_killed_step_keeps_its_diagnosis_over_the_missing_evidence(
     history = _focused_run(
         monkeypatch,
         tmp_path,
-        result=(137, 0.01, {"diagnosis": "oom_killed", "termination_killer": "oom-kill"}),
+        result=(
+            137,
+            0.01,
+            {
+                "diagnosis": "oom_killed",
+                "termination_killer": "oom-kill",
+                "termination_unit": "unit.service",
+                "worktree_provenance_unknown": True,
+            },
+        ),
         write_evidence=False,
     )
     assert history["exit"] == 137
     assert history["diagnosis"] == "oom_killed"
     assert history["steps"][0]["termination_killer"] == "oom-kill"
+    # Anti-vacuity: keep the submission head and the receipt names a tree
+    # pytest may never have run against.
+    assert history["git_head"] is None
+    assert history["worktree_capture_source"] == "unavailable"
+    # The durable projections keep who ended the step, not only that it failed.
+    from devtools import verify_runs
+
+    for durable in (
+        verify_runs.canonical_verification_receipt(history)["steps"][0],
+        verify_runs._semantic_history_row(history)["steps"][0],
+    ):
+        assert durable["termination_killer"] == "oom-kill"
+        assert durable["termination_unit"] == "unit.service"

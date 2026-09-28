@@ -922,6 +922,9 @@ def canonical_verification_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
                 "exit_code": raw.get("exit"),
                 "duration_s": raw.get("duration_s"),
                 "diagnosis": raw.get("diagnosis"),
+                "termination_reason": raw.get("termination_reason"),
+                "termination_killer": raw.get("termination_killer"),
+                "termination_unit": raw.get("termination_unit"),
                 "pytest_slot_receipt": _durable_slot_receipt(raw.get("pytest_slot_receipt")),
                 "artifact_ref": f"polylogue://verification/{entry.get('run_id')}/steps/{raw.get('step_id')}"
                 if raw.get("step_id") is not None
@@ -1035,7 +1038,20 @@ def _semantic_history_row(entry: Mapping[str, Any]) -> dict[str, Any]:
     raw_steps = entry.get("steps")
     if isinstance(raw_steps, list):
         row["steps"] = [
-            {key: step[key] for key in ("step_id", "name", "exit", "status", "diagnosis") if key in step}
+            {
+                key: step[key]
+                for key in (
+                    "step_id",
+                    "name",
+                    "exit",
+                    "status",
+                    "diagnosis",
+                    "termination_reason",
+                    "termination_killer",
+                    "termination_unit",
+                )
+                if key in step
+            }
             for step in raw_steps
             if isinstance(step, Mapping)
         ]

@@ -452,6 +452,15 @@ def _run(
                 **killed,
                 "pytest_slot": outcome.slot,
                 **({"pytest_slot_log": str(outcome.log_path)} if outcome.log_path is not None else {}),
+                # The tree pytest ran against is whatever the slot recorded
+                # before the kill; without that record it is unknown, never
+                # the tree admitted at submission.
+                **(
+                    {"worktree_provenance": outcome.receipt["worktree_provenance"]}
+                    if isinstance(outcome.receipt, dict)
+                    and isinstance(outcome.receipt.get("worktree_provenance"), dict)
+                    else {"worktree_provenance_unknown": True}
+                ),
             },
         )
     if outcome.slot.startswith("agentctl job") and (
@@ -752,6 +761,8 @@ def main(argv: list[str] | None = None) -> int:
         rc = int(step["exit"])
         metadata = step
     provenance = metadata.get("worktree_provenance")
+    if not isinstance(provenance, dict) and metadata.get("worktree_provenance_unknown"):
+        run.record_execution_worktree({"capture_source": "unavailable"})
     if isinstance(provenance, dict):
         run.record_execution_worktree(provenance)
         # Report what actually ran, not what was admitted at submission.
