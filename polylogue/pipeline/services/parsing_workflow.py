@@ -481,7 +481,7 @@ async def parse_from_raw(
                 )
 
     if repair_message_fts and batches_processed > 0 and service.execution is None:
-        await repair_message_fts_bulk(backend, result.changed_session_ids)
+        await repair_message_fts_bulk(backend, result.fts_repair_session_ids)
 
     elapsed = time.perf_counter() - t_start
     logger.info(
