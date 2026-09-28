@@ -174,8 +174,15 @@ def write_thread_state_projection(
     The graph is the only index-tier home for this evidence; see
     :mod:`polylogue.storage.sqlite.agent_thread_state` for the node and edge
     shapes and for the supersession and receipt-order rules.
+
+    A child session can already be archived when its spawn edge lands, so
+    every child whose projected parent changed has its parent edge re-decided
+    here; otherwise lineage would depend on which raw was applied first.
     """
-    return agent_thread_state.write_thread_state_graph(
+    from polylogue.storage.sqlite.archive_tiers.write import rederive_codex_spawn_parent_links
+
+    before = agent_thread_state.read_spawn_edges(index_conn, source_scope=source_scope)
+    written = agent_thread_state.write_thread_state_graph(
         index_conn,
         source_scope=source_scope,
         threads=[
@@ -199,6 +206,10 @@ def write_thread_state_projection(
         observed_at_ms=observed_at_ms,
         observation_order=observation_order,
     )
+    if written:
+        after = agent_thread_state.read_spawn_edges(index_conn, source_scope=source_scope)
+        rederive_codex_spawn_parent_links(index_conn, {child for _parent, child in before.keys() ^ after.keys()})
+    return written
 
 
 def apply_retained_state_export(

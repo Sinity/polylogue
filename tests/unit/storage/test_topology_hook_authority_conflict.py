@@ -56,6 +56,8 @@ from polylogue.archive.topology.edge import (
 )
 from polylogue.core.enums import BlockType, LinkType, Origin, Provider
 from polylogue.logging import capture
+from polylogue.sources.codex_state_projection import write_thread_state_projection
+from polylogue.sources.parsers import codex_state
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -440,3 +442,94 @@ def test_unreadable_spawn_edge_projection_is_reported_not_silently_rootless(
         and event.get("session_id") == "child-thread"
         for event in events
     )
+
+
+# ---------------------------------------------------------------------------
+# Child archived before the state export that names its parent
+# ---------------------------------------------------------------------------
+
+
+def _project_state_export(
+    conn: sqlite3.Connection, *, parent: str, child: str, raw_id: str = "state-raw", observed_at_ms: int = 1_000
+) -> None:
+    """Land one retained state export through the production projection writer."""
+    snapshot = codex_state.CodexStateSnapshot(
+        threads=(),
+        spawn_edges=(codex_state.CodexSpawnEdge(parent_thread_id=parent, child_thread_id=child, status="closed"),),
+    )
+    write_thread_state_projection(
+        conn, snapshot, raw_id=raw_id, blob_hash=f"blob-{raw_id}", observed_at_ms=observed_at_ms
+    )
+    conn.commit()
+
+
+def _edge_decisions(conn: sqlite3.Connection, child_id: str) -> dict[str, tuple[object, ...]]:
+    return {
+        name: (row["link_type"], row["method"], row["status"], row["resolved_dst_session_id"])
+        for name, row in _links(conn, child_id).items()
+    }
+
+
+def _composed_parent(conn: sqlite3.Connection, child_id: str) -> tuple[object, object]:
+    row = conn.execute(
+        "SELECT parent_session_id, session_kind FROM sessions WHERE session_id = ?", (child_id,)
+    ).fetchone()
+    return row[0], row[1]
+
+
+@pytest.mark.parametrize("parser_parent", [None, _PARSER_PARENT, _HOOK_PARENT])
+def test_state_export_after_the_child_reaches_the_same_topology(tmp_path: Path, parser_parent: str | None) -> None:
+    """Topology must not depend on whether the child or its state export landed first.
+
+    Red twin: drop the ``rederive_codex_spawn_parent_links`` call from
+    ``write_thread_state_projection`` and the child-first archive keeps the
+    parser-only edge (or none) and composes through the wrong parent.
+    """
+    state_first = _index_conn(tmp_path / "state-first.db")
+    source = _source_conn(tmp_path / "source.db")
+    _project_state_export(state_first, parent=_HOOK_PARENT, child=_CHILD)
+    write_parsed_session_to_archive(state_first, _session(_HOOK_PARENT), source_conn=source)
+    write_parsed_session_to_archive(state_first, _session(_PARSER_PARENT), source_conn=source)
+    expected_child = write_parsed_session_to_archive(
+        state_first, _session(_CHILD, parent=parser_parent), source_conn=source
+    )
+
+    child_first = _index_conn(tmp_path / "child-first.db")
+    write_parsed_session_to_archive(child_first, _session(_HOOK_PARENT), source_conn=source)
+    write_parsed_session_to_archive(child_first, _session(_PARSER_PARENT), source_conn=source)
+    child_id = write_parsed_session_to_archive(child_first, _session(_CHILD, parent=parser_parent), source_conn=source)
+    before = _edge_decisions(child_first, child_id)
+    _project_state_export(child_first, parent=_HOOK_PARENT, child=_CHILD)
+
+    assert child_id == expected_child
+    assert _edge_decisions(child_first, child_id) == _edge_decisions(state_first, expected_child) != before
+    assert _composed_parent(child_first, child_id) == _composed_parent(state_first, expected_child)
+    assert _composed_parent(child_first, child_id)[0] == f"{Origin.CODEX_SESSION.value}:{_HOOK_PARENT}"
+
+
+def test_revised_state_export_moves_an_already_archived_child(tmp_path: Path) -> None:
+    """A newer export naming a different parent re-decides the stored child.
+
+    The parser agreed with the first export, so its edge was upgraded in place;
+    the revision must find that parser claim again and mark it contradicted.
+    Red twin: drop the ``rederive_codex_spawn_parent_links`` call from
+    ``write_thread_state_projection`` and the child keeps composing through
+    the first export's parent, because nothing re-saves its transcript.
+    """
+    index = _index_conn(tmp_path / "index.db")
+    source = _source_conn(tmp_path / "source.db")
+    _project_state_export(index, parent=_HOOK_PARENT, child=_CHILD)
+    write_parsed_session_to_archive(index, _session(_HOOK_PARENT), source_conn=source)
+    write_parsed_session_to_archive(index, _session("revised-hook-parent"), source_conn=source)
+    child_id = write_parsed_session_to_archive(index, _session(_CHILD, parent=_HOOK_PARENT), source_conn=source)
+    assert _links(index, child_id)[_HOOK_PARENT]["method"] == HOOK_AUTHORITATIVE_LINK_METHOD
+
+    _project_state_export(index, parent="revised-hook-parent", child=_CHILD, raw_id="state-raw-2", observed_at_ms=2_000)
+
+    links = _links(index, child_id)
+    assert links["revised-hook-parent"]["method"] == HOOK_AUTHORITATIVE_LINK_METHOD
+    assert links["revised-hook-parent"]["status"] is None
+    assert links[_HOOK_PARENT]["method"] == HOOK_CONTRADICTED_LINK_METHOD
+    assert links[_HOOK_PARENT]["status"] == TopologyEdgeStatus.AUTHORITY_CONTRADICTED.value
+    assert links[_HOOK_PARENT]["resolved_dst_session_id"] is None
+    assert _composed_parent(index, child_id)[0] == f"{Origin.CODEX_SESSION.value}:revised-hook-parent"
