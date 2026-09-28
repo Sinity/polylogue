@@ -2199,7 +2199,8 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonAuthority.CONTROL,
         DaemonFallback.NEVER,
         capability="archive.delete_session",
-        deadline_s=30.0,
+        # Paged like the preview it releases, within the same budget.
+        deadline_s=300.0,
         # Carries one reference per preview chunk of the selection.
         max_body_bytes=DELETE_SELECTION_MAX_BODY_BYTES,
         request_contract="mutation.session.delete.cancel.request/v1",

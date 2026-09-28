@@ -2801,3 +2801,30 @@ def test_startup_fences_a_half_accepted_paged_batch(tmp_path: Path) -> None:
     assert audit.fence_staged_machine_pages() == 0
     reference = AcceptedOperationReference.from_record({**record, "part_count": 41})
     assert reference.part_count == 41
+
+
+def test_a_failing_later_page_terminalizes_the_staged_request(tmp_path: Path) -> None:
+    """Anti-vacuity: leave a staged request unstopped when a later page raises
+    and it reads as running until the next restart."""
+    from polylogue.operations.daemon_mutations import _fenced_on_failure
+
+    audit = _audit(tmp_path)
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit)
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:fixture",
+        archive_identity_digest="identity:fixture",
+        parameter_digest="params:failing",
+    )
+    authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
+    binding = MachineRequestBinding("identity:fixture", "request:failing", "actor:test", "f" * 64, "mutation.fixture")
+    with pytest.raises(RuntimeError, match="second page"), _fenced_on_failure(audit, binding):
+        with audit.bind_machine_request(binding, transition="accept_execution_batch", page=(0, False)):
+            audit.accept_execution_batch((str(authorization.authorization_id),), _principal())
+        raise RuntimeError("second page failed")
+    record = audit.machine_request(binding)
+    assert record is not None and record["stop_reason"] == "refused"
+    assert machine_request_state(audit, record)["outcome"] == "interrupted"

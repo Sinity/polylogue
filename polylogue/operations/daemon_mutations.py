@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from time import time
 from typing import Any, cast
 
-from polylogue.operations.audit import MACHINE_PAGE_PARTS, AuditRepository, MachineRequestBinding, machine_pages_kind
+from polylogue.operations.audit import (
+    MACHINE_PAGE_KINDS,
+    MACHINE_PAGE_PARTS,
+    AuditRepository,
+    MachineRequestBinding,
+    machine_pages_kind,
+)
 from polylogue.operations.bindings import OperationBinding, runtime_operation_binding
 from polylogue.operations.daemon_protocol import DaemonOperationRequest
 from polylogue.operations.delete_authorization import _canonical_session_ids
@@ -22,7 +29,6 @@ from polylogue.operations.mutation_actuators import (
     SessionDeleteArgs,
 )
 from polylogue.operations.mutation_transaction import (
-    DELETE_PREVIEW_SAMPLE_IDS,
     MAX_MUTATION_PLAN_TARGETS,
     ConfirmationRequiredError,
     MutationPreview,
@@ -565,6 +571,18 @@ def _accepted_pages(audit: AuditRepository, binding: MachineRequestBinding, kind
     return None
 
 
+@contextmanager
+def _fenced_on_failure(audit: AuditRepository, binding: MachineRequestBinding) -> Iterator[None]:
+    """Stop a staged request whose later page fails, so it reads terminal."""
+    try:
+        yield
+    except Exception:
+        record = audit.machine_request(binding)
+        if record is not None and record["artifact_kind"] in MACHINE_PAGE_KINDS and not record.get("stop_reason"):
+            audit.stop_machine_batch(binding, "refused")
+        raise
+
+
 def _page_bounds(total: int, start: int) -> Iterator[tuple[int, int, bool]]:
     """``(offset, end, final)`` for each page of ``total`` parts from ``start``."""
     for offset in range(start, total, MACHINE_PAGE_PARTS):
@@ -594,23 +612,14 @@ def mutation_session_delete_preview(
         staged = audit.machine_request(binding)
         accepted_at_ms = int(cast(int, staged["accepted_at_ms"])) if staged is not None else int(time() * 1000)
         expires_at_ms = accepted_at_ms + _DELETE_PREVIEW_BUDGET_MS + _PREVIEW_LIFETIME_MS
-        for offset, end, final in _page_bounds(len(chunks), accepted):
-            args = tuple(SessionDeleteArgs(snapshot.archive, chunk) for chunk in chunks[offset:end])
-            previews = _previews(request, context, audit, snapshot, operation, args, expires_at_ms=expires_at_ms)
-            with audit.bind_machine_request(binding, transition="create_preview_batch", page=(offset, final)):
-                audit.create_preview_batch(tuple(preview.plan for preview in previews), context.principal)
-    refs = tuple(str(part["artifact_ref"]) for part in audit.machine_parts(binding))
-    previews = tuple(audit.preview_for_principal(ref, context.principal) for ref in refs)
-    ids = tuple(target.ref.removeprefix("session:") for preview in previews for target in preview.plan.targets)
-    return {
-        "status": "prepared",
-        "operation": "delete",
-        "preview_ref": refs[0],
-        "preview_refs": list(refs),
-        "session_ids_sample": list(ids[:DELETE_PREVIEW_SAMPLE_IDS]),
-        "session_count": len(ids),
-        "expires_at_ms": min(preview.plan.expires_at_ms for preview in previews),
-    }
+        with _fenced_on_failure(audit, binding):
+            for offset, end, final in _page_bounds(len(chunks), accepted):
+                args = tuple(SessionDeleteArgs(snapshot.archive, chunk) for chunk in chunks[offset:end])
+                previews = _previews(request, context, audit, snapshot, operation, args, expires_at_ms=expires_at_ms)
+                with audit.bind_machine_request(binding, transition="create_preview_batch", page=(offset, final)):
+                    audit.create_preview_batch(tuple(preview.plan for preview in previews), context.principal)
+    # Counted and sampled from the durable rows: no target list is rebuilt.
+    return audit.machine_preview_summary(binding)
 
 
 def mutation_session_delete_authorize(
@@ -625,14 +634,17 @@ def mutation_session_delete_authorize(
         preview_refs = _refs(request.payload, "preview_ref")
         operation = runtime_operation_binding(SessionDeleteActuator())
         executor = OperationExecutor()
-        for offset, end, final in _page_bounds(len(preview_refs), accepted):
-            previews = tuple(audit.preview_for_principal(ref, context.principal) for ref in preview_refs[offset:end])
-            authorizations = tuple(
-                executor.authorize_bound(operation, preview, context.principal, confirmation_strength="bound_token")
-                for preview in previews
-            )
-            with audit.bind_machine_request(binding, transition="issue_authorization_batch", page=(offset, final)):
-                audit.issue_authorization_batch(previews, context.principal, authorizations)
+        with _fenced_on_failure(audit, binding):
+            for offset, end, final in _page_bounds(len(preview_refs), accepted):
+                previews = tuple(
+                    audit.preview_for_principal(ref, context.principal) for ref in preview_refs[offset:end]
+                )
+                authorizations = tuple(
+                    executor.authorize_bound(operation, preview, context.principal, confirmation_strength="bound_token")
+                    for preview in previews
+                )
+                with audit.bind_machine_request(binding, transition="issue_authorization_batch", page=(offset, final)):
+                    audit.issue_authorization_batch(previews, context.principal, authorizations)
     refs = [str(part["artifact_ref"]) for part in audit.machine_parts(binding)]
     return {"status": "authorized", "authorization_ref": refs[0], "authorization_refs": refs}
 
@@ -647,10 +659,11 @@ def mutation_session_delete_cancel(
     refs = _refs(request.payload, "preview_ref")
     accepted = _accepted_pages(audit, binding, "cancelled-preview-batch")
     if accepted is not None:
-        for offset, end, final in _page_bounds(len(refs), accepted):
-            previews = tuple(audit.preview_for_principal(ref, context.principal) for ref in refs[offset:end])
-            with audit.bind_machine_request(binding, transition="cancel_preview_batch", page=(offset, final)):
-                audit.cancel_preview_batch(previews, context.principal)
+        with _fenced_on_failure(audit, binding):
+            for offset, end, final in _page_bounds(len(refs), accepted):
+                previews = tuple(audit.preview_for_principal(ref, context.principal) for ref in refs[offset:end])
+                with audit.bind_machine_request(binding, transition="cancel_preview_batch", page=(offset, final)):
+                    audit.cancel_preview_batch(previews, context.principal)
     return {"status": "cancelled", "preview_ref": refs[0], "preview_refs": list(refs)}
 
 
@@ -692,14 +705,15 @@ def _execute_batch(
     accepted = _accepted_pages(audit, binding, "execution-batch")
     if accepted is not None:
         deadline_unix_ms = context.runtime.request_deadline_unix_ms(request)
-        for offset, end, final in _page_bounds(len(refs), accepted):
-            with audit.bind_machine_request(
-                binding,
-                transition="accept_execution_batch",
-                deadline_unix_ms=deadline_unix_ms,
-                page=(offset, final),
-            ):
-                audit.accept_execution_batch(refs[offset:end], context.principal)
+        with _fenced_on_failure(audit, binding):
+            for offset, end, final in _page_bounds(len(refs), accepted):
+                with audit.bind_machine_request(
+                    binding,
+                    transition="accept_execution_batch",
+                    deadline_unix_ms=deadline_unix_ms,
+                    page=(offset, final),
+                ):
+                    audit.accept_execution_batch(refs[offset:end], context.principal)
     record = audit.machine_request(binding)
     assert record is not None
     if record["artifact_kind"] != "execution-batch":
