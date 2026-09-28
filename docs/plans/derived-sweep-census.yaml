@@ -170,13 +170,6 @@ sites:
     scope: "read_only_module"
     classification: unclassified
     reason: "pinned by the initial census; adjudication is follow-up work"
-  - file: "polylogue/sources/live/parse_prefetch.py"
-    function: "LiveParseStage._prepare_existing_session_writes"
-    subject: "prepared_writes"
-    kind: "read_path_substitution"
-    scope: "read_only_module"
-    classification: producer_scoped_transaction
-    reason: "the parse stage clears prepared writes on its own in-memory preparation before reconciling it again: a reconciliation is valid only for the publication that follows the warm that made it, so an older one is closed and rebuilt against a snapshot taken after every earlier publication. Nothing stored is read back or substituted; the sealed carrier files are unchanged"
   - file: "polylogue/sources/parsers/browser_capture.py"
     function: "_merge_envelope_attachments"
     subject: "attachment_kind"
