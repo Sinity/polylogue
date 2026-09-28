@@ -109,8 +109,10 @@ breakage is acceptable.
   the same change.
 - **Also a defect.** Any compatibility path present in the diff: a shim, a
   legacy alias, a fallback to old behaviour, a dual read or dual write, a
-  deprecated wrapper kept for callers, or migration or carry-forward of prior
-  archive state. It is P1 when it keeps two authorities alive (old and new
+  deprecated wrapper kept for callers, or migration or carry-forward of state
+  from before the fresh-start reset. An additive numbered durable-tier
+  migration for a schema change made after the reset is ordinary evolution,
+  not a compatibility path. It is P1 when it keeps two authorities alive (old and new
   readers, keys, or routes); otherwise P2.
 - **Noise.** A finding whose remedy is to keep the old path alongside the new
   one (a shim, alias, fallback, dual read or write, or deprecated wrapper). A
