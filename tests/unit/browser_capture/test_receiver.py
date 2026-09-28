@@ -5,7 +5,7 @@ import json
 import shutil
 import socket
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from http import HTTPStatus
 from http.client import HTTPConnection, HTTPResponse
@@ -1073,12 +1073,12 @@ def test_receiver_streams_captures_past_the_control_bound_byte_identically(
     monkeypatch.setattr(server, "MAX_CONTROL_BODY_BYTES", 256)
     monkeypatch.setattr(capture_stream, "CAPTURE_READ_CHUNK_BYTES", chunk)
     reads: list[int] = []
-    original_stage = server.stage_capture_body
+    original_stage = capture_stream.stage_capture_body
 
-    def recording_stage(read: object, length: int, *, spool_root: Path) -> object:
+    def recording_stage(read: Callable[[int], bytes], length: int, *, spool_root: Path) -> object:
         def recording_read(size: int) -> bytes:
             reads.append(size)
-            return read(size)  # type: ignore[operator]
+            return read(size)
 
         return original_stage(recording_read, length, spool_root=spool_root)
 

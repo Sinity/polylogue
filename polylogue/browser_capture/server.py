@@ -83,7 +83,7 @@ from polylogue.browser_capture.receiver import (
 )
 from polylogue.core.json import dumps_bytes
 from polylogue.core.loopback import is_loopback_host
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 from polylogue.paths import archive_root as default_archive_root
 
 # polylogue.daemon.events is imported lazily inside the capture-health route
@@ -594,15 +594,32 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         try:
             return stage_capture_body(self.rfile.read, length, spool_root=self.server.config.spool_path)
         except CaptureBodyIncompleteError:
-            logger.warning("browser_capture.incomplete_body", request_id=self._request_id())
+            emit(
+                "browser_capture.incomplete_body",
+                level=WARNING,
+                reason="incomplete_body",
+                request_id=self._request_id(),
+            )
             self._safe_error(HTTPStatus.BAD_REQUEST, "incomplete_body")
             return None
         except OSError as exc:
             if is_storage_exhausted(exc):
-                logger.warning("browser_capture.spool_storage_exhausted", request_id=self._request_id())
+                emit(
+                    "browser_capture.spool_storage_exhausted",
+                    level=WARNING,
+                    reason="spool_storage_exhausted",
+                    request_id=self._request_id(),
+                )
                 self._safe_error(HTTPStatus.INSUFFICIENT_STORAGE, "spool_storage_exhausted")
                 return None
-            logger.warning("browser_capture.write_failed", request_id=self._request_id(), error=repr(exc))
+            emit(
+                "browser_capture.write_failed",
+                level=WARNING,
+                reason="write_failed",
+                request_id=self._request_id(),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
             return None
 
@@ -664,11 +681,18 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         try:
             summary = summarize_capture_file(staged.path)
         except CaptureEnvelopeError as exc:
-            logger.warning("browser_capture.invalid_envelope", request_id=self._request_id(), reason=exc.reason)
+            emit("browser_capture.invalid_envelope", level=WARNING, reason=exc.reason, request_id=self._request_id())
             self._safe_error(HTTPStatus.BAD_REQUEST, exc.reason)
             return
         except OSError as exc:
-            logger.warning("browser_capture.write_failed", request_id=self._request_id(), error=repr(exc))
+            emit(
+                "browser_capture.write_failed",
+                level=WARNING,
+                reason="write_failed",
+                request_id=self._request_id(),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
             return
         if summary.head.provenance.extension_instance_id is None:
