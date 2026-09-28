@@ -32,6 +32,9 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, TypeVar, cast
 
+if TYPE_CHECKING:
+    from polylogue.config import PolylogueConfig
+
 from polylogue.core.enums import OperationStatus
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
@@ -333,6 +336,7 @@ def compose_embedding_convergence(
     max_errors: int | None = None,
     scope_limited: bool = False,
     progress_callback: Callable[[Mapping[str, object]], None] | None = None,
+    config: PolylogueConfig | None = None,
 ) -> ComposedEmbeddingConvergence:
     """Compose the common-kernel embedding owner once for a daemon process.
 
@@ -355,7 +359,7 @@ def compose_embedding_convergence(
     archive_root = index_db_path.parent
     loop = asyncio.get_running_loop()
     admission = DaemonEmbeddingAdmission(write_bridge, loop)
-    cfg = load_polylogue_config()
+    cfg = config if config is not None else load_polylogue_config()
     if not bool(cfg.embedding_enabled):
 
         async def disabled(_scope: Sequence[str] | None) -> EmbeddingConvergenceResult:

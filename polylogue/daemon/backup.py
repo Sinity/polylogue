@@ -19,6 +19,7 @@ import sqlite3
 import stat
 import tempfile
 import time
+import zipfile
 from collections.abc import Mapping
 from contextlib import AbstractContextManager, closing, nullcontext
 from datetime import datetime, timezone
@@ -707,9 +708,9 @@ def _blob_reference_evidence(
     }
 
 
-def _resolved_source_path(source_path: str, root: Path) -> str:
+def _resolved_source_path(source_path: str, root: Path, *, container: bool = False) -> str:
     """Resolve an acquisition path against the archive root in force."""
-    outer, separator, member = source_path.partition(":")
+    outer, separator, member = source_path.partition(":") if container else (source_path, "", "")
     path = Path(outer)
     parts = path.parts
     for directory in ("inbox", "browser-capture", "hooks"):
@@ -719,6 +720,27 @@ def _resolved_source_path(source_path: str, root: Path) -> str:
                 path = candidate
                 break
     return f"{path}:{member}" if separator else str(path)
+
+
+def _is_recorded_container(row: Mapping[str, object], root: Path) -> bool:
+    """Use stored coordinates, or prove a legacy ZIP path by its live file."""
+    if (
+        row.get("coordinate_format") == "zip-v2"
+        or row.get("entry_ordinal") is not None
+        or row.get("addressing_mode") is not None
+    ):
+        return True
+    source_path = row.get("source_path")
+    if not isinstance(source_path, str) or ":" not in source_path:
+        return False
+    outer, _separator, _member = source_path.partition(":")
+    candidate = Path(outer)
+    parts = candidate.parts
+    for directory in ("inbox", "browser-capture", "hooks"):
+        if directory in parts:
+            candidate = root.joinpath(*parts[parts.index(directory) :])
+            break
+    return candidate.is_file() and zipfile.is_zipfile(candidate)
 
 
 def _append_segment_payload(path: str, start: int, end: int) -> tuple[bytes | None, str | None]:
@@ -875,7 +897,9 @@ def _source_recoverability_proofs(
             ):
                 try:
                     if int(row["source_index"]) == 0:
-                        resolved_path = _resolved_source_path(str(row["source_path"]), root)
+                        resolved_path = _resolved_source_path(
+                            str(row["source_path"]), root, container=_is_recorded_container(row, root)
+                        )
                         prior_full_sizes.setdefault(resolved_path, []).append(
                             (int(row["acquired_at_ms"]), int(row["size_bytes"]))
                         )
@@ -899,8 +923,9 @@ def _source_recoverability_proofs(
                 continue
             source_index_value = row.get("source_index")
             source_index = int(source_index_value) if isinstance(source_index_value, (int, str)) else None
-            resolved = _resolved_source_path(source_path, root)
-            if ":" in resolved:
+            is_container = _is_recorded_container(row, root)
+            resolved = _resolved_source_path(source_path, root, container=is_container)
+            if is_container:
                 payload, error = zip_reacquisition_payload(
                     row,
                     source_path=resolved,
@@ -975,7 +1000,7 @@ def _source_recoverability_proofs(
             if error is None and payload is not None and _payload_matches_reference(row, payload, blob_hash):
                 kind = (
                     "zip_reacquired_payload"
-                    if ":" in resolved
+                    if is_container
                     else "live_append_segment_sha256"
                     if str(row.get("revision_kind") or "") == "append"
                     else "direct_file_sha256"
