@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import Provider
+from polylogue.sources.assembly import SidecarData
 from polylogue.sources.assembly_chatgpt import ChatGPTAssemblySpec
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedSession, ParsedSessionEvent
 from polylogue.sources.parsers.chatgpt_sidecars import (
@@ -57,7 +58,9 @@ _RENDITION_BLOBS = {
 
 
 def _assert_every_rendition_is_archived(attachments: list[ParsedAttachment]) -> None:
-    assert sorted(attachment.precomputed_blob for attachment in attachments) == sorted(_RENDITION_BLOBS.values())
+    blobs = [attachment.precomputed_blob for attachment in attachments]
+    assert all(blob is not None for blob in blobs)
+    assert sorted(blob for blob in blobs if blob is not None) == sorted(_RENDITION_BLOBS.values())
     assert len({attachment.provider_attachment_id for attachment in attachments}) == 2
     assert len({attachment.name for attachment in attachments}) == 2
     assert {attachment.mime_type for attachment in attachments} == {"image/jpeg"}
@@ -75,9 +78,8 @@ def test_every_duplicate_asset_rendition_becomes_its_own_attachment() -> None:
         source_name=Provider.CHATGPT, provider_session_id="conversation", messages=[], attachments=[pointer]
     )
 
-    returned = ChatGPTAssemblySpec().enrich_session(
-        session, {"chatgpt_asset_index": ChatGPTAssetIndex.empty(), "chatgpt_asset_blobs": _RENDITION_BLOBS}
-    )
+    sidecars: SidecarData = {"chatgpt_asset_index": ChatGPTAssetIndex.empty(), "chatgpt_asset_blobs": _RENDITION_BLOBS}
+    returned = ChatGPTAssemblySpec().enrich_session(session, sidecars)
 
     _assert_every_rendition_is_archived(list(returned.attachments))
     members = sorted(str(event.payload["member_name"]) for event in returned.session_events)
@@ -102,7 +104,10 @@ def test_prepared_carrier_appends_renditions_and_rolls_them_back(
         attachments.append(ParsedAttachment(provider_attachment_id=_RENDITION_ID, message_provider_id="m1"))
         session = ParsedSession(source_name=Provider.CHATGPT, provider_session_id="conversation", messages=[])
         session = session.model_copy(update={"attachments": attachments, "session_events": events})
-        sidecars = {"chatgpt_asset_index": ChatGPTAssetIndex.empty(), "chatgpt_asset_blobs": _RENDITION_BLOBS}
+        sidecars: SidecarData = {
+            "chatgpt_asset_index": ChatGPTAssetIndex.empty(),
+            "chatgpt_asset_blobs": _RENDITION_BLOBS,
+        }
 
         assert ChatGPTAssemblySpec().enrich_session(session, sidecars) is session
         _assert_every_rendition_is_archived(list(attachments))

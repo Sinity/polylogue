@@ -435,7 +435,7 @@ def _resolve_attachment_renditions(
         rendition = base.model_copy(
             update={
                 "provider_attachment_id": rendition_id,
-                "provider_file_id": base.provider_file_id or asset_id,
+                "provider_file_id": asset_id,
                 "name": name,
                 "mime_type": mimetypes.guess_type(name or "")[0],
                 "size_bytes": blob_size,

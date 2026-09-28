@@ -213,19 +213,19 @@ async def test_composed_callback_repairs_summary_before_counter_dependent_profil
 async def test_promoted_generation_starts_a_bounded_profile_pass_from_new_demand(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from polylogue.daemon import session_profile_composition as composition
+    from polylogue.daemon.convergence import SessionProfileConvergenceOwner
 
     # The promoted pass visits every audit domain, and its return value is the
     # last domain's report; keep each pass's report to find the profile's.
     passes: list[DerivationReport] = []
-    real_converge = composition.SessionProfileConvergenceOwner.converge
+    real_converge = SessionProfileConvergenceOwner.converge
 
     async def recording_converge(self: object, *args: object, **kwargs: object) -> DerivationReport:
         report = await real_converge(self, *args, **kwargs)  # type: ignore[arg-type]
         passes.append(report)
         return report
 
-    monkeypatch.setattr(composition.SessionProfileConvergenceOwner, "converge", recording_converge)
+    monkeypatch.setattr(SessionProfileConvergenceOwner, "converge", recording_converge)
     recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
     coordinator = DaemonWriteCoordinator()
@@ -515,7 +515,7 @@ async def test_a_persistently_pending_domain_does_not_starve_later_audit_domains
     visited; drop the re-owe step and the domains after a late-completing
     summary are not revisited.
     """
-    from polylogue.daemon import session_profile_composition as composition
+    from polylogue.daemon.convergence import SessionProfileConvergenceOwner
     from polylogue.daemon.derivation import DiscoveryPhase, DomainCursor, PassCursor
 
     recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
@@ -532,7 +532,7 @@ async def test_a_persistently_pending_domain_does_not_starve_later_audit_domains
             cursor=PassCursor({domain: DomainCursor(phase=DiscoveryPhase.DONE)}),
         )
 
-    monkeypatch.setattr(composition.SessionProfileConvergenceOwner, "converge", fake_converge)
+    monkeypatch.setattr(SessionProfileConvergenceOwner, "converge", fake_converge)
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
     coordinator = DaemonWriteCoordinator()
     try:
