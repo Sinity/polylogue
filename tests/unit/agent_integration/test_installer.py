@@ -433,7 +433,9 @@ def test_uninstall_after_a_kill_before_any_native_write_is_a_clean_no_op(
     receipt = AgentIntegrationManager(home=home, environment=manager.environment).uninstall()
 
     assert receipt["ok"] is True
-    assert all(not client["retained_drift"] for client in receipt["clients"])  # type: ignore[union-attr]
+    clients = cast(list[dict[str, object]], receipt["clients"])
+    assert clients
+    assert all(not client["retained_drift"] for client in clients)
 
 
 def test_reinstall_after_a_killed_install_keeps_ownership_of_written_values(
@@ -497,3 +499,58 @@ def test_killed_upgrade_that_reuses_an_identity_recovers(tmp_path: Path, monkeyp
     fresh = AgentIntegrationManager(home=home, environment=manager.environment)
     assert fresh.install(upgraded)["ok"] is True
     assert fresh.uninstall()["ok"] is True
+
+
+def test_status_blocks_on_an_interrupted_install_until_it_is_resolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: observe only committed operations and the empty prepared client reports ok."""
+    manager, home, polylogue, server = _manager(tmp_path)
+    _kill_after_native_writes(monkeypatch, writes_before_kill=1)
+    with pytest.raises(_KilledMidInstall):
+        manager.install(_options(polylogue, server, clients=("claude-code",)))
+    monkeypatch.undo()
+
+    fresh = AgentIntegrationManager(home=home, environment=manager.environment)
+    interrupted = fresh.status()
+    assert interrupted["ok"] is False
+    assert interrupted["blocking"] is True
+    client = cast(list[dict[str, object]], interrupted["clients"])[0]
+    assert client["interrupted"] is True
+    assert client["native_ok"] is False
+    assert fresh.doctor()["ok"] is False
+
+    assert fresh.install(_options(polylogue, server, clients=("claude-code",)))["ok"] is True
+    resolved = fresh.status()
+    assert resolved["ok"] is True
+    assert cast(list[dict[str, object]], resolved["clients"])[0]["interrupted"] is False
+
+
+def test_killed_upgrade_after_removing_a_dropped_operation_converges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: journal only desired operations and the removed MCP entry is retained as drift."""
+    from polylogue.agent_integration import installer
+
+    manager, home, polylogue, server = _manager(tmp_path)
+    assert manager.install(_options(polylogue, server, clients=("claude-code",)))["ok"] is True
+    real_remove = installer._remove_operation
+
+    def remove_then_die(*args: object, **kwargs: object) -> tuple[bool, str]:
+        real_remove(*args, **kwargs)  # type: ignore[arg-type]
+        raise _KilledMidInstall()
+
+    monkeypatch.setattr(installer, "_remove_operation", remove_then_die)
+    without_mcp = _options(polylogue, server, clients=("claude-code",), install_mcp=False)
+    with pytest.raises(_KilledMidInstall):
+        manager.install(without_mcp)
+    monkeypatch.undo()
+
+    fresh = AgentIntegrationManager(home=home, environment=manager.environment)
+    receipt = fresh.install(without_mcp)
+
+    assert receipt["ok"] is True
+    assert receipt["retained_drift"] == []
+    claude_json = home / ".claude.json"
+    assert not claude_json.exists() or "polylogue" not in json.loads(claude_json.read_text()).get("mcpServers", {})
+    assert fresh.status()["blocking"] is False

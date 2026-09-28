@@ -30,9 +30,9 @@ supersedes the other.
 
 from __future__ import annotations
 
+import os
 import shutil
 import tempfile
-from collections.abc import Callable
 from pathlib import Path
 
 from polylogue.core.json import JSONDocument
@@ -54,7 +54,7 @@ from polylogue.schemas.operator.receipt import (
     load_schema_inference_receipt,
     write_schema_inference_receipt,
 )
-from polylogue.schemas.package_publication import provider_tree_lock
+from polylogue.schemas.package_publication import provider_tree_lock, publish_provider_tree, read_provider_snapshot
 from polylogue.schemas.promotion_audit import PromotionAuditFinding, audit_schema_artifacts
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.runtime_registry import canonical_schema_provider
@@ -106,33 +106,34 @@ class SchemaCommitAuditError(Exception):
 
 
 def _persist_audited(output_dir: Path, provider_token: str, bundle: _ProviderBundle) -> None:
-    """Persist *bundle*, audit the written provider tree, and roll back on a blocker."""
-    _write_audited(
-        output_dir, provider_token, lambda: persist_generated_provider_bundle(output_dir, provider_token, bundle)
-    )
+    """Persist *bundle*, audit the written provider tree, and roll back on a blocker.
 
-
-def _write_audited(output_dir: Path, provider_token: str, write: Callable[[], object]) -> None:
-    """Run *write*, audit the provider tree it produced, and restore the prior tree on a blocker."""
+    Only publication and its audit hold the exclusive tree lock; the caller
+    builds *bundle* (the potentially long inference run) before this point, so
+    concurrent schema reads are not blocked for the duration of generation.
+    """
     provider_dir = output_dir / provider_token
     output_dir.mkdir(parents=True, exist_ok=True)
     # Snapshot, write, audit and rollback form one critical section: without
     # the exclusive tree lock a concurrent commit's valid publication could be
-    # replaced by this commit's stale snapshot during rollback.
+    # replaced by this commit's stale snapshot during rollback. The snapshot
+    # lives beside the published tree so rollback is a same-filesystem atomic
+    # exchange: the provider name never observes a missing or partial tree.
     with (
         provider_tree_lock(output_dir, exclusive=True),
-        tempfile.TemporaryDirectory(prefix="polylogue-schema-commit-prior-") as prior_root,
+        tempfile.TemporaryDirectory(prefix=f".{provider_token}.prior-", dir=output_dir) as prior_root,
     ):
         prior = Path(prior_root) / provider_token
         if provider_dir.exists():
             shutil.copytree(provider_dir, prior)
-        write()
+        persist_generated_provider_bundle(output_dir, provider_token, bundle)
         report = audit_schema_artifacts(provider_dir) if provider_dir.exists() else None
         if report is None or not report.blockers:
             return
-        shutil.rmtree(provider_dir)
         if prior.exists():
-            shutil.copytree(prior, provider_dir)
+            publish_provider_tree(prior, provider_dir, expected_snapshot=read_provider_snapshot(provider_dir))
+        else:
+            os.rename(provider_dir, Path(prior_root) / "refused")
         raise SchemaCommitAuditError(provider_token, report.blockers)
 
 
@@ -201,25 +202,18 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
         )
         generation_results = [source_bundle.result]
     else:
-        # The archive route persists inside generation; the promotion audit of
-        # what it wrote is the gate, with the prior tree restored on a blocker.
-        audited_results: list[list[GenerationResult]] = []
-        _write_audited(
+        # Generation runs unlocked; only the audited publication of its bundle
+        # takes the exclusive tree lock, with the prior tree restored on a blocker.
+        generation_results = generate_all_schemas(
             output_dir,
-            provider_token,
-            lambda: audited_results.append(
-                generate_all_schemas(
-                    output_dir,
-                    db_path=request.db_path,
-                    providers=[request.provider],
-                    max_samples=request.max_samples,
-                    privacy_config=privacy_config_from_payload(request.privacy_config),
-                    full_corpus=request.full_corpus,
-                    archive_location=request.archive_location,
-                )
-            ),
+            db_path=request.db_path,
+            providers=[request.provider],
+            max_samples=request.max_samples,
+            privacy_config=privacy_config_from_payload(request.privacy_config),
+            full_corpus=request.full_corpus,
+            archive_location=request.archive_location,
+            persist=lambda root, _provider, bundle: _persist_audited(root, provider_token, bundle),
         )
-        generation_results = audited_results[0]
     generation = (
         generation_results[0]
         if generation_results

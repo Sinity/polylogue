@@ -190,6 +190,10 @@ def _unsafe_property_name(name: str) -> bool:
     return name not in _PUBLIC_PROPERTY_NAMES and is_dynamic_key(name)
 
 
+def _contains_secret(value: str) -> bool:
+    return any(pattern.search(value) for pattern in _SECRET_PATTERNS.values())
+
+
 def _secret_findings(*, artifact: str, json_path: str, value: str) -> list[PromotionAuditFinding]:
     findings = []
     for category, pattern in _SECRET_PATTERNS.items():
@@ -243,7 +247,9 @@ def _annotation_findings(
     """
     if isinstance(value, dict):
         for key, child in value.items():
-            unsafe_key = _unsafe_property_name(key) or _observed_value_leak(key)
+            # Secret status is decided before the path is built: a credential
+            # used as a map key must never appear in a finding's path.
+            unsafe_key = _contains_secret(key) or _unsafe_property_name(key) or _observed_value_leak(key)
             key_path = f"{json_path}[{_redacted_value(key) if unsafe_key else key!r}]"
             key_secrets = _secret_findings(artifact=artifact, json_path=key_path, value=key)
             findings.extend(key_secrets)

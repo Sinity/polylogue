@@ -99,3 +99,29 @@ def test_high_entropy_annotation_value_is_a_blocker(tmp_path: Path) -> None:
 
     assert [finding.category for finding in report.blockers] == ["unsafe_annotation_value"]
     assert "sample" in report.blockers[0].json_path
+
+
+def test_a_secret_used_as_an_annotation_key_never_appears_in_the_finding_path(tmp_path: Path) -> None:
+    """Anti-vacuity: build the key path before deciding secret status and the key publishes in ``json_path``."""
+    secret_key = "sk-ant-api03-" + "b" * 40
+    _write_tree(tmp_path, secret_key)
+
+    report = audit_schema_artifacts(tmp_path)
+
+    assert "anthropic_api_key" in {finding.category for finding in report.blockers}
+    assert secret_key not in json.dumps(report.to_payload())
+
+
+def test_commit_removes_a_first_publication_that_fails_audit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: skip rollback when no prior tree existed and the leaky package stays published."""
+    output_dir = tmp_path / "providers"
+
+    def leaky_persist(root: Path, provider: str, _bundle: object) -> None:
+        _write_tree(root / provider, _LEAKED_ID)
+
+    monkeypatch.setattr(commit, "persist_generated_provider_bundle", leaky_persist)
+
+    with pytest.raises(commit.SchemaCommitAuditError):
+        commit._persist_audited(output_dir, "chatgpt", object())  # type: ignore[arg-type]
+
+    assert list(output_dir.iterdir()) == []

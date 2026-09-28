@@ -1198,6 +1198,7 @@ class AntigravityLanguageServerClient:
             f"-app_data_dir={self.root.name}",
             "-override_ide_name=antigravity",
         ]
+        launched_at_ns = time.time_ns()
         self._process = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
@@ -1205,7 +1206,7 @@ class AntigravityLanguageServerClient:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        self.port = self._await_discovered_port()
+        self.port = self._await_discovered_port(launched_at_ns=launched_at_ns)
         self._wait_until_ready()
         self.server_info = AntigravityLanguageServerInfo(
             binary_path=binary,
@@ -1244,11 +1245,15 @@ class AntigravityLanguageServerClient:
             raise AntigravityExportError(f"Antigravity returned no markdown for cascade {cascade_id}")
         return markdown
 
-    def _await_discovered_port(self) -> int:
+    def _await_discovered_port(self, *, launched_at_ns: int) -> int:
         """Read the port our own child published in its persistent-mode discovery file.
 
         The directory can also hold a discovery file from the operator's
-        running IDE, so only the file naming this child's pid is accepted.
+        running IDE, so only the file naming this child's pid is accepted. A
+        file left by a crashed server whose pid the child has since reused
+        also names that pid, so a file is accepted only once it was written
+        at or after this launch; an older one is watched until the child
+        rewrites it.
         """
         process = self._process
         if process is None:
@@ -1260,6 +1265,8 @@ class AntigravityLanguageServerClient:
                 raise AntigravityExportError(f"Antigravity language server exited with code {process.returncode}")
             for candidate in sorted(discovery_dir.glob("ls_*.json")) if discovery_dir.is_dir() else ():
                 try:
+                    if candidate.stat().st_mtime_ns < launched_at_ns:
+                        continue
                     published = loads(candidate.read_bytes())
                 except (OSError, ValueError):
                     continue

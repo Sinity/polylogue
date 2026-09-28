@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -844,11 +845,12 @@ def test_client_reads_only_its_own_discovery_file_and_sends_csrf_token(
     """
     daemon_dir = tmp_path / "daemon"
     daemon_dir.mkdir()
+    launched_at_ns = 0
     (daemon_dir / "ls_aaaa.json").write_text('{"pid": 111, "httpPort": 40001}')
     (daemon_dir / "ls_bbbb.json").write_text('{"pid": 222, "httpPort": 40002}')
     client = AntigravityLanguageServerClient(tmp_path, startup_timeout_s=2.0)
     client._process = _FakeProcess(222)  # type: ignore[assignment]
-    assert client._await_discovered_port() == 40002
+    assert client._await_discovered_port(launched_at_ns=launched_at_ns) == 40002
     client.port = 40002
 
     seen: list[Any] = []
@@ -880,7 +882,9 @@ def test_client_launches_vendor_on_a_random_port_with_a_run_token(
     binary.write_bytes(b"")
     monkeypatch.setattr("polylogue.sources.parsers.antigravity.subprocess.Popen", fake_popen)
     monkeypatch.setattr("polylogue.sources.parsers.antigravity._discover_language_server_version", lambda _b: "1.11.0")
-    monkeypatch.setattr(AntigravityLanguageServerClient, "_await_discovered_port", lambda self: 40003)
+    monkeypatch.setattr(
+        AntigravityLanguageServerClient, "_await_discovered_port", lambda self, *, launched_at_ns: 40003
+    )
     monkeypatch.setattr(AntigravityLanguageServerClient, "_wait_until_ready", lambda self: None)
     client = AntigravityLanguageServerClient(tmp_path / "antigravity", language_server_path=binary)
     client.start()
@@ -888,3 +892,21 @@ def test_client_launches_vendor_on_a_random_port_with_a_run_token(
     assert "-http_server_port=0" in cmd
     assert f"-csrf_token={client._csrf_token}" in cmd
     assert client.port == 40003
+
+
+def test_a_discovery_file_older_than_the_launch_is_not_accepted_for_a_reused_pid(tmp_path: Path) -> None:
+    """Anti-vacuity: accept on pid alone and the crashed server's stale port 40009 wins."""
+    daemon_dir = tmp_path / "daemon"
+    daemon_dir.mkdir()
+    stale = daemon_dir / "ls_stale.json"
+    stale.write_text('{"pid": 444, "httpPort": 40009}')
+    os.utime(stale, ns=(1_000_000_000, 1_000_000_000))
+    launched_at_ns = 2_000_000_000
+    client = AntigravityLanguageServerClient(tmp_path, startup_timeout_s=0.3)
+    client._process = _FakeProcess(444)  # type: ignore[assignment]
+    with pytest.raises(AntigravityExportError, match="published no HTTP port"):
+        client._await_discovered_port(launched_at_ns=launched_at_ns)
+
+    stale.write_text('{"pid": 444, "httpPort": 40010}')
+    os.utime(stale, ns=(3_000_000_000, 3_000_000_000))
+    assert client._await_discovered_port(launched_at_ns=launched_at_ns) == 40010
