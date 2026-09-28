@@ -123,7 +123,7 @@ def _get_cached_connection(path: Path) -> sqlite3.Connection:
         initialize_active_archive_root(path.parent)
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    require_write_lease(f"cached write connection({path})")
+    require_write_lease(f"cached write connection({path})", archive_root=path.parent)
     conn = connect_measured(path, timeout=DB_TIMEOUT)
     try:
         os.chmod(path, 0o600)
