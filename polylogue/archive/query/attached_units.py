@@ -152,16 +152,23 @@ def _row_session_id(row: Any) -> str | None:
 
 
 def _compact_attached_payload(payload: JSONDocument, row: Any) -> JSONDocument:
-    """Report how much of each SQL-cut text field the row left out.
+    """Report how much of each text field the attached row leaves out.
 
-    The text itself already arrived cut to ``_MAX_ATTACHED_TEXT_CHARS``; the
-    row's full-length attribute says whether anything was cut.
+    Text normally arrives already cut in SQL, with the whole length on the
+    row. A value holding an embedded NUL arrives whole (SQLite's text
+    functions stop at NUL; its length attribute is ``None``) and is cut here.
     """
     compacted = dict(payload)
     for field, length_attribute in _TEXT_FULL_LENGTH_ATTRIBUTES.items():
         value = compacted.get(field)
+        if not isinstance(value, str):
+            continue
         full_length = getattr(row, length_attribute, None)
-        if isinstance(value, str) and isinstance(full_length, int) and full_length > len(value):
+        if full_length is None:
+            full_length = len(value)
+            value = value[:_MAX_ATTACHED_TEXT_CHARS]
+            compacted[field] = value
+        if full_length > len(value):
             compacted[f"{field}_truncated_chars"] = full_length - len(value)
     return compacted
 

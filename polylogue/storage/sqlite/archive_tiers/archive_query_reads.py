@@ -1082,6 +1082,28 @@ _ARCHIVE_ACTION_QUERY_SELECT_SQL = ",\n                ".join(
 )
 
 
+def _has_nul_sql(expression: str) -> str:
+    """Return SQL that is true when a TEXT ``expression`` holds an embedded NUL."""
+    return f"instr(CAST({expression} AS BLOB), x'00') > 0"
+
+
+def _text_prefix_sql(expression: str, bound: int) -> str:
+    """Return SQL for the first ``bound`` characters of a TEXT ``expression``.
+
+    SQLite's text ``substr`` and ``length`` stop at an embedded NUL, which
+    tool output (``find -print0``, ``git -z``) legitimately carries, and
+    ``replace`` cannot target NUL. A value holding NUL is therefore returned
+    whole (its full length is NULL) and cut by the caller, exactly; every
+    other value is cut here.
+    """
+    return f"CASE WHEN {_has_nul_sql(expression)} THEN {expression} ELSE substr({expression}, 1, {bound}) END"
+
+
+def _text_length_sql(expression: str) -> str:
+    """Return SQL for the character length of a NUL-free TEXT ``expression``, else NULL."""
+    return f"CASE WHEN {_has_nul_sql(expression)} THEN NULL ELSE length({expression}) END"
+
+
 def _archive_action_query_select_sql(text_prefix_chars: int | None) -> str:
     """Return the action select list, cutting ``output_text`` in SQL when asked.
 
@@ -1093,10 +1115,10 @@ def _archive_action_query_select_sql(text_prefix_chars: int | None) -> str:
         return _ARCHIVE_ACTION_QUERY_SELECT_SQL
     bound = max(int(text_prefix_chars), 0)
     columns = [
-        (name, f"substr(a.output_text, 1, {bound})" if name == "output_text" else expr)
+        (name, _text_prefix_sql("a.output_text", bound) if name == "output_text" else expr)
         for name, expr in _ARCHIVE_ACTION_QUERY_COLUMNS
     ]
-    columns.append(("output_text_chars", "length(a.output_text)"))
+    columns.append(("output_text_chars", _text_length_sql("a.output_text")))
     return ",\n                ".join(
         expr if expr.endswith(f".{name}") else f"{expr} AS {name}" for name, expr in columns
     )
@@ -3178,10 +3200,29 @@ def query_session_messages(
             ), '') AS text"""
     else:
         bound = max(int(text_prefix_chars), 0)
+        whole_text = """COALESCE((
+                SELECT group_concat(ordered.search_text, char(10))
+                FROM (
+                    SELECT b.search_text
+                    FROM blocks b
+                    WHERE b.message_id = m.message_id
+                      AND b.search_text IS NOT NULL
+                    ORDER BY b.position, b.block_id
+                ) AS ordered
+            ), '')"""
+        # A block holding NUL defeats SQLite's text substr/length (see
+        # ``_text_prefix_sql``); such a message comes back whole, with a NULL
+        # length, and the caller cuts it exactly.
+        has_nul_block = f"""EXISTS (
+                SELECT 1 FROM blocks b
+                WHERE b.message_id = m.message_id
+                  AND b.search_text IS NOT NULL
+                  AND {_has_nul_sql("b.search_text")}
+            )"""
         # ``preceding`` is the length of the joined text before this block
         # (every earlier block plus its newline separator); a block starting
         # at or past the bound contributes nothing to the prefix.
-        text_sql = f"""COALESCE((
+        text_sql = f"""CASE WHEN {has_nul_block} THEN {whole_text} ELSE COALESCE((
                 SELECT substr(group_concat(ordered.head, char(10)), 1, {bound})
                 FROM (
                     SELECT
@@ -3196,13 +3237,13 @@ def query_session_messages(
                     ORDER BY b.position, b.block_id
                 ) AS ordered
                 WHERE ordered.preceding < {bound}
-            ), '') AS text,
-            COALESCE((
+            ), '') END AS text,
+            CASE WHEN {has_nul_block} THEN NULL ELSE COALESCE((
                 SELECT SUM(length(b.search_text)) + COUNT(*) - 1
                 FROM blocks b
                 WHERE b.message_id = m.message_id
                   AND b.search_text IS NOT NULL
-            ), 0) AS text_chars"""
+            ), 0) END AS text_chars"""
     rows = self._conn.execute(
         f"""
         SELECT
@@ -3262,7 +3303,9 @@ def query_session_messages(
             word_count=int(row["word_count"]),
             text=str(row["text"] or ""),
             blocks=tuple(blocks_by_message[str(row["message_id"])]),
-            text_chars=int(row["text_chars"]) if text_prefix_chars is not None else None,
+            text_chars=(
+                int(row["text_chars"]) if text_prefix_chars is not None and row["text_chars"] is not None else None
+            ),
         )
         for row in rows
     ]

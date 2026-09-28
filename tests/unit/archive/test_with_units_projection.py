@@ -253,7 +253,8 @@ class TestAttachBehaviour:
 
         Fails if the prefix skips or reorders a block, miscounts a separator,
         stops before the bound, or reports a truncated count that disagrees
-        with the whole text read by the unbounded route.
+        with the whole text read by the unbounded route -- including text
+        holding an embedded NUL, where SQLite's own substr/length stop early.
         """
         from tests.infra.storage_records import SessionBuilder
 
@@ -273,8 +274,11 @@ class TestAttachBehaviour:
                     {"type": "text", "text": "d" * 900},
                     {"type": "tool_use", "tool_name": "Bash", "tool_id": "t1", "input": {"command": "ls"}},
                     {"type": "tool_result", "tool_id": "t1", "text": "x" * 1999 + "yz"},
+                    {"type": "tool_use", "tool_name": "Bash", "tool_id": "t2", "input": {"command": "find -print0"}},
+                    {"type": "tool_result", "tool_id": "t2", "text": "p\x00q" * 1000},
                 ],
             )
+            .add_message("m-nul", role="user", text="", blocks=[{"type": "text", "text": "n\x00" * 1500}])
             .save()
         )
         session_id = "claude-code-session:ext-whale"
@@ -285,7 +289,7 @@ class TestAttachBehaviour:
             bounded = archive.query_session_messages([session_id], text_prefix_chars=2000)
             attached = fetch_attached_units(archive, [session_id], ["message", "action"])
 
-        assert len(bounded) == 2
+        assert len(bounded) == 3
         assert all(row.blocks == () for row in bounded)
         long_id = archive_message_id(session_id, "m-long")
         short_id = archive_message_id(session_id, "m-short")
@@ -295,10 +299,16 @@ class TestAttachBehaviour:
         assert by_id[long_id]["text_truncated_chars"] == len(whole_messages[long_id]) - 2000
         assert by_id[short_id]["text"] == whole_messages[short_id]
         assert "text_truncated_chars" not in by_id[short_id]
-        (action,) = attached.rows["action"][session_id]
-        assert whole_outputs == ["x" * 1999 + "yz"]
-        assert action["output_text"] == "x" * 1999 + "y"
-        assert action["output_text_truncated_chars"] == 1
+        nul_id = archive_message_id(session_id, "m-nul")
+        assert "\x00" in whole_messages[nul_id]
+        assert by_id[nul_id]["text"] == whole_messages[nul_id][:2000]
+        assert by_id[nul_id]["text_truncated_chars"] == len(whole_messages[nul_id]) - 2000
+        plain, with_nul = attached.rows["action"][session_id]
+        assert whole_outputs == ["x" * 1999 + "yz", "p\x00q" * 1000]
+        assert plain["output_text"] == "x" * 1999 + "y"
+        assert plain["output_text_truncated_chars"] == 1
+        assert with_nul["output_text"] == ("p\x00q" * 1000)[:2000]
+        assert with_nul["output_text_truncated_chars"] == 1000
 
     def test_fetch_attached_units_applies_payload_field_selection(self, tmp_path: Path) -> None:
         from tests.infra.storage_records import SessionBuilder
