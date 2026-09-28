@@ -308,6 +308,7 @@ class _FullIngestResult:
     ingested_message_count: int = 0
     changed_session_count: int = 0
     excised_skips: int = 0
+    excised_paths: tuple[Path, ...] = ()
     stage_timings_s: dict[str, float] = field(default_factory=dict)
     # Real session ids materialized by this full-ingest group (polylogue-20d.13),
     # threaded from ``_IngestBatchSummary.changed_session_ids`` so callers can

@@ -608,6 +608,9 @@ class TestApplySessionExcision:
     def test_reingest_batch_skips_excised_file_without_aborting(self, tmp_path: Path) -> None:
         """The batch orchestration layer must skip-not-abort on ContentExcisedError.
 
+        Anti-vacuity: treating an excised path as a failed file makes the
+        canonical one-shot ingestion reject the batch instead of reporting a skip.
+
         Uses the shared synthetic-corpus generator (real provider-shaped
         files, the same fixture machinery as
         ``tests/unit/pipeline/test_archive_ingest_commit_batching.py``)
