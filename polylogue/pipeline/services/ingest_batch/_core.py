@@ -826,6 +826,10 @@ class _CohortCachingBlobPublisher(ArchiveBlobPublisher):
             return self._inner.open(hash_hex)
         return io.BytesIO(data)
 
+    def read_all(self, hash_hex: str) -> bytes:
+        data = self._cohort_cache.read(self._inner, hash_hex)
+        return self._inner.read_all(hash_hex) if data is None else data
+
 
 class _DriveRevisionGovernanceAdapter:
     """Minimal ``RawRevisionGovernanceHost`` for Drive lineage bookkeeping.
@@ -1493,12 +1497,13 @@ def _write_session(
         write_outcome=writer_outcomes,
         manage_transaction=manage_transaction,
     )
-    if writer_outcomes and writer_outcomes[0].stale_skipped:
+    if writer_outcomes and (writer_outcomes[0].stale_skipped or writer_outcomes[0].suppression_skipped):
         if prepared_writes is not None and prepared_write is not None:
             prepared_writes.remove(prepared_write)
             if prepared_write is not payload.prepared_write:
                 prepared_write.close()
-        _repair_stale_revision_observations(conn, payload)
+        if writer_outcomes[0].stale_skipped:
+            _repair_stale_revision_observations(conn, payload)
         counts["skipped_sessions"] = 1
         counts["skipped_messages"] = payload.message_count
         counts["skipped_attachments"] = payload.attachment_count
@@ -1988,6 +1993,7 @@ def _drain_ready_session_entries(
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
     drive_plans: Mapping[str, RevisionReplayPlan | None] | None = None,
+    drive_cohort_cache: DriveRevisionCohortCache | None = None,
 ) -> int:
     if not fresh_build:
         _delete_stale_sessions_for_raw_entries(conn, ready_entries)
@@ -2002,7 +2008,8 @@ def _drain_ready_session_entries(
     signature_cache = LineageSignatureCache()
     # polylogue-ojjet: one Drive revision-cohort blob cache per drained
     # batch, the same lifetime as the signature cache above.
-    drive_cohort_cache = DriveRevisionCohortCache()
+    if drive_cohort_cache is None:
+        drive_cohort_cache = DriveRevisionCohortCache()
     if fresh_build and fresh_build_batch is None:
         fresh_build_batch = set()
     for raw_id, cdata in _topo_sort_session_entries(ready_entries):
@@ -2334,6 +2341,7 @@ def _drain_ingest_result(
     fresh_build_batch: set[str] | None = None,
     drive_plans: Mapping[str, RevisionReplayPlan | None] | None = None,
     marker_acceptance_enabled: bool = False,
+    drive_cohort_cache: DriveRevisionCohortCache | None = None,
 ) -> None:
     _record_outcome(summary, ir)
     _observe_current_rss(summary)
@@ -2414,6 +2422,7 @@ def _drain_ingest_result(
             fresh_build=fresh_build,
             fresh_build_batch=fresh_build_batch,
             drive_plans=drive_plans,
+            drive_cohort_cache=drive_cohort_cache,
         )
     if written_count == 0:
         summary.skipped_raw_ids.add(ir.raw_id)
@@ -2463,6 +2472,7 @@ def _consume_ingest_results(
     )
     transaction_started = False
     fresh_build_batch: set[str] | None = set() if fresh_build else None
+    drive_cohort_cache = DriveRevisionCohortCache()
 
     def ensure_index_transaction() -> None:
         nonlocal transaction_started
@@ -2502,6 +2512,7 @@ def _consume_ingest_results(
                 fresh_build=fresh_build,
                 fresh_build_batch=fresh_build_batch,
                 marker_acceptance_enabled=marker_acceptance_enabled,
+                drive_cohort_cache=drive_cohort_cache,
             )
         finally:
             discard_ingest_result_payload(ir)
