@@ -182,6 +182,41 @@ def test_generated_contract_arguments_match_the_live_mcp_signatures() -> None:
     assert not problems, problems
 
 
+def test_published_examples_use_live_operation_vocabularies_and_preconditions() -> None:
+    """Anti-vacuity: restoring any rejected projection, view, write op, or ref form fails here."""
+    import typing
+
+    from polylogue.mcp.declarations import MCPCapabilities
+    from polylogue.mcp.server import build_server
+    from polylogue.mcp.server_cutover import mcp_query_projection_names
+
+    server = build_server(capabilities=MCPCapabilities(write=True, judge=True, maintenance=True))
+    live_tools = server._tool_manager._tools
+    query_projections = set(mcp_query_projection_names())
+    for example in TOOL_CONTRACT_BY_NAME["query"].examples:
+        projection = example.arguments_dict().get("projection")
+        assert projection in query_projections
+
+    read = TOOL_CONTRACT_BY_NAME["read"]
+    read_example = read.examples[0].arguments_dict()
+    read_views = set(typing.get_args(typing.get_type_hints(live_tools["read"].fn)["view"]))
+    assert read_example["view"] in read_views
+    around_description = next(arg.description for arg in read.arguments if arg.name == "around")
+    assert "Raw message ID" in around_description
+    assert "view=messages" in around_description
+    assert "without offset or continuation" in around_description
+
+    for name, argument in (("explain", "subject"), ("write", "operation")):
+        vocabulary = set(typing.get_args(typing.get_type_hints(live_tools[name].fn)[argument]))
+        for example in TOOL_CONTRACT_BY_NAME[name].examples:
+            assert example.arguments_dict()[argument] in vocabulary
+
+    run_ref = TOOL_CONTRACT_BY_NAME["run"].examples[0].arguments_dict()["ref"]
+    assert run_ref.startswith(("saved-query:", "saved-view:"))
+    run_ref_description = next(arg.description for arg in TOOL_CONTRACT_BY_NAME["run"].arguments if arg.name == "ref")
+    assert "recipe" not in run_ref_description
+
+
 def _live_maintenance_signature() -> tuple[frozenset[str], frozenset[str]]:
     """Return the live ``maintenance`` operation vocabulary and parameter names."""
     import inspect
