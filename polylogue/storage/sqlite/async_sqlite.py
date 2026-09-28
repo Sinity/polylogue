@@ -114,7 +114,11 @@ async def _attach_sibling_tiers(conn: aiosqlite.Connection, *, read_only: bool =
             expected = ARCHIVE_VERSION_BY_TIER[tier]
             if found != expected:
                 raise SchemaSkew(tier.value, expected, found)
-            if tier in {ArchiveTier.INDEX, ArchiveTier.EMBEDDINGS, ArchiveTier.OPS}:
+            # Only the derived tiers carry a stamped schema identity
+            # (``DerivedTier``). ``embeddings.db`` is repurchased, never
+            # replayed, and has no identity row; its version check above is
+            # the whole contract.
+            if tier is ArchiveTier.OPS:
                 identity_cursor = await conn.execute(
                     f"SELECT identity FROM {schema_name}.schema_identity WHERE tier = ?", (tier.value,)
                 )
