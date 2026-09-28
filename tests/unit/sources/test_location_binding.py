@@ -631,3 +631,32 @@ def test_capture_validates_every_record_not_only_the_prefix(tmp_path: Path) -> N
     capture_bound_source(publisher, source, Provider.CLAUDE_CODE, lambda: publisher.write_from_path(source))
     assert publisher.has_pending
     publisher.discard_pending()
+
+
+def test_record_validation_inspects_a_whole_oversized_line(tmp_path: Path) -> None:
+    """A foreign discriminator past the validation window, in one record, is refused.
+
+    The record's own leading field is larger than the validation window, so
+    its Codex-shaped ``type``/``payload`` keys sit past the window boundary
+    within a single JSONL line.
+
+    Anti-vacuity: bound the per-record buffer to the validation window and
+    this line's discriminator is dropped with the overflow, so the blob is
+    retained as Claude Code and its Codex content parsed as Claude content.
+    """
+    from polylogue.sources.bound_capture import capture_bound_source
+    from polylogue.sources.dispatch import LOCATION_VALIDATION_PREFIX_BYTES
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+    oversized_codex_record = {
+        "pad": "x" * (LOCATION_VALIDATION_PREFIX_BYTES * 2),
+        **_CODEX_ROLLOUT[0],
+    }
+    source = tmp_path / "projects" / "proj" / "oversized-record.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(_jsonl([oversized_codex_record]))
+    publisher = ArchiveBlobPublisher(tmp_path / "source-2.db", tmp_path / "blob-2")
+
+    with pytest.raises(ForeignOriginContentError):
+        capture_bound_source(publisher, source, Provider.CLAUDE_CODE, lambda: publisher.write_from_path(source))
+    assert not publisher.has_pending

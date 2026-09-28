@@ -533,12 +533,13 @@ class BoundRecordValidator:
     records; a foreign record anywhere later would otherwise be retained and
     parsed as the location's origin. Fed the stream in chunks (so a caller
     that is already reading the bytes, to hash or to capture them, validates
-    the same bytes in the same pass), it validates every line: a line that
-    fits the validation window is decoded whole, and a longer one from the
-    completed structure of its leading bytes, so memory stays bounded by the
-    window whatever a record's size. A malformed line is the parser's typed
-    concern, not a foreign-origin claim. ``feed`` and ``finish`` raise
-    :class:`ForeignOriginContentError`.
+    the same bytes in the same pass), it validates every line in full: each
+    line is buffered whole and decoded, so a discriminator anywhere in an
+    oversized record -- not only within a leading window -- is seen. A line
+    still incomplete at ``finish()`` (a truncated trailing record) falls back
+    to the completed structure of what was read. A malformed line is the
+    parser's typed concern, not a foreign-origin claim. ``feed`` and
+    ``finish`` raise :class:`ForeignOriginContentError`.
     """
 
     def __init__(self, path: Path | str, location: Provider | str | None) -> None:
@@ -551,46 +552,37 @@ class BoundRecordValidator:
             active = not path_declaration_refuses_session(self._bound, source)
         self.active = active
         self._head = bytearray()
-        self._overflowed = False
 
     def feed(self, chunk: bytes) -> None:
         if not self.active:
             return
-        window = LOCATION_VALIDATION_PREFIX_BYTES
         start = 0
         while start < len(chunk):
             newline = chunk.find(b"\n", start)
             end = len(chunk) if newline == -1 else newline
-            if not self._overflowed:
-                room = window - len(self._head)
-                piece = chunk[start:end]
-                self._head += piece[:room]
-                self._overflowed = len(piece) > room
+            self._head += chunk[start:end]
             if newline == -1:
                 return
             self._validate_line()
             start = newline + 1
 
     def finish(self) -> None:
-        if self.active and (self._head or self._overflowed):
+        if self.active and self._head:
             self._validate_line()
 
     def _validate_line(self) -> None:
-        head, complete = bytes(self._head), not self._overflowed
+        head = bytes(self._head)
         self._head.clear()
-        self._overflowed = False
         if not head.strip():
             return
-        if complete:
-            try:
-                record = json.loads(head)
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                return
-            detect_provider_evidence([record], expected=self._bound)
+        try:
+            record = json.loads(head)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            partial = _completed_prefix_structure(head)
+            if isinstance(partial, dict):
+                detect_provider_evidence([partial], expected=self._bound)
             return
-        partial = _completed_prefix_structure(head)
-        if isinstance(partial, dict):
-            detect_provider_evidence([partial], expected=self._bound)
+        detect_provider_evidence([record], expected=self._bound)
 
 
 def _completed_prefix_structure(prefix: bytes) -> object:
