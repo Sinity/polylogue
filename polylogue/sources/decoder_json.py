@@ -253,6 +253,20 @@ def _iter_jsonl_stream(
         logger_obj.warning("Skipped %d invalid JSON lines in %s", error_count, path_name)
 
 
+def _stdlib_prefixed_items(handle: JsonReadable, prefix: str) -> list[JsonValue] | None:
+    """The ``prefix`` items of the whole document as ``json.load`` reads it, or ``None``."""
+    handle.seek(0)
+    try:
+        data = json.load(handle)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if prefix == "sessions.item" and isinstance(data, dict):
+        data = data.get("sessions")
+    if prefix in {"item", "sessions.item"} and isinstance(data, list) and _is_json_value(data):
+        return cast(list[JsonValue], data)
+    return None
+
+
 def _stream_prefixed_items(
     logger_obj: LoggerLike,
     ijson_module: IjsonModuleLike,
@@ -276,6 +290,12 @@ def _stream_prefixed_items(
             # silently truncates the session set, so surface a typed error
             # instead. A JSONError with zero items found is a normal
             # "wrong prefix, try the next strategy" signal and is swallowed.
+            recovered = _stdlib_prefixed_items(handle, prefix)
+            if recovered is not None:
+                # ijson refused bytes the decoder's own ``json.load`` fallback
+                # accepts (directly encoded surrogates, NaN): the document is
+                # whole, so it is read that way instead of reported partial.
+                return (True, recovered)
             offset = _json_error_offset(exc)
             logger_obj.warning(
                 "Partial JSON stream decode of %s (strategy %s): corruption after %d record(s)%s",
@@ -293,6 +313,9 @@ def _stream_prefixed_items(
         return (found_any, records)
     except Exception as exc:
         if found_any:
+            recovered = _stdlib_prefixed_items(handle, prefix)
+            if recovered is not None:
+                return (True, recovered)
             # Same failure, and therefore the same handling as the JSONError
             # branch above: records were already recovered, so returning the
             # partial set silently truncates the session set. Only the

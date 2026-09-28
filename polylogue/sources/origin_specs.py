@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import IO, Literal, cast
 
 from polylogue.core.enums import Origin, Provider, ToolResultUnknownReason
-from polylogue.core.json_envelope import jsonl_record_envelopes, top_level_envelopes
+from polylogue.core.json_envelope import jsonl_record_envelopes, sqlite_value_limit, top_level_envelopes
 from polylogue.declarations import (
     CompatibilityKey,
     CompletenessEdge,
@@ -794,29 +794,54 @@ def recognize_source_class(
             if provider is Provider.HERMES
             else antigravity.MARKDOWN_EXPORT_SIGNATURE_FIELDS
         )
+        tail_violates_atof = False
         try:
             with path.open("rb") as handle:
                 if is_jsonl:
                     payload = list(
                         islice(jsonl_record_envelopes(handle, fields=fields), SOURCE_CLASS_JSONL_LEADING_RECORDS)
                     )
-                elif _first_significant_byte(handle) == b"[":
-                    # A JSON array document: its signature is read per element,
-                    # over the same bounded leading sample the JSONL route reads,
-                    # so an array of millions of records costs a bounded read.
-                    handle.seek(0)
-                    elements = top_level_envelopes(handle, expand_arrays=True, fields=fields)
-                    payload = list(islice(elements, SOURCE_CLASS_JSONL_LEADING_RECORDS))
-                    # The record parser reads the whole array and refuses a
-                    # malformed tail, so the rest is validated too -- streamed,
-                    # its envelopes dropped as they come.
-                    for _element in elements:
-                        pass
                 else:
+                    # The record parser holds a JSON document whole (ijson's
+                    # item list, then ``json.load``), so a document beyond the
+                    # record bound is refused by name, as an over-bound JSONL
+                    # line is (polylogue-0df0u).
+                    size = path.stat().st_size
+                    if size > sqlite_value_limit():
+                        return SourceClassRecognition(
+                            "unsupported",
+                            f"{provider.value} JSON document of {size} bytes is beyond the record bound",
+                        )
+                    first = _first_significant_byte(handle)
                     handle.seek(0)
-                    (payload,) = top_level_envelopes(handle, expand_arrays=False, fields=fields)
+                    if first == b"[":
+                        # The signature is read from the leading records; the
+                        # rest is streamed, its envelopes dropped as they come,
+                        # because the record parser reads the whole array: a
+                        # malformed tail refuses it, and the Hermes predicate
+                        # applies to every member.
+                        elements = top_level_envelopes(handle, expand_arrays=True, fields=fields)
+                        payload = list(islice(elements, SOURCE_CLASS_JSONL_LEADING_RECORDS))
+                        for element in elements:
+                            if (
+                                provider is Provider.HERMES
+                                and isinstance(element, dict)
+                                and element
+                                and not hermes_spans.looks_like_atof_payload(element)
+                            ):
+                                tail_violates_atof = True
+                    elif first == b"{":
+                        (payload,) = top_level_envelopes(handle, expand_arrays=False, fields=fields)
+                    else:
+                        # A scalar root carries no source signature; its body
+                        # is never scanned.
+                        return SourceClassRecognition(
+                            "unsupported", f"{provider.value} candidate has no JSON object or array root"
+                        )
         except (OSError, UnicodeDecodeError, ValueError, ArithmeticError, ijson.JSONError):
             return SourceClassRecognition("unsupported", f"{provider.value} candidate is not readable JSON")
+        if tail_violates_atof:
+            return SourceClassRecognition("unsupported", "Hermes array holds a member without the ATOF signature")
 
     if provider is Provider.HERMES:
         record = payload if isinstance(payload, dict) else None

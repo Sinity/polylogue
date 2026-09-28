@@ -10,7 +10,7 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -2001,3 +2001,67 @@ def test_exact_fields_settle_on_a_container_duplicate_and_skip_array_roots() -> 
     assert list(
         top_level_envelopes(io.BytesIO(array_root), expand_arrays=False, fields=fields, whole_fields=fields)
     ) == [[]]
+
+
+def test_json_document_recognition_matches_the_record_parser(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Recognition refuses what the whole-document record parser cannot hold or admit.
+
+    Anti-vacuity: drop the document bound and an over-bound document is
+    admitted into a whole-document ``json.load``; scan a scalar root and its
+    body is read; check only JSON syntax on the drained tail and a non-ATOF
+    member past the sample is admitted.
+    """
+    import polylogue.core.json_envelope as json_envelope
+    from polylogue.sources import origin_specs
+    from polylogue.sources.origin_specs import recognize_source_class
+
+    record = '{"atof_version": "0.1", "kind": "mark", "uuid": "u", "timestamp": "t", "name": "n"}'
+    mixed = tmp_path / "mixed.json"
+    mixed.write_text("[" + ",".join([record] * 40 + ['{"other": 1}']) + "]", encoding="utf-8")
+    refused = recognize_source_class(Provider.HERMES, mixed)
+    assert refused is not None and refused.source_class == "unsupported"
+
+    scalar = tmp_path / "scalar.json"
+    scalar.write_bytes(b'"' + b"x" * 64)
+    opened: list[object] = []
+    real = json_envelope.top_level_envelopes
+
+    def tracked(*args: Any, **kwargs: Any) -> Any:
+        opened.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(origin_specs, "top_level_envelopes", tracked)
+    refused = recognize_source_class(Provider.HERMES, scalar)
+    assert refused is not None and refused.source_class == "unsupported" and not opened
+
+    monkeypatch.setattr(json_envelope, "sqlite_value_limit", lambda: 64)
+    monkeypatch.setattr(origin_specs, "sqlite_value_limit", lambda: 64)
+    large = tmp_path / "large.json"
+    large.write_text("[" + record + "]", encoding="utf-8")
+    refused = recognize_source_class(Provider.HERMES, large)
+    assert refused is not None and "record bound" in refused.reason
+
+
+def test_array_decoder_reads_provider_surrogates_through_the_stdlib_fallback() -> None:
+    """Anti-vacuity: raise the partial-stream error when ijson refuses a later
+    element's surrogate bytes and the whole valid document yields nothing."""
+    import io
+
+    from polylogue.sources.decoders import _iter_json_stream
+
+    first = b'{"atof_version": "0.1", "kind": "mark", "uuid": "a", "timestamp": "t", "name": "n"}'
+    second = b'{"atof_version": "0.1", "kind": "mark", "uuid": "b", "timestamp": "t", "name": "n\xed\xa0\x80"}'
+    records = list(_iter_json_stream(io.BytesIO(b"[" + first + b"," + second + b"]"), "spans.json"))
+    assert [record["uuid"] for record in records] == ["a", "b"]  # type: ignore[index,call-overload]
+
+
+def test_orchestration_identity_with_a_surrogate_is_refused() -> None:
+    """Anti-vacuity: return the parsed artifact and the lone surrogate reaches a
+    SQLite binding in the workflow projector."""
+    from polylogue.sources.parsers.claude.orchestration import parse_claude_orchestration_artifact
+
+    payload = b'{"runId": "run\xed\xa0\x80", "status": "done"}\n'
+    with pytest.raises(ValueError, match="surrogate"):
+        parse_claude_orchestration_artifact(
+            "/home/u/.claude/projects/p/s/subagents/workflows/run-1/journal.jsonl", payload
+        )

@@ -204,7 +204,28 @@ def parse_claude_orchestration_artifact(
         facts = (_document_fact(rule.kind, source_path, loaded),)
     else:
         facts = ()
+    for fact in facts:
+        for field_name, value in (
+            ("run_id", fact.run_id),
+            ("agent_id", fact.agent_id),
+            ("content_key", fact.content_key),
+            ("attempt_id", fact.attempt_id),
+            ("tool_use_id", fact.tool_use_id),
+        ):
+            if value is not None and _holds_surrogate(value):
+                # Identity fields become graph and reference ids bound to
+                # SQLite; a lone surrogate cannot be stored, so the artifact
+                # is refused by name and degrades to path-identity evidence.
+                raise ValueError(f"orchestration identity field {field_name!r} holds a UTF-16 surrogate code unit")
     return ClaudeOrchestrationArtifact(rule.kind, source_path, rule.parse_policy, facts)
+
+
+def _holds_surrogate(value: str) -> bool:
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return True
+    return False
 
 
 def _decode(payload: bytes | str | object, *, jsonl: bool) -> object:
