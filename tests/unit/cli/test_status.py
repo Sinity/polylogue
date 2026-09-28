@@ -735,6 +735,31 @@ class TestCanonicalStatusOperation:
         assert request.full_url == "http://daemon.example:9000/api/status"
         assert result.authority["mode"] == "daemon"
 
+    def test_sinex_status_reads_the_active_archive_file_set(self, tmp_path: Path) -> None:
+        """Sinex debt follows the explicitly selected index archive root.
+
+        Anti-vacuity: resolving source.db from archive_root instead of the
+        active db_path reports another archive's publication state.
+        """
+        from polylogue.config import Config
+        from polylogue.daemon.status import _sinex_publication_status_info
+
+        configured_root = tmp_path / "configured"
+        active_root = tmp_path / "active"
+        config = Config(
+            archive_root=configured_root,
+            db_path=active_root / "index.db",
+            render_root=configured_root / "render",
+            sources=[],
+            sinex_mode="off",
+        )
+        with (
+            patch("polylogue.config.load_polylogue_config", return_value=config),
+            patch("polylogue.sinex.service.publication_status") as publication_status,
+        ):
+            _sinex_publication_status_info()
+        assert publication_status.call_args.args[0] == active_root / "source.db"
+
     def test_status_command_passes_exact_readiness_to_canonical_operation(self, tmp_path: Path) -> None:
         env = _make_app_env()
         config = SimpleNamespace(archive_root=tmp_path)
