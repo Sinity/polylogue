@@ -2167,7 +2167,9 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonAuthority.WRITE,
         DaemonFallback.NEVER,
         capability="archive.delete_session",
-        deadline_s=30.0,
+        # Accepted durably at its first page; the caller follows the durable
+        # request to completion (polylogue-zxbbl), within the budget execute has.
+        deadline_s=300.0,
         # A preview carries the exact selection -- every session id, split
         # into bounded preview chunks -- not a parameter map.
         max_body_bytes=DELETE_SELECTION_MAX_BODY_BYTES,
@@ -2183,7 +2185,9 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonAuthority.WRITE,
         DaemonFallback.NEVER,
         capability="archive.delete_session",
-        deadline_s=30.0,
+        # Accepted durably at its first page; the caller follows the durable
+        # request to completion (polylogue-zxbbl), within the budget execute has.
+        deadline_s=300.0,
         # Carries one reference per preview chunk of the selection.
         max_body_bytes=DELETE_SELECTION_MAX_BODY_BYTES,
         request_contract="mutation.session.delete.authorize.request/v1",

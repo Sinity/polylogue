@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 
-from polylogue.operations.audit import AuditRepository, MachineRequestBinding
+from polylogue.operations.audit import MACHINE_PAGE_KINDS, AuditRepository, MachineRequestBinding
 from polylogue.operations.daemon_protocol import AcceptedOperationReference
 from polylogue.operations.machine_receipts import (
     IngestHistoricalReceiptV2,
@@ -100,6 +100,9 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
         return {**state, "outcome": "accepted", "effect": "indeterminate"}
     if kind == "insight-preview-pages":
         return {**state, "outcome": "running", "effect": "no-effect", "accepted": False}
+    if kind in MACHINE_PAGE_KINDS:
+        # A paged batch still accepting pages: durably accepted, not done.
+        return {**state, "outcome": "running", "effect": "no-effect"}
     if kind not in {"operation", "execution-batch", "source-generation"}:
         refs = [part["artifact_ref"] for part in parts] or [record["artifact_ref"]]
         state["artifact_refs"] = refs

@@ -86,6 +86,28 @@ AuditTargetState = Literal[
 _F = TypeVar("_F", bound=Callable[..., object])
 _CONFIRMATION_STRENGTH_ORDER = {"role_only": 0, "confirm_flag": 1, "bound_token": 2}
 _MAX_MACHINE_AUTHORITY_PARTS = 40
+
+#: Machine batch transitions a request can accept in pages. One transition
+#: carries at most :data:`_MAX_MACHINE_AUTHORITY_PARTS` parts (the bound on a
+#: continuity payload); a request of any size appends pages under one staged
+#: record, ``<kind>-pages``, and its final page turns it into ``<kind>``.
+_PAGED_MACHINE_KINDS: dict[str, str] = {
+    "create_preview_batch": "preview-batch",
+    "issue_authorization_batch": "authorization-batch",
+    "accept_execution_batch": "execution-batch",
+}
+
+
+def machine_pages_kind(kind: str) -> str:
+    """The staged artifact kind of a paged machine batch still accepting pages."""
+    return f"{kind}-pages"
+
+
+#: Parts one page of a paged machine batch carries.
+MACHINE_PAGE_PARTS = _MAX_MACHINE_AUTHORITY_PARTS
+
+#: Staged kinds of paged machine batches.
+MACHINE_PAGE_KINDS = frozenset(machine_pages_kind(kind) for kind in _PAGED_MACHINE_KINDS.values())
 _MAX_INSIGHT_ACCEPTED_PARTS = 4096
 _INSIGHT_MACHINE_OPERATION = "maintenance.insights.rebuild"
 
@@ -246,13 +268,25 @@ def _continuity_mutation(kind: str) -> Callable[[_F], _F]:
                     and prior is not None
                     and prior.get("artifact_kind") == "insight-preview-pages"
                 )
+                page = self._machine_page
+                continuing_page = (
+                    page is not None
+                    and page[0] > 0
+                    and prior is not None
+                    and prior.get("artifact_kind") == machine_pages_kind(_PAGED_MACHINE_KINDS[kind])
+                    and prior.get("part_count") == page[0]
+                )
+                if page is not None and page[0] > 0 and prior is None:
+                    raise MachineRequestConflictError("a later machine page has no staged request")
                 if (
                     prior is not None
                     and self._machine_part is None
-                    and not (continuing_insight_staging or continuing_insight_seal)
+                    and not (continuing_insight_staging or continuing_insight_seal or continuing_page)
                 ):
                     raise MachineRequestRecoveredError(prior)
                 payload["machine_request"] = binding.to_dict()
+                if page is not None:
+                    payload["machine_page"] = {"offset": page[0], "final": page[1]}
                 if self._machine_part is not None:
                     payload["machine_part"] = self._machine_part
                 if self._machine_deadline_unix_ms is not None:
@@ -553,6 +587,7 @@ class AuditRepository:
         self._machine_binding: tuple[MachineRequestBinding, str] | None = None
         self._machine_part: int | None = None
         self._machine_deadline_unix_ms: int | None = None
+        self._machine_page: tuple[int, bool] | None = None
         self._before_machine_prepare = before_machine_prepare
         self._on_commit = on_commit
         self._settled_reader = threading.local()
@@ -565,8 +600,13 @@ class AuditRepository:
         transition: str,
         part: int | None = None,
         deadline_unix_ms: int | None = None,
+        page: tuple[int, bool] | None = None,
     ) -> Iterator[None]:
-        """Bind exactly one domain transition in its existing continuity transaction."""
+        """Bind exactly one domain transition in its existing continuity transaction.
+
+        ``page`` = (offset, final) appends one page of a paged batch
+        transition at part ``offset``; the final page completes the request.
+        """
 
         if transition not in {
             "create_preview",
@@ -584,22 +624,23 @@ class AuditRepository:
             raise ValueError("machine request must bind a declared audit authority transition")
         if self._machine_binding is not None:
             raise RuntimeError("machine request binding scopes cannot overlap")
-        part_limit = (
-            _MAX_INSIGHT_ACCEPTED_PARTS
-            if binding.operation_name == _INSIGHT_MACHINE_OPERATION
-            else _MAX_MACHINE_AUTHORITY_PARTS
-        )
-        if part is not None and (transition != "consume_authorization_and_start" or not 0 <= part < part_limit):
-            raise ValueError("machine part must name a bounded execution ordinal")
+        # Parts are rows of the request; a paged batch has as many as it
+        # accepted, so an ordinal is bounded only by what the request holds.
+        if part is not None and (transition != "consume_authorization_and_start" or part < 0):
+            raise ValueError("machine part must name an execution ordinal")
+        if page is not None and (transition not in _PAGED_MACHINE_KINDS or page[0] < 0):
+            raise ValueError("only a paged batch transition takes a page")
         self._machine_binding = (binding, transition)
         self._machine_part = part
         self._machine_deadline_unix_ms = deadline_unix_ms
+        self._machine_page = page
         try:
             yield
         finally:
             self._machine_binding = None
             self._machine_part = None
             self._machine_deadline_unix_ms = None
+            self._machine_page = None
 
     def machine_request(self, binding: MachineRequestBinding) -> dict[str, object] | None:
         """Recover the immutable domain reference and reject conflicting reuse.
@@ -888,7 +929,42 @@ class AuditRepository:
             "accept_execution_batch": "execution-batch",
             "seal_insight_execution": "execution-batch",
         }[mutation.kind]
-        if insight:
+        raw_page = mutation.payload.get("machine_page")
+        offset = 0
+        if isinstance(raw_page, dict):
+            offset, final = int(raw_page["offset"]), bool(raw_page["final"])
+            staged = machine_pages_kind(kind)
+            if offset == 0:
+                conn.execute(
+                    """INSERT INTO machine_requests(
+                        archive_identity, request_id, principal_ref, fingerprint, operation_name,
+                        artifact_kind, artifact_ref, accepted_at_ms, part_count, accepted_deadline_unix_ms
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        *binding.to_dict().values(),
+                        kind if final else staged,
+                        refs[0],
+                        mutation.created_at_ms,
+                        len(refs),
+                        mutation.payload.get("accepted_deadline_unix_ms"),
+                    ),
+                )
+            else:
+                changed = conn.execute(
+                    """UPDATE machine_requests SET part_count = part_count + ?, artifact_kind = ?
+                    WHERE archive_identity = ? AND request_id = ? AND artifact_kind = ? AND part_count = ?""",
+                    (
+                        len(refs),
+                        kind if final else staged,
+                        binding.archive_identity,
+                        binding.request_id,
+                        staged,
+                        offset,
+                    ),
+                ).rowcount
+                if changed != 1:
+                    raise MachineRequestConflictError("machine page does not continue its staged request")
+        elif insight:
             changed = conn.execute(
                 """UPDATE machine_requests SET artifact_kind = ?, artifact_ref = ?, accepted_at_ms = ?,
                     accepted_deadline_unix_ms = ?
@@ -954,7 +1030,14 @@ class AuditRepository:
                     """INSERT INTO machine_request_parts(
                         archive_identity, request_id, ordinal, artifact_ref, preview_ref, authorization_ref
                     ) VALUES (?, ?, ?, ?, ?, ?)""",
-                    (binding.archive_identity, binding.request_id, ordinal, ref, preview_ref, authorization_ref),
+                    (
+                        binding.archive_identity,
+                        binding.request_id,
+                        offset + ordinal,
+                        ref,
+                        preview_ref,
+                        authorization_ref,
+                    ),
                 )
 
     def machine_parts(self, binding: MachineRequestBinding) -> list[dict[str, object]]:

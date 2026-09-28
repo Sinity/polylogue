@@ -1384,3 +1384,38 @@ def test_an_indeterminate_mutation_keeps_the_writer_gate_until_its_body_settles(
         thread.join(timeout=5.0)
         handler.server.execution_kernel.shutdown(wait=True)
         stop()
+
+
+def test_cli_delete_pages_every_phase_past_one_machine_batch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A selection larger than one machine batch is accepted, authorized and
+    executed page by page (polylogue-zxbbl).
+
+    The page and chunk sizes are shrunk so seven sessions make four plans in
+    four one-part pages. Anti-vacuity: accept each phase as one batch again and
+    the audit tier refuses more parts than a page holds, so no phase returns.
+    """
+    from polylogue.operations import daemon_mutations
+
+    monkeypatch.setattr(daemon_mutations, "MAX_MUTATION_PLAN_TARGETS", 2)
+    monkeypatch.setattr(daemon_mutations, "MACHINE_PAGE_PARTS", 1)
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    session_ids = _seed_delete_authority_archive(archive_root, 7)
+
+    with _delete_authority_daemon(monkeypatch, archive_root) as client:
+        preview = _delete_operation(client, "preview", {"session_ids": list(session_ids)})
+        assert preview["session_count"] == 7
+        preview_refs = preview["preview_refs"]
+        assert isinstance(preview_refs, list) and len(preview_refs) == 4
+        authorization = _delete_operation(client, "authorize", {"preview_refs": preview_refs})
+        tokens = authorization["authorization_refs"]
+        assert isinstance(tokens, list) and len(tokens) == 4
+        result = _delete_operation(client, "execute", {"authorization_refs": tokens})
+
+    _assert_completed_delete(result, affected=7, chunks=4)
+    with sqlite3.connect(archive_root / "audit.db") as conn:
+        kinds = sorted(str(row[0]) for row in conn.execute("SELECT artifact_kind FROM machine_requests"))
+        assert kinds == ["authorization-batch", "execution-batch", "preview-batch"]
+        assert {int(row[0]) for row in conn.execute("SELECT part_count FROM machine_requests")} == {4}
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)

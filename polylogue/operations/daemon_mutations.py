@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import replace
 from pathlib import Path
 from time import time
 from typing import Any, cast
 
-from polylogue.operations.audit import AuditRepository, MachineRequestBinding
+from polylogue.operations.audit import MACHINE_PAGE_PARTS, AuditRepository, MachineRequestBinding, machine_pages_kind
 from polylogue.operations.bindings import OperationBinding, runtime_operation_binding
 from polylogue.operations.daemon_protocol import DaemonOperationRequest
 from polylogue.operations.delete_authorization import _canonical_session_ids
@@ -543,6 +543,23 @@ def _previews(
     return tuple(previews)
 
 
+def _accepted_pages(audit: AuditRepository, binding: MachineRequestBinding, kind: str) -> int | None:
+    """Parts a paged request already accepted: ``None`` when it is complete."""
+    prior = audit.machine_request(binding)
+    if prior is None:
+        return 0
+    if prior["artifact_kind"] == machine_pages_kind(kind):
+        return _audit_int(prior["part_count"], field="part count")
+    return None
+
+
+def _page_bounds(total: int, start: int) -> Iterator[tuple[int, int, bool]]:
+    """``(offset, end, final)`` for each page of ``total`` parts from ``start``."""
+    for offset in range(start, total, MACHINE_PAGE_PARTS):
+        end = min(offset + MACHINE_PAGE_PARTS, total)
+        yield offset, end, end == total
+
+
 def mutation_session_delete_preview(
     request: DaemonOperationRequest,
     context: OperationContext,
@@ -550,21 +567,23 @@ def mutation_session_delete_preview(
     snapshot: PinnedOperationRead,
 ) -> dict[str, object]:
     binding = _binding(request, context, snapshot)
-    prior = audit.machine_request(binding)
-    if prior is not None:
-        refs = tuple(str(part["artifact_ref"]) for part in audit.machine_parts(binding))
-        previews = tuple(audit.preview_for_principal(ref, context.principal) for ref in refs)
-        ids = tuple(target.ref.removeprefix("session:") for preview in previews for target in preview.plan.targets)
-    else:
+    accepted = _accepted_pages(audit, binding, "preview-batch")
+    if accepted is not None:
+        # Accepted durably at its first page and extended page by page, so a
+        # selection of any size is prepared and a restart resumes it.
         ids = _canonical_session_ids(snapshot.archive, tuple(cast(list[str], request.payload["session_ids"])))
         operation = runtime_operation_binding(SessionDeleteActuator())
-        args = tuple(
-            SessionDeleteArgs(snapshot.archive, ids[offset : offset + MAX_MUTATION_PLAN_TARGETS])
-            for offset in range(0, len(ids), MAX_MUTATION_PLAN_TARGETS)
-        )
-        previews = _previews(request, context, audit, snapshot, operation, args)
-        with audit.bind_machine_request(binding, transition="create_preview_batch"):
-            refs = tuple(audit.create_preview_batch(tuple(preview.plan for preview in previews), context.principal))
+        chunks = [
+            ids[offset : offset + MAX_MUTATION_PLAN_TARGETS] for offset in range(0, len(ids), MAX_MUTATION_PLAN_TARGETS)
+        ]
+        for offset, end, final in _page_bounds(len(chunks), accepted):
+            args = tuple(SessionDeleteArgs(snapshot.archive, chunk) for chunk in chunks[offset:end])
+            previews = _previews(request, context, audit, snapshot, operation, args)
+            with audit.bind_machine_request(binding, transition="create_preview_batch", page=(offset, final)):
+                audit.create_preview_batch(tuple(preview.plan for preview in previews), context.principal)
+    refs = tuple(str(part["artifact_ref"]) for part in audit.machine_parts(binding))
+    previews = tuple(audit.preview_for_principal(ref, context.principal) for ref in refs)
+    ids = tuple(target.ref.removeprefix("session:") for preview in previews for target in preview.plan.targets)
     return {
         "status": "prepared",
         "operation": "delete",
@@ -583,21 +602,20 @@ def mutation_session_delete_authorize(
     snapshot: PinnedOperationRead,
 ) -> dict[str, object]:
     binding = _binding(request, context, snapshot)
-    prior = audit.machine_request(binding)
-    if prior is not None:
-        refs = [str(part["artifact_ref"]) for part in audit.machine_parts(binding)]
-    else:
-        previews = tuple(
-            audit.preview_for_principal(ref, context.principal) for ref in _refs(request.payload, "preview_ref")
-        )
+    accepted = _accepted_pages(audit, binding, "authorization-batch")
+    if accepted is not None:
+        preview_refs = _refs(request.payload, "preview_ref")
         operation = runtime_operation_binding(SessionDeleteActuator())
         executor = OperationExecutor()
-        authorizations = tuple(
-            executor.authorize_bound(operation, preview, context.principal, confirmation_strength="bound_token")
-            for preview in previews
-        )
-        with audit.bind_machine_request(binding, transition="issue_authorization_batch"):
-            refs = audit.issue_authorization_batch(previews, context.principal, authorizations)
+        for offset, end, final in _page_bounds(len(preview_refs), accepted):
+            previews = tuple(audit.preview_for_principal(ref, context.principal) for ref in preview_refs[offset:end])
+            authorizations = tuple(
+                executor.authorize_bound(operation, preview, context.principal, confirmation_strength="bound_token")
+                for preview in previews
+            )
+            with audit.bind_machine_request(binding, transition="issue_authorization_batch", page=(offset, final)):
+                audit.issue_authorization_batch(previews, context.principal, authorizations)
+    refs = [str(part["artifact_ref"]) for part in audit.machine_parts(binding)]
     return {"status": "authorized", "authorization_ref": refs[0], "authorization_refs": refs}
 
 
@@ -653,15 +671,18 @@ def _execute_batch(
 ) -> dict[str, object]:
     assert context.runtime is not None
     binding = _binding(request, context, snapshot)
+    accepted = _accepted_pages(audit, binding, "execution-batch")
+    if accepted is not None:
+        deadline_unix_ms = context.runtime.request_deadline_unix_ms(request)
+        for offset, end, final in _page_bounds(len(refs), accepted):
+            with audit.bind_machine_request(
+                binding,
+                transition="accept_execution_batch",
+                deadline_unix_ms=deadline_unix_ms,
+                page=(offset, final),
+            ):
+                audit.accept_execution_batch(refs[offset:end], context.principal)
     record = audit.machine_request(binding)
-    if record is None:
-        with audit.bind_machine_request(
-            binding,
-            transition="accept_execution_batch",
-            deadline_unix_ms=context.runtime.request_deadline_unix_ms(request),
-        ):
-            audit.accept_execution_batch(refs, context.principal)
-        record = audit.machine_request(binding)
     assert record is not None
     if record["artifact_kind"] != "execution-batch":
         raise ValueError("machine request is not an execution batch")

@@ -2722,3 +2722,52 @@ def test_a_request_overlapping_deferred_recovery_is_refused(tmp_path: Path, monk
     assert actuator.calls == 0
     # Left for a later attempt: not terminalized, still overlapping its targets.
     assert _run_state(tmp_path, operation_id)[0] in {"running", "interrupted"}
+
+
+def test_paged_machine_batch_stages_then_completes_and_survives_recovery(tmp_path: Path) -> None:
+    """A batch accepted in pages is one durable request: running while staged,
+    complete at its final page, and its pages cannot be skipped or repeated.
+
+    Anti-vacuity: insert a new machine request per page, or skip the staged
+    kind, and the second page raises ``MachineRequestRecoveredError`` or the
+    staged request reads as completed.
+    """
+    audit = _audit(tmp_path)
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit)
+    previews = tuple(
+        executor.prepare_bound(
+            _binding(actuator),
+            object(),
+            _principal(),
+            archive_instance_id="archive:fixture",
+            archive_identity_digest="identity:fixture",
+            parameter_digest=f"params:{i}",
+        )
+        for i in range(3)
+    )
+    authorizations = tuple(executor.authorize_bound(_binding(actuator), preview, _principal()) for preview in previews)
+    refs = tuple(str(auth.authorization_id) for auth in authorizations)
+    binding = MachineRequestBinding("identity:fixture", "request:paged", "actor:test", "d" * 64, "mutation.fixture")
+
+    with audit.bind_machine_request(binding, transition="accept_execution_batch", page=(0, False)):
+        audit.accept_execution_batch(refs[:2], _principal())
+    staged = audit.machine_request(binding)
+    assert staged is not None and staged["artifact_kind"] == "execution-batch-pages"
+    assert machine_request_state(audit, staged)["outcome"] == "running"
+    with audit.bind_machine_request(binding, transition="accept_execution_batch", page=(1, True)):
+        with pytest.raises(MachineRequestRecoveredError):
+            audit.accept_execution_batch(refs[2:], _principal())
+
+    recovered = AuditRepository.for_archive_root(tmp_path)
+    recovered.reconcile_continuity()
+    with recovered.bind_machine_request(binding, transition="accept_execution_batch", page=(2, True)):
+        recovered.accept_execution_batch(refs[2:], _principal())
+    complete = recovered.machine_request(binding)
+    assert complete is not None and complete["artifact_kind"] == "execution-batch"
+    assert complete["part_count"] == 3
+    assert [part["ordinal"] for part in recovered.machine_parts(binding)] == [0, 1, 2]
+    assert [part["authorization_ref"] for part in recovered.machine_parts(binding)] == list(refs)
+    with recovered.bind_machine_request(binding, transition="accept_execution_batch", page=(3, True)):
+        with pytest.raises(MachineRequestRecoveredError):
+            recovered.accept_execution_batch(refs[:1], _principal())

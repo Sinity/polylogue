@@ -23,6 +23,7 @@ from polylogue.daemon.execution import (
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 from polylogue.logging import propagate
 from polylogue.operations.audit import (
+    MACHINE_PAGE_KINDS,
     AuditContinuityError,
     AuditRepository,
     MachineRequestBinding,
@@ -489,9 +490,12 @@ class DaemonOperationRuntime:
             # Preview-page records are only staging authority; _durable
             # deliberately excludes them from this recovery boundary so their
             # normal sealing exchange may continue.
+            # A paged batch still staging is resumed the same way: its handler
+            # appends the pages it has not yet accepted.
             if (
                 record is not None
                 and record["artifact_kind"] != "insight-preview-pages"
+                and record["artifact_kind"] not in MACHINE_PAGE_KINDS
                 and durable is not None
                 and durable["outcome"] in {"running", "indeterminate"}
             ):
