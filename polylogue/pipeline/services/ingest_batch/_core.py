@@ -16,6 +16,7 @@ import hashlib
 import io
 import json
 import pickle
+import re
 import sqlite3
 import time
 import unicodedata
@@ -43,8 +44,9 @@ from polylogue.core.metrics import (
 )
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.storage_faults import raise_if_storage_fault, storage_fault_kind
 from polylogue.core.timestamp_authority import session_evidence_timestamps
-from polylogue.logging import get_logger
+from polylogue.logging import emit, get_logger
 from polylogue.markers.preparation import marker_candidates_for_prepared_write, marker_recipe_fingerprint
 from polylogue.pipeline.ids import bound_session_content_hash, session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
@@ -1834,16 +1836,21 @@ def _write_session_entry(
             }
         )
         if write_elapsed >= 1.0:
-            logger.info(
-                "slow_write",
-                cid=cdata.session_id[:20],
-                elapsed_s=round(write_elapsed, 2),
-                msgs=cdata.message_count,
-                changed_messages=counts["messages"],
-                skipped_messages=counts["skipped_messages"],
-                changed_session_events=counts["session_events"],
-                attachments=cdata.attachment_count,
-                stage_top=_top_stage_timings(write_stage_timings),
+            # One structured record per slow session: which session, how long,
+            # and which write phases took the time. The prose predecessor's
+            # keywords were all unregistered, so only the bare word reached
+            # the configured sink.
+            emit(
+                "pipeline.session_write.slow",
+                outcome="ok",
+                session_id=cdata.session_id,
+                duration_ms=round(write_elapsed * 1000, 3),
+                messages=cdata.message_count,
+                skipped=counts["skipped_messages"],
+                stage_timings_ms={
+                    _stage_timing_label(name): round(seconds * 1000, 3)
+                    for name, seconds in _top_stage_timings(write_stage_timings).items()
+                },
             )
         if batch_owns_transaction:
             conn.execute(f"RELEASE {_SESSION_WRITE_SAVEPOINT}")
@@ -1862,6 +1869,18 @@ def _write_session_entry(
             summary.marker_sessions_by_raw_id.setdefault(raw_id, []).append(marker_session)
         return True
     except Exception as exc:
+        # A storage fault fails every session alike; recording it as this
+        # raw's parse failure would persist a durable ``parse_error`` on input
+        # that has nothing wrong with it. Let the batch boundary classify it.
+        # Classify first: SQLite can roll the whole transaction back on
+        # SQLITE_FULL, and the savepoint cleanup then raises "no such
+        # savepoint", which must not replace the fault.
+        if storage_fault_kind(exc) is not None:
+            if batch_owns_transaction:
+                with contextlib.suppress(sqlite3.Error):
+                    conn.execute(f"ROLLBACK TO {_SESSION_WRITE_SAVEPOINT}")
+                    conn.execute(f"RELEASE {_SESSION_WRITE_SAVEPOINT}")
+            raise_if_storage_fault(exc)
         if batch_owns_transaction:
             # Discard only this session's rows; the batch transaction (and its
             # suspended FTS triggers) survives so the drain can continue.
@@ -1879,6 +1898,12 @@ def _write_session_entry(
         for prepared_write in prepared_writes:
             if prepared_write is not cdata.prepared_write:
                 prepared_write.close()
+
+
+def _stage_timing_label(name: str) -> str:
+    """A write-phase name in the registered ``stage_timings_ms`` label shape."""
+    label = re.sub(r"[^a-z0-9_.]", "_", name.lower())[:48]
+    return label if label[:1].isalpha() else f"phase_{label[:42]}"
 
 
 def _top_stage_timings(stage_timings_s: dict[str, float], *, limit: int = 5) -> dict[str, float]:
@@ -1981,22 +2006,25 @@ def _drain_ready_session_entries(
     if fresh_build and fresh_build_batch is None:
         fresh_build_batch = set()
     for raw_id, cdata in _topo_sort_session_entries(ready_entries):
-        wrote = _write_session_entry(
-            conn,
-            raw_id,
-            cdata,
-            summary=summary,
-            force_write=force_write,
-            signature_cache=signature_cache,
-            blob_publisher=blob_publisher,
-            pending_attachment_receipts=pending_attachment_receipts,
-            source_conn=source_conn,
-            fresh_build=fresh_build,
-            fresh_build_batch=fresh_build_batch,
-            drive_plans=drive_plans,
-            drive_cohort_cache=drive_cohort_cache,
-        )
-        discard_session_data_payload(cdata)
+        try:
+            wrote = _write_session_entry(
+                conn,
+                raw_id,
+                cdata,
+                summary=summary,
+                force_write=force_write,
+                signature_cache=signature_cache,
+                blob_publisher=blob_publisher,
+                pending_attachment_receipts=pending_attachment_receipts,
+                source_conn=source_conn,
+                fresh_build=fresh_build,
+                fresh_build_batch=fresh_build_batch,
+                drive_plans=drive_plans,
+                drive_cohort_cache=drive_cohort_cache,
+            )
+        finally:
+            # A storage fault escapes the entry; its payload is still released.
+            discard_session_data_payload(cdata)
         if not wrote:
             continue
         written_count += 1

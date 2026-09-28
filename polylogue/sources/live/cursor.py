@@ -1042,11 +1042,16 @@ class CursorStore:
         paths: list[Path],
         input_bytes: int,
         queued_file_count: int,
+        attempt_id: str | None = None,
     ) -> str:
-        """Record a durable in-flight live-ingest attempt."""
+        """Record a durable in-flight live-ingest attempt.
+
+        A caller may choose ``attempt_id`` so it knows the row's key before
+        the write lands (a cancelled caller can still name it).
+        """
         now = datetime.now(UTC).isoformat()
         now_ms = _required_epoch_ms(now)
-        attempt_id = str(uuid.uuid4())
+        attempt_id = attempt_id or str(uuid.uuid4())
         with self._connect_ops() as conn:
             record_archive_ingest_attempt(
                 conn,

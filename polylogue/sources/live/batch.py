@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 import time
+import uuid
 import zipfile
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import Future
@@ -69,9 +70,16 @@ from polylogue.core.raw_failure_evidence import (
 )
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.stage_admission import admit_stage_write
+from polylogue.core.storage_faults import (
+    ARCHIVE_SIDE_FAULTS,
+    CAPACITY_FAULTS,
+    StorageFaultKind,
+    raise_if_storage_fault,
+    storage_fault_kind,
+)
 from polylogue.core.timestamp_authority import timestamp_millis
 from polylogue.core.write_hold import WriteHoldBudgetError, check_write_hold_budget
-from polylogue.logging import WARNING, emit, get_logger
+from polylogue.logging import ERROR, WARNING, bind, emit, get_logger
 from polylogue.pipeline.batch_policy import WriteDestination, select_cold_build_shape
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.ingest_outcomes import (
@@ -79,6 +87,7 @@ from polylogue.pipeline.ingest_outcomes import (
     classify_archive_write_exception,
     downstream_failure_disposition,
     success_disposition,
+    transient_error_disposition,
 )
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
 from polylogue.sources.artifact_observations import record_session_artifact_observation
@@ -713,6 +722,73 @@ class _ArchiveFullWriteResult:
     write_hold_exhausted: bool = False
 
 
+def _snapshot_fault_kinds(exc: BaseException) -> frozenset[StorageFaultKind]:
+    """The storage faults a SQLite source export may escape with.
+
+    The export first allocates its staging file in the archive, so an
+    ``OSError`` raised directly is archive-side (capacity or read-only). A
+    SQLite error translated to ``OSError`` may come from opening the source
+    database itself, where only a full archive is unambiguous.
+    """
+    if isinstance(exc.__cause__, sqlite3.Error):
+        return CAPACITY_FAULTS
+    return ARCHIVE_SIDE_FAULTS
+
+
+def _release_unwritten_publication_receipts(source_db_path: Path, records: Sequence[RawSessionRecord]) -> None:
+    """Release the blob reservations of records a storage fault left unwritten.
+
+    Best effort against storage that just failed: the first release the
+    storage refuses is reported and ends the attempt, and the fault that
+    caused it is still the one propagated.
+    """
+    from polylogue.storage.blob_publication import release_refused_publication_receipt
+
+    for record in records:
+        try:
+            release_refused_publication_receipt(
+                source_db_path,
+                record.blob_publication_receipt_id,
+                record.blob_hash or record.raw_id,
+            )
+        except Exception as exc:
+            emit(
+                "live.ingest.publication_release_failed",
+                level=ERROR,
+                outcome="error",
+                reason="storage_fault",
+                raw_id=record.raw_id,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
+            return
+
+
+@dataclass(slots=True)
+class _OpenIngestAttempt:
+    """The ``ingest_attempts`` row one ``_ingest_files`` call opened, until it is finished.
+
+    ``scope`` holds the attempt's correlation binding: every event this
+    process emits inside the attempt -- across ``asyncio.to_thread`` and the
+    writer handoff, which copy the context -- carries its ``attempt_id``,
+    the key of ``ingest_attempts`` and ``daemon_stage_events``. The caller
+    that created the holder closes the scope when the attempt returns or
+    escapes.
+    """
+
+    attempt_id: str | None = None
+    #: Whether the start write returned, so the row is known to exist.
+    started: bool = False
+    #: Whether the final close was submitted (it may complete detached).
+    finishing: bool = False
+    finished: bool = False
+    scope: ExitStack = field(default_factory=ExitStack)
+
+    def opened(self, attempt_id: str) -> None:
+        self.attempt_id = attempt_id
+        self.scope.enter_context(bind(attempt_id=attempt_id))
+
+
 class LiveBatchProcessor:
     """Run the daemon live ingest batch path without filesystem watching."""
 
@@ -953,15 +1029,116 @@ class LiveBatchProcessor:
         synchronous archive-publication worker, where its thread-local scope
         cannot leak over page planning, parsing, or convergence.
         """
-        return await self._ingest_files(
-            paths,
-            queued_file_count=queued_file_count,
-            skipped_file_count=skipped_file_count,
-            emit_event=emit_event,
-            max_pass_seconds=max_pass_seconds,
-            whole_archive_convergence=whole_archive_convergence,
-            defer_convergence=defer_convergence,
+        attempt = _OpenIngestAttempt()
+        with attempt.scope:
+            try:
+                return await self._ingest_files(
+                    paths,
+                    queued_file_count=queued_file_count,
+                    skipped_file_count=skipped_file_count,
+                    emit_event=emit_event,
+                    max_pass_seconds=max_pass_seconds,
+                    whole_archive_convergence=whole_archive_convergence,
+                    defer_convergence=defer_convergence,
+                    open_attempt=attempt,
+                )
+            except asyncio.CancelledError:
+                # Cancellation is shutdown: no further ops write is admitted
+                # here (it could hold the writer past the shutdown deadline).
+                # The row stays ``running`` and the next start records it as
+                # ``interrupted``, which is what happened; this event says so
+                # now, with the attempt it names.
+                if attempt.attempt_id is not None and not attempt.finished:
+                    emit(
+                        "live.ingest.attempt_cancelled",
+                        level=WARNING,
+                        outcome="refused",
+                        # Cancelled before the start write returned: the row
+                        # exists only if that write was already admitted (the
+                        # coordinator then finishes it detached); a queued
+                        # start never commits. Say which case was observed.
+                        reason=(
+                            "cancelled_during_finish"
+                            if attempt.finishing
+                            else "cancelled"
+                            if attempt.started
+                            else "cancelled_before_start_confirmed"
+                        ),
+                        attempt_id=attempt.attempt_id,
+                    )
+                raise
+            except Exception as exc:
+                await self._finish_escaped_attempt(attempt, exc)
+                raise_if_storage_fault(exc)
+                raise
+
+    async def _finish_escaped_attempt(self, attempt: _OpenIngestAttempt, exc: Exception) -> None:
+        """Close the attempt row an escaping exception left ``running``.
+
+        Lock contention, a storage fault or an unexpected defect can leave the
+        batch before its ordinary finish. Without this the row stays
+        ``running`` -- status reports the page as still in flight -- until the
+        next daemon start relabels it ``interrupted``, which is not what
+        happened. The classification is the same one the in-batch handlers
+        use. If the ops tier itself refuses the write (it may share the full
+        disk), the refusal is reported and the original exception still
+        propagates unchanged.
+        """
+        if attempt.attempt_id is None or attempt.finished or not attempt.started:
+            # No row is known to exist (the start write itself failed), so
+            # there is nothing to close and no attempt to name.
+            return
+        # A spent writer hold is a property of the pass, not of these inputs
+        # (the adapter reports the page retryable); record it that way rather
+        # than as the non-retryable parser-defect fallback.
+        disposition = (
+            transient_error_disposition(evidence_ref="write_hold_budget", diagnostic=str(exc))
+            if isinstance(exc, WriteHoldBudgetError)
+            else classify_archive_write_exception(exc)
         )
+        fault = storage_fault_kind(exc)
+        emit(
+            "live.ingest.attempt_escaped",
+            level=ERROR if fault is not None else WARNING,
+            outcome="error",
+            reason=(f"storage_fault.{fault.value}" if fault is not None else disposition.outcome_code),
+            attempt_id=attempt.attempt_id,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
+        try:
+            closed = await self._run_ops_write(
+                "attempt_finish",
+                self._cursor.finish_ingest_attempt,
+                attempt.attempt_id,
+                status="failed",
+                phase="failed",
+                error=f"{type(exc).__name__}: {exc}",
+                disposition=disposition,
+            )
+        except Exception as finish_exc:
+            emit(
+                "live.ingest.attempt_finish_failed",
+                level=ERROR,
+                outcome="error",
+                reason="ops_write_refused",
+                attempt_id=attempt.attempt_id,
+                error_type=type(finish_exc).__name__,
+                error_detail=str(finish_exc),
+            )
+            return
+        if closed is False:
+            # The bounded cursor-write retries gave up on a locked ops tier:
+            # the row is still ``running``, and saying so is the point.
+            emit(
+                "live.ingest.attempt_finish_failed",
+                level=ERROR,
+                outcome="error",
+                reason="ops_write_skipped",
+                attempt_id=attempt.attempt_id,
+            )
+            return
+        attempt.finished = True
 
     async def _ingest_files(
         self,
@@ -973,6 +1150,7 @@ class LiveBatchProcessor:
         max_pass_seconds: float | None = None,
         whole_archive_convergence: bool = True,
         defer_convergence: bool = False,
+        open_attempt: _OpenIngestAttempt | None = None,
     ) -> LiveBatchMetrics:
         """Body of :meth:`ingest_files`, with each ops write separately admitted."""
         authorization = self.require_cursor_authority(paths)
@@ -999,13 +1177,22 @@ class LiveBatchProcessor:
         # split below reconciles exactly, even if a file grows mid-batch.
         path_sizes = {path: _path_size(path) for path in paths}
         input_bytes = sum(path_sizes.values())
+        # The key is chosen before the write: if cancellation detaches the
+        # admitted start (the coordinator shields an acquired write), the row
+        # can still commit, and the cancelled attempt must be able to name it.
+        attempt_id = str(uuid.uuid4())
+        if open_attempt is not None:
+            open_attempt.opened(attempt_id)
         attempt_id = await self._run_ops_write(
             "attempt_start",
             self._cursor.begin_ingest_attempt,
             paths=paths,
             input_bytes=input_bytes,
             queued_file_count=queued_file_count if queued_file_count is not None else len(paths),
+            attempt_id=attempt_id,
         )
+        if open_attempt is not None:
+            open_attempt.started = True
         await self._record_attempt_progress_admitted(
             attempt_id,
             phase="planning",
@@ -1371,6 +1558,10 @@ class LiveBatchProcessor:
                         # poison payload. Let LiveWatcher requeue the source
                         # group without advancing or excluding its cursors.
                         raise
+                    # A full disk, I/O error or corrupt page fails every file
+                    # in the group the same way; marking them failed would
+                    # back good inputs off into quarantine.
+                    raise_if_storage_fault(exc)
                     logger.warning("live.watcher: batch failed for %s: %s", source_name, exc)
                     attempt_disposition = classify_archive_write_exception(exc)
                     for path in source_paths:
@@ -1710,6 +1901,10 @@ class LiveBatchProcessor:
                 evidence_ref="batch:per_item_failure_aggregate",
                 diagnostic=f"{len(retry_paths)} source item(s) failed without a batch-level exception",
             )
+        if open_attempt is not None:
+            # A cancellation from here on may race a close the coordinator
+            # finishes detached; the cancellation event says so.
+            open_attempt.finishing = True
         await self._run_ops_write(
             "attempt_finish",
             self._cursor.finish_ingest_attempt,
@@ -1719,6 +1914,8 @@ class LiveBatchProcessor:
             error="; ".join(retry_paths[:3]) if retry_paths else None,
             disposition=final_disposition,
         )
+        if open_attempt is not None:
+            open_attempt.finished = True
         timing_items = sorted(metrics.stage_timings_s.items(), key=lambda item: (-item[1], item[0]))
         timing_map: dict[str, float] = {}
         for name, seconds in timing_items[:12]:
@@ -2693,6 +2890,46 @@ class LiveBatchProcessor:
         pass_started: float | None = None,
         prepared_json_paths: frozenset[str] = frozenset(),
     ) -> _FullIngestResult:
+        """Acquire and write one source group; a storage fault takes its staged blobs with it.
+
+        Blobs staged for earlier files in the pass are published only by the
+        write that the fault prevented. Leaving their private staging copies
+        behind would spend more of an already-full archive on every retry.
+        """
+        publishers: list[BlobStore] = []
+        try:
+            return self._ingest_full_paths_sync_staged(
+                paths,
+                publishers=publishers,
+                source_name=source_name,
+                heartbeat=heartbeat,
+                attempt_id=attempt_id,
+                max_pass_seconds=max_pass_seconds,
+                pass_started=pass_started,
+                prepared_json_paths=prepared_json_paths,
+            )
+        except Exception as exc:
+            # Classify here, not by type: the publication flush raises a raw
+            # SQLITE_FULL/ENOSPC that only a later handler converts.
+            if storage_fault_kind(exc) is not None:
+                for publisher in publishers:
+                    discard_pending = getattr(publisher, "discard_pending", None)
+                    if callable(discard_pending):
+                        discard_pending()
+            raise
+
+    def _ingest_full_paths_sync_staged(
+        self,
+        paths: list[Path],
+        *,
+        publishers: list[BlobStore],
+        source_name: str,
+        heartbeat: _FullIngestHeartbeat | None = None,
+        attempt_id: str | None = None,
+        max_pass_seconds: float | None = None,
+        pass_started: float | None = None,
+        prepared_json_paths: frozenset[str] = frozenset(),
+    ) -> _FullIngestResult:
         if not paths:
             return _FullIngestResult(succeeded=[], failed=[], source_payload_read_bytes=0)
         pass_clock_started = pass_started if pass_started is not None else time.monotonic()
@@ -2739,6 +2976,7 @@ class LiveBatchProcessor:
         from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
         blob_store = ArchiveBlobPublisher(source_db, blob_root)
+        publishers.append(blob_store)
         archive_active = self._archive_active(archive_root)
         archive_bootstrapped = not archive_active and not source_only
         if archive_bootstrapped:
@@ -2792,7 +3030,10 @@ class LiveBatchProcessor:
                 ):
                     if raw_data is not None:
                         antigravity_pairs[Path(raw_data.source_path)] = (raw_data, session)
-            except Exception:
+            except Exception as exc:
+                # Conversion publishes each raw into the archive blob store; a
+                # full or read-only archive is not a property of these files.
+                raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
                 logger.exception("antigravity: language-server cohort conversion failed")
             for path in antigravity_pb_paths:
                 pair = antigravity_pairs.get(path)
@@ -3019,6 +3260,9 @@ class LiveBatchProcessor:
                 except Exception as error:
                     if not antigravity._is_trajectory_storage_error(error):
                         raise
+                    # The export stages into the archive's blob area; a full
+                    # archive is not this database's failure.
+                    raise_if_storage_fault(error, kinds=_snapshot_fault_kinds(error))
                     logger.exception("antigravity: trajectory SQLite acquisition failed: %s", path)
                     failed.append(path)
                     continue
@@ -3065,7 +3309,12 @@ class LiveBatchProcessor:
                     raw_id = hermes_profile_raw_id(source_path, 0, snapshot.source_revision)
                     raw_source_revisions[path] = snapshot.source_revision
                     raw_source_fingerprints[path] = snapshot.source_fingerprint
-                except OSError:
+                except OSError as exc:
+                    # The export stages into the archive's blob area, so a
+                    # full archive refuses it for every database alike. A
+                    # read-only or corrupt report can come from the source
+                    # database itself, which stays this file's failure.
+                    raise_if_storage_fault(exc, kinds=_snapshot_fault_kinds(exc))
                     failed.append(path)
                     continue
                 source_payload_read_bytes += blob_size
@@ -3124,7 +3373,12 @@ class LiveBatchProcessor:
                     raw_id = codex_state_raw_id(source_path, snapshot.source_revision)
                     raw_source_revisions[path] = snapshot.source_revision
                     raw_source_fingerprints[path] = snapshot.source_fingerprint
-                except OSError:
+                except OSError as exc:
+                    # The export stages into the archive's blob area, so a
+                    # full archive refuses it for every database alike. A
+                    # read-only or corrupt report can come from the source
+                    # database itself, which stays this file's failure.
+                    raise_if_storage_fault(exc, kinds=_snapshot_fault_kinds(exc))
                     failed.append(path)
                     continue
                 source_payload_read_bytes += blob_size
@@ -3183,7 +3437,11 @@ class LiveBatchProcessor:
                         ),
                     )
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
-                except OSError:
+                except OSError as exc:
+                    # A full or read-only archive refuses the copy for every
+                    # file alike; only a source-side read failure is this
+                    # file's own.
+                    raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
                     failed.append(path)
                     continue
                 source_payload_read_bytes += blob_size
@@ -3223,7 +3481,11 @@ class LiveBatchProcessor:
                         ),
                     )
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
-                except OSError:
+                except OSError as exc:
+                    # A full or read-only archive refuses the copy for every
+                    # file alike; only a source-side read failure is this
+                    # file's own.
+                    raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
                     failed.append(path)
                     continue
                 source_payload_read_bytes += blob_size
@@ -3266,7 +3528,11 @@ class LiveBatchProcessor:
                         ),
                     )
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
-                except OSError:
+                except OSError as exc:
+                    # A full or read-only archive refuses the copy for every
+                    # file alike; only a source-side read failure is this
+                    # file's own.
+                    raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
                     failed.append(path)
                     continue
                 source_payload_read_bytes += blob_size
@@ -3311,7 +3577,11 @@ class LiveBatchProcessor:
                         ),
                     )
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
-                except OSError:
+                except OSError as exc:
+                    # A full or read-only archive refuses the copy for every
+                    # file alike; only a source-side read failure is this
+                    # file's own.
+                    raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
                     failed.append(path)
                     continue
                 source_payload_read_bytes += blob_size
@@ -3405,7 +3675,14 @@ class LiveBatchProcessor:
         time_budget_exceeded = acquisition_time_budget_exceeded
         write_hold_exhausted = False
         if raw_records:
-            blob_store.flush()
+            try:
+                blob_store.flush()
+            except Exception as exc:
+                if storage_fault_kind(exc) is not None:
+                    # Reservation may have committed before publication
+                    # failed; nothing references these receipts yet.
+                    _release_unwritten_publication_receipts(source_db, raw_records)
+                raise
             # These counters describe the in-memory payload handoff. A
             # blob-backed JSONL file is absent here by design and remains
             # available through its durable BlobStore reference.
@@ -3444,6 +3721,16 @@ class LiveBatchProcessor:
                     max_pass_seconds=max_pass_seconds,
                     pass_started=pass_clock_started,
                 )
+            except Exception as exc:
+                if storage_fault_kind(exc) is not None:
+                    # The flush reserved a receipt for every record; a storage
+                    # fault -- opening the archive or inside the record loop --
+                    # leaves some unconsumed, and each outage retry would
+                    # reserve and strand another GC-immune one. Releasing a
+                    # receipt a written record already consumed removes
+                    # nothing.
+                    _release_unwritten_publication_receipts(source_db, raw_records)
+                raise
             finally:
                 for residue in shard_paths_by_raw_id.values():
                     discard_session_shard(residue)
@@ -4539,6 +4826,26 @@ class LiveBatchProcessor:
                                 provider=provider,
                             )
                         raise
+                    if storage_fault_kind(exc) is not None:
+                        # Storage refused the write: recording a parse failure
+                        # on the raw would pin an infrastructure fault on the
+                        # input. Leave the raw pending, as for contention; if
+                        # the same storage refuses that too, the fault that
+                        # caused it is still the one reported.
+                        if provider is not None and source_raw_id is not None:
+                            try:
+                                reset_transient_raw_parse_state(archive, source_raw_id, provider=provider)
+                            except Exception as reset_exc:
+                                emit(
+                                    "live.ingest.raw_state_reset_failed",
+                                    level=ERROR,
+                                    outcome="error",
+                                    reason="storage_fault",
+                                    raw_id=source_raw_id,
+                                    error_type=type(reset_exc).__name__,
+                                    error_detail=str(reset_exc),
+                                )
+                        raise_if_storage_fault(exc)
                     if provider is not None and source_raw_id is not None:
                         preserve_existing_failure_evidence = False
                         if provider is Provider.UNKNOWN and _is_json_stream_decode_error(exc):
@@ -5055,6 +5362,10 @@ class LiveBatchProcessor:
                     except ZipBombError as exc:
                         logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
         except (zipfile.BadZipFile, OSError) as exc:
+            # Members stream into the archive's blob staging: a full or
+            # read-only archive is not a property of this ZIP, and reporting
+            # "no admissible record" would exclude the unchanged file for good.
+            raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
             logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
             return [], 0
         return records, total_bytes
@@ -5140,6 +5451,7 @@ class LiveBatchProcessor:
                         )
                     )
         except (zipfile.BadZipFile, OSError) as exc:
+            raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
             logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
             # A transport/read failure is not evidence that the archive has no
             # admissible members. Keep it distinct from a successful empty

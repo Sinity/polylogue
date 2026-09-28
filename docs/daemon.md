@@ -718,6 +718,18 @@ embedding and session-profile work already runs outside it.
 Hook capture rides the same route: producers append to per-process NDJSON
 carriers, which are ordinary files in their own `hook_carrier` intake class.
 
+An archive storage fault -- a full disk or quota, an I/O error, a corrupt
+database page or a read-only mount (`polylogue/core/storage_faults.py`) -- is
+not a verdict on the input. The batch leaves the affected files' cursors and
+raw parse state untouched, closes its `ingest_attempts` row as
+`transient_error` with evidence `archive_write:storage_fault:<kind>`, and the
+page is refused at ERROR as `daemon.intake.page_refused` with reason
+`storage_fault.<kind>`. Every item stays retryable, so the same inputs are
+admitted once storage recovers; none backs off into quarantine. Every event
+the daemon process emits inside an ingest attempt carries its `attempt_id`,
+which joins the log to the attempt row. Parse-worker processes are not
+covered: they have no configured event sink yet.
+
 ### Daemon-Owned Tasks
 
 These run automatically inside the daemon process:

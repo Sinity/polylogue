@@ -16,6 +16,7 @@ from polylogue.pipeline.services.acquisition_records import ScanResult
 from polylogue.pipeline.services.acquisition_streams import iter_raw_record_stream
 from polylogue.pipeline.stage_models import AcquireResult
 from polylogue.security.excision_policy import ExcisionPolicySnapshot, build_excision_policy_snapshot
+from polylogue.sources.cursor import _record_cursor_failure
 from polylogue.sources.drive.types import DriveUILike
 from polylogue.sources.source_acquisition import iter_source_raw_data
 from polylogue.sources.source_snapshot import (
@@ -25,7 +26,7 @@ from polylogue.sources.source_snapshot import (
     preflight_source_cut,
 )
 from polylogue.sources.source_walk import _resolve_source_paths
-from polylogue.storage.cursor_state import CursorStatePayload
+from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
 from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
 
 if TYPE_CHECKING:
@@ -85,6 +86,7 @@ class AcquisitionService:
         policy_snapshot: ExcisionPolicySnapshot,
         prepared_observation: ArtifactObservationRecord | None = None,
         preparation_error: Exception | None = None,
+        failures: list[CursorFailurePayload] | None = None,
     ) -> None:
         await persist_raw_record(
             self.repository,
@@ -93,6 +95,7 @@ class AcquisitionService:
             policy_snapshot=policy_snapshot,
             prepared_observation=prepared_observation,
             preparation_error=preparation_error,
+            failures=failures,
         )
 
     async def _persist_source_cursors(
@@ -104,18 +107,42 @@ class AcquisitionService:
         """Persist stat cursors only for source paths acquired successfully."""
         if source.path is None:
             return
+        # A failure names a physical file or a ZIP member as ``<file>:<member>``,
+        # and a POSIX path may itself contain ``:``, so the first colon is not
+        # the boundary. Resolve each failure against the real source files once;
+        # the per-file check is then one set lookup however many files failed.
+        source_paths = list(_resolve_source_paths(source))
+        source_keys = {str(path) for path in source_paths}
         failed_paths: set[str] = set()
+        failed_everything = False
         if cursor_state:
             for failure in cursor_state.get("failed_files", []):
                 raw_path = str(failure["path"])
-                failed_paths.add(raw_path.partition(":")[0])
+                if raw_path in source_keys:
+                    # A real file whose own name contains ``:``; its prefixes
+                    # are other files that did not fail.
+                    failed_paths.add(raw_path)
+                    continue
+                # A member coordinate. Its container is a real source file
+                # named by a prefix ending before a ``:``; when several real
+                # files qualify (``a.zip`` and a file named ``a.zip:m.json``)
+                # the coordinate cannot say which, so all of them are
+                # withheld -- a needless re-read is safe, a skipped member
+                # is not.
+                containers = {raw_path[:index] for index, char in enumerate(raw_path) if char == ":"} & source_keys
+                if containers:
+                    failed_paths.update(containers)
+                else:
+                    # A failure naming no file this walk resolved (a provenance
+                    # path, such as a staged SQLite snapshot's original) cannot
+                    # be scoped, so no cursor in this source is proven safe.
+                    failed_everything = True
             # An unscoped failure means the pass did not prove any path safe
             # to skip.  Do not turn a failed persistence/read pass into a
             # successful stat cursor for every file in the source.
-            if cursor_state.get("error_count"):
-                failed_paths.update(str(path) for path in _resolve_source_paths(source))
-        for file_path in _resolve_source_paths(source):
-            if str(file_path) in failed_paths:
+            failed_everything = failed_everything or bool(cursor_state.get("error_count"))
+        for file_path in source_paths:
+            if failed_everything or str(file_path) in failed_paths:
                 continue
             try:
                 st = file_path.stat()
@@ -138,7 +165,7 @@ class AcquisitionService:
         drive_config: DriveConfig | None = None,
         progress_label: str = "Scanning",
         on_record: Callable[[RawSessionRecord], Awaitable[None]] | None = None,
-        on_source_complete: Callable[[], Awaitable[None]] | None = None,
+        on_source_complete: Callable[[CursorStatePayload], Awaitable[None]] | None = None,
         observation_callback: Callable[[JSONDocument], None] | None = None,
         persist_cursors: bool = True,
         blob_store: BlobStore | None = None,
@@ -197,7 +224,9 @@ class AcquisitionService:
                 cursor_state["latest_error"] = str(exc)
 
             if on_source_complete is not None:
-                await on_source_complete()
+                # The callback may record per-path persistence failures into
+                # this source's cursor state before its cursors are saved.
+                await on_source_complete(cursor_state)
 
             # Slice B: persist cursor stat fields for all source files after
             # processing so the next run can skip unchanged files.
@@ -247,6 +276,7 @@ class AcquisitionService:
         # reduce commit frequency and async thread-crossing overhead.
         flush_interval = 500
         pending_records: list[tuple[RawSessionRecord, ArtifactObservationRecord | None, Exception | None]] = []
+        persist_failures: list[CursorFailurePayload] = []
         peak_observation: JSONDocument | None = None
         observation_count = 0
         peak_baseline = read_peak_rss_self_mb() or 0.0
@@ -313,6 +343,7 @@ class AcquisitionService:
                             policy_snapshot=current_policy,
                             prepared_observation=observation,
                             preparation_error=preparation_error,
+                            failures=persist_failures,
                         )
 
             if self.execution is None:
@@ -336,6 +367,15 @@ class AcquisitionService:
             if len(pending_records) >= flush_interval:
                 await _flush_pending()
 
+        async def _complete_source(cursor_state: CursorStatePayload) -> None:
+            # Pending records belong to the source that just finished (they
+            # are flushed at every source boundary), so their persistence
+            # failures withhold that source's cursors for exactly those paths.
+            await _flush_pending()
+            for failure in persist_failures:
+                _record_cursor_failure(cursor_state, failure["path"], failure["error"])
+            persist_failures.clear()
+
         try:
             visit_result = await self.visit_sources(
                 sources,
@@ -344,7 +384,7 @@ class AcquisitionService:
                 drive_config=drive_config,
                 progress_label="Scanning",
                 on_record=_store,
-                on_source_complete=_flush_pending,
+                on_source_complete=_complete_source,
                 observation_callback=_observe,
                 blob_store=blob_publisher,
             )
