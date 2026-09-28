@@ -42,10 +42,14 @@ P1 (merge blocker):
 P2: devtools and test-harness defects, status, progress and metric accuracy,
 docs drift, performance that does not grow with archive size, and test
 weakness where the gate still runs. A test-only or docs-only diff is P2 unless
-it makes a required gate vacuous. Do not raise P1 for verification plumbing
-unless it lets unverified code merge.
+it makes a required gate vacuous.
 
 ## Checks that are easy to miss (apply to every diff)
+
+Area-specific rules live in the `## Code Review Rules` section of the nested
+`AGENTS.md` beside the code they govern (`polylogue/storage/`,
+`polylogue/sources/`, `polylogue/daemon/`, `devtools/`). The checks below
+apply everywhere.
 
 1. **Accounting of skips.** For any loop, filter, or early `continue` or
    `return` over inputs (files, ZIP members, records, events), each skipped
@@ -62,28 +66,15 @@ unless it lets unverified code merge.
    retained, what is converged), flag the divergence and name the owner. Two
    classifiers that can disagree are a defect even when they agree on today's
    fixtures.
-4. **Interruption.** For each new multi-step state change, ask what a cancel,
-   deadline, kill, or restart between the steps leaves behind: a stage marked
-   skipped or converged that never ran, a cursor advanced before its commit, a
-   session committed before its cursor, a resumed candidate treated as fresh.
-5. **Scale.** Flag per-chunk, per-event, or per-open work that costs
+4. **Scale.** Flag per-chunk, per-event, or per-open work that costs
    O(archive): an unfiltered `fetchall`, a full-table scan, a six-tier
    bootstrap, an fsync or FULL-synchronous commit per event, re-reading or
    re-hashing the same file. The defect is cost that grows with the archive
    while the unit of work stays fixed.
-6. **Parser field choice.** When a parser picks one of several provider
-   fields, check that it prefers the complete field over a truncated or display
-   rendering, reads both the top-level and nested placements the provider
-   emits, and does not emit the same content from two fields. A field the
-   parser drops needs a declared reason in the hash partition or the origin
-   spec.
-7. **Removed symbols.** When the diff removes or renames a function,
+5. **Removed symbols.** When the diff removes or renames a function,
    attribute, or keyword, check the tests and stubs that name it
    (`monkeypatch.setattr` targets, fakes with fixed signatures).
-8. **Origin versus Provider.** Never reverse an Origin into a Provider; the AI
-   Studio and Drive mapping is non-injective. A reverse lookup must refuse when
-   more than one provider matches.
-9. **Outcome.** Row-bearing operations decide one `outcome` in
+6. **Outcome.** Row-bearing operations decide one `outcome` in
    `surfaces/outcome.py`. `ok` over zero returned rows, over an unmeasured
    component, or while convergence is incomplete is wrong (`degraded` or
    `empty`). Exit codes follow the outcome.
@@ -128,8 +119,6 @@ physical limit is acceptable, and its refusal is typed.
 - Requests to bump schema, parser, or materializer versions, or to declare a
   reparse.
 - New caps, smaller timeouts, or truncation as a remedy.
-- Filesystem enumeration as a cache or receipt key; receipts are keyed on
-  declared inputs.
 - Test strictness beyond the anti-vacuity condition the test names.
 - Scenarios that need the environment corrupted below its own integrity
   contract (lockfile, provision stamp, environment digest).

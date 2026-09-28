@@ -178,9 +178,10 @@ command needs its `CommandSpec` and `devtools render devtools-reference`).
   daemon → lifecycle, cancellation, restart; MCP → registry and the shared
   product route.
 
-## Review guidelines
+## Code Review Rules
 
-Read and apply `docs/review/codex-review-guide.md` (checks, severity, noise).
+Read and apply `docs/review/codex-review-guide.md` (checks, severity, noise)
+and the nested `AGENTS.md` beside each changed file.
 - A change to an interface, command, config key, schema, route, or file format
   updates every consumer (callers, CLI/MCP, tests, docs, generated references,
   configs, hooks) and deletes the predecessor in the same change; name a
