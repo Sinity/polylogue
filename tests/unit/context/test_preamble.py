@@ -214,6 +214,7 @@ class TestBuildContextPreambleGitEnrichment:
         poly.compact_lineage = AsyncMock(return_value=None)
         poly.find_resume_candidates = AsyncMock(return_value=[])
         poly.list_assertion_claim_payloads = AsyncMock(return_value=[])
+        poly.record_context_ledger = AsyncMock(return_value=None)
 
         preamble = await build_context_preamble_payload(
             poly,

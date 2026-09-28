@@ -291,5 +291,5 @@ def test_json_history_fails_when_history_file_is_unavailable(tmp_path: Path, mon
     from devtools import why
 
     missing = tmp_path / "missing.jsonl"
-    monkeypatch.setattr(why, "VERIFY_HISTORY_PATH", missing)
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HISTORY_PATH", str(missing))
     assert why._render_history_json(24, io.StringIO()) == 1
