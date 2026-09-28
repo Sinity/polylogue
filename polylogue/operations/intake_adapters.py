@@ -924,6 +924,7 @@ class FileIntakeAdapter(IntakeAdapter):
                     AdmissionOutcome.RETRYABLE,
                     reason=f"source admission left {key} unattempted: {excluded_by_path[key]}",
                     actual_cost=0,
+                    unattempted=True,
                 )
             elif key in excluded_by_path:
                 # polylogue-onbz3: a durable refusal is not "already admitted
@@ -953,6 +954,7 @@ class FileIntakeAdapter(IntakeAdapter):
                     AdmissionOutcome.RETRYABLE,
                     reason=f"source admission left {key} unattempted",
                     actual_cost=0,
+                    unattempted=True,
                 )
             elif not succeeded:
                 # A zero-success, zero-failure batch supplied no per-item

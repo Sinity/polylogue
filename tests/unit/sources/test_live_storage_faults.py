@@ -638,3 +638,33 @@ async def test_degraded_admission_restores_due_local_retries(
         clear_degraded()
 
     assert adapter._fresh_retry_debt[source_path] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_degradation_during_admission_marks_items_unattempted(
+    storage_env: tuple[Polylogue, LiveWatcher, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Degradation after the entry check still reports the page unattempted.
+
+    Anti-vacuity: drop ``unattempted=True`` from the batch-metrics branches of
+    ``admit_page`` and the dispatcher counts these items as failed attempts.
+    """
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    _archive, watcher, _source_path = storage_env
+    real_ingest = watcher._ingest_files
+
+    async def degrade_then_ingest(*args: Any, **kwargs: Any) -> Any:
+        set_degraded(DegradedReason(code="database_layout_mismatch", message="structural error"))
+        return await real_ingest(*args, **kwargs)
+
+    monkeypatch.setattr(watcher, "_ingest_files", degrade_then_ingest)
+    try:
+        outcomes = await _admit(watcher)
+    finally:
+        clear_degraded()
+
+    assert outcomes
+    assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.RETRYABLE}
+    assert all(result.unattempted and result.actual_cost == 0 for result in outcomes.values())
