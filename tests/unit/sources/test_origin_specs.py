@@ -1549,12 +1549,15 @@ def test_directly_encoded_surrogates_are_read_as_the_decoder_reads_them(tmp_path
             list(top_level_envelopes(io.BytesIO(document), expand_arrays=False, fields=identity, whole_fields=identity))
 
 
-def test_array_document_recognition_reads_a_bounded_sample(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Recognizing a JSON array reads only the leading records, not the whole array.
+def test_array_document_recognition_samples_the_head_and_validates_the_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A JSON array's signature is read from its leading records; the rest is
+    streamed only to prove it parses, as the record parser reads the whole array.
 
-    Anti-vacuity: collect the expanded envelopes with a bare ``list(...)`` and
-    the generator is drained past the sample; read the root unexpanded first
-    and the whole array is scanned before sampling. Either trips the guard.
+    Anti-vacuity: stop at the sample and a document with a malformed tail is
+    admitted although the record parser refuses it; read the root unexpanded
+    and the whole array is materialized as one envelope.
     """
     from polylogue.core.json_envelope import top_level_envelopes as real
     from polylogue.sources import origin_specs
@@ -1565,18 +1568,20 @@ def test_array_document_recognition_reads_a_bounded_sample(tmp_path: Path, monke
     drawn: list[int] = []
 
     def guarded(handle: object, *, expand_arrays: bool, fields: frozenset[str]):  # type: ignore[no-untyped-def]
-        assert expand_arrays, "array root read unexpanded, scanning the whole document"
+        assert expand_arrays, "array root read unexpanded, materializing the whole document"
         for index, envelope in enumerate(real(handle, expand_arrays=expand_arrays, fields=fields)):  # type: ignore[arg-type]
-            if expand_arrays:
-                drawn.append(index)
-                assert index < origin_specs.SOURCE_CLASS_JSONL_LEADING_RECORDS, "array drained past the sample"
+            drawn.append(index)
             yield envelope
 
     monkeypatch.setattr(origin_specs, "top_level_envelopes", guarded)
     recognition = origin_specs.recognize_source_class(Provider.HERMES, document)
-
     assert recognition is not None and recognition.source_class == "session"
-    assert len(drawn) == origin_specs.SOURCE_CLASS_JSONL_LEADING_RECORDS
+    assert len(drawn) == 200
+
+    truncated = tmp_path / "truncated.json"
+    truncated.write_text("[" + ",".join([record] * 40) + ",", encoding="utf-8")
+    refused = origin_specs.recognize_source_class(Provider.HERMES, truncated)
+    assert refused is not None and refused.source_class == "unsupported"
 
 
 def test_hermes_jsonl_recognition_requires_every_record_to_be_atof(tmp_path: Path) -> None:

@@ -805,12 +805,13 @@ def recognize_source_class(
                     # over the same bounded leading sample the JSONL route reads,
                     # so an array of millions of records costs a bounded read.
                     handle.seek(0)
-                    payload = list(
-                        islice(
-                            top_level_envelopes(handle, expand_arrays=True, fields=fields),
-                            SOURCE_CLASS_JSONL_LEADING_RECORDS,
-                        )
-                    )
+                    elements = top_level_envelopes(handle, expand_arrays=True, fields=fields)
+                    payload = list(islice(elements, SOURCE_CLASS_JSONL_LEADING_RECORDS))
+                    # The record parser reads the whole array and refuses a
+                    # malformed tail, so the rest is validated too -- streamed,
+                    # its envelopes dropped as they come.
+                    for _element in elements:
+                        pass
                 else:
                     handle.seek(0)
                     (payload,) = top_level_envelopes(handle, expand_arrays=False, fields=fields)
