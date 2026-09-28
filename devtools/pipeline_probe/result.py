@@ -175,7 +175,7 @@ def _archive_file_set_raw_fanout(source_db: Path, index_db: Path) -> list[RawFan
         {
             "raw_id": str(row[0]),
             "payload_provider": row[1],
-            "source_name": row[2],
+            "source_name": row[1],
             "blob_size_bytes": int(row[3]),
             "session_count": index_counts.get(str(row[0]), (0, 0))[0],
             "message_count": index_counts.get(str(row[0]), (0, 0))[1],
