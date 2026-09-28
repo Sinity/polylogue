@@ -421,7 +421,7 @@ def test_custom_tool_calls_follow_the_measured_apply_patch_share() -> None:
     names: Counter[str] = Counter()
     for item in generate_workload_corpus(seed=11, target_sessions=60, origins={"codex": 1.0}).iter_files():
         for record in _records(item.data):
-            payload = record.get("payload") if isinstance(record, dict) else None
+            payload = record.get("payload")
             if isinstance(payload, dict) and payload.get("type") == "custom_tool_call":
                 names[str(payload.get("name"))] += 1
     assert names["other"] > 0, "the measured 'other' share (560k of 710k) must still appear"
