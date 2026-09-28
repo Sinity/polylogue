@@ -66,9 +66,11 @@ apply everywhere.
    enumeration as complete is P1. Check fallbacks, such as an unknown provider
    or origin selecting a narrower filter.
 2. **Transient versus permanent.** A read fault (EACCES, `SQLITE_BUSY`,
-   `SQLITE_CANTOPEN`, a missing root, a partial write) stays retryable. It must
-   not be recorded as "not ours", excluded, or converged. Look for
-   `except sqlite3.Error` or `except OSError` that returns a negative answer.
+   `SQLITE_CANTOPEN`, a required root that is missing or vanishes mid-read, a
+   partial write) stays retryable. It must not be recorded as "not ours",
+   excluded, or converged. Look for `except sqlite3.Error` or
+   `except OSError` that returns a negative answer. An optional source whose
+   root is not installed is a declared exclusion (`absent_root`), not a fault.
 3. **One decision, one owner.** If the diff adds a predicate that decides the
    same thing as an existing one (what is a session, what is excluded, what is
    retained, what is converged), flag the divergence and name the owner. Two
