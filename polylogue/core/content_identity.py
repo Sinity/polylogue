@@ -34,16 +34,29 @@ _CONTENT_IDENTITY_DOMAIN = b"polylogue:member-content:v2\0"
 
 _UTF8_BOM = b"\xef\xbb\xbf"
 
-#: Byte-order marks of the UTF-16 and UTF-32 encodings the source decoder
-#: accepts (``decoder_json.ENCODING_GUESSES``), each with the codec that
-#: consumes it. UTF-32 comes first: its little-endian mark begins with
-#: UTF-16's.
-_WIDE_BOMS = (
-    (codecs.BOM_UTF32_LE, "utf-32"),
-    (codecs.BOM_UTF32_BE, "utf-32"),
-    (codecs.BOM_UTF16_LE, "utf-16"),
-    (codecs.BOM_UTF16_BE, "utf-16"),
+#: Text encodings the source decoder tries, in order, for a JSON member
+#: (``decoder_json.decode_json_bytes``): the first under which the whole
+#: payload decodes, with NUL characters and leading byte-order marks removed,
+#: is the member's text. The identity reads a member exactly the same way.
+JSON_TEXT_ENCODINGS: tuple[str, ...] = (
+    "utf-8",
+    "utf-8-sig",
+    "utf-16",
+    "utf-16-le",
+    "utf-16-be",
+    "utf-32",
+    "utf-32-le",
+    "utf-32-be",
 )
+
+#: Open containers the identity holds state for. The source decoder recurses
+#: on the C stack and refuses nesting far shallower than this, so no member
+#: the archive can decode reaches it; it keeps the per-container state (a
+#: frame, and for an object a hasher and member table) of a member no decoder
+#: reads well under a GiB. A deeper member is not JSON under the decoder
+#: contract and takes its byte identity. A run of directly nested arrays
+#: shares one frame and counts once.
+_MAX_OPEN_CONTAINERS = 1 << 20
 
 #: Bytes read per step of the streaming identity. A pacing window only: the
 #: digest is the same for every window size.
@@ -92,6 +105,12 @@ class _Sink(Protocol):
     """Anything with ``update(bytes)``: a hashlib object in practice."""
 
     def update(self, data: bytes, /) -> None: ...
+
+
+class _ByteSource(Protocol):
+    """Anything with ``read(size)`` returning bytes, empty only at the end."""
+
+    def read(self, size: int = -1, /) -> bytes: ...
 
 
 class _Digester(_Sink, Protocol):
@@ -250,6 +269,7 @@ class _SpilledStrings:
     def __init__(self) -> None:
         self._nonce = secrets.token_hex(16)
         self._files: dict[str, IO[bytes]] = {}
+        self._keys: dict[str, str] = {}
         self._placeholders = 0
         #: A token past the physical value limit. Raised only once the whole
         #: document has parsed: until then the bytes may not be JSON at all,
@@ -260,6 +280,15 @@ class _SpilledStrings:
         marker = f"polylogue-spilled-string-{self._nonce}-{len(self._files)}"
         self._files[marker] = handle
         return marker.encode("ascii")
+
+    def add_key(self, key: str) -> bytes:
+        """A unique marker standing in for a long key held decoded, never re-escaped."""
+        marker = f"polylogue-spilled-key-{self._nonce}-{len(self._keys)}"
+        self._keys[marker] = key
+        return marker.encode("ascii")
+
+    def take_key(self, marker: str) -> str:
+        return self._keys.pop(marker, marker) if self._keys else marker
 
     def refuse(self, token: str, size: int) -> None:
         if self.refusal is None:
@@ -279,6 +308,7 @@ class _SpilledStrings:
         for handle in self._files.values():
             handle.close()
         self._files.clear()
+        self._keys.clear()
         self.refusal = None
 
 
@@ -299,7 +329,7 @@ class _TokenReader:
     #: escape split across two reads is seen whole.
     _TAIL = 16
 
-    def __init__(self, handle: IO[bytes], spills: _SpilledStrings, *, scan: bool) -> None:
+    def __init__(self, handle: _ByteSource, spills: _SpilledStrings, *, scan: bool) -> None:
         self._handle = handle
         self._spills = spills
         self._scan_enabled = scan
@@ -511,12 +541,10 @@ class _TokenReader:
                 self._spills.refuse("object key", size)
                 out += self._spills.placeholder_key()
             else:
-                key = "".join(pieces)
-                try:
-                    out += json.dumps(key, ensure_ascii=False)[1:-1].encode("utf-8")
-                except UnicodeEncodeError:
-                    # A lone surrogate stays an escape for the exact tokenizer.
-                    out += json.dumps(key, ensure_ascii=True)[1:-1].encode("ascii")
+                # Held decoded and handed on as a marker: re-escaping it for
+                # the tokenizer could multiply its size (a control character
+                # is six escaped bytes).
+                out += self._spills.add_key("".join(pieces))
         else:
             spill.seek(0)
             out += self._spills.add(spill)
@@ -858,10 +886,12 @@ def _stream_identity(events: Iterator[tuple[str, object]], spills: _SpilledStrin
     for event, value in events:
         if event == "map_key":
             top = stack[-1]
-            top.key = str(value)
+            top.key = spills.take_key(str(value))
             top.value = None
         elif event == "start_map":
             if stack and stack[-1].is_map and stack[-1].key is None:
+                raise _NotJsonError
+            if len(stack) >= _MAX_OPEN_CONTAINERS:
                 raise _NotJsonError
             stack.append(_Frame(is_map=True, outer=None))
         elif event == "start_array":
@@ -869,6 +899,8 @@ def _stream_identity(events: Iterator[tuple[str, object]], spills: _SpilledStrin
             sink.update(b"a[")
             if stack and not stack[-1].is_map:
                 stack[-1].depth += 1
+            elif len(stack) >= _MAX_OPEN_CONTAINERS:
+                raise _NotJsonError
             else:
                 stack.append(_Frame(is_map=False, outer=sink))
         elif event == "end_map":
@@ -923,74 +955,117 @@ def _stream_identity(events: Iterator[tuple[str, object]], spills: _SpilledStrin
     return root.hexdigest()
 
 
-class _WideTranscoder:
-    """Present a BOM-bearing UTF-16/32 handle as UTF-8 bytes, one window at a time.
+class _EncodingMismatchError(Exception):
+    """The payload does not decode under the encoding being tried."""
 
-    The source decoder reads such a member as the same JSON text a UTF-8
-    serialization of it would be, so the identity must too. The codec consumes
-    the byte-order mark; a malformed sequence raises ``UnicodeDecodeError``.
+
+class _DecodedText:
+    """A member's bytes as the source decoder reads them, re-encoded as UTF-8.
+
+    Decodes with one of :data:`JSON_TEXT_ENCODINGS` one window at a time,
+    drops NUL characters and any leading byte-order marks as
+    ``decode_json_bytes`` does, and raises :class:`_EncodingMismatchError`
+    when a byte does not decode or nothing is left -- the two conditions
+    under which the decoder moves on to its next encoding.
     """
 
-    def __init__(self, handle: IO[bytes], codec: str) -> None:
+    def __init__(self, handle: IO[bytes], start: int, encoding: str, errors: str = "strict") -> None:
+        handle.seek(start)
         self._handle = handle
-        self._decoder = codecs.getincrementaldecoder(codec)("strict")
+        self._decoder = codecs.getincrementaldecoder(encoding)(errors)
+        self._at_start = True
+        self._eof = False
 
     def read(self, size: int = -1) -> bytes:
-        while True:
+        while not self._eof:
             chunk = self._handle.read(_STREAM_READ_BYTES)
-            text = self._decoder.decode(chunk, final=not chunk)
-            if text or not chunk:
-                return text.encode("utf-8")
+            self._eof = not chunk
+            try:
+                text = self._decoder.decode(chunk, final=self._eof)
+            except UnicodeDecodeError as exc:
+                raise _EncodingMismatchError from exc
+            text = text.replace("\x00", "")
+            if self._at_start:
+                text = text.lstrip("\ufeff")
+                if not text:
+                    if self._eof:
+                        raise _EncodingMismatchError
+                    continue
+                self._at_start = False
+            if text:
+                return text.encode("utf-8", "surrogatepass")
+        return b""
+
+    def drain(self) -> None:
+        """Decode the rest, raising :class:`_EncodingMismatchError` if it does not."""
+        while self.read():
+            pass
 
 
-def _text_handle(handle: IO[bytes], start: int) -> IO[bytes]:
-    """``handle`` from ``start`` as UTF-8 bytes, transcoding a UTF-16/32 member."""
-    handle.seek(start)
-    head = handle.read(4)
-    handle.seek(start)
-    for bom, codec in _WIDE_BOMS:
-        if head.startswith(bom):
-            return _WideTranscoder(handle, codec)  # type: ignore[return-value]
-    return handle
+def _identity_as(handle: IO[bytes], start: int, encoding: str, errors: str) -> str:
+    """The structural identity of the member read as ``encoding`` text."""
+    import ijson
+    from ijson.backends import python as exact_backend
+
+    spills = _SpilledStrings()
+    text = _DecodedText(handle, start, encoding, errors)
+    try:
+        try:
+            try:
+                events = ijson.basic_parse(
+                    _TokenReader(text, spills, scan=True), use_float=False, buf_size=_STREAM_READ_BYTES
+                )
+                digest = _stream_identity(events, spills)
+            except (_LoneSurrogateEscapeError, UnicodeDecodeError):
+                # The C tokenizer either met a lone surrogate escape or
+                # rejected one while decoding; the exact tokenizer decides.
+                spills.close()
+                text = _DecodedText(handle, start, encoding, errors)
+                events = exact_backend.basic_parse(
+                    _TokenReader(text, spills, scan=False), use_float=False, buf_size=_STREAM_READ_BYTES
+                )
+                digest = _stream_identity(events, spills)
+        except (_NotJsonError, ijson.JSONError, TypeError, ValueError, ArithmeticError):
+            # The decoder picks an encoding by whether the whole payload
+            # decodes, not by whether the text parses: a later undecodable
+            # byte still moves it to the next encoding.
+            text.drain()
+            raise
+        if spills.refusal is not None:
+            # The document is JSON, so an overlong token is a real refusal.
+            raise spills.refusal
+        return digest
+    finally:
+        spills.close()
 
 
 def stream_payload_content_identity(handle: IO[bytes]) -> str:
     """Return :func:`payload_content_identity` of a seekable handle's bytes.
 
-    The document is tokenized in fixed windows and hashed as it streams, so
-    memory holds each open object's (key, digest) entries and at most one
-    window of any scalar, never the whole document. Every size takes this one
-    route.
+    The member is read as the source decoder reads it (:data:`JSON_TEXT_ENCODINGS`),
+    tokenized in fixed windows and hashed as it streams, so memory holds each
+    open object's (key, digest) entries and at most one window of any scalar,
+    never the whole document. Every size takes this one route.
     """
     import ijson
-    from ijson.backends import python as exact_backend
 
     start = handle.tell()
-    spills = _SpilledStrings()
+    attempts = [(encoding, "strict") for encoding in JSON_TEXT_ENCODINGS]
+    # The decoder's last resort when no encoding decodes the payload whole.
+    attempts.append(("utf-8", "ignore"))
     try:
-        try:
-            reader = _TokenReader(_text_handle(handle, start), spills, scan=True)
-            events = ijson.basic_parse(reader, use_float=False, buf_size=_STREAM_READ_BYTES)
-            digest = _stream_identity(events, spills)
-        except (_LoneSurrogateEscapeError, UnicodeDecodeError):
-            # The C tokenizer either met a lone surrogate escape or rejected
-            # one while decoding; the exact tokenizer decides.
-            spills.close()
-            reader = _TokenReader(_text_handle(handle, start), spills, scan=False)
-            events = exact_backend.basic_parse(reader, use_float=False, buf_size=_STREAM_READ_BYTES)
-            digest = _stream_identity(events, spills)
-        if spills.refusal is not None:
-            # The document is JSON, so an overlong token is a real refusal.
-            raise spills.refusal
-        return digest
+        for encoding, errors in attempts:
+            try:
+                return _identity_as(handle, start, encoding, errors)
+            except _EncodingMismatchError:
+                continue
+        raise _NotJsonError
     except (_NotJsonError, ijson.JSONError, UnicodeDecodeError, TypeError, ValueError, ArithmeticError):
         handle.seek(start)
         opaque = sha256()
         while chunk := handle.read(_STREAM_READ_BYTES):
             opaque.update(chunk)
         return opaque.hexdigest()
-    finally:
-        spills.close()
 
 
 def payload_content_identity(payload: bytes) -> str:
@@ -1009,6 +1084,7 @@ def structurally_equal(left: object, right: object) -> bool:
 
 
 __all__ = [
+    "JSON_TEXT_ENCODINGS",
     "ContentIdentityRefusal",
     "payload_content_identity",
     "physical_value_limit",

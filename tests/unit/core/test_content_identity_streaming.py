@@ -311,36 +311,49 @@ def test_a_value_is_measured_by_its_decoded_utf8_size(payload: bytes, monkeypatc
     assert payload_content_identity(payload) == _decoded_identity(payload)
 
 
+@pytest.mark.parametrize("bom", [True, False])
 @pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"])
-def test_a_bom_bearing_wide_member_shares_its_utf8_identity(encoding: str) -> None:
-    """The source decoder reads a UTF-16/32 member with a byte-order mark as the
-    same JSON a UTF-8 serialization of it is, so the identity must match.
+def test_a_wide_member_is_read_as_the_source_decoder_reads_it(encoding: str, bom: bool) -> None:
+    """A UTF-16/32 member, with or without a byte-order mark, shares the
+    identity of its UTF-8 serialization exactly when the source decoder reads
+    it as that value; otherwise it keeps its byte identity.
 
-    Anti-vacuity: feed the wide bytes to the tokenizer untranscoded (or read a
-    UTF-32-LE mark as UTF-16's) and the member falls back to its byte digest,
-    which differs from the UTF-8 one.
+    Anti-vacuity: read only BOM-bearing members (or only UTF-8) and the
+    BOM-less UTF-16-LE and UTF-32-LE members, which the decoder reads, fall
+    back to their byte digests.
     """
-    value = {"title": "café \U0001f600", "n": [1, 2.5, None, True]}
+    from polylogue.sources.decoder_json import decode_json_bytes
+
+    value = {"title": "caf\u00e9 \U0001f600", "n": [1, 2.5, None, True]}
     text = json.dumps(value, ensure_ascii=False)
-    bom = "﻿".encode(encoding)
-    utf16 = bom + text.encode(encoding)
+    payload = ("\ufeff".encode(encoding) if bom else b"") + text.encode(encoding)
+    decoded = decode_json_bytes(payload)
+    try:
+        decoder_reads_value = decoded is not None and loads(decoded) == value
+    except ValueError:
+        decoder_reads_value = False
 
-    identity = payload_content_identity(utf16)
+    expected = payload_content_identity(text.encode()) if decoder_reads_value else sha256(payload).hexdigest()
+    assert payload_content_identity(payload) == expected
+    if encoding.endswith("-le"):
+        assert decoder_reads_value
 
-    assert identity == payload_content_identity(text.encode()) == structural_content_identity(value)
-    assert identity != sha256(utf16).hexdigest()
+
+def test_nul_bytes_are_dropped_as_the_source_decoder_drops_them() -> None:
+    assert payload_content_identity(b'{"a":\x00 1}') == payload_content_identity(b'{"a": 1}')
 
 
 def test_deeply_nested_arrays_stream_in_constant_memory() -> None:
     """A run of directly nested arrays shares one frame.
 
-    Anti-vacuity: allocate a frame (with its member table) per ``[`` and a
-    half-million-deep member holds hundreds of megabytes of frames, far past
-    the bound asserted here.
+    Anti-vacuity: allocate a frame per ``[`` and a two-million-deep member
+    holds hundreds of megabytes of frames, far past the bound asserted here.
+    The bound's headroom is the tokenizer's own per-window event batch, which
+    does not grow with depth.
     """
     import tracemalloc
 
-    depth = 500_000
+    depth = 2_000_000
     compact = b"[" * depth + b"1" + b"]" * depth
     spaced = b"[ " * depth + b"1" + b" ]" * depth
 
@@ -351,7 +364,7 @@ def test_deeply_nested_arrays_stream_in_constant_memory() -> None:
     finally:
         tracemalloc.stop()
 
-    assert peak < 64 * 1024 * 1024
+    assert peak < 128 * 1024 * 1024
     assert identity == stream_payload_content_identity(io.BytesIO(spaced))
     assert identity != sha256(compact).hexdigest()
 
@@ -380,3 +393,33 @@ def test_a_key_too_long_for_a_scratch_row_keeps_its_place(monkeypatch: pytest.Mo
     payload = json.dumps(value).encode()
 
     assert payload_content_identity(payload) == structural_content_identity(value)
+
+
+def test_a_spilled_key_of_control_characters_is_never_re_escaped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A long key reaches the hasher decoded, so control characters and lone
+    surrogates keep their exact identity.
+
+    Anti-vacuity: hand the key to the tokenizer as text with its control
+    characters raw and the tokenizer rejects it, giving the byte digest.
+    """
+    from polylogue.core import content_identity
+
+    monkeypatch.setattr(content_identity, "_SPILL_STRING_BYTES", 64)
+    key = "\x01" * 300 + "\ud800" + "x"
+    value = {key: 1, "b": [key]}
+    payload = json.dumps(value).encode()
+
+    assert payload_content_identity(payload) == structural_content_identity(value)
+
+
+def test_nesting_past_the_open_container_bound_takes_the_byte_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: drop the bound and the deep member gets a structural
+    identity, holding a frame per open object."""
+    from polylogue.core import content_identity
+
+    monkeypatch.setattr(content_identity, "_MAX_OPEN_CONTAINERS", 8)
+    deep = b'{"a":' * 20 + b"1" + b"}" * 20
+    shallow = b'{"a":' * 5 + b"[[[[[[[[[[1]]]]]]]]]]" + b"}" * 5
+
+    assert payload_content_identity(deep) == sha256(deep).hexdigest()
+    assert payload_content_identity(shallow) == structural_content_identity(loads(shallow))
