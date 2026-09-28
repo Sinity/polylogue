@@ -1008,10 +1008,6 @@
       "digest": "54d96cca8ab9b6943fd62cb5326413f33fdd9d70"
     },
     {
-      "file": "polylogue/sources/live/batch.py",
-      "digest": "5b632e9d7e8c193098c94a6b023359c315229db7"
-    },
-    {
       "file": "polylogue/sources/live/production_baseline.py",
       "digest": "741396bb2726923221c287c8d117a21e8cd57b33"
     }
