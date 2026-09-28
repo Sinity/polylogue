@@ -24,9 +24,9 @@ from typing import Any
 
 from devtools.verify_runs import (
     ABANDONED_DIAGNOSIS,
-    VERIFY_HISTORY_PATH,
     VERIFY_RUNS_DIR,
     reconcile_and_record_abandoned_verify_runs,
+    verify_history_path,
 )
 
 __all__ = ["main"]
@@ -306,9 +306,10 @@ def _history_projection(entry: Mapping[str, Any]) -> dict[str, Any]:
 def _history_rows(hours: float) -> list[dict[str, Any]]:
     cutoff = datetime.now(UTC) - timedelta(hours=hours)
     rows: list[dict[str, Any]] = []
-    if not VERIFY_HISTORY_PATH.exists():
+    history_path = verify_history_path()
+    if not history_path.exists():
         return rows
-    with VERIFY_HISTORY_PATH.open(encoding="utf-8") as handle:
+    with history_path.open(encoding="utf-8") as handle:
         for line in handle:
             try:
                 entry = json.loads(line)
@@ -336,8 +337,9 @@ def _render_history(hours: float, stream: Any) -> int:
     own cadence and was 17 hours stale when it mattered. The history file is
     current by construction.
     """
-    if not VERIFY_HISTORY_PATH.exists():
-        print(f"why: no run history at {VERIFY_HISTORY_PATH}", file=sys.stderr)
+    history_path = verify_history_path()
+    if not history_path.exists():
+        print(f"why: no run history at {history_path}", file=sys.stderr)
         return 1
     rows = _history_rows(hours)
 

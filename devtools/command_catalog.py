@@ -164,7 +164,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
                 "Run in a checkout on the default branch deliberately; without it the verifier refuses there.",
             ),
         ),
-        use_when="Run the gates and bounded affected tests locally before pushing. --quick stops at static gates; --all runs the complete corpus at the explicit master/corpus boundary. Unknown or oversized affected plans are refused before pytest and name the count, reason, and next boundary.",
+        use_when="Run the gates and bounded affected tests locally before pushing. --quick stops at static gates; --all runs the complete corpus at the explicit master/corpus boundary. Unknown or oversized affected plans are refused before pytest and name the count, reason, and next boundary. Pattern baselines use path:sha1[:count] content anchors, not source line numbers.",
         examples=("devtools verify", "devtools verify --quick", "devtools verify --all"),
         featured=True,
     ),

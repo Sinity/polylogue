@@ -29,6 +29,59 @@ def test_schema_manifest_rejects_a_target_file_with_schema_drift(tmp_path: Path)
     assert verify_schema_manifest.main(["--archive-root", str(root)]) == 1
 
 
+def test_schema_manifest_rejects_missing_archive_tier(tmp_path: Path) -> None:
+    """Anti-vacuity: explicit comparison cannot pass by skipping absent tier files."""
+    root = tmp_path / "partial"
+    root.mkdir()
+    assert verify_schema_manifest.main(["--archive-root", str(root)]) == 1
+
+
+def test_schema_manifest_read_uri_encodes_legal_path_characters(tmp_path: Path) -> None:
+    """Anti-vacuity: '?' and '#' in a valid directory name must not alter SQLite URI parsing."""
+    root = tmp_path / "archive?copy#1"
+    root.mkdir()
+    path = root / "source.db"
+    initialize_archive_database(path, ArchiveTier.SOURCE)
+    result = verify_schema_manifest._check_tier(ArchiveTier.SOURCE, path)
+    assert result["ok"] is True
+
+
+def test_schema_manifest_uses_the_resolved_active_index_generation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Anti-vacuity: a stale root index shadow must not be the compared index."""
+    active = tmp_path / "generation" / "index.db"
+    monkeypatch.setattr(
+        verify_schema_manifest.ArchiveLocation,
+        "resolve",
+        lambda _root: type("Location", (), {"active_index_path": active})(),
+    )
+    checked: dict[str, Path | None] = {}
+    monkeypatch.setattr(
+        verify_schema_manifest,
+        "_check_tier",
+        lambda tier, path: checked.__setitem__(tier.value, path) or {"tier": tier.value, "ok": True, "version": 1},
+    )
+    monkeypatch.setattr(verify_schema_manifest, "_benign_ddl_violations", lambda: [])
+    monkeypatch.setattr(verify_schema_manifest, "_provider_named_index_objects", lambda: [])
+    assert verify_schema_manifest.main(["--archive-root", str(tmp_path)]) == 0
+    assert checked["index"] == active
+
+
+def test_migration_type_change_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: replacing a migration with a symlink is not an allowed edit."""
+    change = verify_schema_manifest._MigrationChange(
+        "T",
+        "polylogue/storage/sqlite/migrations/source/001_init.sql",
+        "polylogue/storage/sqlite/migrations/source/001_init.sql",
+    )
+    monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: (change,))
+    assert any(
+        "required migration was modified" in item
+        for item in verify_schema_manifest._migration_integrity_violations("base", ArchiveTier.SOURCE)
+    )
+
+
 def test_schema_manifest_normalization_keeps_escaped_literal_values_exact() -> None:
     """Harmless SQL layout is normalized without rewriting quoted values."""
     compact = "CREATE TABLE sample(value TEXT DEFAULT 'a''b' CHECK(value='A  B'));"
