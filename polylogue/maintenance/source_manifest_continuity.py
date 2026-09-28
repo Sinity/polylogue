@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -670,6 +671,9 @@ def preflight_rebuild(
 require_rebuild_preflight = preflight_rebuild
 
 
+_CAPTURED_INODE = re.compile(r"dev:(\d+):ino:(\d+)")
+
+
 def build_source_frontier(declarations: Iterable[SourceDeclaration]) -> SourceFrontier:
     """Enumerate every configured root, retaining unavailable roots as blockers."""
     rows = tuple(declarations)
@@ -693,6 +697,7 @@ def build_source_frontier(declarations: Iterable[SourceDeclaration]) -> SourceFr
             blockers.append(f"unavailable:{declaration.source_id}:{declaration.root}:{exc}")
             continue
         states[declaration.source_id] = FrontierState.PRESENT if observed else FrontierState.VALID_EMPTY
+        disappeared: Path | None = None
         for item in observed:
             identity: tuple[int, ...]
             if declaration.role is SourceRole.ARCHIVE_MEMBER:
@@ -701,12 +706,34 @@ def build_source_frontier(declarations: Iterable[SourceDeclaration]) -> SourceFr
                 device, inode, _ctime, offset = item.identity.split(":")
                 identity = (int(device), int(inode), int(offset))
             else:
-                member_path = declaration.root if not declaration.root.is_dir() else declaration.root / item.coordinate
-                info = member_path.stat()
-                identity = (info.st_dev, info.st_ino)
+                # Reuse the identity observe_source_members captured with the
+                # bytes; re-stating the live path could see a replaced inode
+                # or raise after a concurrent deletion.
+                captured = _CAPTURED_INODE.search(item.identity)
+                if captured is not None:
+                    identity = (int(captured.group(1)), int(captured.group(2)))
+                else:
+                    # A SQLite logical-export member's identity is its export
+                    # digest, not an inode; stat the member for duplicate
+                    # detection and type a concurrent disappearance.
+                    member_path = (
+                        declaration.root if not declaration.root.is_dir() else declaration.root / item.coordinate
+                    )
+                    try:
+                        info = member_path.stat()
+                    except OSError:
+                        disappeared = member_path
+                        break
+                    identity = (info.st_dev, info.st_ino)
             if identity in physical_identities:
                 raise SourceContinuityError("source frontier contains duplicate physical member identity")
             physical_identities.add(identity)
+        if disappeared is not None:
+            # A member that vanished after observation makes this source's
+            # frontier incoherent: a typed blocker, not an unhandled error.
+            states[declaration.source_id] = FrontierState.UNAVAILABLE
+            blockers.append(f"unavailable:{declaration.source_id}:{declaration.root}:member disappeared:{disappeared}")
+            continue
         members.extend(
             FrontierMember(
                 item.source_id,
@@ -772,9 +799,10 @@ def canonical_source_declarations(
         raise SourceContinuityError("duplicate source_id in canonical source declaration")
     if len(roots) != len(set(roots)):
         raise SourceContinuityError("duplicate root in canonical source declaration")
-    return tuple(
-        SourceDeclaration(row.source_id, row.role, root, row.mutable) for row, root in zip(rows, roots, strict=True)
-    )
+    # Resolved roots are for duplicate detection only; the declaration keeps the
+    # configured absolute path so a symlinked root still reaches _real_root's
+    # fail-closed refusal instead of being replaced by its target.
+    return tuple(SourceDeclaration(row.source_id, row.role, Path(row.root).absolute(), row.mutable) for row in rows)
 
 
 def _real_root(root: Path) -> Path:

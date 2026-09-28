@@ -123,8 +123,24 @@ async def _session_messages(store: Any, session_id: str, page_size: int) -> Asyn
     The caller's bound counts text-bearing output, not raw rows, so paging
     continues past rows it discards; ``None`` means the session is gone.
     """
+    windowed = getattr(store, "read_transcript_window", None)
     pager = getattr(store, "get_messages_paginated", None)
     iterator = getattr(store, "iter_messages", None)
+    if callable(windowed):
+        # Snapshot-bound pages: each continuation resumes the archive snapshot
+        # its first page read, so a concurrent rewrite is refused as stale
+        # instead of shifting a numeric offset onto a different transcript.
+
+        async def continued() -> AsyncIterator[Any]:
+            window = await windowed(session_id, limit=page_size)
+            while True:
+                for row in window.rows:
+                    yield row
+                if window.continuation is None:
+                    return
+                window = await windowed(session_id, continuation=window.continuation)
+
+        return continued()
     if callable(pager):
 
         async def paged() -> AsyncIterator[Any]:
