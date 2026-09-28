@@ -102,6 +102,13 @@ from polylogue.storage.sqlite.connection_profile import open_isolated_write_conn
 _T = TypeVar("_T")
 
 
+class ArchiveIdentityStaleError(ValueError):
+    """The archive identity moved (a generation was promoted) after this execution pinned it.
+
+    Transient: clearing the pin and driving again reads the promoted generation.
+    """
+
+
 class IngestStoppedError(RuntimeError):
     def __init__(self, reason: str) -> None:
         self.reason = reason
@@ -391,7 +398,7 @@ class IngestExecution:
                     self.first_snapshot(snapshot)
                     self.observed_identity = identity
                 elif identity != self.observed_identity:
-                    raise ValueError("archive_identity_stale")
+                    raise ArchiveIdentityStaleError("archive_identity_stale")
                 self.snapshot = snapshot
                 self.observe_snapshot(snapshot)
                 return work(snapshot)
@@ -1197,7 +1204,17 @@ class IngestExecution:
             applied_at=started.plan.prepared_at,
             historical_receipt=history,
         )
-        await self.runtime.write_phase("ingest.finalize", lambda: self.executor.finalize_bound(started, receipt=final))
+        binding = self.binding
+
+        def finalize_unless_stopped() -> None:
+            # Under the writer: a cancel or deadline fence committed after the
+            # last ``check_stop`` wins over this terminal write.
+            record = self.audit.machine_request(binding) if binding is not None else None
+            if record is not None and record.get("stop_reason"):
+                raise IngestStoppedError(str(record["stop_reason"]))
+            self.executor.finalize_bound(started, receipt=final)
+
+        await self.runtime.write_phase("ingest.finalize", finalize_unless_stopped)
         self.terminalized = True
         return history
 
@@ -1294,12 +1311,6 @@ class IngestRedrive(IngestExecution):
             raise ValueError("accepted ingest source name is not a string")
         return source_name
 
-    async def claim(self) -> bool:
-        """Take the run under a new attempt owned by this process, if still unowned."""
-        return await self.runtime.write_phase(
-            "ingest.redrive", lambda: self.audit.resume_interrupted_ingest(self.operation_id)
-        )
-
     async def resume(self) -> RetainedSourceGeneration:
         def load_started() -> StartedBoundMutation:
             with self.audit.settled_machine_read():
@@ -1310,17 +1321,9 @@ class IngestRedrive(IngestExecution):
         generation = await self.accepted_generation()
 
         def already_materialized() -> bool:
-            from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+            from polylogue.operations.ingest_acceptance import generation_materialized
 
-            with closing(open_readonly_connection(self.archive_root / "source.db", validate_schema=False)) as conn:
-                return (
-                    conn.execute(
-                        "SELECT 1 FROM source_item_raw_members AS m JOIN raw_sessions AS r ON r.raw_id = m.raw_id "
-                        "WHERE m.source_generation_id = ? AND r.parsed_at_ms IS NOT NULL LIMIT 1",
-                        (generation.source_generation_id,),
-                    ).fetchone()
-                    is not None
-                )
+            return generation_materialized(self.archive_root, generation.source_generation_id)
 
         # A generation raw already materialized may be the interrupted
         # attempt's work, whose changed-session projection died with it.
@@ -1339,10 +1342,7 @@ class IngestRedrive(IngestExecution):
         if self.started_mutation is not None:
             await self.mark_unknown(reason)
             return
-        await self.runtime.write_phase(
-            "ingest.redrive-release",
-            lambda: self.audit.finalize_attempt(self.operation_id, status="unknown", unknown_reason=reason[:512]),
-        )
+        await release_redrive_claim(self.runtime, self.audit, self.operation_id, reason)
         self.terminalized = True
 
     async def settle_failed(self, reason: str) -> None:
@@ -1354,6 +1354,21 @@ class IngestRedrive(IngestExecution):
             lambda: self.audit.finalize_attempt(self.operation_id, status="failed", error_summary=reason[:512]),
         )
         self.terminalized = True
+
+
+async def claim_interrupted_ingest(runtime: OperationRuntime, audit: AuditRepository, operation_id: str) -> bool:
+    """Take an interrupted run under a new attempt owned by this process, if still unowned."""
+    return await runtime.write_phase("ingest.redrive", lambda: audit.resume_interrupted_ingest(operation_id))
+
+
+async def release_redrive_claim(
+    runtime: OperationRuntime, audit: AuditRepository, operation_id: str, reason: str
+) -> None:
+    """Hand a claimed, not yet driven run back as interrupted with no running attempt."""
+    await runtime.write_phase(
+        "ingest.redrive-release",
+        lambda: audit.finalize_attempt(operation_id, status="unknown", unknown_reason=reason[:512]),
+    )
 
 
 async def redrive_accepted_ingests(
@@ -1380,7 +1395,10 @@ async def redrive_accepted_ingests(
     from polylogue.daemon.execution import DaemonBackpressureError
     from polylogue.operations.audit import AuditRepository
 
-    claimed: list[tuple[str, str, IngestRedrive]] = []
+    # Claims are durable rows; the execution (its scratch state file and blob
+    # publisher) is built only when its run is driven, one at a time.
+    claimed: list[tuple[str, dict[str, object]]] = []
+    released = "the ingest owner stopped before the terminal checkpoint"
     try:
         if not (archive_root / "audit.db").is_file():
             return
@@ -1395,26 +1413,28 @@ async def redrive_accepted_ingests(
                 return audit.interrupted_ingest_requests()
 
         for operation_id, record in await runtime.compute_phase(discover):
-            request_id = str(record["request_id"])
-            if stop_requested(request_id) == "shutdown":
+            if stop_requested(str(record["request_id"])) == "shutdown":
+                # Claims already taken go back too: their attempts name this
+                # live process, which a recreated server could never reclaim.
+                for claimed_id, _record in claimed:
+                    await release_redrive_claim(runtime, audit, claimed_id, released)
                 return
-            execution = IngestRedrive(
-                runtime,
-                archive_root,
-                audit,
-                operation_id=operation_id,
-                record=record,
-                stop_requested=partial(stop_requested, request_id),
-            )
-            if await execution.claim():
-                claimed.append((operation_id, request_id, execution))
-            else:
-                execution.state_path.unlink(missing_ok=True)
+            if await claim_interrupted_ingest(runtime, audit, operation_id):
+                claimed.append((operation_id, record))
     finally:
         if on_claimed is not None:
             on_claimed()
 
-    for position, (operation_id, request_id, execution) in enumerate(claimed):
+    for position, (operation_id, record) in enumerate(claimed):
+        request_id = str(record["request_id"])
+        execution = IngestRedrive(
+            runtime,
+            archive_root,
+            audit,
+            operation_id=operation_id,
+            record=record,
+            stop_requested=partial(stop_requested, request_id),
+        )
         try:
             emit("ingest.redrive.started", operation_id=operation_id, request_id=request_id, outcome="running")
             backoff_s = 0.5
@@ -1422,7 +1442,7 @@ async def redrive_accepted_ingests(
                 try:
                     generation = await execution.resume()
                     history = await drive_accepted_generation(execution, generation)
-                except (IngestReprepareRequiredError, DaemonBackpressureError) as exc:
+                except (IngestReprepareRequiredError, ArchiveIdentityStaleError, DaemonBackpressureError) as exc:
                     # Transient: the claim stays with this owner and the same
                     # run is driven again; every phase settles by content hash.
                     emit(
@@ -1453,10 +1473,9 @@ async def redrive_accepted_ingests(
                 # Every claimed run goes back as interrupted: the attempts
                 # name this live process, so a server recreated in it could
                 # otherwise never reclaim them.
-                for _operation_id, _request_id, remaining in claimed[position:]:
-                    await remaining.release("the ingest owner stopped before the terminal checkpoint")
-                    if remaining is not execution:
-                        remaining.state_path.unlink(missing_ok=True)
+                await execution.release(released)
+                for remaining_id, _record in claimed[position + 1 :]:
+                    await release_redrive_claim(runtime, audit, remaining_id, released)
                 return
             # As a fresh request's stop: fenced first, then indeterminate,
             # because sessions published before the stop remain.
@@ -1621,7 +1640,7 @@ async def execute_ingest_operation(
             outcome="cancelled" if exc.reason == "cancelled" else "timed-out",
             reference=execution.record,
         )
-    except (IngestReprepareRequiredError, DaemonBackpressureError):
+    except (IngestReprepareRequiredError, ArchiveIdentityStaleError, DaemonBackpressureError):
         # Transient after acceptance: left unstopped, the accepted generation
         # stays eligible for its ingest owner's re-drive.
         await execution.mark_unknown("accepted ingest met a transient refusal before its terminal checkpoint")

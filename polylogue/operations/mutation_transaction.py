@@ -642,6 +642,15 @@ class RecoveryRedrivenByOwnerError(MutationTransactionError):
     """
 
 
+class RecoverySettledIndeterminateError(RecoveryRedrivenByOwnerError):
+    """A stopped operation with a possibly partial effect keeps its indeterminate state.
+
+    Its outcome is decided (it was stopped) but not absent: generic recovery
+    must not rewrite it as failed with no effect, so it is skipped like an
+    owner-driven run.
+    """
+
+
 class ReplayHandles:
     """Writable handles recovery gives an actuator to resolve one plan.
 
@@ -1498,6 +1507,7 @@ __all__ = [
     "RecoveryBlockedError",
     "RecoveryDeferredError",
     "RecoveryRedrivenByOwnerError",
+    "RecoverySettledIndeterminateError",
     "ConvergentReplay",
     "RecoveryOutcome",
     "RecoveryResolution",

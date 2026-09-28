@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from pathlib import Path
 
 from polylogue.operations.mutation_transaction import (
     ConfirmationStrength,
@@ -13,6 +14,7 @@ from polylogue.operations.mutation_transaction import (
     MutationTarget,
     RecoveryRedrivenByOwnerError,
     RecoveryResolution,
+    RecoverySettledIndeterminateError,
     ReplayHandles,
     build_typed_plan,
     register_recovery_route,
@@ -74,6 +76,23 @@ def ingest_plan(
     )
 
 
+def generation_materialized(archive_root: Path, source_generation_id: str) -> bool:
+    """Whether any raw of this accepted generation was already materialized (parsed)."""
+    from contextlib import closing
+
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    with closing(open_readonly_connection(archive_root / "source.db", validate_schema=False)) as conn:
+        return (
+            conn.execute(
+                "SELECT 1 FROM source_item_raw_members AS m JOIN raw_sessions AS r ON r.raw_id = m.raw_id "
+                "WHERE m.source_generation_id = ? AND r.parsed_at_ms IS NOT NULL LIMIT 1",
+                (source_generation_id,),
+            ).fetchone()
+            is not None
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class IngestRecovery:
     """Recovery route for an interrupted ingest.
@@ -84,7 +103,10 @@ class IngestRecovery:
     (``polylogue.operations.daemon_ingest.redrive_accepted_ingests``). Generic
     recovery leaves that run to the owner. A request that was stopped
     (cancelled, past its deadline, or refused) has its outcome already
-    decided, so its run is terminalized as not replayable.
+    decided: with no generation content materialized its run is
+    terminalized as not replayable; with content already published its effect
+    is partial, so the run keeps its indeterminate state instead of being
+    rewritten as failed with no effect.
     """
 
     operation: str = INGEST_OPERATION
@@ -101,6 +123,10 @@ class IngestRecovery:
             return RecoveryResolution("not-replayable", "no accepted ingest request binds this source generation")
         if stop_reason is None:
             raise RecoveryRedrivenByOwnerError(f"source generation {generation_id} awaits its ingest owner")
+        if generation_materialized(handles.archive_root, generation_id):
+            raise RecoverySettledIndeterminateError(
+                f"source generation {generation_id} was stopped ({stop_reason}) after publishing content"
+            )
         return RecoveryResolution(
             "not-replayable", f"the ingest request was stopped ({stop_reason}) before its terminal checkpoint"
         )

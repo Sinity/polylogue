@@ -363,6 +363,50 @@ async def test_a_redrive_after_partial_publication_is_indeterminate(
 
 
 @pytest.mark.timeout(300)
+async def test_a_stopped_partial_ingest_stays_indeterminate_across_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A request stopped after its content was published keeps its indeterminate outcome.
+
+    Anti-vacuity (Codex P1, #5717): terminalize every stopped ingest as not
+    replayable and the next startup rewrites it as failed with no effect,
+    although its sessions are in the archive.
+    """
+    archive_root, source = _archive(tmp_path)
+
+    async def killed(self: IngestExecution, *_args: object, **_kwargs: object) -> None:
+        with sqlite3.connect(archive_root / "audit.db") as audit:
+            audit.execute("UPDATE operation_attempts SET worker_id = ? WHERE state = 'running'", (_DEAD_OWNER,))
+            audit.execute("UPDATE machine_requests SET stop_reason = 'cancelled', stopped_at_ms = 1")
+        raise RuntimeError("process killed after the cancel fence")
+
+    async def nothing(self: IngestExecution, *_args: object) -> None:
+        return None
+
+    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    with monkeypatch.context() as patch:
+        patch.setattr(IngestExecution, "finalize", killed)
+        patch.setattr(IngestExecution, "mark_unknown", nothing)
+        patch.setattr(IngestExecution, "fence", nothing)
+        with _serving(archive_root) as (harness, _api_server):
+            try:
+                with pytest.raises(RuntimeError, match="did not complete"):
+                    await archive.parse_file(source, source_name="redrive")
+            finally:
+                try:
+                    await harness.close()
+                finally:
+                    await archive.close()
+    assert _session_titles(archive_root) == ["Retained Redrive"]
+
+    await _restart_and_settle(archive_root)
+
+    run, state = _run_and_state(archive_root)
+    assert run is not None and run["status"] != "failed", run
+    assert state["outcome"] == "indeterminate", state
+
+
+@pytest.mark.timeout(300)
 async def test_runs_are_claimed_before_the_listeners_serve(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The server exposes its listeners only after the owner claimed every interrupted run.
 
@@ -370,17 +414,17 @@ async def test_runs_are_claimed_before_the_listeners_serve(tmp_path: Path, monke
     a slow claim leaves the run on its dead attempt when the listeners open,
     so an immediate resend reads it as ``interrupted``.
     """
-    from polylogue.operations.daemon_ingest import IngestRedrive
+    from polylogue.operations import daemon_ingest
 
     archive_root, source = _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
-    original_claim = IngestRedrive.claim
+    original_claim = daemon_ingest.claim_interrupted_ingest
 
-    async def slow_claim(self: IngestRedrive) -> bool:
+    async def slow_claim(*args: Any) -> bool:
         await asyncio.sleep(1.0)
-        return await original_claim(self)
+        return await original_claim(*args)
 
-    monkeypatch.setattr(IngestRedrive, "claim", slow_claim)
+    monkeypatch.setattr(daemon_ingest, "claim_interrupted_ingest", slow_claim)
     with _serving(archive_root) as (harness, api_server):
         try:
             with sqlite3.connect(archive_root / "audit.db") as audit:
@@ -537,3 +581,101 @@ async def test_starting_the_redrive_on_its_owner_loop_does_not_block_it(
     assert claimed == []
     await runtime.accepted_ingest_redrive_claimed()
     assert claimed == [True]
+
+
+async def _two_interrupted_ingests(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from polylogue.daemon.operation_runtime import DaemonOperationRuntime
+
+    archive_root, source = _archive(tmp_path)
+    await _die_after_acceptance(archive_root, source, monkeypatch)
+    second = tmp_path / "inputs" / "second.json"
+    export = json.loads(source.read_text(encoding="utf-8"))
+    export["title"] = "Second Redrive"
+    second.write_text(json.dumps(export), encoding="utf-8")
+    with monkeypatch.context() as patch:
+        patch.setattr(DaemonOperationRuntime, "start_accepted_ingest_redrive", lambda self: None)
+        await _die_after_acceptance(archive_root, second, monkeypatch)
+    return archive_root
+
+
+@pytest.mark.timeout(300)
+async def test_shutdown_during_the_claim_phase_releases_earlier_claims(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An owner stopping between two claims hands the first claim back.
+
+    Anti-vacuity (Codex P1, #5717): return from the claim loop without
+    releasing and the first run keeps a ``running`` attempt owned by this
+    live process, which no later owner in it can reclaim.
+    """
+    from polylogue.operations import daemon_ingest
+
+    archive_root = await _two_interrupted_ingests(tmp_path, monkeypatch)
+    original_claim = daemon_ingest.claim_interrupted_ingest
+
+    async def claim_then_stop(runtime: Any, audit: Any, operation_id: str) -> bool:
+        taken = await original_claim(runtime, audit, operation_id)
+        with runtime._condition:
+            runtime._closing = True
+        return taken
+
+    with monkeypatch.context() as patch:
+        patch.setattr(daemon_ingest, "claim_interrupted_ingest", claim_then_stop)
+        await _restart_and_settle(archive_root)
+    with sqlite3.connect(archive_root / "audit.db") as audit:
+        assert audit.execute("SELECT COUNT(*) FROM operation_attempts WHERE state = 'running'").fetchone() == (0,)
+
+    await _restart_and_settle(archive_root)
+
+    assert _session_titles(archive_root) == ["Retained Redrive", "Second Redrive"]
+
+
+@pytest.mark.timeout(300)
+async def test_a_cancel_committed_before_finalization_wins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stop fenced after the last stop check still refuses the applied receipt.
+
+    Anti-vacuity (Codex P1, #5717): finalize without rechecking the durable
+    stop under the writer and the cancelled request completes as applied.
+    """
+    archive_root, source = _archive(tmp_path)
+    await _die_after_acceptance(archive_root, source, monkeypatch)
+    original = IngestExecution.historical_receipt
+
+    async def cancel_then_receipt(self: IngestExecution, *args: Any, **kwargs: Any) -> Any:
+        with sqlite3.connect(archive_root / "audit.db") as audit:
+            audit.execute("UPDATE machine_requests SET stop_reason = 'cancelled', stopped_at_ms = 1")
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(IngestExecution, "historical_receipt", cancel_then_receipt)
+    await _restart_and_settle(archive_root)
+
+    run, state = _run_and_state(archive_root)
+    assert run is not None and run["status"] != "completed", run
+    assert state["outcome"] not in {"completed", "degraded"}, state
+
+
+@pytest.mark.timeout(300)
+async def test_an_identity_moved_between_reads_retries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A generation promoted between two reads of one drive retries instead of failing.
+
+    Anti-vacuity (Codex P1, #5717): raise the stale identity as a plain
+    ``ValueError`` and the re-drive settles the accepted generation as failed.
+    """
+    archive_root, source = _archive(tmp_path)
+    await _die_after_acceptance(archive_root, source, monkeypatch)
+    original = IngestExecution.input_page
+    moves = {"left": 1}
+
+    async def moved_once(self: IngestExecution, *args: Any, **kwargs: Any) -> Any:
+        if moves["left"]:
+            moves["left"] -= 1
+            self.observed_identity = "a-generation-promoted-since"
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(IngestExecution, "input_page", moved_once)
+    await _restart_and_settle(archive_root)
+
+    assert moves["left"] == 0
+    run, state = _run_and_state(archive_root)
+    assert run is not None and run["status"] == "completed", run
+    assert state["outcome"] in {"completed", "degraded"}, state
