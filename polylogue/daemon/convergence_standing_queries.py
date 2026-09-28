@@ -65,6 +65,7 @@ CLOCK_BOUNDARY_MS = 24 * 60 * 60 * 1000
 #: expressible in this grammar, so probing every string value in the AST would
 #: add only false positives from search terms and titles.
 _CLOCK_BOUND_FIELDS = frozenset(DATE_QUERY_FIELD_REGISTRY) | {"since", "until", "time"}
+_PROMOTED_CLOCK_BOUNDARIES: dict[tuple[str, str], int] = {}
 
 
 def clock_boundary_start_ms(now_ms: int, *, boundary_ms: int = CLOCK_BOUNDARY_MS) -> int:
@@ -155,6 +156,36 @@ def _clock_due_watches(conn: sqlite3.Connection, *, now_ms: int) -> tuple[QueryO
     return tuple(due)
 
 
+def _clock_due_promoted_findings(conn: sqlite3.Connection, *, now_ms: int, db_path: Path) -> tuple[str, ...]:
+    """Return relative query hashes whose accepted expectation is due by clock.
+
+    Promoted findings have no watch baseline. Keep a process-local boundary
+    receipt so a clock-only convergence pass evaluates them once per day.
+    Restarting may repeat the read, which is safe; it cannot skip a boundary.
+    """
+    boundary = clock_boundary_start_ms(now_ms)
+    due: list[str] = []
+    for finding in list_assertion_claims(
+        conn,
+        kinds=(AssertionKind.FINDING,),
+        statuses=(AssertionStatus.ACCEPTED,),
+    ):
+        value = finding.value if isinstance(finding.value, dict) else {}
+        if not isinstance(value.get("expected"), dict):
+            continue
+        reference = value.get("query_ref")
+        if not isinstance(reference, str):
+            continue
+        query_hash = reference.removeprefix("query:")
+        query = get_query(conn, query_hash)
+        if query is None or not query_is_clock_relative(query):
+            continue
+        key = (str(db_path), query_hash)
+        if _PROMOTED_CLOCK_BOUNDARIES.get(key, -1) < boundary:
+            due.append(query_hash)
+    return tuple(dict.fromkeys(due))
+
+
 def make_standing_query_stage(
     db_path: Path,
     *,
@@ -176,7 +207,11 @@ def make_standing_query_stage(
         if not user_db.exists():
             return False
         with closing(open_readonly_connection(user_db)) as conn:
-            return bool(_clock_due_watches(conn, now_ms=int(time.time() * 1000)))
+            now_ms = int(time.time() * 1000)
+            return bool(
+                _clock_due_watches(conn, now_ms=now_ms)
+                or _clock_due_promoted_findings(conn, now_ms=now_ms, db_path=db_path)
+            )
 
     def execute(_path: Path) -> StageExecuteReturn:
         """Re-evaluate exactly the watches whose clock boundary has passed."""
@@ -189,7 +224,8 @@ def make_standing_query_stage(
         conn = open_daemon_connection(user_db, timeout=30.0)
         try:
             due = _clock_due_watches(conn, now_ms=now_ms)
-            if not due:
+            promoted_due = _clock_due_promoted_findings(conn, now_ms=now_ms, db_path=db_path)
+            if not due and not promoted_due:
                 return True
             for query in due:
                 evaluation = evaluator.evaluate(
@@ -204,6 +240,13 @@ def make_standing_query_stage(
                 if evaluation.cache_only:
                     continue
                 _materialize_watch_evaluation(conn, query.query_hash, evaluation, now_ms=now_ms)
+            if promoted_due:
+                _materialize_promoted_finding_drifts(
+                    conn, evaluator, now_ms=now_ms, query_hashes=frozenset(promoted_due)
+                )
+                boundary = clock_boundary_start_ms(now_ms)
+                for query_hash in promoted_due:
+                    _PROMOTED_CLOCK_BOUNDARIES[(str(db_path), query_hash)] = boundary
             conn.commit()
         finally:
             conn.close()
@@ -591,6 +634,7 @@ def _materialize_promoted_finding_drifts(
     evaluator: CanonicalPlanEvaluator,
     *,
     now_ms: int,
+    query_hashes: frozenset[str] | None = None,
 ) -> None:
     """Emit a new candidate when an accepted expected-count finding diverges."""
     for finding in list_assertion_claims(
@@ -604,6 +648,8 @@ def _materialize_promoted_finding_drifts(
         if not isinstance(expected, dict) or not isinstance(query_reference, str):
             continue
         query_hash = query_reference.removeprefix("query:")
+        if query_hashes is not None and query_hash not in query_hashes:
+            continue
         query = get_query(conn, query_hash)
         if query is None:
             continue

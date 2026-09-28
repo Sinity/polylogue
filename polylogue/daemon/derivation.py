@@ -601,6 +601,7 @@ class _Pass:
         #: Domains this pass observed holding at least one non-valid key.
         self.unconverged_domains: set[str] = set()
         self.prerequisite_cache: dict[DerivationKey, str | None] = {}
+        self.coarse_domain_cache: dict[str, str | None] = {}
 
     # ── bookkeeping ────────────────────────────────────────────────
 
@@ -750,7 +751,42 @@ class _Pass:
                 return f"prerequisite domain {name!r} could not be inspected"
             if name in self.unconverged_domains:
                 return f"prerequisite domain {name!r} has an unconverged key"
+            if (reason := self.inspect_coarse_domain(name)) is not None:
+                return reason
         return None
+
+    def inspect_coarse_domain(self, name: str) -> str | None:
+        """Establish current required-key validity before using a coarse edge.
+
+        A resumed cursor may leave an earlier refusal behind it, so the
+        in-pass outcome set cannot certify the whole prerequisite domain.
+        Stream every required page and cache the first refusal for this pass.
+        """
+        if name in self.coarse_domain_cache:
+            return self.coarse_domain_cache[name]
+        try:
+            upstream = self.registry.get(name)
+            cursor: str | None = None
+            while True:
+                page = _as_page(upstream.required_page(self.frame, cursor=cursor, limit=DEFAULT_PAGE))
+                if len(page.keys) > DEFAULT_PAGE:
+                    raise ValueError(f"prerequisite domain {name!r} exceeded page limit")
+                statuses = _coerce_statuses(dict(upstream.inspect(self.frame, page.keys)))
+                for key in page.keys:
+                    if statuses.get(key, KeyStatus.MISSING) is not KeyStatus.VALID:
+                        reason = f"prerequisite domain {name!r} has unconverged key {key!r}"
+                        self.coarse_domain_cache[name] = reason
+                        return reason
+                if page.next_cursor is None:
+                    self.coarse_domain_cache[name] = None
+                    return None
+                if page.next_cursor == cursor:
+                    raise ValueError(f"prerequisite domain {name!r} cursor did not advance")
+                cursor = page.next_cursor
+        except Exception as exc:
+            reason = f"prerequisite domain {name!r} could not be inspected: {exc}"
+            self.coarse_domain_cache[name] = reason
+            return reason
 
     def binding_block(self, binding: DerivationKey) -> str | None:
         if binding.domain in self.unreadable_domains:

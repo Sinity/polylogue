@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from polylogue.archive.query.evaluator import QueryEvaluation, QueryEvaluationRequest
+from polylogue.archive.query.watch_definition import compile_watch_definition
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.daemon.convergence import DaemonConverger
 from polylogue.daemon.convergence_stages import make_standing_query_stage
@@ -60,14 +61,14 @@ class _Evaluator:
         raise AssertionError("standing queries do not resolve cohorts directly")
 
 
-def _seed_watch(tmp_path: Path, *, watch: bool = True) -> tuple[Path, str]:
+def _seed_watch(tmp_path: Path, *, watch: bool = True, plan: object | None = None) -> tuple[Path, str]:
     index_db = tmp_path / "index.db"
     user_db = tmp_path / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
     with sqlite3.connect(user_db) as conn:
         query = put_query(
             conn,
-            {"field": "origin", "value": "codex-session"},
+            plan if plan is not None else {"field": "origin", "value": "codex-session"},
             grain="session",
             lane="dialogue",
             rank_policy="mixed",
@@ -226,6 +227,47 @@ def test_promoted_expected_count_divergence_targets_original_finding_without_wat
         assert rows[1][0] == f"assertion:{original.assertion_id}"
         assert '"finding_kind":"query-drift"' in str(rows[1][1])
         assert rows[1][2] == "candidate"
+
+
+def test_clock_boundary_rechecks_promoted_relative_finding_without_watch(tmp_path: Path) -> None:
+    """A relative accepted finding gets a clock-only drift check.
+
+    Anti-vacuity: restrict the clock trigger to watched queries or omit drift
+    materialization from the clock path; this promoted finding is never checked.
+    """
+    index_db, query_hash = _seed_watch(
+        tmp_path,
+        watch=False,
+        plan=compile_watch_definition("sessions where origin:codex-session AND date >= 7d"),
+    )
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        original = upsert_findings_as_assertions(
+            conn,
+            [
+                FindingAssertion(
+                    claim_key="expected-count",
+                    target_ref=f"query:{query_hash}",
+                    body_text="Expected one member.",
+                    finding_kind="measure",
+                    statistic={"op": "count", "value": 1, "unit": "members"},
+                    n=1,
+                    query_ref=f"query:{query_hash}",
+                    result_set_ref="result-set:original",
+                    detector_ref="agent:test-detector",
+                    expected={"measure": "member_count", "op": "=", "value": 1},
+                )
+            ],
+            now_ms=1,
+        )[0]
+        mark_assertion_status(conn, original.assertion_id, AssertionStatus.ACCEPTED, now_ms=2)
+        conn.commit()
+
+    evaluator = _Evaluator(members=("session:one", "session:two"))
+    stage = make_standing_query_stage(index_db, evaluator=evaluator)
+    assert stage.check(index_db) is True
+    assert stage.execute(index_db) is True
+    assert any(request.purpose == "finding-drift" for request in evaluator.requests)
+    assert stage.check(index_db) is False
 
 
 # ---------------------------------------------------------------------------
