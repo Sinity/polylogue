@@ -980,6 +980,7 @@ def _assert_schema_supported(conn: sqlite3.Connection, path: str | Path, tier: A
             found=found,
             remedy=_schema_skew_remedy(resolved_tier),
         )
+    _assert_derived_identity_supported(conn, resolved_tier)
 
 
 def _assert_derived_identity_supported(conn: sqlite3.Connection, tier: ArchiveTier | None) -> None:

@@ -19,8 +19,9 @@ from polylogue.schemas.audit.checks import (
     check_semantic_roles,
 )
 from polylogue.schemas.audit.models import AuditCheck, AuditReport
-from polylogue.schemas.audit.walkers import _load_committed_schema
+from polylogue.schemas.audit.walkers import _UUID_RE, _load_committed_schema
 from polylogue.schemas.packages import SchemaVersionPackage
+from polylogue.schemas.privacy import _looks_high_entropy_token
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 
 
@@ -214,8 +215,30 @@ def _workload_profile_checks(
                 provider=scope,
             )
         ]
+    token_values = profile.get("tokens", [])
+    token_values = token_values if isinstance(token_values, list) else []
+    token_privacy = check_privacy_guards({"x-polylogue-values": token_values})
+    # Structural tokens commonly prefix identifiers with a field label, so
+    # scan their components as well as testing the entire token string.
+    token_errors = [
+        value
+        for value in token_values
+        if isinstance(value, str)
+        and (
+            any(_UUID_RE.search(part) for part in value.split(":"))
+            or any(_looks_high_entropy_token(part) for part in value.split(":"))
+        )
+    ]
+    if token_errors:
+        token_privacy = CheckResult(
+            name="privacy_guards",
+            status=OutcomeStatus.ERROR,
+            summary=f"{len(token_errors)} unsafe workload token(s) found",
+            details=[f"tokens: unsafe value length={len(value)}" for value in token_errors[:20]],
+        )
     return [
         _scoped(scope, check_privacy_guards(profile)),
+        _scoped(scope, token_privacy),
         _scoped(scope, check_published_paths(profile)),
     ]
 
