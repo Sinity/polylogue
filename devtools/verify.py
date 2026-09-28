@@ -133,7 +133,13 @@ DESCRIPTOR_CONTRACT_TESTS = (
     "tests/unit/devtools/test_seeded_archive_cache_gc.py::test_declared_agentctl_operation_is_bounded_and_previewable",
     "tests/unit/devtools/test_agent_env.py::test_every_declared_pytest_pool_operation_classifies_its_own_worker",
     "tests/unit/devtools/test_verify.py::test_verify_quick_descriptor_accepts_the_declared_json_projection",
+    # A tracked-text ratchet reads AGENTS.md; an AGENTS-only change must still
+    # run it, or a retired name reintroduced there passes the hosted gate.
+    "tests/unit/architecture/test_retired_analysis_modules.py::test_no_tracked_reference_to_a_retired_analysis_name",
 )
+#: Documentation that a contract test reads. A change touching one of these
+#: earns the contract slice rather than no pytest step at all.
+_CONTRACT_READ_DOCUMENTS = frozenset({"AGENTS.md"})
 _UNMEASURED_WORKLOAD_DIMENSIONS = (
     "cpu_ms",
     "current_rss_bytes",
@@ -334,7 +340,9 @@ def _selection_for_changes(changed_paths: frozenset[str] | None) -> str:
     """
     if not changed_paths or not all(_no_test_path(path) for path in changed_paths):
         return "affected"
-    return "descriptor" if _PROJECT_DESCRIPTOR in changed_paths else "none"
+    if _PROJECT_DESCRIPTOR in changed_paths or changed_paths & _CONTRACT_READ_DOCUMENTS:
+        return "descriptor"
+    return "none"
 
 
 def _selection_reason(selection: str) -> str | None:

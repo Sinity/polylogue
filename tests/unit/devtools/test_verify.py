@@ -669,7 +669,7 @@ def test_descriptor_only_changes_use_contract_tests_and_python_changes_use_testm
     [
         frozenset({"docs/devtools.md"}),
         frozenset({".github/workflows/verify.yml"}),
-        frozenset({".agentctl/README.md", "AGENTS.md", ".github/CODEOWNERS"}),
+        frozenset({".agentctl/README.md", "README.md", ".github/CODEOWNERS"}),
     ],
 )
 def test_metadata_only_changes_select_no_pytest_step(changed: frozenset[str]) -> None:
@@ -696,6 +696,20 @@ def test_metadata_only_changes_select_no_pytest_step(changed: frozenset[str]) ->
 )
 def test_one_code_path_makes_the_change_set_affected(changed: frozenset[str], expected: str) -> None:
     assert verify._selection_for_changes(changed) == expected
+
+
+def test_an_agents_only_change_runs_the_tracked_reference_ratchet() -> None:
+    """AGENTS.md is read by a contract test, so it is not no-test documentation.
+
+    Anti-vacuity: drop ``_CONTRACT_READ_DOCUMENTS`` and an AGENTS-only change
+    selects ``none``, so the retired-name ratchet never runs on it.
+    """
+    assert verify._selection_for_changes(frozenset({"AGENTS.md"})) == "descriptor"
+    commands = [command for label, command in verify.build_verify_steps(quick=False, selection="descriptor")]
+    ratchet = (
+        "tests/unit/architecture/test_retired_analysis_modules.py::test_no_tracked_reference_to_a_retired_analysis_name"
+    )
+    assert any(ratchet in command for command in commands)
 
 
 class _StubTestmonData:

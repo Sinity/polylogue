@@ -164,7 +164,9 @@ command needs its `CommandSpec` and `devtools render devtools-reference`).
   them red. Behaviour tests assert typed outcomes, stable event tokens, and
   declared fields, not natural-language wording; rendered text is asserted
   only where that text is itself the declared output contract. Timestamp-sensitive tests use
-  `frozen_clock`; fixtures come from `tests/infra/`.
+  `frozen_clock`, except where the reference time comes from outside the process
+  (a Git commit, an OS wait, a benchmark), which opt out with `uses_real_clock`
+  as `TESTING.md` describes; fixtures come from `tests/infra/`.
 - Cross-check by change type: parser or detection → origin specs, real
   fixtures, replay parity; storage or schema → fresh DDL, the migration or
   moved identity, readers and writers, restart; query or read → equivalence of
