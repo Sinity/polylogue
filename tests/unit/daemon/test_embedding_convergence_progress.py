@@ -433,6 +433,7 @@ def test_max_errors_stops_derivation_before_more_provider_calls() -> None:
 
     class FailingEmbedding(BaseDerivation):
         domain = "embedding"
+        prerequisites: tuple[str, ...] = ()
 
         def __init__(self) -> None:
             self.calls: list[str] = []
