@@ -1968,3 +1968,27 @@ def test_consumed_tokens_leave_no_per_token_reader_state(monkeypatch: pytest.Mon
     )
     assert envelope["toolUseId"] == "toolu_valid"  # type: ignore[index]
     assert readers and all(len(reader.substituted) <= 1 for reader in readers)
+
+
+def test_exact_fields_settle_on_a_container_duplicate_and_skip_array_roots() -> None:
+    """A container that replaces an exact field clears its refusal; an array
+    root is answered at its first token.
+
+    Anti-vacuity: keep the stand-in marker when ``{}`` replaces the field and
+    the valid snake-case fallback is refused with the document; scan an array
+    root to its end and the malformed tail below raises instead of returning
+    the empty placeholder.
+    """
+    import io
+
+    from polylogue.core.json_envelope import top_level_envelopes
+
+    fields = frozenset({"toolUseId", "tool_use_id"})
+    document = b'{"toolUseId": "t\xed\xa0\x80", "toolUseId": {}, "tool_use_id": "toolu_valid"}'
+    (envelope,) = top_level_envelopes(io.BytesIO(document), expand_arrays=False, fields=fields, whole_fields=fields)
+    assert envelope == {"toolUseId": {}, "tool_use_id": "toolu_valid"}
+
+    array_root = b"[1, " + b"x" * 1024
+    assert list(
+        top_level_envelopes(io.BytesIO(array_root), expand_arrays=False, fields=fields, whole_fields=fields)
+    ) == [[]]

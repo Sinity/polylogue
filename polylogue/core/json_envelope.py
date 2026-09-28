@@ -620,11 +620,18 @@ def _envelopes(
         if event in ("start_map", "start_array"):
             placeholder: object = {} if event == "start_map" else []
             if depth == 0:
+                if exact_fields and event == "start_array":
+                    # Exact identity fields live only on an object root: an
+                    # array root is answered at its first token, never scanned.
+                    yield placeholder
+                    return
                 root = placeholder
                 expanding = expand_arrays and event == "start_array"
             elif depth == 1 and expanding:
                 element = placeholder
             elif depth == 1 and isinstance(root, dict) and key in fields:
+                # A container replacing an exact field settles it too.
+                substituted_exact.discard(key)
                 root[key] = placeholder
             elif depth == 2 and expanding and isinstance(element, dict) and element_key in fields:
                 element[element_key] = placeholder
