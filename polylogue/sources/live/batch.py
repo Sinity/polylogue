@@ -7,6 +7,7 @@ import contextvars
 import os
 import re
 import sqlite3
+import threading
 import time
 import uuid
 import zipfile
@@ -2876,14 +2877,29 @@ class LiveBatchProcessor:
                         if Path(source_path).suffix.lower() == ".json"
                     )
                     archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
-                    await asyncio.to_thread(
-                        self._parse_stage.warm_paths,
-                        path_candidates,
-                        archive_root=archive_root,
-                        read_snapshot=self._read_snapshot,
-                        capture_mode=fallback_provider,
-                        source_index=0,
+                    # The warm has no deadline and mutates the stage's
+                    # bookkeeping. If the caller is cancelled, stop it at its
+                    # next poll and settle the thread before the ingest lock
+                    # is released, so no retry, warm or shutdown runs beside it.
+                    cancelled = threading.Event()
+                    warm = asyncio.ensure_future(
+                        asyncio.to_thread(
+                            self._parse_stage.warm_paths,
+                            path_candidates,
+                            archive_root=archive_root,
+                            read_snapshot=self._read_snapshot,
+                            capture_mode=fallback_provider,
+                            source_index=0,
+                            cancelled=cancelled,
+                        )
                     )
+                    try:
+                        await asyncio.shield(warm)
+                    except asyncio.CancelledError:
+                        cancelled.set()
+                        with suppress(Exception):
+                            await warm
+                        raise
             except Exception:
                 prepared_json_paths = frozenset()
                 logger.warning(

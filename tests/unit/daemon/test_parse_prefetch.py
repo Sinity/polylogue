@@ -247,7 +247,7 @@ def test_warm_async_cancellation_does_not_join_default_executor(
         return raw_id, [], None
 
     monkeypatch.setattr(revision_backfill, "census_parse_worker", blocked_worker)
-    stage = DaemonParseStage(max_workers=1, max_inflight_bytes=1_000, warm_timeout_seconds=300)
+    stage = DaemonParseStage(max_workers=1, max_inflight_bytes=1_000, stall_report_seconds=300)
 
     async def scenario() -> None:
         task = asyncio.create_task(
@@ -334,7 +334,7 @@ def test_completed_result_retains_payload_reservation_until_consumed(
 
     monkeypatch.setattr(revision_backfill, "census_parse_worker", completed_worker)
     monkeypatch.setattr(Future, "result", gated_result)
-    stage = DaemonParseStage(max_workers=2, max_inflight_bytes=100, warm_timeout_seconds=1)
+    stage = DaemonParseStage(max_workers=2, max_inflight_bytes=100, stall_report_seconds=1)
     first = threading.Thread(
         target=lambda: stage.warm_raw_ids(_config(tmp_path), raw_ids=["raw-67"], max_payload_bytes=100),
         daemon=True,
@@ -629,7 +629,7 @@ def test_a_slow_worker_is_awaited_and_reported_not_abandoned(tmp_path: Path, mon
 
     monkeypatch.setattr(revision_backfill, "census_parse_worker", slow_worker)
     monkeypatch.setattr(census_parse_stage, "emit", record)
-    stage = DaemonParseStage(max_workers=1, max_inflight_bytes=10_000_000, warm_timeout_seconds=0.05)
+    stage = DaemonParseStage(max_workers=1, max_inflight_bytes=10_000_000, stall_report_seconds=0.05)
     try:
         warmed = stage.warm(_config(tmp_path), limit=10, max_payload_bytes=10_000_000)
     finally:

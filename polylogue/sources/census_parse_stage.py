@@ -137,7 +137,7 @@ _MAX_MAX_INFLIGHT_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
 # report, not a deadline (polylogue-slc55): abandoning a slow worker left its
 # raw for the writer-held pass to parse again from scratch, and a large raw
 # never finished. A wedged worker is visible through the repeated stall event.
-_DEFAULT_WARM_TIMEOUT_SECONDS = 300.0
+_DEFAULT_STALL_REPORT_SECONDS = 300.0
 
 
 class _ProcessBoundedThreadPoolExecutor(ThreadPoolExecutor):
@@ -266,18 +266,18 @@ def daemon_parse_stage_max_cached_tree_bytes() -> int:
     return max(_MIN_MAX_CACHED_TREE_BYTES, min(_MAX_MAX_CACHED_TREE_BYTES, physical // 8))
 
 
-def daemon_parse_stage_warm_timeout_seconds() -> float:
+def daemon_parse_stage_stall_report_seconds() -> float:
     """Seconds without a completed worker before ``warm()`` reports a stall.
 
     Not a deadline: ``warm()`` waits for its workers (only a stop request ends
-    it early). Override with ``POLYLOGUE_DAEMON_PARSE_STAGE_WARM_TIMEOUT_SECONDS``.
+    it early). Override with ``POLYLOGUE_DAEMON_PARSE_STAGE_STALL_REPORT_SECONDS``.
     """
     from polylogue.config import load_polylogue_config
 
-    configured = load_polylogue_config().daemon_parse_stage_warm_timeout_seconds
+    configured = load_polylogue_config().daemon_parse_stage_stall_report_seconds
     if configured is not None and configured > 0:
         return configured
-    return _DEFAULT_WARM_TIMEOUT_SECONDS
+    return _DEFAULT_STALL_REPORT_SECONDS
 
 
 class CensusParseStage:
@@ -296,7 +296,7 @@ class CensusParseStage:
         *,
         max_workers: int | None = None,
         max_inflight_bytes: int | None = None,
-        warm_timeout_seconds: float | None = None,
+        stall_report_seconds: float | None = None,
         max_cached_tree_bytes: int | None = None,
     ) -> None:
         self._executor = _ProcessBoundedThreadPoolExecutor(
@@ -328,8 +328,8 @@ class CensusParseStage:
         # retries neither duplicate raw ids nor grow an unbounded queue.
         self._pending_payload_by_raw_id: dict[str, int] = {}
         self._pending_payload_bytes = 0
-        self._warm_timeout_seconds = (
-            warm_timeout_seconds if warm_timeout_seconds is not None else daemon_parse_stage_warm_timeout_seconds()
+        self._stall_report_seconds = (
+            stall_report_seconds if stall_report_seconds is not None else daemon_parse_stage_stall_report_seconds()
         )
         # polylogue-xb4i: a SECOND budget tracked alongside ``self.cache``,
         # keyed on the same raw_ids but accounting ESTIMATED PARSED-TREE
@@ -439,9 +439,9 @@ class CensusParseStage:
         return self._warm_idle.wait(timeout)
 
     @property
-    def warm_timeout_seconds(self) -> float:
-        """Return the bounded wait used for worker admission and warm()."""
-        return self._warm_timeout_seconds
+    def stall_report_seconds(self) -> float:
+        """Return the no-completion window after which warm() reports a stall."""
+        return self._stall_report_seconds
 
     def max_inflight_bytes(self) -> int:
         """Return the source-payload admission budget for warm workers."""
@@ -711,7 +711,7 @@ class CensusParseStage:
             done, _ = wait(remaining, timeout=0.1)
             if not done:
                 now = time.monotonic()
-                if now - last_completion >= self._warm_timeout_seconds:
+                if now - last_completion >= self._stall_report_seconds:
                     emit(
                         "daemon.parse_prefetch.preparation_stalled",
                         level=WARNING,
@@ -782,7 +782,7 @@ __all__ = [
     "DaemonParseStage",
     "daemon_parse_stage_max_cached_tree_bytes",
     "daemon_parse_stage_max_inflight_bytes",
-    "daemon_parse_stage_warm_timeout_seconds",
+    "daemon_parse_stage_stall_report_seconds",
     "daemon_parse_stage_worker_count",
     "estimate_parsed_tree_bytes",
 ]

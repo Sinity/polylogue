@@ -62,7 +62,7 @@ _DEFAULT_PROCESS_WORKER_CAP = 8
 #: prefetches too keeps a walk that only prefetches (every file skipped after
 #: cursor reconciliation) from accumulating results.
 _SPECULATIVE_LIFETIME_CALLS = 8
-_DEFAULT_WARM_TIMEOUT_SECONDS = 60.0
+_DEFAULT_STALL_REPORT_SECONDS = 60.0
 #: How often a waiting warm re-reads its preparations' progress.
 _PROGRESS_POLL_SECONDS = 5.0
 
@@ -117,21 +117,21 @@ def live_watcher_parse_stage_max_inflight_bytes() -> int:
     return max(_MIN_MAX_INFLIGHT_BYTES, min(_MAX_MAX_INFLIGHT_BYTES, physical // 32))
 
 
-def live_watcher_parse_stage_warm_timeout_seconds() -> float:
+def live_watcher_parse_stage_stall_report_seconds() -> float:
     """Seconds without forward progress before a preparation is reported stalled.
 
     Not a deadline: a warm waits for its preparations to finish, however long
     a large file takes, and this window only decides when a worker that has
     stopped advancing is reported (``live.parse_prefetch.preparation_stalled``).
 
-    Override with ``POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WARM_TIMEOUT_SECONDS``.
+    Override with ``POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_STALL_REPORT_SECONDS``.
     """
     from polylogue.config import load_polylogue_config
 
-    configured = load_polylogue_config().live_watcher_parse_stage_warm_timeout_seconds
+    configured = load_polylogue_config().live_watcher_parse_stage_stall_report_seconds
     if configured is not None and configured > 0:
         return configured
-    return _DEFAULT_WARM_TIMEOUT_SECONDS
+    return _DEFAULT_STALL_REPORT_SECONDS
 
 
 def _completed_reporting_stalls(futures: Iterable[Future[Any]], *, stall_window: float) -> Iterator[Future[Any]]:
@@ -411,7 +411,7 @@ class LiveParseStage:
         *,
         max_workers: int | None = None,
         max_inflight_bytes: int | None = None,
-        warm_timeout_seconds: float | None = None,
+        stall_report_seconds: float | None = None,
         shard_directory: Path | None = None,
         use_processes: bool = False,
     ) -> None:
@@ -485,10 +485,10 @@ class LiveParseStage:
             )
         )
         self._max_path_bytes = max_inflight_bytes or live_watcher_parse_stage_max_inflight_bytes()
-        self._warm_timeout_seconds = (
-            warm_timeout_seconds
-            if warm_timeout_seconds is not None
-            else live_watcher_parse_stage_warm_timeout_seconds()
+        self._stall_report_seconds = (
+            stall_report_seconds
+            if stall_report_seconds is not None
+            else live_watcher_parse_stage_stall_report_seconds()
         )
 
     def warm_paths(
@@ -499,10 +499,15 @@ class LiveParseStage:
         read_snapshot: ReadSnapshot | None = None,
         capture_mode: Provider | None = None,
         source_index: int = 0,
+        cancelled: threading.Event | None = None,
     ) -> int:
         """Prepare path-backed JSON/JSONL outside the writer lease.
 
-        Every selected path gets a result, including worker death and timeout.
+        Every selected path gets a result, including worker death. Setting
+        ``cancelled`` ends the wait at the next progress poll: running
+        preparations stay owned by the stage for a later warm to collect, no
+        result is recorded for unsubmitted paths, and no prepared write is
+        installed from this warm's snapshot.
         The publisher can therefore retain raw bytes and retry without an
         accidental inline parse when preparation failed.
         """
@@ -524,10 +529,16 @@ class LiveParseStage:
                         None, None, None, "worker stop could not be verified; scratch cleanup is blocked", deferred=True
                     )
             return len(candidates)
-        self._warm_until(list(candidates))
+        self._warm_until(list(candidates), cancelled=cancelled)
+        if cancelled is not None and cancelled.is_set():
+            self._drop_stale_speculation()
+            return len(candidates)
         retry = self._discard_retryable(claimed)
         if retry:
-            self._warm_until([candidate for candidate in candidates if candidate[0] in retry])
+            self._warm_until([candidate for candidate in candidates if candidate[0] in retry], cancelled=cancelled)
+        if cancelled is not None and cancelled.is_set():
+            self._drop_stale_speculation()
+            return len(candidates)
         if archive_root is not None:
             self._prepare_existing_session_writes(
                 archive_root,
@@ -549,7 +560,9 @@ class LiveParseStage:
                 dropped.add(source_path)
         return dropped
 
-    def _warm_until(self, candidates: list[tuple[str, Provider, bool]]) -> None:
+    def _warm_until(
+        self, candidates: list[tuple[str, Provider, bool]], *, cancelled: threading.Event | None = None
+    ) -> None:
         """Submit ``candidates`` as capacity allows and wait until each is prepared.
 
         There is no deadline. A large file's preparation is real progress
@@ -559,7 +572,8 @@ class LiveParseStage:
         worker that has stopped advancing: preparation writes its sealed
         carrier as it goes, so the attempt directory's size is the forward
         progress signal. Worker death still ends a wait (``BrokenProcessPool``
-        at collection), and shutdown terminates stragglers.
+        at collection), shutdown terminates stragglers, and a set ``cancelled``
+        ends the wait at the next poll with nothing recorded for what remains.
         """
         remaining = list(candidates)
         wanted = {source_path for source_path, _provider, _is_stream in candidates}
@@ -567,6 +581,8 @@ class LiveParseStage:
         last_progress = time.monotonic()
         reported_at = last_progress
         while True:
+            if cancelled is not None and cancelled.is_set():
+                return
             remaining = self._submit_path_candidates(remaining)
             selected = [future for path, future in self._path_futures.items() if path in wanted]
             if not remaining and not selected:
@@ -585,7 +601,7 @@ class LiveParseStage:
             if done or advanced > progress:
                 progress = advanced
                 last_progress = reported_at = now
-            elif now - reported_at >= self._warm_timeout_seconds:
+            elif now - reported_at >= self._stall_report_seconds:
                 reported_at = now
                 emit(
                     "live.parse_prefetch.preparation_stalled",
@@ -1083,7 +1099,7 @@ class LiveParseStage:
         completed = 0
         shard_build_failures = 0
         consumed: set[Future[tuple[str, list[ParsedSession] | None, BaseException | None, str | None]]] = set()
-        for future in _completed_reporting_stalls(futures, stall_window=self._warm_timeout_seconds):
+        for future in _completed_reporting_stalls(futures, stall_window=self._stall_report_seconds):
             completed += 1
             consumed.add(future)
             candidate = futures[future]
@@ -1165,6 +1181,6 @@ __all__ = [
     "live_parse_and_shard_worker",
     "live_parse_worker",
     "live_watcher_parse_stage_max_inflight_bytes",
-    "live_watcher_parse_stage_warm_timeout_seconds",
+    "live_watcher_parse_stage_stall_report_seconds",
     "live_watcher_parse_stage_worker_count",
 ]

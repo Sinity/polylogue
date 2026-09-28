@@ -721,7 +721,7 @@ async def test_a_slow_json_preparation_is_awaited_not_deferred(tmp_path: Path, m
     monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", delayed_worker)
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
-    stage = LiveParseStage(max_workers=2, warm_timeout_seconds=0.05, shard_directory=tmp_path / "shards")
+    stage = LiveParseStage(max_workers=2, stall_report_seconds=0.05, shard_directory=tmp_path / "shards")
     processor = LiveBatchProcessor(
         Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
         (WatchSource(name="inbox", root=source_root),),
@@ -931,6 +931,83 @@ async def test_unchanged_preparation_defer_retries_through_fair_intake(
         assert later is not None and later.content_fingerprint is not None
     finally:
         released.set()
+        stage.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_fresh_discovery_keeps_a_page_of_lookahead_for_prefetch(tmp_path: Path) -> None:
+    """Discovery keeps the next page pending so its parsing can overlap this one.
+
+    Anti-vacuity: stop the walk once ``limit`` paths are pending and the
+    pending list is exactly the offered page, so the intake prefetch has no
+    path beyond the batch it is about to warm; drop the refill on the
+    carried-over branch and the second page has no lookahead either.
+    """
+    paths = _write_fixture_corpus(tmp_path / "sessions", count=6)
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    source = WatchSource(name="codex", root=paths[0].parent)
+    polylogue = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    watcher = LiveWatcher(polylogue, (source,), cursor=CursorStore(archive_root / "index.db"))
+    adapter = FileIntakeAdapter(DaemonIntakeContext(archive_root, watcher, (source,)), source)
+
+    first = [Path(str(item.payload)) for item in await adapter.discover(limit=2)]
+    assert len(first) == 2
+    assert len(adapter._fresh_pending) == 4
+    assert set(adapter._fresh_pending) - set(first)
+
+    # The first page was attempted; the next discovery offers the lookahead
+    # and refills a page behind it.
+    adapter._fresh_attempted_paths = set(first)
+    second = [Path(str(item.payload)) for item in await adapter.discover(limit=2)]
+    assert len(second) == 2 and not set(second) & set(first)
+    assert len(adapter._fresh_pending) == 4
+    assert set(adapter._fresh_pending) - set(second)
+
+
+def test_a_cancelled_warm_stops_waiting_and_installs_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cancellation ends an unbounded warm promptly and leaves no stale install.
+
+    Anti-vacuity: ignore ``cancelled`` in ``_warm_until`` and the warm waits
+    for the held worker, so the thread is still alive after the join; skip
+    the post-wait check and the warm installs prepared writes from its
+    abandoned snapshot.
+    """
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    (path,) = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    released = threading.Event()
+    original_worker = parse_prefetch.live_parse_path_worker
+
+    def held_worker(provider_value: str, source_path: str, *args: object, **kwargs: object) -> object:
+        released.wait(timeout=30)
+        return original_worker(provider_value, source_path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", held_worker)
+    monkeypatch.setattr(parse_prefetch, "_PROGRESS_POLL_SECONDS", 0.05)
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    installs: list[object] = []
+    monkeypatch.setattr(stage, "_prepare_existing_session_writes", lambda *a, **k: installs.append(k))
+    cancelled = threading.Event()
+    warm = threading.Thread(
+        target=stage.warm_paths,
+        args=([(str(path), Provider.CODEX, True)],),
+        kwargs={"archive_root": tmp_path / "archive", "cancelled": cancelled},
+    )
+    try:
+        warm.start()
+        deadline = time.monotonic() + 10
+        while str(path) not in stage._path_futures and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert str(path) in stage._path_futures
+        cancelled.set()
+        warm.join(timeout=5)
+        assert not warm.is_alive()
+        assert installs == []
+        assert str(path) not in stage._path_results
+    finally:
+        released.set()
+        warm.join(timeout=30)
         stage.shutdown()
 
 
@@ -1155,7 +1232,7 @@ def test_a_warm_waits_for_every_path_through_limited_capacity(tmp_path: Path, mo
 
     monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", delayed_worker)
     monkeypatch.setattr(parse_prefetch, "_PROGRESS_POLL_SECONDS", 0.02)
-    stage = LiveParseStage(max_workers=2, warm_timeout_seconds=0.05, shard_directory=tmp_path / "parse-shards")
+    stage = LiveParseStage(max_workers=2, stall_report_seconds=0.05, shard_directory=tmp_path / "parse-shards")
     candidates = [(str(path), Provider.CODEX, True) for path in paths]
     try:
         threading.Timer(0.3, released.set).start()
@@ -1210,7 +1287,7 @@ def test_a_slow_process_worker_is_awaited_and_verified_off_the_writer(
     path = _write_fixture_corpus(tmp_path / "sessions", count=1)[0]
     directory = tmp_path / "parse-shards"
     monkeypatch.setattr(parse_prefetch, "_PROGRESS_POLL_SECONDS", 0.02)
-    stage = LiveParseStage(max_workers=1, warm_timeout_seconds=0.02, shard_directory=directory, use_processes=True)
+    stage = LiveParseStage(max_workers=1, stall_report_seconds=0.02, shard_directory=directory, use_processes=True)
     monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", _delayed_path_worker)
     candidate = (str(path), Provider.CODEX, True)
     original_verify = PreparedJsonl.verify_files
@@ -1730,7 +1807,7 @@ def test_a_slow_in_memory_prefetch_is_awaited_and_reported(tmp_path: Path, monke
         max_workers=1,
         max_inflight_bytes=10_000_000,
         shard_directory=tmp_path / "parse-shards",
-        warm_timeout_seconds=0.05,
+        stall_report_seconds=0.05,
     )
     try:
         candidates = _live_parse_stage_candidates(paths, fallback_provider=Provider.CODEX)
