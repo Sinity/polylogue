@@ -677,9 +677,12 @@ def test_poison_observation_does_not_suppress_healthy_sibling(tmp_path: Path) ->
             acquired_at_ms=1,
         )
     report = _run(tmp_path)
-    assert report.done == 1 and report.failed == 1
+    # The poison raw's parser refusal is recorded durably and settles it as a
+    # terminal verdict; it neither blocks its sibling nor returns as work.
+    assert report.done == 2 and report.failed == 0
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id FROM sessions").fetchall() == [("healthy",)]
+    assert _run(tmp_path).made_no_publication_attempts
 
 
 def test_zero_output_requires_parser_evidence(tmp_path: Path) -> None:
