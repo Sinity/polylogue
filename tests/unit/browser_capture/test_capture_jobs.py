@@ -1256,7 +1256,7 @@ def test_explicit_default_retention_is_durable_declaration(tmp_path: Path) -> No
         }
         status, declared = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", body)
         assert status == 200
-        assert declared["receipt"]["no_op"] is False
+        assert declared["duplicate"] is False
 
         body.update(
             request_id="terminal-after-declaration",
