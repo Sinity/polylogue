@@ -242,7 +242,7 @@ class MachineErrorPayload(SurfacePayloadModel):
     details: Mapping[str, object] = Field(default_factory=dict)
     # The terminal outcome envelope (surfaces/outcome.py) the CLI error path
     # emits alongside the error; declared so the published schema admits it.
-    outcome: Mapping[str, object] | None = None
+    outcome: OutcomeEnvelope | None = None
 
     def to_dict(self) -> MachineErrorEnvelope:
         payload: MachineErrorEnvelope = {
@@ -255,7 +255,7 @@ class MachineErrorPayload(SurfacePayloadModel):
         if self.details:
             payload["details"] = require_json_document(dict(self.details), context="machine error details")
         if self.outcome is not None:
-            payload["outcome"] = require_json_document(dict(self.outcome), context="machine error outcome")
+            payload["outcome"] = require_json_document(self.outcome.to_dict(), context="machine error outcome")
         return payload
 
     def to_json(self, *, exclude_none: bool = False) -> str:

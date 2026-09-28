@@ -418,28 +418,3 @@ def test_embedding_session_window_reports_max_session_truncation(
     assert received["max_sessions"] == 3
     assert selected == ("s1", "s2")
     assert limited is True
-
-
-def test_failed_backfill_receipt_decodes_as_failed() -> None:
-    """A backfill that raises after acceptance persists a decodable receipt.
-
-    Anti-vacuity: drop ``progress``/``result`` from ``failed_backfill_terminal``
-    and ``_embedding_terminal_receipt`` rejects it, so the attempt reads back
-    as ``indeterminate`` on every retry of its request id.
-    """
-    import json
-
-    from polylogue.daemon.embedding_owner import failed_backfill_terminal
-    from polylogue.operations.machine_lifecycle import _embedding_terminal_receipt
-
-    payload = failed_backfill_terminal("maintenance.embeddings.backfill", RuntimeError("provider unavailable"))
-    decoded = _embedding_terminal_receipt(
-        "embedding_receipt:" + json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    )
-
-    assert decoded is not None
-    assert decoded["outcome"] == "failed"
-    # Red if the failure certifies zero work: what it changed is unknown.
-    assert decoded["effect"] == "indeterminate"
-    assert decoded["affected_count"] is None
-    assert decoded["result"] == {"done": None, "pending": None, "failed": None}

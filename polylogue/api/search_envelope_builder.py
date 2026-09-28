@@ -102,6 +102,7 @@ async def build_search_envelope_for_spec(
         not fetch_spec.query_terms
         and not fetch_spec.contains_terms
         and fetch_spec.similar_text is None
+        and fetch_spec.similar_session_id is None
         and fetch_spec.has_filters()
     )
     if not hits and filter_only:

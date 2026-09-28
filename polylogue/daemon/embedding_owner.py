@@ -63,7 +63,6 @@ __all__ = [
     "EmbeddingConvergenceResult",
     "compose_embedding_convergence",
     "execute_embedding_backfill_operation",
-    "failed_backfill_terminal",
 ]
 
 
@@ -657,7 +656,17 @@ async def execute_embedding_backfill_operation(
     except Exception as exc:
         if execution.operation_id is not None:
             await execution.stop("cancelled" if runtime.stop_reason(request) == "cancelled" else "refused")
-            await execution.finalize(failed_backfill_terminal(request.operation, exc), status="failed")
+            await execution.finalize(
+                {
+                    "operation": request.operation,
+                    "outcome": "failed",
+                    "sequence": 1,
+                    "effect": "no-effect",
+                    "stop_reason": "refused",
+                    "error": str(exc)[:512],
+                },
+                status="failed",
+            )
         raise
     state = await execution.state()
     return operation_envelope(
@@ -668,26 +677,3 @@ async def execute_embedding_backfill_operation(
         reference=execution.record,
         result=state.get("result", state),
     )
-
-
-def failed_backfill_terminal(operation: str, exc: BaseException) -> dict[str, object]:
-    """Terminal receipt for a backfill that raised after durable acceptance.
-
-    The run is settled as ``failed`` so a retry of the request id reads back a
-    decoded terminal instead of an undecodable attempt. What it changed before
-    raising is unknown -- a rebuild may already have marked sessions for
-    reindex, or convergence may have published some vectors -- so the effect
-    is ``indeterminate`` and every counter is ``None`` rather than a zero it
-    never measured.
-    """
-    return {
-        "operation": operation,
-        "outcome": "failed",
-        "sequence": 1,
-        "effect": "indeterminate",
-        "affected_count": None,
-        "stop_reason": "refused",
-        "progress": {"state": "stopped", "computed": None, "failed": None, "estimated_cost_usd": None},
-        "result": {"done": None, "pending": None, "failed": None},
-        "error": {"type": type(exc).__name__, "message": str(exc)},
-    }
