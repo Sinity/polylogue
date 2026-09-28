@@ -281,7 +281,8 @@ _HYPOTHESIS_DATABASE = Path(".cache/hypothesis/examples")
 #: which tests run nor what the run leaves behind. Anything else -- report
 #: files, cache-dependent selection (``--lf``), cache clearing, external
 #: configuration -- has an effect a receipt cannot supply, so it always runs.
-_REUSABLE_FLAGS = frozenset({"-x", "--exitfirst", "-q", "--quiet", "-v", "--verbose", "-vv", "--no-header"})
+# Verbosity flags are excluded: they ask for output a receipt cannot replay.
+_REUSABLE_FLAGS = frozenset({"-x", "--exitfirst", "-q", "--quiet", "--no-header"})
 _REUSABLE_VALUE_OPTIONS = frozenset({"-k", "-m"})
 _REUSABLE_PREFIXES = ("--tb=", "--maxfail=", "-k=", "-m=")
 
@@ -316,7 +317,7 @@ def _reuse_eligible(selection: list[str], *, root: Path) -> bool:
 
 
 def _ignored_python_sources(root: Path) -> bool:
-    """Whether any Python source pytest may load is ignored by Git.
+    """Whether any test input under the source trees is ignored by Git.
 
     The tree digest omits ignored files, and a named test still loads its
     ancestors' ``conftest.py`` and whatever it imports; an ignored one could
@@ -331,9 +332,9 @@ def _ignored_python_sources(root: Path) -> bool:
                 "--ignored",
                 "--exclude-standard",
                 "--",
-                "tests/*.py",
-                "polylogue/*.py",
-                "devtools/*.py",
+                "tests",
+                "polylogue",
+                "devtools",
                 "conftest.py",
             ],
             cwd=root,
@@ -343,7 +344,14 @@ def _ignored_python_sources(root: Path) -> bool:
         )
     except (OSError, subprocess.TimeoutExpired):
         return True
-    return result.returncode != 0 or bool(result.stdout.strip())
+    if result.returncode != 0:
+        return True
+    # Any ignored file a test may read (a module, a conftest, a JSON fixture a
+    # parametrization globs) is outside the digest; bytecode caches are not inputs.
+    return any(
+        line and "__pycache__/" not in line and not line.endswith((".pyc", ".pyo"))
+        for line in result.stdout.decode("utf-8", "replace").splitlines()
+    )
 
 
 def _git_ignored(path: Path, *, root: Path) -> bool:
@@ -604,7 +612,7 @@ _VALUE_TAKING_OPTIONS = frozenset(
 
 def _selected_test_modules(selection: list[str]) -> int:
     """How many test modules the selection names, directories expanded."""
-    count = 0
+    modules: set[Path] = set()
     # Only the operand of an option known to take one is skipped: pytest's
     # standalone flags (``-x``, ``--strict-markers``, ...) take none, and the
     # path after them is still a selection.
@@ -623,10 +631,11 @@ def _selected_test_modules(selection: list[str]) -> int:
         target = Path(argument.split("::", 1)[0])
         target = target if target.is_absolute() else ROOT / target
         if target.is_dir():
-            count += sum(1 for path in target.rglob("test_*.py") if path.is_file())
+            modules.update(path.resolve() for path in target.rglob("test_*.py") if path.is_file())
         elif target.is_file():
-            count += 1
-    return count
+            # Node ids of one file are one module, not several.
+            modules.add(target.resolve())
+    return len(modules)
 
 
 def _xdist_disabled(selection: list[str]) -> bool:

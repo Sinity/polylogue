@@ -1260,6 +1260,7 @@ def test_stateful_selectors_are_never_answered_from_a_receipt(tmp_path: Path, fl
     ("selection", "eligible"),
     [
         (["tests/unit/test_a.py", "-k", "fast", "-x", "--tb=short"], True),
+        (["tests/unit/test_a.py", "-v"], False),
         (["tests/unit/test_a.py", "--junitxml=/tmp/report.xml"], False),
         (["tests/unit/test_a.py", "--cache-clear"], False),
         (["/tmp/test_external.py"], False),
@@ -1505,3 +1506,24 @@ def test_generated_worker_options_go_before_the_path_separator() -> None:
     separator = cmd.index("--")
     assert cmd.index("-n") < separator
     assert cmd[separator + 1 :] == ["tests/unit/devtools"]
+
+
+def test_node_ids_of_one_file_count_as_one_module() -> None:
+    """Anti-vacuity: count selectors instead of files and eight node ids of one
+    file trigger xdist."""
+    selection = [f"tests/unit/devtools/test_run_tests.py::test_{index}" for index in range(8)]
+    assert run_tests._selected_test_modules(selection) == 1
+
+
+def test_an_ignored_fixture_disables_reuse(tmp_path: Path) -> None:
+    """Anti-vacuity: look only at ignored ``*.py`` and an ignored JSON fixture a
+    parametrization globs leaves the receipt reusable."""
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py"]
+    receipt = _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") == receipt
+    (tmp_path / ".git" / "info").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".git" / "info" / "exclude").write_text("*.local.json\n", encoding="utf-8")
+    (tmp_path / "tests" / "fixtures").mkdir(parents=True)
+    (tmp_path / "tests" / "fixtures" / "extra.local.json").write_text("{}", encoding="utf-8")
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
