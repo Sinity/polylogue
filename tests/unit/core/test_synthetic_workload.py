@@ -414,6 +414,20 @@ def test_codex_apply_patch_calls_carry_their_touched_path() -> None:
     assert paths > 0
 
 
+def test_custom_tool_calls_follow_the_measured_apply_patch_share() -> None:
+    """Anti-vacuity: unconditionally naming apply_patch makes every custom_tool_call a
+    patch, corrupting the tool-class distribution the committed profile measures
+    (150k apply_patch vs 560k other)."""
+    names: Counter[str] = Counter()
+    for item in generate_workload_corpus(seed=11, target_sessions=60, origins={"codex": 1.0}).iter_files():
+        for record in _records(item.data):
+            payload = record.get("payload") if isinstance(record, dict) else None
+            if isinstance(payload, dict) and payload.get("type") == "custom_tool_call":
+                names[str(payload.get("name"))] += 1
+    assert names["other"] > 0, "the measured 'other' share (560k of 710k) must still appear"
+    assert names["apply_patch"] > 0
+
+
 def test_one_record_codex_sessions_stay_one_record() -> None:
     """Anti-vacuity: a lower bound of two records turns every metadata-only session conversational."""
     measured = load_workload_profile("codex")

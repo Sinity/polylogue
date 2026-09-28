@@ -1084,8 +1084,14 @@ def _claude_code_stream(
         if kind == "user_tool_result" and not open_calls:
             kind = "assistant_tool_use"
         record_uuid = _uuid(rng)
-        timestamp = clock.tick()
-        base = {"parentUuid": parent, **common, "uuid": record_uuid, "timestamp": timestamp}
+        # Advancing the clock is deferred until it is known whether this
+        # record actually carries a timestamp: _claude_code_template's
+        # chosen skeleton can omit the key entirely (a metadata record like
+        # file-history-snapshot), and ticking regardless would still consume
+        # a full sampled gap for it, inflating the session's measured
+        # duration whenever such a template follows a timestamped record.
+        placeholder_timestamp = _iso(clock.now)
+        base = {"parentUuid": parent, **common, "uuid": record_uuid, "timestamp": placeholder_timestamp}
         record: dict[str, object]
         if kind.startswith("assistant_"):
             if kind == "assistant_tool_use":
@@ -1159,7 +1165,8 @@ def _claude_code_stream(
         if record.get("uuid") == record_uuid:
             parent = record_uuid
             out.last_uuid = record_uuid
-        if record.get("timestamp") == timestamp:
+        if record.get("timestamp") == placeholder_timestamp:
+            record["timestamp"] = clock.tick()
             out.stamped(clock.now)
         out.lines.append(_dumps(record))
     # Calls the stream ended without answering stay unanswered, as in real
@@ -1366,9 +1373,20 @@ def _codex_stream(
                 arguments = _codex_arguments(rng, name, text(kind, f"{kind}:{name}"))
                 payload = {"type": "function_call", "name": name, "arguments": arguments, "call_id": call_id}
             else:
-                patch = _patch_text(_path_text(rng, "/workspace/synthetic", 40), text(kind, f"{kind}:apply_patch"))
+                # The committed profile distinguishes apply_patch from every
+                # other custom-tool-call name (measured 150k vs 560k); sample
+                # which class this call is instead of always rendering
+                # apply_patch, or every generated custom call comes out a
+                # patch and the tool-class distribution is 100% patches.
+                custom_name = _draw_tool(rng, profile, "custom_tool_call:", ("other",))
+                if custom_name == "apply_patch":
+                    custom_input: Text = _patch_text(
+                        _path_text(rng, "/workspace/synthetic", 40), text(kind, f"{kind}:apply_patch")
+                    )
+                else:
+                    custom_input = text(kind, f"{kind}:{custom_name}")
                 payload = {"type": "custom_tool_call", "id": _token(rng, "ctc_", 48), "status": "completed",
-                           "call_id": call_id, "name": "apply_patch", "input": patch}  # fmt: skip
+                           "call_id": call_id, "name": custom_name, "input": custom_input}  # fmt: skip
         elif kind in {"function_call_output", "custom_tool_call_output"}:
             wanted = "function_call" if kind == "function_call_output" else "custom_tool_call"
             position = next((i for i, (_, k) in enumerate(open_calls) if k == wanted), 0)

@@ -202,7 +202,7 @@ def _count_shares(origin: str, kind: str, record: Mapping[str, object], shares: 
     if text is not None:
         shares["texts"] += weight
         shares[f"texts:{kind}"] += weight
-        if not text[:2000].isascii():
+        if not text.isascii():
             shares["non_ascii_texts"] += weight
             shares[f"non_ascii_texts:{kind}"] += weight
     tool = tool_name_of(origin, kind, record)

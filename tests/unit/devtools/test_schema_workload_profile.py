@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from pathlib import Path
 
 import pytest
 
-from devtools.schema_workload_profile import _stream_families, default_source_root, main, measure
+from devtools.schema_workload_profile import (
+    Weights,
+    _count_shares,
+    _stream_families,
+    default_source_root,
+    main,
+    measure,
+)
 from polylogue.schemas.synthetic.workload import generate_workload_corpus
 
 
@@ -57,6 +65,17 @@ def test_write_refuses_when_no_streams_were_measured(tmp_path: Path, monkeypatch
     empty.mkdir()
     assert main(["--origin", "claude-code", "--source", str(empty), "--write"]) == 1
     assert target.read_text(encoding="utf-8") == "committed"
+
+
+def test_non_ascii_share_scans_the_whole_measured_text() -> None:
+    """Anti-vacuity: checking only text[:2000] leaves a non-ASCII character
+    past the prefix uncounted, systematically underreporting non-ASCII texts
+    whenever the measured text runs well beyond 2 KiB (as real transcripts
+    do), so the generated workload cannot reproduce the advertised rate."""
+    record = {"payload": {"type": "custom_tool_call", "input": "x" * 2500 + "é"}}
+    shares: Weights = defaultdict(float)
+    _count_shares("codex", "custom_tool_call", record, shares, 1.0)
+    assert shares.get("non_ascii_texts") == 1.0
 
 
 def test_default_roots_come_from_the_source_registry() -> None:
