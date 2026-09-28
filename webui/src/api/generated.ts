@@ -835,13 +835,13 @@ export type GetWebuiFreshnessParameters = {
 export type GetWebuiFreshnessResponse = {
   readonly [key: string]: unknown;
 };
-export type GetWebuiFreshnessError = QueryFailurePayload;
+export type GetWebuiFreshnessError = QueryFailurePayload | QueryErrorPayload;
 
 export type GetWebuiObservabilityParameters = Record<string, never>;
 export type GetWebuiObservabilityResponse = {
   readonly [key: string]: unknown;
 };
-export type GetWebuiObservabilityError = QueryFailurePayload;
+export type GetWebuiObservabilityError = QueryFailurePayload | QueryErrorPayload;
 
 export type ListAssertionClaimsParameters = {
   readonly context_inject?: boolean;

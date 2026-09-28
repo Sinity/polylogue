@@ -323,8 +323,20 @@ def _query_error_response(description: str) -> dict[str, Any]:
 
 def _query_failure_response() -> dict[str, Any]:
     return {
-        "description": "Unexpected failure answered at the request boundary, with an error outcome.",
-        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QueryFailurePayload"}}},
+        "description": (
+            "Server failure: the request boundary's unexpected-failure answer carries an error outcome; "
+            "a route's own typed 500 keeps the plain error envelope."
+        ),
+        "content": {
+            "application/json": {
+                "schema": {
+                    "anyOf": [
+                        {"$ref": "#/components/schemas/QueryFailurePayload"},
+                        {"$ref": "#/components/schemas/QueryErrorPayload"},
+                    ]
+                }
+            }
+        },
     }
 
 
