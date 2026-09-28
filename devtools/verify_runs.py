@@ -847,6 +847,17 @@ def _terminal_status(entry: Mapping[str, Any]) -> str:
     return "passed" if entry.get("exit_code") == 0 else "failed"
 
 
+#: Slot-receipt fields that name checkout-local files. The durable lane
+#: outlives the checkout, so a path there points at nothing and leaks layout.
+_SLOT_RECEIPT_LOCAL_FIELDS = frozenset({"log_path"})
+
+
+def _durable_slot_receipt(receipt: object) -> dict[str, Any] | None:
+    if not isinstance(receipt, Mapping):
+        return None
+    return {key: value for key, value in receipt.items() if key not in _SLOT_RECEIPT_LOCAL_FIELDS}
+
+
 def canonical_verification_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
     """Return the bounded, cross-source contract for one verifier run.
 
@@ -871,7 +882,7 @@ def canonical_verification_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
                 "exit_code": raw.get("exit"),
                 "duration_s": raw.get("duration_s"),
                 "diagnosis": raw.get("diagnosis"),
-                "pytest_slot_receipt": raw.get("pytest_slot_receipt"),
+                "pytest_slot_receipt": _durable_slot_receipt(raw.get("pytest_slot_receipt")),
                 "artifact_ref": f"polylogue://verification/{entry.get('run_id')}/steps/{raw.get('step_id')}"
                 if raw.get("step_id") is not None
                 else None,

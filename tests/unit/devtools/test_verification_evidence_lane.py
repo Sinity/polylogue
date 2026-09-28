@@ -46,6 +46,25 @@ def test_canonical_receipt_is_bounded_and_foreground_has_no_agentctl_ids(
     assert receipt["artifact_ref"].startswith("polylogue://verification/")
 
 
+def test_evidence_receipt_drops_the_slot_log_path(tmp_path: Path) -> None:
+    """The durable row keeps the slot outcome but not its checkout-local log path.
+
+    Anti-vacuity: copy the slot receipt through unchanged and ``log_path``
+    reappears in the row.
+    """
+    run = VerifyRun(tier="focused-test", argv=[], git_head="sha:abc", root=tmp_path)
+    step = run.start_step(label="pytest focused", cmd=["pytest"])
+    slot = {"status": "passed", "exit_code": 0, "log_path": str(tmp_path / ".cache" / "slot.log")}
+    run.finish_step(step_id=step.step_id, result={"exit": 0, "duration_s": 0.1, "pytest_slot_receipt": slot})
+    payload = run.finish(exit_code=0, duration_s=0.2, final_git_head="sha:abc")
+    evidence = tmp_path / "evidence.jsonl"
+    append_verification_evidence(payload, path=evidence)
+
+    [row] = read_verification_evidence(evidence)
+    assert row["steps"][0]["pytest_slot_receipt"] == {"status": "passed", "exit_code": 0}
+    assert str(tmp_path) not in json.dumps(row)
+
+
 def test_history_exposes_declared_agentctl_join_identity_without_lifecycle_state(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
