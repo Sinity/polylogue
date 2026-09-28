@@ -90,6 +90,8 @@ def raw_authority_blockers_command(env: AppEnv, limit: int, offset: int, output_
             f"{item['blocker_id']}  kind={item['kind']}  plan={item['plan_id']}  observed_in={item['observed_pass_id']}"
         )
         click.echo(f"  reason: {item['reason']}")
+        click.echo(f"  expected: {json.dumps(item.get('expected'), sort_keys=True)}")
+        click.echo(f"  observed: {json.dumps(item.get('observed'), sort_keys=True)}")
     click.echo(f"({payload['returned_count']} of {payload['total_count']} unresolved)")
     if payload.get("truncated"):
         click.echo(f"Truncated: pass --offset {payload['next_offset']} for the next page.")
@@ -133,6 +135,7 @@ def raw_authority_blocker_resolve_command(
         {
             "blocker_id": blocker_id,
             "resolution": reason,
+            "confirm": True,
         },
     )
     receipt_result = result.get("result")

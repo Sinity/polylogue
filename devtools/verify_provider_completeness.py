@@ -27,6 +27,9 @@ def main(argv: list[str] | None = None) -> int:
     """Render the declaration-backed provider completeness report."""
     args = _parser().parse_args(argv)
     report = provider_package_completeness(origin=args.origin)
+    if args.origin is not None and not report.rows:
+        print(f"provider completeness: no packages matched origin {args.origin!r}", file=sys.stderr)
+        return 1
     blockers = accepted_blockers(report)
 
     if args.json:

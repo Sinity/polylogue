@@ -317,8 +317,9 @@ def test_sample_and_gc_write_under_armed_lease_enforcement(tmp_path: Path) -> No
     the calling thread every run. ``arm_write_lease_enforcement`` is used in
     its default thread-local scope, so it cannot leak to other pytest workers.
 
-    Anti-vacuity: dropping either ``write_lease`` from
-    ``cursor_lag_baseline`` turns this red with ``UnleasedWriteError``. That
+    Anti-vacuity: dropping either ``write_lease`` or the archive identity on
+    ``open_initialized_tier_connection`` turns this red with
+    ``UnleasedWriteError``. That
     was the live defect -- ``daemon/status.py``'s health collector thread and
     ``daemon/http.py``'s ``/health`` handler both reach these writes without a
     lease, and ``daemon/health.py`` swallows the refusal to a warning, so the

@@ -107,6 +107,7 @@ def _workload_receipt(
     total_wall_s: float,
     cpu_seconds_total: float,
     peak_rss_mb: float,
+    peak_rss_bytes: int,
     proc_io: dict[str, Any],
     total_messages: int,
     expected_messages: int,
@@ -150,10 +151,16 @@ def _workload_receipt(
         version=1,
         inputs=(
             WorkloadInputRef(
-                input_id=(f"synthetic:{provider}:{seed}:{batches}:{'lineage' if lineage else 'corpus'}:{input_digest}"),
-                package_ref=provider,
-                seed=seed,
-                distribution_refs=("ingest-throughput.synthetic-corpus-v1",),
+                input_id=(
+                    f"lineage:codex:{batches}:{input_digest}"
+                    if lineage
+                    else f"synthetic:{provider}:{seed}:{batches}:{input_digest}"
+                ),
+                package_ref="codex" if lineage else provider,
+                seed=None if lineage else seed,
+                distribution_refs=(
+                    "ingest-throughput.synthetic-lineage-v1" if lineage else "ingest-throughput.synthetic-corpus-v1",
+                ),
             ),
         ),
         phases=("ingest",),
@@ -165,7 +172,7 @@ def _workload_receipt(
         # Match the report's four-decimal-second precision before converting
         # units, so the two projections cannot drift by rounding noise.
         cpu_ms=round(cpu_seconds_total, 4) * 1000.0,
-        peak_rss_bytes=round(peak_rss_mb * 1024 * 1024),
+        peak_rss_bytes=peak_rss_bytes,
         read_io_bytes=proc_io.get("read_bytes"),
         write_io_bytes=proc_io.get("write_bytes"),
         progress_completed=total_messages,
@@ -213,22 +220,12 @@ def _current_build_id() -> str | None:
             check=True,
             timeout=2,
         )
-        status = subprocess.run(
-            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
-            cwd=repository_root,
-            capture_output=True,
-            check=True,
-            timeout=2,
-        )
     except (OSError, subprocess.SubprocessError):
         return None
     revision = head.stdout.strip()
     if not revision:
         return None
-    return (
-        f"git:{revision}:tracked-diff:{hashlib.sha256(diff.stdout).hexdigest()}:"
-        f"status:{hashlib.sha256(status.stdout).hexdigest()}"
-    )
+    return f"git:{revision}:tracked-diff:{hashlib.sha256(diff.stdout).hexdigest()}"
 
 
 def _input_digest(files: list[Path]) -> str:
@@ -265,6 +262,11 @@ def _rusage_snapshot() -> Any:
     import resource
 
     return resource.getrusage(resource.RUSAGE_SELF)
+
+
+def _ru_maxrss_bytes(value: int, *, platform_name: str) -> int:
+    """Convert getrusage's platform-specific peak RSS unit to bytes."""
+    return int(value) if platform_name == "darwin" else int(value) * 1024
 
 
 def _file_size(path: Path) -> int:
@@ -721,7 +723,7 @@ def measure_ingest_throughput(
                     }
                 )
             input_digest = hashlib.sha256(
-                f"lineage:{provider}:{seed}:{batches}:{prefix_len}:{_LINEAGE_TAIL_MESSAGES}".encode()
+                f"lineage:codex:{batches}:{prefix_len}:{_LINEAGE_TAIL_MESSAGES}:messages_min={messages_min}:messages_max={messages_max}".encode()
             ).hexdigest()
 
         index_db = archive_root / "index.db"
@@ -804,8 +806,11 @@ def measure_ingest_throughput(
         cpu_seconds_total = ru_utime_delta + ru_stime_delta
         cpu_utilization = round(cpu_seconds_total / total_wall_s, 3) if total_wall_s > 0 else 0.0
 
-        # ---- memory: ru_maxrss is process-lifetime peak (KiB on Linux) ----
-        peak_rss_mb = round(rusage_after.ru_maxrss / 1024.0, 2)
+        # ru_maxrss is bytes on macOS and KiB on Linux/BSD.
+        import sys
+
+        peak_rss_bytes = _ru_maxrss_bytes(rusage_after.ru_maxrss, platform_name=sys.platform)
+        peak_rss_mb = round(peak_rss_bytes / (1024.0 * 1024.0), 2)
 
         resources = {
             "ru_utime_s": round(ru_utime_delta, 4),
@@ -903,6 +908,7 @@ def measure_ingest_throughput(
             "total_wall_s": total_wall_s,
             "cpu_seconds_total": cpu_seconds_total,
             "peak_rss_mb": peak_rss_mb,
+            "peak_rss_bytes": peak_rss_bytes,
             "proc_io": proc_io,
             "total_messages": total_messages,
             "expected_messages": expected_messages,
@@ -947,6 +953,7 @@ def measure_ingest_throughput(
             "cpu_seconds_total": round(cpu_seconds_total, 4),
             "cpu_utilization": cpu_utilization,
             "peak_rss_mb": peak_rss_mb,
+            "peak_rss_bytes": peak_rss_bytes,
             "peak_rss_scope": "process-lifetime ru_maxrss",
             "per_batch_ms": per_batch_block,
             "stage_timings_s": stage_timings_sorted,
@@ -964,6 +971,7 @@ def measure_ingest_throughput(
                 total_wall_s=total_wall_s,
                 cpu_seconds_total=cpu_seconds_total,
                 peak_rss_mb=peak_rss_mb,
+                peak_rss_bytes=peak_rss_bytes,
                 proc_io=proc_io,
                 total_messages=total_messages,
                 expected_messages=expected_messages,
@@ -1062,6 +1070,8 @@ def _format_human(report: dict[str, Any]) -> str:
         )
     else:
         lines.append("  throughput: unavailable (incomplete workload)")
+        lines.append(f"  parse_outcomes: {json.dumps(report.get('parse_outcomes', {}), sort_keys=True)}")
+        lines.append(f"  retained workdir: {report.get('workdir')}")
     storage = report.get("storage") or {}
     lines.append(
         f"  cpu: {report.get('cpu_seconds_total', 0.0):.3f}s "

@@ -197,6 +197,40 @@ def test_transcript_file_delivery_does_not_bypass_its_declared_operation(
     assert reached == ["cli.query"]
 
 
+def test_transcript_file_name_is_a_typed_path_even_when_reserved_or_comma(
+    probe_env: tuple[Any, Config, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file path never re-enters the polymorphic output grammar.
+
+    Anti-vacuity: forward the path in ``output`` and ``stdout`` becomes stdout
+    while commas split it into several independent destinations.
+    """
+    from polylogue.cli.query_contracts import QueryDeliveryTarget
+    from polylogue.cli.read_views import standard
+    from polylogue.cli.read_views.base import ReadViewInvocation
+    from polylogue.surfaces.projection_spec import RenderDestination
+
+    env, config, session_id = probe_env
+    observed: list[object] = []
+    monkeypatch.setattr(standard, "execute_query_request", lambda _env, req: observed.append(req.params))
+    request = RootModeRequest.from_params({"_config": config, "id": session_id})
+    for destination_path in ("stdout", "a,b.md"):
+        invocation = ReadViewInvocation(
+            view="transcript",
+            session_id=session_id,
+            output_format="markdown",
+            destination="file",
+            out_path=destination_path,
+        )
+        standard.run_read_summary_or_transcript(env, request, invocation)
+        params = observed[-1]
+        assert isinstance(params, dict)
+        target = params["_output_target"]
+        assert isinstance(target, QueryDeliveryTarget)
+        assert target.kind is RenderDestination.FILE
+        assert str(target.path) == destination_path
+
+
 def test_context_image_cancellation_is_final(
     probe_env: tuple[Any, Config, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -119,7 +119,14 @@ def run_read_summary_or_transcript(env: AppEnv, request: RootModeRequest, invoca
     elif invocation.destination == RenderDestination.FILE:
         if not invocation.out_path:
             raise click.UsageError("--to file requires --out <path>.")
-        execute_query_request(env, updated.with_param_updates(output=invocation.out_path))
+        from polylogue.cli.query_contracts import QueryDeliveryTarget
+
+        target = QueryDeliveryTarget(
+            raw=invocation.out_path,
+            kind=RenderDestination.FILE,
+            path=Path(invocation.out_path),
+        )
+        execute_query_request(env, updated.with_param_updates(output="stdout", _output_target=target))
     else:
         raise click.UsageError(f"Unrecognized read destination: {invocation.destination!r}.")
 

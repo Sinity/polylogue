@@ -1791,3 +1791,40 @@ def test_envelope_attachment_merge_matches_same_descriptor_rows_by_bytes() -> No
     assert sorted(by_id) == ["native-0", "native-1"]
     assert by_id["native-0"].inline_bytes == b"abc\x00"
     assert by_id["native-1"].inline_bytes == b"abc\x01"
+
+
+def test_claude_file_uuid_merges_into_native_attachment_identity() -> None:
+    """Anti-vacuity: retaining `claude-file:abc` as a second row duplicates one file."""
+    import base64
+
+    parsed = ParsedSession(
+        source_name=Provider.CLAUDE_AI,
+        provider_session_id="conv-uuid",
+        messages=[ParsedMessage(provider_message_id="a1", role=Role.ASSISTANT, text="file")],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id="abc",
+                message_provider_id="a1",
+                name="result.txt",
+                mime_type="text/plain",
+                size_bytes=4,
+            )
+        ],
+    )
+    envelope = _claude_envelope_with_attachments(
+        [
+            {
+                "provider_attachment_id": "claude-file:abc",
+                "message_provider_id": "a1",
+                "name": "result.txt",
+                "mime_type": "text/plain",
+                "size_bytes": 4,
+                "inline_base64": base64.b64encode(b"data").decode("ascii"),
+            }
+        ]
+    )
+
+    merged = _merge_envelope_attachments(parsed, envelope)
+
+    assert [item.provider_attachment_id for item in merged.attachments] == ["abc"]
+    assert merged.attachments[0].inline_bytes == b"data"

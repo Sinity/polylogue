@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeVar, cast
 from urllib.parse import parse_qs, parse_qsl, unquote, urlparse, urlsplit
 
 from polylogue.archive.query.transaction import (
+    QueryArchiveEpochUnreadableError,
     QueryContinuationInvalidError,
     QueryContinuationStaleError,
     archive_read_context,
@@ -121,6 +122,7 @@ from polylogue.surfaces.outcome import OutcomeEnvelope, combine_outcomes, decide
 from polylogue.surfaces.payloads import (
     MutationResultPayload,
     QueryErrorPayload,
+    QueryFailurePayload,
     QueryMissDiagnosticsPayload,
     QueryMissReasonPayload,
     ReaderActionAvailabilityPayload,
@@ -1045,129 +1047,168 @@ class DaemonMutationIndeterminate(RuntimeError):  # noqa: N818 - public typed ou
 
 
 def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Decorator that discriminates PolylogueError types to HTTP status codes.
+    """Decorator that answers a route's escaped exception with a typed envelope.
 
-    PolylogueError subclasses carry ``http_status_code`` — use it.
-    Unexpected exceptions map to 500 and are logged.
+    The mapping itself is ``_answer_route_exception``; the request boundary in
+    ``do_GET``/``do_POST``/``do_DELETE`` applies the same mapping to routes
+    that are not decorated.
     """
 
     @functools.wraps(fn)
     def wrapper(self: DaemonAPIHandler, *args: object, **kwargs: object) -> None:
         try:
             fn(self, *args, **kwargs)
-        except PolylogueError as exc:
-            status = (
-                HTTPStatus(exc.http_status_code)
-                if 100 <= exc.http_status_code <= 599
-                else HTTPStatus.INTERNAL_SERVER_ERROR
-            )
-            diagnostic = getattr(exc, "diagnostic", None)
-            if isinstance(diagnostic, dict):
-                self._send_json(status, diagnostic)
-                return
-            field = getattr(exc, "field", None)
-            self._send_json(
-                status,
-                QueryErrorPayload(
-                    error=type(exc).__name__,
-                    detail=str(exc),
-                    field=field,
-                ).model_dump(mode="json"),
-            )
-        except sqlite3.OperationalError as exc:
-            if _is_sqlite_busy_error(exc):
-                self._send_json(
-                    HTTPStatus.SERVICE_UNAVAILABLE,
-                    QueryErrorPayload(
-                        error="archive_busy",
-                        detail="Archive read route is temporarily unavailable while the daemon is writing catch-up data.",
-                    ).model_dump(mode="json"),
-                    extra_headers={"Retry-After": "1"},
-                )
-                return
-            emit(
-                "daemon.http.route_failed",
-                level=ERROR,
-                outcome="error",
-                reason="sqlite_error",
-                route=fn.__name__,
-                status_code=int(HTTPStatus.INTERNAL_SERVER_ERROR),
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
-            self._send_json(
-                HTTPStatus.INTERNAL_SERVER_ERROR,
-                QueryErrorPayload(error="sqlite_error").model_dump(mode="json"),
-            )
-        except TimeoutError as exc:
-            emit(
-                "daemon.http.route_timeout",
-                level=WARNING,
-                outcome="unmeasured",
-                reason="archive_query_timeout",
-                route=fn.__name__,
-                status_code=int(HTTPStatus.SERVICE_UNAVAILABLE),
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
-            self._send_json(
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                QueryErrorPayload(error="archive_query_timeout", detail=str(exc)).model_dump(mode="json"),
-                extra_headers={"Retry-After": "2"},
-            )
-        except DaemonBackpressureError as exc:
-            self._send_json(
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                QueryErrorPayload(error=exc.code, detail=str(exc)).model_dump(mode="json"),
-                extra_headers={"Retry-After": "1"},
-            )
-        except DaemonMutationIndeterminate as exc:
-            emit(
-                "daemon.http.mutation_indeterminate",
-                level=WARNING,
-                outcome="unmeasured",
-                reason="mutation_indeterminate",
-                route=fn.__name__,
-                status_code=int(HTTPStatus.SERVICE_UNAVAILABLE),
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
-            self._send_json(
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                QueryErrorPayload(error=exc.code, detail=str(exc)).model_dump(mode="json"),
-                extra_headers={"Retry-After": "5"},
-            )
-        except DaemonOperationCancelled as exc:
-            self._send_json(
-                HTTPStatus.REQUEST_TIMEOUT,
-                QueryErrorPayload(error=exc.code, detail=str(exc)).model_dump(mode="json"),
-            )
-        except _CLIENT_DISCONNECT_ERRORS as exc:
-            emit(
-                "daemon.http.client_disconnected",
-                level=DEBUG,
-                outcome="skipped",
-                reason="client_disconnected",
-                route=fn.__name__,
-                error_type=type(exc).__name__,
-            )
         except Exception as exc:
-            emit(
-                "daemon.http.route_failed",
-                level=ERROR,
-                outcome="error",
-                reason="unhandled_error",
-                route=fn.__name__,
-                status_code=int(HTTPStatus.INTERNAL_SERVER_ERROR),
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
-            self._send_json(
-                HTTPStatus.INTERNAL_SERVER_ERROR,
-                QueryErrorPayload(error="internal_error").model_dump(mode="json"),
-            )
+            _answer_route_exception(self, exc, route=fn.__name__)
 
     return wrapper
+
+
+def _answer_route_exception(
+    handler: DaemonAPIHandler, exc: Exception, *, route: str, method: str | None = None
+) -> None:
+    """Map one escaped route exception to its HTTP answer.
+
+    PolylogueError subclasses carry ``http_status_code`` — use it. Unexpected
+    exceptions map to a 500 ``internal_error`` envelope whose ``outcome`` is
+    an error ``OutcomeEnvelope``, logged once. When the response has already
+    started, a second status line would corrupt the stream, so the failure is
+    logged and the connection is closed instead. A client that disconnects,
+    whether in the route or while this answer is written, is logged at debug.
+    """
+
+    context: dict[str, object] = {"route": route}
+    if method is not None:
+        context["method"] = method
+    try:
+        if not isinstance(exc, _CLIENT_DISCONNECT_ERRORS):
+            _write_route_exception_answer(handler, exc, context=context)
+            return
+    except _CLIENT_DISCONNECT_ERRORS as write_exc:
+        exc = write_exc
+    emit(
+        "daemon.http.client_disconnected",
+        level=DEBUG,
+        outcome="skipped",
+        reason="client_disconnected",
+        error_type=type(exc).__name__,
+        **context,
+    )
+
+
+def _write_route_exception_answer(handler: DaemonAPIHandler, exc: Exception, *, context: dict[str, object]) -> None:
+    if handler._response_started:
+        emit(
+            "daemon.http.route_failed",
+            level=ERROR,
+            outcome="error",
+            reason="failed_after_response_started",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+            **context,
+        )
+        handler.close_connection = True
+        return
+    if isinstance(exc, PolylogueError):
+        status = (
+            HTTPStatus(exc.http_status_code) if 100 <= exc.http_status_code <= 599 else HTTPStatus.INTERNAL_SERVER_ERROR
+        )
+        diagnostic = getattr(exc, "diagnostic", None)
+        if isinstance(diagnostic, dict):
+            handler._send_json(status, diagnostic)
+            return
+        field = getattr(exc, "field", None)
+        handler._send_json(
+            status,
+            QueryErrorPayload(
+                error=type(exc).__name__,
+                detail=str(exc),
+                field=field,
+            ).model_dump(mode="json"),
+        )
+        return
+    if isinstance(exc, sqlite3.OperationalError) and _is_sqlite_busy_error(exc):
+        handler._send_json(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            QueryErrorPayload(
+                error="archive_busy",
+                detail="Archive read route is temporarily unavailable while the daemon is writing catch-up data.",
+            ).model_dump(mode="json"),
+            extra_headers={"Retry-After": "1"},
+        )
+        return
+    if isinstance(exc, TimeoutError):
+        emit(
+            "daemon.http.route_timeout",
+            level=WARNING,
+            outcome="unmeasured",
+            reason="archive_query_timeout",
+            status_code=int(HTTPStatus.SERVICE_UNAVAILABLE),
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+            **context,
+        )
+        handler._send_json(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            QueryErrorPayload(error="archive_query_timeout", detail=str(exc)).model_dump(mode="json"),
+            extra_headers={"Retry-After": "2"},
+        )
+        return
+    if isinstance(exc, DaemonBackpressureError):
+        handler._send_json(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            QueryErrorPayload(error=exc.code, detail=str(exc)).model_dump(mode="json"),
+            extra_headers={"Retry-After": "1"},
+        )
+        return
+    if isinstance(exc, DaemonMutationIndeterminate):
+        emit(
+            "daemon.http.mutation_indeterminate",
+            level=WARNING,
+            outcome="unmeasured",
+            reason="mutation_indeterminate",
+            status_code=int(HTTPStatus.SERVICE_UNAVAILABLE),
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+            **context,
+        )
+        handler._send_json(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            QueryErrorPayload(error=exc.code, detail=str(exc)).model_dump(mode="json"),
+            extra_headers={"Retry-After": "5"},
+        )
+        return
+    if isinstance(exc, QueryArchiveEpochUnreadableError):
+        # A missing or unreadable archive tier is retryable unavailability with
+        # its own code and guidance, as the query-unit route answers it.
+        handler._send_json(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            QueryErrorPayload(error=exc.code, detail=str(exc)).model_dump(mode="json"),
+        )
+        return
+    if isinstance(exc, DaemonOperationCancelled):
+        handler._send_json(
+            HTTPStatus.REQUEST_TIMEOUT,
+            QueryErrorPayload(error=exc.code, detail=str(exc)).model_dump(mode="json"),
+        )
+        return
+    error_code = "sqlite_error" if isinstance(exc, sqlite3.OperationalError) else "internal_error"
+    emit(
+        "daemon.http.route_failed",
+        level=ERROR,
+        outcome="error",
+        reason="sqlite_error" if error_code == "sqlite_error" else "unhandled_error",
+        status_code=int(HTTPStatus.INTERNAL_SERVER_ERROR),
+        error_type=type(exc).__name__,
+        error_detail=str(exc),
+        **context,
+    )
+    handler._send_json(
+        HTTPStatus.INTERNAL_SERVER_ERROR,
+        QueryFailurePayload(error=error_code, outcome=OutcomeEnvelope(state="error", reason=error_code)).model_dump(
+            mode="json"
+        ),
+    )
 
 
 def _is_sqlite_busy_error(exc: sqlite3.OperationalError) -> bool:
@@ -1427,9 +1468,18 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     """
 
     server: DaemonAPIHTTPServer
+    # Whether this request's status line has been written; once it has, an
+    # escaped exception can no longer be answered with its own status.
+    _response_started = False
 
     def log_message(self, format: str, *args: object) -> None:
         return
+
+    def send_response_only(self, code: int, message: str | None = None) -> None:
+        # An interim ``100 Continue`` precedes the real answer; it does not start it.
+        if code >= 200:
+            self._response_started = True
+        super().send_response_only(code, message)
 
     # ------------------------------------------------------------------
     # Auth
@@ -2116,26 +2166,18 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         self._send_error(HTTPStatus.NOT_FOUND, "not_found")
 
-    # #1677: client disconnects (refresh, navigate, tab close) surface as
-    # BrokenPipeError from wfile.write(). Stdlib lets that escape as a
-    # traceback to journal; we demote it to debug — the client has already
-    # given up by the time we know.
-    _CLIENT_DISCONNECT = _CLIENT_DISCONNECT_ERRORS
+    # Request boundary: an exception escaping any route is answered through
+    # ``_answer_route_exception`` rather than left to socketserver, which
+    # would print a traceback and drop the connection with no status. Client
+    # disconnects (#1677) are demoted to debug there.
 
     def do_GET(self) -> None:
+        self._response_started = False
         try:
             path, params = self._parse_path()
             self._dispatch_get(path, params)
-        except self._CLIENT_DISCONNECT as exc:
-            emit(
-                "daemon.http.client_disconnected",
-                level=DEBUG,
-                outcome="skipped",
-                reason="client_disconnected",
-                method="GET",
-                route=_request_path_for_log(self.path),
-                error_type=type(exc).__name__,
-            )
+        except Exception as exc:
+            _answer_route_exception(self, exc, route=_request_path_for_log(self.path), method="GET")
 
     def _reject_credential_query(self) -> bool:
         names = {
@@ -2247,18 +2289,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         return True
 
     def do_POST(self) -> None:
+        self._response_started = False
         try:
             self._do_post_impl()
-        except self._CLIENT_DISCONNECT as exc:
-            emit(
-                "daemon.http.client_disconnected",
-                level=DEBUG,
-                outcome="skipped",
-                reason="client_disconnected",
-                method="POST",
-                route=_request_path_for_log(self.path),
-                error_type=type(exc).__name__,
-            )
+        except Exception as exc:
+            _answer_route_exception(self, exc, route=_request_path_for_log(self.path), method="POST")
 
     def _do_post_impl(self) -> None:
         path, params = self._parse_path()
@@ -2279,18 +2314,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self._send_error(HTTPStatus.NOT_FOUND, "not_found")
 
     def do_DELETE(self) -> None:
+        self._response_started = False
         try:
             self._do_delete_impl()
-        except self._CLIENT_DISCONNECT as exc:
-            emit(
-                "daemon.http.client_disconnected",
-                level=DEBUG,
-                outcome="skipped",
-                reason="client_disconnected",
-                method="DELETE",
-                route=_request_path_for_log(self.path),
-                error_type=type(exc).__name__,
-            )
+        except Exception as exc:
+            _answer_route_exception(self, exc, route=_request_path_for_log(self.path), method="DELETE")
 
     def _do_delete_impl(self) -> None:
         path, params = self._parse_path()
@@ -3464,7 +3492,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             query_params["cursor"] = cursor
 
         archive_root = _web_reader_archive_root()
-        if archive_root is not None:
+        # The split archive list fast path is offset based. Search continuations
+        # carry a ranked keyset cursor, so send them through the canonical
+        # search builder instead of repeating page one and dropping the cursor.
+        if archive_root is not None and not cursor:
             self._send_json(HTTPStatus.OK, self._do_archive_session_list(archive_root, params, limit, offset, route))
             return
 

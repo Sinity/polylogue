@@ -112,7 +112,7 @@ def test_only_the_peak_setter_is_charged(tmp_path: Path, monkeypatch: pytest.Mon
 
 
 def test_a_watermark_reset_does_not_lower_the_peak(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A test that resets ``VmHWM`` must not erase what the run already cost."""
+    """Anti-vacuity: resetting VmHWM between tests must not charge the later test as a new peak setter."""
     reader = _Memory([0, 100, 900, 200, 200, 200, 200, 200])
     monkeypatch.setattr(retention_probe, "read_memory_kib", reader)
     monkeypatch.setattr(retention_probe, "_object_census", lambda: [])
@@ -131,3 +131,26 @@ def test_a_watermark_reset_does_not_lower_the_peak(tmp_path: Path, monkeypatch: 
 
     assert report["observed_anon_peak_kib"] == 900
     assert report["final_kib"]["VmHWM"] < report["observed_anon_peak_kib"]
+
+
+def test_worker_output_is_qualified_and_retention_ranking_is_separate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: an exact .json path collides under xdist and HWM sorting hides later retainers."""
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw1")
+    reader = _Memory([0, 100, 900, 200, 600, 600, 600, 600, 600])
+    monkeypatch.setattr(retention_probe, "read_memory_kib", reader)
+    monkeypatch.setattr(retention_probe, "_object_census", lambda: [])
+    monkeypatch.setattr(retention_probe, "_malloc_trim", lambda: True)
+    probe = RetentionProbe(report_path=tmp_path / "retention.json")
+    probe.pytest_sessionstart(session=None)
+    probe.pytest_collection_finish(session=None)
+    probe.pytest_runtest_logfinish("tests/peak.py::test_it", ("tests/peak.py", 1, "test_it"))
+    reader.reset_watermark()
+    probe.pytest_runtest_logfinish("tests/retainer.py::test_it", ("tests/retainer.py", 1, "test_it"))
+    probe.pytest_sessionfinish(session=None, exitstatus=0)
+
+    payload = json.loads((tmp_path / "retention-gw1.json").read_text(encoding="utf-8"))
+    assert payload["files"][0]["path"] == "tests/retainer.py"
+    assert payload["peak_setter_files"][0]["path"] == "tests/peak.py"
+    assert not (tmp_path / "retention.json").exists()

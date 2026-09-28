@@ -320,6 +320,14 @@ export type QueryExpressionExplanationAst = {
   readonly unsupported_nodes?: ReadonlyArray<string>;
 };
 
+export type QueryFailurePayload = {
+  readonly detail?: string | null;
+  readonly error: string;
+  readonly field?: string | null;
+  readonly ok?: false;
+  readonly outcome: OutcomeEnvelope;
+};
+
 export type QueryFieldPredicateAst = {
   readonly field: string;
   readonly field_ref?: QueryFieldRefAst | null;
@@ -819,13 +827,13 @@ export type WebSignInTicketPayload = {
 
 export type BootstrapWebCredentialParameters = Record<string, never>;
 export type BootstrapWebCredentialResponse = WebCredentialBootstrapPayload;
-export type BootstrapWebCredentialError = QueryErrorPayload | WebCredentialFailurePayload;
+export type BootstrapWebCredentialError = QueryErrorPayload | WebCredentialFailurePayload | QueryFailurePayload;
 
 export type GetStatusParameters = Record<string, never>;
 export type GetStatusResponse = {
   readonly [key: string]: unknown;
 };
-export type GetStatusError = QueryErrorPayload | WebCredentialFailurePayload;
+export type GetStatusError = QueryErrorPayload | WebCredentialFailurePayload | QueryFailurePayload;
 
 export type GetWebuiFreshnessParameters = {
   readonly source: string;
@@ -833,13 +841,13 @@ export type GetWebuiFreshnessParameters = {
 export type GetWebuiFreshnessResponse = {
   readonly [key: string]: unknown;
 };
-export type GetWebuiFreshnessError = unknown;
+export type GetWebuiFreshnessError = QueryFailurePayload | QueryErrorPayload;
 
 export type GetWebuiObservabilityParameters = Record<string, never>;
 export type GetWebuiObservabilityResponse = {
   readonly [key: string]: unknown;
 };
-export type GetWebuiObservabilityError = unknown;
+export type GetWebuiObservabilityError = QueryFailurePayload | QueryErrorPayload;
 
 export type ListAssertionClaimsParameters = {
   readonly context_inject?: boolean;
@@ -850,7 +858,7 @@ export type ListAssertionClaimsParameters = {
   readonly target_ref?: string;
 };
 export type ListAssertionClaimsResponse = AssertionClaimListPayload;
-export type ListAssertionClaimsError = QueryErrorPayload | WebCredentialFailurePayload;
+export type ListAssertionClaimsError = QueryErrorPayload | WebCredentialFailurePayload | QueryFailurePayload;
 
 export type MintWebSignInTicketParameters = Record<string, never>;
 export type MintWebSignInTicketResponse = WebSignInTicketPayload;
@@ -890,7 +898,7 @@ export type QueryUnitsParameters = {
   readonly until?: string;
 };
 export type QueryUnitsResponse = QueryUnitEnvelope | QueryUnitAggregateEnvelope;
-export type QueryUnitsError = QueryErrorPayload | WebCredentialFailurePayload;
+export type QueryUnitsError = QueryErrorPayload | WebCredentialFailurePayload | QueryFailurePayload;
 export type QueryParameters = Omit<QueryUnitsParameters, "continuation" | "expression"> & { readonly expression: string };
 export type QueryPage = Page<MessageQueryRowPayload | ActionQueryRowPayload | BlockQueryRowPayload | AssertionQueryRowPayload | FileQueryRowPayload | RunQueryRowPayload | ObservedEventQueryRowPayload | ContextSnapshotQueryRowPayload | DelegationQueryRowPayload | QueryUnitAggregateRowPayload, QueryUnitEnvelope | QueryUnitAggregateEnvelope>;
 
@@ -916,11 +924,11 @@ export type ReadSessionViewParameters = {
   readonly window_hours?: number;
 };
 export type ReadSessionViewResponse = SessionReadViewEnvelope;
-export type ReadSessionViewError = QueryErrorPayload | WebCredentialFailurePayload;
+export type ReadSessionViewError = QueryErrorPayload | WebCredentialFailurePayload | QueryFailurePayload;
 
 export type RevokeWebCredentialParameters = Record<string, never>;
 export type RevokeWebCredentialResponse = WebCredentialRevocationPayload;
-export type RevokeWebCredentialError = QueryErrorPayload | WebCredentialFailurePayload;
+export type RevokeWebCredentialError = QueryErrorPayload | WebCredentialFailurePayload | QueryFailurePayload;
 
 export type SearchSessionsParameters = {
   readonly cursor?: string;
@@ -934,7 +942,7 @@ export type SearchSessionsParameters = {
   readonly since?: string;
 };
 export type SearchSessionsResponse = SearchEnvelope | SessionListResponse;
-export type SearchSessionsError = QueryErrorPayload | WebCredentialFailurePayload;
+export type SearchSessionsError = QueryErrorPayload | WebCredentialFailurePayload | QueryFailurePayload;
 export type SearchParameters = Omit<SearchSessionsParameters, "query"> & { readonly query: string };
 export type SearchPage = Page<SessionSearchHitPayload, SearchEnvelope>;
 

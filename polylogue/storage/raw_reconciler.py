@@ -391,13 +391,6 @@ _OBLIGATION_STATES = {
 }
 
 
-#: How many acknowledgements of one still-blocking obligation this pass will
-#: walk past before refusing. The chain only grows when an operator resolves a
-#: blocker whose evidence is still blocking, so a long chain is itself the
-#: signal that acknowledgement is being used in place of a discharge.
-_MAX_FRONTIER_ACKNOWLEDGEMENT_CHAIN = 64
-
-
 def _open_frontier_blocker_id(conn: sqlite3.Connection, *, pass_id: str, plan_id: str) -> str:
     """Return the id this pass must publish its obligation under.
 
@@ -420,7 +413,7 @@ def _open_frontier_blocker_id(conn: sqlite3.Connection, *, pass_id: str, plan_id
     """
 
     blocker_id = f"raw-authority-blocker:{_digest(['frontier', pass_id, plan_id])}"
-    for _ in range(_MAX_FRONTIER_ACKNOWLEDGEMENT_CHAIN):
+    while True:
         row = conn.execute(
             "SELECT resolved_at_ms FROM raw_authority_blockers WHERE blocker_id = ?",
             (blocker_id,),
@@ -428,10 +421,6 @@ def _open_frontier_blocker_id(conn: sqlite3.Connection, *, pass_id: str, plan_id
         if row is None or row[0] is None:
             return blocker_id
         blocker_id = f"raw-authority-blocker:{_digest(['frontier', pass_id, plan_id, blocker_id])}"
-    raise RuntimeError(
-        f"raw authority frontier obligation for plan {plan_id} has been acknowledged "
-        f"{_MAX_FRONTIER_ACKNOWLEDGEMENT_CHAIN} times without being discharged"
-    )
 
 
 def _reconcile_frontier_obligations(
@@ -618,7 +607,7 @@ def inspect_raw_authority_frontier(config: Config) -> RawAuthorityFrontierCensus
     state_counts_counter = Counter(item.state.value for item in all_items)
     state_counts = json_document(dict(sorted(state_counts_counter.items())))
     inventory_digest = _digest([item.to_dict() for item in all_items])
-    gap_items = tuple(item for item in all_items if item.state is not RawAuthorityFrontierState.PROVEN_CURRENT)
+    gap_items = tuple(item for item in all_items if item.state in _OBLIGATION_STATES)
     plans = tuple(_plan(item) for item in gap_items)
     plan_inventory_digest = _digest([plan.to_dict() for plan in plans])
     pass_id = f"raw-authority-frontier-pass:{inventory_digest}"

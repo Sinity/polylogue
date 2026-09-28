@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
@@ -91,6 +93,32 @@ def test_verify_archive_cli_restricts_to_selected_checks(
     payload = json.loads(result.stdout)
     names = {check["name"] for check in payload["checks"]}
     assert names == {"tier-schema", "planner-stats"}
+
+
+def test_verify_archive_skips_source_enumeration_for_unrelated_checks(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import polylogue.config as config_module
+
+    monkeypatch.setattr(
+        config_module,
+        "resolve_runtime_config",
+        lambda **_kwargs: SimpleNamespace(source_paths=SimpleNamespace(explicit=True)),
+    )
+    monkeypatch.setattr(
+        config_module,
+        "configured_source_frontier",
+        lambda _runtime: pytest.fail("unselected source-conservation check enumerated configured sources"),
+    )
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "verify-archive", "--check", "planner-stats", "--output-format", "json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert {check["name"] for check in json.loads(result.stdout)["checks"]} == {"planner-stats"}
 
 
 def test_verify_archive_cli_rejects_unknown_check_name(
