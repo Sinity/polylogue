@@ -77,6 +77,7 @@ from devtools.verify_runs import (
     VerifyRun,
     append_verification_evidence,
     append_verify_history,
+    copy_current_pytest_artifacts,
     env_for_pytest_step,
     git_head,
     git_worktree_content_sha256,
@@ -155,7 +156,9 @@ def _format_duration(seconds: float) -> str:
 
 def print_outliers(limit: int = DEFAULT_OUTLIER_COUNT, *, root: Path = ROOT) -> int:
     """Print slow tests and files from the latest full-run pytest reports."""
-    report_paths = sorted((root / PYTEST_REPORT_DIR).glob(PYTEST_PARALLEL_REPORT_PATTERN))
+    report_paths = sorted(
+        path for path in (root / PYTEST_REPORT_DIR).glob("last-pytest-*.json") if path.name != PYTEST_REPORT_PATH.name
+    )
     tests: list[tuple[str, str, float]] = []
     for path in report_paths:
         try:
@@ -170,7 +173,7 @@ def print_outliers(limit: int = DEFAULT_OUTLIER_COUNT, *, root: Path = ROOT) -> 
             duration = _phase_duration(test)
             tests.append((test["nodeid"], test["nodeid"].split("::", 1)[0], duration))
     if not tests:
-        print(f"devtools test --outliers: no readable {PYTEST_PARALLEL_REPORT_PATTERN} receipts", file=sys.stderr)
+        print("devtools test --outliers: no readable full-run pytest receipts", file=sys.stderr)
         return 2
 
     serial_time = sum(duration for _nodeid, _filename, duration in tests)
@@ -825,6 +828,7 @@ def _run(
     artifacts: PytestStepArtifacts,
     report_path: Path,
     runner: str = "managed",
+    stdout: Any = None,
 ) -> tuple[int, float, dict[str, Any]]:
     """Run focused pytest through the host's pytest slot, preserving its receipt."""
     del label, run
@@ -842,7 +846,8 @@ def _run(
                 "options": semantic_rerun_options(command),
             }
         )
-        outcome = executor(command, cwd=cwd, env=env, root=ROOT)
+        output_option = {"stdout": stdout} if stdout is not None else {}
+        outcome = executor(command, cwd=cwd, env=env, root=ROOT, **output_option)
     except PytestSlotUnavailableError as exc:
         sys.stderr.write(f"devtools test: {exc}\n")
         runtime_evidence = getattr(exc, "runtime_evidence", None)
@@ -1131,7 +1136,8 @@ def main(argv: list[str] | None = None) -> int:
     # reaches the disposition below. Cancelled once that disposition is made.
     temp_guard = guard_temp_trees(run_temp)
     _prepare_nodatacow_parent(run_temp)
-    cmd = [*cmd, "--basetemp", str(run_temp)]
+    if not any(arg == "--basetemp" or arg.startswith("--basetemp=") for arg in selection):
+        cmd = [*cmd, "--basetemp", str(run_temp)]
     _clear_pytest_report(report_path)
     artifacts = run.start_step(label="pytest focused", cmd=cmd)
     started = time.monotonic()
@@ -1169,7 +1175,21 @@ def main(argv: list[str] | None = None) -> int:
             artifacts=artifacts,
             report_path=report_path,
             runner=runner,
+            stdout=sys.stderr if use_json else None,
         )
+        copy_current_pytest_artifacts(
+            ROOT,
+            artifacts,
+            legacy_paths={
+                "progress_path": PYTEST_PROGRESS_PATH,
+                "events_merged_path": PYTEST_EVENTS_PATH,
+                "selection_path": PYTEST_SELECTION_PATH,
+                "summary_path": PYTEST_SUMMARY_PATH,
+            },
+        )
+        slot_log = metadata.get("pytest_slot_log")
+        if isinstance(slot_log, str) and Path(slot_log).is_file():
+            shutil.copyfile(slot_log, ROOT / PYTEST_REPORT_DIR / "current-pytest-output.log")
         _publish_last_focused_pytest_report(report_path)
         metadata["testmon_preselection"] = {
             "status": graph.status.value,

@@ -589,7 +589,7 @@ async def test_record_demo_ownership_treats_missing_index_as_unsafe_not_empty(tm
     """A missing/unreadable index.db must never authorize moving aside real durable content.
 
     Guards polylogue-dl6af gap 2: ``index.db`` is explicitly the rebuildable
-    tier (this repo's "Schema regimes" doc) and can legitimately be absent
+    tier (this repo's AGENTS.md "Storage tiers" section) and can legitimately be absent
     on a real archive -- e.g. right after ``polylogue ops reset --index``,
     before the daemon has rebuilt it. Classifying that absence as "0
     sessions" (proof of emptiness) let the first-touch ownership manifest

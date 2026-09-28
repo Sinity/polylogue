@@ -77,10 +77,23 @@ def read_file_edits_page(
     The returned total is the relation's own count, never the page's.
     """
 
-    from polylogue.storage.sqlite.queries.file_edits import sync_file_edits_for_session
+    from polylogue.storage.sqlite.queries.file_edits import _SELECT_COLUMNS
+    from polylogue.storage.sqlite.queries.mappers import _row_to_file_edit
 
-    edits = sync_file_edits_for_session(archive._conn, session_id)
-    page = edits[offset : offset + limit] if limit else []
+    conn = archive._conn
+    total = int(conn.execute("SELECT COUNT(*) FROM file_edits WHERE session_id = ?", (session_id,)).fetchone()[0])
+    edits = (
+        [
+            _row_to_file_edit(row)
+            for row in conn.execute(
+                f"SELECT {_SELECT_COLUMNS} FROM file_edits WHERE session_id = ? "
+                "ORDER BY message_id, tool_use_block_id LIMIT ? OFFSET ?",
+                (session_id, max(limit, 0), max(offset, 0)),
+            ).fetchall()
+        ]
+        if limit > 0
+        else []
+    )
     rows: list[dict[str, object]] = [
         {
             "tool_use_block_id": edit.tool_use_block_id,
@@ -94,9 +107,9 @@ def read_file_edits_page(
             "user_modified": edit.user_modified,
             "observed_at_ms": edit.observed_at_ms,
         }
-        for edit in page
+        for edit in edits
     ]
-    return rows, len(edits)
+    return rows, total
 
 
 def read_agent_policies_evidence(archive: ArchiveStore, session_id: str) -> dict[str, object]:
@@ -142,10 +155,25 @@ def read_web_content_constructs_page(
     relation's own row count.
     """
 
-    from polylogue.storage.sqlite.queries.web_content_constructs import sync_web_content_constructs_for_session
+    from polylogue.storage.sqlite.queries.mappers_archive import _row_to_web_content_construct
+    from polylogue.storage.sqlite.queries.web_content_constructs import _SELECT_COLUMNS
 
-    constructs = sync_web_content_constructs_for_session(archive._conn, session_id)
-    page = constructs[offset : offset + limit] if limit else []
+    conn = archive._conn
+    total = int(
+        conn.execute("SELECT COUNT(*) FROM web_content_constructs WHERE session_id = ?", (session_id,)).fetchone()[0]
+    )
+    constructs = (
+        [
+            _row_to_web_content_construct(row)
+            for row in conn.execute(
+                f"SELECT {_SELECT_COLUMNS} FROM web_content_constructs WHERE session_id = ? "
+                "ORDER BY message_id, block_id, position LIMIT ? OFFSET ?",
+                (session_id, max(limit, 0), max(offset, 0)),
+            ).fetchall()
+        ]
+        if limit > 0
+        else []
+    )
     rows: list[dict[str, object]] = [
         {
             "construct_id": construct.construct_id,
@@ -171,9 +199,9 @@ def read_web_content_constructs_page(
             "start_index": construct.start_index,
             "end_index": construct.end_index,
         }
-        for construct in page
+        for construct in constructs
     ]
-    return rows, len(constructs)
+    return rows, total
 
 
 def read_session_events_page(

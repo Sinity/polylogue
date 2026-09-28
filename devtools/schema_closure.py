@@ -39,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
-    from polylogue.sources.origin_specs import derived_identity_source_closure, in_derived_identity_closure
+    from polylogue.sources.origin_specs import derived_identity_source_closure
 
     root = _repo_root()
     closure = derived_identity_source_closure()
@@ -54,7 +54,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{len(members)} files feed the derived schema identity.")
         return 0
 
-    results = [{"path": str(path), "in_closure": in_derived_identity_closure(path)} for path in args.paths]
+    resolved_closure = {member.resolve() for member in closure}
+    results = [
+        {"path": str(path), "in_closure": (path if path.is_absolute() else root / path).resolve() in resolved_closure}
+        for path in args.paths
+    ]
     if args.json:
         print(
             json.dumps(
@@ -70,8 +74,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{'IN ' if result['in_closure'] else 'out'}  {result['path']}")
         if any(result["in_closure"] for result in results):
             print(
-                "\nEditing a file marked IN moves the derived schema identity: the archive must reconverge, "
-                "and the change must land before a fresh rebuild starts, never during one."
+                "\nIN means conservative file membership. Semantic edits to a member may move the derived schema identity; "
+                "normalized-only edits may not. Confirm the identity before scheduling reconvergence."
             )
     return 0
 

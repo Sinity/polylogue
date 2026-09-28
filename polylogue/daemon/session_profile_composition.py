@@ -111,7 +111,9 @@ def compose_session_profile_callback(
     # A completed domain restarts on its next owner pass. Keep one domain
     # active until its bounded cursor is swept so earlier sessions cannot
     # consume the budget before a later domain reaches the same archive tail.
-    audit_domains = (summary.domain, usage_rollup.domain, profile.domain)
+    # Marker delivery is an independent durable cursor. Keep it in the bounded
+    # startup audit so a long profile scan cannot starve accepted markers.
+    audit_domains = (summary.domain, usage_rollup.domain, profile.domain, markers.domain)
     audit_budget = Budget(discovery=128, inspection=128, compute=64, publication=64, retained_outcomes=64)
     audit_lock = asyncio.Lock()
     audit_index = 0
@@ -129,13 +131,26 @@ def compose_session_profile_callback(
             resume=not audit_reset,
         )
         audit_reset = False
-        if report.cursor.position(domain).swept:
+        if report.cursor.position(domain).swept and report.pending:
+            # Quiet and blocked keys are retryable. Do not mark this audit
+            # domain complete while a full scan retained any such outcome.
+            audit_reset = True
+        elif report.cursor.position(domain).swept:
             audit_index += 1
             if audit_index == len(audit_domains):
                 demand_reset = True
         return report
 
     async def converge(scope: Sequence[str] | None) -> DerivationReport:
+        """Converge demanded session work; never the archive-wide audit.
+
+        Demand runs first on every tick (polylogue-6remh): a periodic tick
+        that swept the startup audit before demand starved demanded profiles
+        for as long as the audit took, and an idle tick must inspect nothing.
+        The audit is the startup/promotion sweep, advanced only in bounded
+        slices by :meth:`ComposedSessionProfiles.converge_backlog` after this
+        demand pass, and it does not repeat once swept.
+        """
         nonlocal demand_reset
         if scope is not None:
             frame = make_session_profile_frame(
@@ -143,8 +158,6 @@ def compose_session_profile_callback(
             )
             return await owner.converge(frame)
         async with audit_lock:
-            if audit_index < len(audit_domains):
-                return await audit_tick()
             frame = make_session_profile_frame(
                 index_path, archive_root=archive_root, scope=None, profile_demand_only=True
             )

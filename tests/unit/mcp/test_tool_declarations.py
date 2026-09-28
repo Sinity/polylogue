@@ -120,6 +120,13 @@ def test_live_handlers_match_their_declaration_modules_and_public_names() -> Non
         assert declaration.registration.registrar == expected_registrar
 
 
+def test_minimal_calls_supply_required_work_event_summaries() -> None:
+    """Anti-vacuity: invoking either declared minimal example must pass required summary validation."""
+    declarations = {item.name: item for item in MCP_TOOL_DECLARATIONS}
+    assert declarations["record_work_event"].minimal_arguments["summary"]
+    assert declarations["emit_decision"].minimal_arguments["summary"]
+
+
 def test_discovery_signatures_expose_real_resume_and_reference_inputs() -> None:
     server = build_server()
     signatures = {name: inspect.signature(tool.fn) for name, tool in server._tool_manager._tools.items()}

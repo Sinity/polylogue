@@ -3603,6 +3603,27 @@ def test_composed_verdict_reads_the_operands_the_composed_payload_publishes() ->
     assert operation_payload["ok"] is True
 
 
+def test_status_composition_preserves_runtime_collection_metadata() -> None:
+    """Pinned component values keep the runtime collector's state and age markers."""
+    from polylogue.operations.daemon_status import produce_operation_status
+
+    collection = {"state": "stale", "age_s": 42.0, "error": "collector timed out"}
+    runtime = {
+        **_daemon_payload_for_verdict_variant("clean"),
+        "component_readiness": {"search": {"collection": collection}},
+    }
+    pinned = _clean_pinned_status_payload()
+    with patch("polylogue.operations.daemon_status.produce_direct_status", return_value=pinned):
+        payload = produce_operation_status(
+            archive=cast(Any, _PinnedArchiveStub()),
+            now_ms=1_700_000_000_000,
+            runtime_status=runtime,
+        )
+
+    component_readiness = cast(dict[str, Any], payload["component_readiness"])
+    assert component_readiness["search"]["collection"] == collection
+
+
 def test_pinned_only_refutations_still_reach_the_composed_verdict() -> None:
     """A refutation only the pinned reader can see is never dropped either.
 

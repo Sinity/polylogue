@@ -33,6 +33,7 @@ from devtools.pytest_invocation import (
 from devtools.pytest_options import caller_plugins, operand_count, short_options_with_value
 from devtools.pytest_slot import PytestSlotUnavailableError, run_pytest, run_pytest_isolated
 from devtools.pytest_stream_report import report_file_argument
+from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV, write_run_receipt
 from devtools.toolchain import venv_python
 
 __all__ = [
@@ -42,6 +43,7 @@ __all__ = [
     "RERUN_IN_SLOT_RESULT",
     "adjudicate_rerun",
     "build_rerun",
+    "rerun_cost_dir",
     "rerun_environment",
     "read_json",
     "report_nodeid_to_selector",
@@ -222,6 +224,8 @@ def build_rerun(
         *REPORT_PLUGIN_ARGS,
         *MANAGED_PLUGIN_ARGS,
         "-p",
+        SUITE_COST_PLUGIN_NAME,
+        "-p",
         "no:testmon",
         "-p",
         "no:randomly",
@@ -232,9 +236,16 @@ def build_rerun(
     return failed, command, rerun_report
 
 
-def rerun_environment(env: Mapping[str, str]) -> dict[str, str]:
-    """The rerun is one process: drop the xdist worker settings."""
-    return {key: value for key, value in env.items() if not key.startswith("PYTEST_XDIST")}
+def rerun_cost_dir(step_dir: Path) -> Path:
+    """Where the rerun's suite-cost plugin writes, beside the first run's."""
+    return step_dir / "suite-cost-rerun"
+
+
+def rerun_environment(env: Mapping[str, str], *, step_dir: Path) -> dict[str, str]:
+    """The rerun is one process (no xdist worker settings) with its own cost directory."""
+    rerun_env = {key: value for key, value in env.items() if not key.startswith("PYTEST_XDIST")}
+    rerun_env[SUITE_COST_DIR_ENV] = str(rerun_cost_dir(step_dir))
+    return rerun_env
 
 
 def adjudicate_rerun(
@@ -389,12 +400,13 @@ def rerun_failed_once(
     try:
         executor = run_pytest if runner == "managed" else run_pytest_isolated
         rerun_completed = executor(
-            rerun_command, cwd=str(root), env=rerun_environment(env), root=root, stdout=sys.stderr
+            rerun_command, cwd=str(root), env=rerun_environment(env, step_dir=step_dir), root=root, stdout=sys.stderr
         )
     except PytestSlotUnavailableError as exc:
         sys.stderr.write(f"\n  rerun could not acquire the pytest slot: {exc}\n")
         return {"attempted": failed, "still_failed": failed, "flaky": [], "rerun_report": None, "rerun_exit": 125}
     rerun_receipt = getattr(rerun_completed, "receipt", None)
+    write_run_receipt(rerun_cost_dir(step_dir))
     moved = _content_moved(
         first_provenance,
         rerun_receipt.get("worktree_provenance") if isinstance(rerun_receipt, Mapping) else None,

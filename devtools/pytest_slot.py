@@ -19,7 +19,8 @@ consumes, because the queue persists the submitting client's environment and
 the declared operation resolves its own.
 
 Every run started here also keeps its temporary trees inside the checkout and
-disposes of them on every exit but a failed run's; see :func:`basetemp_root`.
+disposes of them on success, while failures and interruptions retain their
+diagnostic trees and telemetry; see :func:`basetemp_root`.
 """
 
 from __future__ import annotations
@@ -662,9 +663,11 @@ def _submit(
     env: Mapping[str, str],
     root: Path,
     on_exit: Callable[[], None],
+    resource_state: dict[str, bool] | None = None,
+    preserve_guard: Callable[[], None] | None = None,
 ) -> SlotOutcome:
     """Run ``command`` as the declared pytest-pool operation and wait for it."""
-    identity = f"{os.getpid()}"
+    identity = f"{os.getpid()}-{time.time_ns():x}"
     launch_path = root / LAUNCH_DIR / f"pytest-slot-{identity}.json"
     log_path = root / LAUNCH_DIR / f"pytest-slot-{identity}.log"
     client = client_environment(env)
@@ -703,14 +706,22 @@ def _submit(
         # Only on this waiter's own death (a signal or interpreter exit): the
         # job is then cancelled, by reference so it is found even if the queue
         # dropped its entry.
-        _reap_job(job_id, reference=reference, env=client, launch_path=launch_path)
+        cancelled = _reap_job(job_id, reference=reference, env=client, launch_path=launch_path)
+        if cancelled:
+            on_exit()
+        elif resource_state is not None:
+            resource_state["preserve"] = True
+            if preserve_guard is not None:
+                preserve_guard()
 
-    with _on_exit(reap_owned_job, on_exit):
+    with _on_exit(reap_owned_job):
         view = _wait_for(job_id, reference=reference, env=client)
     receipt = _read_slot_result(log_path)
     try:
         returncode = _job_exit_status(view, receipt=receipt)
     except PytestSlotUnavailableError as exc:
+        if view.get("terminal") is True:
+            launch_path.unlink(missing_ok=True)
         exc.runtime_evidence = {
             "job_id": job_id,
             "phase": view.get("phase"),
@@ -762,6 +773,7 @@ def _progress_counts(environment: Mapping[str, str]) -> dict[str, Any]:
     events_path = environment.get("POLYLOGUE_PYTEST_EVENTS_PATH")
     if events_path:
         outcomes: dict[str, int] = {}
+        completed: set[str] = set()
         try:
             lines = Path(events_path).read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
@@ -771,14 +783,21 @@ def _progress_counts(environment: Mapping[str, str]) -> dict[str, Any]:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if not isinstance(event, Mapping) or event.get("event") != "test_report":
+            if not isinstance(event, Mapping):
+                continue
+            if event.get("event") == "test_finished" and isinstance(event.get("nodeid"), str):
+                completed.add(event["nodeid"])
+                continue
+            if event.get("event") != "test_report" or event.get("when") != "call":
                 continue
             outcome = event.get("outcome")
             if isinstance(outcome, str):
                 outcomes[outcome] = outcomes.get(outcome, 0) + 1
         if outcomes:
             counts["outcomes"] = outcomes
-            counts["terminal_count"] = sum(outcomes.values())
+            counts["terminal_count"] = len(completed)
+        elif completed:
+            counts["terminal_count"] = len(completed)
     return counts
 
 
@@ -789,6 +808,7 @@ class _ProgressSnapshot:
         self._environment = environment
         self._offsets: dict[Path, int] = {}
         self._outcomes: dict[str, int] = {}
+        self._completed: set[str] = set()
         self._bytes = 0
         self._mutex = threading.Lock()
 
@@ -828,13 +848,19 @@ class _ProgressSnapshot:
                         event = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if isinstance(event, Mapping) and event.get("event") == "test_report":
+                    if not isinstance(event, Mapping):
+                        continue
+                    if event.get("event") == "test_finished" and isinstance(event.get("nodeid"), str):
+                        self._completed.add(event["nodeid"])
+                    elif event.get("event") == "test_report" and event.get("when") == "call":
                         outcome = event.get("outcome")
                         if isinstance(outcome, str):
                             self._outcomes[outcome] = self._outcomes.get(outcome, 0) + 1
             if self._outcomes:
                 counts["outcomes"] = dict(self._outcomes)
-                counts["terminal_count"] = sum(self._outcomes.values())
+                counts["terminal_count"] = len(self._completed)
+            elif self._completed:
+                counts["terminal_count"] = len(self._completed)
             counts["event_bytes"] = self._bytes
             return counts
 
@@ -945,9 +971,10 @@ def _focused_worktree_provenance(cwd: str, environment: Mapping[str, str]) -> di
     # only if nothing moved between them.
     identity = checkout_identity(root)
     digest = git_worktree_content_sha256(root)
+    dirty = git_dirty(root)
     if identity.head is None or digest is None:
         raise PytestSlotUnavailableError("focused worktree content could not be identified")
-    if checkout_identity(root) != identity or git_worktree_content_sha256(root) != digest:
+    if checkout_identity(root) != identity or git_worktree_content_sha256(root) != digest or git_dirty(root) != dirty:
         raise PytestSlotUnavailableError("the checkout changed while its content was being identified")
     head = identity.head
     # The branch admitted at submission may have changed while the run queued.
@@ -959,7 +986,7 @@ def _focused_worktree_provenance(cwd: str, environment: Mapping[str, str]) -> di
     return {
         "git_head": head,
         "git_branch": identity.branch,
-        "git_dirty": git_dirty(root),
+        "git_dirty": dirty,
         "git_worktree_content_sha256": digest,
         "capture_source": "pytest_slot_start",
     }
@@ -984,15 +1011,15 @@ def _write_interrupted_result(
     memory: Mapping[str, Any] | None = None,
     profile: ChargeProfile | None = None,
 ) -> dict[str, Any]:
-    """Atomically preserve a typed timeout result before the worker dies."""
+    """Atomically preserve an interruption result before the worker dies."""
     receipt = _slot_receipt(
-        status="timed_out",
+        status="interrupted",
         elapsed_s=time.monotonic() - started,
         sizing=sizing,
         memory=memory,
         profile=profile,
         extra={
-            "diagnosis": "pytest_deadline",
+            "diagnosis": "pytest_interrupted",
             "signal": signal.Signals(signal_number).name,
             "progress": _progress_counts(environment),
         },
@@ -1010,6 +1037,7 @@ def _run_held(
     on_exit: Callable[[], None],
     telemetry_path: Path | None = None,
     result_path: Path | None = None,
+    on_interrupt: Callable[[], None] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """Run pytest here, in its own process group so a signalled waiter takes it along.
 
@@ -1035,6 +1063,7 @@ def _run_held(
         sys.stderr.write(note + "\n")
         sys.stderr.flush()
     progress = _ProgressSnapshot(env)
+    terminal_status = "running"
     if telemetry_path is not None:
         _persist_telemetry_seed(telemetry_path, sizing=sizing, progress=progress)
     if result_path is not None:
@@ -1046,7 +1075,7 @@ def _run_held(
         process.pid,
         snapshot_path=telemetry_path,
         snapshot_context=lambda: {
-            "status": "running",
+            "status": terminal_status,
             "pid": process.pid,
             "process_group": process.pid,
             "sizing": sizing,
@@ -1057,6 +1086,8 @@ def _run_held(
 
     def preserve(signal_number: int) -> None:
         """Write the terminated run's receipt before anything is disposed."""
+        if on_interrupt is not None:
+            on_interrupt()
         if result_path is None:
             return
         # One reading taken here rather than trusting the sampling thread's
@@ -1096,6 +1127,7 @@ def _run_held(
         # disposal cannot remove the evidence first.
         with _on_exit(stop, on_exit, on_signal=preserve):
             returncode = process.wait()
+            terminal_status = "passed" if returncode == 0 else "failed"
     finally:
         memory = sampler.stop()
     return returncode, _slot_receipt(
@@ -1153,8 +1185,9 @@ def run_pytest(
     as the ``pytest_focused`` operation in the host's single-slot pytest pool
     and reads the captured log.
 
-    The temporary trees are removed on every exit except a failed run's, whose
-    leftovers are worth reading.
+    Successful runs remove both temporary trees. Failed, interrupted, or
+    possibly still queued runs retain the resources needed for diagnosis or
+    execution.
     """
     argv, contained, scratch = contained_pytest_run(command, env=env, root=root)
     basetemp = scratch.with_name(scratch.name.removesuffix(".tmpdir"))
@@ -1166,13 +1199,18 @@ def run_pytest(
     sweep_stale_temp_trees(basetemp.parent)
     guard = guard_temp_trees(scratch, basetemp)
     keep = False
+    resource_state = {"preserve": False}
 
     def dispose() -> None:
         guard.cancel()
-        if not keep:
+        if not keep and not resource_state["preserve"]:
             remove_temp_tree(scratch)
             remove_temp_tree(basetemp)
             telemetry_path.unlink(missing_ok=True)
+
+    def mark_interrupted() -> None:
+        nonlocal keep
+        keep = True
 
     try:
         if holds_pytest_slot(env):
@@ -1184,10 +1222,19 @@ def run_pytest(
                 on_exit=dispose,
                 telemetry_path=telemetry_path,
                 result_path=held_result_path,
+                on_interrupt=mark_interrupted,
             )
             outcome = SlotOutcome(returncode=returncode, slot=SLOT_HELD, receipt=receipt)
         else:
-            outcome = _submit(argv, cwd=cwd, env=contained, root=root, on_exit=dispose)
+            outcome = _submit(
+                argv,
+                cwd=cwd,
+                env=contained,
+                root=root,
+                on_exit=dispose,
+                resource_state=resource_state,
+                preserve_guard=guard.cancel,
+            )
         # A queued job keeps its first attempt's exit code even when its
         # in-slot rerun cleared every failure; that run is green, so its
         # scratch goes like any green run's.
@@ -1221,13 +1268,18 @@ def run_pytest_isolated(
     sweep_stale_temp_trees(basetemp.parent)
     guard = guard_temp_trees(scratch, basetemp)
     keep = False
+    resource_state = {"preserve": False}
 
     def dispose() -> None:
         guard.cancel()
-        if not keep:
+        if not keep and not resource_state["preserve"]:
             remove_temp_tree(scratch)
             remove_temp_tree(basetemp)
             telemetry_path.unlink(missing_ok=True)
+
+    def mark_interrupted() -> None:
+        nonlocal keep
+        keep = True
 
     try:
         returncode, receipt = _run_held(
@@ -1238,6 +1290,7 @@ def run_pytest_isolated(
             on_exit=dispose,
             telemetry_path=telemetry_path,
             result_path=held_result_path,
+            on_interrupt=mark_interrupted,
         )
         keep = returncode != 0
         return SlotOutcome(returncode=returncode, slot="isolated", receipt=receipt)
@@ -1273,7 +1326,14 @@ def _rerun_failures_in_slot(
     exit code of the job stays the first run's: adjudication belongs to the
     client, which also owns the report it patches.
     """
-    from devtools.pytest_rerun import RERUN_IN_SLOT_ENV, RERUN_IN_SLOT_RESULT, build_rerun, rerun_environment
+    from devtools.pytest_rerun import (
+        RERUN_IN_SLOT_ENV,
+        RERUN_IN_SLOT_RESULT,
+        build_rerun,
+        rerun_cost_dir,
+        rerun_environment,
+    )
+    from devtools.pytest_suite_cost_plugin import write_run_receipt
 
     raw = environment.get(RERUN_IN_SLOT_ENV)
     if not raw:
@@ -1317,7 +1377,7 @@ def _rerun_failures_in_slot(
     log.flush()
     # Fresh scratch for the second attempt, as a separately queued rerun had:
     # a test that leaves a sentinel in the temp dir must not see its own.
-    rerun_env = rerun_environment(environment)
+    rerun_env = rerun_environment(environment, step_dir=step_dir)
     first_scratch = environment.get("TMPDIR")
     if first_scratch:
         try:
@@ -1355,6 +1415,8 @@ def _rerun_failures_in_slot(
     # interrupted receipt.
     on_start(process)
     rerun_exit = process.wait()
+    with contextlib.suppress(OSError):
+        write_run_receipt(rerun_cost_dir(step_dir))
     with contextlib.suppress(OSError):
         (step_dir / RERUN_IN_SLOT_RESULT).write_text(
             json.dumps({"attempted": failed, "rerun_exit": rerun_exit, "worktree_provenance": provenance}),
@@ -1411,6 +1473,7 @@ def _run_launch(launch_path: Path) -> int:
     telemetry_path = _telemetry_path(log_path)
     started = time.monotonic()
     terminating = False
+    terminal_status = "running"
 
     # Chosen before the signal handler exists: an interrupted receipt must
     # corroborate against the same profile the width was admitted under.
@@ -1471,7 +1534,7 @@ def _run_launch(launch_path: Path) -> int:
                 child.pid,
                 snapshot_path=telemetry_path,
                 snapshot_context=lambda: {
-                    "status": "running",
+                    "status": terminal_status,
                     "pid": measured[0].pid,
                     "process_group": measured[0].pid,
                     "sizing": sizing,
@@ -1496,6 +1559,7 @@ def _run_launch(launch_path: Path) -> int:
                     on_start=register,
                     first_group=child.pid,
                 )
+            terminal_status = "passed" if returncode == 0 else "failed"
         except OSError as exc:
             log.write(f"devtools.pytest_slot: could not start pytest: {exc}\n".encode())
             return 125

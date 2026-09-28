@@ -27,6 +27,23 @@ def test_provider_completeness_human_output_includes_status(capsys: pytest.Captu
     assert "provider-package:codex-session/session-jsonl@v1: complete" in output
 
 
+def test_empty_requested_origin_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Anti-vacuity: an empty filtered report must not pass as a 0/0 success."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        verify_provider_completeness,
+        "provider_package_completeness",
+        lambda **_: SimpleNamespace(
+            rows=(), totals=SimpleNamespace(complete=0, total=0, partial=0, missing=0, reserved=0), to_json=lambda: "{}"
+        ),
+    )
+    assert verify_provider_completeness.main(["--origin", "retired-origin", "--check"]) == 1
+    assert "no packages matched" in capsys.readouterr().err
+
+
 def test_a_withdrawn_schema_package_reports_partial_and_names_the_missing_item(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

@@ -434,7 +434,7 @@ def corroborate_profile(
         return None
     processes = [entry for entry in memory.get("processes") or [] if entry.get("peak_private_kib")]
     peak = memory.get("peak") or {}
-    if not processes or not peak.get("rss_kib"):
+    if not processes or not peak.get("pss_kib"):
         return None
     try:
         workers = int(sizing["workers"])
@@ -444,7 +444,8 @@ def corroborate_profile(
     heaviest = max(processes, key=lambda entry: int(entry["peak_private_kib"]))
     worker_anon_mib = round(int(heaviest["peak_private_kib"]) / 1024, 1)
     worker_file_mib = round(max(0, int(heaviest["peak_rss_kib"]) - int(heaviest["peak_private_kib"])) / 1024, 1)
-    group_peak_mib = round(int(peak["rss_kib"]) / 1024, 1)
+    # PSS avoids counting shared controller/worker pages once per process.
+    group_peak_mib = round(int(peak["pss_kib"]) / 1024, 1)
     # A receipt may carry the largest worker's actual executed count in the
     # explicit ``observed_tests_per_worker`` field.  The sizing payload's
     # ``tests_per_worker`` is only the admission projection emitted before the
@@ -467,14 +468,30 @@ def corroborate_profile(
     estimated_worker_anon_mib = round(profile.worker_anon_for_tests(tests_per_worker), 1)
     predicted_mib = round(profile.charge_mib(workers, tests_per_worker=tests_per_worker), 1)
 
-    understated = worker_anon_mib > estimated_worker_anon_mib or group_peak_mib > predicted_mib
+    # Admission projections are not the completed run's worker distribution,
+    # and process telemetry omits cgroup page-cache/slab charges. Without both
+    # evidence sources a positive corroboration would overstate what was seen.
+    observed_tests_complete = observed_tests is not None
+    cgroup_peak = memory.get("cgroup_peak_mib")
+    group_exceeds_prediction = group_peak_mib > predicted_mib
+    worker_exceeds_prediction = worker_anon_mib > estimated_worker_anon_mib
+    # PSS is a lower bound on total cgroup charge, so an overage is conclusive.
+    # A smaller PSS is not proof of a match: page cache and slab may be absent.
+    verdict = "understated" if group_exceeds_prediction else "inconclusive"
+    if observed_tests_complete and isinstance(cgroup_peak, (int, float)):
+        verdict = "understated" if float(cgroup_peak) > predicted_mib or worker_exceeds_prediction else "corroborated"
     return {
-        "verdict": "understated" if understated else "corroborated",
+        "verdict": verdict,
         "workers": workers,
         "heaviest_pid": heaviest.get("pid"),
         "observed_worker_anon_mib": worker_anon_mib,
         "observed_worker_file_mib": worker_file_mib,
         "observed_group_peak_mib": group_peak_mib,
+        "observed_cgroup_peak_mib": cgroup_peak,
+        "inconclusive_reasons": [
+            *([] if observed_tests_complete else ["completed per-worker test count was not recorded"]),
+            *([] if isinstance(cgroup_peak, (int, float)) else ["peak cgroup charge was not recorded"]),
+        ],
         "tests_per_worker": round(tests_per_worker, 1) if tests_per_worker is not None else None,
         "tests_per_worker_source": (
             "observed_run"

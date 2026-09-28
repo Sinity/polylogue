@@ -105,6 +105,22 @@ def test_only_the_run_s_own_process_group_is_attributed(tmp_path: Path) -> None:
     assert [entry["pid"] for entry in document["processes"]] == [100]
 
 
+def test_detached_child_in_managed_cgroup_is_attributed(tmp_path: Path) -> None:
+    """A setsid child remains charged to the managed cgroup after leaving its process group."""
+    proc = _proc(tmp_path)
+    _process(proc, 100, pgid=100, pss_kib=100 * KIB)
+    _process(proc, 101, pgid=900, command="detached", pss_kib=700 * KIB)
+    (proc / "self").mkdir()
+    (proc / "self" / "cgroup").write_text("0::/managed/pytest\n")
+    cgroup_root = tmp_path / "cgroup"
+    member_dir = cgroup_root / "managed" / "pytest"
+    member_dir.mkdir(parents=True)
+    (member_dir / "cgroup.procs").write_text("100\n101\n")
+    sampler = ProcessGroupMemorySampler(100, proc=proc, cgroup_root=cgroup_root, meminfo=_meminfo(tmp_path, 8000))
+    sampler.sample()
+    assert sampler.snapshot()["peak"]["pss_kib"] == 800 * KIB
+
+
 def test_the_peak_survives_a_later_quieter_sample(tmp_path: Path) -> None:
     """What matters is the worst moment, not the state the run finished in."""
     proc = _proc(tmp_path)
