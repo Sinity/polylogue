@@ -25,12 +25,9 @@ reaches for it.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import sys
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
@@ -346,24 +343,9 @@ ACKNOWLEDGED_DIRNAME = "acknowledged"
 _CARRIER_DRAIN_LOCK = ".carrier-drain.lock"
 
 
-@contextmanager
-def _carrier_lock(root: Path, *, exclusive: bool) -> Iterator[None]:
-    """Block producers while the legacy carrier drain owns the spool."""
-    root.mkdir(parents=True, exist_ok=True)
-    with (root / _CARRIER_DRAIN_LOCK).open("a+b") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-
-
 def _carrier_scope_summary(root: Path) -> dict[str, object]:
-    """Hash carrier membership in a streaming walk without retaining paths."""
-    import hashlib
-
+    """Count carrier files in a bounded walk without retaining path strings."""
     carrier_root = root / CARRIERS_DIRNAME
-    digest = hashlib.sha256()
     count = 0
     if carrier_root.exists():
         stack = [carrier_root]
@@ -376,10 +358,8 @@ def _carrier_scope_summary(root: Path) -> dict[str, object]:
                 if entry.is_dir(follow_symlinks=False):
                     stack.append(path)
                 elif entry.is_file(follow_symlinks=False) and path.suffix == ".ndjson":
-                    digest.update(path.relative_to(carrier_root).as_posix().encode("utf-8"))
-                    digest.update(b"\0")
                     count += 1
-    return {"file_count": count, "sha256": digest.hexdigest()}
+    return {"file_count": count}
 
 
 class _CompactionSink:
@@ -606,17 +586,22 @@ def compact_legacy_spool(
     max_bytes: int = MAX_COMPACTED_CARRIER_BYTES,
     checkpoint_events: int = COMPACTION_CHECKPOINT_EVENTS,
 ) -> dict[str, object]:
-    """Drain the retired spool under an explicit carrier-producer quiesce.
+    """Drain the retired spool without blocking hook producers.
 
-    A producer racing this operation blocks on the shared lock and resumes
-    only after the receipt is complete. Such an event is a post-release
-    arrival for the next acquisition pass, never an omitted in-flight item.
+    The lock serializes concurrent compactors only. Live producers use unique
+    append-only carriers and can proceed while this bounded legacy drain runs.
     """
 
-    with _carrier_lock(root, exclusive=True):
+    root.mkdir(parents=True, exist_ok=True)
+    lock_fd = os.open(root / _CARRIER_DRAIN_LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        os.lockf(lock_fd, os.F_LOCK, 0)
         before = _carrier_scope_summary(root)
         summary = _compact_legacy_spool_unlocked(root, max_bytes=max_bytes, checkpoint_events=checkpoint_events)
         after = _carrier_scope_summary(root)
+    finally:
+        os.lockf(lock_fd, os.F_ULOCK, 0)
+        os.close(lock_fd)
     summary.update(
         carrier_compaction_serialized=True,
         carrier_producer_policy="hook producers do not wait for the legacy drain lock",

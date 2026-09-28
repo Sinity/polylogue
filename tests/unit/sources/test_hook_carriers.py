@@ -530,11 +530,11 @@ def test_compact_quiesces_carrier_producer_and_defers_mid_drain_arrival(
     policy = result["carrier_producer_policy"]
     assert policy == "hook producers do not wait for the legacy drain lock"
     # Anti-vacuity: restoring the old sorted path array grows the receipt with
-    # every carrier filename instead of keeping a fixed-size count/hash pair.
+    # every carrier filename instead of keeping a fixed-size count.
     scope = result["carrier_scope"]
     assert isinstance(scope, dict)
     assert set(scope) == {"before", "after"}
-    assert all(set(value) == {"file_count", "sha256"} for value in scope.values())
+    assert all(set(value) == {"file_count"} for value in scope.values())
     assert result["conservation_reconciliation"] == (
         "event_id basename; acknowledged day shard is destination metadata"
     )
