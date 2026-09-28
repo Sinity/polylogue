@@ -1616,6 +1616,9 @@ def publish_prepared_session_insight_partition(
         bundle = prepared.bundle
         replace_session_profiles_bulk_sync(conn, (bundle.profile_record,))
         replace_session_latency_profiles_bulk_sync(conn, (bundle.latency_profile_record,))
+        from polylogue.storage.derived.session.repo_observations import refresh_session_repos_sync
+
+        refresh_session_repos_sync(conn, prepared.session_id, bundle.repo_observations)
         conn.execute(
             "DELETE FROM session_profile_demand WHERE session_id = ? AND revision = ?",
             (prepared.session_id, expected_demand_revision),

@@ -685,7 +685,7 @@ async def _periodic_status_snapshot_refresh() -> None:
 
 
 async def _run_drive_source_catchup_once(
-    session_profile_callback: SessionProfileCallback,
+    session_profile_callback: SessionProfileCallback | None,
 ) -> int:
     """Acquire and parse configured Drive sources once.
 
@@ -728,7 +728,7 @@ async def _run_drive_source_catchup_once(
                 max_pass_seconds=_DRIVE_CATCHUP_MAX_PASS_SECONDS,
             )
             session_ids = tuple(sorted(result.parse_result.processed_ids))
-            if session_ids:
+            if session_ids and session_profile_callback is not None:
                 try:
                     await session_profile_callback(session_ids)
                 except Exception as exc:
@@ -763,7 +763,7 @@ async def _run_drive_source_catchup_once(
 
 
 async def _run_drive_source_catchup_safely(
-    session_profile_callback: SessionProfileCallback,
+    session_profile_callback: SessionProfileCallback | None,
 ) -> int:
     """Run Drive catch-up without letting remote-source failures kill daemon."""
     try:
@@ -2405,6 +2405,7 @@ async def _run_daemon_services_under_active_writer_lease(
         capabilities.add(ServiceCapability.API)
     if browser_port is not None:
         capabilities.add(ServiceCapability.BROWSER_HOST)
+    embedding_config = None
     if schema_blocked:
         capabilities.add(ServiceCapability.SCHEMA_BLOCKED)
     else:
@@ -2412,7 +2413,8 @@ async def _run_daemon_services_under_active_writer_lease(
         from polylogue.config import load_polylogue_config
         from polylogue.daemon.embedding_backlog import embedding_convergence_unavailable_reason
 
-        if embedding_convergence_unavailable_reason(load_polylogue_config()) is None:
+        embedding_config = load_polylogue_config()
+        if embedding_convergence_unavailable_reason(embedding_config) is None:
             capabilities.add(ServiceCapability.EMBEDDINGS)
 
     halts = HaltRegistry(archive_root_path)
@@ -2633,6 +2635,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 archive_root_path / "index.db",
                 compute_adapter=daemon_compute,
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
+                config=embedding_config,
             )
 
             async def converge_ingest_embeddings(index_db: Path, paths: Sequence[Path]) -> bool:
@@ -2739,7 +2742,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 ),
                 ("wal_checkpoint", _periodic_wal_checkpoint),
                 ("fts_merge", _periodic_fts_merge),
-                ("heartbeat", _periodic_heartbeat),
+                ("heartbeat", lambda: _periodic_heartbeat(sources=sources)),
                 (
                     "embedding_backlog",
                     lambda: periodic_embedding_backlog_check(
@@ -2841,7 +2844,10 @@ async def _run_daemon_services_under_active_writer_lease(
                         return await write_coordinator.run_sync(actor, function, *args, **kwargs)
 
                     async def run_remote_intake() -> int:
-                        assert session_profile_callback is not None
+                        if session_profile_callback is None:
+                            # Derived schema skew blocks profile publication,
+                            # but source acquisition remains durable and safe.
+                            return await _run_drive_source_catchup_safely(None)
                         return await _run_drive_source_catchup_safely(session_profile_callback)
 
                     async def discover_raw_intake(limit: int) -> tuple[tuple[str, int], ...]:
@@ -2867,6 +2873,11 @@ async def _run_daemon_services_under_active_writer_lease(
                                 AdmissionOutcome.RETRYABLE,
                                 reason=failed.error or "raw observation derivation failed",
                             )
+                        if report.failed:
+                            return AdmissionResult(
+                                AdmissionOutcome.RETRYABLE,
+                                reason="raw observation derivation domain failed",
+                            )
                         pending = next((outcome for outcome in outcomes if outcome.outcome is Outcome.PENDING), None)
                         if pending is not None:
                             return AdmissionResult(
@@ -2881,12 +2892,12 @@ async def _run_daemon_services_under_active_writer_lease(
                                 raw_id,
                                 session_profile_callback,
                             )
-                            return AdmissionResult(AdmissionOutcome.ADMITTED, actual_cost=1)
+                            return AdmissionResult(AdmissionOutcome.ADMITTED)
                         # A concurrent publisher may have made the inspected
                         # raw valid between discovery and this exact pass.
                         # Dispatcher acknowledgement is then warranted, but
                         # only because the canonical output relation said so.
-                        return AdmissionResult(AdmissionOutcome.DUPLICATE, actual_cost=1)
+                        return AdmissionResult(AdmissionOutcome.DUPLICATE)
 
                     async def discover_hook_events(limit: int) -> Sequence[tuple[str, int]]:
                         from polylogue.operations.hook_event_derivation import discover_pending_hook_carriers
@@ -2971,7 +2982,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         DaemonIntakeContext(
                             archive_root=archive_root_path,
                             watcher=watcher,
-                            sources=sources,
+                            sources=sources if enable_watch else (),
                             write_runner=run_intake_write,
                         ),
                         source_halts=SubUnitHaltPolicy(
@@ -3247,6 +3258,17 @@ async def _run_daemon_services_under_active_writer_lease(
                 # Preflight-blocked, or no intake service is schedulable under
                 # this profile: keep HTTP/health and other components serving
                 # so operators see the degraded state.
+                async def unresolved_intake_service() -> None:
+                    raise AssertionError("an intake service was selected after its construction guard")
+
+                for service_name in ("fair_intake", "watcher"):
+                    if supervisor.state(service_name) is ServiceState.PENDING:
+                        if watcher_creation_blocked:
+                            supervisor.mark_unavailable(
+                                service_name, reason="durable schema mismatch blocks intake construction"
+                            )
+                        else:
+                            supervisor.start(service_name, unresolved_intake_service)
                 if lifecycle_events_enabled:
                     await _emit_daemon_lifecycle_event(
                         "component_skipped",
@@ -3438,6 +3460,9 @@ async def _run_daemon_services_under_active_writer_lease(
             if uds_server is not None:
                 with contextlib.suppress(Exception):
                     uds_server.server_close()
+            from polylogue.daemon.execution import reset_daemon_compute_adapter
+
+            reset_daemon_compute_adapter()
             if cleanup_task is not None:
                 for _ in range(cleanup_cancel_requests):
                     cleanup_task.cancel()
