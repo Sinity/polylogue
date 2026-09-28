@@ -126,7 +126,7 @@ def test_a_rare_fifth_template_skeleton_is_retained() -> None:
     templates = _Templates(frozenset({"type", "a", "b", "c", "d", "e"}), frozenset())
     for index, key in enumerate("abcde"):
         templates.add("record:probe", {"type": "x", key: "v"}, 10.0 - index)
-    skeletons, _strings, _lists = templates.payload()
+    skeletons, _strings, _lists, _ints = templates.payload()
     assert len(skeletons["record:probe"]) == 5  # type: ignore[arg-type]
 
 
@@ -187,3 +187,47 @@ def test_turn_context_instructions_are_profiled() -> None:
     assert shares["turn_context:user_instructions"] == 1.0
     assert shares["turn_context:developer_instructions"] == 0.0
     assert shares["turn_contexts"] == 1.0
+
+
+@pytest.mark.parametrize(
+    "output",
+    [' {"metadata":{"exit_code":1},"output":"x"}', '{"metadata":{"exit_code":1},"output":"x"}'],
+)
+def test_json_custom_outputs_are_recognized_in_any_key_order(output: str) -> None:
+    """Anti-vacuity (Codex P2, #5670): require ``{"output"`` as a literal prefix
+    and a metadata-first or space-led object is not counted as structured."""
+    shares: Weights = defaultdict(float)
+    _count_shares("codex", "custom_tool_call_output", {"payload": {"output": output}}, shares, 1.0)
+    assert shares["custom_json"] == 1.0
+    assert shares["custom_errors"] == 1.0
+
+
+def test_exec_envelopes_are_counted_per_called_tool() -> None:
+    """Anti-vacuity (Codex P2, #5670): count one broad envelope rate and an
+    ``update_plan`` answer shares the rate of ``exec_command``."""
+    shares: Weights = defaultdict(float)
+    envelope = {"payload": {"output": "Wall time: 0.1 seconds\nProcess exited with code 0\nOutput:\n"}}
+    _count_shares("codex", "function_call_output", envelope, shares, 1.0, called_tool="exec_command")
+    _count_shares(
+        "codex", "function_call_output", {"payload": {"output": "ok"}}, shares, 1.0, called_tool="update_plan"
+    )
+    assert shares["exec_envelopes:exec_command"] == 1.0
+    assert shares["exec_envelopes:update_plan"] == 0.0
+    assert shares["exec_outputs:update_plan"] == 1.0
+
+
+def test_reasoning_summaries_are_profiled() -> None:
+    """Anti-vacuity (Codex P1, #5670): measure only the ciphertext and no
+    summary presence reaches the profile."""
+    shares: Weights = defaultdict(float)
+    record = {"payload": {"type": "reasoning", "summary": [{"type": "summary_text", "text": "thinking"}]}}
+    _count_shares("codex", "reasoning", record, shares, 1.0)
+    assert shares["reasoning_summary"] == 1.0
+
+
+def test_template_integers_keep_their_measured_values() -> None:
+    """Anti-vacuity (Codex P1, #5670): render template integers as 1..5000 and
+    a completed item's ``exit_code`` of 0 becomes a failure."""
+    from polylogue.schemas.synthetic.workload import template_measures
+
+    assert ("int", "payload.exit_code", 0) in set(template_measures({"payload": {"exit_code": 0}}))

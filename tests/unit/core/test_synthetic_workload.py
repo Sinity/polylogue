@@ -279,7 +279,13 @@ def test_codex_nested_subagents_keep_their_subagent_parent() -> None:
         shares={**measured.shares, "nested_subagents_per_subagent": 0.5, "orphan_subagents_per_session": 0.0},
         subagents_per_session=Histogram((2,), (1.0,)),
     )
-    files, _ = _codex_session(random.Random(1), profile, index=0)
+    # A nested spawn is sampled at its rate; take the first seed that draws one.
+    files: list[WorkloadFile] = []
+    for seed in range(1, 50):
+        files, _ = _codex_session(random.Random(seed), profile, index=0)
+        parents = {item.session_id: item.parent_session_id for item in files}
+        if any(parent in parents and parents[parent] is not None for parent in parents.values()):
+            break
     parents = {item.session_id: item.parent_session_id for item in files}
     starts = {item.session_id: _records(item.data)[0]["timestamp"] for item in files}
     main = next(item.session_id for item in files if item.parent_session_id is None)
@@ -731,3 +737,80 @@ def test_template_lists_and_strings_follow_their_own_field_measures() -> None:
     assert 16 <= len(files) <= 31
     assert len(str(record["filePath"])) <= 7
     assert len(str(record["content"])) >= 2048
+
+
+def test_an_unpaired_codex_result_is_emitted_after_its_synthesized_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P1, #5670): replace the unpaired result with its call
+    and the sampled result is never emitted."""
+    records = _scripted_codex(monkeypatch, ["session_meta", "custom_tool_call", "function_call_output"])
+    types = [_mapping_type(record) for record in records]
+    assert types.count("function_call") == 1
+    assert types.count("function_call_output") == 1
+    assert types.index("function_call") < types.index("function_call_output")
+
+
+def test_non_exec_codex_tools_get_no_exec_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P2, #5670): answer every function call at the broad
+    envelope rate and ``update_plan`` results carry ``Process exited`` lines."""
+    measured = load_workload_profile("codex").streams["main"]
+    records = _scripted_codex(
+        monkeypatch,
+        ["session_meta", *["function_call", "function_call_output"] * 6],
+        tool_names={"function_call:update_plan": 1.0},
+        shares={**measured.shares, "codex_exec_envelope_share": 1.0, "codex_exec_envelope_share:update_plan": 0.0},
+    )
+    outputs = [
+        str(payload.get("output")) for payload in _payloads(records) if payload.get("type") == "function_call_output"
+    ]
+    assert outputs and not [output for output in outputs if "Process exited" in output]
+
+
+def test_codex_reasoning_carries_its_summary_at_the_measured_share(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P1, #5670): always emit an empty summary and
+    production never materializes reasoning text."""
+    measured = load_workload_profile("codex").streams["main"]
+    records = _scripted_codex(
+        monkeypatch, ["session_meta", "reasoning"], shares={**measured.shares, "codex_reasoning_summary_share": 1.0}
+    )
+    (reasoning,) = [record for record in records if _mapping_type(record) == "reasoning"]
+    assert reasoning["payload"]["summary"]  # type: ignore[index]
+
+
+def test_parallel_claude_results_share_one_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P1, #5670): render one result per message and the
+    second parallel call stays unanswered."""
+    from polylogue.schemas.synthetic.workload import StreamProfile, _claude_code_session
+
+    measured = load_workload_profile("claude-code")
+    main = measured.streams["main"]
+    lengths = {
+        **main.lengths,
+        "assistant_tool_use:blocks": Histogram((2,), (1.0,)),
+        "user_tool_result:blocks": Histogram((2,), (1.0,)),
+    }
+    profile = dataclasses.replace(
+        measured,
+        streams={**measured.streams, "main": dataclasses.replace(main, lengths=lengths)},
+        subagents_per_session=Histogram((0,), (1.0,)),
+        shares={**measured.shares, "orphan_subagents_per_session": 0.0},
+    )
+    monkeypatch.setattr(
+        StreamProfile, "kind_sequence", lambda self, rng, count: ["assistant_tool_use", "user_tool_result"]
+    )
+    files, _stats = _claude_code_session(random.Random(7), profile, index=0)
+    call, result = _records(files[0].data)[:2]
+    called = [block["id"] for block in call["message"]["content"] if block["type"] == "tool_use"]  # type: ignore[index]
+    answered = [block["tool_use_id"] for block in result["message"]["content"] if block["type"] == "tool_result"]  # type: ignore[index]
+    assert len(called) >= 2 and sorted(answered) == sorted(called[: len(answered)]) and len(answered) >= 2
+
+
+def test_session_bytes_are_merged_in_bounded_segments() -> None:
+    """Anti-vacuity (Codex P1, #5670): join every line of a session into one
+    buffer and a record-count tail allocates a second transcript-sized copy."""
+    from polylogue.schemas.synthetic import workload
+
+    lines = [(b"x" * 1024,) for _ in range(3000)]
+    merged = workload._lines(lines)
+
+    assert max(len(segment) for segment in merged if isinstance(segment, bytes)) < 2 * workload._MERGED_SEGMENT_BYTES
+    assert len(merged) > 1

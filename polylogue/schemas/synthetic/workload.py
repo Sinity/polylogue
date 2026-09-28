@@ -353,12 +353,17 @@ def template_measures(
     Paths follow :func:`record_skeleton`'s structure (``a.b[].c``), keeping
     only the keys it keeps, so a generated field draws its own length --
     a file path is not sized like the file content beside it -- and a list
-    its own measured cardinality. ``measure`` is ``"str"`` or ``"list"``.
+    its own measured cardinality. ``measure`` is ``"str"``, ``"list"`` or
+    ``"int"`` (an integer leaf's own value, bucketed).
     """
     if depth > _SKELETON_DEPTH:
         return
     if isinstance(value, str):
         yield "str", path, len(value)
+    elif isinstance(value, int) and not isinstance(value, bool):
+        # Integers by magnitude: an ``exit_code`` that is almost always 0
+        # stays 0, a timestamp stays timestamp-sized.
+        yield "int", path, max(value, 0)
     elif isinstance(value, Mapping):
         if depth >= _SKELETON_DEPTH:
             return
@@ -528,6 +533,8 @@ class WorkloadProfile:
     template_strings: Mapping[str, Mapping[str, Histogram]] = field(default_factory=dict)
     #: List lengths per template kind and field path.
     template_lists: Mapping[str, Mapping[str, Histogram]] = field(default_factory=dict)
+    #: Integer leaf values per template kind and field path.
+    template_ints: Mapping[str, Mapping[str, Histogram]] = field(default_factory=dict)
     #: The rendered family's tool-call names (set by :meth:`for_stream`).
     tool_names: Mapping[str, float] = field(default_factory=dict)
 
@@ -553,6 +560,7 @@ class WorkloadProfile:
             },
             template_strings=_path_histograms(payload.get("template_strings")),
             template_lists=_path_histograms(payload.get("template_lists")),
+            template_ints=_path_histograms(payload.get("template_ints")),
         )
 
     def for_stream(self, stream: StreamProfile) -> WorkloadProfile:
@@ -579,7 +587,9 @@ class WorkloadProfile:
         else:
             weights = {str(index): weight for index, (_, weight) in enumerate(entries)}
             skeleton = entries[int(_weighted(rng, weights))][0]
-        shape = _TemplateShape(self.template_strings.get(kind, {}), self.template_lists.get(kind, {}))
+        shape = _TemplateShape(
+            self.template_strings.get(kind, {}), self.template_lists.get(kind, {}), self.template_ints.get(kind, {})
+        )
         record = _instantiate(skeleton, rng, fill, shape)
         return record if isinstance(record, dict) else {}
 
@@ -615,6 +625,7 @@ class _TemplateShape:
 
     strings: Mapping[str, Histogram]
     lists: Mapping[str, Histogram]
+    ints: Mapping[str, Histogram] = field(default_factory=dict)
 
 
 def _instantiate(
@@ -646,7 +657,8 @@ def _instantiate(
     if skeleton == "str":
         return synthetic_text(rng, shape.strings.get(path, _DEFAULT_STRINGS).sample(rng), non_ascii=False)
     if skeleton == "int":
-        return rng.randint(0, 5000)
+        measured = shape.ints.get(path)
+        return measured.sample(rng) if measured is not None else rng.randint(0, 5000)
     if skeleton == "float":
         return round(rng.random() * 100, 3)
     if skeleton == "bool":
@@ -972,18 +984,34 @@ def _dumps(record: object) -> tuple[Segment, ...]:
     return tuple(segments)
 
 
+#: Adjacent encoded bytes are merged into segments of at most this size, so
+#: a session of hundreds of thousands of records is never joined into one
+#: transcript-sized buffer.
+_MERGED_SEGMENT_BYTES = 1 << 20
+
+
 def _lines(lines: Sequence[tuple[Segment, ...]]) -> tuple[Segment, ...]:
-    """JSONL: each line's segments followed by a newline, adjacent bytes merged."""
+    """JSONL: each line's segments followed by a newline, adjacent bytes merged in bounded chunks."""
     merged: list[Segment] = []
     pending: list[bytes] = []
-    for line in lines:
+    pending_size = 0
+    releasable = isinstance(lines, list)
+    for index in range(len(lines)):
+        line = lines[index]
+        if releasable:
+            # The merged chunk now holds these bytes; the per-line copy goes.
+            lines[index] = ()  # type: ignore[index]
         for segment in (*line, b"\n"):
             if isinstance(segment, bytes):
                 pending.append(segment)
+                pending_size += len(segment)
+                if pending_size >= _MERGED_SEGMENT_BYTES:
+                    merged.append(b"".join(pending))
+                    pending, pending_size = [], 0
             else:
                 if pending:
                     merged.append(b"".join(pending))
-                    pending = []
+                    pending, pending_size = [], 0
                 merged.append(segment)
     if pending:
         merged.append(b"".join(pending))
@@ -1180,6 +1208,7 @@ class _Stream:
 
     @property
     def segments(self) -> tuple[Segment, ...]:
+        """The stream as JSONL segments; the per-line list is released as it is merged (read once)."""
         return _lines(self.lines)
 
 
@@ -1277,7 +1306,10 @@ def _claude_code_stream(
                 }
             record = {**base, "type": "assistant", "message": message, "requestId": _token(rng, "req_", 24)}
         elif kind == "user_tool_result":
-            call_id, call_uuid, call_name, call_input = open_calls.pop(0)
+            # Answers to parallel calls may share one message: the measured
+            # number of result blocks, each answering the next open call.
+            answered = [open_calls.pop(0) for _ in range(min(len(open_calls), stream.count(rng, f"{kind}:blocks")))]
+            call_id, call_uuid, call_name, call_input = answered[0]
             body = text(kind)
             content: Text = body
             if len(body) > _CC_SIDECAR_THRESHOLD and rng.random() < profile.share("sidecar_share_of_large", 0.5):
@@ -1292,15 +1324,22 @@ def _claude_code_stream(
                     "\n</persisted-output>",
                 )
             is_error = rng.random() < error_share
+            result_blocks: list[dict[str, object]] = [
+                {"tool_use_id": call_id, "type": "tool_result", "content": content, "is_error": is_error}
+            ]
+            for extra_id, _uuid_of_call, _name, _input in answered[1:]:
+                result_blocks.append(
+                    {
+                        "tool_use_id": extra_id,
+                        "type": "tool_result",
+                        "content": text(kind),
+                        "is_error": rng.random() < error_share,
+                    }  # fmt: skip
+                )
             record = {
                 **base,
                 "type": "user",
-                "message": {
-                    "role": "user",
-                    "content": [
-                        {"tool_use_id": call_id, "type": "tool_result", "content": content, "is_error": is_error}
-                    ],
-                },
+                "message": {"role": "user", "content": result_blocks},
                 "toolUseResult": _claude_code_tool_result(rng, call_name, call_input, body, spawned_agents),
                 "sourceToolAssistantUUID": call_uuid,
             }
@@ -1463,7 +1502,8 @@ def _codex_stream(
     kinds = stream.kind_sequence(rng, count)[1:]
     turn_id = _uuid(rng)
     out = _Stream()
-    open_calls: list[tuple[str, str]] = []
+    #: (call id, call kind, tool name) of unanswered calls.
+    open_calls: list[tuple[str, str, str]] = []
     totals = {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0, "reasoning_output_tokens": 0}
 
     def text(kind: str, length_key: str | None = None) -> Plain:
@@ -1497,6 +1537,32 @@ def _codex_stream(
     instructions = {
         field_name: text("turn_context", f"turn_context:{field_name}") for field_name in CODEX_TURN_INSTRUCTION_FIELDS
     }
+
+    def emit_call(kind: str) -> dict[str, object]:
+        """One call's payload, registered as open."""
+        call_id = _token(rng, "call_", 24)
+        out.tool_calls += 1
+        if kind == "function_call":
+            modelled = _draw_tool(rng, profile, "function_call:", CODEX_FUNCTION_TOOLS)
+            # An unmodelled function stays unmodelled: not a shell command.
+            name = _CODEX_OTHER_FUNCTION if modelled == "other" else modelled
+            open_calls.append((call_id, kind, name))
+            arguments = _codex_arguments(rng, name, text(kind, f"{kind}:{modelled}"))
+            return {"type": "function_call", "name": name, "arguments": arguments, "call_id": call_id}
+        # The committed profile distinguishes apply_patch from every other
+        # custom-tool-call name (measured 150k vs 560k); sample which class
+        # this call is instead of always rendering apply_patch.
+        custom_name = _draw_tool(rng, profile, "custom_tool_call:", ("other",))
+        open_calls.append((call_id, kind, custom_name))
+        if custom_name == "apply_patch":
+            custom_input: Text = _patch_text(
+                _path_text(rng, "/workspace/synthetic", 40), text(kind, f"{kind}:apply_patch")
+            )
+        else:
+            custom_input = text(kind, f"{kind}:{custom_name}")
+        return {"type": "custom_tool_call", "id": _token(rng, "ctc_", 48), "status": "completed",
+                "call_id": call_id, "name": custom_name, "input": custom_input}  # fmt: skip
+
     for kind in kinds:
         if kind == "legacy":
             continue
@@ -1511,10 +1577,14 @@ def _codex_stream(
             continue
         if kind in {"function_call_output", "custom_tool_call_output"}:
             wanted = "function_call" if kind == "function_call_output" else "custom_tool_call"
-            if not any(call_kind == wanted for _call_id, call_kind in open_calls):
-                # No call of this class is open: emit one, never answer a
-                # call of the other class with this result kind.
-                kind = wanted
+            if not any(call_kind == wanted for _call_id, call_kind, _name in open_calls):
+                # No call of this class is open: emit one first, then the
+                # sampled result answers it -- never a call of the other
+                # class, and the sampled result is not dropped.
+                call_time = clock.tick()
+                out.lines.append(
+                    _dumps({"timestamp": call_time, "type": "response_item", "payload": emit_call(wanted)})
+                )
         timestamp = clock.tick()
         payload: dict[str, object]
         record_type = "response_item"
@@ -1534,43 +1604,27 @@ def _codex_stream(
                        "content": [{"type": part_type, "text": text(kind)}],
                        "internal_chat_message_metadata_passthrough": passthrough}  # fmt: skip
         elif kind == "reasoning":
-            payload = {"type": "reasoning", "id": _token(rng, "rs_", 48), "summary": [], "content": None,
+            # The readable summary is what production materializes as the
+            # thinking text; the ciphertext beside it is opaque.
+            summary = (
+                [{"type": "summary_text", "text": text(kind, "reasoning:summary")}]
+                if rng.random() < profile.share("codex_reasoning_summary_share", 0.0)
+                else []
+            )
+            payload = {"type": "reasoning", "id": _token(rng, "rs_", 48), "summary": summary, "content": None,
                        "encrypted_content": synthetic_text(rng, max(16, stream.length(rng, kind)),
                                                            non_ascii=False, b64=True)}  # fmt: skip
         elif kind in {"function_call", "custom_tool_call"}:
-            call_id = _token(rng, "call_", 24)
-            open_calls.append((call_id, kind))
-            out.tool_calls += 1
-            if kind == "function_call":
-                modelled = _draw_tool(rng, profile, "function_call:", CODEX_FUNCTION_TOOLS)
-                # An unmodelled function stays unmodelled: not a shell command.
-                name = _CODEX_OTHER_FUNCTION if modelled == "other" else modelled
-                arguments = _codex_arguments(rng, name, text(kind, f"{kind}:{modelled}"))
-                payload = {"type": "function_call", "name": name, "arguments": arguments, "call_id": call_id}
-            else:
-                # The committed profile distinguishes apply_patch from every
-                # other custom-tool-call name (measured 150k vs 560k); sample
-                # which class this call is instead of always rendering
-                # apply_patch, or every generated custom call comes out a
-                # patch and the tool-class distribution is 100% patches.
-                custom_name = _draw_tool(rng, profile, "custom_tool_call:", ("other",))
-                if custom_name == "apply_patch":
-                    custom_input: Text = _patch_text(
-                        _path_text(rng, "/workspace/synthetic", 40), text(kind, f"{kind}:apply_patch")
-                    )
-                else:
-                    custom_input = text(kind, f"{kind}:{custom_name}")
-                payload = {"type": "custom_tool_call", "id": _token(rng, "ctc_", 48), "status": "completed",
-                           "call_id": call_id, "name": custom_name, "input": custom_input}  # fmt: skip
+            payload = emit_call(kind)
         elif kind in {"function_call_output", "custom_tool_call_output"}:
             wanted = "function_call" if kind == "function_call_output" else "custom_tool_call"
-            position = next(i for i, (_, k) in enumerate(open_calls) if k == wanted)
-            call_id, call_kind = open_calls.pop(position)
+            position = next(i for i, (_, k, _name) in enumerate(open_calls) if k == wanted)
+            call_id, call_kind, call_name = open_calls.pop(position)
             output_kind = f"{call_kind}_output"
             payload = {
                 "type": output_kind,
                 "call_id": call_id,
-                "output": _codex_output(rng, profile, output_kind, text(kind)),
+                "output": _codex_output(rng, profile, output_kind, text(kind), tool=call_name),
             }
         elif kind == "event_token_count":
             record_type = "event_msg"
@@ -1593,7 +1647,9 @@ def _codex_stream(
     return out
 
 
-def _codex_output(rng: random.Random, profile: WorkloadProfile, output_kind: str, body: Text) -> Text:
+def _codex_output(
+    rng: random.Random, profile: WorkloadProfile, output_kind: str, body: Text, *, tool: str | None = None
+) -> Text:
     """A tool output in the producer's structural form, with its exit code.
 
     Exec-style calls answer with the unified-exec envelope and custom tools
@@ -1602,9 +1658,18 @@ def _codex_output(rng: random.Random, profile: WorkloadProfile, output_kind: str
     outcome, as it does for real bare outputs.
     """
     if output_kind == "function_call_output":
-        if rng.random() >= profile.share("codex_exec_envelope_share", 0.0):
+        # Conditioned on the called tool: ``update_plan`` answers with no
+        # exec envelope, ``exec_command`` almost always with one.
+        modelled = "other" if tool == _CODEX_OTHER_FUNCTION else tool
+        envelope_share = profile.shares.get(
+            f"codex_exec_envelope_share:{modelled}", profile.share("codex_exec_envelope_share", 0.0)
+        )
+        error_share = profile.shares.get(
+            f"codex_exec_error_share:{modelled}", profile.share("codex_exec_error_share", 0.0)
+        )
+        if rng.random() >= envelope_share:
             return body
-        code = 1 if rng.random() < profile.share("codex_exec_error_share", 0.0) else 0
+        code = 1 if rng.random() < error_share else 0
         header = (
             f"Chunk ID: {rng.getrandbits(24):06x}\nWall time: {rng.random() * 30:.4f} seconds\n"
             f"Process exited with code {code}\nOriginal token count: {max(1, len(body) // 4)}\nOutput:\n"

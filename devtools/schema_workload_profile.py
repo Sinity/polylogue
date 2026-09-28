@@ -44,7 +44,7 @@ from polylogue.schemas.synthetic.workload import (
     tool_calls_of,
     workload_profile_path,
 )
-from polylogue.sources.parsers.codex import _codex_exec_envelope_outcome
+from polylogue.sources.parsers.codex import _codex_exec_envelope_outcome, _decoded_json_value, _structural_outcome
 
 #: Source family whose runtime root each origin is measured from by default.
 _SOURCE_FAMILIES = {"claude-code": "claude-code-session", "codex": "codex-session"}
@@ -76,6 +76,7 @@ class _Templates:
         self.measures: dict[str, defaultdict[str, defaultdict[str, defaultdict[int, float]]]] = {
             "str": defaultdict(lambda: defaultdict(_buckets)),
             "list": defaultdict(lambda: defaultdict(_buckets)),
+            "int": defaultdict(lambda: defaultdict(_buckets)),
         }
 
     def add(self, kind: str, record: Mapping[str, object], weight: float) -> None:
@@ -86,9 +87,9 @@ class _Templates:
         for measure, path, length in template_measures(record, allowed=self.allowed):
             self.measures[measure][kind][path][log2_bucket(length)] += weight
 
-    def payload(self) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    def payload(self) -> tuple[dict[str, object], dict[str, object], dict[str, object], dict[str, object]]:
         templates: dict[str, object] = {}
-        per_path: dict[str, dict[str, object]] = {"str": {}, "list": {}}
+        per_path: dict[str, dict[str, object]] = {"str": {}, "list": {}, "int": {}}
         for kind, entries in sorted(self.skeletons.items()):
             # Every observed variant: a rare skeleton is the one structure
             # some parser path sees, and it passed the public allowlists.
@@ -98,7 +99,7 @@ class _Templates:
                 per_path[measure][kind] = {
                     path: _histogram(buckets) for path, buckets in sorted(by_kind[kind].items()) if _histogram(buckets)
                 }
-        return templates, per_path["str"], per_path["list"]
+        return templates, per_path["str"], per_path["list"], per_path["int"]
 
 
 def default_source_root(origin: str) -> Path:
@@ -158,6 +159,9 @@ class _Stream:
         previous_kind: str | None = None
         previous_ms: float | None = None
         count = 0
+        #: Open Codex function calls by call id, so each output is counted
+        #: against the tool that produced it.
+        called: dict[str, str] = {}
         for record in _records(path):
             kind = classify(record)
             count += 1
@@ -179,8 +183,23 @@ class _Stream:
                 length = text_measure(origin, kind, record)
                 if length is not None:
                     self.lengths[kind][log2_bucket(length)] += weight
+            payload = record.get("payload")
+            called_tool: str | None = None
+            if origin == "codex" and isinstance(payload, Mapping):
+                call_id = payload.get("call_id")
+                if kind == "function_call" and isinstance(call_id, str) and calls:
+                    called[call_id] = calls[0][0]
+                elif kind == "function_call_output" and isinstance(call_id, str):
+                    called_tool = called.pop(call_id, None)
+                if kind == "reasoning":
+                    summary = _reasoning_summary(payload)
+                    if summary:
+                        self.lengths["reasoning:summary"][log2_bucket(len(summary))] += weight
+            if origin == "claude-code" and kind == "user_tool_result":
+                results = _tool_result_blocks(record)
+                if results:
+                    self.lengths[f"{kind}:blocks"][log2_bucket(len(results))] += weight
             if kind == "turn_context":
-                payload = record.get("payload")
                 for field_name in CODEX_TURN_INSTRUCTION_FIELDS:
                     value = payload.get(field_name) if isinstance(payload, Mapping) else None
                     if isinstance(value, str):
@@ -192,7 +211,7 @@ class _Stream:
                 if previous_ms is not None and moment >= previous_ms:
                     self.gaps[log2_bucket(moment - previous_ms)] += weight
                 previous_ms = moment
-            _count_shares(origin, kind, record, self.shares, weight)
+            _count_shares(origin, kind, record, self.shares, weight, called_tool=called_tool)
         if count:
             self.records[log2_bucket(count)] += weight
         return count
@@ -215,7 +234,35 @@ def _ranked(weights: Mapping[str, float]) -> list[tuple[str, float]]:
     return sorted(weights.items(), key=lambda item: (-item[1], item[0]))
 
 
-def _count_shares(origin: str, kind: str, record: Mapping[str, object], shares: Weights, weight: float) -> None:
+def _reasoning_summary(payload: Mapping[str, object]) -> str:
+    """The human-readable summary text of a Codex reasoning item (what production materializes)."""
+    summary = payload.get("summary")
+    return "".join(
+        str(item.get("text") or "")
+        for item in (summary if isinstance(summary, list) else ())
+        if isinstance(item, Mapping)
+    )
+
+
+def _tool_result_blocks(record: Mapping[str, object]) -> list[Mapping[str, object]]:
+    message = record.get("message")
+    content = message.get("content") if isinstance(message, Mapping) else None
+    return [
+        block
+        for block in (content if isinstance(content, list) else ())
+        if isinstance(block, Mapping) and block.get("type") == "tool_result"
+    ]
+
+
+def _count_shares(
+    origin: str,
+    kind: str,
+    record: Mapping[str, object],
+    shares: Weights,
+    weight: float,
+    *,
+    called_tool: str | None = None,
+) -> None:
     # Character class is measured on the same field the lengths are.
     text = measured_text(origin, kind, record)
     if text is not None:
@@ -262,27 +309,33 @@ def _count_shares(origin: str, kind: str, record: Mapping[str, object], shares: 
         payload = record.get("payload")
         output = payload.get("output") if isinstance(payload, Mapping) else None
         if kind == "function_call_output":
-            shares["exec_outputs"] += weight
+            # Counted overall and per called tool: an exec envelope belongs
+            # to exec tools, not to ``update_plan``.
+            suffixes = ("", f":{called_tool}") if called_tool is not None else ("",)
             # The parser's own anchored recognizer, so the shares are what
             # production parsing observes.
             _is_error, exit_code = _codex_exec_envelope_outcome(output)
-            if exit_code is not None:
-                shares["exec_envelopes"] += weight
-                if exit_code != 0:
-                    shares["exec_errors"] += weight
+            for suffix in suffixes:
+                shares[f"exec_outputs{suffix}"] += weight
+                if exit_code is not None:
+                    shares[f"exec_envelopes{suffix}"] += weight
+                    if exit_code != 0:
+                        shares[f"exec_errors{suffix}"] += weight
         else:
             shares["custom_outputs"] += weight
-            metadata = None
-            if isinstance(output, str) and output.startswith('{"output"'):
-                try:
-                    decoded = json.loads(output)
-                except json.JSONDecodeError:
-                    decoded = None
-                metadata = decoded.get("metadata") if isinstance(decoded, dict) else None
-            if isinstance(metadata, dict) and isinstance(metadata.get("exit_code"), int):
+            # Production's own structural recognizer: key order and leading
+            # whitespace do not matter.
+            decoded = _decoded_json_value(output) if isinstance(output, str) else output
+            is_error, exit_code = _structural_outcome(decoded)
+            if exit_code is not None or is_error is not None:
                 shares["custom_json"] += weight
-                if metadata["exit_code"] != 0:
+                if is_error or (exit_code is not None and exit_code != 0):
                     shares["custom_errors"] += weight
+    elif kind == "reasoning":
+        payload = record.get("payload")
+        shares["reasoning"] += weight
+        if isinstance(payload, Mapping) and _reasoning_summary(payload):
+            shares["reasoning_summary"] += weight
 
 
 def _family_payload(origin: str, shares: Mapping[str, float]) -> dict[str, object]:
@@ -298,6 +351,19 @@ def _family_payload(origin: str, shares: Mapping[str, float]) -> dict[str, objec
             "codex_exec_error_share": ratio("exec_errors", "exec_envelopes"),
             "codex_custom_json_share": ratio("custom_json", "custom_outputs"),
             "codex_custom_error_share": ratio("custom_errors", "custom_json"),
+            "codex_reasoning_summary_share": ratio("reasoning_summary", "reasoning"),
+            **{
+                f"codex_exec_envelope_share:{key.split(':', 1)[1]}": ratio(key.replace("outputs", "envelopes"), key)
+                for key in shares
+                if key.startswith("exec_outputs:")
+            },
+            **{
+                f"codex_exec_error_share:{key.split(':', 1)[1]}": ratio(
+                    key.replace("outputs", "errors"), key.replace("outputs", "envelopes")
+                )
+                for key in shares
+                if key.startswith("exec_outputs:")
+            },
             **{
                 f"codex_turn_context_{field_name}_share": ratio(f"turn_context:{field_name}", "turn_contexts")
                 for field_name in CODEX_TURN_INSTRUCTION_FIELDS
@@ -419,7 +485,7 @@ def measure(origin: str, root: Path, *, sample: int, tail: int, seed: int) -> di
         streams[name] = stream.payload(origin)
 
     fanout, nested_per_subagent, orphans_per_session = _fanout(origin, root, families)
-    template_payload, template_strings, template_lists = templates.payload()
+    template_payload, template_strings, template_lists, template_ints = templates.payload()
     return {
         "kind": WORKLOAD_PROFILE_KIND,
         "version": WORKLOAD_PROFILE_VERSION,
@@ -435,6 +501,7 @@ def measure(origin: str, root: Path, *, sample: int, tail: int, seed: int) -> di
         "templates": template_payload,
         "template_strings": template_strings,
         "template_lists": template_lists,
+        "template_ints": template_ints,
     }
 
 
