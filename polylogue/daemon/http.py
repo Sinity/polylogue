@@ -3260,7 +3260,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             query_params["cursor"] = cursor
 
         archive_root = _web_reader_archive_root()
-        if archive_root is not None:
+        # The split archive list fast path is offset based. Search continuations
+        # carry a ranked keyset cursor, so send them through the canonical
+        # search builder instead of repeating page one and dropping the cursor.
+        if archive_root is not None and not cursor:
             self._send_json(HTTPStatus.OK, self._do_archive_session_list(archive_root, params, limit, offset, route))
             return
 
