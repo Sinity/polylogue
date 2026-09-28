@@ -27,6 +27,7 @@ from polylogue.archive.revision_authority import (
     durable_authority_logical_keys,
     parser_census_is_complete,
 )
+from polylogue.core.compute_cancel import compute_cancel
 from polylogue.core.enums import Origin
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
@@ -34,6 +35,7 @@ from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS,
 )
 from polylogue.logging import WARNING, emit
+from polylogue.pipeline.services.process_pool import terminate_process_pool
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import (
@@ -663,7 +665,7 @@ class RawObservationDerivation:
                                         str(scratch),
                                         fallback_timestamp,
                                     )
-                                    artifact = _await_reporting_stalls(submitted, subject=f"raw {raw_id}")
+                                    artifact = _await_reporting_stalls(submitted, subject=f"raw {raw_id}", pool=pool)
                                 except BrokenProcessPool as exc:
                                     raise RetainedPreparationRetryableError(
                                         f"retained worker exited before preparing raw {raw_id}"
@@ -755,6 +757,7 @@ class RawObservationDerivation:
                                 aggregate = _await_reporting_stalls(
                                     pool.submit(prepare_retained_cohort_artifact, ordered, scratch),
                                     subject=f"cohort {logical_key}",
+                                    pool=pool,
                                 )
                             except BrokenProcessPool as exc:
                                 raise RetainedPreparationRetryableError(
@@ -1017,17 +1020,39 @@ T = TypeVar("T")
 _RETAINED_PREPARATION_STALL_REPORT_SECONDS = 600.0
 
 
-def _await_reporting_stalls(future: Future[T], *, subject: str) -> T:
-    """Wait for ``future``; report every window it runs without finishing."""
+#: How often a wait checks its caller's cancellation.
+_RETAINED_PREPARATION_CANCEL_POLL_SECONDS = 1.0
+
+
+def _await_reporting_stalls(future: Future[T], *, subject: str, pool: ProcessPoolExecutor) -> T:
+    """Wait for ``future``; report every window it runs without finishing.
+
+    A retained preparation has no deadline, so the compute owner's
+    cancellation (``compute_cancel``) is what stops a worker stuck in a source
+    read: it terminates ``pool`` and raises a retryable refusal, and the raw
+    stays retained for a later pass.
+    """
+    from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
+
+    cancelled = compute_cancel.get()
+    window = _RETAINED_PREPARATION_STALL_REPORT_SECONDS
+    step = window if cancelled is None else min(window, _RETAINED_PREPARATION_CANCEL_POLL_SECONDS)
     waited = 0.0
+    unreported = 0.0
     while True:
         try:
-            return future.result(timeout=_RETAINED_PREPARATION_STALL_REPORT_SECONDS)
+            return future.result(timeout=step)
         except TimeoutError:
             if future.done():
                 # The worker itself raised TimeoutError: a result, not a wait.
                 raise
-            waited += _RETAINED_PREPARATION_STALL_REPORT_SECONDS
+        if cancelled is not None and cancelled.is_set():
+            terminate_process_pool(pool)
+            raise RetainedPreparationRetryableError(f"retained preparation cancelled for {subject}")
+        waited += step
+        unreported += step
+        if unreported >= window:
+            unreported = 0.0
             emit(
                 "storage.raw_observation.preparation_stalled",
                 level=WARNING,

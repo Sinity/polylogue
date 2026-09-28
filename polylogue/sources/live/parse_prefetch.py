@@ -1100,20 +1100,21 @@ class LiveParseStage:
         # Results are installed on the caller thread in intake order, so
         # read tasks finishing out of order cannot reorder publication.
         held: set[str] = set()
-        admitted_sessions: set[str] = set()
+        claimed_sessions: set[str] = set()
         with ThreadPoolExecutor(max_workers=min(self._max_path_pending, len(pending))) as executor:
             futures = {path: executor.submit(prepare_one, path, result) for path, result in pending.items()}
             for path, future in futures.items():
                 prepared, session_ids = future.result()
-                if prepared.error is None and (
-                    (cancelled is not None and cancelled.is_set()) or session_ids & admitted_sessions
-                ):
+                overlaps = bool(session_ids & claimed_sessions)
+                # A held path still claims its sessions: a later path sharing
+                # any of them waits behind it, so overlap closes transitively.
+                claimed_sessions |= session_ids
+                if prepared.error is None and ((cancelled is not None and cancelled.is_set()) or overlaps):
                     for write in prepared.prepared_writes:
                         write.close()
-                    if session_ids & admitted_sessions:
+                    if overlaps:
                         held.add(path)
                     continue
-                admitted_sessions |= session_ids
                 self._path_results[path] = prepared
         return frozenset(held)
 

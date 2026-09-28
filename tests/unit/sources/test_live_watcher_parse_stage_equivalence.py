@@ -1046,6 +1046,70 @@ def test_a_preparation_stall_report_carries_its_measurements() -> None:
     assert not [record for record in records if record["event"] == "log.field_rejected"]
 
 
+@pytest.mark.asyncio
+async def test_a_held_path_still_claims_its_sessions(tmp_path: Path) -> None:
+    """Session overlap closes transitively over held paths.
+
+    Files carry sessions {A}, {A, B} and {B}. The middle one is held for A,
+    and the third must wait behind it for B. Anti-vacuity: let a held path
+    claim nothing and the third path is admitted, publishing B ahead of the
+    held middle file.
+    """
+    archive_root = tmp_path / "archive"
+    (original,) = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    await _ingest(archive_root, [original], parse_stage=None)
+    bundle = json.loads(_chatgpt_bundle_bytes("alpha", "beta"))
+    root = tmp_path / "bundles"
+    root.mkdir()
+    only_a, both, only_b = root / "a.json", root / "ab.json", root / "b.json"
+    only_a.write_text(json.dumps(bundle[:1]), encoding="utf-8")
+    both.write_text(json.dumps(bundle), encoding="utf-8")
+    only_b.write_text(json.dumps(bundle[1:]), encoding="utf-8")
+    stage = LiveParseStage(max_workers=3, shard_directory=tmp_path / "parse-shards")
+    candidates = [(str(path), Provider.CHATGPT, False) for path in (only_a, both, only_b)]
+    try:
+        held = stage.warm_paths(candidates, archive_root=archive_root, read_snapshot=open_operation_read)
+        assert all(stage._path_results[str(path)].error is None for path in (only_a, both, only_b))
+        assert held == frozenset({str(both), str(only_b)})
+    finally:
+        stage.shutdown()
+
+
+@pytest.mark.uses_real_clock("waits on a real worker process")
+def test_a_cancelled_retained_preparation_stops_its_worker(tmp_path: Path) -> None:
+    """Owner cancellation stops a retained preparation that never finishes.
+
+    Anti-vacuity: wait only for the result, as a deadline-free wait does, and
+    the call never returns while the worker sleeps.
+    """
+    import multiprocessing
+
+    from polylogue.core.compute_cancel import compute_cancel
+    from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
+    from polylogue.storage.derived import raw as raw_derivation
+
+    marker = tmp_path / "worker-started"
+    cancelled = threading.Event()
+    pool = ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn"))
+    token = compute_cancel.set(cancelled)
+    try:
+        future = pool.submit(_stalled_process_worker, str(marker))
+        deadline = time.monotonic() + 30
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        workers = tuple(pool._processes.values())
+        assert marker.exists() and workers
+        threading.Timer(0.5, cancelled.set).start()
+        started = time.monotonic()
+        with pytest.raises(RetainedPreparationRetryableError, match="cancelled"):
+            raw_derivation._await_reporting_stalls(future, subject="raw example", pool=pool)
+        assert time.monotonic() - started < 10
+        assert not any(worker.is_alive() for worker in workers)
+    finally:
+        compute_cancel.reset(token)
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
 def test_a_stalled_read_ahead_cannot_wedge_required_work(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Unclaimed read-ahead holding the byte budget is preempted, then reaped.
 
