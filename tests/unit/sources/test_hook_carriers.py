@@ -14,6 +14,7 @@ import time
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -649,7 +650,7 @@ def test_concurrent_compactions_fold_each_envelope_once(tmp_path: Path, monkeypa
 
     assert errors == []
     assert len(appends) == 1
-    assert sorted(result["folded"] for result in results) == [0, 1]
+    assert sorted(int(cast(int, result["folded"])) for result in results) == [0, 1]
     assert materialize_hook_carriers(archive_root) == 1
 
 
