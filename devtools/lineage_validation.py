@@ -680,10 +680,15 @@ def _sample_prefix_sharing(conn: Connection, limit: int, *, max_stored_messages:
         stored = _int(row["stored_messages"])
         stored_total += stored
         try:
-            composed = len(read_archive_session_envelope(conn, session_id).messages)
+            envelope = read_archive_session_envelope(conn, session_id)
         except Exception as exc:  # pragma: no cover - defensive for live archive artifacts
             errors.append({"session_id": session_id, "error": f"{type(exc).__name__}: {exc}"})
             samples.append({**row, "composed_messages": None, "composition_status": "error"})
+            continue
+        composed = len(envelope.messages)
+        if not envelope.lineage_complete:
+            errors.append({"session_id": session_id, "error": "lineage transcript is incomplete"})
+            samples.append({**row, "composed_messages": composed, "composition_status": "incomplete"})
             continue
         composed_total += composed
         samples.append(

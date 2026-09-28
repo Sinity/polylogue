@@ -29,6 +29,52 @@ def test_current_pattern_gate_is_seeded_and_reports_pending_rules() -> None:
     assert any("connection-lifecycle: pending" in item for item in details)
 
 
+@pytest.mark.skipif(shutil.which("ast-grep") is None, reason="ast-grep is required to execute structural rules")
+def test_exclusive_create_flags_bound_before_open_are_detected(tmp_path: Path) -> None:
+    (tmp_path / "polylogue").mkdir()
+    (tmp_path / "polylogue" / "writer.py").write_text(
+        "import os\n"
+        "def write(path):\n"
+        "    flags = os.O_CREAT | os.O_EXCL\n"
+        "    fd = os.open(path, flags)\n"
+        "    with os.fdopen(fd, 'w') as stream:\n"
+        "        stream.write('x')\n",
+        encoding="utf-8",
+    )
+    rule = verify_patterns.Rule(
+        "exclusive-create-write",
+        Path(__file__).parents[3] / "devtools/patterns/exclusive-create-write.yml",
+        tmp_path / "baseline.txt",
+        "owner",
+        "enforcing",
+    )
+
+    assert verify_patterns._scan(tmp_path, rule)
+
+
+@pytest.mark.skipif(shutil.which("ast-grep") is None, reason="ast-grep is required to execute structural rules")
+def test_sqlite_error_rule_ignores_an_explicit_fail_closed_false(tmp_path: Path) -> None:
+    (tmp_path / "polylogue").mkdir()
+    (tmp_path / "polylogue" / "fallback.py").write_text(
+        "import sqlite3\n"
+        "def check():\n"
+        "    try:\n"
+        "        return True\n"
+        "    except sqlite3.Error:\n"
+        "        return False\n",
+        encoding="utf-8",
+    )
+    rule = verify_patterns.Rule(
+        "sqlite-error-default",
+        Path(__file__).parents[3] / "devtools/patterns/sqlite-error-default.yml",
+        tmp_path / "baseline.txt",
+        "owner",
+        "enforcing",
+    )
+
+    assert not verify_patterns._scan(tmp_path, rule)
+
+
 def test_synthetic_new_match_makes_the_ratchet_red(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     rule = _rule(tmp_path)
     monkeypatch.setattr(verify_patterns, "_rules", lambda _root: (rule,))
@@ -51,7 +97,7 @@ def test_synthetic_new_match_makes_the_ratchet_red(monkeypatch: pytest.MonkeyPat
     assert payload["required_gate"]["diagnosis"] == "gate_semantic_violation"
 
 
-def test_stale_baseline_is_reported_as_shrinkable_not_a_failure(
+def test_stale_baseline_is_a_blocking_exemption_that_must_be_pruned(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     rule = _rule(tmp_path)
@@ -60,9 +106,24 @@ def test_stale_baseline_is_reported_as_shrinkable_not_a_failure(
 
     payload = verify_patterns._payload(tmp_path)
 
-    assert payload["blocking"] is False
+    assert payload["blocking"] is True
     digest = hashlib.sha1(b"return None").hexdigest()
     assert payload["stale_matches"] == [f"synthetic polylogue/existing.py:{digest}"]
+
+
+def test_baseline_digest_validation_does_not_call_security_restricted_sha1_constructor(tmp_path: Path) -> None:
+    path = tmp_path / "baseline.txt"
+    path.write_text("file.py:" + "a" * 40 + "\n", encoding="utf-8")
+    assert verify_patterns._baseline(path) == Counter({("file.py", "a" * 40): 1})
+
+
+def test_new_match_diagnostic_keeps_current_one_based_locations() -> None:
+    """Anti-vacuity: content anchors alone must still point to source locations."""
+    rule = verify_patterns.Rule("synthetic", Path("rule"), Path("baseline"), "owner", "enforcing")
+    detail = verify_patterns._new_match_detail(
+        rule, ("polylogue/a.py", "f" * 40), 1, {("polylogue/a.py", "f" * 40): [54]}
+    )
+    assert "at lines 54" in detail
 
 
 def test_missing_ast_grep_is_typed_and_actionable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -78,6 +139,19 @@ def test_missing_ast_grep_is_typed_and_actionable(monkeypatch: pytest.MonkeyPatc
     # The remedy must be the command that actually provisions the group:
     # `uv sync --group audit` alone prunes the dev extra back out.
     assert "uv sync --extra dev --group audit --frozen" in gate["details"][0]
+
+
+def test_malformed_registry_rule_fails_closed(tmp_path: Path) -> None:
+    """Anti-vacuity: skipping a scalar list item drops a required rule silently."""
+    registry = tmp_path / "devtools/patterns/registry.yaml"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(
+        "rules:\n  - id: valid\n    rule: a.yml\n    baseline: a.txt\n    owner: bead\n    status: enforcing\n  - broken\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="must be a mapping"):
+        verify_patterns._rules(tmp_path)
 
 
 def test_scan_converts_ast_grep_zero_based_lines_to_one_based(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -134,5 +208,5 @@ def test_duplicate_content_anchors_are_compared_as_a_multiset(monkeypatch: pytes
         lambda _root, _rule: Counter({("polylogue/existing.py", digest): 1}),
     )
     payload = verify_patterns._payload(tmp_path)
-    assert payload["blocking"] is False
+    assert payload["blocking"] is True
     assert payload["stale_matches"] == [f"synthetic polylogue/existing.py:{digest}"]

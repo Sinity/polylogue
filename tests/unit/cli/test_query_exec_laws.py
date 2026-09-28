@@ -54,6 +54,17 @@ from tests.infra.daemon_operations import running_daemon_operations
 from tests.infra.identity import archive_message_id
 
 
+def test_explicit_file_destination_preserves_reserved_and_comma_paths(tmp_path: Path) -> None:
+    from polylogue.surfaces.projection_spec import RenderDestination
+
+    for name in ("stdout", "terminal", "browser", "clipboard", "report,final.json"):
+        path = tmp_path / name
+        spec = QueryOutputSpec.from_params({"output": str(path), "output_destination": "file", "out_path": str(path)})
+        assert len(spec.destinations) == 1
+        assert spec.destinations[0].kind is RenderDestination.FILE
+        assert spec.destinations[0].path == path
+
+
 async def _execute_query_params(env: AppEnv, params: dict[str, object]) -> None:
     """Drive the archive executor from raw params (the retired shim's shape)."""
     await async_execute_query_request(env, RootModeRequest.from_params(params))

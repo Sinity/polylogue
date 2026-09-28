@@ -525,6 +525,8 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
             error=exc.code,
             detail=type(exc).__name__,
             tool=fn_name,
+            archive_root=exc.archive_root,
+            resident_writer=exc.resident_writer,
         )
     elif isinstance(exc, DaemonOperationRejectedError):
         # The resident daemon refused the request before durable acceptance

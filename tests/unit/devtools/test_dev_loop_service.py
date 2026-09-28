@@ -48,6 +48,7 @@ def test_run_proof_uses_self_bound_free_ports_and_product_convergence(
     _fixed_service_context(monkeypatch)
     monkeypatch.setattr(dev_loop_service, "_free_loopback_ports", lambda count: [48801, 48865][:count])
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "scratch"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "operator-config"))
     (tmp_path / "scratch").mkdir()
     initialized: list[Path] = []
     monkeypatch.setattr(dev_loop_service, "initialize_active_archive_root", initialized.append)
@@ -92,6 +93,9 @@ def test_run_proof_uses_self_bound_free_ports_and_product_convergence(
     assert isinstance(environment, dict)
     assert environment["POLYLOGUE_API_PORT"] == "48801"
     assert environment["POLYLOGUE_BROWSER_CAPTURE_PORT"] == "48865"
+    assert environment["XDG_CONFIG_HOME"] == str(
+        tmp_path / "scratch" / "polylogue-dev-loop-proof" / "artifacts" / "xdg-config"
+    )
 
 
 def test_started_daemon_uses_fixed_proof_tokens(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

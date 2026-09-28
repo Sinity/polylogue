@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing
 import re
 import resource
 import subprocess
@@ -165,36 +166,49 @@ def collection_argv(selection: list[str], *, root: Path) -> list[str]:
     return [*command[:index], *selection, *command[index + 1 :]]
 
 
+def _run_isolated_collection(command: list[str], root: str, environment: dict[str, str], output_queue: Any) -> None:
+    completed = subprocess.run(command, cwd=root, capture_output=True, text=True, check=False, env=environment)
+    output_queue.put(
+        (
+            completed.returncode,
+            completed.stdout,
+            completed.stderr,
+            resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss,
+        )
+    )
+
+
 def measure_collection(selection: list[str], *, root: Path) -> dict[str, Any]:
     """Collect ``selection`` in a child process and report what it cost."""
 
     command = collection_argv(selection, root=root)
-    before = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
     started = time.monotonic()
     environment = {**collection_env(), "PYTHONPROFILEIMPORTTIME": "1"}
-    completed = subprocess.run(command, cwd=root, capture_output=True, text=True, check=False, env=environment)
+    context = multiprocessing.get_context("fork")
+    output_queue = context.Queue()
+    worker = context.Process(target=_run_isolated_collection, args=(command, str(root), environment, output_queue))
+    worker.start()
+    returncode, stdout, stderr, peak = output_queue.get()
+    worker.join()
     elapsed = time.monotonic() - started
-    after = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
-    output = (completed.stdout or "") + "\n" + (completed.stderr or "")
-    peak_rss_mib = round(max(before, after) / 1024, 1)
-    peak_rss_delta_mib = round(max(0, after - before) / 1024, 1)
+    if worker.exitcode != 0:
+        raise RuntimeError(f"isolated collection measurement exited {worker.exitcode}")
+    output_queue.close()
+    output = (stdout or "") + "\n" + (stderr or "")
+    # Isolate the measured child so RUSAGE_CHILDREN's process-wide high-water
+    # mark from an earlier, larger child cannot understate this collection.
+    peak_rss_mib = round(peak / 1024, 1)
     collected = _collected_count(output)
     result: dict[str, Any] = {
         "kind": "polylogue.collection-cost",
         "selection": list(selection) or ["<whole corpus>"],
         "collected": collected,
         "wall_clock_s": round(elapsed, 2),
-        # ru_maxrss is the high-water mark across every reaped child, so the
-        # later reading is this child's peak unless an earlier child in the
-        # same process was larger. The delta is reported beside it, not
-        # instead of it, so that case stays visible.
+        # The isolated worker has no prior child high-water mark, so this is
+        # the measured collection child's peak.
         "peak_rss_mib": peak_rss_mib,
-        "peak_rss_delta_mib": peak_rss_delta_mib,
-        # The delta excludes this command's already-paid child high-water
-        # mark. It is the comparable collection cost when this process has
-        # measured more than one selection; retain the absolute peak too.
-        "collection_cost_kib_per_item": _cost_kib_per_item(peak_rss_delta_mib, collected),
-        "returncode": completed.returncode,
+        "collection_cost_kib_per_item": _cost_kib_per_item(peak_rss_mib, collected),
+        "returncode": returncode,
         "tail": [line for line in output.strip().splitlines() if line.strip()][-3:],
     }
     result.update(_import_time_attribution(output))

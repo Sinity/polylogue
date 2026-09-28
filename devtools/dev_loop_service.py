@@ -81,6 +81,7 @@ def _proof_environment(*, archive_root: Path, artifact_root: Path, api_port: int
             "XDG_CACHE_HOME": str(artifact_root / "xdg-cache"),
             "XDG_DATA_HOME": str(artifact_root / "xdg-data"),
             "XDG_STATE_HOME": str(artifact_root / "xdg-state"),
+            "XDG_CONFIG_HOME": str(artifact_root / "xdg-config"),
         }
     )
     return environment
@@ -381,19 +382,21 @@ def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.
     """Run the bounded Polylogue semantics inside the AgentCTL job boundary."""
     checkout = (repo_root or Path(__file__).resolve().parents[1]).resolve()
     _require_agentctl_operation_context()
-    api_port, capture_port = _free_loopback_ports(2)
     archive_root, artifact_root = _service_paths()
     artifact_root.mkdir(parents=True, exist_ok=True)
     initialize_active_archive_root(archive_root)
+    receiver_auth = run_receiver_smoke(spool_path=artifact_root / "receiver-auth")
+    if receiver_auth.get("ok") is not True:
+        raise RuntimeError("receiver authentication proof failed")
+    # Reserve ports as late as possible, after archive initialization and the
+    # receiver smoke, to minimize the handoff interval before daemon bind.
+    api_port, capture_port = _free_loopback_ports(2)
     environment = _proof_environment(
         archive_root=archive_root,
         artifact_root=artifact_root,
         api_port=api_port,
         capture_port=capture_port,
     )
-    receiver_auth = run_receiver_smoke(spool_path=artifact_root / "receiver-auth")
-    if receiver_auth.get("ok") is not True:
-        raise RuntimeError("receiver authentication proof failed")
     daemon = _start_daemon(
         repo_root=checkout,
         environment=environment,

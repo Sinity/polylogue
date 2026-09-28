@@ -77,7 +77,9 @@ def candidate_tree_refusal(payload: Mapping[str, Any], candidate: str) -> str | 
     if tested != candidate:
         return f"receipt tested tree {tested}, not the candidate {candidate}"
     final = payload.get("final_git_head")
-    if isinstance(final, str) and final and final != tested:
+    if not isinstance(final, str) or not final:
+        return "receipt records no ending tree SHA, so it does not prove which tree was present at completion"
+    if final != tested:
         return (
             f"the tree moved under the run -- started at {tested}, finished at {final} -- "
             f"so the receipt covers no single tree (candidate {candidate})"
@@ -155,6 +157,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if payload.get("run_id") != run_id:
         sys.stderr.write(f"verify receipt check: {receipt} records run {payload.get('run_id')!r}, not {run_id!r}\n")
+        return 1
+    if not isinstance(payload.get("git_head"), str) or not payload.get("git_head"):
+        sys.stderr.write(f"verify receipt check: {receipt}: receipt records no tested tree SHA\n")
+        return 1
+    if not isinstance(payload.get("final_git_head"), str) or not payload.get("final_git_head"):
+        sys.stderr.write(f"verify receipt check: {receipt}: receipt records no ending tree SHA\n")
         return 1
     # Which tree ran comes first: a receipt for another tree is not made into
     # evidence by having passed.

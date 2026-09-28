@@ -25,7 +25,6 @@ from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_sync, message_f
 from polylogue.storage.search import search_messages
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
-from tests.infra.live_ingest import write_index_session
 
 STORAGE_CORRECTNESS_SCENARIO_NAME = "storage-correctness"
 STORAGE_CORRECTNESS_SCOPE_ADJUDICATION = {
@@ -35,6 +34,19 @@ STORAGE_CORRECTNESS_SCOPE_ADJUDICATION = {
         "reference survival, the gc_generations age gate, and typed reclaim evidence."
     )
 }
+
+
+def _write_index_session(archive: ArchiveStore, session: ParsedSession, *, content_hash: str) -> str:
+    """Write scenario data through the shipped canonical index row writer."""
+    connection = sqlite3.connect(str(archive.index_db_path))
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+
+        return write_parsed_session_to_archive(connection, session, content_hash=content_hash)
+    finally:
+        connection.close()
 
 
 @dataclass(frozen=True, slots=True)
@@ -383,9 +395,9 @@ def _storage_lineage_composition_check() -> dict[str, object]:
     with _storage_archive_root() as temp_root:
         root = Path(temp_root)
         with ArchiveStore(root) as archive:
-            parent_id = write_index_session(archive, parent, content_hash=str(session_content_hash(parent)))
-            child_id = write_index_session(archive, child, content_hash=str(session_content_hash(child)))
-            write_index_session(archive, parent_grown, content_hash=str(session_content_hash(parent_grown)))
+            parent_id = _write_index_session(archive, parent, content_hash=str(session_content_hash(parent)))
+            child_id = _write_index_session(archive, child, content_hash=str(session_content_hash(child)))
+            _write_index_session(archive, parent_grown, content_hash=str(session_content_hash(parent_grown)))
             archive.commit()
         with sqlite3.connect(root / "index.db") as conn:
             conn.row_factory = sqlite3.Row

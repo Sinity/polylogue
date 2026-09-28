@@ -2614,13 +2614,15 @@ def _raw_replay_backlog_info(*, include: bool = True) -> dict[str, object]:
 
 def _sinex_publication_status_info() -> dict[str, object]:
     """Read durable Sinex publication state without requiring a transport."""
-    from polylogue.config import load_polylogue_config
+    from polylogue.config import active_archive_root, load_polylogue_config, resolve_runtime_config
     from polylogue.sinex.models import PublicationMode
     from polylogue.sinex.service import publication_status
     from polylogue.storage.archive_identity import ArchiveLocation
 
-    mode = PublicationMode.from_string(load_polylogue_config().sinex_mode)
-    source_db = ArchiveLocation.resolve(archive_root()).configured_tier("source").configured_path
+    config = load_polylogue_config()
+    mode = PublicationMode.from_string(config.sinex_mode)
+    runtime_config = resolve_runtime_config().as_config()
+    source_db = ArchiveLocation.resolve(active_archive_root(runtime_config)).configured_tier("source").configured_path
     return publication_status(source_db, mode).as_dict()
 
 

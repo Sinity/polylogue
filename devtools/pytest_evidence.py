@@ -67,6 +67,8 @@ def evaluate_pytest_evidence(
     diagnosis = "pytest_passed"
     if exit_code == 3:
         diagnosis = "pytest_worker_loss"
+    elif exit_code != 0:
+        diagnosis = "pytest_failed"
     elif report is None:
         diagnosis = "pytest_no_report"
     elif report_tests is None:
@@ -75,8 +77,6 @@ def evaluate_pytest_evidence(
         diagnosis = "pytest_no_tests_selected"
     elif not collection_finished:
         diagnosis = "pytest_collection_incomplete"
-    elif exit_code != 0:
-        diagnosis = "pytest_failed"
     elif not summary_published:
         diagnosis = "pytest_summary_missing"
     elif summary_values.get("exitstatus") != exit_code:

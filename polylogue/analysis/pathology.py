@@ -48,7 +48,7 @@ from polylogue.analysis.run_projection import (
 from polylogue.core.refs import EvidenceRef
 
 # Bump when a detector's rule changes so cached/rebuilt output is comparable.
-PATHOLOGY_DETECTOR_VERSION = 5
+PATHOLOGY_DETECTOR_VERSION = 6
 
 PathologyKind = Literal["wasted_loop", "stale_context"]
 PathologySeverity = Literal["low", "medium", "high"]
