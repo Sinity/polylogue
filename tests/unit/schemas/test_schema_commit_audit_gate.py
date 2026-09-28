@@ -171,3 +171,31 @@ def test_an_audited_commit_retires_the_live_legacy_schema(tmp_path: Path, monkey
     commit._persist_audited(output_dir, "chatgpt", object())  # type: ignore[arg-type]
 
     assert not legacy.exists()
+
+
+def test_the_tree_exchange_uses_renamex_np_where_renameat2_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """macOS has ``renamex_np(RENAME_SWAP)``, not ``renameat2``.
+
+    Anti-vacuity (Codex P2, #5704): resolve only ``renameat2`` and every commit
+    over an existing provider tree fails on macOS.
+    """
+    import ctypes
+
+    from polylogue.schemas import package_publication
+
+    calls: list[tuple[bytes, bytes, int]] = []
+
+    class Libc:
+        renameat2 = None
+
+        @staticmethod
+        def renamex_np(first: bytes, second: bytes, flags: int) -> int:
+            calls.append((first, second, flags))
+            return 0
+
+    monkeypatch.setattr(ctypes, "CDLL", lambda *_args, **_kwargs: Libc())
+    package_publication._exchange_paths(tmp_path / "a", tmp_path / "b")
+
+    assert calls == [(bytes(tmp_path / "a"), bytes(tmp_path / "b"), 2)]
