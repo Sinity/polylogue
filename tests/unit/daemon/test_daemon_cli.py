@@ -8,6 +8,7 @@ import hashlib
 import inspect
 import json
 import os
+import re
 import sqlite3
 import stat
 import threading
@@ -2166,7 +2167,8 @@ def test_pidfile_remains_locked_until_admitted_writers_are_drained(
     retained_fd = daemon_cli._release_pidfile_after_writer_drain(owner_fd, writer_drained=False)
 
     assert retained_fd == owner_fd
-    with pytest.raises(RuntimeError, match="another daemon may be running"):
+    # The refusal is the contract, not its wording.
+    with pytest.raises(RuntimeError, match=re.escape(str(pidfile))):
         daemon_cli._acquire_pidfile(pidfile)
 
     assert daemon_cli._release_pidfile_after_writer_drain(retained_fd, writer_drained=True) is None
@@ -3930,6 +3932,14 @@ def _daemon_startup_stubs(
     async def _noop_fts(*_args: object, **_kwargs: object) -> object:
         return SimpleNamespace(failed=0)
 
+    # Modules that bind ``archive_root`` at import are imported before the
+    # patch, or the first test to import them lazily would pin its own root
+    # for every later test. The environment names the same root, so the
+    # real resolver and the patched one agree.
+    import polylogue.daemon.events
+    import polylogue.daemon.lifecycle  # noqa: F401
+
+    stack.enter_context(patch.dict(os.environ, {"POLYLOGUE_ARCHIVE_ROOT": str(tmp_path)}))
     stack.enter_context(patch("polylogue.paths.archive_root", return_value=tmp_path))
     stack.enter_context(patch.object(daemon_cli, "_check_schema_version_fast", return_value=ok_schema))
     stack.enter_context(
