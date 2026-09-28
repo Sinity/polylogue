@@ -368,9 +368,11 @@ def test_evidence_summary_reports_degraded_when_lineage_is_unreadable(tmp_path: 
     # own schema-identity refusal on open, which is a different contract.
     import contextlib
 
-    from polylogue.daemon import http as http_module
+    from polylogue.archive.query import transaction as transaction_module
 
-    real_read_context = cast("Any", http_module).archive_read_context
+    # The evidence-summary route imports ``archive_read_context`` from its
+    # owner at call time (route_families/read_detail.py), so fail it there.
+    real_read_context = transaction_module.archive_read_context
 
     class _FailingLineageConn:
         def __init__(self, inner: Any) -> None:
@@ -425,7 +427,7 @@ def test_evidence_summary_reports_degraded_when_lineage_is_unreadable(tmp_path: 
     handler = _RecordingHandler(f"/api/sessions/{session_id}/evidence-summary")
     with (
         patch("polylogue.paths.archive_root", return_value=archive_root),
-        patch.object(http_module, "archive_read_context", _wrapped),
+        patch.object(transaction_module, "archive_read_context", _wrapped),
     ):
         handler._handle_get_session_evidence_summary(session_id)
 
