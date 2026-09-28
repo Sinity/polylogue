@@ -47,7 +47,7 @@ P1 (merge blocker):
 - a surface that decides `ok` without the rows or measurements that justify
   it.
 
-P2: devtools and test-harness defects, status, progress and metric accuracy,
+P2, when no P1 item applies: devtools and test-harness defects, status, progress and metric accuracy,
 docs drift, performance that does not grow with archive size, and test
 weakness where the gate still runs. A test-only or docs-only diff is P2 unless
 it makes a required gate vacuous or crosses the public boundary.
@@ -76,15 +76,21 @@ apply everywhere.
    retained, what is converged), flag the divergence and name the owner. Two
    classifiers that can disagree are a defect even when they agree on today's
    fixtures.
-4. **Scale.** Flag per-chunk, per-event, or per-open work that costs
+4. **Interruption.** For each multi-step state change, wherever it lives
+   (daemon, operations, storage), ask what a cancel, deadline, kill, or
+   restart between the steps leaves behind: a stage marked skipped or
+   converged that never ran, a cursor advanced before its commit, a session
+   committed before its cursor, a resumed candidate treated as fresh, a
+   request that looks settled although its work never ran.
+5. **Scale.** Flag per-chunk, per-event, or per-open work that costs
    O(archive): an unfiltered `fetchall`, a full-table scan, a six-tier
    bootstrap, an fsync or FULL-synchronous commit per event, re-reading or
    re-hashing the same file. The defect is cost that grows with the archive
    while the unit of work stays fixed.
-5. **Removed symbols.** When the diff removes or renames a function,
+6. **Removed symbols.** When the diff removes or renames a function,
    attribute, or keyword, check the tests and stubs that name it
    (`monkeypatch.setattr` targets, fakes with fixed signatures).
-6. **Outcome.** Row-bearing operations decide one `outcome` in
+7. **Outcome.** Row-bearing operations decide one `outcome` in
    `surfaces/outcome.py`. `ok` over zero returned rows, over an unmeasured
    component, or while convergence is incomplete is wrong (`degraded` or
    `empty`). Exit codes follow the outcome.
@@ -128,10 +134,11 @@ physical limit is acceptable, and its refusal is typed.
 
 - Requests to keep old behaviour beside new behaviour, or to migrate or
   upgrade prior archive state (see above).
-- Requests to bump a derived-tier schema, parser, or lowering version, or to
-  declare a reparse; the derived identity is computed. A public artifact
-  version that consumers use for invalidation (such as
-  `RESUME_BRIEF_MATERIALIZER_VERSION`) is not covered by this rule.
+- Requests to bump the AST-computed derived identity or to declare a reparse
+  for it. This covers only the computed identity. A manually maintained
+  version or invalidation token (such as `RESUME_BRIEF_MATERIALIZER_VERSION`
+  or `_PARSER_FINGERPRINT` in `sources/live/watcher.py`) that a change
+  requires but leaves unchanged is a finding.
 - New caps, smaller timeouts, or truncation as a remedy.
 - Test strictness beyond the anti-vacuity condition the test names.
 - Scenarios that need the environment corrupted below its own integrity
