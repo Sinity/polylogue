@@ -2389,29 +2389,18 @@ def _require_released_train_chain(
 def _durable_chain_floor_versions(archive_root: Path, manifest_root: Path) -> dict[ArchiveTier, int]:
     """Return every version a durable tier reached without a numbered train.
 
-    Two routes put a durable tier above its adoption floor with no train
-    manifest to prove it: a fresh direct bootstrap, and the verified audit-tier
-    adoption of a canonical image into an established archive. Both are the
-    archive's own evidence, so both raise the chain floor; trains are still
-    required for every version above it.
+    Only a fresh direct bootstrap puts a durable tier above its adoption floor
+    with no train manifest to prove it. That is the archive's own evidence, so
+    it raises the chain floor; trains are still required for every version
+    above it.
 
-    A released train's own pre-apply evidence is deliberately not a third
+    A released train's own pre-apply evidence is deliberately not a second
     route. It authenticates a marker the archive already carries
     (``_released_train_proven_floor``), but it never raises the floor on its
     own: a tier standing above the floor with released trains and no declared
-    adoption evidence stays a refusal.
+    bootstrap evidence stays a refusal.
     """
-    from polylogue.operations.durable_change_train import (
-        audit_adoption_receipt_path,
-        audit_adoption_receipt_version,
-    )
-
-    versions = dict(_fresh_durable_bootstrap_versions(archive_root, manifest_root))
-    if audit_adoption_receipt_path(archive_root.resolve()).is_file():
-        adopted = audit_adoption_receipt_version(archive_root)
-        if adopted is not None:
-            versions[ArchiveTier.AUDIT] = max(versions.get(ArchiveTier.AUDIT, 0), adopted)
-    return versions
+    return dict(_fresh_durable_bootstrap_versions(archive_root, manifest_root))
 
 
 def _retire_corroborated_fresh_durable_bootstrap_marker(
@@ -2768,9 +2757,6 @@ def _reconcile_durable_change_train_startup_locked(
     live_evidence_cache: dict[ArchiveTier, _DurableForwardVersionEvidence] | None = None,
 ) -> tuple[Path, ...]:
     """Reconcile persisted trains while the caller holds archive ownership."""
-    from polylogue.operations.durable_change_train import validate_audit_adoption_receipt
-
-    validate_audit_adoption_receipt(archive_root)
     manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
     reconciled: list[Path] = []
     live_evidence_by_tier: dict[ArchiveTier, DurableDatabaseEvidence] = {}
@@ -2865,17 +2851,6 @@ def _reconcile_durable_change_train_startup_locked(
             continue
         manifests_by_tier[tier] = _released_train_manifests_by_target(manifest_root, tier)
         tier_manifest_paths = _durable_train_manifest_paths(manifest_root, tier)
-        if tier is ArchiveTier.AUDIT and not tier_manifest_paths:
-            # An established archive may have received audit.db through the
-            # verified adoption route before the source continuity half was
-            # published.  The adoption receipt is the authority for this
-            # narrow pre-train state; the ordinary audit train is admitted
-            # once source continuity exists and the audit migration route can
-            # publish its own released manifest.
-            from polylogue.operations.durable_change_train import audit_adoption_receipt_path
-
-            if audit_adoption_receipt_path(archive_root).is_file():
-                continue
         bootstrap_version = fresh_bootstrap_versions.get(tier)
         if bootstrap_version is not None and current_version < bootstrap_version:
             raise DurableChangeTrainError(

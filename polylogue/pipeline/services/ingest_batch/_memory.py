@@ -28,6 +28,7 @@ def discard_session_data_payload(cdata: SessionWritePayload) -> None:
     if cdata.prepared_write is not None:
         cdata.prepared_write.close()
         cdata.prepared_write = None
+    cdata.prepared_rows = None
     if not isinstance(cdata.parsed_session.messages, SqliteMessageSink):
         cdata.parsed_session.messages.clear()
     cdata.parsed_session.attachments.clear()
