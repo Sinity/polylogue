@@ -26,6 +26,7 @@ from polylogue.logging import WARNING, emit
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import (
     _json_subtree,
+    _root_envelope_without,
     _skip_json_subtree,
     claude_ai_object_envelope,
     claude_design_object_envelope,
@@ -52,6 +53,7 @@ from polylogue.sources.parsers import (
     chatgpt,
     drive,
     grok,
+    hermes_identity,
     hermes_spans,
     hermes_state,
     hermes_verification,
@@ -192,6 +194,30 @@ class PreparedFileSeal:
     @property
     def identity(self) -> tuple[int, int, int, int, int]:
         return self.device, self.inode, self.size, self.mtime_ns, self.ctime_ns
+
+
+def _hermes_atif_envelope(handle: BinaryIO) -> tuple[dict[str, JSONValue], bool] | None:
+    """Prove one Hermes ATIF trajectory and report whether it has subagents.
+
+    Hermes lowering tries ATOF event lists, state and verification exports
+    before ATIF, so documents those detectors claim stay on that route. ATIF
+    lowering has no admission ledger, so no future wire type is carried.
+    """
+    result = _root_envelope_without(handle, frozenset({"steps", "subagent_trajectories"}), frozenset({"atof_version"}))
+    if result is None:
+        return None
+    envelope, arrays = result
+    envelope.pop("__admission_future_type", None)
+    if arrays["steps"] != 1 or arrays["subagent_trajectories"] > 1:
+        return None
+    witness: dict[str, JSONValue] = {**envelope, "steps": []}
+    if (
+        not hermes_spans.looks_like_atif_payload(witness)
+        or hermes_state.looks_like_state_db_payload(witness)
+        or hermes_verification.looks_like_verification_evidence_db_payload(witness)
+    ):
+        return None
+    return envelope, arrays["subagent_trajectories"] == 1
 
 
 def _file_identity(stat: os.stat_result) -> tuple[int, int, int, int, int]:
@@ -617,6 +643,7 @@ def prepare_jsonl_blob(
     classify_claude_design_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
     classify_claude_ai_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
     classify_drive_chunked_object: Callable[[dict[str, JSONValue]], bool] | None = None,
+    classify_hermes_atif_object: Callable[[dict[str, JSONValue]], bool] | None = None,
     classify_gemini_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
     attempt_directory: Path | None = None,
 ) -> PreparedJsonl:
@@ -645,6 +672,7 @@ def prepare_jsonl_blob(
         design_envelope: dict[str, JSONValue] | None = None
         claude_ai_envelope: dict[str, JSONValue] | None = None
         drive_chunked: tuple[dict[str, JSONValue], str] | None = None
+        atif: tuple[dict[str, JSONValue], bool] | None = None
         chatgpt_envelope: dict[str, object] | None = None
         chatgpt_mapping: ChatGPTNodeMapping | None = None
         gemini_envelope: dict[str, JSONValue] | None = None
@@ -785,6 +813,16 @@ def prepare_jsonl_blob(
         ):
             with source.open("rb") as handle:
                 drive_chunked = drive_chunked_prompt_envelope(handle)
+        if (
+            not is_stream
+            and provider is Provider.HERMES
+            and (prepare_sessions is None or classify_hermes_atif_object is not None)
+            and (prepare_records is None or classify_hermes_atif_object is not None)
+            and Path(source_path).name.lower().endswith(".json")
+            and hermes_envelope is None
+        ):
+            with source.open("rb") as handle:
+                atif = _hermes_atif_envelope(handle)
         if gemini_envelope is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
@@ -1250,6 +1288,63 @@ def prepare_jsonl_blob(
             store.conn.commit()
             shard_path = shard_builder.seal().path
             shard_builder = None
+        elif atif is not None:
+            atif_envelope, atif_has_subagents = atif
+            _create_artifact_tables(store.conn)
+            shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
+
+            def atif_items(prefix: str) -> Iterator[JSONValue]:
+                with source.open("rb") as handle:
+                    for item in ijson.items(handle, f"{prefix}.item"):
+                        yield cast(JSONValue, normalize_ijson_stdlib_numbers(item))
+
+            atif_admitted = True
+            if classify_hermes_atif_object is not None:
+                atif_witness: dict[str, JSONValue] = {**atif_envelope, "steps": list(islice(atif_items("steps"), 64))}
+                if atif_has_subagents:
+                    atif_witness["subagent_trajectories"] = list(islice(atif_items("subagent_trajectories"), 64))
+                atif_admitted = classify_hermes_atif_object(atif_witness)
+            atif_sessions: list[ParsedSession] = []
+            if atif_admitted:
+                atif_sessions = hermes_spans.parse_atif_stream(
+                    atif_envelope,
+                    atif_items("steps"),
+                    atif_items("subagent_trajectories") if atif_has_subagents else (),
+                    fallback_id,
+                    profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)),
+                    new_events=store.new_event_sink,
+                )
+            atif_sessions = require_positive_conversational_evidence(
+                atif_sessions, provider=provider, source_path=source_path
+            )
+            if prepare_sessions is not None:
+                atif_sessions = prepare_sessions(atif_sessions)
+            elif prepare_session is not None:
+                atif_sessions = [prepare_session(session) for session in atif_sessions]
+            session_count = 0
+            for session in atif_sessions:
+                session.content_hash = session_content_hash(session)
+                append_session_to_shard(shard_builder, session)
+                _append_artifact_session(store, session_count, session)
+                session_count += 1
+            for table, column in (
+                ("prepared_message", "message_ordinal"),
+                ("prepared_event", "event_ordinal"),
+                ("prepared_attachment", "attachment_ordinal"),
+            ):
+                store.conn.execute(
+                    f"DELETE FROM {table} WHERE session_ordinal NOT IN (SELECT {column} FROM prepared_session)"
+                )
+            after_hash = _source_digest(source)
+            if before_hash != after_hash:
+                raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
+            enrichment_digest, enrichment_index_path = (
+                preparation_dependency() if preparation_dependency is not None else (None, None)
+            )
+            _seal_artifact(store.conn, after_hash, session_count, enrichment_digest, enrichment_index_path)
+            store.conn.commit()
+            shard_path = shard_builder.seal().path
+            shard_builder = None
         elif grok_count is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
@@ -1448,6 +1543,7 @@ def prepare_jsonl_blob(
             or design_envelope is not None
             or claude_ai_envelope is not None
             or drive_chunked is not None
+            or atif is not None
             or (grok_count is not None and classify_grok_export is not None)
             or (prepare_sessions is None and prepare_session is not None),
             attempt_directory=attempt_directory,
