@@ -28,10 +28,11 @@ JSONRecord: TypeAlias = JSONDocument
 
 
 class EmptyJsonlStreamError(ValueError):
-    """A JSONL stream holds no records at all: empty or whitespace only.
+    """A JSONL sample holds no inspected record, and no record failed to decode.
 
-    Distinct from a stream whose lines failed to decode, which is decode-loss
-    evidence; an empty capture is an ordinary shape, not a detection failure.
+    The stream is empty or blank, or every record exceeded the inspection
+    bound. Distinct from a stream whose lines failed to decode, which is
+    decode-loss evidence; this is an unresolved sample, not a detection crash.
     """
 
 
@@ -252,7 +253,9 @@ def _sample_jsonl_payload_with_detail(
                 break
 
     if valid_records == 0:
-        if malformed_lines == 0 and uninspected_records == 0:
+        if malformed_lines == 0:
+            # Nothing failed to decode: the stream is empty, blank, or every
+            # record exceeded the inspection bound and was left uninspected.
             raise EmptyJsonlStreamError("No valid JSONL records found")
         raise ValueError("No valid JSONL records found")
     return samples, malformed_lines, malformed_detail

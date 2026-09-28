@@ -47,13 +47,21 @@ def test_undecodable_jsonl_reports_the_crash(tmp_path: Path) -> None:
     assert crash is not None
 
 
-def test_empty_jsonl_is_a_shape_fallback(tmp_path: Path) -> None:
-    """An empty or whitespace-only capture holds no record to fail on.
+def test_jsonl_without_a_failed_record_is_a_shape_fallback(tmp_path: Path) -> None:
+    """Empty, blank, or all-oversized captures hold no record that failed.
 
     Anti-vacuity: report ``EmptyJsonlStreamError`` as a crash in
-    ``_jsonl_sample_with_failure`` and ``crash`` is no longer ``None``.
+    ``_jsonl_sample_with_failure``, or raise it only when nothing was left
+    uninspected, and ``crash`` is no longer ``None``.
     """
-    for name, content in (("empty.jsonl", b""), ("blank.jsonl", b"\n  \n\t\n")):
+    from polylogue.archive.raw_payload.decode import JSONL_RECORD_INSPECTION_BYTES
+
+    oversized = b'{"type": "note", "text": "' + b"x" * (JSONL_RECORD_INSPECTION_BYTES + 1) + b'"}\n'
+    for name, content in (
+        ("empty.jsonl", b""),
+        ("blank.jsonl", b"\n  \n\t\n"),
+        ("oversized.jsonl", oversized * 2),
+    ):
         stream = tmp_path / name
         stream.write_bytes(content)
 
