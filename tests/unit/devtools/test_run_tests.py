@@ -1158,6 +1158,33 @@ def test_a_green_older_than_a_pruned_red_is_not_reused(tmp_path: Path) -> None:
     assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
 
 
+def test_a_pruned_red_later_in_the_same_second_blocks_reuse(tmp_path: Path) -> None:
+    """Anti-vacuity: compare history run ids lexically and the pruned red,
+    whose suffix sorts below the green's, is taken for an earlier run."""
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py"]
+    _green_receipt(
+        runs,
+        "20260101T000000Z-focused-test-1-ff",
+        argv=selection,
+        digest="d1",
+        started_at="2026-01-01T00:00:00.1+00:00",
+    )
+    (tmp_path / ".cache" / "verify" / "history.jsonl").write_text(
+        json.dumps(
+            {
+                "run_id": "20260101T000000Z-focused-test-1-00",
+                "status": "failed",
+                "started_at": "2026-01-01T00:00:00.9+00:00",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
+
+
 def test_a_later_red_in_the_same_second_outranks_a_green(tmp_path: Path) -> None:
     """Anti-vacuity: order by directory name alone and the green, whose random
     suffix sorts higher, is returned although the red started after it."""

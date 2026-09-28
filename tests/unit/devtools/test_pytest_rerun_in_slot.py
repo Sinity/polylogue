@@ -334,6 +334,13 @@ def test_a_callers_plugin_load_survives_into_the_rerun() -> None:
     assert pytest_rerun.semantic_rerun_options(command) == ["-p", "custom_plugin", "-pother"]
 
 
+def test_the_suite_file_batch_is_dropped_with_its_value() -> None:
+    """Anti-vacuity: leave ``--polylogue-file-batch`` out of the table and its
+    ``1/2`` is dropped as an operand, so the rerun gets a value-less option."""
+    command = ["python", "-m", "pytest", "--polylogue-file-batch", "1/2", "-W", "error", "tests/test_w.py"]
+    assert pytest_rerun.semantic_rerun_options(command) == ["-W", "error"]
+
+
 def test_the_first_attempts_descendants_are_reaped_before_a_rerun() -> None:
     """Anti-vacuity: skip ``_group_reaped`` and the backgrounded ``sleep`` the
     failed attempt left behind is still in its group when the rerun starts."""

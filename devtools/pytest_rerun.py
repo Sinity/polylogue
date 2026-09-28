@@ -100,6 +100,9 @@ RERUN_IN_SLOT_RESULT = "pytest-rerun-in-slot.json"
 #: ``--import-mode``) changes how a test executes and is kept.
 _RERUN_DROPPED_WITH_VALUE = frozenset(
     {
+        # The suite's file sharding (``tests/conftest.py``): applied to the
+        # failed ids alone it would deselect some of them.
+        "--polylogue-file-batch",
         "-r",
         "-k",
         "-m",

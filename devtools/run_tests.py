@@ -430,7 +430,7 @@ def reusable_green_receipt(
         except (OSError, ValueError):
             continue
         if isinstance(payload, dict):
-            loaded.append((f"{entry.name[:16]}|{payload.get('started_at') or ''}", entry, payload))
+            loaded.append((_run_order(entry.name, payload), entry, payload))
     loaded.sort(key=lambda item: item[0], reverse=True)
     interpreter = (sys.executable, platform.python_version())
     for _order, entry, payload in loaded:
@@ -452,14 +452,21 @@ def reusable_green_receipt(
             and payload.get("exit_code") == 0
             and (payload.get("pytest_aggregate") or {}).get("terminal_green") is True
         )
-        if not green or _later_failure_pruned(root, after=entry.name):
+        if not green or _later_failure_pruned(root, after=_order):
             return None
         return receipt
     return None
 
 
+def _run_order(run_id: str, payload: Mapping[str, Any]) -> str:
+    """Chronological sort key: run ids carry the second, ``started_at`` the rest."""
+    return f"{run_id[:16]}|{payload.get('started_at') or ''}"
+
+
 def _later_failure_pruned(root: Path, *, after: str) -> bool:
-    """Whether a focused run newer than ``after`` failed and lost its detail.
+    """Whether a focused run later than ``after`` failed and lost its detail.
+
+    ``after`` is the green run's :func:`_run_order` key.
 
     Retention keeps fewer failed details than green ones, so a later red of
     the same inputs can be pruned while the older green survives. The
@@ -483,7 +490,7 @@ def _later_failure_pruned(root: Path, *, after: str) -> bool:
                 if (
                     isinstance(run_id, str)
                     and "-focused-test-" in run_id
-                    and run_id > after
+                    and _run_order(run_id, row) > after
                     and row.get("status") != "success"
                     and not (runs_root / run_id).exists()
                 ):
@@ -724,6 +731,7 @@ _VALUE_TAKING_OPTIONS = frozenset(
         "--benchmark-time-unit",
         "--snapshot-update-dir",
         "--snapshot-default-extension",
+        "--polylogue-file-batch",
     }
 )
 
