@@ -823,15 +823,15 @@ def bounded_lines(handle: IO[bytes] | IO[str] | Iterable[bytes | str]) -> Iterat
             content = len(held) - (1 if held.endswith(ending) else 0)  # type: ignore[arg-type]
             yield held if content <= limit else OversizedRecord(content)
         return
-    while line := handle.readline(limit + 1):  # type: ignore[union-attr]
+    while line := handle.readline(limit + 1):
         newline: bytes | str = b"\n" if isinstance(line, bytes) else "\n"
-        if len(line) <= limit or line.endswith(newline):  # type: ignore[arg-type]
+        if len(line) <= limit or line.endswith(newline):
             yield line
             continue
         size = len(line)
         while rest := handle.readline(_READ_BYTES):
             size += len(rest)
-            if rest.endswith(newline):  # type: ignore[arg-type]
+            if rest.endswith(newline):
                 size -= 1
                 break
         yield OversizedRecord(size)
