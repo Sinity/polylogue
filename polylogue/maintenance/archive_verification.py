@@ -3540,6 +3540,20 @@ def _check_chatgpt_content_conservation_at_index_path(
             summary="ChatGPT documents overlap the candidate but contain no measurable content units",
             evidence={**evidence, "outcome_reason": "zero_content_units"},
         )
+    rejected = int(evidence["rejected_mapping_candidates"])
+    if rejected:
+        # A rejected conversation record lowers no document, so its content is
+        # outside the measured units; a conserved sibling must not report OK.
+        return ArchiveVerificationCheck(
+            name="chatgpt-content-conservation",
+            status=OutcomeStatus.ERROR,
+            summary=f"{rejected:,} ChatGPT conversation record(s) were rejected by the bundle lowering",
+            count=rejected,
+            details=[
+                f"{item['raw_id']}:{item['conversation_key']}" for item in evidence["rejected_mapping_candidate_sample"]
+            ],
+            evidence={**evidence, "outcome_reason": "rejected_mapping_candidates"},
+        )
     summary = (
         f"{dropped:,} content unit(s) dropped at the parse boundary across "
         f"{evidence['documents_with_dropped_content']:,} document(s): "
