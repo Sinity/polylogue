@@ -39,7 +39,6 @@ INTERACTIVE_SURFACES = (
     "daemon_cli_query",
     "daemon_live_completion",
     "cli_status_cold",
-    "ingest_to_searchable",
 )
 
 
@@ -242,7 +241,7 @@ def test_catalog_exists_and_covers_required_surfaces() -> None:
 
 
 def test_catalog_names_the_interactive_budget_contract() -> None:
-    """The 20d.14 contract must retain all four end-to-end budget families."""
+    """The 20d.14 contract retains the interactive budget families with benchmarks."""
     surfaces = verify_slos._parse_slo_catalog(CATALOG_PATH.read_text())
 
     for name in INTERACTIVE_SURFACES:
@@ -255,6 +254,17 @@ def test_catalog_names_the_interactive_budget_contract() -> None:
         assert isinstance(p50, int)
         assert isinstance(p95, int)
         assert p95 >= p50
+
+
+def test_catalog_withholds_ingest_to_searchable_until_the_benchmark_covers_it() -> None:
+    """The direct-ingest benchmark cannot stand in for watcher-to-find latency.
+
+    Anti-vacuity: restoring the direct ``LiveBatchProcessor`` benchmark as an
+    ``ingest_to_searchable`` surface makes this fail; the catalog must not
+    publish an end-to-end budget until a benchmark observes the full route.
+    """
+    surfaces = verify_slos._parse_slo_catalog(CATALOG_PATH.read_text())
+    assert "ingest_to_searchable" not in surfaces
 
 
 def _stub_benchmark_stats(
