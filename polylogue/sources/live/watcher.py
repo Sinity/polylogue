@@ -311,6 +311,10 @@ def _is_retryable_lock_error(exc: sqlite3.OperationalError) -> bool:
     return "database is locked" in message or "database table is locked" in message or "busy" in message
 
 
+class WatcherRootsUnavailableError(RuntimeError):
+    """Raised when the watcher is started with no existing source root."""
+
+
 class LiveWatcher:
     """Filesystem watch that wakes the fair-intake dispatcher.
 
@@ -452,21 +456,31 @@ class LiveWatcher:
         """Return configured roots that exist at the instant of a scan."""
         return [source.root for source in self._sources if source.exists()]
 
-    async def run(self) -> None:
-        # Hook commands create their first carrier lazily.  Ensure the nested
-        # root exists before ``awatch`` snapshots its roots, otherwise a daemon
-        # that starts before the first hook event never sees that file.
+    def prepare_watch_roots(self) -> list[Path]:
+        """Create the writable hook carrier roots and return what can be watched.
+
+        Hook commands create their first carrier lazily.  The nested root must
+        exist before ``awatch`` snapshots its roots, otherwise a daemon that
+        starts before the first hook event never sees that file.  An empty
+        result means there is nothing to watch; the daemon resolves that as an
+        unavailable watcher before starting :meth:`run`.
+        """
         for source in self._hook_sources():
             # Untagged single-root callers predate the topology contract and
             # are necessarily the primary.  Tagged legacy roots remain
             # strictly read-only and are never created by the watcher.
             if source.role in {None, "primary-writable"}:
                 source.root.mkdir(parents=True, exist_ok=True)
-        roots = self._existing_source_roots()
+        return self._existing_source_roots()
+
+    async def run(self) -> None:
+        roots = self.prepare_watch_roots()
         if not roots:
-            logger.warning("live.watcher: no source roots exist; nothing to watch")
+            # Reachable only when every root vanished after the daemon's own
+            # check. Returning would read as a completed watch, so raise and
+            # let the declared failure policy decide.
             self._watcher_ready.set()
-            return
+            raise WatcherRootsUnavailableError("no configured source root exists")
 
         watch_task = asyncio.create_task(self._watch_changes(roots))
         await asyncio.sleep(0)
@@ -1584,4 +1598,4 @@ def _cursor_stat_matches(cursor: CursorRecord, stat: os.stat_result) -> bool:
     )
 
 
-__all__ = ["LiveWatcher", "WatchSource", "default_sources"]
+__all__ = ["LiveWatcher", "WatchSource", "WatcherRootsUnavailableError", "default_sources"]
