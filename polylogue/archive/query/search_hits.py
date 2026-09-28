@@ -328,7 +328,7 @@ async def search_hits_for_plan(
         raise EmbeddingRetrievalNotReadyError(
             "semantic retrieval is unavailable: no configured/constructible vector backend; "
             "configure Voyage/sqlite-vec and retry",
-            readiness_status="disabled" if vector_failure.kind == "unavailable" else "failed",
+            readiness_status="disabled" if vector_failure.kind == "unavailable" else "pending",
         )
     executable_plan = replace(plan, vector_provider=vector_provider)
     paired, resolved_lane = await run_archive_read(
@@ -363,6 +363,16 @@ def project_search_hits(
     terms = search_terms(query_terms)
     hits: list[SessionSearchHit] = []
     for rank, (native_hit, summary) in enumerate(paired, start=1):
+        if resolved_lane == "hybrid":
+            components, fused_score = _hybrid_score_components(native_hit.lane_ranks or {})
+        else:
+            components = {
+                f"{lane}_rank": float(rank_value)
+                for lane, rank_value in (native_hit.lane_ranks or {}).items()
+                if rank_value is not None
+            }
+            fused_score = None
+        primary_rank, primary_contribution = primary_lane_evidence(components)
         hits.append(
             session_search_hit_from_summary(
                 _archive_summary_to_domain(summary),
@@ -372,26 +382,19 @@ def project_search_hits(
                 message_id=native_hit.message_id,
                 snippet=native_hit.snippet,
                 matched_terms=terms,
-                score_components={
-                    f"{lane}_rank": float(rank_value)
-                    for lane, rank_value in (native_hit.lane_ranks or {}).items()
-                    if rank_value is not None
-                },
-                lane_rank=min(
-                    rank_value for rank_value in (native_hit.lane_ranks or {}).values() if rank_value is not None
-                )
-                if native_hit.lane_ranks and any(value is not None for value in native_hit.lane_ranks.values())
-                else None,
+                score=fused_score,
+                score_components=components,
+                raw_score=fused_score,
+                lane_rank=primary_rank,
+                lane_contribution=primary_contribution,
             )
         )
-    needs_vector = bool(plan.similar_text or plan.similar_session_id or plan.retrieval_lane == "hybrid")
+    actual_lanes = (
+        ("text", "vector") if resolved_lane == "hybrid" else (("vector",) if resolved_lane == "semantic" else ("text",))
+    )
     execution = SearchExecution(
-        requested_lanes=("text", "vector")
-        if plan.retrieval_lane == "hybrid"
-        else (("vector",) if needs_vector else ("text",)),
-        executed_lanes=("text", "vector")
-        if resolved_lane == "hybrid"
-        else (("vector",) if resolved_lane == "semantic" else ("text",)),
+        requested_lanes=("text", "vector") if plan.retrieval_lane == "hybrid" else actual_lanes,
+        executed_lanes=actual_lanes,
         unavailable_lanes=("vector",) if vector_failure and vector_failure.kind == "unavailable" else (),
         failed_lanes=(vector_failure,) if vector_failure and vector_failure.kind != "unavailable" else (),
     )

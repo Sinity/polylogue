@@ -94,8 +94,10 @@ def _git_ceiling_directories() -> tuple[str, ...]:
 
 
 def _find_git_root(path: Path, ceilings: tuple[str, ...] = ()) -> Path | None:
-    for candidate in _iter_repo_root_candidates(path):
-        if str(candidate) in ceilings:
+    candidates = tuple(_iter_repo_root_candidates(path))
+    starting_candidate = candidates[0] if candidates else None
+    for candidate in candidates:
+        if str(candidate) in ceilings and candidate != starting_candidate:
             return None
         if candidate.name == ".git" and _path_exists(candidate):
             repo_root = candidate.parent

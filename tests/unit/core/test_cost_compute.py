@@ -104,6 +104,7 @@ def test_exact_provider_money_does_not_replace_canonical_model_usage_tokens() ->
     assert summary.total_input_tokens == 100
     assert summary.total_output_tokens == 20
     assert summary.total_api_cost_usd == 1.0
+    assert sum(item.api_cost_usd for item in summary.per_model) == summary.total_api_cost_usd
 
 
 def test_compute_session_cost_falls_back_to_word_count_estimate_for_zero_token_usage() -> None:
