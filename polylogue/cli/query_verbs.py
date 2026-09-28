@@ -1733,6 +1733,9 @@ def delete_verb(
     effective_output_format = output_format or (
         request.params.get("output_format") if isinstance(request.params.get("output_format"), str) else None
     )
+    # Named projection callbacks enter through the same renderer, so use the
+    # root query's inherited dialect in every branch below.
+    output_format = effective_output_format
     if _explain_terminal_action(
         request,
         action="delete",

@@ -668,6 +668,33 @@ def test_write_messages_file_replaces_the_destination_on_success(tmp_path: Path,
     assert sorted(child.name for child in tmp_path.iterdir() if child.name.startswith(".messages.json")) == []
 
 
+def test_write_messages_file_follows_symlink_destination(tmp_path: Path, daemon_archive: Path) -> None:
+    """Atomic export preserves an existing symlink and updates its target.
+
+    Anti-vacuity: replacing the link pathname directly leaves the target stale
+    and turns the requested symlink into a regular file.
+    """
+    target = tmp_path / "target.json"
+    target.write_text('{"old": true}', encoding="utf-8")
+    link = tmp_path / "messages.json"
+    link.symlink_to(target)
+    session_id = _seed_messages(tmp_path, {"id": "m1", "role": "user", "text": "first"})
+
+    _write_messages_file(
+        _env(),
+        _seeded_request(tmp_path),
+        session_id=session_id,
+        limit=10,
+        offset=0,
+        full=False,
+        output_format="json",
+        out_path=link,
+    )
+
+    assert link.is_symlink()
+    assert json.loads(target.read_text(encoding="utf-8"))["session_id"] == session_id
+
+
 def test_run_messages_ndjson_emits_one_json_document_per_line(
     tmp_path: Path, daemon_archive: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -75,7 +75,7 @@ _COMPLETION_DEADLINE_MS = 1000
 DAEMON_REQUIRED_COMPLETION_MESSAGE = (
     "polylogue: no cached values — run `polylogued run` to populate shell completion suggestions"
 )
-_COMPLETION_CACHE_VERSION = 2
+_COMPLETION_CACHE_VERSION = 3
 _COMPLETION_CACHE_MAX_VALUES = 256
 _COMPLETION_CACHE_TTL_SECONDS = 24 * 60 * 60
 _COMPLETION_CACHE_MAX_BYTES = 1024 * 1024
@@ -104,13 +104,11 @@ def _read_completion_cache(source: str, incomplete: str, *, limit: int, archive_
         if len(raw) > _COMPLETION_CACHE_MAX_BYTES:
             return []
         payload = json.loads(raw)
-        if (
-            not isinstance(payload, dict)
-            or payload.get("version") != _COMPLETION_CACHE_VERSION
-            or payload.get("archive_root") != archive_root
-        ):
+        if not isinstance(payload, dict) or payload.get("version") != _COMPLETION_CACHE_VERSION:
             return []
-        values_by_source = payload.get("values")
+        archives = payload.get("archives")
+        archive = archives.get(archive_root) if isinstance(archives, dict) else None
+        values_by_source = archive.get("values") if isinstance(archive, dict) else None
         values = values_by_source.get(source) if isinstance(values_by_source, dict) else None
         if not isinstance(values, list):
             return []
@@ -128,59 +126,95 @@ def _read_completion_cache(source: str, incomplete: str, *, limit: int, archive_
         return []
 
 
-def _remember_completion_values(source: str, value: object, *, archive_root: str) -> None:
+def _remember_completion_values(source: str, value: object, *, archive_root: str, incomplete: str = "") -> None:
     """Merge daemon-returned candidates into the small, disposable XDG cache."""
     items = render_completion_values(value)
-    if not items:
-        return
     path = _completion_cache_path()
     now = time.time()
+    lock_path = path.with_suffix(path.suffix + ".lock")
     values: dict[str, list[dict[str, object]]] = {}
-    try:
-        with path.open("r", encoding="utf-8") as stream:
-            raw = stream.read(_COMPLETION_CACHE_MAX_BYTES + 1)
-        prior = json.loads(raw) if len(raw) <= _COMPLETION_CACHE_MAX_BYTES else None
-        raw_values = (
-            prior.get("values") if isinstance(prior, dict) and prior.get("archive_root") == archive_root else None
-        )
-        if isinstance(raw_values, dict):
-            values = {
-                key: [
-                    row
-                    for row in rows
-                    if isinstance(row, dict)
-                    and isinstance(row.get("value"), str)
-                    and isinstance(row.get("seen_at"), (int, float))
-                    and 0 <= now - row["seen_at"] <= _COMPLETION_CACHE_TTL_SECONDS
-                ]
-                for key, rows in raw_values.items()
-                if isinstance(key, str) and key in {"session_id", "tag", "repo", "tool"} and isinstance(rows, list)
-            }
-    except (OSError, ValueError, TypeError):
-        pass
-    merged = {str(row["value"]): row for row in values.get(source, [])}
-    for item in items:
-        if len(item.value) <= 512:
-            merged[item.value] = {
-                "value": item.value,
-                "help": item.help[:512] if isinstance(item.help, str) else None,
-                "seen_at": now,
-            }
-    values[source] = list(merged.values())[-_COMPLETION_CACHE_MAX_VALUES:]
     temporary: str | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=path.parent, prefix=".shell-completions-", delete=False
-        ) as stream:
-            temporary = stream.name
-            os.fchmod(stream.fileno(), 0o600)
-            json.dump({"version": _COMPLETION_CACHE_VERSION, "archive_root": archive_root, "values": values}, stream)
-        # This disposable cache does not require a durability barrier on each TAB press.
-        # ast-grep-ignore: replace-without-parent-fsync
-        os.replace(temporary, path)
-    except OSError:
-        pass
+        import fcntl
+
+        with lock_path.open("a") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            prior: object = None
+            try:
+                raw = path.read_text(encoding="utf-8")
+                prior = json.loads(raw) if len(raw.encode("utf-8")) <= _COMPLETION_CACHE_MAX_BYTES else None
+            except (OSError, ValueError):
+                pass
+            archives = prior.get("archives") if isinstance(prior, dict) else None
+            archive_map = dict(archives) if isinstance(archives, dict) else {}
+            old = archive_map.get(archive_root)
+            raw_values = old.get("values") if isinstance(old, dict) else None
+            if isinstance(raw_values, dict):
+                values = {
+                    key: [
+                        row
+                        for row in rows
+                        if isinstance(row, dict)
+                        and isinstance(row.get("value"), str)
+                        and isinstance(row.get("seen_at"), (int, float))
+                        and 0 <= now - row["seen_at"] <= _COMPLETION_CACHE_TTL_SECONDS
+                    ]
+                    for key, rows in raw_values.items()
+                    if key in {"session_id", "tag", "repo", "tool"} and isinstance(rows, list)
+                }
+            values[source] = [
+                row
+                for row in values.get(source, [])
+                if not _cached_value_matches(source, str(row.get("value", "")), row.get("help"), incomplete)
+            ]
+            merged = {str(row["value"]): row for row in values.get(source, [])}
+            for item in items:
+                if len(item.value) <= 512:
+                    merged.pop(item.value, None)
+                    merged[item.value] = {
+                        "value": item.value,
+                        "help": item.help[:512] if isinstance(item.help, str) else None,
+                        "seen_at": now,
+                    }
+            values[source] = list(merged.values())[-_COMPLETION_CACHE_MAX_VALUES:]
+            archive_map[archive_root] = {"values": values, "seen_at": now}
+            payload = {"version": _COMPLETION_CACHE_VERSION, "archives": archive_map}
+            encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+            while len(encoded.encode("utf-8")) > _COMPLETION_CACHE_MAX_BYTES:
+                oldest_root = min(archive_map, key=lambda root: archive_map[root].get("seen_at", 0))
+                rows_by_source = archive_map[oldest_root].get("values", {})
+                candidates = [
+                    (row.get("seen_at", 0), oldest_root, key, i)
+                    for key, rows in rows_by_source.items()
+                    for i, row in enumerate(rows)
+                ]
+                if not candidates:
+                    archive_map.pop(oldest_root)
+                else:
+                    _, root, key, index = min(candidates)
+                    rows_by_source[key].pop(index)
+                    if not rows_by_source[key]:
+                        rows_by_source.pop(key)
+                encoded = json.dumps(
+                    {"version": _COMPLETION_CACHE_VERSION, "archives": archive_map},
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                )
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=path.parent, prefix=".shell-completions-", delete=False
+            ) as stream:
+                temporary = stream.name
+                os.fchmod(stream.fileno(), 0o600)
+                stream.write(encoded)
+            os.replace(temporary, path)
+            temporary = None
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    except (OSError, ValueError, TypeError):
+        if temporary is not None:
+            with suppress(OSError):
+                os.unlink(temporary)
+        return
     finally:
         if temporary is not None:
             with suppress(OSError):
@@ -256,7 +290,7 @@ def completion_values(source: str, incomplete: str, *, limit: int) -> list[Compl
         # transport failure is rendered as no completion rather than a
         # traceback in the prompt.
         return []
-    _remember_completion_values(source, result.value, archive_root=archive_root)
+    _remember_completion_values(source, result.value, archive_root=archive_root, incomplete=incomplete)
     return render_completion_values(result.value)
 
 

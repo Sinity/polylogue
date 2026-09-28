@@ -208,6 +208,11 @@ def deliver_query_output(
             path = destination.path
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(document.content, encoding="utf-8")
+            from polylogue.security.secret_scan import describe_path_scan_result, scan_path_for_secret_candidates
+
+            notice = describe_path_scan_result(scan_path_for_secret_candidates(path))
+            if notice is not None:
+                env.ui.console.print(f"[yellow]{notice}[/yellow]")
             env.ui.console.print(f"Wrote to {path}")
 
 
