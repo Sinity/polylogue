@@ -34,7 +34,8 @@ async def get_blocks(
             tool_result_exit_code,
             tool_outcome,
             tool_result_outcome_unknown_reason,
-            signature
+            signature,
+            lower(hex(content_hash)) AS content_hash
         FROM blocks
         WHERE message_id IN ({placeholders})
         ORDER BY message_id, position
