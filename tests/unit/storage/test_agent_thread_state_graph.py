@@ -176,3 +176,21 @@ def test_index_tier_carries_no_provider_named_relation() -> None:
     assert "codex" in _PROVIDER_TOKENS
     # A vocabulary value naming a provider is not a provider-named object.
     assert "claude-code-session" not in _strip_sql_noise("origin IN ('claude-code-session')")
+
+
+def test_title_read_reports_absent_tables_as_no_titles() -> None:
+    """A tier without the evidence graph has no retained titles."""
+    assert read_thread_titles(sqlite3.connect(":memory:"), thread_ids=["parent-thread"]) == {}
+
+
+def test_title_read_propagates_an_interrupted_read(index_conn: sqlite3.Connection) -> None:
+    """An interrupted read is a failure, not an absence of titles.
+
+    Anti-vacuity: restore the blanket ``except sqlite3.Error: return {}`` in
+    ``read_thread_titles`` and this returns ``{}``, which ingest would then
+    persist as "this thread has no retained title".
+    """
+    _write(index_conn)
+    index_conn.set_progress_handler(lambda: 1, 1)
+    with pytest.raises(sqlite3.OperationalError, match="interrupted"):
+        read_thread_titles(index_conn, thread_ids=["parent-thread"])

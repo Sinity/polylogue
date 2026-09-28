@@ -51,7 +51,7 @@ def _archive_record_context_delivery(
         image, boundary=boundary, run_ref=run_ref, inheritance_mode=inheritance_mode
     )
     try:
-        conn = open_connection(user_db)
+        conn = open_connection(user_db, archive_root=user_db.parent)
         conn.row_factory = sqlite3.Row
         try:
             envelope = write_context_delivery(
@@ -90,7 +90,7 @@ def _archive_judge_assertion_candidate(
         raise ValueError("assertion user tier is not initialized")
     _require_archive_write_authority(config, "api.judge_assertion_candidate")
     try:
-        conn = open_connection(user_db)
+        conn = open_connection(user_db, archive_root=user_db.parent)
         conn.row_factory = sqlite3.Row
         try:
             result = judge_assertion_candidate(
@@ -177,14 +177,26 @@ def _archive_capture_assertion_candidate(
                 session_ref = f"session:{summaries[0].session_id}"
                 resolved_refs.append(session_ref)
                 continue
-            parsed = ObjectRef.parse(ref)
-            if parsed.kind != "session":
-                raise ValueError("--ref must be a session:<id> ref or 'last'")
-            try:
-                session_id = archive.resolve_session_id(parsed.object_id)
-            except KeyError:
-                raise ValueError(f"session ref not found: {parsed.object_id}") from None
-            resolved_refs.append(f"session:{session_id}")
+            parsed = parse_public_ref(ref)
+            if isinstance(parsed, ObjectRef):
+                if parsed.kind == "message":
+                    resolved_refs.append(parsed.format())
+                    continue
+                if parsed.kind != "session":
+                    raise ValueError("--ref must be a session or message ref, or 'last'")
+                try:
+                    session_id = archive.resolve_session_id(parsed.object_id)
+                except KeyError:
+                    raise ValueError(f"session ref not found: {parsed.object_id}") from None
+                resolved_refs.append(f"session:{session_id}")
+            else:
+                if parsed.message_id is None or parsed.block_index is not None:
+                    raise ValueError("--ref must identify a session or message")
+                try:
+                    session_id = archive.resolve_session_id(parsed.session_id)
+                except KeyError:
+                    raise ValueError(f"session ref not found: {parsed.session_id}") from None
+                resolved_refs.append(f"{session_id}::{parsed.message_id}")
 
         normalized_scope_refs = [parse_public_ref(ref).format() for ref in scope_refs]
         target_ref = resolved_refs[0] if resolved_refs else f"assertion:{assertion_id}"
@@ -210,7 +222,7 @@ def _archive_capture_assertion_candidate(
 
     try:
         _require_archive_write_authority(config, "api.capture_assertion_candidate")
-        conn = open_connection(user_db)
+        conn = open_connection(user_db, archive_root=user_db.parent)
         conn.row_factory = sqlite3.Row
         try:
             # The key lookup and first write share one reservation. Without
@@ -287,7 +299,7 @@ def _archive_judge_assertion_candidates(
         raise ValueError("assertion user tier is not initialized")
     _require_archive_write_authority(config, "api.judge_assertion_candidates")
     try:
-        conn = open_connection(user_db)
+        conn = open_connection(user_db, archive_root=user_db.parent)
         conn.row_factory = sqlite3.Row
         try:
             result = judge_assertion_candidates(conn, items)
@@ -322,7 +334,7 @@ def _archive_record_comparative_judgment(
     _require_archive_write_authority(config, "api.record_comparative_judgment")
     initialize_archive_database(user_db, ArchiveTier.USER)
     try:
-        conn = open_connection(user_db)
+        conn = open_connection(user_db, archive_root=user_db.parent)
         conn.row_factory = sqlite3.Row
         try:
             envelope = upsert_comparative_judgment_assertion(conn, judgment, author_kind=author_kind)
@@ -343,7 +355,7 @@ def record_manual_continuation_product(config: Config, child_session_id: str, pa
     root = _active_archive_root(config)
     _require_archive_write_authority(config, "api.record_manual_continuation")
     now_ms = int(datetime.now(UTC).timestamp() * 1000)
-    index = open_connection(root / "index.db")
+    index = open_connection(root / "index.db", archive_root=root)
     try:
         if index.execute("SELECT 1 FROM sessions WHERE session_id = ?", (child,)).fetchone() is None:
             raise ValueError("manual continuation child session does not exist")
@@ -376,7 +388,7 @@ def record_manual_continuation_product(config: Config, child_session_id: str, pa
 
     from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
 
-    user = open_connection(root / "user.db")
+    user = open_connection(root / "user.db", archive_root=root)
     try:
         upsert_assertion(
             user,
@@ -410,7 +422,7 @@ def record_context_ledger_product(config: Config, admission: Any, *, observed_at
     _require_archive_write_authority(config, "api.context_injection_ledger")
     if not ops_db.exists():
         initialize_archive_database(ops_db, ArchiveTier.OPS)
-    ops_conn = open_connection(ops_db)
+    ops_conn = open_connection(ops_db, archive_root=ops_db.parent)
     try:
         record_context_ledger(ops_conn, admission, observed_at_ms=observed_at_ms)
     finally:

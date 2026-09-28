@@ -98,7 +98,14 @@ async def build_search_envelope_for_spec(
 
     hits = await facade.search_session_hits(fetch_spec)
     execution = getattr(hits, "execution", None)
-    if not hits and fetch_spec.boolean_predicate is not None:
+    filter_only = fetch_spec.boolean_predicate is not None or (
+        not fetch_spec.query_terms
+        and not fetch_spec.contains_terms
+        and fetch_spec.similar_text is None
+        and fetch_spec.similar_session_id is None
+        and fetch_spec.has_filters()
+    )
+    if not hits and filter_only:
         # Filter-only expressions have no ranked-search evidence, but they are
         # still valid envelope queries.  Keep this fallback in the canonical
         # builder rather than reintroducing a surface-local execution branch.
@@ -109,7 +116,9 @@ async def build_search_envelope_for_spec(
             session_search_hit_from_session(
                 session,
                 query_terms=(),
-                rank=display_offset + index,
+                # Ranks are absolute in the fetched relation, so a cursor page
+                # continues after its anchor instead of restarting at 1.
+                rank=(fetch_spec.offset or 0) + index,
                 retrieval_lane="auto",
                 match_surface="session",
             )
@@ -125,11 +134,13 @@ async def build_search_envelope_for_spec(
         SessionSearchHitPayload.from_search_hit(hit, message_count=hit.summary.message_count) for hit in hits
     ]
     resolved_lane = hits[0].retrieval_lane if hits else spec.retrieval_lane
-    return build_search_envelope(
+    envelope = build_search_envelope(
         hit_payloads,
         total=total,
         limit=display_limit,
-        offset=display_offset,
+        # A cursor page starts after its anchor's rank, so the continuation
+        # fields describe the page actually fetched, not the request's offset.
+        offset=decoded_cursor.r if decoded_cursor is not None else display_offset,
         query=query if query is not None else _search_query_text(spec),
         retrieval_lane=resolved_lane,
         sort=spec.sort,
@@ -151,6 +162,7 @@ async def build_search_envelope_for_spec(
             }
         ),
     )
+    return envelope
 
 
 async def build_archive_search_envelope(

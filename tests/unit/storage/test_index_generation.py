@@ -324,6 +324,35 @@ def test_create_removes_generation_root_when_materialization_fails(
     assert tuple(store.generations_root.glob("gen-*")) == ()
 
 
+def test_create_failure_does_not_remove_replacement_generation_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cleanup is bound to the created inode, even if its pathname is replaced.
+
+    Anti-vacuity: pathname-only ``rmtree(root)`` deletes ``replacement`` after
+    initialization moves the original directory aside and installs a new one.
+    """
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    moved: list[Path] = []
+
+    def replace_then_fail(_path: Path, *args: object, **kwargs: object) -> None:
+        root = store.generations_root / next(p.name for p in store.generations_root.glob("gen-*"))
+        destination = root.with_name(root.name + "-moved")
+        root.rename(destination)
+        root.mkdir()
+        moved.append(destination)
+        raise OSError("injected initialization failure")
+
+    monkeypatch.setattr("polylogue.storage.index_generation.initialize_archive_database", replace_then_fail)
+    with pytest.raises(OSError, match="injected"):
+        store.create(owner_id="operator", source_snapshot="snapshot-a")
+
+    assert len(moved) == 1 and moved[0].is_dir()
+    replacements = tuple(path for path in store.generations_root.glob("gen-*") if path.name.endswith("-moved") is False)
+    assert len(replacements) == 1 and replacements[0].is_dir()
+
+
 def test_capture_blob_directory_identity_is_stable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _archive(tmp_path)
     blob = tmp_path / "blob"

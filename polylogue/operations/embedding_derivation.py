@@ -41,17 +41,21 @@ def select_embedding_session_window(
     min_messages: int | None = None,
 ) -> tuple[tuple[str, ...], bool]:
     """Resolve one bounded pending-session window for a daemon operation."""
-    from polylogue.storage.embeddings.materialization import select_pending_session_window
+    from polylogue.storage.embeddings.materialization import select_pending_archive_session_window
 
-    del archive_root
     with open_readonly_connection(index_db_path, timeout_class="background-read", validate_schema=False) as conn:
-        rows = select_pending_session_window(
+        embeddings_path = archive_root / "embeddings.db"
+        if embeddings_path.exists():
+            conn.execute("ATTACH DATABASE ? AS embedding_tier", (str(embeddings_path),))
+        rows = select_pending_archive_session_window(
             conn,
+            status_table="embedding_tier.embedding_status" if embeddings_path.exists() else "",
             rebuild=rebuild,
             # Read one extra row so the operation can distinguish an exact
             # fit from a max-sessions window that leaves pending sessions.
             max_sessions=None if max_sessions is None else max_sessions + 1,
             max_messages=max_messages,
+            min_messages=min_messages,
         )
     if min_messages is not None:
         rows = [row for row in rows if row.message_count >= min_messages]
