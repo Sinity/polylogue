@@ -689,6 +689,20 @@ class TestPolylogueConfigTOML:
         cfg = load_polylogue_config(config_path=toml_path)
         assert cfg.api_port == 9998
 
+    def test_legacy_daemon_bind_aliases_remain_effective(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+        """Existing flat daemon bind keys still configure the API.
+
+        Anti-vacuity: stop mapping [daemon].host/port and both values fall back
+        to loopback:8766 despite the documented existing configuration.
+        """
+        from polylogue.config import load_polylogue_config
+
+        toml_path = tmp_path / "polylogue.toml"
+        toml_path.write_text('[daemon]\nhost = "0.0.0.0"\nport = 8123\n', encoding="utf-8")
+        cfg = load_polylogue_config(config_path=toml_path)
+        assert cfg.api_host == "0.0.0.0"
+        assert cfg.api_port == 8123
+
     def test_toml_sets_browser_capture(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
         from polylogue.config import load_polylogue_config
 

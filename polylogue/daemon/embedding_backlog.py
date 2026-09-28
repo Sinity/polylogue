@@ -158,6 +158,12 @@ async def periodic_embedding_backlog_check(
                 elif result.report is not None and result.report.done:
                     pass_span.ok(messages=int(result.report.done))
                     return PassOutcome.PROGRESSED
+                elif result.report is not None and (result.report.pending or result.report.failed):
+                    pass_span.degraded(
+                        "backlog_not_drained",
+                        pending=int(result.report.pending),
+                        failed=int(result.report.failed),
+                    )
                 else:
                     pass_span.empty(messages=0)
                     return PassOutcome.DRAINED

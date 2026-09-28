@@ -28,6 +28,7 @@ from polylogue.daemon.derivation import (
     DerivationKey,
     DerivationRegistry,
     DerivationReport,
+    KeyOutcome,
     KeyPage,
     KeyStatus,
     Outcome,
@@ -422,6 +423,30 @@ def test_publish_refusal_is_pending_not_failed() -> None:
     assert adapter.output == {}
 
 
+def test_successful_cleanup_is_pending_when_requiredness_moved_before_certification() -> None:
+    """A vanished required key is a binding race, not a broken publisher.
+
+    Anti-vacuity: omit the requiredness recheck and a successful cleanup with
+    missing output is classified FAILED instead of retryable BINDING_MOVED.
+    """
+
+    class VanishingDomain(RecordingDerivation):
+        def publish(self, frame: DerivationFrame, replacement: Replacement) -> bool:
+            del frame, replacement
+            self._required = ()
+            return True
+
+        def is_required_key(self, frame: DerivationFrame, key: str) -> bool:
+            del frame
+            return key in self._required
+
+    report = converge(DerivationRegistry([VanishingDomain("d", required=("vanishing",))]), FRAME)
+
+    assert report.failed == 0
+    assert report.pending == 1
+    assert report.by_outcome(Outcome.PENDING)[0].reason is PendingReason.BINDING_MOVED
+
+
 def test_a_publication_the_output_relation_does_not_confirm_is_a_failure() -> None:
     """Publishing reports a claim; the output relation certifies it.
 
@@ -611,6 +636,27 @@ def test_a_report_can_be_bounded_without_losing_its_totals() -> None:
     assert report.pending == 95
     assert len(report.outcomes) == 3
     assert report.truncated
+
+
+def test_direct_report_construction_derives_counts_from_outcomes() -> None:
+    """The exported positional report constructor keeps outcome properties truthful.
+
+    Anti-vacuity: remove DerivationReport.__post_init__ and this completed
+    outcome is exposed as zero done work.
+    """
+    report = DerivationReport(FRAME, (KeyOutcome(DerivationKey("demo", "one"), Outcome.DONE),))
+    assert report.done == 1
+    assert report.pending == 0
+
+
+def test_outer_deadline_tightens_an_existing_budget_deadline() -> None:
+    """Both relative deadlines constrain the pass to the earlier deadline.
+
+    Anti-vacuity: ignore deadline_s when a Budget already has one and the
+    returned budget keeps the later 100-second allowance.
+    """
+    limits = Budget.coerce(Budget(deadline_s=100), deadline_s=1)
+    assert limits.deadline_s == 1
 
 
 def test_repeated_bounded_passes_visit_every_key() -> None:

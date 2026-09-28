@@ -1985,6 +1985,18 @@ def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
             continue
         cfg[entry.key] = tuple(value) if isinstance(value, list) else value
 
+    # The original flat [daemon] bind keys remain documented deployment
+    # inputs. Canonical nested keys win when both are present.
+    daemon = toml_data.get("daemon")
+    if isinstance(daemon, Mapping):
+        api = daemon.get("api")
+        if not isinstance(api, Mapping):
+            api = {}
+        if "host" in daemon and "host" not in api:
+            cfg["api_host"] = daemon["host"]
+        if "port" in daemon and "port" not in api:
+            cfg["api_port"] = daemon["port"]
+
 
 def _coerce_env_value(cfg_key: str, env_var: str, value: str) -> object:
     """Coerce environment values according to the config inventory key type.
