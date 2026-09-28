@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 from collections.abc import Iterable, Iterator, Mapping, MutableSequence, Set
 from contextlib import closing, contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, fields, is_dataclass, replace
 from pathlib import Path
 from typing import BinaryIO, TypeVar, overload
 from urllib.parse import quote
@@ -78,6 +78,19 @@ def _restore_surrogates(value: object, marker: re.Pattern[str]) -> object:
         return {_restore_surrogates(key, marker): _restore_surrogates(item, marker) for key, item in value.items()}
     if isinstance(value, list):
         return [_restore_surrogates(item, marker) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_restore_surrogates(item, marker) for item in value)
+    if is_dataclass(value) and not isinstance(value, type):
+        # Excluded parser-only coordinates (the owner coordinate) are carried
+        # over as dataclasses; their strings hold markers too.
+        return replace(
+            value,
+            **{
+                field.name: _restore_surrogates(getattr(value, field.name), marker)
+                for field in fields(value)
+                if field.init
+            },
+        )
     return value
 
 

@@ -3511,3 +3511,28 @@ def test_candidate_lookup_normalizes_only_after_the_exact_probe_misses(monkeypat
 
     monkeypatch.setattr(unicodedata, "normalize", guarded)
     assert conservation._candidate(decomposed) == key
+
+
+def test_js_literal_escaped_surrogate_pair_is_one_character() -> None:
+    """Anti-vacuity: keep the two code units and the stored JSON escapes them
+    adjacently, which every JSON reader combines into U+1F600."""
+    from polylogue.sources.parsers.codex import _parse_js_literal
+
+    value, ok = _parse_js_literal('"a\\uD83D\\uDE00b \\uD800"')
+    assert ok and value == "a\U0001f600b \ud800"
+
+
+def test_sink_restores_surrogates_inside_the_owner_coordinate() -> None:
+    """Anti-vacuity: restore only strings, dicts and lists and the owner
+    coordinate's stable key keeps the random surrogate marker."""
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.message_owner import MessageOwnerCoordinate
+    from polylogue.sources.parsers.base import ParsedMessage
+    from polylogue.sources.prepared_message_sink import _from_text_json, _message_json
+
+    message = ParsedMessage(provider_message_id="m\ud800", role=Role.USER, text="t\ud800")
+    message = message.model_copy(update={"owner_coordinate": MessageOwnerCoordinate(stable_key="s\ud800")})
+    restored = _from_text_json(ParsedMessage, _message_json(message))
+    assert restored.owner_coordinate is not None
+    assert restored.owner_coordinate.stable_key == "s\ud800"
+    assert restored.text == "t\ud800"

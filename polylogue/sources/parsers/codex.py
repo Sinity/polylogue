@@ -1789,6 +1789,14 @@ def _is_js_identifier_part(char: str) -> bool:
     return _is_js_identifier_start(char) or char.isdigit()
 
 
+_SURROGATE_PAIR = re.compile("[\ud800-\udbff][\udc00-\udfff]")
+
+
+def _combined_pair(match: re.Match[str]) -> str:
+    high, low = (ord(char) for char in match.group())
+    return chr(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00))
+
+
 class _JsLiteralParser:
     """Conservative parser for the JSON-like argument literals used by Code Mode.
 
@@ -1932,7 +1940,11 @@ class _JsLiteralParser:
             char = self.text[self.position]
             self.position += 1
             if char == quote:
-                return "".join(parts)
+                # JavaScript strings are UTF-16: an escaped high/low pair such
+                # as \uD83D\uDE00 is one character. Combining it here keeps
+                # the value equal to what any JSON reader of the stored,
+                # escaped payload decodes; a lone surrogate stays as it is.
+                return _SURROGATE_PAIR.sub(_combined_pair, "".join(parts))
             if quote == "`" and char == "$" and self._peek() == "{":
                 raise _JsLiteralError("template interpolation is not a literal")
             if char != "\\":
