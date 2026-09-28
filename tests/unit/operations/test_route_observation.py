@@ -354,6 +354,17 @@ def test_workload_receipt_reports_an_unentered_declared_phase_as_interrupted(tmp
     assert receipt.to_workload_receipt().status is WorkloadRunStatus.INTERRUPTED
 
 
+def test_degraded_route_is_not_projected_as_successful_work(tmp_path: Path) -> None:
+    from polylogue.scenarios.workload import WorkloadRunStatus
+
+    _init_ops(tmp_path)
+    with observe_route(archive_root=tmp_path, surface="mcp", route="mcp.gap") as obs:
+        obs.status = "degraded"
+    assert obs.receipt is not None
+    assert obs.receipt.to_workload_receipt().status is WorkloadRunStatus.INTERRUPTED
+    assert "response_bytes" in obs.receipt.to_workload_receipt().phases[0].unavailable
+
+
 def test_persisted_row_and_workload_receipt_join_on_the_correlation_id(tmp_path: Path) -> None:
     """Anti-vacuity: strip the correlation id from the emitted receipt and the
     two projections of one invocation can no longer be joined."""
@@ -412,6 +423,37 @@ def test_context_refuses_an_undeclared_phase(tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="not declared"):
             with obs.phase("render"):
                 pass
+
+
+def test_repeated_declared_phases_do_not_fail_the_observed_route(tmp_path: Path) -> None:
+    """Anti-vacuity: a duplicate phase cannot replace a successful route result."""
+    _init_ops(tmp_path)
+    spec = RouteObservationSpec(surface="cli", route="cli.repeat", phases=("total", "parse"))
+    with observe_route(archive_root=tmp_path, surface="cli", route="cli.repeat", spec=spec) as obs:
+        for _ in range(2):
+            with obs.phase("parse"):
+                pass
+    rows = list_route_observations(sqlite3.connect(tmp_path / "ops.db"), surface="cli", route="cli.repeat")
+    assert len(rows) == 1
+
+
+def test_route_spec_cannot_relabel_a_different_call_site() -> None:
+    spec = RouteObservationSpec(surface="mcp", route="mcp.query")
+    with pytest.raises(ValueError, match="identity"):
+        with observe_route(archive_root=None, surface="cli", route="cli.status", spec=spec):
+            pass
+
+
+def test_invalid_daemon_path_drops_telemetry_without_replacing_route_error(tmp_path: Path) -> None:
+    """Anti-vacuity: malformed optional telemetry cannot escape the finally block."""
+    _init_ops(tmp_path)
+    with pytest.raises(RuntimeError, match="operation failed"):
+        with observe_route(archive_root=tmp_path, surface="cli", route="cli.invalid-path") as obs:
+            obs.daemon_path = "socket"  # type: ignore[assignment]
+            raise RuntimeError("operation failed")
+    assert route_observation_drops().by_reason.get("emit_failed") == 1
+    conn = sqlite3.connect(tmp_path / "ops.db")
+    assert conn.execute("SELECT COUNT(*) FROM route_observations").fetchone()[0] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -511,8 +553,20 @@ def test_drops_are_reported_beside_the_percentiles_they_qualify() -> None:
         "total": 7,
         "accounting_complete": True,
         "by_reason": {"emit_failed": 7},
+        "by_route": {"cli\tcli.status": 7},
         "unattributed": 0,
     }
+
+
+def test_drops_for_a_route_without_a_surviving_bucket_remain_attributed() -> None:
+    drops = RouteObservationDrops(
+        accounting_complete=True,
+        by_reason={"pruned": 4},
+        by_route={"cli\tvanished": 4},
+    )
+    report = compute_latency_percentiles([_observation(surface="cli", route="status", duration_ms=12)], drops=drops)
+    assert report.unattributed_drops == 4
+    assert report.to_payload()["drops"]["by_route"] == {"cli\tvanished": 4}
 
 
 def test_unknown_drop_accounting_is_not_reported_as_zero_drops() -> None:
@@ -541,7 +595,7 @@ def test_drops_charged_to_no_rendered_bucket_survive_as_unattributed() -> None:
 
     assert [b.route for b in report.buckets] == ["cli.status"]
     assert report.buckets[0].dropped_count == 0
-    assert report.unattributed_drops == 0
+    assert report.unattributed_drops == 4
     assert report.drops.total == 4
     assert report.is_complete is False
 
@@ -551,7 +605,8 @@ def test_a_reader_that_hit_its_row_limit_declares_the_truncation() -> None:
 
     drops = read_side_drops(observation_count=1000, mcp_call_count=3, row_limit=1000)
     assert drops.accounting_complete is False
-    assert drops.by_reason == {"read_limit_truncated": 1}
+    assert drops.by_reason == {"read_limit_truncated": 0}
+    assert drops.total == 0
 
     untruncated = read_side_drops(observation_count=12, mcp_call_count=3, row_limit=1000)
     assert untruncated.by_reason == {}

@@ -376,7 +376,22 @@ def raw_operation(
         rows = result.get("entries", [])
     else:
         provider = _provider(request.origin)
-        if isinstance(request, RawSearch):
+        configured = next((source for source in service.sources if source.provider == provider), None)
+        if configured is None:
+            result = {
+                "matches": [],
+                "entries": [],
+                "scanned_bytes": 0,
+                "truncated": False,
+                "next_cursor": None,
+                "gaps": [],
+                "sources": [
+                    {"source": provider, "availability": "unavailable", "reason": "session source is not configured"}
+                ],
+            }
+            rows = []
+            # Keep the common page projection below, which includes the named gap.
+        elif isinstance(request, RawSearch):
             result = service.search(
                 provider,
                 request.query,
@@ -392,13 +407,14 @@ def raw_operation(
                 provider, None, None, None, request.limit, cursor=request.continuation, cursor_key=key
             )
             rows = result["entries"]
-        result["sources"] = [
-            {
-                "source": provider,
-                "availability": "available",
-                "coverage": {"scanned_bytes": result["scanned_bytes"], "truncated": result["truncated"]},
-            }
-        ]
+        if configured is not None:
+            result["sources"] = [
+                {
+                    "source": provider,
+                    "availability": "available",
+                    "coverage": {"scanned_bytes": result["scanned_bytes"], "truncated": result["truncated"]},
+                }
+            ]
     # Each row carries the stat identity its text was read under; the scanner
     # verified the descriptor before and after that read. Emission reports
     # that observation instead of re-stating the file, so a later change can

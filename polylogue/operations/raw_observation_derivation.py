@@ -140,6 +140,8 @@ def raw_observation_backlog_snapshot(
 
     adapter = make_raw_observation_derivation(archive_root, index_db_path=index_db_path)
     frame = raw_observation_frame(archive_root, index_db_path=index_db_path)
+    from polylogue.sources.dispatch import is_stream_record_provider
+
     try:
         raw_ids, next_cursor = adapter.required_page(frame, cursor=None, limit=limit)
         states = adapter.inspect(frame, raw_ids)
@@ -150,6 +152,8 @@ def raw_observation_backlog_snapshot(
         return {
             "available": True,
             "scan": "bounded_raw_observation_page",
+            # This page can prove zero pending rows only when the traversal is
+            # complete. An incomplete page is a lower bound, never a total.
             "candidate_count": 0,
             "total_blob_bytes": 0,
             "max_blob_bytes": 0,
@@ -172,8 +176,8 @@ def raw_observation_backlog_snapshot(
                 "origin": str(row["origin"]),
                 "source_path": str(row["source_path"] or ""),
                 "blob_size": int(row["blob_size"] or 0),
-                "oversized": False,
-                "stream_safe": True,
+                "oversized": int(row["blob_size"] or 0) > 64 * 1024 * 1024,
+                "stream_safe": is_stream_record_provider(str(row["source_path"] or ""), str(row["origin"])),
             }
             for row in selected
         ),
