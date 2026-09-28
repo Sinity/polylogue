@@ -888,6 +888,8 @@ def _declared_projections(descriptor: QueryFieldDescriptor) -> tuple[QueryProjec
         projections.discard("plan")
     if descriptor.mcp_names:
         projections.add("mcp")
+    if descriptor.api_names:
+        projections.add("api")
     if descriptor.record_attr or descriptor.sql_param:
         projections.add("storage")
     return tuple(item for item in ("spec", "plan", "storage", "mcp", "dsl", "api") if item in projections)
