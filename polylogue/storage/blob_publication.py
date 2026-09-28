@@ -5,7 +5,7 @@ from __future__ import annotations
 import fcntl
 import sqlite3
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -197,6 +197,11 @@ class ArchiveBlobPublisher(BlobStore):
 
     def write_from_fileobj(self, source: IO[bytes], *, heartbeat: Heartbeat | None = None) -> tuple[str, int]:
         return self._queue(self._store.prepare_from_fileobj(source, heartbeat=heartbeat))
+
+    def write_from_writer(
+        self, write: Callable[[IO[bytes]], None], *, heartbeat: Heartbeat | None = None
+    ) -> tuple[str, int]:
+        return self._queue(self._store.prepare_from_writer(write, heartbeat=heartbeat))
 
     def write_from_bytes(self, data: bytes) -> tuple[str, int]:
         return self._queue(self._store.prepare_from_bytes(data))
