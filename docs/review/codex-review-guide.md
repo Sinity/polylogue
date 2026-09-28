@@ -22,8 +22,10 @@ skipped. Weight your attention there.
   pre-acquisition exclusion for both intake and the cold-build baseline.
 - If the changed file is in the derived-identity closure
   (`devtools schema closure <file>`), say so: the fix must land before a
-  rebuild starts. Do not ask for a version bump or a reparse declaration; the
-  identity is computed from the AST closure.
+  rebuild starts. Do not ask to bump the derived identity or declare a
+  reparse for it; that identity is computed from the AST closure. A manual
+  invalidation token in the same file (see "Do not flag") still needs its
+  bump.
 
 ## Severity
 
@@ -61,10 +63,11 @@ Area-specific rules live in the `## Code Review Rules` section of the nested
 `polylogue/sources/`, `polylogue/daemon/`, `devtools/`). The checks below
 apply everywhere.
 
-1. **Accounting of skips.** For any loop, filter, or early `continue` or
-   `return` over inputs (files, ZIP members, records, events), each skipped
-   item must leave a typed disposition: a refusal, an exclusion reason, or a
-   retryable fault. A skip that is not recorded while the caller records
+1. **Accounting of skips.** In an enumeration or admission loop whose caller
+   claims the inputs were processed completely (files, ZIP members, records,
+   events), each skipped item must leave a typed disposition: a refusal, an
+   exclusion reason, or a retryable fault. A helper that selects from data
+   it leaves intact (picking the first user prompt, say) is not covered. A skip that is not recorded while the caller records
    enumeration as complete is P1. Check fallbacks, such as an unknown provider
    or origin selecting a narrower filter.
 2. **Transient versus permanent.** A read fault (EACCES, `SQLITE_BUSY`,
