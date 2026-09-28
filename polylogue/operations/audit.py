@@ -21,16 +21,18 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 from polylogue.operations.ingest_acceptance import INGEST_OPERATION
 from polylogue.operations.machine_receipts import (
     MAX_PAGE_ITEMS,
-    IngestHistoricalReceipt,
     IngestHistoricalReceiptV2,
     IngestInputPageHistoricalReceipt,
     IngestInputRawPageHistoricalReceipt,
     IngestInsightPageHistoricalReceipt,
+    IngestRefusalPageHistoricalReceipt,
+    IngestRefusedMembershipHistorical,
     MachineHistoricalReceipt,
     decode_machine_receipt,
     encode_machine_receipt,
     ingest_input_raw_pages_digest,
     ingest_insight_pages_digest,
+    ingest_refusal_pages_digest,
     ingest_session_ids_digest,
 )
 from polylogue.operations.mutation_transaction import (
@@ -1401,6 +1403,16 @@ class AuditRepository:
                 "page": page.model_dump(mode="json"),
                 "now_ms": int(time.time() * 1000),
             }
+        if kind == "append_ingest_refusal_page":
+            operation_id = cast(str, args[0])
+            refusal_page = cast(IngestRefusalPageHistoricalReceipt, args[1])
+            if not operation_id or not isinstance(refusal_page, IngestRefusalPageHistoricalReceipt):
+                raise ValueError("ingest refusal page requires a typed operation and page")
+            return {
+                "operation_id": operation_id,
+                "page": refusal_page.model_dump(mode="json"),
+                "now_ms": int(time.time() * 1000),
+            }
         if kind == "append_ingest_input_raw_page":
             operation_id = cast(str, args[0])
             raw_page = cast(IngestInputRawPageHistoricalReceipt, args[1])
@@ -1546,6 +1558,12 @@ class AuditRepository:
                     self,
                     cast(str, payload["operation_id"]),
                     IngestInsightPageHistoricalReceipt.model_validate(payload["page"]),
+                )
+            if mutation.kind == "append_ingest_refusal_page":
+                return cast(Any, self.append_ingest_refusal_page).__wrapped__(
+                    self,
+                    cast(str, payload["operation_id"]),
+                    IngestRefusalPageHistoricalReceipt.model_validate(payload["page"]),
                 )
             if mutation.kind == "append_ingest_input_raw_page":
                 return cast(Any, self.append_ingest_input_raw_page).__wrapped__(
@@ -3085,7 +3103,7 @@ class AuditRepository:
         return pages
 
     def resolve_ingest_insight_pages(
-        self, receipt: IngestHistoricalReceipt | IngestHistoricalReceiptV2
+        self, receipt: IngestHistoricalReceiptV2
     ) -> list[IngestInsightPageHistoricalReceipt]:
         """Return every historical profile target, including referenced pages."""
         if receipt.insight_pages_ref is None:
@@ -3097,6 +3115,62 @@ class AuditRepository:
             target_count=receipt.summary.profile_targets_observed,
             digest=receipt.insight_pages_digest,
         )
+
+    @_continuity_mutation("append_ingest_refusal_page")
+    def append_ingest_refusal_page(self, operation_id: str, page: IngestRefusalPageHistoricalReceipt) -> None:
+        """Retain one page of refused memberships before the terminal receipt cites it."""
+        with self._connection() as conn:
+            run = conn.execute(
+                "SELECT operation_name, status FROM operation_runs WHERE operation_id = ?", (operation_id,)
+            ).fetchone()
+            if run is None or str(run[0]) != INGEST_OPERATION or str(run[1]) == "completed":
+                raise ValueError("ingest refusal page lacks an open ingest operation")
+            last_row = conn.execute(
+                "SELECT detail_json FROM operation_events WHERE operation_id = ? AND event_type = 'ingest_refusal_page' "
+                "ORDER BY sequence DESC LIMIT 1",
+                (operation_id,),
+            ).fetchone()
+            last_ordinal = -1 if last_row is None else int(json.loads(str(last_row[0]))["ordinal"])
+            payload = page.model_dump(mode="json")
+            if page.ordinal <= last_ordinal:
+                prior_row = conn.execute(
+                    "SELECT detail_json FROM operation_events WHERE operation_id = ? "
+                    "AND event_type = 'ingest_refusal_page' AND json_extract(detail_json, '$.ordinal') = ?",
+                    (operation_id, page.ordinal),
+                ).fetchone()
+                prior = None if prior_row is None else json.loads(str(prior_row[0]))
+                if prior != payload:
+                    raise ValueError("ingest refusal page conflicts with durable page")
+                return
+            if page.ordinal != last_ordinal + 1:
+                raise ValueError("ingest refusal pages must be contiguous")
+            self._append_event(
+                conn,
+                operation_id=operation_id,
+                event_type="ingest_refusal_page",
+                occurred_at_ms=cast(int, self._command_value("now_ms", int(time.time() * 1000))),
+                detail=payload,
+            )
+
+    def resolve_ingest_refusals(self, receipt: IngestHistoricalReceiptV2) -> list[IngestRefusedMembershipHistorical]:
+        """Return every refused membership a terminal receipt names, inline or paged."""
+        summary = receipt.summary
+        if summary.refused_membership_pages_ref is None:
+            return list(summary.refused_memberships)
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT detail_json FROM operation_events WHERE operation_id = ? AND event_type = 'ingest_refusal_page' "
+                "ORDER BY sequence",
+                (summary.refused_membership_pages_ref,),
+            ).fetchall()
+        pages = [IngestRefusalPageHistoricalReceipt.model_validate_json(str(row[0])) for row in rows]
+        if (
+            [page.ordinal for page in pages] != list(range(summary.refused_membership_page_count))
+            or sum(len(page.refusals) for page in pages) != summary.refused_membership_count
+            or ingest_refusal_pages_digest(pages) != summary.refused_memberships_digest
+        ):
+            raise ValueError("ingest refusal pages differ from terminal receipt")
+        return [refusal for page in pages for refusal in page.refusals]
 
     @_continuity_mutation("append_ingest_input_page")
     def append_ingest_input_page(self, operation_id: str, page: IngestInputPageHistoricalReceipt) -> None:
