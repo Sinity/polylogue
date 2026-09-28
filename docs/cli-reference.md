@@ -158,8 +158,9 @@ Options:
   --set TEXT...                   Set metadata key value
   --add-tag TEXT                  Add tags (comma-separated)
   --plain                         Force non-interactive plain output
-  --no-daemon                     Run archive reads in-process instead of
-                                  using the local daemon.
+  --no-daemon                     Refuse daemon-served reads for this
+                                  invocation (reads will fail if they require
+                                  the daemon).
   -v, --verbose                   Verbose output
   --diagnose                      Explain CLI parser decisions on stderr
                                   before running. Useful when query-first
