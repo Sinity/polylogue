@@ -86,7 +86,7 @@ class AnnotationImportRow(BaseModel):
 class AnnotationBatchImportRequest(BaseModel):
     """Complete product-layer request for one bounded JSONL batch."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, protected_namespaces=())
 
     jsonl: str
     batch_id: str = Field(min_length=1, max_length=256)
