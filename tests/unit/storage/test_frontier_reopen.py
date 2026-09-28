@@ -30,6 +30,7 @@ from polylogue.storage.raw_authority import resolve_raw_authority_blocker
 from polylogue.storage.raw_reconciler import (
     RawAuthorityFrontierItem,
     RawAuthorityFrontierState,
+    _open_frontier_blocker_id,
     _reconcile_frontier_obligations,
 )
 from tests.infra.archive_templates import bootstrap_archive_root
@@ -68,6 +69,31 @@ def _blocker_rows(root: Path) -> list[tuple[str, bool]]:
 
 
 class TestFrontierObligationReopen:
+    def test_acknowledgement_chain_has_no_arbitrary_cap(self, tmp_path: Path) -> None:
+        """Repeated acknowledgements continue to produce an open successor.
+
+        Anti-vacuity: restore the 64-row cap and the 65th acknowledged row
+        raises instead of returning the next obligation id.
+        """
+        bootstrap_archive_root(tmp_path)
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            blocker_id = _open_frontier_blocker_id(conn, pass_id=_PASS_ID, plan_id="raw-replay:frontier-1")
+            for index in range(70):
+                conn.execute(
+                    "INSERT INTO raw_authority_blockers(blocker_id, plan_input_digest, observed_pass_id, reason, "
+                    "expected_json, observed_json, created_at_ms, resolved_at_ms, resolution) "
+                    "VALUES (?, ?, ?, 'still blocking', '{}', '{}', ?, ?, 'acknowledged')",
+                    (
+                        blocker_id,
+                        "a" * 64,
+                        _PASS_ID,
+                        index,
+                        index,
+                    ),
+                )
+                blocker_id = _open_frontier_blocker_id(conn, pass_id=_PASS_ID, plan_id="raw-replay:frontier-1")
+        assert blocker_id.startswith("raw-authority-blocker:")
+
     def test_acknowledged_obligation_reopens_while_evidence_blocks(self, tmp_path: Path) -> None:
         bootstrap_archive_root(tmp_path)
         item = _blocking_item()

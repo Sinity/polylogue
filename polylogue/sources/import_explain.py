@@ -136,6 +136,11 @@ def explain_import_archive(
             )
             index_conn = index_frame.connection
             index_conn.row_factory = sqlite3.Row
+            # Derived projections require identity validation as well as the
+            # ordinary tier-version check performed while opening the frame.
+            from polylogue.storage.sqlite.connection_profile import assert_tier_schema_supported
+
+            assert_tier_schema_supported(index_conn, index_db, ArchiveTier.INDEX)
         else:
             caveats.append("index tier is unavailable; produced archive row counts are incomplete")
         for row in raw_rows:

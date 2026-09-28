@@ -115,13 +115,15 @@ def _get_cached_connection(path: Path) -> sqlite3.Connection:
     if key in cache:
         return cache[key]
 
-    if path.name == "index.db" and not _is_initialized_archive_index(path):
+    if path.name == "index.db":
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
+        # File presence is not lineage admission: historical four-file roots
+        # must pass the format-marker gate before any tier is opened.
         initialize_active_archive_root(path.parent)
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    require_write_lease(f"cached write connection({path})")
+    require_write_lease(f"cached write connection({path})", archive_root=path.parent)
     conn = connect_measured(path, timeout=DB_TIMEOUT)
     try:
         os.chmod(path, 0o600)

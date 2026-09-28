@@ -30,7 +30,7 @@ def test_registry_declares_the_canonical_effects_in_order() -> None:
         # The bus announcement is post-commit on purpose: a subscriber woken by
         # an uncommitted write could read rows that still roll back.
         "post-commit",
-        "async-deferred",
+        "in-transaction",
     ]
     assert [effect.failure_policy for effect in WRITE_EFFECT_REGISTRY] == [
         "abort",
@@ -73,7 +73,11 @@ def test_commit_write_effects_positive_case_runs_fts_repair_and_cache_invalidati
     assert result.rows_affected == 2
     assert repaired == [("c1", "c2")]
     assert invalidated == [True]
-    assert result.effect_receipts[-1].disposition == "enqueued"
+    insight_invalidation = next(
+        receipt for receipt in result.effect_receipts if receipt.name == "invalidate_session_insights"
+    )
+    assert insight_invalidation.disposition == "applied"
+    assert insight_invalidation.phase == "in-transaction"
 
 
 def test_commit_write_effects_degraded_case_skips_conditional_effects_when_no_ids(

@@ -93,6 +93,8 @@ def _read_chatgpt_zip_sidecars(
     seen_targets: set[str] = set()
     payloads: dict[str, object] = {}
     acquired: dict[str, tuple[str, int]] = {}
+    member_by_asset: dict[str, str] = {}
+    seen_asset_members: set[str] = set()
     try:
         with zipfile.ZipFile(zip_path) as zf:
             validator = ZipEntryValidator("chatgpt", cursor_state=None, zip_path=zip_path)
@@ -107,8 +109,10 @@ def _read_chatgpt_zip_sidecars(
                 # (and some under none), including a handful named `.json`.
                 asset_id = _member_asset_id(Path(info.filename).name)
                 if asset_id is not None:
-                    if store is None or asset_id in acquired:
+                    asset_key = _asset_rendition_key(asset_id, info.filename)
+                    if store is None or asset_key in seen_asset_members:
                         continue
+                    seen_asset_members.add(asset_key)
                     try:
                         with open_bounded_zip_entry(zf, info) as handle:
                             blob_hash, size = store.write_from_fileobj(handle)
@@ -123,7 +127,7 @@ def _read_chatgpt_zip_sidecars(
                             error=str(exc),
                         )
                         continue
-                    acquired[asset_id] = (blob_hash, size)
+                    _record_asset_blob(acquired, member_by_asset, asset_id, info.filename, (blob_hash, size))
                     continue
                 if info.filename not in targets or info.filename in seen_targets:
                     continue
@@ -161,6 +165,29 @@ def _member_asset_id(basename: str) -> str | None:
     return _normalize_file_id(match.group(1))
 
 
+def _asset_rendition_key(asset_id: str, member_name: str) -> str:
+    """Keep each physical rendition addressable under its provider file id."""
+    return f"{asset_id}#{member_name}"
+
+
+def _record_asset_blob(
+    acquired: dict[str, tuple[str, int]],
+    member_by_asset: dict[str, str],
+    asset_id: str,
+    member_name: str,
+    blob: tuple[str, int],
+) -> None:
+    """Use the compact provider key until a second rendition proves it ambiguous."""
+    previous_member = member_by_asset.get(asset_id)
+    if previous_member is None:
+        member_by_asset[asset_id] = member_name
+        acquired[asset_id] = blob
+        return
+    if asset_id in acquired:
+        acquired[_asset_rendition_key(asset_id, previous_member)] = acquired.pop(asset_id)
+    acquired[_asset_rendition_key(asset_id, member_name)] = blob
+
+
 def _is_asset_member(name: str) -> bool:
     return _member_asset_id(Path(name).name) is not None
 
@@ -180,10 +207,16 @@ def _acquire_asset_blobs_from_directory(directory: Path, store: BlobStore) -> di
     from .decoder_zip import MAX_UNCOMPRESSED_SIZE
 
     acquired: dict[str, tuple[str, int]] = {}
+    member_by_asset: dict[str, str] = {}
+    seen_asset_members: set[str] = set()
     for asset_path in _walk_asset_files(directory):
         asset_id = _member_asset_id(asset_path.name)
-        if asset_id is None or asset_id in acquired:
+        if asset_id is None:
             continue
+        asset_key = _asset_rendition_key(asset_id, asset_path.relative_to(directory).as_posix())
+        if asset_key in seen_asset_members:
+            continue
+        seen_asset_members.add(asset_key)
         try:
             size_on_disk = asset_path.stat().st_size
         except OSError as exc:
@@ -197,7 +230,13 @@ def _acquire_asset_blobs_from_directory(directory: Path, store: BlobStore) -> di
         except OSError as exc:
             logger.warning("chatgpt_asset_read_failed", path=str(asset_path), error=str(exc))
             continue
-        acquired[asset_id] = (blob_hash, size)
+        _record_asset_blob(
+            acquired,
+            member_by_asset,
+            asset_id,
+            asset_path.relative_to(directory).as_posix(),
+            (blob_hash, size),
+        )
     if acquired:
         flush_blob_publications(store)
     return acquired
@@ -373,7 +412,12 @@ def _resolve_asset_attachment(
     asset_blobs: Mapping[str, tuple[str, int]],
 ) -> tuple[ParsedAttachment, ParsedSessionEvent | None]:
     resolved = index.resolve_dat(attachment.provider_attachment_id)
-    blob = asset_blobs.get(_normalize_file_id(attachment.provider_attachment_id))
+    asset_id = _normalize_file_id(attachment.provider_attachment_id)
+    blob = asset_blobs.get(asset_id)
+    if blob is None:
+        rendition_keys = sorted(key for key in asset_blobs if key.startswith(f"{asset_id}#"))
+        if rendition_keys:
+            blob = asset_blobs[rendition_keys[0]]
     if resolved is None and blob is None:
         return attachment, None
     update: dict[str, object] = {}

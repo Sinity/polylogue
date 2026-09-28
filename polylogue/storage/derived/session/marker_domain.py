@@ -243,14 +243,38 @@ class SessionMarkerDerivation:
         # Reading only that head avoids observing an unbounded tail we cannot
         # yet atomically acknowledge.
         page = self._accepted_page(after_sequence=after_sequence, limit=min(limit, 1))
-        if not page:
-            return (), None
+        next_sequence = after_sequence + 1
+        if not page or page[0].sequence != next_sequence:
+            tombstone = self._tombstone_at(next_sequence, stream_id=applied[0] if applied else None)
+            if tombstone is None:
+                if not page:
+                    return (), None
+                raise AcceptedMarkerInputRefusedError("accepted marker stream has a missing unconsumed sequence")
+            return (_key(tombstone[0], next_sequence),), None
         first = page[0]
         if applied is not None and first.stream_id != applied[0]:
             raise AcceptedMarkerInputRefusedError("accepted marker stream changed under durable user cursor")
-        if first.sequence != after_sequence + 1:
-            raise AcceptedMarkerInputRefusedError("accepted marker stream has a missing unconsumed sequence")
         return (_key(first.stream_id, first.sequence),), None
+
+    def _tombstone_at(self, sequence: int, *, stream_id: str | None) -> tuple[str, str] | None:
+        conn = self._source_read_connection()
+        try:
+            if stream_id is None:
+                row = conn.execute(
+                    "SELECT e.stream_id, e.identity FROM excised_marker_inputs e "
+                    "JOIN accepted_marker_stream s ON s.singleton = 1 AND s.stream_id = e.stream_id "
+                    "WHERE e.state = 'accepted' AND e.accepted_sequence = ?",
+                    (sequence,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT stream_id, identity FROM excised_marker_inputs "
+                    "WHERE state = 'accepted' AND stream_id = ? AND accepted_sequence = ?",
+                    (stream_id, sequence),
+                ).fetchone()
+            return None if row is None else (str(row[0]), str(row[1]))
+        finally:
+            conn.close()
 
     def excess_page(self, frame: object, *, cursor: str | None, limit: int) -> tuple[tuple[str, ...], str | None]:
         del frame, cursor, limit
@@ -300,7 +324,10 @@ class SessionMarkerDerivation:
         stream_id, sequence = _parse_key(key)
         page = self._accepted_page(after_sequence=sequence - 1, limit=1)
         if len(page) != 1 or page[0].stream_id != stream_id or page[0].sequence != sequence:
-            raise AcceptedMarkerInputRefusedError("accepted marker batch is absent or no longer contiguous")
+            tombstone = self._tombstone_at(sequence, stream_id=stream_id)
+            if tombstone is None:
+                raise AcceptedMarkerInputRefusedError("accepted marker batch is absent or no longer contiguous")
+            return SessionMarkerReplacement(stream_id=stream_id, sequence=sequence, identity=tombstone[1], payload=())
         batch = page[0]
         return SessionMarkerReplacement(
             stream_id=stream_id,
@@ -328,7 +355,11 @@ class SessionMarkerDerivation:
                 raise AcceptedMarkerInputRefusedError("accepted marker stream changed under durable user cursor")
             if replacement.sequence != expected_prior + 1:
                 raise AcceptedMarkerInputRefusedError("accepted marker batch is not the next durable source sequence")
-            lower_markers(conn, replacement.payload)
+            # Excision can run after derivation read the sealed payload. Its
+            # tombstone is authoritative under writer admission and prevents
+            # publishing content after the source carrier was erased.
+            if self._tombstone_at(replacement.sequence, stream_id=replacement.stream_id) is None:
+                lower_markers(conn, replacement.payload)
             advance_accepted_marker_delivery_cursor(
                 conn,
                 stream_id=replacement.stream_id,

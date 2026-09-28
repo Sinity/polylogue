@@ -730,10 +730,6 @@
       "digest": "a7b83dca8221443a76d724228c62f508d6db99a5"
     },
     {
-      "file": "polylogue/sources/live/production_baseline.py",
-      "digest": "3c378cc88fc50e85c597c5b1e2bed63bd9382ec8"
-    },
-    {
       "file": "polylogue/sources/live/sqlite_locking.py",
       "digest": "3e145f80dcd15603caefaf2918e03f80f34b4247"
     },
@@ -1010,6 +1006,14 @@
     {
       "file": "polylogue/storage/usage.py",
       "digest": "97fe52950a1ef81ad18bea6adf76e4c6bd298919"
+    },
+    {
+      "file": "polylogue/sources/codex_state_evidence.py",
+      "digest": "54d96cca8ab9b6943fd62cb5326413f33fdd9d70"
+    },
+    {
+      "file": "polylogue/sources/live/production_baseline.py",
+      "digest": "741396bb2726923221c287c8d117a21e8cd57b33"
     }
   ]
 }

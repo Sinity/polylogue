@@ -503,6 +503,7 @@
     "polylogue/storage/sqlite/deadline.py",
     "polylogue/storage/sqlite/delegation_facts.py",
     "polylogue/storage/sqlite/durable_change_train.py",
+    "polylogue/storage/sqlite/maintenance.py",
     "polylogue/storage/sqlite/managed_connection.py",
     "polylogue/storage/sqlite/migration_runner.py",
     "polylogue/storage/sqlite/queries/__init__.py",

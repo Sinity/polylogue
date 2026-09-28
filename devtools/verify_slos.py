@@ -595,6 +595,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if active_tiers is not None:
             print(f"active_tiers={sorted(active_tiers)}")
+        print("workload_receipt=" + json.dumps(workload_receipt, sort_keys=True))
         print(f"blocking={blocking}")
 
     return 1 if blocking else 0
