@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import threading
 from concurrent.futures import as_completed
@@ -135,6 +136,40 @@ def test_process_pool_workers_initialize_info_logging() -> None:
         wrapper_name = executor.submit(_worker_wrapper_class_name).result(timeout=10)
 
     assert wrapper_name == "BoundLoggerFilteringAtInfo"
+
+
+def test_process_pool_worker_events_reach_the_configured_file_with_correlation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A parse worker's emit reaches the parent's ``POLYLOGUE_LOG_FILE``.
+
+    Anti-vacuity: drop ``configure_events`` from the worker initializer and the
+    file holds no worker record; drop ``initargs`` and the bare record loses
+    ``run_id``; submit without ``carry_context`` and the carried record loses
+    ``attempt_id``. Records must also arrive exactly once.
+    """
+    from polylogue import logging as plog
+
+    log_file = tmp_path / "events.jsonl"
+    monkeypatch.setenv("POLYLOGUE_LOG_FILE", str(log_file))
+    monkeypatch.setenv("POLYLOGUE_LOG_FORMAT", "json")
+    monkeypatch.setenv("POLYLOGUE_LOG_LEVEL", "info")
+    plog.set_run_context(run_id="pool-run")
+    try:
+        with process_pool_executor(max_workers=1) as executor:
+            executor.submit(plog.emit, "parse.worker.floor").result(timeout=30)
+            with plog.bind(attempt_id="attempt-7"):
+                executor.submit(plog.carry_context(plog.emit), "parse.worker.carried", files=3).result(timeout=30)
+    finally:
+        plog.set_run_context()
+
+    records = [json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines()]
+    by_event = {record["event"]: record for record in records}
+    assert sorted(record["event"] for record in records) == ["parse.worker.carried", "parse.worker.floor"]
+    assert by_event["parse.worker.floor"]["run_id"] == "pool-run"
+    assert "attempt_id" not in by_event["parse.worker.floor"]
+    carried = by_event["parse.worker.carried"]
+    assert (carried["run_id"], carried["attempt_id"], carried["files"]) == ("pool-run", "attempt-7", 3)
 
 
 @pytest.mark.timeout(45)

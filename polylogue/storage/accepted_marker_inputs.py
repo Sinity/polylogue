@@ -344,6 +344,43 @@ def persist_pending_marker_input_sync(
     return "pending-new"
 
 
+def replace_uncommitted_pending_marker_input_sync(
+    conn: sqlite3.Connection,
+    batch: PreparedAcceptedMarkerInput,
+    *,
+    retained_digest: str,
+    expected_incarnation_id: str,
+) -> None:
+    """Replace a pending carrier whose index transaction provably never committed.
+
+    A pending carrier is the prepare half of a two-tier commit: its index
+    witness is inserted in the same index transaction as the writes it
+    describes. The caller, holding the index write transaction, has observed
+    no witness for this request in the current incarnation, so the retained
+    bytes were never witnessed here and never accepted or delivered. They
+    describe a rolled-back (or replaced-index) attempt, and the current
+    interpretation supersedes them. Accepted carriers are never replaced.
+    """
+    _validate(batch)
+    _assert_marker_input_not_excised_sync(conn, batch.identity, batch.raw_id)
+    if len(expected_incarnation_id) != 36:
+        raise AcceptedMarkerInputRefusedError("pending marker carrier has an invalid index incarnation")
+    cursor = conn.execute(
+        "UPDATE pending_accepted_marker_inputs SET carrier_digest = ?, expected_incarnation_id = ?, payload = ? "
+        "WHERE request_key = ? AND raw_id = ? AND carrier_digest = ?",
+        (
+            batch.payload_sha256,
+            expected_incarnation_id,
+            batch.payload,
+            batch.identity,
+            batch.raw_id,
+            retained_digest,
+        ),
+    )
+    if cursor.rowcount != 1:
+        raise AcceptedMarkerInputRefusedError("pending marker carrier changed while it was being replaced")
+
+
 async def append_accepted_marker_input(
     conn: _Connection,
     batch: PreparedAcceptedMarkerInput,

@@ -9,16 +9,19 @@ carries meaning in this protocol -- consumers must not depend on it.
 
 from __future__ import annotations
 
-from typing import cast
+from dataclasses import replace
 
-from polylogue.core.digest import IDENTITY, normalized
+from polylogue.core.digest import IDENTITY, KeyCollisionError
 from polylogue.core.digest import canonical_bytes as canonical_profile_bytes
 from polylogue.core.json import JSONValue, loads
+from polylogue.material_protocol.v1.errors import MaterialKeyCollisionError
+
+_MATERIAL_PROTOCOL_V1 = replace(IDENTITY, name="material-protocol-v1", strict_object_keys=True)
 
 
 def nfc_normalize(value: JSONValue) -> JSONValue:
-    """Recursively NFC-normalize every string in a JSON-compatible value."""
-    return cast(JSONValue, normalized(value))
+    """Normalize a material value without allowing two keys to become one."""
+    return parse_json_value(canonical_bytes(value))
 
 
 def canonical_bytes(value: JSONValue) -> bytes:
@@ -27,7 +30,10 @@ def canonical_bytes(value: JSONValue) -> bytes:
     No trailing newline -- callers that frame this as an NDJSON line append
     ``b"\\n"`` themselves so the digest/line-length story stays explicit.
     """
-    return canonical_profile_bytes(value, IDENTITY)
+    try:
+        return canonical_profile_bytes(value, _MATERIAL_PROTOCOL_V1)
+    except KeyCollisionError as exc:
+        raise MaterialKeyCollisionError(str(exc)) from exc
 
 
 def canonical_line(value: JSONValue) -> bytes:

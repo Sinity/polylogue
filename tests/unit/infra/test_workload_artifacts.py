@@ -185,7 +185,7 @@ def test_complete_orphan_inventory_exceeds_diagnostic_sample_limit(
         "unlink_unreferenced_blob_hashes_under_exclusion",
         lambda *_args, **_kwargs: (10, 0, ()),
     )
-    with pytest.raises(AssertionError, match="found=12 abandoned=12 deleted=10 blockers=\(\)"):
+    with pytest.raises(AssertionError, match=r"found=12 abandoned=12 deleted=10 blockers=\(\)"):
         _dispose_seeded_archive_orphans(archive_root, finding)
 
 
