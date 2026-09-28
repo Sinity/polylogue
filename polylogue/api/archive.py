@@ -1224,32 +1224,6 @@ def _archive_tier_readiness_check(tier: ArchiveTier, path: Any) -> Any:
     )
 
 
-def _archive_list_assertion_claims(
-    config: Config,
-    *,
-    kinds: Sequence[str | AssertionKind] | None = None,
-    target_ref: str | None = None,
-    scope_ref: str | None = None,
-    statuses: Sequence[str | AssertionStatus] | None = ("active", "candidate"),
-    context_inject: bool | None = None,
-    limit: int | None = None,
-) -> list[Any]:
-    """Return assertion-backed lifecycle claims from ``user.db``."""
-
-    from polylogue.storage.sqlite.archive_tiers.user_write import ASSERTION_CLAIM_KINDS, list_assertion_claims
-
-    with _readable_user_tier(config) as conn:
-        return list_assertion_claims(
-            conn,
-            kinds=ASSERTION_CLAIM_KINDS if kinds is None else kinds,
-            target_ref=target_ref,
-            scope_ref=scope_ref,
-            statuses=statuses,
-            context_inject=context_inject,
-            limit=limit,
-        )
-
-
 def _archive_get_context_delivery(
     config: Config,
     *,
@@ -2796,17 +2770,37 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
     ) -> list[ArchiveAssertionEnvelope]:
         """List assertion-backed lifecycle claims for read-surface consumers."""
 
-        return cast(
-            list["ArchiveAssertionEnvelope"],
-            _archive_list_assertion_claims(
-                self.config,
-                kinds=kinds,
+        from polylogue.storage.sqlite.archive_tiers.user_write import ASSERTION_CLAIM_KINDS, list_assertion_claims
+
+        root = _active_archive_root(self.config)
+
+        def read(archive: ArchiveStore) -> list[ArchiveAssertionEnvelope]:
+            archive.require_user_tier()
+            return list_assertion_claims(
+                archive._conn,
+                schema="user_tier",
+                kinds=ASSERTION_CLAIM_KINDS if kinds is None else kinds,
                 target_ref=target_ref,
                 scope_ref=scope_ref,
                 statuses=statuses,
                 context_inject=context_inject,
                 limit=limit,
-            ),
+            )
+
+        return await run_archive_read(
+            root,
+            operation="archive.assertion.claims",
+            arguments={
+                "kinds": tuple(str(kind) for kind in kinds) if kinds is not None else None,
+                "target_ref": target_ref,
+                "scope_ref": scope_ref,
+                "statuses": tuple(str(status) for status in statuses) if statuses is not None else None,
+                "context_inject": context_inject,
+                "limit": limit,
+            },
+            work=read,
+            projection="assertion-claims",
+            stable_order="updated_at_ms,assertion_id",
         )
 
     async def get_context_delivery(
