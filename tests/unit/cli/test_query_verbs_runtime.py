@@ -18,6 +18,7 @@ from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID, READ_VIEW_PROFILES, read_view_choices
 from polylogue.cli import query_verbs, read_view_handlers
 from polylogue.cli.click_app import cli as click_cli
+from polylogue.cli.contextual_errors import AmbiguousSelectionError
 from polylogue.cli.read_view_handlers import ReadViewInvocation
 from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA, ReadViewOptionDeclaration
 from polylogue.cli.root_request import RootModeRequest
@@ -1926,6 +1927,35 @@ def test_delete_verb_updates_confirmation_and_dry_run_flags() -> None:
     _, confirmed_kwargs = execute_confirmed.call_args
     assert confirmed_kwargs.get("force") is True
     assert confirmed_kwargs.get("dry_run") is None
+
+
+def test_delete_dry_run_marks_a_truncated_candidate_prefix_bounded() -> None:
+    """The dry-run refusal labels the two-row prefix as incomplete.
+
+    Anti-vacuity: treating the bounded probe as complete tells users the
+    displayed candidates are the full ambiguous selection.
+    """
+    _, child = _context_pair(query_terms=("alpha",))
+    wrapped = getattr(query_verbs.delete_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+    with patch(
+        "polylogue.cli.verb_cardinality.probe_session_ids_for_verb",
+        return_value=["one", "two", "three"],
+    ):
+        with pytest.raises(AmbiguousSelectionError) as exc_info:
+            wrapped(child, True, False, False, "json")
+    assert exc_info.value.bounded is True
+    assert "First 2 candidates:" in exc_info.value.format_message()
+
+
+@pytest.mark.parametrize(("returncode", "expected"), [(0, 0), (7, 7), (-9, 137)])
+def test_continue_subprocess_status_uses_shell_signal_convention(returncode: int, expected: int) -> None:
+    """Negative subprocess return codes become conventional shell statuses.
+
+    Anti-vacuity: passing ``-9`` directly to Click makes the shell observe
+    247 rather than the signal's conventional status 137.
+    """
+    assert query_verbs._shell_exit_status(returncode) == expected
 
 
 def test_terminal_facet_helpers_sort_and_bound_noisy_rows(capsys: pytest.CaptureFixture[str]) -> None:

@@ -1664,12 +1664,16 @@ def continue_verb(
     if execute:
         result = subprocess.run(route.argv, cwd=route.cwd, check=False)
         if result.returncode:
-            status = 128 + abs(result.returncode) if result.returncode < 0 else result.returncode
-            raise click.exceptions.Exit(status)
+            raise click.exceptions.Exit(_shell_exit_status(result.returncode))
         return
     if destination not in (RenderDestination.TERMINAL, RenderDestination.STDOUT) or out_path is not None:
         raise click.UsageError("continue prints its command to terminal/stdout; omit --to/--out.")
     click.echo(route.command)
+
+
+def _shell_exit_status(returncode: int) -> int:
+    """Map subprocess signal termination to the shell's conventional status."""
+    return 128 + abs(returncode) if returncode < 0 else returncode
 
 
 @click.command("delete")
