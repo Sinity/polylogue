@@ -443,9 +443,10 @@ def build_query_spec_from_params(
     _validate_path_component("since_session_id", since_session_id)
     return spec_cls(
         # A blank term carries no search evidence; keeping it made a
-        # filter-only read (``query=""`` plus filters) look like a ranked one.
+        # filter-only read (``query=""`` or ``contains=""`` plus filters) look
+        # like a ranked one.
         query_terms=tuple(term for term in as_tuple(params.get("query")) if term.strip()),
-        contains_terms=as_tuple(params.get("contains")),
+        contains_terms=tuple(term for term in as_tuple(params.get("contains")) if term.strip()),
         exclude_text_terms=as_tuple(params.get("exclude_text")),
         retrieval_lane=normalize_retrieval_lane(params.get("retrieval_lane")),
         referenced_path=as_tuple(params.get("referenced_path")),

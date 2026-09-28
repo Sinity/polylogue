@@ -18,7 +18,7 @@ import {
   runningPollDelayMs,
   scheduleFreshnessHint,
 } from "../capture/freshness.js";
-import { clampProviderCooldownMs } from "../capture/provider_cooldown.js";
+import { MAX_PROVIDER_COOLDOWN_MS, clampProviderCooldownMs } from "../capture/provider_cooldown.js";
 import { BACKGROUND_ALARMS } from "./adapters.js";
 import { registerBackgroundEvents } from "./events.js";
 
@@ -1851,9 +1851,13 @@ function providerTab(provider, { allowCreate = false } = {}) {
 // A provider-controlled Retry-After can parse to Infinity or NaN. Only a
 // finite positive number of seconds is a usable delay; anything else falls
 // back to the default rate-limit delay rather than an unbounded deadline.
+// A finite but huge value (1e307) still overflows once converted to
+// milliseconds, so seconds are bounded by the cooldown ceiling here, before
+// any conversion.
 function finiteRetryAfterSeconds(value) {
   const seconds = Number(value);
-  return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  return Math.min(seconds, MAX_PROVIDER_COOLDOWN_MS / 1000);
 }
 
 function withProviderTransportOperation(provider, operation, { checkThrottle = true } = {}) {

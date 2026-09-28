@@ -571,7 +571,8 @@ def test_a_cursor_page_emits_the_builder_page_its_outcome_describes(tmp_path: Pa
     hits = cast(list[dict[str, Any]], second["hits"])
     assert len(hits) == 1
     assert cast(_Outcome, second["outcome"])["state"] != "empty"
-    assert cast(dict[str, Any], second["authority"])["matched"] == len(hits)
+    # ``matched`` names the query's full match count (#5727), not the page.
+    assert cast(dict[str, Any], second["authority"])["matched"] >= len(hits)
     first_hits = cast(list[dict[str, Any]], first["hits"])
     assert hits[0]["session"]["id"] != first_hits[0]["session"]["id"]
 

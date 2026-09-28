@@ -2425,6 +2425,44 @@ describe("background receiver diagnostics", () => {
       .toBe(100_000 + 15 * 60_000));
   });
 
+  // Anti-vacuity (Codex P2, #5700): accept any finite seconds value and a
+  // 307-digit Retry-After becomes Infinity once converted to milliseconds,
+  // storing an unbounded cooldown instead of the 24-hour ceiling.
+  it("bounds a huge finite resolved Retry-After at the cooldown ceiling", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(100_000);
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/huge-retry", title: "ChatGPT" }];
+    stored.polylogueReceiverPairing = {
+      state: "online",
+      receiver_id: "rx-huge-retry",
+      api_schema: "polylogue-browser-capture/v1",
+      endpoint: "http://127.0.0.1:8875",
+    };
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({ ok: true, receiver_id: "rx-huge-retry", api_schema: "polylogue-browser-capture/v1" });
+      }
+      throw new Error(`unexpected receiver request: ${url}`);
+    });
+    globalThis.chrome.tabs.sendMessage = vi.fn(async () => ({
+      ok: false,
+      error: "rate_limited",
+      outcome: "rate_limited",
+      retry_after_seconds: 1e307,
+    }));
+
+    await sendRuntimeMessage({
+      type: "polylogue.captureFreshnessHint",
+      provider: "chatgpt",
+      provider_session_id: "huge-retry",
+      reason: "generation_completed",
+      delay_ms: 0,
+    });
+
+    alarmListener({ name: "polylogueCaptureFreshnessWake" });
+    await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.provider_cooldowns.chatgpt)
+      .toBe(100_000 + 24 * 60 * 60 * 1000));
+  });
+
   it("persists a content-reported rate limit before another conversation can capture", async () => {
     vi.spyOn(Date, "now").mockReturnValue(100_000);
     tabs = [{ id: 42, url: "https://chatgpt.com/c/content-rate-limit", title: "ChatGPT" }];

@@ -162,14 +162,6 @@ async def build_search_envelope_for_spec(
             }
         ),
     )
-    # ``matched`` must name what this envelope actually emitted: the cursor
-    # trim and the limit truncation happen inside the builder, so an
-    # authority built from the raw (overfetched) hit list before that point
-    # can disagree with the page the caller receives.
-    if envelope.authority is not None:
-        envelope = envelope.model_copy(
-            update={"authority": envelope.authority.model_copy(update={"matched": len(envelope.hits)})}
-        )
     return envelope
 
 

@@ -276,3 +276,19 @@ async def test_filter_only_cursor_page_reports_its_own_offset(monkeypatch: pytes
 
     assert [hit.match.rank for hit in second.hits] == [3, 4]
     assert second.next_offset == 4
+
+
+@pytest.mark.parametrize("field", ["query", "contains"])
+def test_a_blank_text_term_is_not_search_evidence(field: str) -> None:
+    """A blank ``query`` or ``contains`` plus a filter is a filter-only request.
+
+    Anti-vacuity (Codex P2, #5700): normalize only ``query`` and
+    ``contains=""`` stays the truthy ``("",)``, which keeps the filter-only
+    fallback from running and returns an empty envelope.
+    """
+    from polylogue.archive.query.spec import build_query_spec_from_params
+
+    spec = build_query_spec_from_params(SessionQuerySpec, {field: "", "origin": "codex-session"})
+
+    assert spec.query_terms == ()
+    assert spec.contains_terms == ()
