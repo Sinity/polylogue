@@ -77,7 +77,7 @@ dev-common = [
   "pytest-randomly>=5.0.0",  # Detect order-dependent tests; adds --randomly-seed
   "pytest-json-report>=1.5.0",  # Reference report the testmon-selection gate measures selection against
   "pytest-benchmark>=5.3.0",  # Microbenchmark suite (run with --benchmark-enable -p no:xdist)
-  "hypothesis>=6.168.0",
+  "hypothesis>=6.168.1",
   "hypothesis-jsonschema>=0.23.0",  # Generate test data from JSON schemas
   "genson>=1.4.0",  # Infer JSON schemas from samples
   "jsonschema>=4.0.0",  # Validate JSON against schemas
@@ -87,7 +87,7 @@ dev-common = [
   "mypy>=2.3.1,<2.4",
   "types-dateparser>=1.4.3.20260907",  # dateparser library stubs for mypy
   "types-PyYAML>=6.0",  # yaml library stubs for mypy
-  "ruff>=0.16.8",
+  "ruff>=0.16.9",
   "pip-audit>=2.10.1",  # OSV-backed CVE scanning over the locked dev environment
 ]
 dev = [
