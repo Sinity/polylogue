@@ -4357,3 +4357,57 @@ def test_a_materialized_child_keeps_its_ids_for_id_less_duplicates(tmp_path: Pat
     assert set(inheriting) <= set(materialized)
     assert len(materialized) == 3
     assert replayed == materialized
+
+
+def test_a_materialized_child_keeps_its_ids_when_a_message_is_prepended(tmp_path: Path) -> None:
+    """The copied prefix is found by content, not by its count from the start.
+
+    Anti-vacuity: split the replay at the recorded message count and the two
+    identical ID-less messages swap occurrences once a distinct message is
+    prepended.
+    """
+    parent = [_msg("", Role.USER, "hi", 0), _msg("", Role.ASSISTANT, "answer", 1)]
+    child = [*parent, _msg("", Role.USER, "hi", 2)]
+    rewritten = [_msg("", Role.USER, "hi", 0), _msg("", Role.ASSISTANT, "another answer", 1)]
+    _inheriting, materialized, _replayed = _materialize_then_replay(tmp_path, parent, child, rewritten)
+
+    conn = _connect(tmp_path / "index.db")
+    prepended = [
+        _msg("", Role.USER, "preamble", 0),
+        *(message.model_copy(update={"position": message.position + 1}) for message in child),
+    ]
+    write_parsed_session_to_archive(
+        conn,
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="child",
+            title="child",
+            parent_session_provider_id="parent",
+            branch_type=BranchType.FORK,
+            messages=prepended,
+        ),
+        force_replace=True,
+    )
+    conn.commit()
+    assert set(materialized) <= set(_child_ids(conn, "codex-session:child"))
+    conn.close()
+
+
+def test_a_scoped_replay_places_rows_as_materialization_did(tmp_path: Path) -> None:
+    """Parsed prefix coordinates that collide with the tail are renumbered on
+    replay exactly as materialization renumbered them.
+
+    Anti-vacuity: keep the parser's positions on replay and the tail sorts
+    before its copied prefix.
+    """
+    parent = [_msg("m0", Role.USER, "m0", 0), _msg("m1", Role.ASSISTANT, "m1", 1)]
+    child = [_msg("m0", Role.USER, "m0", 5), _msg("m1", Role.ASSISTANT, "m1", 6), _msg("x", Role.USER, "tail", 0)]
+    rewritten = [_msg("m0", Role.USER, "m0", 0)]
+    _inheriting, materialized, replayed = _materialize_then_replay(tmp_path, parent, child, rewritten)
+    assert replayed == materialized
+    conn = _connect(tmp_path / "index.db")
+    rows = conn.execute(
+        "SELECT native_id, position FROM messages WHERE session_id = ? ORDER BY position", ("codex-session:child",)
+    ).fetchall()
+    assert [row[0] for row in rows] == ["m0", "m1", "x"]
+    conn.close()

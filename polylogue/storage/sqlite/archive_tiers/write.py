@@ -73,6 +73,7 @@ from polylogue.pipeline.ids import (
     disk_message_content_identities,
     disk_message_owner_resolution,
     message_content_identities,
+    message_content_identity,
     message_owner_resolution,
 )
 from polylogue.sources.origin_specs import lowering_fingerprint, origin_specs, parser_fingerprint_for_origin
@@ -745,12 +746,19 @@ class _IdentityScope:
 
     inherited_messages: int
     content_copies: Mapping[str, tuple[int, ...]]
+    #: The copied prefix's content identities, as a digest of their sequence
+    #: and the first of them, so a replay finds the copied messages by content
+    #: even when the transcript gained a message before them.
+    prefix_digest: str = ""
+    first_identity: str = ""
 
     def to_json(self) -> str:
         return json.dumps(
             {
                 "inherited_messages": self.inherited_messages,
                 "content_copies": {key: list(value) for key, value in sorted(self.content_copies.items())},
+                "prefix_digest": self.prefix_digest,
+                "first_identity": self.first_identity,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -767,7 +775,11 @@ class _IdentityScope:
             }
         except (TypeError, ValueError, KeyError):
             return None
-        return cls(count, copies) if count > 0 else None
+        return (
+            cls(count, copies, str(raw.get("prefix_digest") or ""), str(raw.get("first_identity") or ""))
+            if count > 0
+            else None
+        )
 
 
 def _record_identity_scope(conn: sqlite3.Connection, session_id: str, scope: _IdentityScope) -> None:
@@ -781,6 +793,13 @@ def _record_identity_scope(conn: sqlite3.Connection, session_id: str, scope: _Id
     )
 
 
+def _identity_sequence_digest(identities: Iterable[str]) -> str:
+    digest = hashlib.sha256()
+    for identity in identities:
+        digest.update(identity.encode("ascii", "replace") + b"\n")
+    return digest.hexdigest()
+
+
 def _materialized_identity_scope(conn: sqlite3.Connection, session_id: str) -> _IdentityScope | None:
     """The identity scope recorded on this child's composing edge, if any."""
     row = conn.execute(
@@ -792,48 +811,6 @@ def _materialized_identity_scope(conn: sqlite3.Connection, session_id: str) -> _
         (session_id,),
     ).fetchone()
     return _IdentityScope.from_json(str(row[0])) if row is not None and row[0] is not None else None
-
-
-def _scoped_identities(
-    messages: Sequence[ParsedMessage], scope: _IdentityScope
-) -> tuple[tuple[ParsedMessage, ...], tuple[MessageContentIdentity, ...]]:
-    """Messages and content identities that reproduce a materialized child's IDs.
-
-    The tail keeps the identity it had while inheriting: duplicates and
-    occurrences over the tail alone. A prefix message takes its native ID
-    unless its prefix-relative occurrence is listed in the scope, or it has
-    none; a listed copy takes the content occurrence after the tail's. The
-    decision is carried by the message itself (an ID-less copy for a content
-    identity), so the rows need no duplicate set.
-    """
-    ordered = tuple(messages)
-    count = min(scope.inherited_messages, len(ordered))
-    prefix, tail = ordered[:count], ordered[count:]
-    tail_identities = message_content_identities(tail)
-    tail_duplicates = _duplicate_message_native_ids(tail)
-    tail_counts = Counter(digest for digest, _occurrence in tail_identities)
-    scoped_messages: list[ParsedMessage] = []
-    identities: list[MessageContentIdentity] = []
-    for message, (digest, ordinal) in zip(prefix, message_content_identities(prefix), strict=True):
-        copies = scope.content_copies.get(digest, ())
-        spare = tail_counts[digest] + len(copies) + ordinal
-        if ordinal in copies:
-            scoped_messages.append(message.model_copy(update={"provider_message_id": None}))
-            identities.append((digest, tail_counts[digest] + copies.index(ordinal)))
-        elif _normalized_message_native_id(message) is None:
-            scoped_messages.append(message)
-            identities.append((digest, spare))
-        else:
-            # Native: the occurrence does not enter the ID; it stays unique.
-            scoped_messages.append(message)
-            identities.append((digest, spare))
-    for message, identity in zip(tail, tail_identities, strict=True):
-        native = _normalized_message_native_id(message)
-        if native is not None and native in tail_duplicates:
-            message = message.model_copy(update={"provider_message_id": None})
-        scoped_messages.append(message)
-        identities.append(identity)
-    return tuple(scoped_messages), tuple(identities)
 
 
 @dataclass(frozen=True, slots=True)
@@ -902,6 +879,196 @@ class _MessageTail(Sequence[ParsedMessage]):
         for ordinal, message in enumerate(self.messages):
             if ordinal >= self.start:
                 yield message
+
+
+def _scoped_identities(
+    messages: Sequence[ParsedMessage], scope: _IdentityScope
+) -> tuple[_ScopedMessages, tuple[MessageContentIdentity, ...]]:
+    """A view and content identities that reproduce a materialized child's IDs.
+
+    The tail keeps the identity it had while inheriting: duplicates and
+    occurrences over the tail alone. A prefix message takes its native ID
+    unless its prefix-relative occurrence is listed in the scope, or it has
+    none; a listed copy takes the content occurrence after the tail's. The
+    decision is carried by the message itself (an ID-less view of a content
+    copy), so the rows need no duplicate set. Positions are placed as
+    materialization placed them: prefix below tail, renumbered densely when
+    the parsed coordinates collide (``_prefix_positions``).
+
+    Messages are streamed, never listed, so a disk-backed session stays on
+    disk; only the per-message identity pairs are held.
+    """
+    count = min(scope.inherited_messages, len(messages))
+    digests = [message_content_identity(message) for message in messages]
+    start = _copied_prefix_start(digests, scope, count)
+    tail_counts: Counter[str] = Counter()
+    tail_natives: Counter[str] = Counter()
+    prefix_keys: list[tuple[int, int]] = []
+    min_tail_position: int | None = None
+    for ordinal, message in enumerate(messages):
+        digest = digests[ordinal]
+        position = message.position if message.position is not None else ordinal
+        if start <= ordinal < start + count:
+            prefix_keys.append((position, message.variant_index or 0))
+            continue
+        tail_counts[digest] += 1
+        native = _normalized_message_native_id(message)
+        if native is not None:
+            tail_natives[native] += 1
+        if ordinal >= start + count and (min_tail_position is None or position < min_tail_position):
+            min_tail_position = position
+    tail_duplicates = frozenset(native for native, seen in tail_natives.items() if seen > 1)
+    positions = [position for position, _variant in prefix_keys]
+    fits = (
+        len(set(prefix_keys)) == len(prefix_keys)
+        and positions == sorted(positions)
+        and (min_tail_position is None or not positions or positions[-1] < min_tail_position)
+    )
+    prefix_positions: dict[int, int] = {}
+    tail_shift = 0
+    if not fits:
+        for position in positions:
+            prefix_positions.setdefault(position, len(prefix_positions))
+        if min_tail_position is not None and min_tail_position < len(prefix_positions):
+            tail_shift = len(prefix_positions) - min_tail_position
+    identities: list[MessageContentIdentity] = []
+    cleared: set[int] = set()
+    prefix_seen: Counter[str] = Counter()
+    tail_seen: Counter[str] = Counter()
+    for ordinal, digest in enumerate(digests):
+        if start <= ordinal < start + count:
+            occurrence = prefix_seen[digest]
+            prefix_seen[digest] += 1
+            copies = scope.content_copies.get(digest, ())
+            if occurrence in copies:
+                cleared.add(ordinal)
+                identities.append((digest, tail_counts[digest] + copies.index(occurrence)))
+            else:
+                # Native, or an ID-less message the scope did not record: the
+                # occurrence stays unique and past every recorded one.
+                identities.append((digest, tail_counts[digest] + len(copies) + occurrence))
+            continue
+        identities.append((digest, tail_seen[digest]))
+        tail_seen[digest] += 1
+    view = _ScopedMessages(
+        messages,
+        start=start,
+        count=count,
+        cleared=frozenset(cleared),
+        tail_duplicates=tail_duplicates,
+        prefix_positions=prefix_positions,
+        tail_shift=tail_shift,
+    )
+    return view, tuple(identities)
+
+
+def _copied_prefix_start(digests: Sequence[str], scope: _IdentityScope, count: int) -> int:
+    """Where the materialized prefix sits in this transcript, found by content.
+
+    The copied messages are the run of ``count`` whose content identities
+    hash to the recorded sequence; a message gained before them does not move
+    which messages they are. Without a match (the prefix itself changed) the
+    leading ``count`` messages are the prefix.
+    """
+    if not scope.prefix_digest:
+        return 0
+    for start in range(0, len(digests) - count + 1):
+        if digests[start] != scope.first_identity:
+            continue
+        if _identity_sequence_digest(digests[start : start + count]) == scope.prefix_digest:
+            return start
+    return 0
+
+
+class _ScopedMessages(_MessageTail):
+    """A materialized child's messages as its stored rows identify them.
+
+    Wraps the parsed sequence (a disk-backed sink stays one, so the writer's
+    streaming route still takes it) and applies the identity scope per
+    message: a content copy or a tail duplicate is presented without its
+    native ID, and positions are placed as materialization placed them.
+    """
+
+    def __init__(
+        self,
+        messages: Sequence[ParsedMessage],
+        *,
+        start: int,
+        count: int,
+        cleared: frozenset[int],
+        tail_duplicates: frozenset[str],
+        prefix_positions: Mapping[int, int],
+        tail_shift: int,
+    ) -> None:
+        super().__init__(messages, 0)
+        self._prefix_start = start
+        self._count = count
+        self._cleared = cleared
+        self._tail_duplicates = tail_duplicates
+        self._prefix_positions = prefix_positions
+        self._tail_shift = tail_shift
+
+    def remap_position(self, position: int | None, *, prefix: bool) -> int | None:
+        if position is None:
+            return None
+        if prefix and position in self._prefix_positions:
+            return self._prefix_positions[position]
+        return position + self._tail_shift if not prefix else position
+
+    def _scoped(self, ordinal: int, message: ParsedMessage) -> ParsedMessage:
+        update: dict[str, object] = {}
+        prefix = self._prefix_start <= ordinal < self._prefix_start + self._count
+        if ordinal in self._cleared or (not prefix and _normalized_message_native_id(message) in self._tail_duplicates):
+            update["provider_message_id"] = None
+        position = self.remap_position(message.position, prefix=prefix)
+        if position != message.position:
+            update["position"] = position
+        return message.model_copy(update=update) if update else message
+
+    @overload
+    def __getitem__(self, index: int) -> ParsedMessage: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[ParsedMessage]: ...
+
+    def __getitem__(self, index: int | slice) -> ParsedMessage | list[ParsedMessage]:
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(len(self)))]
+        ordinal = index + len(self) if index < 0 else index
+        return self._scoped(ordinal, super().__getitem__(ordinal))
+
+    def __iter__(self) -> Iterator[ParsedMessage]:
+        for ordinal, message in enumerate(super().__iter__()):
+            yield self._scoped(ordinal, message)
+
+    def remap_events(self, events: Sequence[ParsedSessionEvent]) -> list[ParsedSessionEvent] | None:
+        """Boundary positions moved with the rows they address, or ``None`` if none move."""
+        if not self._prefix_positions and not self._tail_shift:
+            return None
+        min_tail = min(
+            (
+                message.position
+                for ordinal, message in enumerate(super().__iter__())
+                if ordinal >= self._prefix_start + self._count and message.position is not None
+            ),
+            default=None,
+        )
+
+        def moved(position: int | None) -> int | None:
+            if position is None:
+                return None
+            prefix = min_tail is None or position < min_tail
+            return self.remap_position(position, prefix=prefix)
+
+        return [
+            event.model_copy(
+                update={
+                    "boundary_start_position": moved(event.boundary_start_position),
+                    "boundary_end_position": moved(event.boundary_end_position),
+                }
+            )
+            for event in events
+        ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1169,7 +1336,11 @@ def _prepared_message_context(
                 branch_point_content_address = _message_content_address_for_id(conn, branch_point_message_id)
     scoped_identities: tuple[MessageContentIdentity, ...] | None = None
     if identity_scope is not None:
-        messages, scoped_identities = _scoped_identities(messages, identity_scope)
+        scoped_view, scoped_identities = _scoped_identities(messages, identity_scope)
+        messages = scoped_view
+        remapped_events = scoped_view.remap_events(list(effective_session.session_events))
+        if remapped_events is not None:
+            effective_session = effective_session.model_copy(update={"session_events": remapped_events})
     return PreparedMessageContext(
         effective_session=effective_session,
         messages=messages if isinstance(messages, (SqliteMessageSink, _MessageTail)) else tuple(messages),
@@ -1264,8 +1435,10 @@ def prepare_session_write(
         scratch = tempfile.TemporaryDirectory(prefix="polylogue-prepared-write-", dir=source_path.parent)
         builder = SessionShardBuilder(Path(scratch.name) / "rows.db")
         try:
-            with disk_message_content_identities(
-                context.messages, occurrence_offsets=content_occurrence_offsets
+            with (
+                nullcontext(context.content_identities)
+                if context.content_identities is not None
+                else disk_message_content_identities(context.messages, occurrence_offsets=content_occurrence_offsets)
             ) as identities:
                 builder.add_streamed(
                     session_id=session_id,
@@ -6973,6 +7146,9 @@ def _refill_inbound_asserted_branch_points(conn: sqlite3.Connection, parent_sess
            AND json_valid(evidence_json)
            AND json_type(evidence_json) = 'object'
            AND json_extract(evidence_json, '$.{ASSERTED_BRANCH_POINT_EVIDENCE_KEY}') IS NOT NULL
+           -- A materialized child owns its prefix: re-binding its assertion
+           -- would compose the parent's prefix in front of its own copy.
+           AND json_type(evidence_json, '$.{IDENTITY_SCOPE_EVIDENCE_KEY}') IS NULL
         """,
         (parent_session_id,),
     ).fetchall()
@@ -10862,8 +11038,12 @@ def _materialize_inherited_prefix(
         prefix_ordinals[str(identity)] += 1
         if planned[5] == "content":
             content_copies[str(identity)].append(ordinal_in_prefix)
+    prefix_identities = [str(row[4]) for _old_id, row in sources if row[4] is not None]
     identity_scope = _IdentityScope(
-        len(inherited_ids), {identity: tuple(ordinals) for identity, ordinals in content_copies.items()}
+        len(inherited_ids),
+        {identity: tuple(ordinals) for identity, ordinals in content_copies.items()},
+        _identity_sequence_digest(prefix_identities) if len(prefix_identities) == len(sources) else "",
+        prefix_identities[0] if prefix_identities and len(prefix_identities) == len(sources) else "",
     )
     conn.execute(
         f"""CREATE TEMP TABLE {_GUARD_PREFIX}plan (
