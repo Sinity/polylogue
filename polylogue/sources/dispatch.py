@@ -52,7 +52,12 @@ from .parsers.base import (
     mark_last_occurrence_as_active_leaf,
 )
 from .parsers.base_models import upgrade_chat_export_user_authorship
-from .parsers.base_support import AdmissionObserver, admit_parsed_sessions, iter_messages_from_list
+from .parsers.base_support import (
+    AdmissionObserver,
+    admit_parsed_sessions,
+    claude_code_unknown_wire_type,
+    iter_messages_from_list,
+)
 from .parsers.claude import code_parser as claude_code_parser
 from .parsers.claude.code_parser import apply_tool_result_sidecars
 from .parsers.claude.stream_scratch import ClaudeStreamScratch, SqliteStringSet
@@ -1094,7 +1099,7 @@ def _claude_code_multiway_parse_inner(
         # not once per read of a field.
         observer = observers.get(group_id)
         if observer is None:
-            observer = observers[group_id] = AdmissionObserver()
+            observer = observers[group_id] = AdmissionObserver(claude_code_unknown_wire_type)
         # ``_fold_code_record`` silently drops a dict record whose ``type``
         # is missing or not a string (logged, never folded into evidence);
         # the admission ledger must not still count that as MATERIALIZED.
@@ -1196,7 +1201,9 @@ def _claude_code_multiway_parse_inner(
 
     for group_id in group_order:
         session = claude_code_parser._finalize_code_session(accumulators[group_id])
-        session = observers.setdefault(group_id, AdmissionObserver()).apply(session, "claude_code")
+        session = observers.setdefault(group_id, AdmissionObserver(claude_code_unknown_wire_type)).apply(
+            session, "claude_code"
+        )
         if sidecar_accumulators is not None:
             # sidecar_accumulators is only set when the scope resolved, which
             # itself only happens when source_path is not None.

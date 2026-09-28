@@ -259,3 +259,34 @@ def test_interleaved_claude_code_unknown_keeps_its_file_line() -> None:
         if event.event_type == "claude_code_unknown_input"
     ]
     assert unknowns == [{"source_index": 3, "wire_type": "future_record_kind"}]
+
+
+def test_claude_code_tool_input_is_not_a_wire_type() -> None:
+    """Nested tool arguments are user data, not Claude Code discriminators.
+
+    Anti-vacuity (Codex P2, #5711): scan the whole record and the tool call's
+    arbitrary input ``{"type": "unknown"}`` turns a valid assistant record
+    into ``TYPED_UNKNOWN`` with a false ``claude_code_unknown_input`` event.
+    A block-level future type still classifies, so the scan is not disabled.
+    """
+    from polylogue.sources.dispatch import parse_stream_payload
+
+    def assistant(uuid: str, block: dict[str, object]) -> dict[str, object]:
+        return {
+            "type": "assistant",
+            "sessionId": "cc-tool-input",
+            "uuid": uuid,
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {"role": "assistant", "content": [block]},
+        }
+
+    tool_call = {"type": "tool_use", "id": "t-1", "name": "Probe", "input": {"type": "unknown"}}
+    (session,) = parse_stream_payload(Provider.CLAUDE_CODE, iter([assistant("a-1", tool_call)]), "cc-tool-input")
+    assert "claude_code_unknown_input" not in [event.event_type for event in session.session_events]
+    accounting = session.unit_accounting
+    assert accounting is not None
+    assert all(outcome.disposition is not AdmissionDisposition.TYPED_UNKNOWN for outcome in accounting.outcomes)
+
+    future_block = {"type": "future_block_kind", "text": "neutral"}
+    (session,) = parse_stream_payload(Provider.CLAUDE_CODE, iter([assistant("a-2", future_block)]), "cc-tool-input")
+    assert [event.payload["wire_type"] for event in session.session_events] == ["future_block_kind"]

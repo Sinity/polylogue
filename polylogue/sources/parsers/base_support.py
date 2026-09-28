@@ -7,7 +7,7 @@ import binascii
 import inspect
 from collections.abc import Callable, Iterable, Iterator, Mapping, MutableSequence, Sequence
 from functools import wraps
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, WebConstructType
@@ -115,6 +115,36 @@ class AdmissionLedger:
         return accounting
 
 
+def _is_unknown_sentinel(candidate: object) -> bool:
+    return isinstance(candidate, str) and (
+        candidate.startswith(("future_", "unknown_", "unsupported_"))
+        or candidate in {"future", "unknown", "unsupported"}
+    )
+
+
+def claude_code_unknown_wire_type(value: object) -> str | None:
+    """Return an unknown Claude Code wire type read only from its discriminators.
+
+    A Claude Code record's discriminators are its own ``type`` and the
+    ``type`` of each ``message.content`` block. Everything beneath a block --
+    a tool call's ``input``, a tool result's body -- is user-controlled data,
+    so a tool argument ``{"type": "unknown"}`` is not a provider wire type.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    record_type = value.get("type")
+    if _is_unknown_sentinel(record_type):
+        return cast(str, record_type)
+    message = value.get("message")
+    content = message.get("content") if isinstance(message, Mapping) else None
+    if isinstance(content, list):
+        for block in content:
+            block_type = block.get("type") if isinstance(block, Mapping) else None
+            if _is_unknown_sentinel(block_type):
+                return cast(str, block_type)
+    return None
+
+
 def _unknown_wire_type(value: object) -> str | None:
     """Return a deliberately future-shaped wire type, if one is visible.
 
@@ -125,11 +155,8 @@ def _unknown_wire_type(value: object) -> str | None:
     if isinstance(value, dict):
         for key in ("type", "content_type", "kind", "record_type"):
             candidate = value.get(key)
-            if isinstance(candidate, str) and (
-                candidate.startswith(("future_", "unknown_", "unsupported_"))
-                or candidate in {"future", "unknown", "unsupported"}
-            ):
-                return candidate
+            if _is_unknown_sentinel(candidate):
+                return cast(str, candidate)
         for child in value.values():
             found = _unknown_wire_type(child)
             if found is not None:
@@ -154,7 +181,11 @@ class AdmissionObserver:
     parser that skips a scalar produced no material from it (fail closed).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, scan: Callable[[object], str | None] | None = None) -> None:
+        #: How one record's unknown wire type is found. The default scans the
+        #: whole record; an origin with declared discriminators passes a scan
+        #: that reads only those, so nested user data is never a wire type.
+        self._scan = scan if scan is not None else _unknown_wire_type
         self._ledger = AdmissionLedger()
         self._count = 0
         self._unknowns: list[tuple[int, str]] = []
@@ -182,7 +213,7 @@ class AdmissionObserver:
                 AdmissionUnit.OUTER_RECORD, ordinal, type(item).__name__, AdmissionRefusalReason.MALFORMED
             )
             return
-        wire_type = _unknown_wire_type(item)
+        wire_type = self._scan(item)
         if wire_type is None and not recognized:
             wire_type = "unrecognized_record_type"
         if wire_type is None:
@@ -276,7 +307,9 @@ def _payload_parameter(parser: Callable[..., ParsedSession]) -> tuple[int, str]:
     return names.index(name), name
 
 
-def parser_admission(provider: str) -> Callable[[_SessionParser], _SessionParser]:
+def parser_admission(
+    provider: str, *, scan: Callable[[object], str | None] | None = None
+) -> Callable[[_SessionParser], _SessionParser]:
     """Put a common conservation boundary around every session parser.
 
     Provider implementations are still responsible for their known wire
@@ -291,7 +324,7 @@ def parser_admission(provider: str) -> Callable[[_SessionParser], _SessionParser
         @wraps(parser)
         def wrapped(*args: Any, **kwargs: Any) -> ParsedSession:
             payload = args[payload_index] if len(args) > payload_index else kwargs.get(payload_name)
-            observer = AdmissionObserver()
+            observer = AdmissionObserver(scan)
             if isinstance(payload, Iterator):
                 # A one-pass payload can only be classified while the parser
                 # pulls it; re-reading it afterwards would see an exhausted

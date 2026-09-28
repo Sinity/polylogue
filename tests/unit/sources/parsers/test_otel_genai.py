@@ -678,6 +678,28 @@ def test_tool_call_beside_text_is_recognised_in_replayed_history() -> None:
     assert not [message for message in session.messages if f"{trace}:{'3' * 16}:input" in message.provider_message_id]
 
 
+def test_unnamed_resource_identity_survives_an_application_upgrade() -> None:
+    """An upgraded application exports the same conversation under the same id.
+
+    Anti-vacuity (Codex P2, #5711): hash ``service.version`` into the
+    fallback resource identity and the post-upgrade export imports as a
+    second session. A changed non-version attribute still separates resources.
+    """
+
+    def export(version: str, environment: str = "prod") -> str:
+        payload = _document(
+            (
+                [_attr("deployment.environment", environment), _attr("service.version", version)],
+                [_chat("e" * 32, "5" * 16, 1_000, ["Q"], "A")],
+            )
+        )
+        (session,) = otel_genai.parse(payload, "ignored")
+        return session.provider_session_id
+
+    assert export("1.0.0") == export("1.1.0")
+    assert export("1.0.0") != export("1.0.0", environment="staging")
+
+
 def test_unnamed_resource_identity_ignores_instance_attributes() -> None:
     """A restarted process exports the same conversation under the same id.
 

@@ -275,8 +275,10 @@ def test_trajectory_sqlite_parser_reserves_summary_keys_against_row_fallback_ids
             CREATE TABLE conversation_summaries (cascade_id TEXT, title TEXT, last_modified_time TEXT);
             """
         )
-        # One anonymous meta row: fallback_id="x" with a single row mints
-        # "x:trajectory-0" absent any collision.
+        # Two anonymous meta rows: row-specific fallback ids
+        # ("x:trajectory-<index>") are minted only when there is more than one
+        # row, so a single row would take the plain "x" and never collide.
+        connection.execute("INSERT INTO trajectory_meta VALUES (NULL, NULL)")
         connection.execute("INSERT INTO trajectory_meta VALUES (NULL, NULL)")
         connection.execute(
             "INSERT INTO conversation_summaries VALUES (?, ?, ?)",
@@ -289,8 +291,9 @@ def test_trajectory_sqlite_parser_reserves_summary_keys_against_row_fallback_ids
     assert len(provider_ids) == len(set(provider_ids)), f"colliding provider_session_id: {provider_ids}"
     orphan = next(session for session in sessions if session.ingest_flags == ["degraded:unmatched-trajectory-summary"])
     assert orphan.provider_session_id == "x:trajectory-0"
-    meta_session = next(session for session in sessions if session is not orphan)
-    assert meta_session.provider_session_id != "x:trajectory-0"
+    meta_ids = [session.provider_session_id for session in sessions if session is not orphan]
+    assert len(meta_ids) == 2
+    assert "x:trajectory-0" not in meta_ids
 
 
 def test_trajectory_sqlite_parser_refuses_malformed_step_without_fabricating_text(tmp_path: Path) -> None:

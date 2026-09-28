@@ -205,6 +205,15 @@ _INSTANCE_RESOURCE_PREFIXES = (
 )
 
 
+def _is_deployment_version(key: str) -> bool:
+    """Name a version attribute (``service.version``, ``deployment.version`` ...).
+
+    An upgrade changes it independently of the conversation, so it never
+    contributes to a session's identity.
+    """
+    return key == "version" or key.endswith((".version", "_version"))
+
+
 def _resource_id(resource_attrs: dict[str, object]) -> str:
     """Name one OTLP resource by its service, or by its stable attributes.
 
@@ -212,8 +221,9 @@ def _resource_id(resource_attrs: dict[str, object]) -> str:
     resources when their configured attributes differ; collapsing both onto
     one shared fallback grouped their spans into a single provider session.
     Per-instance attributes (``process.pid``, ``service.instance.id`` ...)
-    are left out, so a restarted process exports the same conversation under
-    the same identity.
+    and version attributes (``service.version`` ...) are left out, so a
+    restarted or upgraded process exports the same conversation under the
+    same identity.
     """
     service_name = optional_string(resource_attrs.get("service.name"))
     if service_name:
@@ -221,7 +231,7 @@ def _resource_id(resource_attrs: dict[str, object]) -> str:
     stable = {
         key: _json_value(value)
         for key, value in resource_attrs.items()
-        if not key.startswith(_INSTANCE_RESOURCE_PREFIXES)
+        if not key.startswith(_INSTANCE_RESOURCE_PREFIXES) and not _is_deployment_version(key)
     }
     canonical = json.dumps(stable, sort_keys=True, separators=(",", ":"))
     return f"resource-{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:16]}"
