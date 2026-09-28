@@ -3,7 +3,10 @@
 Guide version: v1. End every finding you post with the line `Review-guide: v1`.
 
 You review a single-writer archive. Its durable tiers (`source.db`, `user.db`,
-`audit.db`) are irreplaceable; its derived tiers are rebuilt from them. The
+`audit.db`) are irreplaceable. `index.db` and `ops.db` are rebuilt from them;
+`embeddings.db` is expensive to rebuild because vectors are purchased again and
+no replay route replaces it, so a change that deletes or replaces it is a
+destructive change. The
 costly failures are data silently lost or duplicated, a durable reference that
 re-points, a build that never converges, and work reported as done when it was
 skipped. Weight your attention there.
@@ -30,7 +33,12 @@ P1 (merge blocker):
   re-point (message and block identity, the `pipeline/ids.py` hash partition);
 - input silently dropped, truncated, or duplicated while the run reports
   success or complete enumeration;
-- a writable open or mutation that bypasses the daemon writer route;
+- a writable open or mutation of a live archive that bypasses the daemon
+  writer route without a declared authority (`declared_unguarded_write` in
+  `storage/sqlite/write_guard.py` covers bootstrap, offline exclusive rebuild,
+  migration, and fixture setup);
+- operator archives, transcripts, private exports, local databases, or
+  receipts committed in any diff, including a docs-only or test-only one;
 - a build, promotion, or convergence loop that can never finish (livelock,
   permanent exclusion of a transient fault, a restart that cannot resume);
 - a change that leaves a consumer in the repository broken (see
@@ -42,7 +50,7 @@ P1 (merge blocker):
 P2: devtools and test-harness defects, status, progress and metric accuracy,
 docs drift, performance that does not grow with archive size, and test
 weakness where the gate still runs. A test-only or docs-only diff is P2 unless
-it makes a required gate vacuous.
+it makes a required gate vacuous or crosses the public boundary.
 
 ## Checks that are easy to miss (apply to every diff)
 
@@ -98,10 +106,12 @@ breakage is acceptable.
   readers, keys, or routes); otherwise P2.
 - **Noise.** A finding whose remedy is to keep the old path alongside the new
   one (a shim, alias, fallback, dual read or write, or deprecated wrapper). A
-  finding that asks to migrate, upgrade, or carry forward prior archive state,
-  receipts, cursors, or generations, or to read a previous format. The archive
-  starts fresh with every tier at `user_version=1`; earlier state is inert
-  salvage evidence (AGENTS.md, "Storage tiers"). Do not post these.
+  finding that asks to migrate, import, or carry forward state from before the
+  fresh-start reset (archives, receipts, cursors, generations) or to read its
+  format. The archive starts fresh with every tier at `user_version=1`; the
+  earlier state is inert salvage evidence (AGENTS.md, "Storage tiers"). Do
+  not post these. This is separate from ordinary durable-tier evolution, which
+  uses additive numbered migrations as AGENTS.md describes.
 
 ## Limits
 
@@ -116,8 +126,10 @@ physical limit is acceptable, and its refusal is typed.
 
 - Requests to keep old behaviour beside new behaviour, or to migrate or
   upgrade prior archive state (see above).
-- Requests to bump schema, parser, or materializer versions, or to declare a
-  reparse.
+- Requests to bump a derived-tier schema, parser, or lowering version, or to
+  declare a reparse; the derived identity is computed. A public artifact
+  version that consumers use for invalidation (such as
+  `RESUME_BRIEF_MATERIALIZER_VERSION`) is not covered by this rule.
 - New caps, smaller timeouts, or truncation as a remedy.
 - Test strictness beyond the anti-vacuity condition the test names.
 - Scenarios that need the environment corrupted below its own integrity

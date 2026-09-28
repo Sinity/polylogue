@@ -7,6 +7,7 @@
   it.
 - Flag an enum-generated `CHECK (col IN ...)` in DDL. Safe path:
   `require_vocabulary` at the write boundary.
-- Flag a writable open or commit that bypasses the daemon writer route (P1).
+- Flag a writable open or commit on a live archive that bypasses the daemon
+  writer route without `declared_unguarded_write` (P1).
 - Flag rebuildable state (`index.db`, `ops.db`) used as the authority for a
   durable mutation (P1).
