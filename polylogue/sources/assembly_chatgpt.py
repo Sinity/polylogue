@@ -175,7 +175,7 @@ def _acquire_asset_blobs_from_directory(directory: Path, store: BlobStore) -> di
     so the walk is recursive; each file is streamed via
     ``BlobStore.write_from_path`` (no full-file memory load).
     """
-    from polylogue.storage.blob_publication import flush_blob_publications
+    from polylogue.storage.blob_publication import flush_blob_publications, publication_refused
 
     from .decoder_zip import MAX_UNCOMPRESSED_SIZE
 
@@ -200,6 +200,9 @@ def _acquire_asset_blobs_from_directory(directory: Path, store: BlobStore) -> di
         acquired[asset_id] = (blob_hash, size)
     if acquired:
         flush_blob_publications(store)
+        # An excised asset was discarded at flush: leave it unacquired rather
+        # than hand the writer a blob hash with no bytes behind it.
+        acquired = {asset_id: blob for asset_id, blob in acquired.items() if not publication_refused(store, blob[0])}
     return acquired
 
 
@@ -257,11 +260,16 @@ class ChatGPTAssemblySpec:
                     library_files_payload = zip_sidecars.get(_LIBRARY_FILES_NAME)
                 if asset_names_payload is None:
                     asset_names_payload = zip_sidecars.get(_ASSET_NAMES_NAME)
-                asset_blobs.update(zip_asset_blobs)
                 if zip_asset_blobs and blob_store is not None:
-                    from polylogue.storage.blob_publication import flush_blob_publications
+                    from polylogue.storage.blob_publication import flush_blob_publications, publication_refused
 
                     flush_blob_publications(blob_store)
+                    zip_asset_blobs = {
+                        asset_id: blob
+                        for asset_id, blob in zip_asset_blobs.items()
+                        if not publication_refused(blob_store, blob[0])
+                    }
+                asset_blobs.update(zip_asset_blobs)
                 continue
             directory = path.parent
             if directory in seen_dirs:

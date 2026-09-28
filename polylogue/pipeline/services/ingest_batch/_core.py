@@ -83,7 +83,12 @@ from polylogue.storage.accepted_marker_inputs import (
     finalize_pending_accepted_marker_input,
     prepare_accepted_marker_input,
 )
-from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blob_publication_receipt
+from polylogue.storage.blob_publication import (
+    ArchiveBlobPublisher,
+    consume_blob_publication_receipt,
+    publication_refused,
+    refuse_excised_attachment_blobs,
+)
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
@@ -659,6 +664,27 @@ def _incoming_write_carries_distinct_messages(
 #: function must give a durable content-addressed home. Both carry the same
 #: ``{acquisition_status, tool_use_id, content_replaced}`` payload shape.
 _SIDECAR_EVENT_TYPES = ("claude_tool_result_sidecar", "gemini_cli_tool_output_sidecar")
+
+
+def _drop_refused_sidecar_blob_hashes(
+    session_to_write: ParsedSession, blob_publisher: ArchiveBlobPublisher
+) -> ParsedSession:
+    """Remove sidecar ``blob_hash`` references whose bytes a flush refused as excised."""
+    refused_positions = [
+        position
+        for position, event in enumerate(session_to_write.session_events)
+        if event.event_type in _SIDECAR_EVENT_TYPES
+        and isinstance(blob_hash := event.payload.get("blob_hash"), str)
+        and publication_refused(blob_publisher, blob_hash)
+    ]
+    if not refused_positions:
+        return session_to_write
+    updated = list(session_to_write.session_events)
+    for position in refused_positions:
+        payload = dict(updated[position].payload)
+        del payload["blob_hash"]
+        updated[position] = updated[position].model_copy(update={"payload": payload})
+    return session_to_write.model_copy(update={"session_events": updated})
 
 
 def _preacquire_sidecar_blobs(
@@ -1415,6 +1441,7 @@ def _write_session(
         )
         counts.update(sidecar_blob_counts)
         blob_publisher.flush()
+        session_to_write = _drop_refused_sidecar_blob_hashes(session_to_write, blob_publisher)
     for attachment in session_to_write.attachments:
         # bd polylogue-8ac0: bytes for this attachment were already streamed
         # into the blob store during sidecar discovery (e.g. ChatGPT ``.dat``
@@ -1428,6 +1455,13 @@ def _write_session(
             preacquired_attachment_blobs = {}
         hash_hex, size = attachment.precomputed_blob
         preacquired_attachment_blobs[attachment.acquisition_key] = (bytes.fromhex(hash_hex), size, "acquired")
+    if preacquired_attachment_blobs:
+        # A flush that refused excised bytes discarded them; bytes published
+        # earlier may have been excised since. Neither may be recorded as an
+        # acquired attachment whose blob is absent.
+        preacquired_attachment_blobs = refuse_excised_attachment_blobs(
+            preacquired_attachment_blobs, publisher=blob_publisher, source_conn=source_conn
+        )
 
     prepared_write = payload.prepared_write
     if prepared_write is None and isinstance(session_to_write.messages, SqliteMessageSink):

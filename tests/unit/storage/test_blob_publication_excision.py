@@ -96,3 +96,31 @@ def test_an_excised_sqlite_snapshot_is_a_typed_excision_not_a_parse_failure(tmp_
         )
     assert refused.value.blob_hash.hex() == snapshot_hash
     assert not publisher.exists(snapshot_hash)
+
+
+def test_reading_a_refused_hash_is_a_typed_excision(tmp_path: Path) -> None:
+    """Anti-vacuity: let ``blob_path`` fall through for a refused hash and a
+    reader gets the staging path that flush deleted (``FileNotFoundError``)."""
+    import pytest
+
+    from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root, initialize=True, read_only=False):
+        pass
+    excised = b"bytes a later reader asks for"
+    with sqlite3.connect(root / "source.db") as source:
+        record_excised_blob_hash(
+            source,
+            blob_hash=hashlib.sha256(excised).digest(),
+            reason="synthetic excision",
+            actor="test",
+            excised_at_ms=1,
+        )
+    publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+    excised_hex, _ = publisher.write_from_bytes(excised)
+    publisher.flush()
+
+    assert publisher.exists(excised_hex) is False
+    with pytest.raises(ContentExcisedError):
+        publisher.read_all(excised_hex)

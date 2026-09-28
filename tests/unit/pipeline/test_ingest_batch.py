@@ -1708,6 +1708,110 @@ def test_write_session_precomputed_blob_attachment_recorded_as_acquired(tmp_path
         assert store.read_all(blob_hash) == payload
 
 
+def _excise_in_fresh_source_tier(root: Path, payload: bytes) -> Path:
+    """Initialize an archive at *root* and record *payload*'s blob hash as excised."""
+    from polylogue.storage.sqlite.archive_tiers.source_write import record_excised_blob_hash
+
+    with ArchiveStore(root, initialize=True, read_only=False):
+        pass
+    with sqlite3.connect(root / "source.db") as source:
+        record_excised_blob_hash(
+            source, blob_hash=sha256(payload).digest(), reason="synthetic excision", actor="test", excised_at_ms=1
+        )
+    return root / "source.db"
+
+
+def _excised_attachment_row(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row:
+    row: sqlite3.Row = conn.execute(
+        """
+        SELECT a.acquisition_status, a.blob_hash, a.byte_count
+        FROM attachment_refs r JOIN attachments a ON a.attachment_id = r.attachment_id
+        WHERE r.session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    return row
+
+
+def test_write_session_records_an_excised_inline_attachment_unavailable(tmp_path: Path) -> None:
+    """An inline attachment whose bytes the flush refused as excised is not acquired.
+
+    Anti-vacuity: drop ``refuse_excised_attachment_blobs`` from ``_write_session``
+    and the attachment row is committed ``acquired`` with the excised hash,
+    whose staged bytes the flush discarded, so the reference dangles.
+    """
+    payload = b"attachment bytes the operator excised"
+    source_db = _excise_in_fresh_source_tier(tmp_path / "archive", payload)
+    publisher = ArchiveBlobPublisher(source_db, tmp_path / "archive" / "blob")
+    with open_connection(tmp_path / "index.db") as conn:
+        session = _session_data(
+            "chatgpt-export:conv-excised",
+            content_hash="hash-excised-inline",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "chatgpt-export:conv-excised",
+                    role="user",
+                    text="see attached",
+                    content_hash="msg-hash-excised-inline",
+                    sort_key=1777636800.0,
+                )
+            ],
+            attachment_tuples=[_attachment_tuple("att-1", inline_bytes=payload)],
+            attachment_ref_tuples=[_attachment_ref_tuple("att-1", "chatgpt-export:conv-excised", "msg-1")],
+            raw_id="raw-excised-inline",
+            provider=Provider.CHATGPT,
+        )
+        changed, _counts = _write_session(conn, session, blob_publisher=publisher)
+        conn.commit()
+
+        assert changed is True
+        row = _excised_attachment_row(conn, "chatgpt-export:conv-excised")
+        assert row["acquisition_status"] == "unavailable"
+        assert row["blob_hash"] is None
+        assert row["byte_count"] == len(payload)
+    assert not publisher.exists(sha256(payload).hexdigest())
+
+
+def test_write_session_records_an_excised_precomputed_attachment_unavailable(tmp_path: Path) -> None:
+    """Bytes published earlier and excised since are not recorded as acquired.
+
+    Anti-vacuity: drop the ledger check (``source_conn``) from
+    ``refuse_excised_attachment_blobs`` and the precomputed blob is recorded
+    ``acquired`` under the excised hash.
+    """
+    payload = b"chatgpt asset bytes excised after acquisition"
+    source_db = _excise_in_fresh_source_tier(tmp_path / "archive", payload)
+    with open_connection(tmp_path / "index.db") as conn, sqlite3.connect(source_db) as source_conn:
+        session = _session_data(
+            "chatgpt-export:conv-precomputed",
+            content_hash="hash-excised-precomputed",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "chatgpt-export:conv-precomputed",
+                    role="user",
+                    text="here is a photo",
+                    content_hash="msg-hash-excised-precomputed",
+                    sort_key=1777636800.0,
+                )
+            ],
+            attachment_tuples=[
+                _attachment_tuple("file-xyz", precomputed_blob=(sha256(payload).hexdigest(), len(payload)))
+            ],
+            attachment_ref_tuples=[_attachment_ref_tuple("file-xyz", "chatgpt-export:conv-precomputed", "msg-1")],
+            raw_id="raw-excised-precomputed",
+            provider=Provider.CHATGPT,
+        )
+        changed, _counts = _write_session(conn, session, source_conn=source_conn)
+        conn.commit()
+
+        assert changed is True
+        row = _excised_attachment_row(conn, "chatgpt-export:conv-precomputed")
+        assert row["acquisition_status"] == "unavailable"
+        assert row["blob_hash"] is None
+
+
 def _sidecar_matched_event(tool_use_id: str) -> ParsedSessionEvent:
     return ParsedSessionEvent(
         event_type="claude_tool_result_sidecar",

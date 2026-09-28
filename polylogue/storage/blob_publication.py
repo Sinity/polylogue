@@ -9,7 +9,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, BinaryIO
+from typing import IO, Any, BinaryIO
 from uuid import uuid4
 
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
@@ -273,6 +273,12 @@ class ArchiveBlobPublisher(BlobStore):
         self._pending_by_hash.clear()
 
     def blob_path(self, hash_hex: str) -> Path:
+        if hash_hex in self._refused_as_excised:
+            # The staged bytes were discarded at flush. A reader gets the typed
+            # excision instead of a path that does not exist.
+            from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
+
+            raise ContentExcisedError(blob_hash=bytes.fromhex(hash_hex), source_path=f"blob:{hash_hex}")
         final_path = self._store.blob_path(hash_hex)
         if final_path.exists():
             return final_path
@@ -280,6 +286,8 @@ class ArchiveBlobPublisher(BlobStore):
         return prepared.temporary_path if prepared is not None else final_path
 
     def exists(self, hash_hex: str) -> bool:
+        if hash_hex in self._refused_as_excised:
+            return False
         return self.blob_path(hash_hex).exists()
 
     def open(self, hash_hex: str) -> BinaryIO:
@@ -302,6 +310,47 @@ def publication_receipt_id(blob_store: BlobStore, blob_hash: str) -> str | None:
     return str(receipt_id) if receipt_id is not None else None
 
 
+def publication_refused(blob_store: BlobStore, blob_hash: str) -> bool:
+    """Whether a flush of *blob_store* refused *blob_hash* as excised.
+
+    A plain ``BlobStore`` publishes immediately and never refuses.
+    """
+    refused = getattr(blob_store, "refused_as_excised", None)
+    return bool(callable(refused) and refused(blob_hash))
+
+
+def refuse_excised_attachment_blobs(
+    preacquired: dict[Any, tuple[bytes | None, int, str]],
+    *,
+    publisher: BlobStore | None = None,
+    source_conn: sqlite3.Connection | None = None,
+) -> dict[Any, tuple[bytes | None, int, str]]:
+    """Downgrade acquired attachments whose bytes are excised to ``unavailable``.
+
+    Excision is decided at two places: a flush that refused the staged bytes
+    (``publisher``), and the durable ledger for bytes published earlier and
+    excised since (``source_conn``). Either way the blob is not on disk, so the
+    attachment row must not claim it: it keeps its identity and size with no
+    blob hash, in the declared terminal ``unavailable`` state.
+    """
+    from polylogue.storage.sqlite.archive_tiers.source_write import is_blob_hash_excised
+
+    result: dict[Any, tuple[bytes | None, int, str]] = {}
+    for key, (blob_hash, size, status) in preacquired.items():
+        if (
+            status == "acquired"
+            and blob_hash is not None
+            and (
+                (publisher is not None and publication_refused(publisher, blob_hash.hex()))
+                or (source_conn is not None and is_blob_hash_excised(source_conn, blob_hash))
+            )
+        ):
+            result[key] = (None, size, "unavailable")
+        else:
+            result[key] = (blob_hash, size, status)
+    return result
+
+
 def require_published(blob_store: BlobStore, blob_hash: str, *, source_path: str) -> None:
     """Raise ContentExcisedError when a flush refused *blob_hash* as excised.
 
@@ -310,8 +359,7 @@ def require_published(blob_store: BlobStore, blob_hash: str, *, source_path: str
     does not exist, and the outcome is the typed excision, not a parse
     failure.
     """
-    refused = getattr(blob_store, "refused_as_excised", None)
-    if callable(refused) and refused(blob_hash):
+    if publication_refused(blob_store, blob_hash):
         from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
 
         raise ContentExcisedError(blob_hash=bytes.fromhex(blob_hash), source_path=source_path)

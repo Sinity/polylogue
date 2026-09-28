@@ -12,7 +12,7 @@ from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
-from polylogue.logging import get_logger
+from polylogue.logging import emit, get_logger
 from polylogue.sources.assembly import SidecarData
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
@@ -528,7 +528,13 @@ def iter_source_sessions_with_raw(
         except ContentExcisedError as exc:
             # Deliberately forgotten content: a typed permanent outcome, not a
             # parse failure to retry.
-            logger.info("source_content_excised", source_path=str(path), blob_hash=exc.blob_hash.hex())
+            emit(
+                "sources.parse.content_excised",
+                outcome="skipped",
+                reason="content_excised",
+                path=str(path),
+                blob_hash=exc.blob_hash.hex(),
+            )
         except FileNotFoundError as exc:
             failed_count += 1
             logger.warning("File disappeared during processing (TOCTOU race): %s", path)
