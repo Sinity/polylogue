@@ -1126,10 +1126,20 @@ def _in_slot_rerun_cleared(env: Mapping[str, str]) -> bool:
         return False
     try:
         spec = json.loads(raw)
-        record = json.loads((Path(spec["step_dir"]) / RERUN_IN_SLOT_RESULT).read_text(encoding="utf-8"))
+        step_dir = Path(spec["step_dir"])
+        record = json.loads((step_dir / RERUN_IN_SLOT_RESULT).read_text(encoding="utf-8"))
+        rerun = json.loads((step_dir / "pytest-rerun.json").read_text(encoding="utf-8"))
     except (OSError, ValueError, KeyError, TypeError):
         return False
-    return isinstance(record, dict) and record.get("rerun_exit") == 0
+    if not isinstance(record, dict) or record.get("rerun_exit") != 0 or not isinstance(rerun, dict):
+        return False
+    # Exit 0 is not enough: a rerun can skip a node. Every attempted node must
+    # have passed, as the client's adjudication will require.
+    outcomes = {
+        str(test.get("nodeid")): test.get("outcome") for test in rerun.get("tests", []) if isinstance(test, dict)
+    }
+    attempted = record.get("attempted")
+    return isinstance(attempted, list) and all(outcomes.get(str(nodeid)) == "passed" for nodeid in attempted)
 
 
 def run_pytest(
@@ -1279,9 +1289,18 @@ def _rerun_failures_in_slot(
     failed, command, _rerun_report = plan
     # Taken as the rerun starts, like the first run's: the client compares
     # the two and refuses to clear a failure of content the rerun never ran.
-    provenance = None
-    with contextlib.suppress(Exception):
+    try:
         provenance = _focused_worktree_provenance(cwd, environment)
+    except Exception as exc:
+        # Without the rerun's identity nothing it proves can be attributed to
+        # the failing run's content, so no rerun happens and the failures stand.
+        log.write(f"\n  rerun skipped: worktree provenance unavailable ({exc})\n".encode())
+        with contextlib.suppress(OSError):
+            (step_dir / RERUN_IN_SLOT_RESULT).write_text(
+                json.dumps({"attempted": failed, "rerun_exit": 125, "provenance_error": str(exc)[:500]}),
+                encoding="utf-8",
+            )
+        return
     log.write(f"\n  rerun {len(failed)} failed test(s) alone, in this slot ...\n".encode())
     log.flush()
     try:

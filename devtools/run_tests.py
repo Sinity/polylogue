@@ -255,6 +255,8 @@ _EXECUTION_ENV_PREFIXES = ("HYPOTHESIS_", "PYTEST_", "POLYLOGUE_")
 #: regeneration, fuzz depth, colour, time zone and the XDG roots.
 _EXECUTION_ENV_NAMES = frozenset(
     {
+        # Tests reach tools (git, bash, compilers) through the search path.
+        "PATH",
         "UPDATE_GOLDEN",
         "FUZZ_ITERATIONS",
         "NO_COLOR",

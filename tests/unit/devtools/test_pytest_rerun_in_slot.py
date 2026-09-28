@@ -113,8 +113,11 @@ def test_a_rerun_that_fails_again_stays_red(tmp_path: Path) -> None:
     assert verdict["still_failed"] == ["tests/test_x.py::test_real"]
 
 
-@pytest.mark.parametrize(("rerun_exit", "cleared"), [(0, True), (1, False)])
-def test_scratch_follows_the_adjudicated_outcome(tmp_path: Path, rerun_exit: int, cleared: bool) -> None:
+@pytest.mark.parametrize(
+    ("rerun_exit", "outcome", "cleared"),
+    [(0, "passed", True), (1, "failed", False), (0, "skipped", False)],
+)
+def test_scratch_follows_the_adjudicated_outcome(tmp_path: Path, rerun_exit: int, outcome: str, cleared: bool) -> None:
     """A queued run whose in-slot rerun cleared every failure disposes of its scratch.
 
     Anti-vacuity: ignore the rerun record in ``run_pytest`` and a cleared run
@@ -125,7 +128,45 @@ def test_scratch_follows_the_adjudicated_outcome(tmp_path: Path, rerun_exit: int
     (step / RERUN_IN_SLOT_RESULT).write_text(
         json.dumps({"attempted": ["t"], "rerun_exit": rerun_exit}), encoding="utf-8"
     )
+    # A skipped rerun exits 0 yet clears nothing; the report decides.
+    (step / "pytest-rerun.json").write_text(
+        json.dumps({"tests": [{"nodeid": "t", "outcome": outcome}]}), encoding="utf-8"
+    )
     env = {RERUN_IN_SLOT_ENV: json.dumps({"report_path": "r", "step_dir": str(step), "root": str(tmp_path)})}
 
     assert pytest_slot._in_slot_rerun_cleared(env) is cleared
     assert pytest_slot._in_slot_rerun_cleared({}) is False
+
+
+def test_an_unattributable_rerun_is_not_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Provenance that cannot be captured means no rerun, and the failures stand.
+
+    Anti-vacuity: suppress the capture error and the rerun starts, so a pass
+    over unverified content could clear the failure.
+    """
+    step = tmp_path / "step"
+    step.mkdir()
+    report = step / "pytest-report.json"
+    _failed_report(report, "tests/test_x.py::test_real")
+    monkeypatch.setattr(
+        pytest_rerun,
+        "build_rerun",
+        lambda **_kwargs: (["tests/test_x.py::test_real"], [sys.executable, "-c", "pass"], step / "pytest-rerun.json"),
+    )
+
+    def unavailable(*_args: Any, **_kwargs: Any) -> Any:
+        raise pytest_slot.PytestSlotUnavailableError("focused worktree content could not be identified")
+
+    monkeypatch.setattr(pytest_slot, "_focused_worktree_provenance", unavailable)
+    environment = {
+        RERUN_IN_SLOT_ENV: json.dumps({"report_path": str(report), "step_dir": str(step), "root": str(tmp_path)}),
+    }
+    started: list[object] = []
+    with (tmp_path / "slot.log").open("wb") as log:
+        pytest_slot._rerun_failures_in_slot(environment, cwd=str(tmp_path), log=log, on_start=started.append)
+
+    record = json.loads((step / RERUN_IN_SLOT_RESULT).read_text(encoding="utf-8"))
+    assert started == []
+    assert record["rerun_exit"] == 125
+    verdict = rerun_failed_once(report_path=report, step_dir=step, env={}, root=tmp_path)
+    assert verdict is not None and verdict["still_failed"] == ["tests/test_x.py::test_real"]
