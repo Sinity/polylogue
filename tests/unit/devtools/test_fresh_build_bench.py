@@ -294,6 +294,7 @@ def test_thread_cpu_separates_writer_actors_from_other_threads() -> None:
     summary = thread_cpu_summary(
         {
             "clock_ticks_per_s": 100,
+            "process_cpu_ticks": 500,
             "thread_cpu_ticks": {
                 "polylogue-writer:watcher.live_ingest.full": 300,
                 "polylogue-writer:derivation.session_profile": 100,
@@ -301,7 +302,8 @@ def test_thread_cpu_separates_writer_actors_from_other_threads() -> None:
             },
         }
     )
-    assert summary["writer_total"] == 4.0
+    assert summary["writer_total_lower_bound"] == 4.0
+    assert summary["unattributed"] == 0.5
     assert summary["writer_by_actor"] == [["watcher.live_ingest.full", 3.0], ["derivation.session_profile", 1.0]]
     assert summary["other_threads"] == [["MainThread", 0.5]]
 
@@ -344,3 +346,29 @@ def test_stratum_boundary_is_one_draw(tmp_path: Path) -> None:
     )
     # Expected 0.1 per seed; allow generous noise, far below "every seed".
     assert selected <= seeds * 0.35
+
+
+def test_seal_detects_edited_aggregates(tmp_path: Path) -> None:
+    """Anti-vacuity: verifying file rows only accepts a manifest whose
+    total_bytes was edited."""
+    corpus = tmp_path / "corpus"
+    transcript = corpus / "home" / ".codex" / "sessions" / "rollout.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text("{}\n", encoding="utf-8")
+    manifest = seal(corpus, kind="sample", parameters={})
+    manifest["total_bytes"] += 1
+    with pytest.raises(ValueError, match="total_bytes"):
+        verify_manifest(corpus, manifest)
+
+
+def test_private_corpora_are_owner_only(tmp_path: Path) -> None:
+    """Anti-vacuity: default creation modes leave the copy world-readable."""
+    home = tmp_path / "home"
+    sessions = home / ".codex" / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / "rollout.jsonl").write_text("{}\n", encoding="utf-8")
+    out = tmp_path / "corpus"
+    corpus_from_files(out, [sessions / "rollout.jsonl"], home=home)
+    assert out.stat().st_mode & 0o077 == 0
+    copied = out / "home" / ".codex" / "sessions" / "rollout.jsonl"
+    assert copied.stat().st_mode & 0o077 == 0

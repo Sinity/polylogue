@@ -330,6 +330,14 @@ def output_fingerprint(archive: Path, promoted_index: str, scratch: Path) -> dic
 # receipt
 
 
+def _log_delivery(stacks_path: Path) -> dict[str, int] | None:
+    """The daemon's event-sink delivery counters, as the sampler saw them at exit."""
+    if not stacks_path.exists():
+        return None
+    delivery = json.loads(stacks_path.read_text(encoding="utf-8")).get("log_delivery")
+    return delivery if isinstance(delivery, dict) else None
+
+
 def _tree_summary(samples: list[tuple[float, int, float, int, int, int]], build_end_s: float | None) -> dict[str, Any]:
     if not samples:
         return {}
@@ -458,13 +466,21 @@ def thread_cpu_summary(document: dict[str, Any]) -> dict[str, Any]:
 
     The writer total is the single-writer ceiling: intake cannot go faster
     than the writer's own CPU allows, whatever the host's load does to wall
-    time.
+    time. Sampling sees live threads only, so the per-thread figures are
+    lower bounds: a thread that started and ended between samples, or the
+    last interval of one that ended, lands in ``unattributed`` (the process
+    total minus every sampled thread).
     """
     ticks_per_s = float(document["clock_ticks_per_s"])
     by_thread = {name: ticks / ticks_per_s for name, ticks in document.get("thread_cpu_ticks", {}).items()}
     writer = {name: seconds for name, seconds in by_thread.items() if name.startswith("polylogue-writer:")}
+    process_ticks = document.get("process_cpu_ticks")
     return {
-        "writer_total": round(sum(writer.values()), 2),
+        "process_total": round(process_ticks / ticks_per_s, 2) if process_ticks is not None else None,
+        "unattributed": round(process_ticks / ticks_per_s - sum(by_thread.values()), 2)
+        if process_ticks is not None
+        else None,
+        "writer_total_lower_bound": round(sum(writer.values()), 2),
         "writer_by_actor": [
             [name.removeprefix("polylogue-writer:"), round(seconds, 2)]
             for name, seconds in sorted(writer.items(), key=lambda item: -item[1])
@@ -505,7 +521,8 @@ def _derive_dependents(receipt: dict[str, Any]) -> None:
         "mib_per_s_to_terminal": round(total_mib / terminal_at, 3) if terminal_at else None,
         "files_per_s_to_promotion": round(receipt["corpus"]["file_count"] / promoted, 3) if promoted else None,
     }
-    rss = (receipt.get("process_tree") or {}).get("rss_peak_bytes")
+    tree = receipt.get("process_tree") or {}
+    rss = tree.get("rss_budget_peak_bytes", tree.get("rss_peak_bytes"))
     budgets = evaluate_budgets(
         {name: row["limit"] for name, row in (receipt.get("budgets") or {}).items()},
         {"rss_peak_mib": rss / 2**20 if rss else None, "promotion_s": promoted, "terminal_s": terminal_at},
@@ -537,6 +554,8 @@ def build_receipt(
     observations: list[Any],
     final: Any,
     tree_samples: list[tuple[float, int, float, int, int, int]],
+    daemon_rss_hwm_bytes: int = 0,
+    corpus_unchanged: bool = True,
 ) -> dict[str, Any]:
     events = analyse_events(paths["events"], origin_unix=started_wall)
     batches = analyse_batches(paths["archive"] / "ops.db")
@@ -550,6 +569,13 @@ def build_receipt(
         fingerprint = output_fingerprint(paths["archive"], final.promoted_index, paths["work"] / "tmp")
     total_bytes = int(manifest["total_bytes"])
     tree = _tree_summary(tree_samples, promoted)
+    if tree:
+        tree["daemon_rss_hwm_bytes"] = daemon_rss_hwm_bytes
+        # The budgeted peak: the sampled tree peak (4 Hz) or the daemon's own
+        # exact high-water mark, whichever is larger. A worker child's spike
+        # shorter than the interval is still unobserved.
+        tree["rss_budget_peak_bytes"] = max(tree["rss_peak_bytes"], daemon_rss_hwm_bytes)
+    delivery = _log_delivery(paths["stacks"])
     checks = {
         "promoted": final.promoted_index is not None,
         "intake_complete": final.intake_complete,
@@ -563,6 +589,11 @@ def build_receipt(
         # A daemon that reached terminal but had to be killed on shutdown is
         # not a finished build.
         "clean_shutdown": exit_code == 0,
+        "corpus_unchanged": corpus_unchanged,
+        # Receipt sections are reductions of the event log; a dropped or
+        # undelivered event makes them understate.
+        "events_lossless": delivery is not None
+        and not (delivery.get("dropped") or delivery.get("failures") or delivery.get("undrained")),
     }
     receipt: dict[str, Any] = {
         "format": RECEIPT_FORMAT,
@@ -681,7 +712,10 @@ def render(receipt: dict[str, Any]) -> str:
     thread_cpu = receipt.get("thread_cpu_s") or {}
     if thread_cpu:
         top = ", ".join(f"{name} {seconds}" for name, seconds in (thread_cpu.get("writer_by_actor") or [])[:4])
-        lines.append(f"writer cpu  total={_fmt(thread_cpu.get('writer_total'))}s  ({top})")
+        lines.append(
+            f"writer cpu  >={_fmt(thread_cpu.get('writer_total_lower_bound'))}s  ({top})"
+            f"  process={_fmt(thread_cpu.get('process_total'))}s unattributed={_fmt(thread_cpu.get('unattributed'))}s"
+        )
     writer = receipt.get("writer") or {}
     lines.append(
         f"writer  busy_share_to_promotion={_fmt(writer.get('busy_share_to_promotion'))}"

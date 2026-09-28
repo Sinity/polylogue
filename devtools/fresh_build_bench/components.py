@@ -159,6 +159,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     # Blob and parse output are byte copies of (possibly private) corpus files.
     refuse_inside_checkout(args.scratch, "--scratch")
+    if args.scratch.exists() and any(args.scratch.iterdir()):
+        # A reused blob store deduplicates and skips the publication work.
+        raise SystemExit(f"--scratch must be absent or empty: {args.scratch}")
     args.scratch.mkdir(parents=True, exist_ok=True)
     bench = bench_parse if args.component == "parse" else bench_blob
     result = bench(args.corpus, args.scratch, workers=args.workers, origins=args.origin, limit=args.limit)

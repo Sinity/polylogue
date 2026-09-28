@@ -34,7 +34,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
-from devtools.fresh_build_bench.corpus import load_manifest
+from devtools.fresh_build_bench.corpus import load_manifest, verify_manifest
 
 #: Every archive-readiness domain a finished build must report ready. An
 #: unknown or newly unready domain keeps the build non-terminal.
@@ -117,6 +117,17 @@ def _proc_stat(pid: int) -> tuple[int, int, int] | None:
     return cpu, rss, threads
 
 
+def _proc_rss_hwm(pid: int) -> int:
+    try:
+        with open(f"/proc/{pid}/status", encoding="ascii") as stream:
+            for line in stream:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError):
+        return 0
+    return 0
+
+
 def _proc_io(pid: int) -> tuple[int, int]:
     try:
         with open(f"/proc/{pid}/io", encoding="ascii") as stream:
@@ -129,7 +140,7 @@ def _proc_io(pid: int) -> tuple[int, int]:
 class TreeSampler:
     """One-second samples of the daemon process tree: RSS, CPU and block I/O."""
 
-    def __init__(self, pid: int, *, origin: float, interval_s: float = 1.0) -> None:
+    def __init__(self, pid: int, *, origin: float, interval_s: float = 0.25) -> None:
         self.pid = pid
         self.interval_s = interval_s
         self.samples: list[tuple[float, int, float, int, int, int]] = []
@@ -139,6 +150,9 @@ class TreeSampler:
         #: Last cumulative (cpu ticks, read bytes, write bytes) per process
         #: ever seen: a parse worker that exits keeps its share of the totals.
         self._cumulative: dict[int, tuple[int, int, int]] = {}
+        #: The daemon process's own resident high-water mark (VmHWM): exact
+        #: for the main process whatever the sampling interval misses.
+        self.daemon_rss_hwm_bytes = 0
         self._thread = threading.Thread(target=self._run, name="fresh-build-tree-sampler", daemon=True)
 
     def start(self) -> None:
@@ -154,6 +168,7 @@ class TreeSampler:
             threads += stat[2]
             io = _proc_io(pid)
             self._cumulative[pid] = (stat[0], io[0], io[1])
+        self.daemon_rss_hwm_bytes = max(self.daemon_rss_hwm_bytes, _proc_rss_hwm(self.pid))
         cpu_ticks = sum(value[0] for value in self._cumulative.values())
         read_bytes = sum(value[1] for value in self._cumulative.values())
         write_bytes = sum(value[2] for value in self._cumulative.values())
@@ -372,12 +387,23 @@ def environment(config: RunConfig) -> dict[str, Any]:
 def candidate_identity(candidate: Path) -> dict[str, Any]:
     head = _git(candidate, "rev-parse", "HEAD")
     diff = _git(candidate, "diff", "HEAD", "--binary")
+    digest = hashlib.sha256(diff.encode())
+    # Untracked, unignored files can be imported too (a new module a tracked
+    # edit refers to), so their names and bytes are part of the identity.
+    untracked = sorted(_git(candidate, "ls-files", "--others", "--exclude-standard", "-z").split("\0"))
+    for name in (name for name in untracked if name):
+        digest.update(b"\0untracked\0" + name.encode())
+        try:
+            digest.update((candidate / name).read_bytes())
+        except OSError:
+            digest.update(b"\0unreadable")
+    dirty = bool(diff) or any(untracked)
     return {
         "git_sha": head,
-        "dirty": bool(diff),
-        # Tracked edits are part of what runs: a dirty tree edited again
-        # during the build must not compare equal to itself.
-        "tracked_diff_sha256": hashlib.sha256(diff.encode()).hexdigest() if diff else None,
+        "dirty": dirty,
+        # Edits are part of what runs: a dirty tree edited again during the
+        # build must not compare equal to itself.
+        "tracked_diff_sha256": digest.hexdigest() if dirty else None,
     }
 
 
@@ -585,6 +611,12 @@ def run_build(config: RunConfig, *, progress: Callable[[str], None] = print) -> 
             signal.signal(sig, handler)
     finished = time.monotonic()
     final = observe(paths["archive"], started)
+    # The watcher may have read a file edited after the launch-time check.
+    try:
+        verify_manifest(config.corpus, manifest)
+        corpus_unchanged = True
+    except (OSError, ValueError):
+        corpus_unchanged = False
     # Lazy imports run whatever the candidate tree holds when they execute; a
     # checkout or commit during the build makes the recorded SHA a guess.
     identity["unchanged_during_run"] = candidate_identity(config.candidate) == {
@@ -606,6 +638,8 @@ def run_build(config: RunConfig, *, progress: Callable[[str], None] = print) -> 
         observations=observations,
         final=final,
         tree_samples=sampler.samples,
+        daemon_rss_hwm_bytes=sampler.daemon_rss_hwm_bytes,
+        corpus_unchanged=corpus_unchanged,
     )
     paths["receipt"].write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     return receipt

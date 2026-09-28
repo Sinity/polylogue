@@ -104,7 +104,7 @@ def _hash_tree(root: Path) -> list[CorpusFile]:
 
 def seal(root: Path, *, kind: str, parameters: dict[str, Any]) -> dict[str, Any]:
     """Hash every file under ``home/`` and ``exports/`` and write the manifest."""
-    root.mkdir(parents=True, exist_ok=True)
+    _private_root(root)
     files = _hash_tree(root)
     by_origin: dict[str, dict[str, int]] = defaultdict(lambda: {"files": 0, "bytes": 0})
     for item in files:
@@ -121,7 +121,25 @@ def seal(root: Path, *, kind: str, parameters: dict[str, Any]) -> dict[str, Any]
         "files": [[item.path, item.bytes, item.sha256, item.origin] for item in files],
     }
     (root / MANIFEST_NAME).write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")
+    (root / MANIFEST_NAME).chmod(0o600)
     return manifest
+
+
+def _private_root(root: Path) -> None:
+    """Create a corpus root only its owner can enter.
+
+    Sampled and named corpora are copies of private transcripts; with the
+    common 022 umask they would otherwise be world-readable in shared
+    scratch storage.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    root.chmod(0o700)
+
+
+def _copy_private(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination)
+    destination.chmod(0o600)
 
 
 def load_manifest(root: Path) -> dict[str, Any]:
@@ -151,6 +169,21 @@ def verify_manifest(root: Path, manifest: dict[str, Any]) -> None:
             raise ValueError(f"corpus file changed content since sealing: {relative}")
     if corpus_digest(current) != manifest["digest"]:
         raise ValueError("corpus manifest digest does not match its file list")
+    # The digest covers the file rows only; the aggregates a receipt reads
+    # (bytes, counts, per-origin split) are recomputed and compared too.
+    by_origin: dict[str, dict[str, int]] = defaultdict(lambda: {"files": 0, "bytes": 0})
+    for item in current:
+        by_origin[item.origin]["files"] += 1
+        by_origin[item.origin]["bytes"] += item.bytes
+    expected = {
+        "file_count": len(current),
+        "total_bytes": sum(item.bytes for item in current),
+        "by_origin": dict(sorted(by_origin.items())),
+        "files": [[item.path, item.bytes, item.sha256, item.origin] for item in current],
+    }
+    for key, value in expected.items():
+        if manifest.get(key) != value:
+            raise ValueError(f"corpus manifest {key} does not match the sealed files")
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +257,7 @@ def sample_real(
         raise ValueError("fraction must be in (0, 1]")
     if out.exists() and any(out.iterdir()):
         raise ValueError(f"corpus directory must be absent or empty: {out}")
+    _private_root(out)
     rng = random.Random(seed)
     population: dict[str, dict[str, int]] = {}
     for source in sources:
@@ -256,10 +290,15 @@ def sample_real(
                             break
                         continue
                     whales += 1
+                copied = 0
                 for path in paths:
                     destination = out / source.target / path.relative_to(source.root)
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(path, destination)
+                    _copy_private(path, destination)
+                    copied += destination.stat().st_size
+                if copied != size:
+                    # The census (population and stratum goal) saw other bytes
+                    # than the sample now holds: a live transcript grew.
+                    raise ValueError(f"source changed while sampling: {paths[0]}")
                 taken += size
                 if boundary:
                     break
@@ -286,6 +325,7 @@ def corpus_from_files(out: Path, files: Sequence[Path], *, home: Path) -> dict[s
     """
     if out.exists() and any(out.iterdir()):
         raise ValueError(f"corpus directory must be absent or empty: {out}")
+    _private_root(out)
     sources = [(source.root.resolve(), source.suffixes) for source in default_sample_sources(home)]
     home = home.resolve()
     for file in files:
@@ -297,7 +337,5 @@ def corpus_from_files(out: Path, files: Sequence[Path], *, home: Path) -> dict[s
         # file would never be admitted, and the build could not go terminal.
         if resolved.suffix.lower() not in admitted[0]:
             raise ValueError(f"{file} is not a transcript its source root admits ({', '.join(admitted[0])})")
-        destination = out / "home" / resolved.relative_to(home)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(resolved, destination)
+        _copy_private(resolved, out / "home" / resolved.relative_to(home))
     return seal(out, kind="files", parameters={"selection": "explicit", "files": len(files)})

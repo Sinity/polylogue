@@ -128,12 +128,17 @@ def main(argv: list[str] | None = None) -> int:
         from devtools.fresh_build_bench.run import RunConfig, run_build
 
         _refuse_repo_path(args.work, "--work")
-        verify_manifest(args.corpus, load_manifest(args.corpus))
-        extra = []
+        manifest = load_manifest(args.corpus)
+        verify_manifest(args.corpus, manifest)
+        if not manifest["file_count"]:
+            raise SystemExit("the corpus holds no files; there is no build to measure")
+        extra: list[tuple[str, str]] = []
         for item in args.env:
             key, _, value = item.partition("=")
             if not key.startswith("POLYLOGUE_"):
                 raise SystemExit(f"--env accepts POLYLOGUE_* settings only: {item}")
+            if any(existing == key for existing, _value in extra):
+                raise SystemExit(f"--env names {key} more than once")
             extra.append((key, value))
         config = RunConfig(
             corpus=args.corpus.resolve(),

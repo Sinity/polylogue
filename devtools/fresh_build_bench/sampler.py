@@ -170,12 +170,40 @@ class StackSampler:
             "elapsed_s": time.monotonic() - self._started,
             "sampler_seconds": self._sample_seconds,
             "thread_cpu_ticks": dict(self._thread_cpu),
+            "process_cpu_ticks": _process_cpu_ticks(),
+            "log_delivery": _log_delivery(),
             "stacks": stacks,
         }
         self.out_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.out_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload), encoding="utf-8")
         tmp.replace(self.out_path)
+
+
+def _process_cpu_ticks() -> int | None:
+    """The daemon's own CPU: sampled threads plus the ones that ended unseen."""
+    try:
+        raw = Path("/proc/self/stat").read_bytes()
+    except OSError:
+        return None
+    tail = raw[raw.rfind(b")") + 2 :].split()
+    return int(tail[11]) + int(tail[12])
+
+
+def _log_delivery() -> dict[str, int] | None:
+    """Event-sink delivery counters, when the daemon's logging is loaded.
+
+    The sampler's exit hook is registered before the daemon's, so it runs
+    after logging has drained and closed its queue.
+    """
+    logging_module = sys.modules.get("polylogue.logging")
+    snapshot = getattr(logging_module, "diagnostic_snapshot", None)
+    if snapshot is None:
+        return None
+    try:
+        return dict(snapshot())
+    except Exception:
+        return None
 
 
 def start_from_environment() -> StackSampler | None:

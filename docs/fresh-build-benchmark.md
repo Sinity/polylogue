@@ -50,14 +50,17 @@ parsed are reported but do not gate: a retained non-session artifact is never
 parsed as a session, and the `raw_artifacts` readiness domain is the daemon's
 own verdict on raw completeness. A receipt is **qualified** when the build is terminal, every check in
 `checks` holds (including zero raw parse failures, exact FTS, a clean daemon
-shutdown, and a candidate whose commit and tracked edits did not change during
-the run), and every asserted budget passes; the command exits non-zero otherwise. A large single
+shutdown, a lossless event log, a corpus re-verified after the run, and a
+candidate whose commit, tracked edits and untracked files did not change
+during the run), and every asserted budget passes; the command exits non-zero otherwise. A large single
 source (the former 419 MB and 1.6 GB qualifications) is a `files` corpus run
 with `--max-rss-mib`.
 
 Every run samples the daemon's per-thread CPU in process (py-spy cannot attach
-to the free-threaded interpreter) and reports it as `thread_cpu_s`: the writer
-total, each writer actor, and the other threads. `--profile` adds stack
+to the free-threaded interpreter) and reports it as `thread_cpu_s`: each writer
+actor, the other threads, and the process total. Threads are sampled while
+alive, so per-thread figures are lower bounds and the remainder is reported
+as `unattributed`. `--profile` adds stack
 capture: wall samples and CPU ticks per stack; `profile stacks.json [--thread PREFIX] [--collapsed out]`
 summarises it or writes flame-graph input.
 
@@ -90,6 +93,9 @@ seconds; the end-to-end run proves the total.
 
 ## Reading the numbers
 
+The RSS budget uses the larger of the 4 Hz process-tree peak and the daemon
+process's own high-water mark (`VmHWM`); a worker child's spike shorter than
+the sampling interval is not observed. Corpora are created owner-only.
 All times in a receipt are seconds from the driver's launch of the daemon;
 event milestones, observations and process samples share that clock. Process
 CPU and I/O totals keep the counters of worker processes that exited.
