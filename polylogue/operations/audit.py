@@ -36,6 +36,7 @@ from polylogue.operations.machine_receipts import (
     ingest_session_ids_digest,
 )
 from polylogue.operations.mutation_transaction import (
+    DELETE_PREVIEW_SAMPLE_IDS,
     AuthorizationMismatchError,
     MutationAuthorization,
     MutationPlan,
@@ -1027,7 +1028,8 @@ class AuditRepository:
     def machine_preview_summary(self, binding: MachineRequestBinding) -> dict[str, object]:
         """Reconstruct a preview response from ordered normalized authority rows."""
         parts = self.machine_parts(binding)
-        ids: list[str] = []
+        sample: list[str] = []
+        count = 0
         expiries: list[int] = []
         refs = [str(part["preview_ref"]) for part in parts]
         with self._connection() as conn:
@@ -1038,20 +1040,27 @@ class AuditRepository:
                 if row is None:
                     raise ValueError("machine preview authority is missing")
                 expiries.append(int(row[0]))
-                ids.extend(
-                    str(row[0]).removeprefix("session:")
-                    for row in conn.execute(
-                        "SELECT target_ref FROM operation_preview_targets WHERE preview_id = ? ORDER BY ordinal",
-                        (ref,),
-                    )
+                count += int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM operation_preview_targets WHERE preview_id = ?", (ref,)
+                    ).fetchone()[0]
                 )
+                if len(sample) < DELETE_PREVIEW_SAMPLE_IDS:
+                    sample.extend(
+                        str(row[0]).removeprefix("session:")
+                        for row in conn.execute(
+                            "SELECT target_ref FROM operation_preview_targets WHERE preview_id = ? "
+                            "ORDER BY ordinal LIMIT ?",
+                            (ref, DELETE_PREVIEW_SAMPLE_IDS - len(sample)),
+                        )
+                    )
         return {
             "status": "prepared",
             "operation": "delete",
             "preview_ref": refs[0],
             "preview_refs": refs,
-            "session_ids": ids,
-            "session_count": len(ids),
+            "session_ids_sample": sample,
+            "session_count": count,
             "expires_at_ms": min(expiries),
         }
 

@@ -22,6 +22,7 @@ from polylogue.operations.mutation_actuators import (
     SessionDeleteArgs,
 )
 from polylogue.operations.mutation_transaction import (
+    DELETE_PREVIEW_SAMPLE_IDS,
     MAX_MUTATION_PLAN_TARGETS,
     MutationPreview,
     OperationExecutor,
@@ -535,7 +536,7 @@ def mutation_session_delete_preview(
         "operation": "delete",
         "preview_ref": refs[0],
         "preview_refs": list(refs),
-        "session_ids": list(ids),
+        "session_ids_sample": list(ids[:DELETE_PREVIEW_SAMPLE_IDS]),
         "session_count": len(ids),
         "expires_at_ms": min(preview.plan.expires_at_ms for preview in previews),
     }

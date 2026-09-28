@@ -1033,7 +1033,12 @@ class TestEmitDeleteMachineModeNoPrompt:
             patch(
                 "polylogue.cli.archive_query._submit_mutation_operation",
                 side_effect=[
-                    {"status": "prepared", "preview_ref": "preview:delete", "session_ids": ["s1"]},
+                    {
+                        "status": "prepared",
+                        "preview_ref": "preview:delete",
+                        "session_count": 1,
+                        "session_ids_sample": ["s1"],
+                    },
                     acknowledgement,
                 ],
             ),
@@ -1066,7 +1071,12 @@ class TestEmitDeleteMachineModeNoPrompt:
         with patch(
             "polylogue.cli.archive_query._submit_mutation_operation",
             side_effect=[
-                {"status": "prepared", "preview_ref": "preview:delete", "session_ids": ["s1", "s2"]},
+                {
+                    "status": "prepared",
+                    "preview_ref": "preview:delete",
+                    "session_count": 2,
+                    "session_ids_sample": ["s1", "s2"],
+                },
                 {"status": "authorized", "authorization_refs": ["daemon-token"]},
                 {"status": "deleted", "affected_count": 2},
             ],
@@ -1156,7 +1166,12 @@ class TestEmitDeleteMachineModeNoPrompt:
         with patch(
             "polylogue.cli.archive_query._submit_mutation_operation",
             side_effect=[
-                {"status": "prepared", "preview_ref": "preview:delete", "session_ids": ["s1", "s2"]},
+                {
+                    "status": "prepared",
+                    "preview_ref": "preview:delete",
+                    "session_count": 2,
+                    "session_ids_sample": ["s1", "s2"],
+                },
                 {"status": "authorized", "authorization_refs": ["daemon-token"]},
                 OperationFailedError(
                     "delete_partially_applied",
@@ -1197,7 +1212,12 @@ class TestEmitDeleteMachineModeNoPrompt:
                 return {
                     "operation": operation,
                     "outcome": "completed",
-                    "result": {"status": "prepared", "preview_ref": "preview:delete", "session_ids": ["s1"]},
+                    "result": {
+                        "status": "prepared",
+                        "preview_ref": "preview:delete",
+                        "session_count": 1,
+                        "session_ids_sample": ["s1"],
+                    },
                 }
 
         config = cast(
@@ -1230,7 +1250,12 @@ class TestEmitDeleteMachineModeNoPrompt:
         assert callable(auth_token)
         assert auth_token() is None
         assert issued == [("mutation.session.delete.preview", {"session_ids": ["s1"]})]
-        assert payload == {"status": "prepared", "preview_ref": "preview:delete", "session_ids": ["s1"]}
+        assert payload == {
+            "status": "prepared",
+            "preview_ref": "preview:delete",
+            "session_count": 1,
+            "session_ids_sample": ["s1"],
+        }
 
     def test_confirmed_delete_routes_to_explicit_split_root_daemon(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -1297,7 +1322,12 @@ class TestEmitDeleteMachineModeNoPrompt:
         with patch(
             "polylogue.cli.archive_query._submit_mutation_operation",
             side_effect=[
-                {"status": "prepared", "preview_ref": "preview:delete", "session_ids": ["s1", "s2"]},
+                {
+                    "status": "prepared",
+                    "preview_ref": "preview:delete",
+                    "session_count": 2,
+                    "session_ids_sample": ["s1", "s2"],
+                },
                 {"status": "cancelled", "preview_ref": "preview:delete"},
             ],
         ) as daemon_delete:

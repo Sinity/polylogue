@@ -204,7 +204,8 @@ def _delete_operation(client: _DeleteDaemonClient, step: str, body: dict[str, ob
 def _prepare_authorize(client: _DeleteDaemonClient, session_ids: tuple[str, ...]) -> str:
     preview = _delete_operation(client, "preview", {"session_ids": list(session_ids)})
     assert preview is not None
-    assert preview["session_ids"] == list(session_ids)
+    assert preview["session_count"] == len(session_ids)
+    assert preview["session_ids_sample"] == list(session_ids[:20])
     authorization = _delete_operation(client, "authorize", {"preview_ref": preview["preview_ref"]})
     assert authorization is not None
     return str(authorization["authorization_ref"])
@@ -677,7 +678,9 @@ def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap
 
     Anti-vacuity: restoring the old single-chunk cap (or losing the chunked
     preview/authorize/execute lifecycle) leaves rows in ``sessions`` and the
-    chunk-count assertions fail. The client budget comes from
+    chunk-count assertions fail. Echoing the whole selection in the preview
+    result (which grows past the operation result bound for a large accepted
+    selection) fails the sample assertions. The client budget comes from
     ``_prepared_work_budget_s`` so the route's behavior, not the host's
     current load, decides the outcome (polylogue-ga8vn).
     """
@@ -689,6 +692,9 @@ def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
         preview = _delete_operation(client, "preview", {"session_ids": list(session_ids)})
         assert preview is not None
+        assert preview["session_count"] == 513
+        assert preview["session_ids_sample"] == list(session_ids[:20])
+        assert "session_ids" not in preview
         preview_refs = preview["preview_refs"]
         assert isinstance(preview_refs, list)
         assert len(preview_refs) == 3

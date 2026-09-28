@@ -492,7 +492,8 @@ def test_fresh_runtime_prepares_tier_journals_before_first_snapshot_and_mutation
             "mutation.session.delete.preview", {"session_ids": list(ids)}, archive_root=str(stack.archive_root)
         )
         assert preview is not None and preview["outcome"] == "completed"
-        assert preview["result"]["session_ids"] == list(ids)
+        assert preview["result"]["session_count"] == len(ids)
+        assert preview["result"]["session_ids_sample"] == list(ids[:20])
 
 
 def test_authentication_refusal_is_not_an_indeterminate_mutation(tmp_path: Path) -> None:

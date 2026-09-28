@@ -1098,7 +1098,7 @@ class MutationResult(_OperationPayload):
     preview_refs: list[str] | None = None
     authorization_ref: str | None = None
     authorization_refs: list[str] | None = None
-    session_ids: list[str] | None = None
+    session_ids_sample: list[str] | None = None
     session_count: int | None = Field(default=None, ge=0)
     expires_at_ms: int | None = None
     outcome: str | None = None
@@ -1141,10 +1141,17 @@ class MutationResult(_OperationPayload):
             if self.outcome not in DAEMON_OPERATION_OUTCOMES or self.sequence is None:
                 raise ValueError("mutation lifecycle result requires outcome and durable sequence")
         elif self.status == "prepared":
-            if not self.preview_refs or self.preview_ref != self.preview_refs[0] or self.session_ids is None:
-                raise ValueError("prepared result requires exact preview references and selection")
-            if self.session_count != len(self.session_ids) or self.expires_at_ms is None:
-                raise ValueError("prepared result requires selection count and expiry")
+            from polylogue.operations.mutation_transaction import DELETE_PREVIEW_SAMPLE_IDS
+
+            if not self.preview_refs or self.preview_ref != self.preview_refs[0] or self.session_ids_sample is None:
+                raise ValueError("prepared result requires exact preview references and selection sample")
+            if (
+                self.session_count is None
+                or self.session_count < 1
+                or len(self.session_ids_sample) != min(self.session_count, DELETE_PREVIEW_SAMPLE_IDS)
+                or self.expires_at_ms is None
+            ):
+                raise ValueError("prepared result requires selection count, its leading sample and expiry")
         elif self.status == "authorized":
             if not self.authorization_refs or self.authorization_ref != self.authorization_refs[0]:
                 raise ValueError("authorized result requires exact authorization references")
