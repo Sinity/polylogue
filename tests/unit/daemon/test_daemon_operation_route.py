@@ -344,13 +344,14 @@ def test_embedding_backfill_is_accepted_streams_progress_and_recovers_audit_rece
 
     composed = False
 
-    def compose(_index: Path, **kwargs: object) -> object:
+    def compose(_index: Path, **_kwargs: object) -> object:
         nonlocal composed
         composed = True
-        emit = kwargs["progress_callback"]
-        limited = bool(kwargs["scope_limited"])
 
-        async def converge(_scope: object) -> EmbeddingConvergenceResult:
+        async def converge(_scope: object, **limits: object) -> EmbeddingConvergenceResult:
+            # Limits, progress and stop signals are per pass, never per owner.
+            emit = limits["progress_callback"]
+            limited = bool(limits["scope_limited"])
             assert callable(emit)
             cast(Any, emit)({"state": "started", "session_id": "codex:synthetic", "estimated_cost_usd": 0.0001})
             await asyncio.sleep(0.05)
@@ -426,12 +427,12 @@ def test_embedding_backfill_cancel_is_request_scoped_and_keeps_partial_receipt(
     started = Event()
     composed = Event()
 
-    def compose(_index: Path, **kwargs: object) -> object:
+    def compose(_index: Path, **_kwargs: object) -> object:
         composed.set()
-        emit = kwargs["progress_callback"]
-        quiet = kwargs["quiet"]
 
-        async def converge(_scope: object) -> EmbeddingConvergenceResult:
+        async def converge(_scope: object, **limits: object) -> EmbeddingConvergenceResult:
+            emit = limits["progress_callback"]
+            quiet = limits["quiet"]
             assert callable(emit) and callable(quiet)
             cast(Any, emit)({"state": "started", "ordinal": 0, "estimated_cost_usd": 0.001})
             started.set()
