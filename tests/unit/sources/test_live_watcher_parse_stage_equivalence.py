@@ -661,7 +661,9 @@ async def test_identical_json_paths_keep_distinct_prepared_fallback_ids(tmp_path
 
     stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "shards")
     try:
-        await _ingest(tmp_path / "prepared", paths, parse_stage=stage)
+        # A ChatGPT export is imported through the inbox, which classifies;
+        # a bound location (``codex``) refuses it as foreign.
+        await _ingest(tmp_path / "prepared", paths, parse_stage=stage, source_name="inbox")
     finally:
         stage.shutdown()
     with _connect(tmp_path / "prepared" / "index.db") as conn:
