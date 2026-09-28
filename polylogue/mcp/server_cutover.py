@@ -309,6 +309,7 @@ async def _query_sessions(
     ``_query_advanced_sessions`` below, which is a third implementation
     over ``archive_search_payload`` / ``archive_session_list_payload``.
     """
+    from polylogue.archive.query.spec import DEFAULT_SESSION_LIST_LIMIT
     from polylogue.operations.session_contracts import SessionList, SessionSearch
     from polylogue.operations.session_reads import execute_session_operation
 
@@ -320,7 +321,7 @@ async def _query_sessions(
     # out-of-range limit reached ``SessionList``'s ``Bound`` field (ge=1,
     # le=1000) and came back as an ``invalid_argument`` envelope with no
     # ``total`` -- while the CLI clamped the same input and answered.
-    bounded_limit = hooks.clamp_limit(limit)
+    bounded_limit = hooks.clamp_limit(limit if limit is not None else DEFAULT_SESSION_LIST_LIMIT)
 
     if continuation is None:
         from polylogue.mcp.query_contracts import build_session_query_request
