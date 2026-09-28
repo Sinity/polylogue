@@ -539,9 +539,9 @@ class FactFamilySpec:
             elif axis == "coverage" and not value.coverage.intended_frame:
                 diagnostics.append("missing required coverage")
             elif axis == "evidence_refs" and value.value_state == "known" and not value.evidence_refs:
-                diagnostics.append("missing required evidence_refs")
+                diagnostics.append("known value is missing evidence_refs")
             elif axis == "measurement_authority" and value.value_state == "known" and not value.measurement_authority:
-                diagnostics.append("missing required measurement_authority")
+                diagnostics.append("known value is missing measurement_authority")
             elif axis == "freshness" and value.freshness is None:
                 diagnostics.append("missing required freshness")
             elif axis == "calibrated_confidence" and value.calibrated_confidence is None:
@@ -558,10 +558,6 @@ class FactFamilySpec:
             and not value.freshness.last_good_evidence_refs
         ):
             diagnostics.append("degraded value is missing last_good_evidence_refs")
-        if value.value_state == "known" and not value.measurement_authority:
-            diagnostics.append("known value is missing measurement_authority")
-        if value.value_state == "known" and not value.evidence_refs:
-            diagnostics.append("known value is missing evidence_refs")
         return tuple(diagnostics)
 
     def require(self, value: EvidenceValue[object]) -> None:

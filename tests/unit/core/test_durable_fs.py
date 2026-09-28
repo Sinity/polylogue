@@ -95,3 +95,17 @@ def test_clone_or_copy_replace_sets_metadata_before_its_file_barrier(tmp_path: P
         clone_or_copy_replace(source, tmp_path / "staged" / "source.json")
 
     assert observed == [(0o640, 2_000_000_000)]
+
+
+def test_write_once_removes_its_partial_file_after_fsync_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "receipt"
+    real_fsync = os.fsync
+    monkeypatch.setattr("polylogue.core.durable_fs.os.fsync", lambda _fd: (_ for _ in ()).throw(OSError("disk")))
+    with pytest.raises(DurableFilesystemError):
+        write_once(path, b"partial")
+    assert not path.exists()
+    monkeypatch.setattr("polylogue.core.durable_fs.os.fsync", real_fsync)
+    write_once(path, b"retry")
+    assert path.read_bytes() == b"retry"
