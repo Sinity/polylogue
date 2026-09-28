@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, TypeGuard
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
@@ -547,6 +547,8 @@ class BrowserActionTarget(BaseModel):
 
 class BrowserActionPresentation(BaseModel):
     """Exact provider UI selection requested at the submit boundary."""
+
+    model_config = ConfigDict(protected_namespaces=())
 
     surface: Literal["chat"] = "chat"
     model_slug: str = Field(min_length=1, max_length=160)
