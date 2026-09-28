@@ -490,6 +490,27 @@ def refuse_foreign_material(
         with source.open("rb") as handle:
             prefix = handle.read(LOCATION_VALIDATION_PREFIX_BYTES)
     detect_provider_from_raw_bytes_evidence(prefix, name, bound, truncated_tail_ok=True)
+    if is_jsonl_source_path(name) and b"\n" not in prefix:
+        # The prefix ends inside one oversized first record, so the line-based
+        # detector saw nothing. The completed keys before the cut still carry
+        # the record's envelope; validate that partial structure.
+        partial = _completed_prefix_structure(prefix)
+        if isinstance(partial, dict):
+            detect_provider_evidence([partial], expected=bound)
+
+
+def _completed_prefix_structure(prefix: bytes) -> object:
+    """Values whose lexical tokens completed inside a truncated JSON prefix."""
+    import ijson
+    from ijson.common import ObjectBuilder
+
+    builder = ObjectBuilder()
+    try:
+        for event, value in ijson.basic_parse(BytesIO(prefix), use_float=True):
+            builder.event(event, value)
+    except ijson.JSONError:
+        pass
+    return getattr(builder, "value", None)
 
 
 def same_origin(left: Provider, right: Provider) -> bool:

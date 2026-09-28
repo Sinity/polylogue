@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import zipfile
 from collections.abc import Callable, Collection, Iterable
-from itertools import islice
 from pathlib import Path
 
 from polylogue.archive.artifact_taxonomy import ArtifactClassification, classify_artifact_path
@@ -265,8 +264,13 @@ def process_zip(
     from polylogue.storage.blob_publication import flush_blob_publications, publication_receipt_id
 
     from .cursor import _ParseContext
-    from .decoders import _iter_json_stream
-    from .dispatch import GROUP_PROVIDERS, ForeignOriginContentError, bound_location_provider, detect_provider
+    from .dispatch import (
+        GROUP_PROVIDERS,
+        LOCATION_VALIDATION_PREFIX_BYTES,
+        ForeignOriginContentError,
+        bound_location_provider,
+        refuse_foreign_material,
+    )
     from .emitter import _SessionEmitter
     from .origin_specs import path_declaration_refuses_session
 
@@ -315,9 +319,8 @@ def process_zip(
                     # location first; a refused member never reaches the blob
                     # store.
                     with open_bounded_zip_entry(zf, info) as handle:
-                        sample = list(islice(_iter_json_stream(handle, name), 32))
-                    if sample:
-                        detect_provider(sample, expected=ctx.bound_provider)
+                        prefix = handle.read(LOCATION_VALIDATION_PREFIX_BYTES)
+                    refuse_foreign_material(name, ctx.bound_provider, prefix=prefix)
                 if capture_raw and entry_should_group:
                     # ``open_bounded_zip_entry`` enforces a hard real-byte
                     # ceiling during decompression, independent of the

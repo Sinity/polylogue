@@ -470,3 +470,68 @@ def test_publisher_discards_one_refused_pending_blob(tmp_path: Path) -> None:
     assert publisher.receipt_id(refused) is None
     assert publisher.receipt_id(kept) is not None
     assert publisher.has_pending
+
+
+def test_capture_validates_the_retained_bytes_not_the_path(tmp_path: Path) -> None:
+    """The captured blob is what is validated, so a check-then-copy race cannot admit.
+
+    The capture callable swaps the file to foreign content before copying,
+    as a racing writer would. The refusal must fire on the captured bytes and
+    drop the queued publication.
+
+    Anti-vacuity: validating the path before capture passes (the file is
+    still Claude Code then) and retains the Codex bytes.
+    """
+    from polylogue.sources.bound_capture import capture_bound_source
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+    source = tmp_path / "projects" / "proj" / "bad69218-73bd-490a-869a-2b3a30bf421b.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(_jsonl(_CLAUDE_CODE_TRANSCRIPT))
+    publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+
+    def racing_capture() -> tuple[str, int]:
+        source.write_bytes(_jsonl(_CODEX_ROLLOUT))
+        return publisher.write_from_path(source)
+
+    with pytest.raises(ForeignOriginContentError):
+        capture_bound_source(publisher, source, Provider.CLAUDE_CODE, racing_capture)
+    assert not publisher.has_pending
+
+
+def test_grouped_member_validation_is_byte_bounded(tmp_path: Path) -> None:
+    """One oversized record is not materialized to validate a member.
+
+    The member is a single ~2 MiB JSONL record with a foreign envelope up
+    front; validation reads only a bounded byte prefix yet still refuses.
+
+    Anti-vacuity: record-count sampling decodes the whole record before
+    deciding.
+    """
+    import zipfile
+
+    from polylogue.config import Source
+    from polylogue.sources.source_acquisition_components import (
+        ZipEntryReadContext,
+        validate_bound_grouped_zip_member,
+    )
+
+    record = {
+        "type": "session_meta",
+        "payload": {"id": "c1", "timestamp": "2026-01-01T10:00:00Z", "pad": "x" * 2_000_000},
+    }
+    archive = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("member.jsonl", (json.dumps(record) + "\n").encode("utf-8"))
+    with zipfile.ZipFile(archive) as zf:
+        context = ZipEntryReadContext(
+            Source(name="claude-code", path=tmp_path),
+            archive,
+            zf.infolist()[0],
+            None,
+            Provider.CLAUDE_CODE,
+            None,  # type: ignore[arg-type]
+            bound_provider=Provider.CLAUDE_CODE,
+        )
+        with pytest.raises(ForeignOriginContentError):
+            validate_bound_grouped_zip_member(zf, context)

@@ -8,7 +8,6 @@ import time
 import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from itertools import islice
 from pathlib import Path
 from typing import IO, TypeAlias
 
@@ -42,6 +41,7 @@ from . import decoders as _decoders
 from .decoders import _zip_entry_provider_hint
 from .dispatch import (
     GROUP_PROVIDERS,
+    LOCATION_VALIDATION_PREFIX_BYTES,
     detect_provider,
     detect_provider_from_raw_bytes_evidence,
     refuse_foreign_material,
@@ -428,14 +428,20 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
             detection_evidence = "sqlite_snapshot.snapshot_sqlite_to_blob (Hermes sqlite state/sidecar)"
     else:
         if context.retained_blob is None:
-            # Validate from the source path before streaming, so a refused file
-            # never enters the pending publication batch.
-            refuse_foreign_material(context.path, context.provider_hint)
-            blob_hash, blob_size = stream_path_to_blob(
+            from polylogue.sources.bound_capture import capture_bound_source
+
+            # Capture, then validate the captured bytes (never the path, which
+            # can change between a check and the copy).
+            blob_hash, blob_size = capture_bound_source(
                 context.blob_store,
                 context.path,
-                status_callback=context.status_callback,
-                source_name=context.source.name,
+                context.provider_hint,
+                lambda: stream_path_to_blob(
+                    context.blob_store,
+                    context.path,
+                    status_callback=context.status_callback,
+                    source_name=context.source.name,
+                ),
             )
         else:
             # The path is acquisition identity only after acceptance. Every
@@ -824,16 +830,17 @@ def validate_bound_grouped_zip_member(zf: zipfile.ZipFile, context: ZipEntryRead
     """Refuse a grouped member whose records belong to another origin.
 
     Grouped members are preserved whole and skip the splitter, so a bounded
-    record sample is validated against the archive's location binding before
+    byte prefix is validated against the archive's location binding before
     any byte is published. Acquisition, replay and one-shot parsing share this
     check so they agree on which members are admitted.
     """
     if context.bound_provider is None:
         return
+    # Byte-bounded: a single oversized record must not be materialized to
+    # decide the member's origin.
     with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
-        sample = list(islice(_decoders._iter_json_stream(handle, context.entry.filename), 32))
-    if sample:
-        detect_provider(sample, expected=context.bound_provider)
+        prefix = handle.read(LOCATION_VALIDATION_PREFIX_BYTES)
+    refuse_foreign_material(context.entry.filename, context.bound_provider, prefix=prefix)
 
 
 def iter_zip_entry_raw_data(

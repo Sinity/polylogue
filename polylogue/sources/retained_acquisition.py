@@ -26,7 +26,7 @@ from polylogue.sources.decoder_zip import (
     is_declared_artifact_path,
     provider_detection_path,
 )
-from polylogue.sources.dispatch import ForeignOriginContentError, bound_location_provider
+from polylogue.sources.dispatch import ForeignOriginContentError, bound_location_provider, same_origin
 from polylogue.sources.live.admission import ArtifactIdentity
 from polylogue.sources.origin_specs import database_member_for_filename
 from polylogue.sources.parsers.base import RawSessionData
@@ -80,6 +80,12 @@ def iter_retained_source_records(
     # an operator-imported archive stays unbound and classifies its members.
     location_binding = bound_location_provider(declared_provider)
     if logical_path.suffix.lower() != ".zip":
+        if location_binding is not None and binding is not None and not same_origin(binding.provider, location_binding):
+            # A declared database member of another origin is not this
+            # location's material.
+            raise ForeignOriginContentError(
+                expected=location_binding, found=binding.provider, evidence="declared database member"
+            )
         data = read_plain_source_file(
             SourceReadContext(
                 source=source,
