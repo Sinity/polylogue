@@ -810,10 +810,33 @@ def build_facets_response(
     )
 
 
-#: Declared ceiling on how many sessions one facet aggregation rolls up.
+#: Sessions read per page while a facet aggregation walks its scope. A pacing
+#: bound only: every page is read, so the denominator is the whole scope.
 #: ``spec.limit`` is deliberately *not* an aggregate input (a page size must
-#: never become the denominator), so the only bound left is this cap.
-FACET_SCOPE_SESSION_CAP = 1_000_000
+#: never become the denominator).
+FACET_SCOPE_PAGE = 10_000
+
+
+def _iter_facet_scope(archive: Any, spec: SessionQuerySpec | None) -> Iterator[ArchiveSessionSummary]:
+    """Every session in the matched scope, read page by page."""
+    from dataclasses import replace
+
+    offset = 0
+    while True:
+        if spec is None:
+            page = cast(list[ArchiveSessionSummary], archive.list_summaries(limit=FACET_SCOPE_PAGE, offset=offset))
+        else:
+            page = _archive_list_summaries_for_spec(
+                archive,
+                replace(spec, limit=None, offset=0),
+                default_limit=FACET_SCOPE_PAGE,
+                limit=FACET_SCOPE_PAGE,
+                offset=offset,
+            )
+        yield from page
+        if len(page) < FACET_SCOPE_PAGE:
+            return
+        offset += len(page)
 
 
 def _archive_facet_buckets(
@@ -826,25 +849,13 @@ def _archive_facet_buckets(
     """Roll facet buckets over the whole matched scope.
 
     ``spec.limit``/``spec.offset`` are stripped before the scope query: a
-    caller's page size is a display bound, not a denominator. When the scope
-    itself reaches :data:`FACET_SCOPE_SESSION_CAP` the buckets are derived from
-    a truncated set, and ``scope_gaps`` (when supplied) collects the named gap
-    so the envelope reports the families as truncated instead of complete.
+    caller's page size is a display bound, not a denominator. The scope is
+    read in pages, so its size never truncates the buckets.
     """
     from polylogue.archive.query.facets import FacetBuckets
 
-    if spec is None:
-        summaries = cast(list[ArchiveSessionSummary], archive.list_summaries(limit=FACET_SCOPE_SESSION_CAP))
-    else:
-        from dataclasses import replace
-
-        summaries = _archive_list_summaries_for_spec(
-            archive, replace(spec, limit=None, offset=0), default_limit=FACET_SCOPE_SESSION_CAP
-        )
-    if scope_gaps is not None and len(summaries) >= FACET_SCOPE_SESSION_CAP:
-        gap = f"facet_scope_truncated:{FACET_SCOPE_SESSION_CAP}"
-        if gap not in scope_gaps:
-            scope_gaps.append(gap)
+    del scope_gaps
+    summaries = _iter_facet_scope(archive, spec)
     origins: dict[str, int] = {}
     tags: dict[str, int] = {}
     total_messages = 0

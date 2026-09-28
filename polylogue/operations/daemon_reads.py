@@ -845,13 +845,8 @@ def _facets_payload(params: Mapping[str, object], *, archive: ArchiveStore) -> d
     shared model and dumping it keeps the two surfaces equal by construction
     rather than by matching key lists.
 
-    ``scope_gaps`` is the one input that still had to be threaded by hand, and
-    it was not: this route dropped the collector, so a scope that hit
-    ``FACET_SCOPE_SESSION_CAP`` reported buckets rolled from a truncated
-    denominator as ``outcome: ok`` with every family in ``complete_families``,
-    while the API route on the identical cap reported ``degraded`` and named
-    the gap. This is the production route the CLI reads through, so the
-    truncated answer was the one operators actually saw.
+    ``scope_gaps`` is threaded through both ``_archive_facet_buckets`` calls
+    and ``build_facets_response`` so every declared gap reaches the envelope.
     """
 
     import time

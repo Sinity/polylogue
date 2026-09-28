@@ -6782,13 +6782,12 @@ async def test_facets_denominator_ignores_page_limit_and_names_truncation(
         assert response.complete_families
         assert response.family_errors == {}
 
-        monkeypatch.setattr("polylogue.api.archive.FACET_SCOPE_SESSION_CAP", 1)
-        capped = await archive.facets(spec, include_idf=False, include_deferred=False)
+        monkeypatch.setattr("polylogue.api.archive.FACET_SCOPE_PAGE", 1)
+        paged = await archive.facets(spec, include_idf=False, include_deferred=False)
 
-        assert capped.complete_families == ()
-        assert capped.family_errors, "a truncated scope must name the gap"
-        assert all(reason.startswith("facet_scope_truncated:") for reason in capped.family_errors.values())
-        assert capped.outcome.state == "degraded"
+        assert paged.total_sessions == 2, "a scope larger than one page must still be counted whole"
+        assert paged.complete_families
+        assert paged.outcome.state == "ok"
     finally:
         await archive.close()
 
