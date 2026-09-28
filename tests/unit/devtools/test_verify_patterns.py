@@ -212,3 +212,49 @@ def test_committed_baseline_cannot_grow_with_a_new_match(monkeypatch: pytest.Mon
 
     assert payload["blocking"] is True
     assert any("committed baseline grew" in error for error in payload["required_gate"]["details"])
+
+
+def test_merging_the_base_branch_does_not_count_its_exemptions_as_growth(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An exemption the merged-in base branch added is trusted, not growth.
+
+    Anti-vacuity: trust only the merge commit's first parent and the base
+    branch's own new entry is reported as ``committed baseline grew``, failing
+    every PR that merged its base.
+    """
+    git = ["git", "-C", str(tmp_path)]
+    subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)
+    subprocess.run([*git, "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run([*git, "config", "user.name", "Pattern Test"], check=True)
+    rule = _rule(tmp_path)
+    existing = "polylogue/existing.py:" + hashlib.sha1(b"return None").hexdigest() + ":" + "a" * 40 + "\n"
+    added_digest = hashlib.sha1(b"return False").hexdigest()
+    added = f"polylogue/base.py:{added_digest}:{'b' * 40}\n"
+    rule.baseline_path.write_text(existing, encoding="utf-8")
+    subprocess.run([*git, "add", "."], check=True)
+    subprocess.run([*git, "commit", "-qm", "seed"], check=True)
+    subprocess.run([*git, "checkout", "-qb", "feature"], check=True)
+    (tmp_path / "feature.txt").write_text("x", encoding="utf-8")
+    subprocess.run([*git, "add", "feature.txt"], check=True)
+    subprocess.run([*git, "commit", "-qm", "feature work"], check=True)
+    subprocess.run([*git, "checkout", "-q", "main"], check=True)
+    rule.baseline_path.write_text(existing + added, encoding="utf-8")
+    subprocess.run([*git, "commit", "-qam", "base adds an exemption"], check=True)
+    subprocess.run([*git, "checkout", "-q", "feature"], check=True)
+    subprocess.run([*git, "merge", "-q", "--no-edit", "main"], check=True)
+    monkeypatch.setattr(verify_patterns, "_rules", lambda _root: (rule,))
+    monkeypatch.setattr(
+        verify_patterns,
+        "_scan",
+        lambda _root, _rule: Counter(
+            {
+                ("polylogue/existing.py", hashlib.sha1(b"return None").hexdigest(), "a" * 40): 1,
+                ("polylogue/base.py", added_digest, "b" * 40): 1,
+            }
+        ),
+    )
+
+    payload = verify_patterns._payload(tmp_path)
+
+    assert not any("committed baseline grew" in error for error in payload["required_gate"]["details"])
