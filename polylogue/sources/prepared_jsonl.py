@@ -60,11 +60,11 @@ from polylogue.sources.parsers.claude.ai_parser import parse_design_stream
 from polylogue.sources.prepared_message_sink import (
     ChatGPTNodeMapping,
     GeminiToolOutputIndex,
+    ScratchSessionSpill,
     SqliteAttachmentSink,
     SqliteMessageSink,
     SqliteMessageStore,
     SqliteSessionEventSink,
-    prepare_simple_chatgpt_mapping,
     read_chatgpt_mapping_object,
 )
 from polylogue.sources.sidecar_evidence import RetainedSidecarScope, SidecarResolver
@@ -648,6 +648,9 @@ def prepare_jsonl_blob(
                 read_result = read_chatgpt_mapping_object(handle, store.conn)
             if (
                 read_result is not None
+                # Detector precedence: a browser-capture envelope may also
+                # carry a valid ``mapping``; the capture route owns it.
+                and not browser_capture.looks_like({**read_result[0], "mapping": {}})
                 and read_result[1].children_are_all_strings()
                 and chatgpt._mapping_nodes_are_valid(read_result[1].shallow_view())
             ):
@@ -837,10 +840,13 @@ def prepare_jsonl_blob(
             chatgpt_admitted = (
                 classify_chatgpt_object(chatgpt_envelope) if classify_chatgpt_object is not None else True
             )
+            # The parser reads the mapping node by node from scratch, and
+            # keeps its normalized messages, attachments and events there.
             session: ParsedSession | None = (
-                (
-                    prepare_simple_chatgpt_mapping(chatgpt_envelope, chatgpt_mapping, store, f"{fallback_id}-0")
-                    or chatgpt.parse(chatgpt_envelope, f"{fallback_id}-0")
+                chatgpt.parse(
+                    {**chatgpt_envelope, "mapping": chatgpt_mapping.shallow_view()},
+                    f"{fallback_id}-0",
+                    spill=ScratchSessionSpill(store),
                 )
                 if chatgpt_admitted
                 else None
@@ -909,15 +915,7 @@ def prepare_jsonl_blob(
                     "DELETE FROM prepared_attachment WHERE session_ordinal NOT IN "
                     "(SELECT attachment_ordinal FROM prepared_session)"
                 )
-            store.conn.execute("DROP TABLE chatgpt_node")
-            store.conn.execute("DROP TABLE chatgpt_child")
-            for table in (
-                "chatgpt_simple_node",
-                "chatgpt_simple_sibling",
-                "chatgpt_simple_child",
-                "chatgpt_simple_active",
-                "chatgpt_simple_message",
-            ):
+            for table in ("chatgpt_node", "chatgpt_child", "chatgpt_entry", "scratch_string_set"):
                 store.conn.execute(f"DROP TABLE IF EXISTS {table}")
             after_hash = _source_digest(source)
             if before_hash != after_hash:

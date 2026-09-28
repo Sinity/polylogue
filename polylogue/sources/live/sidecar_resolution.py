@@ -232,10 +232,13 @@ class RetainedSidecarResolver:
     def _retained_siblings(self, conn: sqlite3.Connection, source_path: str | Path) -> tuple[SiblingTranscript, ...]:
         """Retained transcripts sharing this scope, excluding ``source_path``.
 
-        The root ``.jsonl`` plus every ``subagents/agent-*.jsonl``. An append
-        delta is a partial view of its file, so a full revision of the same
-        path is preferred when the archive holds one -- a sibling index only
-        corroborates ownership, and a partial one can only over-report debt.
+        The root ``.jsonl`` plus every ``subagents/agent-*.jsonl``. A sibling
+        that grew through append ingest is its newest full revision followed
+        by the contiguous append chain from that revision's end: each step is
+        the one append starting where the chain ends. Two appends starting at
+        the same offset are competing branches; the chain stops there rather
+        than guess, so a superseded branch never contributes tool ids. A
+        shorter index can only over-report debt, a wrong one would hide it.
         """
         path = Path(source_path)
         session_dir = path.parent.parent if path.parent.name == "subagents" else path.parent / path.stem
@@ -243,30 +246,62 @@ class RetainedSidecarResolver:
         low, high = _prefix_range(f"{(session_dir / 'subagents').as_posix()}/")
         rows = conn.execute(
             """
-            SELECT source_path, hex(blob_hash), revision_kind
+            SELECT source_path, hex(blob_hash), revision_kind, blob_size,
+                   append_start_offset, append_end_offset
             FROM raw_sessions
             WHERE source_path = ? OR (source_path >= ? AND source_path < ?)
-            ORDER BY
-                CASE WHEN revision_kind = 'append' THEN 1 ELSE 0 END,
-                blob_size DESC,
-                acquired_at_ms DESC,
-                raw_id DESC
+            ORDER BY source_path, acquired_at_ms, raw_id
             """,
             (root_path.as_posix(), low, high),
         ).fetchall()
         own = path.as_posix()
-        chosen: dict[str, str] = {}
-        for candidate_path, blob_hash, _revision_kind in rows:
+        revisions: dict[str, list[tuple[str, str, int, int | None, int | None]]] = {}
+        for candidate_path, blob_hash, revision_kind, blob_size, append_start, append_end in rows:
             candidate = str(candidate_path)
             if candidate == own:
                 continue
             if candidate != root_path.as_posix() and not candidate.endswith(".jsonl"):
                 continue
-            chosen.setdefault(candidate, str(blob_hash).lower())
-        return tuple(
-            SiblingTranscript(coordinate=candidate, open_records=self._records_from_blob(blob_hash))
-            for candidate, blob_hash in sorted(chosen.items())
-        )
+            revisions.setdefault(candidate, []).append(
+                (
+                    str(blob_hash).lower(),
+                    str(revision_kind),
+                    int(blob_size or 0),
+                    int(append_start) if append_start is not None else None,
+                    int(append_end) if append_end is not None else None,
+                )
+            )
+        siblings: list[SiblingTranscript] = []
+        for candidate, candidate_rows in sorted(revisions.items()):
+            fulls = [row for row in candidate_rows if row[1] != "append"]
+            if not fulls:
+                # Only deltas retained: the largest is the best partial view.
+                largest = max(candidate_rows, key=lambda row: row[2])
+                siblings.append(
+                    SiblingTranscript(coordinate=candidate, open_records=self._records_from_blobs([largest[0]]))
+                )
+                continue
+            baseline = fulls[-1]
+            blob_hashes = [baseline[0]]
+            end = baseline[2]
+            appends = [row for row in candidate_rows if row[1] == "append" and row[3] is not None]
+            while True:
+                steps = {row for row in appends if row[3] == end and row[4] is not None and row[4] > end}
+                if len(steps) != 1:
+                    break
+                step = next(iter(steps))
+                blob_hashes.append(step[0])
+                assert step[4] is not None
+                end = step[4]
+            siblings.append(SiblingTranscript(coordinate=candidate, open_records=self._records_from_blobs(blob_hashes)))
+        return tuple(siblings)
+
+    def _records_from_blobs(self, blob_hashes: list[str]):  # type: ignore[no-untyped-def]
+        def open_records() -> Iterator[object]:
+            for blob_hash in blob_hashes:
+                yield from self._records_from_blob(blob_hash)()
+
+        return open_records
 
     def _blob_path(self, blob_hash: str) -> Path:
         """Locate retained bytes in the archive this resolver was given.

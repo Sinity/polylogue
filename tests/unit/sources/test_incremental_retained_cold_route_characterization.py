@@ -1,8 +1,8 @@
-"""Characterize the production intake, retained replay and cold-build routes.
+"""Compare the production intake, retained replay and cold-build routes.
 
-This is deliberately a synthetic, one-file comparison. It fixes the observable
-surface future route unification must compare without claiming those routes
-already have identical publication behavior.
+A synthetic, one-file comparison: given the same acquired raw (bytes and
+revision identity), every route must publish the same source-tier governance
+rows and the same index rows.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.operations.raw_observation_derivation import raw_observation_frame
 from polylogue.sources.live import WatchSource
@@ -68,7 +69,9 @@ def _snapshot(archive_root: Path, index_path: Path | None = None) -> dict[str, o
     with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
         raw_id = str(archive.source_connection.execute("SELECT raw_id FROM raw_sessions").fetchone()[0])
         raw = archive.source_connection.execute(
-            "SELECT origin, source_path, blob_hash, parse_error, validation_status FROM raw_sessions WHERE raw_id = ?",
+            "SELECT origin, source_path, blob_hash, parse_error, validation_status, logical_source_key, "
+            "revision_kind, source_revision, acquisition_generation, revision_authority "
+            "FROM raw_sessions WHERE raw_id = ?",
             (raw_id,),
         ).fetchone()
         raw_memberships = tuple(
@@ -127,16 +130,38 @@ def _snapshot(archive_root: Path, index_path: Path | None = None) -> dict[str, o
     }
 
 
-def test_live_retained_and_owned_cold_routes_characterize_one_synthetic_input(tmp_path: Path) -> None:
-    """Compare real route owners and pin the current, concrete route delta.
+def _replay_until_valid(archive_root: Path, raw_id: str) -> None:
+    """Drive retained replay the way the derivation kernel does.
+
+    A byte-revision raw first owes its source classification; the next pass
+    publishes the prepared carrier.
+    """
+    derivation = RawObservationDerivation(archive_root)
+    for _attempt in range(3):
+        frame = raw_observation_frame(archive_root)
+        replacement = derivation.compute(frame, raw_id)
+        try:
+            derivation.publish(frame, replacement)
+        finally:
+            if replacement.scratch_owner is not None:
+                replacement.scratch_owner.cleanup()
+        if derivation.inspect(raw_observation_frame(archive_root), (raw_id,))[raw_id] == "valid":
+            return
+    raise AssertionError(f"retained replay did not converge for {raw_id}")
+
+
+def test_live_retained_and_owned_cold_routes_publish_one_interpretation(tmp_path: Path) -> None:
+    """One acquired raw publishes the same rows through every route owner.
+
+    The retained arm acquires the raw with the revision identity live intake
+    assigned, because governance (byte revision or membership census) follows
+    that identity, not the route.
 
     Anti-vacuity: each arm must actually produce a successful live admission,
-    a valid retained observation, or a promoted owned generation. Message,
-    block, link, and terminal-state assertions prevent a vacuous comparison.
-    Session rows (title, content hash) must be identical across routes;
-    dropping retained enrichment from the live worker makes the live title
-    the native id again and turns this red. The retained membership census
-    remains a pinned, observed route delta.
+    a valid retained observation, or a promoted owned generation. Dropping
+    retained enrichment from the live worker makes the live title the native
+    id again; a route that writes membership governance for a byte-proven raw
+    (or omits the authority census) breaks the source-row equality.
     """
     source_root = tmp_path / "source"
     source_root.mkdir()
@@ -151,6 +176,9 @@ def test_live_retained_and_owned_cold_routes_characterize_one_synthetic_input(tm
     assert live_metrics.succeeded_file_count == 1, live_metrics
     live = _snapshot(live_root)
 
+    live_raw = cast(tuple[object, ...], live["raw"])
+    logical_key, revision_kind, source_revision, generation_number, authority = live_raw[5:10]
+    assert revision_kind == RawRevisionKind.FULL.value
     retained_root = tmp_path / "retained"
     bootstrap_archive_root(retained_root)
     with ArchiveStore.open_existing(retained_root, read_only=False) as archive:
@@ -159,16 +187,15 @@ def test_live_retained_and_owned_cold_routes_characterize_one_synthetic_input(tm
             payload=payload,
             source_path=source_path_string,
             acquired_at_ms=1,
+            revision=RawRevisionEnvelope(
+                str(logical_key),
+                RawRevisionKind(str(revision_kind)),
+                str(source_revision),
+                int(cast(int, generation_number)),
+                authority=RawRevisionAuthority(str(authority)),
+            ),
         )
-    derivation = RawObservationDerivation(retained_root)
-    frame = raw_observation_frame(retained_root)
-    replacement = derivation.compute(frame, raw_id)
-    try:
-        assert derivation.publish(frame, replacement)
-    finally:
-        if replacement.scratch_owner is not None:
-            replacement.scratch_owner.cleanup()
-    assert derivation.inspect(raw_observation_frame(retained_root), (raw_id,))[raw_id] == "valid"
+    _replay_until_valid(retained_root, raw_id)
     retained = _snapshot(retained_root)
 
     cold_root = tmp_path / "cold"
@@ -194,16 +221,12 @@ def test_live_retained_and_owned_cold_routes_characterize_one_synthetic_input(tm
 
     assert live == cold
     assert cold_before_promotion == cold
-    assert live["raw"] == retained["raw"] == cold["raw"]
-    assert live["raw_terminal"] == retained["raw_terminal"] == cold["raw_terminal"]
-    for relation in ("messages", "blocks", "links"):
-        assert live[relation] == retained[relation] == cold[relation]
-
     # One interpretation: live intake enriches from retained archive evidence
-    # exactly as retained replay does, so title and content hash agree.
-    assert live["sessions"] == retained["sessions"] == cold["sessions"]
+    # exactly as retained replay does, so title and content hash agree, and a
+    # byte-proven raw is governed by its revision on every route.
+    assert live == retained
     assert cast(tuple[tuple[object, ...], ...], live["sessions"])[0][3] == "synthetic route fixture"
-    assert live["raw_memberships"] == cold["raw_memberships"] == ()
-    assert len(cast(tuple[object, ...], retained["raw_memberships"])) == 1
-    assert live["membership_census"] == cold["membership_census"] == ()
-    assert len(cast(tuple[object, ...], retained["membership_census"])) == 1
+    assert live["messages"] and live["blocks"]
+    assert live["raw_memberships"] == ()
+    assert live["membership_census"] == ()
+    assert live["authority_census"]

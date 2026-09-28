@@ -44,6 +44,7 @@ gemini-cli ``OriginSpec``), derivation resolves it from those retained bytes.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import tempfile
 from collections.abc import Callable
@@ -141,15 +142,34 @@ def tool_output_files_from_directory(tool_outputs_dir: Path) -> tuple[RetainedSi
                 filename=entry.name,
                 byte_size=byte_size,
                 file_mtime_ms=file_mtime_ms,
-                read_text=_read_text_from_path(entry),
+                read_text=_read_text_from_path(entry, expected_size=byte_size),
             )
         )
     return tuple(files)
 
 
-def _read_text_from_path(path: Path) -> Callable[[], str]:
+class SidecarChangedDuringReadError(OSError):
+    """The sidecar's bytes moved while it was read; the read is not evidence.
+
+    Gemini CLI may still be writing a tool output when ingest observes it.
+    The join records this as read-error debt, and the file's next change
+    brings it back through intake.
+    """
+
+
+def _read_text_from_path(path: Path, *, expected_size: int) -> Callable[[], str]:
     def read() -> str:
-        return path.read_text(encoding="utf-8", errors="replace")
+        with path.open("rb") as handle:
+            before = os.fstat(handle.fileno())
+            payload = handle.read()
+            after = os.fstat(handle.fileno())
+        if (
+            len(payload) != expected_size
+            or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns)
+            or after.st_size != expected_size
+        ):
+            raise SidecarChangedDuringReadError(f"sidecar changed while it was read: {path.name}")
+        return payload.decode("utf-8", errors="replace")
 
     return read
 

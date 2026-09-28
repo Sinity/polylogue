@@ -6,7 +6,7 @@ import json
 import os
 import shutil
 import sqlite3
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
@@ -26,7 +26,6 @@ from polylogue.sources.decoder_json import claude_design_object_envelope, iter_g
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
 from polylogue.sources.live.sidecar_resolution import FilesystemSidecarResolver
-from polylogue.sources.live.tool_result_sidecars import _MAX_SIDECAR_FILE_BYTES
 from polylogue.sources.parsers import chatgpt, local_agent
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.sources.parsers.chatgpt_sidecars import ChatGPTAssetIndex
@@ -34,6 +33,7 @@ from polylogue.sources.prepared_jsonl import PreparedJsonl, _write_artifact, pre
 from polylogue.sources.prepared_message_sink import (
     _ACTIVE_PARENT_LOOKUP_SQL,
     ChatGPTNodeMapping,
+    ScratchSessionSpill,
     SqliteAttachmentSink,
     SqliteMessageSink,
     SqliteMessageStore,
@@ -41,6 +41,7 @@ from polylogue.sources.prepared_message_sink import (
     read_chatgpt_mapping_object,
 )
 from polylogue.sources.sidecar_evidence import RetainedSidecarFile, RetainedSidecarScope
+from polylogue.sources.value_bounds import MAX_STORABLE_VALUE_BYTES
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -1048,7 +1049,7 @@ def test_gemini_cli_sidecar_scope_streams_and_matches_object_parser(
             entry("run_1.txt", "second complete output"),
             entry("prefix_run_1_long_slug.txt", "long id output"),
             entry("pointer.txt", "pointer fallback output"),
-            entry("oversize.txt", "not read", size=_MAX_SIDECAR_FILE_BYTES + 1),
+            entry("oversize.txt", "not read", size=MAX_STORABLE_VALUE_BYTES + 1),
             entry("unreadable.txt", "not read", unreadable=True),
         ),
     )
@@ -1118,7 +1119,8 @@ def test_gemini_cli_sidecar_scope_streams_and_matches_object_parser(
         ("run_1.txt", "run_1"),
     ]
     assert [event["reason"] for event in sidecar_events[4:]] == [
-        "size_exceeded",
+        # A sidecar no SQLite cell can hold; smaller ones are joined whole.
+        "value_bound_refused",
         "read_error:OSError",
         "expected_sidecar_not_retained",
     ]
@@ -2251,7 +2253,21 @@ def test_chatgpt_mapping_object_preparation_matches_parser_and_duplicate_keys(
     artifact.discard()
 
 
-def test_chatgpt_simple_mapping_normalizes_one_node_at_a_time_with_parser_parity(
+def _refuse_collecting_chatgpt_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail if the prepared route falls back to the list-backed entry store.
+
+    The collecting parser holds every normalized message in one list; the
+    prepared route must keep them in scratch. Refusing the list store makes
+    any fallback to it (or to ``extract_messages_from_mapping``) red.
+    """
+
+    def refuse(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("prepared ChatGPT route collected messages in memory")
+
+    monkeypatch.setattr(chatgpt, "_ListMessageEntries", refuse)
+
+
+def test_chatgpt_mapping_normalizes_into_scratch_with_parser_parity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     record = ChatGPTExportBuilder("simple-spill").add_node("user", "First").add_node("assistant", "Second").build()
@@ -2291,15 +2307,7 @@ def test_chatgpt_simple_mapping_normalizes_one_node_at_a_time_with_parser_parity
     source = tmp_path / "chatgpt.json"
     source.write_text(json.dumps(record), encoding="utf-8")
 
-    normalized_sizes: list[int] = []
-    original = chatgpt.extract_messages_from_mapping
-
-    def observe(mapping: Mapping[str, object], *args: object, **kwargs: object) -> object:
-        normalized_sizes.append(len(mapping))
-        assert len(mapping) <= 1
-        return original(mapping, *args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(chatgpt, "extract_messages_from_mapping", observe)
+    _refuse_collecting_chatgpt_entries(monkeypatch)
     artifact = prepare_jsonl_blob(
         str(source),
         str(source),
@@ -2309,7 +2317,6 @@ def test_chatgpt_simple_mapping_normalizes_one_node_at_a_time_with_parser_parity
         shard_directory=str(tmp_path / "scratch"),
     )
     assert artifact.error is None
-    assert len(normalized_sizes) == len(mapping) + 1  # includes the empty envelope shell
     actual = list(artifact.iter_sessions())[0]
     assert [item.model_dump(mode="json") for item in actual.messages] == [
         item.model_dump(mode="json") for item in expected.messages
@@ -2345,15 +2352,7 @@ def test_chatgpt_text_nodes_spill_attachment_metadata_with_parser_parity(
     source = tmp_path / "chatgpt.json"
     source.write_text(json.dumps(record), encoding="utf-8")
 
-    original = chatgpt.extract_messages_from_mapping
-    normalized_sizes: list[int] = []
-
-    def observe(nodes: Mapping[str, object], *args: object, **kwargs: object) -> object:
-        normalized_sizes.append(len(nodes))
-        assert len(nodes) <= 1
-        return original(nodes, *args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(chatgpt, "extract_messages_from_mapping", observe)
+    _refuse_collecting_chatgpt_entries(monkeypatch)
     artifact = prepare_jsonl_blob(
         str(source),
         str(source),
@@ -2363,7 +2362,6 @@ def test_chatgpt_text_nodes_spill_attachment_metadata_with_parser_parity(
         shard_directory=str(tmp_path / "scratch"),
     )
     assert artifact.error is None
-    assert len(normalized_sizes) == len(mapping) + 1
     actual = next(artifact.iter_sessions())
     assert [message.model_dump(mode="json") for message in actual.messages] == [
         message.model_dump(mode="json") for message in expected.messages
@@ -2496,7 +2494,30 @@ def test_chatgpt_object_finalizer_enriches_sealed_attachment_and_event_rows(tmp_
     artifact.discard()
 
 
-def test_chatgpt_missing_current_node_uses_collecting_parser(tmp_path: Path) -> None:
+def _stored_messages(session: ParsedSession) -> list[dict[str, object]]:
+    """Messages as the writer stores them: active path settled, tool outcomes derived.
+
+    A scratch-backed session is lowered into its shard in place, so a sealed
+    carrier already holds this form; a collected parse reaches it only at
+    write time. Comparing this form compares what either route publishes.
+    """
+    from polylogue.core.sources import origin_from_provider
+    from polylogue.sources.tool_outcomes import derive_tool_outcomes
+    from polylogue.storage.sqlite.archive_tiers.write import _normalized_messages
+
+    if isinstance(session.messages, SqliteMessageSink):
+        # Already lowered in place when its shard was built; the lowering is
+        # not idempotent (a settled fallback leaf reads as provider evidence).
+        return [message.model_dump(mode="json") for message in session.messages]
+    messages = derive_tool_outcomes(
+        _normalized_messages(list(session.messages)),
+        list(session.session_events),
+        origin=origin_from_provider(session.source_name),
+    )
+    return [message.model_dump(mode="json") for message in messages]
+
+
+def test_chatgpt_missing_current_node_prepares_in_scratch(tmp_path: Path) -> None:
     record = ChatGPTExportBuilder("missing-current").add_node("user", "Neutral prompt").build()
     record["current_node"] = "missing-node"
     expected = parse_payload(Provider.CHATGPT, [record], "fallback")[0]
@@ -2512,9 +2533,7 @@ def test_chatgpt_missing_current_node_uses_collecting_parser(tmp_path: Path) -> 
     )
     assert artifact.error is None
     actual = list(artifact.iter_sessions())[0]
-    assert [message.model_dump(mode="json") for message in actual.messages] == [
-        message.model_dump(mode="json") for message in expected.messages
-    ]
+    assert _stored_messages(actual) == _stored_messages(expected)
     assert actual.content_hash == session_content_hash(expected)
     artifact.discard()
 
@@ -2603,17 +2622,16 @@ def test_chatgpt_empty_current_node_uses_collecting_parser(tmp_path: Path) -> No
     artifact.discard()
 
 
-def test_chatgpt_sandbox_fallback_emits_truncation_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    links = " ".join(f"sandbox:/mnt/data/file-{index}.txt" for index in range(513))
+def test_chatgpt_sandbox_links_spill_every_attachment(tmp_path: Path) -> None:
+    """Every distinct sandbox link reaches the scratch attachment carrier.
+
+    Anti-vacuity: a per-message attachment cap in the parser makes the count
+    fall short of 1500.
+    """
+    links = " ".join(f"sandbox:/mnt/data/file-{index}.txt" for index in range(1500))
     record = ChatGPTExportBuilder("sandbox-links").add_node("assistant", links).build()
     source = tmp_path / "chatgpt.json"
     source.write_text(json.dumps(record), encoding="utf-8")
-    emitted: list[str] = []
-
-    def observe(event: str, **_kwargs: object) -> None:
-        emitted.append(event)
-
-    monkeypatch.setattr(chatgpt, "emit", observe)
     artifact = prepare_jsonl_blob(
         str(source),
         str(source),
@@ -2623,16 +2641,25 @@ def test_chatgpt_sandbox_fallback_emits_truncation_once(tmp_path: Path, monkeypa
         shard_directory=str(tmp_path / "scratch"),
     )
     assert artifact.error is None
-    assert emitted.count("sources.chatgpt.sandbox_links_bounded") == 1
-    assert len(list(artifact.iter_sessions())[0].attachments) == 512
+    attachments = list(artifact.iter_sessions())[0].attachments
+    assert isinstance(attachments, SqliteAttachmentSink)
+    assert len(attachments) == 1500
     artifact.discard()
 
 
-def test_chatgpt_native_object_preparation_preserves_complete_parser_output(tmp_path: Path) -> None:
+def test_chatgpt_native_object_preparation_preserves_complete_parser_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Complex nodes (tool output, multimodal parts, reasoning timings) spill too.
+
+    Anti-vacuity: route any node shape back to the collecting parser and
+    ``_refuse_collecting_chatgpt_entries`` turns this red.
+    """
     fixture = Path("tests/fixtures/chatgpt/native-conversation-v1.json")
     source = tmp_path / "conversation.json"
     source.write_bytes(fixture.read_bytes())
     expected = parse_payload(Provider.CHATGPT, [json.loads(source.read_bytes())], "fallback")[0]
+    _refuse_collecting_chatgpt_entries(monkeypatch)
     artifact = prepare_jsonl_blob(
         str(source),
         str(source),
@@ -2643,15 +2670,199 @@ def test_chatgpt_native_object_preparation_preserves_complete_parser_output(tmp_
     )
     assert artifact.error is None
     actual = list(artifact.iter_sessions())[0]
-    collected = actual.model_copy(
-        update={"messages": list(actual.messages), "session_events": list(actual.session_events)}
+    collected = actual.model_copy(update={"session_events": list(actual.session_events)})
+    assert collected.model_dump(mode="json", exclude={"content_hash", "messages"}) == expected.model_dump(
+        mode="json", exclude={"content_hash", "messages"}
     )
-    assert collected.model_dump(mode="json", exclude={"content_hash"}) == expected.model_dump(
-        mode="json", exclude={"content_hash"}
-    )
+    assert _stored_messages(actual) == _stored_messages(expected)
+    # The carrier's hash is sealed before shard lowering settles the scratch
+    # messages in place, so it is compared, not recomputed from them.
     assert actual.content_hash == session_content_hash(expected)
-    assert session_content_hash(actual) == session_content_hash(expected)
     artifact.discard()
+
+
+def test_chatgpt_complex_nodes_prepare_in_scratch_with_parser_parity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every cross-node rule holds when messages live in scratch.
+
+    Covers the rules the collecting parser applied to its in-memory list:
+    tool results owned through a tool chain, a code-interpreter run record,
+    authorship evidence, a generation timing owned by a node that emits no
+    message, image pointers and sandbox links becoming attachments, declared
+    sibling order, and timestamp ordering with an untimestamped node.
+
+    Anti-vacuity: ``_refuse_collecting_chatgpt_entries`` fails the route if it
+    normalizes through the list store; drop any spilled rule and the parity
+    comparison below turns red.
+    """
+    builder = ChatGPTExportBuilder("complex-spill").title("Complex spill")
+    builder.add_node("user", "Plot the data", node_id="u1")
+    builder.add_node(
+        "assistant",
+        "Running code",
+        node_id="a1",
+        metadata={
+            "reasoning_start_time": 10.0,
+            "reasoning_end_time": 14.5,
+            "model_slug": "model-a",
+        },
+    )
+    builder.add_node("tool", "stdout line", node_id="t1", metadata={"name": "python"})
+    builder.add_node("tool", "second result", node_id="t2", metadata={"name": "python"})
+    builder.add_node(
+        "assistant",
+        "Saved [chart](sandbox:/mnt/data/chart.png) and [table](sandbox:/mnt/data/t.csv)",
+        node_id="a2",
+        metadata={"finished_duration_sec": 3.25, "model_slug": "model-b"},
+    )
+    builder.add_node("user", "Alternative", node_id="u2")
+    record = builder.build()
+    mapping = record["mapping"]
+    assert isinstance(mapping, dict)
+    parents = {"a1": "u1", "t1": "a1", "t2": "t1", "a2": "t2", "u2": "u1"}
+    for key, parent in parents.items():
+        mapping[key]["parent"] = parent
+    mapping["u1"]["children"] = ["u2", "a1"]
+    a1 = mapping["a1"]["message"]
+    a1["channel"] = "commentary"
+    a1["author"] = {"role": "assistant", "metadata": {"real_author": "tool:web.run"}}
+    a1["metadata"]["aggregate_result"] = {
+        "status": "failed_with_in_kernel_exception",
+        "run_id": "run-1",
+        "start_time": 11.0,
+        "end_time": 12.0,
+        "in_kernel_exception": {"name": "ValueError", "args": ["bad"]},
+        "messages": [{"message_type": "stream", "text": "partial"}],
+    }
+    mapping["u1"]["message"]["content"] = {
+        "content_type": "multimodal_text",
+        "parts": [
+            {"content_type": "image_asset_pointer", "asset_pointer": "file-service://file-img", "size_bytes": 7},
+            "Plot the data",
+        ],
+    }
+    mapping["u2"]["message"]["create_time"] = None
+    # A timing on a node whose message is refused (no role) is owned by the
+    # latest emitted message of its branch instead.
+    mapping["orphan"] = {
+        "id": "orphan",
+        "parent": "a2",
+        "children": [],
+        "message": {
+            "id": "orphan",
+            "author": {"role": "tool"},
+            "create_time": 20.0,
+            "content": {"content_type": "text", "parts": [""]},
+            "metadata": {"finished_duration_sec": 1.0},
+        },
+    }
+    record["current_node"] = "a2"
+    expected = parse_payload(Provider.CHATGPT, [record], "fallback")[0]
+    source = tmp_path / "chatgpt.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+
+    _refuse_collecting_chatgpt_entries(monkeypatch)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "scratch"),
+    )
+    assert artifact.error is None
+    actual = list(artifact.iter_sessions())[0]
+    assert isinstance(actual.messages, SqliteMessageSink)
+    collected = actual.model_copy(
+        update={"attachments": list(actual.attachments), "session_events": list(actual.session_events)}
+    )
+    assert collected.model_dump(mode="json", exclude={"content_hash", "messages"}) == expected.model_dump(
+        mode="json", exclude={"content_hash", "messages"}
+    )
+    assert _stored_messages(actual) == _stored_messages(expected)
+    assert {event.event_type for event in expected.session_events} >= {
+        "generation_lifecycle",
+        "chatgpt_code_interpreter_run",
+        "chatgpt_message_authorship",
+    }
+    assert len(expected.attachments) >= 3
+    assert actual.content_hash == session_content_hash(expected)
+    artifact.discard()
+
+
+def _lower_storable_limit(monkeypatch: pytest.MonkeyPatch, bound: int) -> None:
+    """Stand in for SQLite's value limit so a test needs no gigabyte string."""
+    import polylogue.sources.value_bounds as value_bounds
+
+    monkeypatch.setattr(value_bounds, "MAX_STORABLE_VALUE_BYTES", bound)
+
+
+@pytest.mark.parametrize("oversized", ["part", "title", "mapping_key"])
+def test_chatgpt_object_refuses_a_value_sqlite_cannot_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, oversized: str
+) -> None:
+    """An unstorable scalar refuses the whole object, typed and not retryable.
+
+    Anti-vacuity: remove the check from ``normalize_ijson_stdlib_numbers`` or
+    ``require_storable_string`` and the object prepares with the value intact.
+    """
+    _lower_storable_limit(monkeypatch, 64)
+    giant = "x" * 65
+    builder = ChatGPTExportBuilder("bounded").add_node("user", giant if oversized == "part" else "Prompt")
+    record = builder.build()
+    if oversized == "title":
+        record["title"] = giant
+    if oversized == "mapping_key":
+        mapping = record["mapping"]
+        assert isinstance(mapping, dict)
+        node = mapping.pop("node-1")
+        mapping[giant] = node
+    source = tmp_path / "chatgpt.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "scratch"),
+    )
+    assert artifact.error is not None
+    assert artifact.error.startswith("ValueBoundRefusedError: value_bound_refused:")
+    assert artifact.deferred is False
+    assert list((tmp_path / "scratch").glob("prepared-*.db")) == []
+
+
+def test_streamed_generic_object_refuses_a_value_sqlite_cannot_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other object-streaming routes share the limit through the decoder.
+
+    Anti-vacuity: remove the string arm from ``normalize_ijson_stdlib_numbers``
+    and the generic ``messages`` route prepares the oversized part.
+    """
+    _lower_storable_limit(monkeypatch, 64)
+    record = {
+        "id": "generic-bounded",
+        "messages": [
+            {"role": "user", "content": "Prompt"},
+            {"role": "assistant", "content": "y" * 65},
+        ],
+    }
+    source = tmp_path / "generic.json"
+    source.write_text(json.dumps(record), encoding="utf-8")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.UNKNOWN.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "scratch"),
+    )
+    assert artifact.error is not None
+    assert "value_bound_refused" in artifact.error
+    assert artifact.deferred is False
 
 
 def test_chatgpt_mapping_object_corrupt_suffix_discards_scratch(tmp_path: Path) -> None:
@@ -2838,3 +3049,298 @@ def test_retained_claude_design_object_uses_streamed_replay_route(
     assert len(actual.session_events) == 300
     assert actual.created_at == "2026-01-01T00:00:00+00:00"
     assert actual.updated_at == "2026-01-01T00:00:59+00:00"
+
+
+def test_storable_value_limit_is_sqlites_own() -> None:
+    """The refusal threshold is the linked SQLite's value limit, in UTF-8 bytes.
+
+    Anti-vacuity: replace ``MAX_STORABLE_VALUE_BYTES`` with a chosen number or
+    count characters instead of encoded bytes and one of these asserts fails.
+    """
+    import polylogue.sources.value_bounds as value_bounds
+
+    with sqlite3.connect(":memory:") as conn:
+        assert conn.getlimit(sqlite3.SQLITE_LIMIT_LENGTH) == value_bounds.MAX_STORABLE_VALUE_BYTES
+    four_byte = "\U0001f600" * 4
+    assert value_bounds.require_storable_string(four_byte, bound=16) == four_byte
+    with pytest.raises(value_bounds.ValueBoundRefusedError):
+        value_bounds.require_storable_string(four_byte + "x", bound=16)
+
+
+def test_browser_capture_envelope_with_a_mapping_keeps_the_capture_route(tmp_path: Path) -> None:
+    """Preparation keeps the dispatcher's detector precedence.
+
+    Anti-vacuity: drop the ``browser_capture.looks_like`` guard on the
+    ChatGPT mapping spill and the decoy mapping wins, sealing zero messages
+    instead of the envelope's captured turns.
+    """
+    from polylogue.sources.parsers import browser_capture
+
+    payload = json.loads(Path("tests/fixtures/chatgpt/native-browser-capture-v1.json").read_text(encoding="utf-8"))
+    payload["conversation_id"] = "decoy-conversation"
+    payload["id"] = "decoy-conversation"
+    payload["create_time"] = 1_700_000_000.0
+    payload["current_node"] = "decoy-chatgpt-node"
+    payload["mapping"] = {"decoy-chatgpt-node": {"id": "decoy-chatgpt-node", "parent": None, "children": []}}
+    assert browser_capture.looks_like(payload)
+    expected = parse_payload(Provider.CHATGPT, [payload], "fallback")
+    source = tmp_path / "capture.json"
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "scratch"),
+    )
+    assert artifact.error is None
+    actual = list(artifact.iter_sessions())
+    assert [len(session.messages) for session in actual] == [len(session.messages) for session in expected]
+    assert all(len(session.messages) > 0 for session in actual)
+    artifact.discard()
+
+
+def test_sibling_index_includes_appended_tails(tmp_path: Path) -> None:
+    """A sibling grown by append ingest contributes its accepted tail's tool ids.
+
+    The chain is the full revision plus the contiguous appends from its end.
+    A later append for the same start offset competes with the first; the
+    chain stops there rather than include a superseded branch.
+
+    Anti-vacuity: select only the full revision in
+    ``RetainedSidecarResolver._retained_siblings`` and ``toolu_tail`` is
+    missing; concatenate every append and ``toolu_branch`` appears.
+    """
+    from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
+
+    source_db = tmp_path / "source.db"
+    with sqlite3.connect(source_db) as conn:
+        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+    blob_root = tmp_path / "blob"
+    store = BlobStore(blob_root)
+    session_dir = tmp_path / "project" / "session-1"
+    tail_sibling = (session_dir / "subagents" / "agent-a.jsonl").as_posix()
+    branch_sibling = (session_dir / "subagents" / "agent-b.jsonl").as_posix()
+
+    def tool_use(tool_id: str) -> bytes:
+        return (
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "tool_use", "id": tool_id, "name": "Bash", "input": {}}]},
+                }
+            ).encode()
+            + b"\n"
+        )
+
+    base_hash, base_size = store.write_from_bytes(tool_use("toolu_base"))
+    tail_hash, tail_size = store.write_from_bytes(tool_use("toolu_tail"))
+    branch_hash, branch_size = store.write_from_bytes(tool_use("toolu_branch"))
+    rows = (
+        ("a-base", tail_sibling, base_hash, base_size, "full", 1, None, None),
+        ("a-tail", tail_sibling, tail_hash, tail_size, "append", 2, base_size, base_size + tail_size),
+        ("b-base", branch_sibling, base_hash, base_size, "full", 1, None, None),
+        ("b-one", branch_sibling, tail_hash, tail_size, "append", 2, base_size, base_size + tail_size),
+        ("b-two", branch_sibling, branch_hash, branch_size, "append", 3, base_size, base_size + branch_size + 7),
+    )
+    with sqlite3.connect(source_db) as conn:
+        for raw_id, path, blob_hash, size, kind, acquired, start, end in rows:
+            conn.execute(
+                "INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms, "
+                "revision_kind, append_start_offset, append_end_offset) "
+                "VALUES (?, 'claude-code-session', ?, ?, ?, ?, ?, ?, ?)",
+                (raw_id, path, bytes.fromhex(blob_hash), size, acquired, kind, start, end),
+            )
+    with sqlite3.connect(source_db) as conn:
+        resolver = RetainedSidecarResolver(tmp_path, blob_root=blob_root, source_conn=conn)
+        siblings = resolver._retained_siblings(conn, session_dir.parent / "session-1.jsonl")
+        tool_ids = {
+            sibling.coordinate: {
+                block["id"]
+                for record in sibling.open_records()
+                if isinstance(record, dict)
+                for block in record["message"]["content"]
+            }
+            for sibling in siblings
+        }
+    assert tool_ids == {tail_sibling: {"toolu_base", "toolu_tail"}, branch_sibling: {"toolu_base"}}
+
+
+def test_chatgpt_spill_keeps_every_per_node_collection_in_scratch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Events, sibling ordinals and sandbox dedup stay in scratch; order matches.
+
+    Anti-vacuity: each monkeypatch below fails if the spilled parse falls
+    back to an in-memory collection: ``_sibling_ordinals`` builds a dict over
+    every node, a builtin ``set`` dedups sandbox links, and the admission
+    wrapper's ``list(session_events)`` replaces the scratch event sink. The
+    ``"nan"`` timestamp pins the finite-timestamp rule: with NaN kept as a
+    float, the collecting sort and SQLite (NaN stored as NULL) order the
+    messages differently.
+    """
+    builder = ChatGPTExportBuilder("scratch-only")
+    builder.add_node("user", "first", node_id="n1")
+    builder.add_node("assistant", "see sandbox:/mnt/data/a.txt and sandbox:/mnt/data/b.txt", node_id="n2")
+    builder.add_node("user", "third", node_id="n3")
+    record = builder.build()
+    mapping = record["mapping"]
+    assert isinstance(mapping, dict)
+    mapping["n1"]["message"]["create_time"] = "nan"
+    mapping["n2"]["message"]["create_time"] = 2.0
+    mapping["n3"]["message"]["create_time"] = 1.0
+    mapping["n2"]["message"]["metadata"] = {"targeted_reply": "quoted"}
+    expected = parse_payload(Provider.CHATGPT, [record], "fallback")[0]
+
+    def refuse_ordinals(_mapping: object) -> object:
+        raise AssertionError("sibling ordinals collected in memory")
+
+    original_paths = chatgpt._sandbox_file_paths
+
+    def scratch_seen_only(text: str, seen: object = None) -> object:
+        assert seen is not None and not isinstance(seen, set), "sandbox dedup used an in-memory set"
+        return original_paths(text, seen)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(chatgpt, "_sibling_ordinals", refuse_ordinals)
+    monkeypatch.setattr(chatgpt, "_sandbox_file_paths", scratch_seen_only)
+    store = SqliteMessageStore(tmp_path / "scratch.db")
+    try:
+        (tmp_path / "chatgpt.json").write_text(json.dumps(record), encoding="utf-8")
+        with (tmp_path / "chatgpt.json").open("rb") as source_handle:
+            read = read_chatgpt_mapping_object(source_handle, store.conn)
+        assert read is not None
+        envelope, node_mapping = read
+        session = chatgpt.parse(
+            {**envelope, "mapping": node_mapping.shallow_view()}, "fallback", spill=ScratchSessionSpill(store)
+        )
+        assert isinstance(session.session_events, SqliteSessionEventSink)
+        assert [message.provider_message_id for message in session.messages] == [
+            message.provider_message_id for message in expected.messages
+        ]
+        assert [event.model_dump(mode="json") for event in session.session_events] == [
+            event.model_dump(mode="json") for event in expected.session_events
+        ]
+        assert len(session.attachments) == len(expected.attachments) == 2
+    finally:
+        store.close()
+
+
+def test_chatgpt_node_mapping_numbers_sibling_ordinals_in_one_scan(tmp_path: Path) -> None:
+    """Scratch sibling ordinals equal ``_sibling_ordinals`` and cost one scan.
+
+    Anti-vacuity: a per-lookup prefix ``COUNT(*)`` (quadratic over a wide
+    sibling set) shows up as traced ``COUNT`` statements; skipping the
+    renumbering after a later ``put`` returns the stale ordinal of ``b``,
+    whose re-put moved it to another parent.
+    """
+    nodes: dict[str, object] = {
+        "root": {"id": "root", "parent": None},
+        "a": {"id": "a", "parent": "root"},
+        "b": {"id": "b", "parent": "root"},
+        "c": {"id": "c", "parent": "root"},
+        "d": {"id": "d", "parent": "a"},
+    }
+    conn = sqlite3.connect(tmp_path / "scratch.db")
+    try:
+        mapping = ChatGPTNodeMapping(conn)
+        for ordinal, (key, node) in enumerate(nodes.items()):
+            mapping.put(key, node, ordinal)
+        statements: list[str] = []
+        conn.set_trace_callback(statements.append)
+        assert {key: mapping.sibling_ordinal(key) for key in nodes} == chatgpt._sibling_ordinals(nodes)
+        assert sum("INSERT INTO chatgpt_sibling" in sql for sql in statements) == 1
+        assert not any("COUNT(" in sql for sql in statements)
+        conn.set_trace_callback(None)
+
+        nodes["b"] = {"id": "b", "parent": "a"}
+        mapping.put("b", nodes["b"], 5)
+        assert {key: mapping.sibling_ordinal(key) for key in nodes} == chatgpt._sibling_ordinals(nodes)
+    finally:
+        conn.close()
+
+
+def test_chatgpt_refuses_values_that_only_combine_past_the_cell_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Individually storable parts that combine into an unstorable cell refuse.
+
+    Anti-vacuity: drop the serialized-record check in ``_message_json`` (and
+    ``ChatGPTNodeMapping.put``) and preparation stores the combined record.
+    """
+    _lower_storable_limit(monkeypatch, 200)
+    builder = ChatGPTExportBuilder("combined").add_node("user", "a" * 150, "b" * 150)
+    source = tmp_path / "chatgpt.json"
+    source.write_text(json.dumps(builder.build()), encoding="utf-8")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "scratch"),
+    )
+    assert artifact.error is not None and "value_bound_refused" in artifact.error
+    assert artifact.deferred is False
+
+
+@pytest.mark.parametrize(
+    "envelope",
+    [
+        "Output too large. Showing first , and last , characters",
+        "Output too large. Showing first " + "9" * 5000 + " and last 1 characters",
+    ],
+)
+def test_gemini_malformed_excerpt_counts_are_an_unquantified_mask(tmp_path: Path, envelope: str) -> None:
+    """A mask line whose counts are not numbers still observes the tool call.
+
+    Anti-vacuity: convert the comma-only or 5000-digit count with ``int`` and
+    ``observe`` raises ``ValueError``, aborting the whole session.
+    """
+    from polylogue.sources.prepared_message_sink import GeminiToolOutputIndex
+
+    conn = sqlite3.connect(tmp_path / "scratch.db")
+    try:
+        index = GeminiToolOutputIndex(conn)
+        index.observe(
+            {"toolCalls": [{"id": "call-1", "result": [{"functionResponse": {"response": {"output": envelope}}}]}]}
+        )
+        assert conn.execute("SELECT masked, complete_len FROM gemini_tool_owner").fetchall() == [(1, 1)]
+    finally:
+        conn.close()
+
+
+def test_gemini_sidecar_decoded_past_the_cell_limit_is_typed_debt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sidecar under the byte limit that decodes past it is refused as debt.
+
+    Anti-vacuity: store the decoded text unchecked and the oversized
+    replacement reaches SQLite (an untyped ``DataError`` at the real limit)
+    instead of a ``value_bound_refused`` debt row.
+    """
+    from polylogue.sources import value_bounds
+    from polylogue.sources.prepared_message_sink import GeminiToolOutputIndex
+
+    monkeypatch.setattr(value_bounds, "MAX_STORABLE_VALUE_BYTES", 64)
+    conn = sqlite3.connect(tmp_path / "scratch.db")
+    try:
+        index = GeminiToolOutputIndex(conn)
+        index.observe({"toolCalls": [{"id": "call-1", "result": []}]})
+        # 30 invalid bytes decode to 30 U+FFFD characters: 90 UTF-8 bytes.
+        scope = RetainedSidecarScope(
+            scope_key="scope",
+            files=(
+                RetainedSidecarFile(
+                    filename="call-1.txt", byte_size=30, file_mtime_ms=None, read_text=lambda: "�" * 30
+                ),
+            ),
+            available=True,
+        )
+        results = list(index.join(scope))
+        assert not any(getattr(result, "full_text", None) for result in results)
+        assert conn.execute("SELECT filename, reason FROM gemini_tool_debt").fetchall() == [
+            ("call-1.txt", "value_bound_refused")
+        ]
+    finally:
+        conn.close()

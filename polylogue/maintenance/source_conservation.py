@@ -37,6 +37,7 @@ from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.sqlite_introspection import table_exists
 from polylogue.maintenance.source_manifest_continuity import SourceContinuityError, SourceFrontier
 from polylogue.sources.origin_specs import ORIGIN_SPECS, OriginArtifactRule
+from polylogue.sources.value_bounds import VALUE_BOUND_REFUSED
 
 #: Identity prefixes that name provider fragments, never conversations:
 #: ``toolu_`` is a tool_use block id (tool-result fragment) and ``wf_`` is a
@@ -57,6 +58,7 @@ _TERM_MATERIALIZED = "materialized"
 _TERM_REVISION_SUPERSEDED = "revision_superseded"
 _TERM_BYTE_DUPLICATE = "byte_duplicate_superseded"
 _TERM_PARSE_FAILURE = "parse_failure"
+_TERM_VALUE_BOUND_REFUSED = VALUE_BOUND_REFUSED
 _TERM_VALIDATION_REJECTED = "validation_rejected"
 _TERM_NON_SESSION_ARTIFACT = "non_session_artifact"
 _TERM_DECODE_FAILED = "decode_failed"
@@ -98,6 +100,10 @@ _RULES: dict[str, str] = {
     _TERM_REVISION_SUPERSEDED: "another revision of the same logical source is materialized",
     _TERM_BYTE_DUPLICATE: "content-bound byte-duplicate supersession receipt names a materialized twin",
     _TERM_PARSE_FAILURE: "raw_sessions.parse_error records the typed parser refusal",
+    _TERM_VALUE_BOUND_REFUSED: (
+        "raw_sessions.parse_error records a decoded value longer than SQLite can store in one cell; "
+        "the session is refused whole, never truncated (polylogue.sources.value_bounds)"
+    ),
     _TERM_VALIDATION_REJECTED: "raw_sessions.validation_status = 'failed' records the schema refusal",
     _TERM_NON_SESSION_ARTIFACT: "raw_artifacts declares the item a non-session artifact kind",
     _TERM_DECODE_FAILED: "raw_artifacts.decode_error records the typed decode failure",
@@ -166,7 +172,9 @@ _BLOCKING: frozenset[str] = frozenset(
     }
 )
 
-_WARNING: frozenset[str] = frozenset({_TERM_PENDING, _TERM_HOOK_NO_SOURCE, _TERM_AUTHORITY_BLOCKED})
+_WARNING: frozenset[str] = frozenset(
+    {_TERM_PENDING, _TERM_HOOK_NO_SOURCE, _TERM_AUTHORITY_BLOCKED, _TERM_VALUE_BOUND_REFUSED}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -528,6 +536,7 @@ def raw_term_case(conn: sqlite3.Connection, *, cte_name: str = "heads") -> tuple
             WHEN self_indexed = 1 THEN '{_TERM_MATERIALIZED}'
             WHEN any_indexed = 1 OR shares_indexed_key = 1 THEN '{_TERM_REVISION_SUPERSEDED}'
             WHEN valid_supersession = 1 THEN '{_TERM_BYTE_DUPLICATE}'
+            WHEN instr(parse_error, '{_TERM_VALUE_BOUND_REFUSED}') > 0 THEN '{_TERM_VALUE_BOUND_REFUSED}'
             WHEN parse_error IS NOT NULL THEN '{_TERM_PARSE_FAILURE}'
             WHEN validation_status = 'failed' THEN '{_TERM_VALIDATION_REJECTED}'
             WHEN parse_as_session = 0 AND artifact_kind IS NOT NULL AND artifact_kind != 'unknown'
@@ -955,6 +964,7 @@ def audit_source_conservation(
         _TERM_MATERIALIZED,
         _TERM_REVISION_SUPERSEDED,
         _TERM_BYTE_DUPLICATE,
+        _TERM_VALUE_BOUND_REFUSED,
         _TERM_PARSE_FAILURE,
         _TERM_VALIDATION_REJECTED,
         _TERM_NON_SESSION_ARTIFACT,
@@ -1061,6 +1071,7 @@ TYPED_ABSENCE_TERMS: frozenset[str] = frozenset(
         _TERM_DECODE_FAILED,
         _TERM_AUTHORITY_BLOCKED,
         _TERM_QUARANTINED_COHORT,
+        _TERM_VALUE_BOUND_REFUSED,
     }
 )
 
