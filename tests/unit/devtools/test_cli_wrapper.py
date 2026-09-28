@@ -196,3 +196,46 @@ def test_wrapper_uses_the_resolved_checkouts_own_interpreter(tmp_path: Path) -> 
     assert str(venv_python) in result.stdout, (
         f"wrapper did not use the checkout's own interpreter: {result.stdout}{result.stderr}"
     )
+
+
+def test_wrapper_starts_the_checkout_interpreter_without_pythonpath(tmp_path: Path) -> None:
+    """An inherited PYTHONPATH never reaches the checkout's interpreter start-up.
+
+    Anti-vacuity: exec the venv python without ``env -u PYTHONPATH`` and the
+    stub below prints the inherited value.
+    """
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _make_fake_checkout(checkout)
+    venv_bin = checkout / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    stub = venv_bin / "python"
+    stub.write_text('#!/usr/bin/env bash\necho "PYTHONPATH=${PYTHONPATH-unset}"\n', encoding="utf-8")
+    stub.chmod(0o755)
+
+    result = _run_wrapper(cwd=checkout, env={"PYTHONPATH": "/elsewhere/primary/site-packages"})
+
+    assert result.returncode == 0, result.stderr
+    assert "PYTHONPATH=unset" in result.stdout
+
+
+def test_an_unprovisioned_flake_checkout_is_refused_not_run_on_path_python(tmp_path: Path) -> None:
+    """A flake checkout without a completely synced venv never runs on PATH's python.
+
+    Anti-vacuity: fall through to ``python`` and the run starts on whatever
+    PATH names -- possibly another checkout's environment.
+    """
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _make_fake_checkout(checkout)
+    (checkout / "flake.nix").write_text("{}\n")
+    (checkout / ".venv" / "bin").mkdir(parents=True)
+    python = shutil.which("python3") or shutil.which("python")
+    assert python is not None
+    # An interpreter but no sync fingerprint: an incomplete provision.
+    (checkout / ".venv" / "bin" / "python").symlink_to(python)
+
+    result = _run_wrapper(cwd=checkout)
+
+    assert result.returncode == 1
+    assert "no completely provisioned .venv" in result.stderr

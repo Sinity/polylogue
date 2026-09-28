@@ -18,7 +18,10 @@ import click
 from devtools import system_exit
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
+    ForeignInterpreterError,
+    assert_interpreter_belongs_to,
     assert_polylogue_matches_checkout,
+    normalize_checkout_environment,
 )
 from devtools.command_catalog import (
     COMMAND_SPECS,
@@ -281,6 +284,17 @@ def main(argv: list[str] | None = None) -> int:
     """Entry point for programmatic use of the Click-based devtools CLI."""
 
     command_argv = list(argv or [])
+    corrected = normalize_checkout_environment(_REPO_ROOT)
+    if corrected:
+        sys.stderr.write(
+            f"devtools: rebound the environment to this checkout ({_REPO_ROOT}); "
+            f"it named another: {'; '.join(corrected)}\n"
+        )
+    try:
+        assert_interpreter_belongs_to(_REPO_ROOT, context="devtools")
+    except ForeignInterpreterError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 125
     try:
         assert_polylogue_matches_checkout(_REPO_ROOT, context="devtools")
     except CheckoutImportMismatchError as exc:

@@ -48,9 +48,24 @@ fi
 # pushes a caller back to bare `pytest` and silently out of the checkout guard,
 # containment and receipts the wrapper exists to provide.
 #
-# Falls through to `python` when the checkout has no venv, preserving the
-# previous behaviour for a fresh clone or a Nix-only environment.
-if [ -x "$resolved/.venv/bin/python" ]; then
-  exec "$resolved/.venv/bin/python" "$resolved/devtools/__main__.py" "$@"
+#
+# A flake checkout counts as provisioned only when its devshell's sync
+# fingerprint exists: the shellHook writes it after a proven-complete `uv sync`.
+provisioned() { [ -x "$resolved/.venv/bin/python" ] && [ -f "$resolved/.venv/.uv-sync-fingerprint" ]; }
+
+# PYTHONPATH is dropped for the checkout's own interpreter: an inherited value
+# can name another checkout, and a sitecustomize there would run during
+# interpreter start-up, before devtools can rebind anything. The venv needs no
+# PYTHONPATH; the agentctl job environment already unsets it.
+if [ -x "$resolved/.venv/bin/python" ] && { provisioned || [ ! -f "$resolved/flake.nix" ]; }; then
+  exec env -u PYTHONPATH "$resolved/.venv/bin/python" "$resolved/devtools/__main__.py" "$@"
 fi
-exec python "$resolved/devtools/__main__.py" "$@"
+# A flake checkout that still has no venv would otherwise run whatever
+# `python` PATH names first -- possibly another checkout's environment, even
+# through a symlink that resolves into the Nix store -- so it is refused. The
+# bare-`python` fall-through remains for a checkout without a devshell.
+if [ -f "$resolved/flake.nix" ]; then
+  echo "devtools: $resolved has no completely provisioned .venv; enter its devshell once (nix develop), then rerun" >&2
+  exit 1
+fi
+exec env -u PYTHONPATH python "$resolved/devtools/__main__.py" "$@"
