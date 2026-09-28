@@ -210,7 +210,7 @@ def test_a_large_object_orders_members_through_scratch(monkeypatch: pytest.Monke
     in-memory path and the identity diverges from the decoder."""
     from polylogue.core import content_identity
 
-    monkeypatch.setattr(content_identity, "_SPILL_OBJECT_ENTRIES", 4)
+    monkeypatch.setattr(content_identity, "_ENTRY_MEMORY_BYTES", 4 * (content_identity._ENTRY_OVERHEAD_BYTES + 4))
     value = {f"k{index % 7}́" if index % 3 else f"z{index}": index for index in range(40)}
     payload = json.dumps(value).encode() + b""
     duplicated = b'{"b":1,"a":2,"c":3,"d":4,"e":5,"a":9,"f":1e400,"f":6}'
@@ -335,7 +335,7 @@ def test_a_wide_member_is_read_as_the_source_decoder_reads_it(encoding: str, bom
 
     expected = payload_content_identity(text.encode()) if decoder_reads_value else sha256(payload).hexdigest()
     assert payload_content_identity(payload) == expected
-    if encoding.endswith("-le"):
+    if encoding == "utf-16-le":
         assert decoder_reads_value
 
 
@@ -387,7 +387,7 @@ def test_a_key_too_long_for_a_scratch_row_keeps_its_place(monkeypatch: pytest.Mo
     from polylogue.core import content_identity
 
     monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 300)
-    monkeypatch.setattr(content_identity, "_SPILL_OBJECT_ENTRIES", 4)
+    monkeypatch.setattr(content_identity, "_ENTRY_MEMORY_BYTES", 4 * (content_identity._ENTRY_OVERHEAD_BYTES + 4))
     value: dict[str, object] = {f"k{index}": index for index in range(12)}
     value["m" + "x" * 279] = "long"
     payload = json.dumps(value).encode()
@@ -423,3 +423,41 @@ def test_nesting_past_the_open_container_bound_takes_the_byte_identity(monkeypat
 
     assert payload_content_identity(deep) == sha256(deep).hexdigest()
     assert payload_content_identity(shallow) == structural_content_identity(loads(shallow))
+
+
+def test_member_memory_is_one_budget_across_nested_and_long_keyed_objects(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Few members with long keys, and many small objects nested in one
+    another, both spill once the document's shared budget is spent.
+
+    Anti-vacuity: budget members per object by count and neither document
+    ever reaches the scratch table, so the spill counter stays zero.
+    """
+    from polylogue.core import content_identity
+
+    spilled: list[int] = []
+    original = content_identity._Entries._spill
+
+    def counting_spill(self: object) -> None:
+        spilled.append(1)
+        original(self)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(content_identity._Entries, "_spill", counting_spill)
+    monkeypatch.setattr(content_identity, "_ENTRY_MEMORY_BYTES", 4096)
+    long_keys = {f"k{index}" * 400: index for index in range(4)}
+    nested: object = 1
+    for index in range(40):
+        nested = {"a": nested, "b": index}
+
+    for value in (long_keys, nested):
+        spilled.clear()
+        payload = json.dumps(value).encode()
+        assert payload_content_identity(payload) == structural_content_identity(value)
+        assert spilled
+
+
+def test_bytes_no_encoding_decodes_keep_their_byte_identity() -> None:
+    """The decoder's lossy last resort would read these as ``{}``; the
+    identity must not let them share the clean document's."""
+    payload = b"\xef\xbb\xbf{}\xff\xff"
+    assert payload_content_identity(payload) == sha256(payload).hexdigest()
+    assert payload_content_identity(payload) != payload_content_identity(b"{}")

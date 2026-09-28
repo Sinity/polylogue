@@ -723,53 +723,98 @@ def _encode_spilled_text(raw: IO[bytes], sink: _Sink, spills: _SpilledStrings) -
         sink.update(b";")
 
 
-#: Object members kept in memory before an object's entries move to a scratch
-#: table for last-key-wins and ordering. A pacing bound only.
-_SPILL_OBJECT_ENTRIES = 100_000
+#: Estimated bytes of object members held in memory, across every open
+#: object of one document, before the object being written moves its members
+#: to the shared scratch table. A pacing bound only: the digest is the same
+#: whichever side of it a member falls.
+_ENTRY_MEMORY_BYTES = 64 * 1024 * 1024
 
+#: Estimated bytes one in-memory member costs beyond its key's characters.
+_ENTRY_OVERHEAD_BYTES = 160
 
-#: Bytes reserved in a scratch row beyond its normalized key: the raw-key
-#: hash, the value digest, and SQLite's record header. SQLite bounds a whole
-#: row by the same length limit as one value, so a key within this margin of
-#: the limit cannot share a row with them.
+#: Bytes reserved in a scratch row beyond its normalized key: the object id,
+#: the raw-key hash, the value digest, and SQLite's record header. SQLite
+#: bounds a whole row by the same length limit as one value, so a key within
+#: this margin of the limit cannot share a row with them.
 _SCRATCH_ROW_OVERHEAD = 256
+
+
+class _EntryStore:
+    """Members of one document's objects: an in-memory budget and one scratch table.
+
+    Every open object shares the budget, so nesting cannot multiply it, and
+    every spilled object shares one scratch connection, keyed by object id.
+    """
+
+    def __init__(self) -> None:
+        self.retained = 0
+        self._connection: sqlite3.Connection | None = None
+        self._next_id = 0
+
+    def connection(self) -> sqlite3.Connection:
+        if self._connection is None:
+            connection = sqlite3.connect("")
+            # Pin the row bound the entries plan against.
+            connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, physical_value_limit())
+            connection.execute("PRAGMA journal_mode = OFF")
+            connection.execute(
+                "CREATE TABLE entries (obj INTEGER NOT NULL, key_hash BLOB NOT NULL, "
+                "normalized BLOB NOT NULL, digest BLOB, PRIMARY KEY (obj, key_hash))"
+            )
+            connection.execute("CREATE INDEX entries_order ON entries (obj, normalized, digest)")
+            self._connection = connection
+        return self._connection
+
+    def new_id(self) -> int:
+        self._next_id += 1
+        return self._next_id
+
+    def close(self) -> None:
+        if self._connection is not None:
+            self._connection.close()
+            self._connection = None
 
 
 class _Entries:
     """One object's members: raw key -> value digest, ``None`` for no identity.
 
     A repeated key replaces the earlier member, as the in-memory decoder does.
-    Past :data:`_SPILL_OBJECT_ENTRIES` members they move to a scratch SQLite
-    table that also orders them, so an object's size costs no memory. A row
-    holds the raw key's hash (for replacement), the normalized key (for
+    Members stay in memory until the document's shared budget
+    (:data:`_ENTRY_MEMORY_BYTES`) is exceeded; the object being written then
+    moves its members to the shared scratch table, which also orders them.
+    A row holds the raw key's hash (for replacement), the normalized key (for
     order) and the digest; a key too long to fit a row beside them stays in
     memory, where it already was whole, and is merged in order on encode.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, store: _EntryStore) -> None:
+        self._budget = store
         self._memory: dict[str, bytes | None] = {}
-        self._table: sqlite3.Connection | None = None
+        self._retained = 0
+        self._id: int | None = None
 
     def __setitem__(self, key: str, digest: bytes | None) -> None:
-        if self._table is None:
-            self._memory[key] = digest
-            if len(self._memory) > _SPILL_OBJECT_ENTRIES:
-                self._table = sqlite3.connect("")
-                # Pin the row bound this class plans against.
-                self._table.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, physical_value_limit())
-                self._table.execute("PRAGMA journal_mode = OFF")
-                self._table.execute(
-                    "CREATE TABLE entries (key_hash BLOB PRIMARY KEY, normalized BLOB NOT NULL, digest BLOB)"
-                )
-                held = self._memory
-                self._memory = {}
-                for held_key, held_digest in held.items():
-                    self._store(held_key, held_digest)
+        if self._id is not None:
+            self._put(key, digest)
             return
-        self._store(key, digest)
+        if key not in self._memory:
+            cost = len(key) + _ENTRY_OVERHEAD_BYTES
+            self._retained += cost
+            self._budget.retained += cost
+        self._memory[key] = digest
+        if self._budget.retained > _ENTRY_MEMORY_BYTES:
+            self._spill()
 
-    def _store(self, key: str, digest: bytes | None) -> None:
-        assert self._table is not None
+    def _spill(self) -> None:
+        self._id = self._budget.new_id()
+        held = self._memory
+        self._memory = {}
+        self._budget.retained -= self._retained
+        self._retained = 0
+        for held_key, held_digest in held.items():
+            self._put(held_key, held_digest)
+
+    def _put(self, key: str, digest: bytes | None) -> None:
         normalized = nfc(key).encode("utf-8", "surrogatepass")
         if len(normalized) + _SCRATCH_ROW_OVERHEAD > physical_value_limit():
             # A raw key always normalizes to the same text, so its repeats
@@ -777,21 +822,29 @@ class _Entries:
             self._memory[key] = digest
             return
         key_hash = sha256(key.encode("utf-8", "surrogatepass")).digest()
-        self._table.execute("INSERT OR REPLACE INTO entries VALUES (?, ?, ?)", (key_hash, normalized, digest))
+        self._budget.connection().execute(
+            "INSERT OR REPLACE INTO entries VALUES (?, ?, ?, ?)", (self._id, key_hash, normalized, digest)
+        )
 
     def poisoned(self) -> bool:
         if any(digest is None for digest in self._memory.values()):
             return True
-        if self._table is None:
+        if self._id is None:
             return False
-        return self._table.execute("SELECT 1 FROM entries WHERE digest IS NULL LIMIT 1").fetchone() is not None
+        return (
+            self._budget.connection()
+            .execute("SELECT 1 FROM entries WHERE obj = ? AND digest IS NULL LIMIT 1", (self._id,))
+            .fetchone()
+            is not None
+        )
 
     def encode(self, sink: _Sink) -> None:
-        if self._table is None:
+        if self._id is None:
             _encode_object_entries([(nfc(key), digest) for key, digest in self._memory.items() if digest], sink)
             return
-        count = self._table.execute("SELECT COUNT(*) FROM entries").fetchone()[0] + len(self._memory)
-        sink.update(b"o%d;" % count)
+        connection = self._budget.connection()
+        count = connection.execute("SELECT COUNT(*) FROM entries WHERE obj = ?", (self._id,)).fetchone()[0]
+        sink.update(b"o%d;" % (count + len(self._memory)))
         # Keys are compared as UTF-8 (surrogates passed through), whose byte
         # order is code-point order, so this matches the in-memory sort.
         held = sorted(
@@ -799,8 +852,8 @@ class _Entries:
         )
         rows = (
             (bytes(normalized), bytes(digest))
-            for normalized, digest in self._table.execute(
-                "SELECT normalized, digest FROM entries ORDER BY normalized, digest"
+            for normalized, digest in connection.execute(
+                "SELECT normalized, digest FROM entries WHERE obj = ? ORDER BY normalized, digest", (self._id,)
             )
         )
         for normalized, digest in heapq.merge(rows, held):
@@ -808,8 +861,12 @@ class _Entries:
             sink.update(digest)
 
     def close(self) -> None:
-        if self._table is not None:
-            self._table.close()
+        if self._id is None:
+            self._budget.retained -= self._retained
+            self._retained = 0
+        else:
+            self._budget.connection().execute("DELETE FROM entries WHERE obj = ?", (self._id,))
+        self._memory.clear()
 
 
 class _Frame:
@@ -842,6 +899,14 @@ class _Frame:
 
 
 def _stream_identity(events: Iterator[tuple[str, object]], spills: _SpilledStrings) -> str:
+    store = _EntryStore()
+    try:
+        return _stream_identity_into(events, spills, store)
+    finally:
+        store.close()
+
+
+def _stream_identity_into(events: Iterator[tuple[str, object]], spills: _SpilledStrings, store: _EntryStore) -> str:
     root = sha256(_CONTENT_IDENTITY_DOMAIN)
     stack: list[_Frame] = []
     documents = 0
@@ -872,7 +937,7 @@ def _stream_identity(events: Iterator[tuple[str, object]], spills: _SpilledStrin
         if top.is_map:
             assert top.key is not None
             if top.entries is None:
-                top.entries = _Entries()
+                top.entries = _Entries(store)
             if poisoned:
                 top.entries[top.key] = None
             else:
@@ -1050,15 +1115,15 @@ def stream_payload_content_identity(handle: IO[bytes]) -> str:
     import ijson
 
     start = handle.tell()
-    attempts = [(encoding, "strict") for encoding in JSON_TEXT_ENCODINGS]
-    # The decoder's last resort when no encoding decodes the payload whole.
-    attempts.append(("utf-8", "ignore"))
     try:
-        for encoding, errors in attempts:
+        for encoding in JSON_TEXT_ENCODINGS:
             try:
-                return _identity_as(handle, start, encoding, errors)
+                return _identity_as(handle, start, encoding, "strict")
             except _EncodingMismatchError:
                 continue
+        # No encoding decodes the payload whole. The decoder's lossy last
+        # resort can turn such bytes into a clean document's text, so they
+        # keep their byte identity instead of sharing that document's.
         raise _NotJsonError
     except (_NotJsonError, ijson.JSONError, UnicodeDecodeError, TypeError, ValueError, ArithmeticError):
         handle.seek(start)
