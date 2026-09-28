@@ -564,7 +564,9 @@ def observe_route(
     unchanged.
     """
     resolved_spec = spec if spec is not None else RouteObservationSpec(surface=surface, route=route, verb=verb)
-    if spec is not None and (surface, route, verb) != (spec.surface, spec.route, spec.verb):
+    if spec is not None and (
+        surface != spec.surface or route != spec.route or (verb is not None and verb != spec.verb)
+    ):
         raise ValueError("route observation spec identity must match the call-site identity")
     ctx = RouteObservationContext(daemon_path=daemon_path)
     ctx._declared_phases = resolved_spec.phases
