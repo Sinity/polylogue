@@ -5312,6 +5312,7 @@ class LiveBatchProcessor:
         source = Source(name=fallback_provider.value, path=path.parent)
         acquired_at = datetime.now(UTC).isoformat()
         records: list[tuple[str, RawSessionRecord]] = []
+        refusals: list[str] = []
         total_bytes = 0
         try:
             with zipfile.ZipFile(path) as zf:
@@ -5407,8 +5408,10 @@ class LiveBatchProcessor:
                                     ),
                                 )
                             )
-                    except (ZipBombError, ContentIdentityRefusal) as exc:
+                    except ZipBombError as exc:
                         logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
+                    except ContentIdentityRefusal as exc:
+                        refusals.append(f"{info.filename}: {exc}")
         except (zipfile.BadZipFile, OSError) as exc:
             # Members stream into the archive's blob staging: a full or
             # read-only archive is not a property of this ZIP, and reporting
@@ -5416,6 +5419,7 @@ class LiveBatchProcessor:
             raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
             logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
             return [], 0
+        self._settle_zip_member_refusals(path, refusals)
         return records, total_bytes
 
     def _extract_source_only_zip_member_records(
@@ -5436,6 +5440,7 @@ class LiveBatchProcessor:
         source = Source(name=fallback_provider.value, path=path.parent)
         acquired_at = datetime.now(UTC).isoformat()
         records: list[tuple[str, RawSessionRecord]] = []
+        refusals: list[str] = []
         total_bytes = 0
         validator = _ZipEntryValidator(fallback_provider, cursor_state=None, zip_path=path)
         try:
@@ -5466,8 +5471,11 @@ class LiveBatchProcessor:
                             provider_hint=fallback_provider,
                             source_index=source_index,
                         )
-                    except (ZipBombError, ContentIdentityRefusal) as exc:
+                    except ZipBombError as exc:
                         logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
+                        continue
+                    except ContentIdentityRefusal as exc:
+                        refusals.append(f"{info.filename}: {exc}")
                         continue
                     if raw_data.blob_hash is None:
                         continue
@@ -5506,7 +5514,40 @@ class LiveBatchProcessor:
             # extraction so the caller records retryable failure state instead
             # of permanently acknowledging this source coordinate as excluded.
             return None
+        self._settle_zip_member_refusals(path, refusals)
         return records, total_bytes
+
+    def _settle_zip_member_refusals(self, path: Path, refusals: list[str]) -> None:
+        """Name every member of ``path`` refused a content identity, or clear the gap.
+
+        A refused member holds a token no archive value can store, so it is a
+        permanent property of these bytes: the ZIP's other members are still
+        ingested and its cursor still advances, and the refusal is recorded as
+        durable ``live_ingest_admission`` debt on the ZIP so the missing member
+        is a typed, visible gap rather than a log line. A later expansion of
+        the same path with no refusal clears it.
+        """
+        if not refusals:
+            self._cursor.clear_convergence_debt(
+                stage="live_ingest_admission",
+                subject_type="source_path",
+                subject_id=str(path),
+            )
+            return
+        reason = "content_identity_refused: " + "; ".join(refusals)
+        emit(
+            "live.ingest.zip_member_refused",
+            level=WARNING,
+            outcome="refused",
+            source_path=str(path),
+            reason=reason,
+        )
+        self._cursor.record_convergence_debt(
+            stage="live_ingest_admission",
+            subject_type="source_path",
+            subject_id=str(path),
+            error=reason,
+        )
 
     def _mark_excluded_cursor(
         self,

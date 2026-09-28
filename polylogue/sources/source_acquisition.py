@@ -11,7 +11,7 @@ from polylogue.config import Source
 from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
 
@@ -139,7 +139,13 @@ def iter_source_raw_data(
                         except ContentIdentityRefusal as exc:
                             # The member cannot be stored; record the gap and
                             # acquire the rest of the ZIP.
-                            logger.warning("Refusing ZIP member %s: %s", entry_path, exc)
+                            emit(
+                                "sources.zip.member_identity_refused",
+                                level=WARNING,
+                                outcome="refused",
+                                entry=entry_path,
+                                reason=str(exc),
+                            )
                             _record_cursor_failure(cursor_state, entry_path, str(exc))
             else:
                 yield read_plain_source_file(

@@ -11,6 +11,7 @@ while it still separates values JSON itself distinguishes -- ``true`` from
 
 from __future__ import annotations
 
+import codecs
 import io
 import json
 import re
@@ -31,6 +32,10 @@ from polylogue.core.text_identity import nfc
 _CONTENT_IDENTITY_DOMAIN = b"polylogue:member-content:v2\0"
 
 _UTF8_BOM = b"\xef\xbb\xbf"
+
+#: Byte-order marks of the UTF-16 encodings the source decoder accepts
+#: (``decoder_json.ENCODING_GUESSES``).
+_UTF16_BOMS = (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)
 
 #: Bytes read per step of the streaming identity. A pacing window only: the
 #: digest is the same for every window size.
@@ -79,6 +84,12 @@ class _Sink(Protocol):
     """Anything with ``update(bytes)``: a hashlib object in practice."""
 
     def update(self, data: bytes, /) -> None: ...
+
+
+class _Digester(_Sink, Protocol):
+    """A sink whose digest names what it was fed."""
+
+    def digest(self) -> bytes: ...
 
 
 def _encode_object_entries(entries: list[tuple[str, bytes]], sink: _Sink) -> None:
@@ -738,20 +749,32 @@ class _Entries:
 
 
 class _Frame:
-    """One open container while the document streams."""
+    """One open container while the document streams.
 
-    __slots__ = ("entries", "is_map", "key", "outer", "poisoned", "value")
+    Nothing is allocated for a container until it needs it, and a run of
+    arrays nested directly in one another shares one frame: arrays encode
+    inline into the same sink, and a poisoned element poisons every array
+    of the run, so a depth counter and one flag say everything the run's
+    frames would. Deep nesting therefore costs a small constant per level,
+    not a hasher and a member table each.
+    """
 
-    def __init__(self, *, is_map: bool, outer: _Sink) -> None:
+    __slots__ = ("depth", "entries", "is_map", "key", "outer", "poisoned", "value")
+
+    def __init__(self, *, is_map: bool, outer: _Sink | None) -> None:
         self.is_map = is_map
-        #: Where this container's own encoding goes.
+        #: Where an array's encoding goes; a map resolves its sink on close.
         self.outer = outer
-        self.entries = _Entries()
+        self.entries: _Entries | None = None
         self.key: str | None = None
-        #: The hasher of the member value being read (objects only).
-        self.value: _Sink | None = None
-        #: An array element had no identity (arrays only).
+        #: The hasher of the member value being read (objects only), made on
+        #: the first write: a member whose value is an object only needs one
+        #: once that object closes.
+        self.value: _Digester | None = None
+        #: An element had no identity (arrays only).
         self.poisoned = False
+        #: Arrays in this run (arrays only).
+        self.depth = 1
 
 
 def _stream_identity(events: Iterator[tuple[str, object]], spills: _SpilledStrings) -> str:
@@ -765,9 +788,12 @@ def _stream_identity(events: Iterator[tuple[str, object]], spills: _SpilledStrin
             return root
         top = stack[-1]
         if not top.is_map:
+            assert top.outer is not None
             return top.outer
-        if top.value is None:
+        if top.key is None:
             raise _NotJsonError
+        if top.value is None:
+            top.value = sha256()
         return top.value
 
     def finished_value(*, poisoned: bool = False) -> None:
@@ -780,8 +806,14 @@ def _stream_identity(events: Iterator[tuple[str, object]], spills: _SpilledStrin
             return
         top = stack[-1]
         if top.is_map:
-            assert top.key is not None and isinstance(top.value, type(root))
-            top.entries[top.key] = None if poisoned else top.value.digest()
+            assert top.key is not None
+            if top.entries is None:
+                top.entries = _Entries()
+            if poisoned:
+                top.entries[top.key] = None
+            else:
+                assert top.value is not None
+                top.entries[top.key] = top.value.digest()
             top.key = None
             top.value = None
         elif poisoned:
@@ -791,26 +823,44 @@ def _stream_identity(events: Iterator[tuple[str, object]], spills: _SpilledStrin
         if event == "map_key":
             top = stack[-1]
             top.key = str(value)
-            top.value = sha256()
+            top.value = None
         elif event == "start_map":
-            stack.append(_Frame(is_map=True, outer=current()))
+            if stack and stack[-1].is_map and stack[-1].key is None:
+                raise _NotJsonError
+            stack.append(_Frame(is_map=True, outer=None))
         elif event == "start_array":
             sink = current()
             sink.update(b"a[")
-            stack.append(_Frame(is_map=False, outer=sink))
+            if stack and not stack[-1].is_map:
+                stack[-1].depth += 1
+            else:
+                stack.append(_Frame(is_map=False, outer=sink))
         elif event == "end_map":
             frame = stack.pop()
+            entries = frame.entries
             try:
-                if frame.entries.poisoned():
+                if entries is not None and entries.poisoned():
                     finished_value(poisoned=True)
                     continue
-                frame.entries.encode(frame.outer)
+                sink = current()
+                if entries is None:
+                    _encode_object_entries([], sink)
+                else:
+                    entries.encode(sink)
             finally:
-                frame.entries.close()
+                if entries is not None:
+                    entries.close()
             finished_value()
         elif event == "end_array":
-            frame = stack.pop()
+            frame = stack[-1]
+            assert frame.outer is not None
             frame.outer.update(b"]")
+            if frame.depth > 1:
+                # The enclosing array of the run: a poisoned element already
+                # set the run's shared flag.
+                frame.depth -= 1
+                continue
+            stack.pop()
             finished_value(poisoned=frame.poisoned)
         else:
             sink = current()
@@ -837,6 +887,36 @@ def _stream_identity(events: Iterator[tuple[str, object]], spills: _SpilledStrin
     return root.hexdigest()
 
 
+class _Utf16Transcoder:
+    """Present a BOM-bearing UTF-16 handle as UTF-8 bytes, one window at a time.
+
+    The source decoder reads such a member as the same JSON text a UTF-8
+    serialization of it would be, so the identity must too. The codec consumes
+    the byte-order mark; a malformed sequence raises ``UnicodeDecodeError``.
+    """
+
+    def __init__(self, handle: IO[bytes]) -> None:
+        self._handle = handle
+        self._decoder = codecs.getincrementaldecoder("utf-16")("strict")
+
+    def read(self, size: int = -1) -> bytes:
+        while True:
+            chunk = self._handle.read(_STREAM_READ_BYTES)
+            text = self._decoder.decode(chunk, final=not chunk)
+            if text or not chunk:
+                return text.encode("utf-8")
+
+
+def _text_handle(handle: IO[bytes], start: int) -> IO[bytes]:
+    """``handle`` from ``start`` as UTF-8 bytes, transcoding a UTF-16 member."""
+    handle.seek(start)
+    bom = handle.read(2)
+    handle.seek(start)
+    if bom in _UTF16_BOMS:
+        return _Utf16Transcoder(handle)  # type: ignore[return-value]
+    return handle
+
+
 def stream_payload_content_identity(handle: IO[bytes]) -> str:
     """Return :func:`payload_content_identity` of a seekable handle's bytes.
 
@@ -852,15 +932,14 @@ def stream_payload_content_identity(handle: IO[bytes]) -> str:
     spills = _SpilledStrings()
     try:
         try:
-            reader = _TokenReader(handle, spills, scan=True)
+            reader = _TokenReader(_text_handle(handle, start), spills, scan=True)
             events = ijson.basic_parse(reader, use_float=False, buf_size=_STREAM_READ_BYTES)
             digest = _stream_identity(events, spills)
         except (_LoneSurrogateEscapeError, UnicodeDecodeError):
             # The C tokenizer either met a lone surrogate escape or rejected
             # one while decoding; the exact tokenizer decides.
             spills.close()
-            handle.seek(start)
-            reader = _TokenReader(handle, spills, scan=False)
+            reader = _TokenReader(_text_handle(handle, start), spills, scan=False)
             events = exact_backend.basic_parse(reader, use_float=False, buf_size=_STREAM_READ_BYTES)
             digest = _stream_identity(events, spills)
         if spills.refusal is not None:

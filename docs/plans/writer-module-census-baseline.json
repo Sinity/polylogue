@@ -34,6 +34,11 @@
     ]
   },
   {
+    "file": "polylogue/core/content_identity.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/daemon/cursor_lag_baseline.py",
     "tiers": [
       "ops"

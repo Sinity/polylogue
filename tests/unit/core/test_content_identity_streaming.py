@@ -309,3 +309,54 @@ def test_a_value_is_measured_by_its_decoded_utf8_size(payload: bytes, monkeypatc
     monkeypatch.setattr(content_identity, "_STREAM_READ_BYTES", 8)
     monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 32)
     assert payload_content_identity(payload) == _decoded_identity(payload)
+
+
+@pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be"])
+def test_a_bom_bearing_utf16_member_shares_its_utf8_identity(encoding: str) -> None:
+    """The source decoder reads a UTF-16 member with a byte-order mark as the
+    same JSON a UTF-8 serialization of it is, so the identity must match.
+
+    Anti-vacuity: feed the UTF-16 bytes to the tokenizer untranscoded and the
+    member falls back to its byte digest, which differs from the UTF-8 one.
+    """
+    value = {"title": "café \U0001f600", "n": [1, 2.5, None, True]}
+    text = json.dumps(value, ensure_ascii=False)
+    bom = "﻿".encode(encoding)
+    utf16 = bom + text.encode(encoding)
+
+    identity = payload_content_identity(utf16)
+
+    assert identity == payload_content_identity(text.encode()) == structural_content_identity(value)
+    assert identity != sha256(utf16).hexdigest()
+
+
+def test_deeply_nested_arrays_stream_in_constant_memory() -> None:
+    """A run of directly nested arrays shares one frame.
+
+    Anti-vacuity: allocate a frame (with its member table) per ``[`` and a
+    half-million-deep member holds hundreds of megabytes of frames, far past
+    the bound asserted here.
+    """
+    import tracemalloc
+
+    depth = 500_000
+    compact = b"[" * depth + b"1" + b"]" * depth
+    spaced = b"[ " * depth + b"1" + b" ]" * depth
+
+    tracemalloc.start()
+    try:
+        identity = stream_payload_content_identity(io.BytesIO(compact))
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 64 * 1024 * 1024
+    assert identity == stream_payload_content_identity(io.BytesIO(spaced))
+    assert identity != sha256(compact).hexdigest()
+
+
+def test_mixed_nesting_matches_the_decoded_identity() -> None:
+    """Array runs broken by objects, and objects nested directly in objects,
+    hash exactly as the decoded value does."""
+    payload = b'[[1,[2]],[[{"a":[[3]],"b":{"c":{"d":[]}},"e":{}}]],[[[]]]]'
+    assert stream_payload_content_identity(io.BytesIO(payload)) == structural_content_identity(loads(payload))
