@@ -50,6 +50,17 @@ fi
 #
 # Falls through to `python` when the checkout has no venv, preserving the
 # previous behaviour for a fresh clone or a Nix-only environment.
+# A checkout with a flake but no venv yet (every fresh worktree) is provisioned
+# on first use: the devshell's own shellHook creates .venv and runs the frozen,
+# fingerprinted `uv sync`, so the lockfile and environment guards are exactly
+# the devshell's. Set POLYLOGUE_DEVTOOLS_NO_PROVISION=1 to skip it.
+if [ ! -x "$resolved/.venv/bin/python" ] && [ -f "$resolved/flake.nix" ] \
+    && [ -z "${POLYLOGUE_DEVTOOLS_NO_PROVISION:-}" ] && command -v nix >/dev/null 2>&1; then
+  echo "devtools: provisioning $resolved/.venv through its devshell (first use)" >&2
+  (cd "$resolved" && nix develop --accept-flake-config "$resolved" --command true) >&2 \
+    || echo "devtools: devshell provisioning failed" >&2
+fi
+
 # PYTHONPATH is dropped for the checkout's own interpreter: an inherited value
 # can name another checkout, and a sitecustomize there would run during
 # interpreter start-up, before devtools can rebind anything. The venv needs no
@@ -57,4 +68,12 @@ fi
 if [ -x "$resolved/.venv/bin/python" ]; then
   exec env -u PYTHONPATH "$resolved/.venv/bin/python" "$resolved/devtools/__main__.py" "$@"
 fi
-exec python "$resolved/devtools/__main__.py" "$@"
+# A flake checkout that still has no venv would otherwise run whatever
+# `python` PATH names first -- possibly another checkout's environment, even
+# through a symlink that resolves into the Nix store -- so it is refused. The
+# bare-`python` fall-through remains for a checkout without a devshell.
+if [ -f "$resolved/flake.nix" ]; then
+  echo "devtools: $resolved has no .venv and could not be provisioned; enter its devshell once, then rerun" >&2
+  exit 1
+fi
+exec env -u PYTHONPATH python "$resolved/devtools/__main__.py" "$@"

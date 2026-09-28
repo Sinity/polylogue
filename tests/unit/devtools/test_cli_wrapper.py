@@ -217,3 +217,56 @@ def test_wrapper_starts_the_checkout_interpreter_without_pythonpath(tmp_path: Pa
 
     assert result.returncode == 0, result.stderr
     assert "PYTHONPATH=unset" in result.stdout
+
+
+def _fake_nix(bin_dir: Path, log: Path, *, provision: bool = True) -> None:
+    """A ``nix`` that records its call and, if asked, provisions ``.venv`` like the devshell."""
+    bin_dir.mkdir()
+    python = shutil.which("python3") or shutil.which("python")
+    assert python is not None
+    body = f'#!/usr/bin/env bash\necho "$PWD $*" >> {log}\n'
+    if provision:
+        body += f"mkdir -p .venv/bin\nln -sf {python} .venv/bin/python\n"
+    script = bin_dir / "nix"
+    script.write_text(body)
+    script.chmod(0o755)
+
+
+def test_wrapper_provisions_a_fresh_checkout_through_its_devshell(tmp_path: Path) -> None:
+    """A checkout with a flake and no venv is provisioned once, from its own root.
+
+    Anti-vacuity: remove the provisioning block and the fake ``nix`` is never
+    called, so the log stays empty and the run is refused instead.
+    """
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _make_fake_checkout(checkout)
+    (checkout / "flake.nix").write_text("{}\n")
+    (checkout / "sub").mkdir()
+    log = tmp_path / "nix.log"
+    _fake_nix(tmp_path / "bin", log)
+    env = {"PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}"}
+
+    first = _run_wrapper("hello", cwd=checkout / "sub", env=env)
+    assert first.returncode == 0, first.stderr
+    assert (checkout / ".venv" / "bin" / "python").exists()
+    assert log.read_text().split()[:1] == [str(checkout)]
+
+    second = _run_wrapper("hello", cwd=checkout, env=env)
+    assert second.returncode == 0, second.stderr
+    assert len(log.read_text().splitlines()) == 1
+
+
+def test_an_unprovisionable_flake_checkout_is_refused_not_run_on_path_python(tmp_path: Path) -> None:
+    """Anti-vacuity: fall through to ``python`` and the run starts on whatever PATH names."""
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _make_fake_checkout(checkout)
+    (checkout / "flake.nix").write_text("{}\n")
+    log = tmp_path / "nix.log"
+    _fake_nix(tmp_path / "bin", log, provision=False)
+
+    result = _run_wrapper(cwd=checkout, env={"PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}"})
+
+    assert result.returncode == 1
+    assert "could not be provisioned" in result.stderr
