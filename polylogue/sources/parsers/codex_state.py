@@ -3,7 +3,7 @@
 Codex keeps seven SQLite databases outside the JSONL rollout files that
 ``parsers/codex.py`` parses:
 
-    state_5.sqlite            threads, thread_spawn_edges, thread_artifacts,
+    state_5.sqlite            threads, thread_spawn_edges, thread_artifacts / thread_attachments,
                               thread_dynamic_tools, thread_sections, projects,
                               project_roots, and operational bookkeeping
     goals_1.sqlite            thread_goals, thread_goal_continuation_deferrals
@@ -214,6 +214,11 @@ CODEX_STATE_TABLE_FIDELITY: tuple[CodexStateTableClassification, ...] = (
         "thread_artifacts",
         "retained-for-later-consumption",
         "Artifact identity and payload are thread evidence with no typed projection yet.",
+    ),
+    CodexStateTableClassification(
+        "thread_attachments",
+        "retained-for-later-consumption",
+        "Attachment identity and payload are thread evidence with no typed projection yet.",
     ),
     CodexStateTableClassification(
         "thread_dynamic_tools",
