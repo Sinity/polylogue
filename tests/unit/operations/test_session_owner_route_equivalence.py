@@ -259,7 +259,8 @@ async def test_ranked_search_with_text_exclusion_is_refused_on_mcp_and_generic_r
     with open_operation_read(root) as pinned, pytest.raises(ValueError, match="text exclusions"):
         execute_read_operation(
             "cli.query",
-            {"params": {"query": "needle -secret", "limit": 50}},
+            # The CLI hands its root query over as the words it was given.
+            {"params": {"query": ("needle", "-secret"), "limit": 50}},
             archive=pinned.archive,
             serving_identity="direct",
         )

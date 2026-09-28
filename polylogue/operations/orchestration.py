@@ -45,17 +45,22 @@ def read_session_orchestration(archive: ArchiveStore, session_ref: str) -> Sessi
     from polylogue.archive.query.predicate import QueryFieldPredicate, QueryFieldRef
     from polylogue.operations.read_view_lineage import _TopologySnapshot
     from polylogue.storage.derived.topology import derive_session_topology_async
+    from polylogue.storage.hydrators import session_event_from_record
+    from polylogue.storage.sqlite.queries.session_events import sync_session_events_batch
 
     try:
         session_id = archive.resolve_session_id(session_ref)
     except KeyError:
         return None
     summary = archive.read_summary(session_id)
+    # The session envelope carries no timeline events; launches, quota
+    # windows and configured models are read from them.
+    events = sync_session_events_batch(archive._conn, [session_id]).get(session_id, [])
     session = archive_envelope_to_session(
         archive.read_session(session_id),
         display_label=summary.display_label,
         display_label_source=summary.display_label_source,
-    )
+    ).model_copy(update={"session_events": tuple(session_event_from_record(record) for record in events)})
     topology = asyncio.run(derive_session_topology_async(_TopologySnapshot(archive), session_id))
     artifacts, _ = archive.raw_artifacts_for_session(session_id, limit=1, offset=0)
     predicate = QueryFieldPredicate(field="session.id", values=(session_id,), op="=").with_field_ref(

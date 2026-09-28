@@ -2105,7 +2105,7 @@ class SavedViewSaveActuator(ConvergentReplay):
         if watch:
             from polylogue.daemon.convergence_standing_queries import establish_watch_baselines
 
-            establish_watch_baselines(args.archive.index_db_path)
+            establish_watch_baselines(args.archive.index_db_path, archive_root=args.archive.archive_root)
         return MutationReceipt(
             operation=self.operation,
             plan_hash=plan.plan_hash,

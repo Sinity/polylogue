@@ -340,6 +340,7 @@ def make_standing_query_stage(
 def establish_watch_baselines(
     db_path: Path,
     *,
+    archive_root: Path,
     evaluator: CanonicalPlanEvaluator | None = None,
 ) -> int:
     """Measure every watched definition that has no baseline yet.
@@ -349,6 +350,7 @@ def establish_watch_baselines(
     triggered it is silently absorbed into the baseline: the first delta after
     creation could never be reported. Watch creation calls this so the
     baseline describes the archive as it stood when the watch was made.
+    ``archive_root`` names the archive whose writer lease the caller holds.
     Returns how many baselines were measured.
     """
     user_db = _standing_user_db_path(db_path)
@@ -360,7 +362,7 @@ def establish_watch_baselines(
         evaluator = ArchiveCanonicalPlanEvaluator(db_path)
     now_ms = int(time.time() * 1000)
     measured = 0
-    conn = open_daemon_connection(user_db, timeout=30.0)
+    conn = open_daemon_connection(user_db, timeout=30.0, archive_root=archive_root)
     try:
         for query in list_watched_queries(conn):
             if get_watched_query_baseline(conn, query.query_hash) is not None:
