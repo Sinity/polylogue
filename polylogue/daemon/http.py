@@ -8,6 +8,7 @@ import functools
 import hashlib
 import hmac
 import json
+import os
 import select
 import socket
 import sqlite3
@@ -1293,6 +1294,45 @@ def _check_auth_logic(
     return _AuthResult(allowed=True, reason=None)
 
 
+def _tcp_socket_owner_uid(local_port: int, remote_ip: str, remote_port: int) -> int | None:
+    """The uid owning the IPv4 socket at *remote_ip*:*remote_port*, from ``/proc/net/tcp``.
+
+    The web-credential cookie has no port scoping — RFC 6265 cookies never do — so a
+    browser also attaches it to a same-host request aimed at a different local uid's
+    service on another port; that uid's process can then replay the leaked cookie back
+    to this daemon with forged Host, Origin, and Sec-Fetch-Site headers, since none of
+    those are enforced for a raw (non-browser) client. ``/proc/net/tcp`` is the kernel's
+    own connection table: the uid it reports for the peer's socket cannot be forged by
+    anything the peer sends over the connection. Returns ``None`` when the entry is
+    missing or the table is unavailable (a non-Linux host); callers then fail closed.
+    """
+    try:
+        remote_octets = [int(part) for part in remote_ip.split(".")]
+        if len(remote_octets) != 4 or any(not 0 <= octet <= 255 for octet in remote_octets):
+            return None
+    except ValueError:
+        return None
+    remote_hex = "".join(f"{octet:02X}" for octet in reversed(remote_octets))
+    remote_key = f"{remote_hex}:{remote_port:04X}"
+    local_key = f"0100007F:{local_port:04X}"  # 127.0.0.1, byte-reversed
+    try:
+        text = Path("/proc/net/tcp").read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) < 8:
+            continue
+        # The PEER's own socket entry has its local_address as what we see as remote,
+        # and its rem_address as the address it connected to (our listening socket).
+        if fields[1] == remote_key and fields[2] == local_key:
+            try:
+                return int(fields[7])
+            except ValueError:
+                return None
+    return None
+
+
 def _check_host_admission_logic(host_header: str, api_host: str) -> bool:
     """Pure logic: is *host_header* an allowed Host for this daemon?
 
@@ -1376,7 +1416,30 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         return str(client_address[0]) if isinstance(client_address, tuple) else "127.0.0.1"
 
     def _web_credential_token(self) -> str | None:
-        return read_web_credential_cookie(self.headers.get("Cookie", ""))
+        token = read_web_credential_cookie(self.headers.get("Cookie", ""))
+        if token and not self._peer_is_owner():
+            # The cookie's bytes may have leaked to another local uid's process
+            # (no port scoping; see ``_tcp_socket_owner_uid``); honor it only
+            # from a peer the kernel itself attributes to this process's uid.
+            return None
+        return token
+
+    def _peer_is_owner(self) -> bool:
+        """Whether the TCP peer of this request is owned by this process's own uid.
+
+        Real for a live socket. ``tests/infra/daemon_http_harness.py`` fakes the
+        transport for handler-logic tests and sets this to ``True`` by default,
+        since there is no kernel connection-table entry for a fabricated
+        ``client_address``.
+        """
+        client_address = self.client_address
+        if not isinstance(client_address, tuple) or len(client_address) < 2:
+            return False
+        server_address = getattr(self.server, "server_address", None)
+        if not isinstance(server_address, tuple) or len(server_address) < 2:
+            return False
+        uid = _tcp_socket_owner_uid(int(server_address[1]), str(client_address[0]), int(client_address[1]))
+        return uid is not None and uid == os.getuid()
 
     def _web_credential_decision(self, required_scope: WebCredentialScope) -> WebCredentialDecision:
         return self._web_credentials.validate(

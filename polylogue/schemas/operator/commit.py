@@ -30,7 +30,6 @@ supersedes the other.
 
 from __future__ import annotations
 
-import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -106,7 +105,18 @@ class SchemaCommitAuditError(Exception):
 
 
 def _persist_audited(output_dir: Path, provider_token: str, bundle: _ProviderBundle) -> None:
-    """Persist *bundle*, audit the written provider tree, and roll back on a blocker.
+    """Render *bundle* to a staging tree, audit it there, and publish only on a pass.
+
+    The rendered tree is never written to the live ``provider_dir`` before its
+    audit completes: a kill between publication and the audit gate could
+    otherwise leave an unaudited package — including one carrying a promotion
+    blocker such as retained private material — as the tree subsequent reads
+    see, with the prior tree surviving only in an orphaned temp directory
+    (polylogue findings on this module). Rendering into a same-filesystem
+    staging directory and publishing with :func:`publish_provider_tree`'s
+    atomic exchange means the live tree only ever transitions directly from
+    "prior, audited" to "new, audited"; a failed or interrupted run leaves it
+    exactly as it was.
 
     Only publication and its audit hold the exclusive tree lock; the caller
     builds *bundle* (the potentially long inference run) before this point, so
@@ -114,27 +124,20 @@ def _persist_audited(output_dir: Path, provider_token: str, bundle: _ProviderBun
     """
     provider_dir = output_dir / provider_token
     output_dir.mkdir(parents=True, exist_ok=True)
-    # Snapshot, write, audit and rollback form one critical section: without
-    # the exclusive tree lock a concurrent commit's valid publication could be
-    # replaced by this commit's stale snapshot during rollback. The snapshot
-    # lives beside the published tree so rollback is a same-filesystem atomic
-    # exchange: the provider name never observes a missing or partial tree.
     with (
         provider_tree_lock(output_dir, exclusive=True),
-        tempfile.TemporaryDirectory(prefix=f".{provider_token}.prior-", dir=output_dir) as prior_root,
+        tempfile.TemporaryDirectory(prefix=f".{provider_token}.stage-", dir=output_dir) as stage_root,
     ):
-        prior = Path(prior_root) / provider_token
-        if provider_dir.exists():
-            shutil.copytree(provider_dir, prior)
-        persist_generated_provider_bundle(output_dir, provider_token, bundle)
-        report = audit_schema_artifacts(provider_dir) if provider_dir.exists() else None
-        if report is None or not report.blockers:
+        stage_root_path = Path(stage_root)
+        staged_dir = stage_root_path / provider_token
+        persist_generated_provider_bundle(stage_root_path, provider_token, bundle)
+        if not staged_dir.exists():
+            # bundle.result.success was False: nothing rendered to publish.
             return
-        if prior.exists():
-            publish_provider_tree(prior, provider_dir, expected_snapshot=read_provider_snapshot(provider_dir))
-        else:
-            os.rename(provider_dir, Path(prior_root) / "refused")
-        raise SchemaCommitAuditError(provider_token, report.blockers)
+        report = audit_schema_artifacts(staged_dir)
+        if report.blockers:
+            raise SchemaCommitAuditError(provider_token, report.blockers)
+        publish_provider_tree(staged_dir, provider_dir, expected_snapshot=read_provider_snapshot(provider_dir))
 
 
 def _refuse_private_retained_values(provider: str, bundle: _ProviderBundle) -> None:

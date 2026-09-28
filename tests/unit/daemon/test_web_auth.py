@@ -173,6 +173,36 @@ def test_web_credential_cannot_execute_archive_control_routes(path: str, handler
     route_handler.assert_not_called()
 
 
+def test_web_credential_from_an_untrusted_peer_is_refused_even_with_a_valid_cookie() -> None:
+    """A cookie carries no port scoping, so a same-host different-uid process can
+    receive it and replay it here with any Host/Origin/Sec-Fetch-Site it likes; the
+    kernel-reported peer uid (``trusted_peer=False`` stands in for a mismatch) is the
+    one thing such a replay cannot forge."""
+    server = MockDaemonServer(auth_token="secret")
+    origin = "http://127.0.0.1:8766"
+    issued = server.web_credentials.issue(origin)
+    handler = _make_handler(
+        "GET",
+        "/api/status",
+        origin=origin,
+        host="127.0.0.1:8766",
+        cookie=f"{WEB_CREDENTIAL_COOKIE}={issued.token}",
+        fetch_site="same-origin",
+        web_client=True,
+        server=server,
+        trusted_peer=False,
+    )
+    send_error, _ = capture_responses(handler)
+
+    handler.do_GET()
+
+    send_error.assert_called_once_with(
+        HTTPStatus.UNAUTHORIZED,
+        "web_credential_missing",
+        extra_headers={"Cache-Control": "no-store", "X-Polylogue-Web-Credential-State": "web_credential_missing"},
+    )
+
+
 def test_bootstrap_rejects_wrong_origin_without_minting_cookie() -> None:
     handler = _make_handler(
         "POST",

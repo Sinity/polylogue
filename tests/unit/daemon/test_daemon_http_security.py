@@ -205,6 +205,7 @@ def _make_handler(
     web_client: bool = False,
     body: bytes = b"",
     server: object | None = None,
+    trusted_peer: bool = True,
 ) -> DaemonAPIHandler:
     """Build a ``DaemonAPIHandler`` instance with mocked transport.
 
@@ -233,6 +234,7 @@ def _make_handler(
         web_client=web_client,
         body=body,
         server=server or MockDaemonServer(auth_token="secret"),
+        trusted_peer=trusted_peer,
     )
 
 

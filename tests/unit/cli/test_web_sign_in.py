@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import json
+import os
+from pathlib import Path
 from typing import Any
 from urllib.error import URLError
 
@@ -35,7 +37,14 @@ def test_opened_url_carries_a_ticket_fragment_minted_with_the_bearer(monkeypatch
 
     url = web_sign_in.signed_in_web_url(object(), "http://127.0.0.1:8766/", "http://127.0.0.1:8766/s/abc")  # type: ignore[arg-type]
 
-    assert url == "http://127.0.0.1:8766/web-auth/sign-in?next=/s/abc#polylogue-ticket=t%2F1"
+    # The ticket never reaches the browser process's argv: only a local,
+    # owner-only redirect file's path is returned, and the ticketed URL lives
+    # solely in that file's content.
+    assert url.startswith("file://")
+    redirect_path = url.removeprefix("file://")
+    assert oct(os.stat(redirect_path).st_mode & 0o777) == oct(0o600)
+    content = Path(redirect_path).read_text(encoding="utf-8")
+    assert "http://127.0.0.1:8766/web-auth/sign-in?next=/s/abc#polylogue-ticket=t%2F1" in content
     assert seen[0].full_url == "http://127.0.0.1:8766/api/web-auth/ticket"
     assert seen[0].get_header("Authorization") == "Bearer owner-token"
 
