@@ -356,11 +356,6 @@
   },
   {
     "target": "polylogue/cli",
-    "file": "polylogue/cli/shared/helper_summary.py",
-    "import": "polylogue.storage.embeddings"
-  },
-  {
-    "target": "polylogue/cli",
     "file": "polylogue/cli/shared/types.py",
     "import": "polylogue.storage.repository"
   },

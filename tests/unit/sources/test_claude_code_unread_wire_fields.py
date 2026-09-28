@@ -839,3 +839,96 @@ def test_hook_failure_fields_become_an_event_only_when_evidence_bearing() -> Non
     assert len(events) == 1
     assert events[0].payload["hook_errors"] == ["synthetic hook failed"]
     assert events[0].payload["prevented_continuation"] is True
+
+
+def test_api_error_record_is_harness_protocol_with_a_linked_event() -> None:
+    """A failed API call must not read as model output.
+
+    Anti-vacuity: drop the ``<synthetic>`` re-attribution in
+    ``_parse_code_records`` and the message counts as assistant-authored with
+    model ``<synthetic>``; drop the ``isApiErrorMessage`` block and the status
+    is lost.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "a-api-error",
+                "sessionId": "sess-api-error",
+                "isApiErrorMessage": True,
+                "apiErrorStatus": 429,
+                "apiErrorIsTransient": True,
+                "error": "rate_limit_error",
+                "errorDetails": "rate limited",
+                "message": {
+                    "role": "assistant",
+                    "model": "<synthetic>",
+                    "content": [{"type": "text", "text": "API Error: 429 rate limited"}],
+                },
+            },
+        ],
+        "sess-api-error",
+    )
+    message = parsed.messages[0]
+    assert message.material_origin is MaterialOrigin.RUNTIME_PROTOCOL
+    assert message.model_name is None
+    assert "<synthetic>" not in (parsed.models_used or [])
+    events = [event for event in parsed.session_events if event.event_type == "claude_api_error"]
+    assert len(events) == 1
+    assert events[0].source_message_provider_id == "a-api-error"
+    assert events[0].payload["status"] == 429
+    assert events[0].payload["details"] == "rate limited"
+    assert events[0].payload["transient"] is True
+    assert events[0].payload["error"] == "rate_limit_error"
+
+
+def test_tool_denial_kind_is_kept_beside_the_error_result() -> None:
+    """A refused tool call keeps why it was refused, keyed to the tool call.
+
+    Anti-vacuity: remove the ``toolDenialKind`` block and a permission-rule
+    refusal is indistinguishable from a tool that ran and failed.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "u-denied",
+                "sessionId": "sess-denied",
+                "toolDenialKind": "permission-rule",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_1", "is_error": True, "content": "denied"}
+                    ],
+                },
+            },
+        ],
+        "sess-denied",
+    )
+    events = [event for event in parsed.session_events if event.event_type == "claude_tool_denial"]
+    assert len(events) == 1
+    assert events[0].payload["kind"] == "permission-rule"
+    assert events[0].payload["tool_use_ids"] == ["toolu_1"]
+
+
+def test_per_turn_effort_lands_as_model_effort() -> None:
+    """``perTurnEffort`` on the record is the turn's reasoning effort.
+
+    Anti-vacuity: remove the ``perTurnEffort`` fallback and ``model_effort``
+    stays ``None``.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "a-effort",
+                "sessionId": "sess-effort",
+                "perTurnEffort": "high",
+                "effort": "low",
+                "message": {"role": "assistant", "model": "claude-x", "content": [{"type": "text", "text": "ok"}]},
+            },
+        ],
+        "sess-effort",
+    )
+    assert parsed.messages[0].model_effort == "high"
+    assert parsed.messages[0].material_origin is not MaterialOrigin.RUNTIME_PROTOCOL

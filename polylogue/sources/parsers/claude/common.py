@@ -1004,6 +1004,60 @@ def _pair_idless_tool_blocks(blocks: list[ParsedContentBlock], *, message_key: s
     ]
 
 
+def _occurrence_base(evidence_key: str) -> str:
+    """The identity an occurrence-suffixed evidence key repeats."""
+    return evidence_key.split(":occurrence:", 1)[0]
+
+
+def _compaction_summary_event(evidence: _ClaudeMessageEvidence) -> ParsedSessionEvent | None:
+    """The ``claude_ai_compaction_summary`` event of one message, when it carries one.
+
+    When claude.ai compacts a conversation it stores the summary it carries
+    forward on the message where compaction took effect (``compaction_summary``:
+    text blocks with start/stop timestamps). The text is kept, keyed to that
+    message. It is deliberately not a ``compaction`` event: those carry
+    boundaries and a materialized summary message that effective-context reads
+    apply, and placing a summary message into claude.ai's branched message tree
+    (variant and attachment-owner coordinates) is not done here.
+
+    One event per emitted message, in the normalizer's canonical message
+    order: a repeated native id is one message per occurrence and keeps its
+    own summary, and an export listing the same messages in another array
+    order yields the same events in the same order.
+    """
+    summary_blocks = evidence.raw.get("compaction_summary")
+    if not isinstance(summary_blocks, list):
+        return None
+    texts: list[str] = []
+    start_timestamp: str | None = None
+    stop_timestamp: str | None = None
+    for block in summary_blocks:
+        if not isinstance(block, Mapping):
+            continue
+        text = block.get("text")
+        if isinstance(text, str) and text:
+            texts.append(text)
+        start = block.get("start_timestamp")
+        stop = block.get("stop_timestamp")
+        if start_timestamp is None and isinstance(start, str) and start:
+            start_timestamp = start
+        if isinstance(stop, str) and stop:
+            stop_timestamp = stop
+    if not texts:
+        return None
+    payload: dict[str, object] = {"summary": "\n\n".join(texts)}
+    if start_timestamp is not None:
+        payload["start_timestamp"] = start_timestamp
+    if stop_timestamp is not None:
+        payload["stop_timestamp"] = stop_timestamp
+    return ParsedSessionEvent(
+        event_type="claude_ai_compaction_summary",
+        timestamp=stop_timestamp or start_timestamp or evidence.timestamp or evidence.updated_at,
+        source_message_provider_id=evidence.native_provider_message_id or None,
+        payload=payload,
+    )
+
+
 def normalize_chat_messages(
     chat_messages: list[object],
     *,
@@ -1299,8 +1353,13 @@ def normalize_chat_messages(
             )
         )
 
+    positioned_summaries: list[tuple[str, int, ParsedSessionEvent]] = []
     for evidence in sorted(emitted, key=lambda row: order_key_by_id[row.evidence_key]):
         session_events.extend(_web_tool_evidence_events(evidence))
+        if (compaction_summary := _compaction_summary_event(evidence)) is not None:
+            positioned_summaries.append(
+                (_occurrence_base(evidence.evidence_key), position_by_id[evidence.evidence_key], compaction_summary)
+            )
         if evidence.thinking_configuration:
             payload: dict[str, object] = {"thinking": evidence.thinking_configuration}
             if evidence.model_name:
@@ -1342,6 +1401,33 @@ def normalize_chat_messages(
                     payload=update_payload,
                 )
             )
+    # Compaction summaries follow the messages. The occurrences of one
+    # repeated identity (a native id, or an ID-less record's synthetic key)
+    # get their suffixes, and so their positions and variants, in array
+    # order, so they are grouped at the identity's first position and ordered
+    # by their own content. A summary on a record with no other material, and
+    # so no message of its own, comes after them.
+    positioned_summaries.extend(
+        (_occurrence_base(evidence.evidence_key), 2**31, event)
+        for evidence in evidence_by_id.values()
+        if evidence.evidence_key not in emitted_ids
+        if (event := _compaction_summary_event(evidence)) is not None
+    )
+    first_position: dict[str, int] = {}
+    for base, position, _event in positioned_summaries:
+        first_position[base] = min(position, first_position.get(base, position))
+    session_events.extend(
+        event
+        for _base, _position, event in sorted(
+            positioned_summaries,
+            key=lambda item: (
+                first_position[item[0]],
+                item[0],
+                json.dumps(item[2].payload, sort_keys=True),
+                item[2].timestamp or "",
+            ),
+        )
+    )
 
     if duplicate_ids:
         session_events.append(

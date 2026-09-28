@@ -98,6 +98,9 @@ class AdmissionResult:
     outcome: AdmissionOutcome
     reason: str | None = None
     actual_cost: int | None = None
+    #: A RETRYABLE item the adapter never attempted (e.g. the daemon is
+    #: degraded): it counts toward no attempt budget or cooldown.
+    unattempted: bool = False
 
     @property
     def acknowledgeable(self) -> bool:
@@ -334,7 +337,14 @@ class FairIntakeDispatcher:
         reports: list[IntakeClassReport] = []
 
         total_weight = sum(spec.weight for spec in schedulable) or 1
+        from polylogue.core.degraded import is_fully_degraded
+
         for spec in schedulable:
+            if is_fully_degraded():
+                # A class that just degraded the daemon (a structural database
+                # error) ends the pass: later classes would still open archive
+                # tiers. The service parks from the next tick.
+                break
             runtime = self._runtime[spec.name]
             share = max(1, budget * spec.weight // total_weight)
             runtime.deficit += share
@@ -504,6 +514,9 @@ class FairIntakeDispatcher:
             item_actual_cost = item_cost if result.actual_cost is None else max(0, int(result.actual_cost))
             actual_cost += item_actual_cost
             runtime.deficit -= item_actual_cost - item_cost
+            if result.unattempted:
+                retried += 1
+                continue
             attempts = runtime.attempts.get(item.item_id, 0) + 1
             runtime.attempts[item.item_id] = attempts
             retried += 1

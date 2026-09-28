@@ -1,37 +1,6 @@
-"""Embedding storage, materialization, and readiness helpers."""
+"""Embedding storage, materialization, and readiness helpers.
 
-from polylogue.storage.embeddings.derivation import EmbeddingDerivationAdapter
-from polylogue.storage.embeddings.materialization import (
-    EmbedSessionOutcome,
-    EmbedSingleStatus,
-    PendingSession,
-    embed_session_sync,
-    iter_pending_sessions,
-)
-from polylogue.storage.embeddings.reconcile import (
-    EmbeddingOrphanReconcileReport,
-    EmbeddingOrphanSample,
-    inspect_embedding_orphans,
-    reconcile_embedding_orphans,
-)
-from polylogue.storage.embeddings.status_payload import (
-    EmbeddingStatusPayload,
-    RetrievalBandPayload,
-    embedding_status_payload,
-)
-
-__all__ = [
-    "EmbedSessionOutcome",
-    "EmbeddingDerivationAdapter",
-    "EmbedSingleStatus",
-    "EmbeddingOrphanReconcileReport",
-    "EmbeddingOrphanSample",
-    "EmbeddingStatusPayload",
-    "PendingSession",
-    "RetrievalBandPayload",
-    "embed_session_sync",
-    "embedding_status_payload",
-    "inspect_embedding_orphans",
-    "iter_pending_sessions",
-    "reconcile_embedding_orphans",
-]
+Import from the owning submodule. The package deliberately re-exports
+nothing: an eager re-export of ``derivation`` made importing any leaf here
+(``identity``, from the archive-tier writer) re-enter the writer mid-import.
+"""

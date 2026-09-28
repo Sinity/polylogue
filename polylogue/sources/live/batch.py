@@ -1153,18 +1153,19 @@ class LiveBatchProcessor:
         open_attempt: _OpenIngestAttempt | None = None,
     ) -> LiveBatchMetrics:
         """Body of :meth:`ingest_files`, with each ops write separately admitted."""
+        if is_fully_degraded():
+            # The daemon has been marked structurally unable to ingest (e.g.
+            # schema mismatch detected at preflight or on the first batch).
+            # Do not enter the full-parse path — that is what produced the
+            # IOPS storm in #1003 — nor the source-selection gate, which reads
+            # the archive's existence journals on every call.
+            return self._degraded_skip_metrics(paths, queued_file_count, skipped_file_count)
         authorization = self.require_cursor_authority(paths)
         refused_paths = self._refused_paths
         self._refused_paths = frozenset()
         if refused_paths:
             paths = [path for path in paths if path not in refused_paths]
             skipped_file_count += len(refused_paths)
-        if is_fully_degraded():
-            # The daemon has been marked structurally unable to ingest (e.g.
-            # schema mismatch detected at preflight or on the first batch).
-            # Do not enter the full-parse path — that is what produced the
-            # IOPS storm in #1003.
-            return self._degraded_skip_metrics(paths, queued_file_count, skipped_file_count)
         batch_started = time.perf_counter()
         # polylogue-11cg9: a dedicated monotonic reference for the
         # max_pass_seconds budget, separate from ``batch_started`` (used for
@@ -1990,6 +1991,7 @@ class LiveBatchProcessor:
             stale_cursor_write_count=0,
             stage_timings_s={},
             failed_paths=[],
+            daemon_degraded_skip=True,
         )
 
     def _record_attempt_progress(self, attempt_id: str, **kwargs: Any) -> None:

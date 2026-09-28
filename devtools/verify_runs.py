@@ -56,7 +56,6 @@ def environment_fingerprint(*, root: Path | None = None, env: Mapping[str, str] 
 VERIFY_CACHE = Path(".cache/verify")
 VERIFY_RUNS_DIR = VERIFY_CACHE / "runs"
 VERIFY_HISTORY_PATH = VERIFY_CACHE / "history.jsonl"
-VERIFY_EVIDENCE_PATH = VERIFY_CACHE / "evidence.jsonl"
 VERIFY_EVIDENCE_PATH_ENV = "POLYLOGUE_VERIFICATION_EVIDENCE_PATH"
 CURRENT_RUN_PATH = VERIFY_CACHE / "current-run.json"
 CURRENT_STATISTICS_PATH = VERIFY_CACHE / "current-pytest-statistics.json"
@@ -848,6 +847,17 @@ def _terminal_status(entry: Mapping[str, Any]) -> str:
     return "passed" if entry.get("exit_code") == 0 else "failed"
 
 
+#: Slot-receipt fields that name checkout-local files. The durable lane
+#: outlives the checkout, so a path there points at nothing and leaks layout.
+_SLOT_RECEIPT_LOCAL_FIELDS = frozenset({"log_path"})
+
+
+def _durable_slot_receipt(receipt: object) -> dict[str, Any] | None:
+    if not isinstance(receipt, Mapping):
+        return None
+    return {key: value for key, value in receipt.items() if key not in _SLOT_RECEIPT_LOCAL_FIELDS}
+
+
 def canonical_verification_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
     """Return the bounded, cross-source contract for one verifier run.
 
@@ -872,7 +882,7 @@ def canonical_verification_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
                 "exit_code": raw.get("exit"),
                 "duration_s": raw.get("duration_s"),
                 "diagnosis": raw.get("diagnosis"),
-                "pytest_slot_receipt": raw.get("pytest_slot_receipt"),
+                "pytest_slot_receipt": _durable_slot_receipt(raw.get("pytest_slot_receipt")),
                 "artifact_ref": f"polylogue://verification/{entry.get('run_id')}/steps/{raw.get('step_id')}"
                 if raw.get("step_id") is not None
                 else None,
@@ -980,11 +990,26 @@ def _semantic_history_row(entry: Mapping[str, Any]) -> dict[str, Any]:
     return row
 
 
+def verification_evidence_path(env: Mapping[str, str] | None = None) -> Path:
+    """Where the canonical evidence lane lives.
+
+    The lane is the durable record of every verifier run, so it lives in the
+    user's state directory rather than the checkout: a worktree, and with it
+    ``.cache/verify``, is removed once its branch lands, while the run history
+    must outlive it. ``POLYLOGUE_VERIFICATION_EVIDENCE_PATH`` relocates it.
+    """
+    source = os.environ if env is None else env
+    configured = source.get(VERIFY_EVIDENCE_PATH_ENV)
+    if configured:
+        return Path(configured)
+    state_home = source.get("XDG_STATE_HOME")
+    base = Path(state_home) if state_home else Path(source.get("HOME", "~")).expanduser() / ".local" / "state"
+    return base / "polylogue" / "verification" / "evidence.jsonl"
+
+
 def append_verification_evidence(entry: Mapping[str, Any], *, path: Path | None = None) -> None:
-    """Publish the same canonical receipt to the configured evidence lane."""
-    configured = os.environ.get(VERIFY_EVIDENCE_PATH_ENV)
-    target = path or (Path(configured) if configured else VERIFY_EVIDENCE_PATH)
-    _append_jsonl(canonical_verification_receipt(entry), path=target)
+    """Publish the same canonical receipt to the durable evidence lane."""
+    _append_jsonl(canonical_verification_receipt(entry), path=path or verification_evidence_path())
 
 
 def read_verification_evidence(path: Path) -> list[dict[str, Any]]:
@@ -1384,9 +1409,10 @@ def reconcile_and_record_abandoned_verify_runs(
     what ``prune_successful_verify_runs`` may bound. Appending here is what
     turns the reconciliation into evidence rather than a local file edit.
 
-    The history and evidence lanes are derived from ``runs_root`` for the same
-    reason the scan is: a caller reading a relocated cache must not append to
-    the checkout's.
+    The history lane is derived from ``runs_root`` for the same reason the
+    scan is: a caller reading a relocated cache must not append to the
+    checkout's. The evidence lane is not the checkout's, so a reconciled run
+    joins it like any finished one.
     """
     reconciled = reconcile_abandoned_verify_runs(runs_root=runs_root, state_root=state_root)
     cache = runs_root.parent
@@ -1394,5 +1420,5 @@ def reconcile_and_record_abandoned_verify_runs(
         with contextlib.suppress(OSError, ValueError):
             append_verify_history(payload, path=cache / VERIFY_HISTORY_PATH.name)
         with contextlib.suppress(OSError, ValueError):
-            append_verification_evidence(payload, path=cache / VERIFY_EVIDENCE_PATH.name)
+            append_verification_evidence(payload)
     return reconciled
