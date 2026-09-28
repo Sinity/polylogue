@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
@@ -356,7 +358,14 @@ def test_projection_classifies_text_blocks_tools_attachments_and_system_noise() 
     assert "custom prose" in (prose_without_noise[1].text or "")
 
 
-def test_reasoning_projection_suppresses_the_writer_fallback_text_block() -> None:
+@pytest.mark.parametrize(
+    ("text", "reasoning"),
+    [
+        ("private chain of thought", "private chain of thought"),
+        ("<thinking>private chain</thinking>", "private chain"),
+    ],
+)
+def test_reasoning_projection_suppresses_the_writer_fallback_text_block(text: str, reasoning: str) -> None:
     """A persisted typed-thinking row must project like its pre-write self.
 
     A text-only ``message_type=thinking`` message reaches storage with no
@@ -372,12 +381,12 @@ def test_reasoning_projection_suppresses_the_writer_fallback_text_block() -> Non
     ``message_is_typed_thinking`` hand-off makes ``after_write`` project as
     PROSE, so ``without_reasoning`` keeps the text and the first assertion is
     red.  The reasoning-only assertions pin the opposite direction, so a
-    blanket "drop every typed-thinking message" would fail too.
+    blanket "drop every typed-thinking message" would fail too.  The wrapped
+    case fails if the fallback block keeps its literal ``<thinking>`` tags.
     """
     from polylogue.sources.parsers.base_models import ParsedMessage
     from polylogue.storage.sqlite.archive_tiers.write import _message_blocks
 
-    text = "private chain of thought"
     parsed = ParsedMessage(
         provider_message_id="typed-thinking",
         role=Role.ASSISTANT,
@@ -406,8 +415,8 @@ def test_reasoning_projection_suppresses_the_writer_fallback_text_block() -> Non
 
     assert project_message_content([after_write], hide) == []
     assert project_message_content([before_write], hide) == []
-    assert [message.text for message in project_message_content([after_write], show)] == [text]
-    assert [message.text for message in project_message_content([before_write], show)] == [text]
+    assert [message.text for message in project_message_content([after_write], show)] == [reasoning]
+    assert [message.text for message in project_message_content([before_write], show)] == [reasoning]
 
 
 def test_typed_thinking_keeps_structural_blocks_classified_as_themselves() -> None:

@@ -271,7 +271,9 @@ def _segments_from_blocks(
                 # its own structure and keeps it.  Fenced code inside the
                 # reasoning body stays reasoning too, so this does not route
                 # through _text_block_segments' prose/code split.
-                segments.append(_Segment(ContentKind.REASONING, _block_text(block), block=block))
+                reasoning = _typed_thinking_text(_block_text(block))
+                if reasoning:
+                    segments.append(_Segment(ContentKind.REASONING, reasoning, block=block))
                 continue
             segments.extend(_text_block_segments(block))
             continue
@@ -295,6 +297,20 @@ def _segments_from_blocks(
             continue
         segments.append(_Segment(ContentKind.PROSE, _block_text(block), block=block))
     return segments
+
+
+def _typed_thinking_text(text: str) -> str | None:
+    """Normalize a typed thinking body exactly as the pre-write text path does.
+
+    A ``<thinking>`` wrapper yields its inner text (``None`` when empty), and
+    unwrapped text is the reasoning itself, so a stored fallback block projects
+    the same reasoning as the message did before the writer added it.
+    """
+    stripped = text.strip()
+    match = _THINKING_PATTERN.search(stripped)
+    if match:
+        return match.group("thinking").strip() or None
+    return stripped or None
 
 
 def _segments_from_text(message: Message) -> list[_Segment]:
