@@ -4993,9 +4993,13 @@ def test_a_prepared_excision_refusal_is_a_typed_permanent_outcome(
 
     Anti-vacuity (Codex P2, #5696): let the generic handler catch
     ``ContentExcisedError`` and it becomes a retryable parse failure instead
-    of the non-retryable ``content_excised`` outcome.
+    of a non-retryable ``validation_rejected`` outcome with a
+    ``content_excised`` diagnostic; count it only in the internal summary and
+    the public ``ParseResult`` reports no excision skips.
     """
     from polylogue.core.enums import INGEST_OUTCOME_RETRYABLE, IngestOutcome
+    from polylogue.pipeline.services.ingest_batch._summary import apply_ingest_batch_summary
+    from polylogue.pipeline.services.parsing_models import ParseResult
     from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
 
     archive_root = tmp_path / "archive"
@@ -5040,6 +5044,10 @@ def test_a_prepared_excision_refusal_is_a_typed_permanent_outcome(
     assert summary.parse_failures == 0
     assert summary.excised_skips == 1
     outcome = summary.outcomes[raw_record.raw_id]
-    assert outcome.outcome_code == IngestOutcome.CONTENT_EXCISED.value
+    assert outcome.outcome_code == IngestOutcome.VALIDATION_REJECTED.value
+    assert str(outcome.diagnostic).startswith("content_excised")
     assert outcome.retryable is False
-    assert INGEST_OUTCOME_RETRYABLE[IngestOutcome.CONTENT_EXCISED] is False
+    assert INGEST_OUTCOME_RETRYABLE[IngestOutcome.VALIDATION_REJECTED] is False
+    result = ParseResult()
+    apply_ingest_batch_summary(result, summary)
+    assert result.excised_skips == 1

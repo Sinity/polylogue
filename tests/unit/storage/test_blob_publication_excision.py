@@ -281,3 +281,61 @@ def test_attachments_refused_between_check_and_flush_are_reconciled(tmp_path: Pa
     assert reconciled["excised"] == (None, len(excised), "unavailable")
     assert reconciled["kept"] == acquired["kept"]
     assert [ref.blob_hash.hex() for ref in kept_refs] == [kept_hex]
+
+
+def test_a_refused_publication_does_not_hide_bytes_still_retained(tmp_path: Path) -> None:
+    """A hash excised for one reingest stays readable where its bytes are still on disk.
+
+    Anti-vacuity (Codex P2, #5696): consult the refusal set before the final
+    path and every later read of the still-retained blob raises
+    ``ContentExcisedError``.
+    """
+    root = tmp_path / "archive"
+    with ArchiveStore(root, initialize=True, read_only=False):
+        pass
+    payload = b"bytes another retained session still references"
+    publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+    retained_hex, _ = publisher.write_from_bytes(payload)
+    publisher.flush()
+    with sqlite3.connect(root / "source.db") as source:
+        record_excised_blob_hash(
+            source, blob_hash=bytes.fromhex(retained_hex), reason="synthetic excision", actor="test", excised_at_ms=1
+        )
+    publisher.write_from_bytes(payload)
+    publisher.flush()
+    assert publisher.refused_as_excised(retained_hex)
+
+    assert publisher.exists(retained_hex) is True
+    assert publisher.read_all(retained_hex) == payload
+
+
+def test_an_excision_after_a_successful_flush_is_reconciled_from_the_ledger(tmp_path: Path) -> None:
+    """An excision landing between a clean flush and the reference write ends ``unavailable``.
+
+    Anti-vacuity (Codex P2, #5696): reconcile only flush-local refusals and
+    the attachment stays ``acquired`` with its reference, which the reference
+    write then refuses for the whole replay.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.storage.blob_publication import reconcile_refused_attachments
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root, initialize=True, read_only=False):
+        pass
+    payload = b"bytes excised after the flush"
+    publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+    blob_hex, _ = publisher.write_from_bytes(payload)
+    publisher.flush()
+    with sqlite3.connect(root / "source.db") as source:
+        record_excised_blob_hash(
+            source, blob_hash=bytes.fromhex(blob_hex), reason="synthetic excision", actor="test", excised_at_ms=1
+        )
+    acquired: dict[object, tuple[bytes | None, int, str]] = {"a": (bytes.fromhex(blob_hex), len(payload), "acquired")}
+    refs = (SimpleNamespace(blob_hash=bytes.fromhex(blob_hex)),)
+
+    with sqlite3.connect(root / "source.db") as source:
+        reconciled, kept_refs = reconcile_refused_attachments(acquired, refs, publisher, source_conn=source)
+
+    assert reconciled["a"] == (None, len(payload), "unavailable")
+    assert kept_refs == ()

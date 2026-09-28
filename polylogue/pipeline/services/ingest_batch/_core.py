@@ -1991,8 +1991,10 @@ def _write_session_entry(
         return True
     except ContentExcisedError as exc:
         # A deliberate, permanent refusal (the operator excised content this
-        # session carries), never a parse failure to retry: typed so the
-        # raw's outcome is non-retryable ``content_excised``.
+        # session carries), never a parse failure to retry: the raw's outcome
+        # is the non-retryable ``validation_rejected`` with a
+        # ``content_excised`` diagnostic -- an existing durable outcome, so
+        # ``source_items`` records it without a vocabulary change.
         if batch_owns_transaction:
             conn.execute(f"ROLLBACK TO {_SESSION_WRITE_SAVEPOINT}")
             conn.execute(f"RELEASE {_SESSION_WRITE_SAVEPOINT}")
@@ -2003,10 +2005,10 @@ def _write_session_entry(
         if outcome is not None:
             summary.outcomes[raw_id] = replace(
                 outcome,
-                outcome_code=IngestOutcome.CONTENT_EXCISED.value,
+                outcome_code=IngestOutcome.VALIDATION_REJECTED.value,
                 retryable=False,
                 parse_error=f"content_excised: {exc}"[:500],
-                diagnostic=str(exc)[:500],
+                diagnostic=f"content_excised: {exc}"[:500],
             )
         return False
     except Exception as exc:

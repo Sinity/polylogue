@@ -281,19 +281,23 @@ class ArchiveBlobPublisher(BlobStore):
         self._pending_by_hash.clear()
 
     def blob_path(self, hash_hex: str) -> Path:
+        final_path = self._store.blob_path(hash_hex)
+        if final_path.exists():
+            # Still retained for another session: a refused publication of
+            # the same hash does not make its existing bytes unreadable.
+            return final_path
         if hash_hex in self._refused_as_excised:
             # The staged bytes were discarded at flush. A reader gets the typed
             # excision instead of a path that does not exist.
             from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
 
             raise ContentExcisedError(blob_hash=bytes.fromhex(hash_hex), source_path=f"blob:{hash_hex}")
-        final_path = self._store.blob_path(hash_hex)
-        if final_path.exists():
-            return final_path
         prepared = self._pending_by_hash.get(hash_hex)
         return prepared.temporary_path if prepared is not None else final_path
 
     def exists(self, hash_hex: str) -> bool:
+        if self._store.blob_path(hash_hex).exists():
+            return True
         if hash_hex in self._refused_as_excised:
             return False
         return self.blob_path(hash_hex).exists()
@@ -363,19 +367,31 @@ def reconcile_refused_attachments(
     acquired: dict[Any, tuple[bytes | None, int, str]],
     refs: tuple[Any, ...],
     publisher: BlobStore | None,
+    *,
+    source_conn: sqlite3.Connection | None = None,
 ) -> tuple[dict[Any, tuple[bytes | None, int, str]], tuple[Any, ...]]:
-    """Drop what a flush refused from queued attachments and their blob references.
+    """Drop what a flush refused, or the ledger now excises, from queued attachments and their refs.
 
-    An excision can commit between the caller's ledger check and its flush;
-    the flush then refuses and discards the bytes. The attachment is recorded
-    ``unavailable`` and its reference is not written, exactly as when the
-    ledger check itself saw the excision.
+    An excision can commit between the caller's ledger check and its flush
+    (the flush then refuses and discards the bytes), or after a successful
+    flush and before the caller writes its references. Either way the
+    attachment is recorded ``unavailable`` and its reference is not written,
+    exactly as when the ledger check itself saw the excision, instead of the
+    reference write failing the whole replay.
     """
-    if publisher is None:
+    from polylogue.storage.sqlite.archive_tiers.source_write import is_blob_hash_excised
+
+    if publisher is None and source_conn is None:
         return acquired, refs
+
+    def excised(blob_hash: bytes) -> bool:
+        return (publisher is not None and publication_refused(publisher, blob_hash.hex())) or (
+            source_conn is not None and is_blob_hash_excised(source_conn, blob_hash)
+        )
+
     return (
-        refuse_excised_attachment_blobs(acquired, publisher=publisher),
-        tuple(ref for ref in refs if not publication_refused(publisher, bytes(ref.blob_hash).hex())),
+        refuse_excised_attachment_blobs(acquired, publisher=publisher, source_conn=source_conn),
+        tuple(ref for ref in refs if not excised(bytes(ref.blob_hash))),
     )
 
 
