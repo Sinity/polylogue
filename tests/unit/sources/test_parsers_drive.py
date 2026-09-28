@@ -1047,3 +1047,92 @@ def test_drive_parent_chain_orders_by_instant_not_by_timestamp_text() -> None:
         later_text_earlier_instant,
     ]
     assert _sort_instant(None) <= _sort_instant("garbage") < _sort_instant(earlier_text_later_instant)
+
+
+def test_thought_signatures_stay_out_of_hashed_block_metadata() -> None:
+    """Gemini thought signatures are re-issued on replay, like Claude's signature.
+
+    Anti-vacuity: copy every metadata key again and the THINKING block's
+    hashed metadata carries ``thoughtSignatures``, so an otherwise identical
+    replay changes the block's content identity.
+    """
+    from polylogue.sources.parsers.drive_support_blocks import parsed_blocks_from_meta
+
+    blocks = parsed_blocks_from_meta(
+        [{"type": "thinking", "text": "why", "metadata": {"thoughtSignatures": ["sig-a"], "thinkingBudget": 64}}]
+    )
+
+    assert len(blocks) == 1
+    metadata = blocks[0].metadata or {}
+    assert "thoughtSignatures" not in metadata
+    assert metadata.get("thinkingBudget") == 64
+
+
+def test_a_singular_thought_signature_survives_as_session_evidence() -> None:
+    """The singular Gemini ``thoughtSignature`` leaves the hashed block but is kept.
+
+    Anti-vacuity: drop ``thoughtSignature`` from the evidence keys and the
+    parsed session keeps no copy of the attestation.
+    """
+    from polylogue.sources.parsers.drive_support_blocks import session_events_from_meta_blocks
+
+    events = session_events_from_meta_blocks(
+        [{"type": "thinking", "text": "why", "metadata": {"thoughtSignature": "sig"}}],
+        source_message_provider_id="m1",
+        timestamp=None,
+    )
+
+    assert any("sig" in str(event.payload) for event in events)
+
+
+def test_a_signature_on_a_non_thinking_part_survives_as_session_evidence() -> None:
+    """A text part's ``thoughtSignature`` is stripped from the block, so it must become evidence.
+
+    Anti-vacuity: project evidence from THINKING blocks only and the text
+    part's signature leaves no copy anywhere in the parsed session.
+    """
+    from polylogue.sources.parsers.drive_support_blocks import (
+        parsed_blocks_from_meta,
+        session_events_from_meta_blocks,
+    )
+
+    payload = [
+        {"type": "text", "text": "answer", "metadata": {"thoughtSignature": "sig-text", "role": "model"}},
+    ]
+    blocks = parsed_blocks_from_meta(payload)
+    events = session_events_from_meta_blocks(payload, source_message_provider_id="m1", timestamp=None)
+
+    assert "thoughtSignature" not in (blocks[0].metadata or {})
+    assert [event.payload for event in events] == [{"block_index": 0, "thoughtSignature": "sig-text"}]
+
+
+def test_a_signature_only_change_leaves_the_session_hash_unchanged() -> None:
+    """Signatures stay as evidence but, like a block ``signature``, never move identity.
+
+    Anti-vacuity: hash the whole event payload again and ``sig-a`` versus
+    ``sig-b`` gives two session hashes.
+    """
+    from polylogue.core.enums import Provider, Role
+    from polylogue.pipeline.ids import session_content_hash
+    from polylogue.sources.parsers.base_models import ParsedMessage, ParsedSession, ParsedSessionEvent
+
+    def session(signature: str, block_index: int = 0) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.GEMINI,
+            provider_session_id="s1",
+            title="t",
+            created_at=None,
+            updated_at=None,
+            messages=[ParsedMessage(provider_message_id="m1", role=Role.ASSISTANT, text="answer")],
+            session_events=[
+                ParsedSessionEvent(
+                    event_type="gemini_thinking_evidence",
+                    timestamp=None,
+                    source_message_provider_id="m1",
+                    payload={"block_index": block_index, "thoughtSignature": signature},
+                )
+            ],
+        )
+
+    assert session_content_hash(session("sig-a")) == session_content_hash(session("sig-b"))
+    assert session_content_hash(session("sig-a")) != session_content_hash(session("sig-a", block_index=1))

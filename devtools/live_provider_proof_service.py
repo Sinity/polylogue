@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import secrets
+import shutil
 import subprocess
 import tempfile
 from contextlib import suppress
@@ -33,7 +34,9 @@ def run_proof(*, repo_root: Path | None = None) -> dict[str, object]:
     require_declared_operation_context("live_provider_proof")
     root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
     extension_root = root / "browser-extension"
-    scratch = Path(tempfile.gettempdir()).resolve() / "polylogue-live-provider-proof"
+    # A private per-run directory, removed afterwards: the receiver writes the
+    # complete captured transcripts here, and they must not outlive the proof.
+    scratch = Path(tempfile.mkdtemp(prefix="polylogue-live-provider-proof-")).resolve()
     spool = scratch / "browser-capture"
     spool.mkdir(parents=True, exist_ok=True)
     receiver_token = secrets.token_urlsafe(32)
@@ -42,6 +45,7 @@ def run_proof(*, repo_root: Path | None = None) -> dict[str, object]:
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     environment = os.environ.copy()
+    environment["XDG_CONFIG_HOME"] = str(scratch / "xdg-config")
     environment["POLYLOGUE_LIVE_PROVIDER_RECEIVER_TOKEN"] = receiver_token
     environment[_RECEIVER_PORT_ENV] = str(receiver_port)
     process: subprocess.Popen[Any] | None = None
@@ -81,6 +85,7 @@ def run_proof(*, repo_root: Path | None = None) -> dict[str, object]:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def main(argv: list[str] | None = None) -> int:

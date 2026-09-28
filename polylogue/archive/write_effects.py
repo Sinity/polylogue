@@ -228,29 +228,18 @@ def _invalidate_insights_should_run(ctx: WriteEffectContext) -> bool:
 
 
 def _invalidate_insights_effect(ctx: WriteEffectContext) -> None:
-    """Mark session insight inputs stale in a separate post-commit connection."""
-    db_path = ctx.payload.get("_db_path")
-    if not db_path:
-        raise RuntimeError("deferred insight invalidation requires _db_path")
-    from contextlib import closing
-
-    from polylogue.storage.sqlite.connection_profile import open_connection
-
+    """Invalidate derived inputs on the admitted archive transaction."""
     session_ids = ctx.changed_session_ids
-    # A one-shot connection, never the thread-local cache: this executor thread
-    # outlives index promotions, and a cached handle would keep writing to the
-    # retired generation's inode after ``index.db`` is repointed.
-    with closing(open_connection(db_path)) as conn:
-        # A coalesced retry may carry more IDs than one statement may bind.
-        for start in range(0, len(session_ids), 500):
-            chunk = session_ids[start : start + 500]
-            placeholders = ", ".join("?" for _ in chunk)
-            conn.execute(
-                f"UPDATE session_profiles SET source_sort_key = NULL, source_updated_at = NULL "
-                f"WHERE session_id IN ({placeholders})",
-                chunk,
-            )
-        conn.commit()
+    # Keep each statement below SQLite's variable limit while preserving the
+    # caller-owned transaction and its single-writer admission.
+    for start in range(0, len(session_ids), 500):
+        chunk = session_ids[start : start + 500]
+        placeholders = ", ".join("?" for _ in chunk)
+        ctx.conn.execute(
+            f"UPDATE session_profiles SET source_sort_key = NULL, source_updated_at = NULL "
+            f"WHERE session_id IN ({placeholders})",
+            chunk,
+        )
 
 
 def _announce_ingest_should_run(ctx: WriteEffectContext) -> bool:
@@ -304,7 +293,7 @@ WRITE_EFFECT_REGISTRY: tuple[WriteEffect, ...] = (
     ),
     WriteEffect(
         name="invalidate_session_insights",
-        phase="async-deferred",
+        phase="in-transaction",
         run=_invalidate_insights_effect,
         should_run=_invalidate_insights_should_run,
         failure_policy="log-and-continue",

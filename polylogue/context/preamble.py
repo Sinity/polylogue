@@ -3,20 +3,21 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from polylogue.analysis.lineage_graph import CompactLineageGraph, LineageEdgeRole, LineageNodeRole
-from polylogue.context.scheduler import ContextAssembly, ContextItem, record_context_ledger, schedule_context
+from polylogue.analysis.lineage_graph import (
+    CompactLineageGraph,
+    LineageEdgeResolution,
+    LineageEdgeRole,
+    LineageNodeRole,
+)
+from polylogue.context.scheduler import ContextAssembly, ContextItem, schedule_context
 from polylogue.core.assertions import derive_assertion_context_trust
-from polylogue.core.errors import DatabaseError
 from polylogue.core.refs import ExecutionContextRef
 from polylogue.logging import WARNING, emit, get_logger
-from polylogue.storage.sqlite.connection_profile import open_connection
 from polylogue.surfaces.compaction import estimate_tokens
 from polylogue.surfaces.payloads import (
     AssertionClaimPayload,
@@ -33,7 +34,6 @@ from polylogue.surfaces.payloads import (
 
 if TYPE_CHECKING:
     from polylogue.cli.shared.types import AppEnv
-    from polylogue.config import Config
 
 logger = get_logger(__name__)
 
@@ -71,39 +71,19 @@ def _preamble_execution_context(
     return ExecutionContextRef.from_observation(fields, unknown_fields=unknown_fields)
 
 
-def _record_preamble_ledger(polylogue: object, assembly: ContextAssembly) -> None:
+async def _record_preamble_ledger(polylogue: object, assembly: ContextAssembly) -> None:
     """Best-effort persistence for disposable scheduler receipts."""
 
-    config = getattr(polylogue, "config", None)
-    archive_root = getattr(config, "archive_root", None)
-    if not isinstance(archive_root, (str, Path)):
+    record = getattr(polylogue, "record_context_ledger", None)
+    if not callable(record):
         return
-    config = cast("Config", config)
-    ops_db = Path(archive_root) / "ops.db"
-    from polylogue.maintenance.offline_guard import ArchiveWriterOwnershipError
-
     try:
-        # This context surface is an embedded API route too.  Check archive
-        # ownership before bootstrap/open so a preamble cannot create or write
-        # the disposable ledger beside a resident daemon.
-        from polylogue.api.archive import _require_archive_write_authority
-
-        _require_archive_write_authority(config, "context.preamble_ledger")
-        if not ops_db.exists():
-            from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-            from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
-            initialize_archive_database(ops_db, ArchiveTier.OPS)
-        conn = open_connection(ops_db)
-        try:
-            record_context_ledger(conn, assembly, observed_at_ms=int(datetime.now(timezone.utc).timestamp() * 1000))
-        finally:
-            conn.close()
-    except (OSError, TypeError, ValueError, sqlite3.Error, DatabaseError, ArchiveWriterOwnershipError):
-        # DatabaseError covers a tier this runtime cannot use, including one at
-        # a version it has moved past; the ownership refusal covers a resident
-        # daemon holding the archive. A disposable receipt never fails the
-        # preamble it is a receipt for.
+        await record(
+            assembly,
+            observed_at_ms=int(datetime.now(timezone.utc).timestamp() * 1000),
+        )
+    except Exception:
+        # A disposable receipt never fails the preamble it describes.
         logger.debug("context preamble: scheduler receipt could not be persisted", exc_info=True)
 
 
@@ -507,7 +487,7 @@ async def build_context_preamble_payload(
     if ledger_sink is not None:
         ledger_sink(assembly)
     else:
-        _record_preamble_ledger(polylogue, assembly)
+        await _record_preamble_ledger(polylogue, assembly)
 
     admitted_content = {item.ref: item.content for item in assembly.quoted_evidence}
     values: dict[str, object] = {}
@@ -614,7 +594,9 @@ def _preamble_lineage(graph: CompactLineageGraph) -> ContextPreambleLineage:
         (
             str(edge.parent_id)
             for edge in edges
-            if edge.role is LineageEdgeRole.SEED_PARENT and edge.parent_id is not None
+            if edge.role is LineageEdgeRole.SEED_PARENT
+            and edge.parent_id is not None
+            and edge.resolution in {LineageEdgeResolution.RESOLVED, LineageEdgeResolution.REPAIRED}
         ),
         None,
     )

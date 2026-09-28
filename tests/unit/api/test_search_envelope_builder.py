@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from polylogue.api import search_envelope_builder
 from polylogue.api.search_envelope_builder import build_archive_search_envelope, build_search_envelope_for_spec
 from polylogue.archive.query.expression import compile_expression_into
 from polylogue.archive.query.search_hits import session_search_hit_from_summary
@@ -12,6 +13,7 @@ from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.core.enums import Origin
 from polylogue.core.types import SessionId
+from polylogue.surfaces.authority import build_authority_envelope
 from polylogue.surfaces.cursor_identity import search_cursor_request_identity
 from polylogue.surfaces.payloads import (
     InvalidSearchCursorError,
@@ -94,6 +96,55 @@ async def test_spec_builder_preserves_filters_when_advancing_cursor_fetch(
     # The page was fetched after the cursor anchor (rank 1), not at the
     # request's offset, so the envelope reports the offset it actually used.
     assert envelope.offset == 1
+
+
+@pytest.mark.asyncio
+async def test_spec_builder_authority_reports_full_matches_and_processed_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anti-vacuity: a capped page must distinguish the 100-match total from 10 fetched hits."""
+
+    async def count_matches(self: SessionQuerySpec, config: object, *, vector_provider: object = None) -> int:
+        del self, config, vector_provider
+        return 100
+
+    monkeypatch.setattr(SessionQuerySpec, "count", count_matches)
+    operations = AsyncMock()
+    summary = SessionSummary(id=SessionId("chatgpt:page-hit"), origin=Origin.CHATGPT_EXPORT, title="Page hit")
+    hit = session_search_hit_from_summary(
+        summary,
+        rank=1,
+        retrieval_lane="dialogue",
+        match_surface="message",
+        message_id="m1",
+        snippet="needle",
+        score=-1.0,
+        score_kind="bm25",
+    )
+    operations.search_session_hits = AsyncMock(return_value=[hit] * 10)
+    monkeypatch.setattr(
+        search_envelope_builder,
+        "authority_for_config",
+        lambda *args, **kwargs: build_authority_envelope(
+            archive_epoch="epoch",
+            generation_id="generation",
+            tier_schema_versions={},
+            server_identity="direct",
+            started_at=kwargs.get("started_at"),
+        ),
+    )
+
+    envelope = await build_search_envelope_for_spec(
+        operations,
+        SessionQuerySpec.from_params({"query": "needle", "limit": 10}),
+        limit=10,
+    )
+
+    assert envelope.total == 100
+    assert len(envelope.hits) == 10
+    assert envelope.authority is not None
+    assert envelope.authority.matched == 100
+    assert envelope.authority.analyzed == 10
 
 
 @pytest.mark.asyncio

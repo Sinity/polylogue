@@ -49,6 +49,21 @@ def test_scheduler_is_deterministic_and_never_exceeds_budget() -> None:
     assert {row.decision for row in first.ledger} == {"included", "dropped"}
 
 
+def test_source_quota_drops_an_item_that_exceeds_its_remaining_share() -> None:
+    result = schedule_context(
+        (_Source((ContextItem(ref="oversized", content="x", token_cost=10, source="memory"),)),),
+        moment="session_start",
+        target_session="s1",
+        execution_context=_context(),
+        token_budget=20,
+        now_ms=10,
+        source_quota=3,
+    )
+    assert result.quoted_evidence == ()
+    assert result.ledger[0].decision == "dropped"
+    assert result.ledger[0].disclosure_verdict == "quota"
+
+
 def test_unadopted_policy_is_dropped_but_quoted_evidence_is_admitted() -> None:
     source = _Source(
         (

@@ -130,7 +130,7 @@ def compose_append_revision_chain(
     """N growing revisions of one logical session sharing a single archive id.
 
     Motivated by #2467 (session lineage duplication) and the content-hash
-    idempotency model (``CLAUDE.md`` "Content-hash idempotency"): re-ingesting
+    idempotency model (``AGENTS.md``, "Identity and content"): re-ingesting
     the same ``native_id`` with more messages appended produces a differing
     content hash, which the writer treats as an *update* to the same session
     row, not a new one. Real providers append to the same on-disk JSONL
@@ -412,7 +412,7 @@ def compose_quarantined_head_arrangement(
     """A child session whose parent reference is deliberately never resolved.
 
     Motivated by ``session_links``'s topology-edge persistence
-    (``CLAUDE.md`` "Lineage normalization"): a parser can assert a parent
+    (``AGENTS.md``, "Identity and content"): a parser can assert a parent
     reference before the parent itself is ever ingested (or the parent is
     permanently absent -- deleted export, never-captured session). Storage
     persists the edge as unresolved rather than dropping it, and

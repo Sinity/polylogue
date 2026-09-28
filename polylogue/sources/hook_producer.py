@@ -25,7 +25,6 @@ reaches for it.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import sys
@@ -280,13 +279,13 @@ def append_event(
     resolved_id = str(normalized["event_id"])
     if not resolved_id or not _EVENT_ID_ALPHABET.issuperset(resolved_id):
         raise HookSpoolRecordError("hook carrier event_id must contain only letters, digits, '_' or '-'")
-    lock = _acquire_carrier_lock(Path(root), exclusive=False)
-    try:
-        target = carrier_path(root, str(normalized["provider"]))
-        target.parent.mkdir(parents=True, exist_ok=True)
-        append_carrier_line(target, normalized)
-    finally:
-        _release_carrier_lock(lock)
+    # Producers never wait for the one-shot legacy drain. Each hook process
+    # owns a PID-scoped carrier, while the compactor writes its own carrier;
+    # both can append concurrently without sharing a file. A five-second hook
+    # deadline must not be spent waiting for a large legacy spool fold.
+    target = carrier_path(root, str(normalized["provider"]))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    append_carrier_line(target, normalized)
     return str(target)
 
 
@@ -342,40 +341,25 @@ MAX_COMPACTED_CARRIER_BYTES = 64 * 1024 * 1024
 
 ACKNOWLEDGED_DIRNAME = "acknowledged"
 _CARRIER_DRAIN_LOCK = ".carrier-drain.lock"
-#: Serializes legacy compactors against each other across the whole drain.
-#: Producers never take it, so it costs them nothing; without it two
-#: concurrent drains scan the same envelope, fold it twice and race to retire it.
-_LEGACY_COMPACTION_LOCK = ".legacy-compaction.lock"
 
 
-def _acquire_carrier_lock(root: Path, *, exclusive: bool, name: str = _CARRIER_DRAIN_LOCK) -> int:
-    """Block producers while the legacy carrier drain owns the spool.
-
-    Plain descriptor calls rather than a ``contextlib`` manager: this module is
-    the hook hot path and imports only the cheap stdlib set.
-    """
-    root.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(root / name, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
-    except BaseException:
-        os.close(descriptor)
-        raise
-    return descriptor
-
-
-def _release_carrier_lock(descriptor: int) -> None:
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
-    finally:
-        os.close(descriptor)
-
-
-def _carrier_paths(root: Path) -> list[str]:
+def _carrier_scope_summary(root: Path) -> dict[str, object]:
+    """Count carrier files in a bounded walk without retaining path strings."""
     carrier_root = root / CARRIERS_DIRNAME
-    if not carrier_root.exists():
-        return []
-    return sorted(str(path) for path in carrier_root.rglob("*.ndjson") if path.is_file())
+    count = 0
+    if carrier_root.exists():
+        stack = [carrier_root]
+        while stack:
+            directory = stack.pop()
+            with os.scandir(directory) as entries:
+                ordered = sorted(entries, key=lambda entry: entry.name)
+            for entry in ordered:
+                path = Path(entry.path)
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(path)
+                elif entry.is_file(follow_symlinks=False) and path.suffix == ".ndjson":
+                    count += 1
+    return {"file_count": count}
 
 
 class _CompactionSink:
@@ -506,27 +490,14 @@ def _compact_legacy_spool_unlocked(
     retired = 0
 
     def checkpoint() -> None:
-        """Make this batch's carriers durable, then retire what is in them.
-
-        The exclusive drain lock is held only across this seal-and-retire
-        step, not the scan that fills a checkpoint's batch. A producer's
-        ``append_event`` (shared lock) can therefore interleave between
-        checkpoints; against the legacy spool's ~716k envelopes at
-        ``COMPACTION_CHECKPOINT_EVENTS`` per batch, that bounds the longest a
-        producer can be blocked to one checkpoint's seal+retire cost rather
-        than the whole drain -- well inside a hook handler's fixed timeout.
-        """
+        """Make this batch's carriers durable, then retire what is in them."""
         nonlocal retired
         if not retire:
             return
-        lock = _acquire_carrier_lock(root, exclusive=True)
-        try:
-            sink.seal()
-            for path, bucket in retire:
-                _retire(path, root, bucket)
-            retired += len(retire)
-        finally:
-            _release_carrier_lock(lock)
+        sink.seal()
+        for path, bucket in retire:
+            _retire(path, root, bucket)
+        retired += len(retire)
         retire.clear()
 
     def member_size(path: Path) -> int:
@@ -615,33 +586,26 @@ def compact_legacy_spool(
     max_bytes: int = MAX_COMPACTED_CARRIER_BYTES,
     checkpoint_events: int = COMPACTION_CHECKPOINT_EVENTS,
 ) -> dict[str, object]:
-    """Drain the retired spool under a checkpoint-scoped carrier-producer quiesce.
+    """Drain the retired spool without blocking hook producers.
 
-    A producer racing one checkpoint's seal-and-retire step blocks on the
-    shared lock and resumes once that checkpoint's receipt is complete; the
-    scan between checkpoints -- the part proportional to the spool's size --
-    holds no lock at all, so a large legacy spool cannot block a producer
-    for longer than one checkpoint's durability cost. A producer that
-    appends between checkpoints lands in this process's own carrier, which
-    this drain never reads or retires, so it is a post-release arrival for
-    the next acquisition pass, never an omitted in-flight item.
+    The lock serializes concurrent compactors only. Live producers use unique
+    append-only carriers and can proceed while this bounded legacy drain runs.
     """
 
-    compactor = _acquire_carrier_lock(root, exclusive=True, name=_LEGACY_COMPACTION_LOCK)
+    root.mkdir(parents=True, exist_ok=True)
+    lock_fd = os.open(root / _CARRIER_DRAIN_LOCK, os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        before = _carrier_paths(root)
+        os.lockf(lock_fd, os.F_LOCK, 0)
+        before = _carrier_scope_summary(root)
         summary = _compact_legacy_spool_unlocked(root, max_bytes=max_bytes, checkpoint_events=checkpoint_events)
-        after = _carrier_paths(root)
+        after = _carrier_scope_summary(root)
     finally:
-        _release_carrier_lock(compactor)
+        os.lockf(lock_fd, os.F_ULOCK, 0)
+        os.close(lock_fd)
     summary.update(
-        carrier_quiesced=True,
-        carrier_arrivals_during_drain=0,
-        carrier_arrival_policy=(
-            "producer blocked only during each checkpoint's seal+retire step; "
-            "other arrivals land in their own carrier, untouched by this drain"
-        ),
-        carrier_scope=sorted(set(before) | set(after)),
+        carrier_compaction_serialized=True,
+        carrier_producer_policy="hook producers do not wait for the legacy drain lock",
+        carrier_scope={"before": before, "after": after},
         conservation_reconciliation="event_id basename; acknowledged day shard is destination metadata",
     )
     return summary

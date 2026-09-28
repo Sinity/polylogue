@@ -295,7 +295,7 @@ of dropping content silently.
 
 ## Branch-local extension proof modes
 
-Use the declared `dev_loop_proof` AgentCTL operation when changing receiver, extension, or provider adapters from a branch. It binds the proof to a managed checkout, leases its API and receiver ports, checks the shared-Chrome control boundary with one owned `agentbrowser` target, proves receiver authentication and deterministic provider capture, then reports archive and API convergence through the canonical job result. See [`docs/dev-loop.md`](dev-loop.md) for the start, wait, and result commands.
+Use the declared `dev_loop_proof` AgentCTL operation when changing receiver, extension, or provider adapters from a branch. It binds the proof to a managed checkout; the Polylogue child selects its own loopback API and receiver ports and isolates XDG configuration. The proof checks the shared-Chrome control boundary with one owned `agentbrowser` target, proves receiver authentication and deterministic provider capture, then reports archive and API convergence through the canonical job result. See [`docs/dev-loop.md`](dev-loop.md) for the start, wait, and result commands.
 
 Live shared-Chrome proof runs only through the declared `live_provider_proof`
 AgentCTL operation. It must not create an alternative Polylogue daemon

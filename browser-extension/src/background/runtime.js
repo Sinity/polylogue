@@ -1619,9 +1619,16 @@ async function missionIntelligenceProjection(state, configuredUrl) {
   } catch (error) {
     return unavailable(error?.status === 401 ? "unauthorized" : "offline", error?.message || "projection_unavailable");
   }
+  const archiveUrl = new URL(base);
+  // The receiver (8765) does not serve archive pages. The daemon's canonical
+  // reader is the separate web endpoint (8766) and uses /s/:session_id.
+  if (archiveUrl.port === "8765") archiveUrl.port = "8766";
+  archiveUrl.pathname = `/s/${encodeURIComponent(indexedSessionId)}`;
+  archiveUrl.search = "";
+  archiveUrl.hash = "";
   return {
     ...projection,
-    archive: { ...projection.archive, url: `${base}/?q=${encodeURIComponent(indexedSessionId)}` },
+    archive: { ...projection.archive, url: archiveUrl.toString() },
     cost: {
       ...(projection.cost || {}),
       status: projection.cost?.status === "unavailable" ? "unknown" : (projection.cost?.status || "unknown"),
@@ -3183,8 +3190,8 @@ async function missionControlSnapshot(tab = null, { refresh = true } = {}) {
   const settings = await receiverSettings();
   const intelligence = await missionIntelligenceProjection(state, settings.baseUrl);
   const acceptedIdentityMap = await runtimeChrome.storage.local.get({ [ACCEPTED_MESSAGE_IDENTITIES_KEY]: {} });
-  const acceptedIdentity = state.provider && state.provider_session_id
-    ? acceptedIdentityMap[ACCEPTED_MESSAGE_IDENTITIES_KEY]?.[sessionKey(state.provider, state.provider_session_id)] || null
+  const acceptedIdentities = state.provider && state.provider_session_id
+    ? acceptedIdentityMap[ACCEPTED_MESSAGE_IDENTITIES_KEY]?.[sessionKey(state.provider, state.provider_session_id)] || {}
     : null;
 
   return {
@@ -3217,7 +3224,7 @@ async function missionControlSnapshot(tab = null, { refresh = true } = {}) {
     assertions: {
       selection_candidate_supported: true,
       persistence_supported: true,
-      accepted_identity: acceptedIdentity,
+      accepted_identities: acceptedIdentities,
       reason: "candidate_assertion_route",
     },
     intelligence,
@@ -3407,9 +3414,13 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (Array.isArray(result?.accepted_identities)) {
           const current = await runtimeChrome.storage.local.get({ [ACCEPTED_MESSAGE_IDENTITIES_KEY]: {} });
           const key = sessionKey(summary.provider, summary.providerSessionId);
-          const native = result.accepted_identities.find((item) => item?.fidelity === "native") || null;
+          const identities = Object.fromEntries(
+            result.accepted_identities
+              .filter((item) => item?.fidelity === "native" && typeof item?.message_ref === "string" && item.message_ref)
+              .map((item) => [item.message_ref, item]),
+          );
           await runtimeChrome.storage.local.set({
-            [ACCEPTED_MESSAGE_IDENTITIES_KEY]: { ...current[ACCEPTED_MESSAGE_IDENTITIES_KEY], [key]: native },
+            [ACCEPTED_MESSAGE_IDENTITIES_KEY]: { ...current[ACCEPTED_MESSAGE_IDENTITIES_KEY], [key]: identities },
           });
         }
       } catch (error) {

@@ -32,7 +32,7 @@ printf '%s' '{"operation":"sessions.list","limit":20}' | python -m polylogue.cli
 
 | Operation | Scope and result |
 | --- | --- |
-| `sessions.list` | Filtered indexed session summaries |
+| `sessions.list` | Filtered indexed session summaries (default limit matches `DEFAULT_SESSION_LIST_LIMIT`, 20) |
 | `sessions.search` | Lexical search over indexed session content |
 | `sessions.read` | A page of lineage-composed messages for a session ref |
 | `sessions.orchestration` | Retained launch, model, usage, and topology evidence |
@@ -45,7 +45,7 @@ printf '%s' '{"operation":"sessions.list","limit":20}' | python -m polylogue.cli
 | `memory.raw.search` | Bounded literal-search fanout across original session sources |
 | `memory.raw.get` | The same original byte read as `sessions.raw.read` |
 
-Indexed pages return `continuation`, bound to the archive frame, operation, filters, and ordering. Resume with the operation and continuation, plus `ref` for transcript reads. Conflicting arguments or a changed archive frame are rejected. The existing `query(projection="sessions")` surface also accepts these continuations. `query(projection="timeline")` exposes the event timeline.
+Indexed pages return `continuation`, bound to the archive frame, operation, filters, and ordering. Resume with the operation and continuation, plus `ref` for transcript reads. Conflicting arguments or a changed archive frame are rejected. The existing `query(projection="sessions")` surface also accepts these continuations. When `limit` is omitted, both owner and generic routes use `DEFAULT_SESSION_LIST_LIMIT` (20), preserving the same first-page boundary. `query(projection="timeline")` exposes the event timeline.
 
 Timeline time bounds are timezone-bearing ISO timestamps. Indexed events lacking timestamps are excluded from placement and reported as a coverage gap. A file's modification time is never substituted for a missing event timestamp. Message rows carry their stable message reference. Semantic event rows carry their session reference and exact event ID, resolvable through the session events projection. Both carry a recorded timestamp and bounded text.
 

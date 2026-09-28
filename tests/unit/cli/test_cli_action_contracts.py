@@ -505,7 +505,7 @@ def test_import_contract_guard_requires_daemon_acceptance(tmp_path: Path, worksp
 
     The assertion is on the typed terminal outcome (the ``error`` exit code)
     and on the absence of any archived session, not on the refusal prose:
-    per CLAUDE.md a test does not pin natural-language wording.
+    per AGENTS.md a test does not pin natural-language wording.
 
     Anti-vacuity: restore a CLI-side local ingest fallback, or let the command
     claim success when no daemon answered, and the exit code becomes 0 --

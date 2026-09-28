@@ -14,7 +14,6 @@ import time
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
 
 import pytest
 
@@ -476,16 +475,10 @@ def test_compact_folds_the_retired_spool_into_carriers(tmp_path: Path, monkeypat
         assert conn.execute("SELECT COUNT(DISTINCT session_native_id) FROM raw_hook_events").fetchone()[0] == 3
 
 
-def test_compact_does_not_block_a_producer_during_the_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The exclusive lock is scoped to a checkpoint's seal+retire, not the scan.
-
-    Anti-vacuity (Codex P2, #5700): holding the drain lock across the whole
-    fold -- proportional to the legacy spool's size, hundreds of thousands of
-    files -- can outlast a hook handler's fixed timeout and drop an event.
-    Pausing the scan (``_CompactionSink.append``, unlocked) must not block a
-    racing producer; only pausing inside the checkpoint's retirement step
-    (locked) may.
-    """
+def test_compact_quiesces_carrier_producer_and_defers_mid_drain_arrival(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A producer racing the drain is blocked, then admitted on the next pass."""
 
     archive_root, spool_root = _scratch(tmp_path, monkeypatch)
     pending = spool_root / "pending" / "2026-09-14"
@@ -512,7 +505,7 @@ def test_compact_does_not_block_a_producer_during_the_scan(tmp_path: Path, monke
 
     appended = threading.Event()
 
-    def append_during_scan() -> None:
+    def append_during_drain() -> None:
         append_hook_event(
             event_type="PostToolUse",
             session_id="live-session",
@@ -524,134 +517,29 @@ def test_compact_does_not_block_a_producer_during_the_scan(tmp_path: Path, monke
         )
         appended.set()
 
-    producer = threading.Thread(target=append_during_scan)
+    producer = threading.Thread(target=append_during_drain)
     producer.start()
-    # The scan holds no lock, so a producer racing it is never blocked.
-    assert appended.wait(timeout=5)
-    producer.join(timeout=5)
+    # Anti-vacuity: restore the shared producer lock and this hook blocks
+    # behind a large legacy drain instead of admitting the event promptly.
+    assert appended.wait(timeout=0.1)
     release.set()
     drain.join(timeout=5)
+    producer.join(timeout=5)
 
-    assert result["carrier_quiesced"] is True
-    assert result["carrier_arrivals_during_drain"] == 0
-    policy = result["carrier_arrival_policy"]
-    assert policy == (
-        "producer blocked only during each checkpoint's seal+retire step; "
-        "other arrivals land in their own carrier, untouched by this drain"
-    )
+    assert result["carrier_compaction_serialized"] is True
+    policy = result["carrier_producer_policy"]
+    assert policy == "hook producers do not wait for the legacy drain lock"
+    # Anti-vacuity: restoring the old sorted path array grows the receipt with
+    # every carrier filename instead of keeping a fixed-size count.
+    scope = result["carrier_scope"]
+    assert isinstance(scope, dict)
+    assert set(scope) == {"before", "after"}
+    assert all(set(value) == {"file_count"} for value in scope.values())
     assert result["conservation_reconciliation"] == (
         "event_id basename; acknowledged day shard is destination metadata"
     )
-    assert materialize_hook_carriers(archive_root) == 2
-
-
-def test_compact_blocks_a_producer_only_during_checkpoint_retirement(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A producer racing one checkpoint's retirement step blocks, then resumes."""
-
-    archive_root, spool_root = _scratch(tmp_path, monkeypatch)
-    pending = spool_root / "pending" / "2026-09-14"
-    pending.mkdir(parents=True)
-    (pending / f"{0:032x}.json").write_text(_envelope(0), encoding="utf-8")
-
-    from polylogue.sources import hook_producer as hook_producer_module
-
-    entered = threading.Event()
-    release = threading.Event()
-    original_retire = hook_producer_module._retire
-
-    def pause_once(path: Path, root: Path, bucket: str) -> None:
-        entered.set()
-        release.wait(timeout=5)
-        original_retire(path, root, bucket)
-
-    monkeypatch.setattr(hook_producer_module, "_retire", pause_once)
-    result: dict[str, object] = {}
-
-    drain = threading.Thread(target=lambda: result.update(compact_legacy_spool(spool_root)))
-    drain.start()
-    assert entered.wait(timeout=5)
-
-    appended = threading.Event()
-
-    def append_during_retirement() -> None:
-        append_hook_event(
-            event_type="PostToolUse",
-            session_id="live-session",
-            provider="codex",
-            timestamp=_TIMESTAMP,
-            payload={},
-            root=spool_root,
-            event_id="f" * 32,
-        )
-        appended.set()
-
-    producer = threading.Thread(target=append_during_retirement)
-    producer.start()
-    assert not appended.wait(timeout=0.1)
-    release.set()
-    drain.join(timeout=5)
-    producer.join(timeout=5)
-
     assert appended.is_set()
-    assert result["retired"] == 1
     assert materialize_hook_carriers(archive_root) == 2
-
-
-def test_concurrent_compactions_fold_each_envelope_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A second drain waits for the first instead of re-scanning its envelopes.
-
-    Anti-vacuity (Codex P2, #5700): with only the checkpoint-scoped producer
-    lock, the second drain scans the envelope the paused first drain already
-    appended, folds it into a second carrier line, and its retirement raises
-    ``FileNotFoundError`` once the first drain has moved the envelope.
-    """
-
-    archive_root, spool_root = _scratch(tmp_path, monkeypatch)
-    pending = spool_root / "pending" / "2026-09-14"
-    pending.mkdir(parents=True)
-    (pending / f"{0:032x}.json").write_text(_envelope(0), encoding="utf-8")
-
-    from polylogue.sources.hook_producer import _CompactionSink
-
-    entered = threading.Event()
-    release = threading.Event()
-    original_append = _CompactionSink.append
-    appends: list[dict[str, object]] = []
-
-    def pause_first(self: _CompactionSink, record: dict[str, object]) -> Path:
-        appends.append(record)
-        if len(appends) == 1:
-            entered.set()
-            release.wait(timeout=5)
-        return original_append(self, record)
-
-    monkeypatch.setattr(_CompactionSink, "append", pause_first)
-    results: list[dict[str, object]] = []
-    errors: list[BaseException] = []
-
-    def drain() -> None:
-        try:
-            results.append(compact_legacy_spool(spool_root))
-        except BaseException as exc:
-            errors.append(exc)
-
-    first = threading.Thread(target=drain)
-    first.start()
-    assert entered.wait(timeout=5)
-    second = threading.Thread(target=drain)
-    second.start()
-    second.join(timeout=0.2)
-    assert second.is_alive()
-    release.set()
-    first.join(timeout=5)
-    second.join(timeout=5)
-
-    assert errors == []
-    assert len(appends) == 1
-    assert sorted(int(cast(int, result["folded"])) for result in results) == [0, 1]
-    assert materialize_hook_carriers(archive_root) == 1
 
 
 def _envelope(index: int, *, session: str = "legacy-session") -> str:

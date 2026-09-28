@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from polylogue.analysis.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION
+from polylogue.analysis.export_bundles import INSIGHT_EXPORT_BUNDLE_VERSION
 from polylogue.analysis.projection_contracts import (
     PROJECTION_CONTRACTS,
     ProjectionCostClass,
@@ -9,6 +11,16 @@ from polylogue.analysis.projection_contracts import (
     cost_outlook_availability,
     facets_availability,
 )
+
+
+def test_incompatible_insight_payloads_advance_published_versions() -> None:
+    """Consumers can distinguish the removed fields from prior contracts.
+
+    Anti-vacuity: pinning either discriminator to its former value makes this
+    fail even if the payload remains internally valid.
+    """
+    assert ARCHIVE_INSIGHT_CONTRACT_VERSION == 11
+    assert INSIGHT_EXPORT_BUNDLE_VERSION == 2
 
 
 class TestBudgetExceeded:

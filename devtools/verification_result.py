@@ -105,6 +105,7 @@ def _pytest_outcomes(aggregate: Mapping[str, Any]) -> dict[str, Any]:
         "terminal_count": _integer(aggregate.get("terminal_union_count")),
         "terminal_green": _boolean(aggregate.get("terminal_green")),
         "complete_corpus_covered": _boolean(aggregate.get("complete_corpus_covered")),
+        "flaky": list(aggregate.get("flaky", [])) if isinstance(aggregate.get("flaky"), list) else [],
         "corpus_digest": _string(corpus.get("digest")),
         "outcomes": bounded_outcomes,
         "outcomes_truncated": len(outcomes) > MAX_GATE_OUTCOMES,
@@ -122,4 +123,4 @@ def _semantic_status(payload: Mapping[str, Any], verification_scope: str | None)
             "complete": "complete-passed",
             "non-test": "non-test-passed",
         }.get(verification_scope or "", "passed")
-    return "interrupted" if exit_code == 130 else "failed"
+    return "interrupted" if exit_code == 130 or payload.get("diagnosis") == "verification_interrupted" else "failed"

@@ -17,7 +17,7 @@ the procedure for changing it. Check its source references against current code.
 | Ring | Role | Primary modules |
 |------|------|-----------------|
 | **Archive Substrate** | Owns stored meaning: acquisition, parsing, persistence, query | `sources/`, `pipeline/`, `storage/`, `archive/`, `operations/` |
-| **Derived Read Models** | Stored insights computed over the archive | `insights/`, `storage/derived/session/` |
+| **Derived Read Models** | Stored insights computed over the archive | `analysis/`, `storage/derived/session/` |
 | **Surfaces** | Expose the archive to users and machines | `cli/`, `mcp/`, `api/`, `rendering/`, `ui/`, `daemon/` |
 | **Verification** | Schema, demos, devtools, tests | `schemas/`, `demo/`, `devtools/`, `tests/` |
 
@@ -161,8 +161,8 @@ Archive verification is composed from domain-owned declarations. Each owner supp
 
 ### CI gate claims: one registry, no second declaration (polylogue-vijnq)
 - **Chosen**: the gate registry in `devtools/gate.py` is the only declaration
-  of what CI enforces, and `.github/workflows/verify.yml` runs
-  `devtools verify` as one step that enumerates it at run time. No file
+  of what CI enforces, and the CircleCI quick-gate job runs
+  `devtools verify --quick` as one step that enumerates it at run time. No file
   restates a per-check `ci_gate` claim, so a claim and the real workflow step
   cannot diverge — there is only one.
 - **Rejected**: restoring `check_test_quality_ci_claims`, the one genuine

@@ -6,11 +6,20 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
 import pytest
 
 from polylogue.daemon import embedding_backlog, embedding_owner
+from polylogue.daemon.derivation import (
+    BaseDerivation,
+    Budget,
+    DerivationFrame,
+    DerivationRegistry,
+    KeyPage,
+    KeyStatus,
+    converge,
+)
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.status import format_daemon_status_lines
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
@@ -411,10 +420,46 @@ def test_embedding_session_window_reports_max_session_truncation(
         "polylogue.operations.embedding_derivation.open_readonly_connection",
         lambda *_args, **_kwargs: nullcontext(object()),
     )
-    monkeypatch.setattr("polylogue.storage.embeddings.materialization.select_pending_session_window", select)
+    monkeypatch.setattr("polylogue.storage.embeddings.materialization.select_pending_archive_session_window", select)
 
     selected, limited = select_embedding_session_window(tmp_path / "index.db", archive_root=tmp_path, max_sessions=2)
 
     assert received["max_sessions"] == 3
     assert selected == ("s1", "s2")
     assert limited is True
+
+
+def test_max_errors_stops_derivation_before_more_provider_calls() -> None:
+    """Anti-vacuity: removing the failure budget computes every failing key in the page."""
+
+    class FailingEmbedding(BaseDerivation):
+        domain = "embedding"
+        prerequisites: tuple[str, ...] = ()
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def required_page(self, _frame: object, *, cursor: str | None, limit: int) -> KeyPage:
+            start = int(cursor or 0)
+            stop = min(start + limit, 3)
+            return KeyPage(tuple(str(index) for index in range(start, stop)), str(stop) if stop < 3 else None)
+
+        def inspect(self, _frame: object, keys: Sequence[str]) -> Mapping[str, KeyStatus]:
+            return dict.fromkeys(keys, KeyStatus.MISSING)
+
+        def compute(self, _frame: object, key: str) -> NoReturn:
+            self.calls.append(key)
+            raise RuntimeError("provider 429")
+
+        def publish(self, _frame: object, _replacement: object) -> bool:
+            raise AssertionError("compute always fails before publish is reached")
+
+    adapter = FailingEmbedding()
+    report = converge(
+        DerivationRegistry((adapter,)),
+        DerivationFrame(archive_root="/archive", source_revision="index-generation:test"),
+        budget=Budget(page=10, max_errors=1),
+    )
+    assert adapter.calls == ["0"]
+    assert report.failed == 1
+    assert report.pending == 2

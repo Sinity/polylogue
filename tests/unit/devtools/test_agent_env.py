@@ -71,6 +71,7 @@ def test_agent_jobs_get_bounded_focused_runs_and_no_test_tiers() -> None:
         == agent_env.AGENT_MAX_PYTEST_WORKERS
     )
     assert agent_env.agent_worker_cap(1, AGENT, cgroup_reader=deployed_agent_cgroup) == 1
+    assert agent_env.agent_worker_cap(0, AGENT, cgroup_reader=deployed_agent_cgroup) == 0
     assert agent_env.refuse_verify_tier(["--quick"], AGENT, cgroup_reader=deployed_agent_cgroup) is None
     assert agent_env.refuse_verify_tier([], AGENT, cgroup_reader=deployed_agent_cgroup) is not None
     assert agent_env.refuse_verify_tier(["--all"], AGENT, cgroup_reader=deployed_agent_cgroup) is not None
@@ -161,3 +162,13 @@ def test_every_declared_pytest_pool_operation_is_owned_by_its_slice() -> None:
     )
     assert agent_env.inside_pytest_pool({}, cgroup_reader=reader(quick_cgroup))
     assert agent_env.inside_pytest_pool({"AGENTCTL_POOL": agent_env.PYTEST_QUICK_POOL}, cgroup_reader=outside_cgroup)
+
+
+def test_the_heavy_corpus_pool_is_pytest_ownership() -> None:
+    """``verify_all`` runs in ``pytest-heavy``; that pool holds the pytest slot.
+
+    Anti-vacuity: drop ``PYTEST_HEAVY_POOL`` from ``PYTEST_POOLS`` and an
+    exported ``pytest-heavy`` pool no longer counts as ownership, so the
+    corpus run is refused or rerouted into the quick pool.
+    """
+    assert agent_env.inside_pytest_pool({"AGENTCTL_POOL": agent_env.PYTEST_HEAVY_POOL})

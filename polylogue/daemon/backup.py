@@ -1076,6 +1076,7 @@ def _recoverability_failure_kind(error: str) -> str:
         "container_coordinate_mismatch",
         "ambiguous_container_member",
         "content_identity:unavailable",
+        "replay_provider_unrecorded",
     }:
         return "acquisition_coordinate"
     if error.startswith("error:"):

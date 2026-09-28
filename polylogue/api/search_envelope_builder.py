@@ -155,8 +155,8 @@ async def build_search_envelope_for_spec(
             started_at=started_at,
         ).model_copy(
             update={
-                "matched": len(hit_payloads),
-                "analyzed": total,
+                "matched": total,
+                "analyzed": len(hits),
                 "request_scope_fingerprint": request_scope_fingerprint,
                 "result_scope_fingerprint": result_scope_fingerprint,
             }
