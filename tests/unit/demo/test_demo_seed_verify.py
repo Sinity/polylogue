@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -236,6 +237,26 @@ async def test_demo_verify_reports_missing_overlays(tmp_path: Path) -> None:
     assert "expected demo overlays" in "\n".join(verify.problems)
     failed_constructs = [row.to_payload() for row in verify.construct_coverage if not row.ok]
     assert not failed_constructs, failed_constructs
+
+
+@pytest.mark.asyncio
+async def test_demo_verify_preserves_hermes_identity_after_archive_relocation(tmp_path: Path) -> None:
+    """Verification uses the retained Hermes ID after an inode-preserving move.
+
+    Anti-vacuity: recomputing the profile suffix from the destination path makes
+    this seeded archive fail despite its SQLite session row being unchanged.
+    """
+    original_root = tmp_path / "original" / "archive"
+    await seed_demo_archive(original_root, force=True, with_overlays=False)
+    before = verify_demo_archive(original_root)
+    assert before.ok is True
+
+    relocated_root = tmp_path / "relocated" / "archive"
+    relocated_root.parent.mkdir()
+    os.rename(original_root, relocated_root)
+
+    after = verify_demo_archive(relocated_root, check_source_path_leaks=False)
+    assert after.ok is True, after.problems
 
 
 @pytest.mark.asyncio

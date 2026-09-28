@@ -7,34 +7,22 @@ from pathlib import Path
 
 from polylogue.archive.query.transaction import run_archive_read_sync
 from polylogue.scenarios import DEMO_CLAUDE_CODE_SESSION_ID, DEMO_HERMES_SESSION_ID, DEMO_SESSION_IDS
-from polylogue.sources.parsers.hermes_identity import (
-    profile_key,
-    profile_root_for_artifact,
-    qualified_session_id,
-)
 
 from .constructs import construct_problem_messages, evaluate_demo_constructs
 from .models import DemoVerifyResult
 from .seed import DEMO_SOURCE_DIRNAME
 
 
-def _expected_demo_session_ids(archive_root: Path) -> set[str]:
-    """Return the seeded ids, deriving Hermes identity from its fixture path.
+def _expected_demo_session_ids(session_ids: set[str]) -> set[str]:
+    """Return seeded ids while preserving Hermes identity from the archive."""
 
-    Hermes session ids include the profile qualifier computed from the source
-    install root.  The demo source is materialized beneath the archive root,
-    so derive the expected id through the same shared identity helpers used by
-    the parser instead of asserting the raw, pre-qualification id.
-    """
-
-    hermes_snapshot = archive_root / DEMO_SOURCE_DIRNAME / "hermes" / "demo-00.json"
-    hermes_id = qualified_session_id(
-        DEMO_HERMES_SESSION_ID.removeprefix("hermes-session:"),
-        profile_key(profile_root_for_artifact(hermes_snapshot)),
-    )
+    hermes_prefix = f"{DEMO_HERMES_SESSION_ID}@profile-"
+    hermes_ids = {session_id for session_id in session_ids if session_id.startswith(hermes_prefix)}
+    if len(hermes_ids) != 1:
+        return set(DEMO_SESSION_IDS)
     expected_ids = set(DEMO_SESSION_IDS)
     expected_ids.remove(DEMO_HERMES_SESSION_ID)
-    expected_ids.add(f"{DEMO_HERMES_SESSION_ID.split(':', maxsplit=1)[0]}:{hermes_id}")
+    expected_ids.update(hermes_ids)
     return expected_ids
 
 
@@ -139,7 +127,7 @@ def verify_demo_archive(
             problems=(f"archive unreadable: {exc}",),
         )
 
-    expected_ids = _expected_demo_session_ids(archive_root)
+    expected_ids = _expected_demo_session_ids(session_ids)
     if session_ids != expected_ids:
         problems.append(f"expected demo sessions {sorted(expected_ids)}, found {sorted(session_ids)}")
     expected_session_count = len(DEMO_SESSION_IDS)
