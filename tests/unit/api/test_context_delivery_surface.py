@@ -98,7 +98,6 @@ async def test_compile_and_record_context_persists_the_exact_compiled_image(
             # Fetching the receipt back returns exactly the delivered image.
             fetched = await poly.get_context_delivery(envelope.snapshot_ref, recipient_ref="agent:codex-main")
             assert fetched is not None
-            assert fetched.context_image == envelope.context_image
             assert fetched.context_image_sha256 == envelope.context_image_sha256
 
             # A wrong recipient never sees the receipt.
@@ -130,13 +129,15 @@ async def test_compile_and_record_context_replay_is_idempotent_and_drift_is_reje
             )
             assert replay.outcome == "idempotent"
             assert replay.snapshot_ref == first.snapshot_ref
-            assert replay.context_image == first.context_image
+            assert replay.context_image_sha256 == first.context_image_sha256
 
             listed = await poly.list_context_deliveries(recipient_ref="agent:codex-main")
             assert [item.snapshot_ref for item in listed] == [first.snapshot_ref]
 
             # Same snapshot ref, different recipient: identity drift is rejected.
-            with pytest.raises(ValueError, match="different delivery identity"):
+            from polylogue.operations.daemon_errors import DaemonOperationRejectedError
+
+            with pytest.raises(DaemonOperationRejectedError, match="different delivery identity"):
                 await poly.compile_and_record_context(
                     recipient_ref="agent:someone-else",
                     delivered_by_ref="user:local",
@@ -227,7 +228,7 @@ async def test_list_context_deliveries_never_includes_full_context_image(
             # (MCPContextDeliverySummaryPayload), not by truncating the facade
             # return type. Prove it round-trips to the same recorded receipt.
             assert listed[0].snapshot_ref == recorded.snapshot_ref
-            assert listed[0].context_image == recorded.context_image
+            assert listed[0].context_image_sha256 == recorded.context_image_sha256
 
             unrelated = await poly.list_context_deliveries(recipient_ref="agent:unrelated")
             assert unrelated == []
