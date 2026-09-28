@@ -35,7 +35,7 @@ from polylogue import Polylogue
 from polylogue.core.enums import BlockType, Origin, Provider, Role
 from polylogue.operations.daemon_reads import execute_read_operation
 from polylogue.operations.operation_context import open_operation_read
-from polylogue.operations.session_contracts import SessionList, SessionSearch
+from polylogue.operations.session_contracts import SessionList, SessionRead, SessionSearch
 from polylogue.operations.session_reads import execute_session_operation
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -291,3 +291,54 @@ async def test_text_exclusion_listing_agrees_between_mcp_and_generic_routes(tmp_
     assert set(generic[0]) == {ids["plain"], ids["other"]}
     assert mcp_ids == generic[0]
     assert result["total"] == generic[1] == 2
+
+
+@pytest.mark.asyncio
+async def test_transcript_windows_agree_across_the_generic_and_owner_read_routes(tmp_path: Path) -> None:
+    """Both executors page one transcript into the same windows.
+
+    Each route resumes only its own continuation: ``session.read`` keeps its
+    ``session-read-v1`` dialect and ``sessions.read`` stamps
+    ``session-owner-v1``, and replaying one against the other is a typed
+    refusal (``test_session_read_parity``). What must agree is the window each
+    page selects. Mutation: let either route decide its offset, page size,
+    ``next_offset`` or row order outside ``read_transcript_window_sync`` and a
+    page's message ids or coordinates diverge here.
+    """
+
+    root = tmp_path / "archive"
+    session_id = _seed(root)[-1]  # five messages: three windows of two
+
+    owner_pages: list[tuple[list[str], int | None, int, int | None]] = []
+    async with Polylogue(archive_root=root) as api:
+        request = SessionRead(ref=f"session:{session_id}", limit=2)
+        while True:
+            page = await execute_session_operation(api, request)
+            owner_pages.append(([str(item.id) for item in page.items], page.total, page.offset, page.next_offset))
+            if page.continuation is None:
+                break
+            request = SessionRead(ref=f"session:{session_id}", continuation=page.continuation)
+
+    generic_pages: list[tuple[list[str], int | None, int, int | None]] = []
+    with open_operation_read(root) as pinned:
+        payload: dict[str, object] = {"ref": f"session:{session_id}", "limit": 2}
+        while True:
+            body = execute_read_operation("session.read", payload, archive=pinned.archive, serving_identity="direct")
+            session = body["session"]
+            assert isinstance(session, dict)
+            generic_pages.append(
+                (
+                    [str(message["message_id"]) for message in session["messages"]],
+                    _optional_int(body["total"]),
+                    _int(body["offset"]),
+                    _optional_int(body["next_offset"]),
+                )
+            )
+            if body["continuation"] is None:
+                break
+            payload = {"ref": f"session:{session_id}", "continuation": body["continuation"]}
+
+    assert owner_pages == generic_pages
+    assert [len(ids) for ids, *_ in owner_pages] == [2, 2, 1]
+    walked = [message_id for ids, *_ in owner_pages for message_id in ids]
+    assert len(walked) == len(set(walked)) == 5

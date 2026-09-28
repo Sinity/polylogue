@@ -308,18 +308,32 @@ def should_seed(root: Path, seed: Path) -> bool:
     matched its own environment ends up re-executing the corpus. A graph the
     running checkout wrote can only over-select, never under-select: an
     unrecorded test is unknown and runs.
+
+    That over-selection is also why an environment-current local graph still
+    loses to a seed that records more of this checkout's test files: an
+    interrupted corpus run leaves a usable but partial graph, and keeping it
+    re-executes every test it never reached on each later selecting run.
     """
     local = inspect_testmon_graph(root)
     if not local.usable:
         return True
+    local_unrecorded: tuple[str, ...] | None = None
     if local.full_rerun_cause is None:
-        return False
+        local_unrecorded = unrecorded_test_files(root)
+        if not local_unrecorded:
+            return False
     with tempfile.TemporaryDirectory(prefix="testmon-seed-") as scratch:
         probe_root = Path(scratch)
-        if not snapshot_testmon_graph(seed, testmon_datafile(probe_root)):
+        probe = testmon_datafile(probe_root)
+        if not snapshot_testmon_graph(seed, probe):
             return False
         candidate = inspect_testmon_graph(probe_root)
-    return candidate.usable and candidate.full_rerun_cause is None
+        if not candidate.usable or candidate.full_rerun_cause is not None:
+            return False
+        if local_unrecorded is None:
+            return True
+        seed_unrecorded = unrecorded_test_files(root, datafile=probe)
+    return seed_unrecorded is not None and len(seed_unrecorded) < len(local_unrecorded)
 
 
 def sync_testmon_graph(root: Path, *, source: Path | None = None) -> bool:

@@ -1176,6 +1176,12 @@ class TestEmitDeleteMachineModeNoPrompt:
         assert capsys.readouterr().out == ""
 
     def test_partial_delete_error_reports_applied_counts_without_refusal_word(self) -> None:
+        """A partially applied delete is not rendered as a refusal.
+
+        Anti-vacuity: delete the ``delete_partially_applied`` branch in
+        ``archive_query`` and the error falls through to ``daemon refused
+        delete``, dropping both applied counts.
+        """
         env = self._env(plain=True)
         with patch(
             "polylogue.cli.archive_query._submit_mutation_operation",

@@ -677,7 +677,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered s
   persists a full-corpus regeneration into
   `polylogue/schemas/providers/<provider>/versions/...`, and
   `devtools schema promote` promotes a single reviewed evidence cluster
-  (from `generate --cluster`) into a registered package version -- a
+  (from `generate --cluster --retain-clusters`) into a registered package version -- a
   narrower, single-version operation `commit` does not replace.
 
 For **derived tiers** (`index.db`, `embeddings.db`) this design intentionally
