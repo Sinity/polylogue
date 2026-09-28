@@ -131,6 +131,9 @@ if TYPE_CHECKING:
 
 _WHALE_RECEIPT_ROOT: Path | None = None
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
+#: Wall budget for back-to-back bounded session-derivation passes in one
+#: periodic convergence tick; the tick interval leaves the rest for the others.
+_SESSION_PROFILE_BACKLOG_SECONDS = 45.0
 #: Debt rows one retry tick inspects, shared by the admitted pass and the
 #: lease-free embedding pass that precedes it so both see the same window.
 _CONVERGENCE_DEBT_RETRY_LIMIT = 100
@@ -945,6 +948,8 @@ async def _periodic_convergence_check(
     raw_retention_callback: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Periodically retry recorded convergence debt."""
+    from polylogue.daemon.session_profile_composition import ComposedSessionProfiles
+
     db = _active_index_db_path()
 
     async def once() -> None:
@@ -962,7 +967,9 @@ async def _periodic_convergence_check(
                     error_detail=str(exc),
                 )
         await fts_owner.converge()
-        if session_profile_callback is not None:
+        if isinstance(session_profile_callback, ComposedSessionProfiles):
+            await session_profile_callback.converge_backlog(_SESSION_PROFILE_BACKLOG_SECONDS)
+        elif session_profile_callback is not None:
             await session_profile_callback(None)
 
     await daemon_periodic_runner().run(
