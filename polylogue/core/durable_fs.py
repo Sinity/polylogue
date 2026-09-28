@@ -140,6 +140,7 @@ def clone_or_copy_replace(source: Path, destination: Path) -> None:
         shutil.copymode(source, temporary_path)
         os.utime(temporary_path, ns=(info.st_atime_ns, info.st_mtime_ns))
         os.replace(temporary_path, destination)
+        _fsync_directory(destination.parent)
     except BaseException:
         if handle >= 0:
             os.close(handle)

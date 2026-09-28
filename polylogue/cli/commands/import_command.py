@@ -27,7 +27,9 @@ The three observable outcomes are:
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import stat
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -67,6 +69,20 @@ def _clone_file(source: str | Path, destination: str | Path) -> Path:
     return destination_path
 
 
+def _make_directories_owner_writable(root: Path) -> None:
+    """Let a restage create its temporaries inside an earlier staged tree.
+
+    ``copytree`` copies each source directory's mode after its contents, so a
+    ``0555`` export directory is read-only once staged and a later restage
+    could not create a replacement inside it. The same ``copytree`` restores
+    every mode once the directory's contents are published.
+    """
+    for directory, _subdirectories, _files in os.walk(root):
+        mode = os.stat(directory).st_mode
+        if not mode & stat.S_IWUSR:
+            os.chmod(directory, stat.S_IMODE(mode) | stat.S_IWUSR)
+
+
 def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:
     """Stage a local import target into the archive inbox for daemon pickup."""
     from polylogue.sources.parsers import antigravity, hermes_state
@@ -92,11 +108,28 @@ def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:
         if hermes_state.looks_like_state_db_path(resolved) or antigravity.looks_like_trajectory_db_path(resolved):
             stage_sqlite_snapshot(resolved, dest)
             return dest
-        sqlite_staging_metadata_path(dest).unlink(missing_ok=True)
-        if resolved.is_dir():
-            shutil.copytree(resolved, dest, dirs_exist_ok=True, copy_function=_clone_file)
-        else:
-            _clone_file(resolved, dest)
+        # A restaged non-snapshot has no SQLite provenance, but the earlier
+        # snapshot keeps its sidecar until its replacement has succeeded: a
+        # failed restage leaves both the old content and its original path.
+        metadata_path = sqlite_staging_metadata_path(dest)
+        try:
+            earlier_metadata: bytes | None = metadata_path.read_bytes()
+        except FileNotFoundError:
+            earlier_metadata = None
+        metadata_path.unlink(missing_ok=True)
+        try:
+            if resolved.is_dir():
+                if dest.is_dir():
+                    _make_directories_owner_writable(dest)
+                shutil.copytree(resolved, dest, dirs_exist_ok=True, copy_function=_clone_file)
+            else:
+                _clone_file(resolved, dest)
+        except OSError:
+            if earlier_metadata is not None:
+                from polylogue.core.durable_fs import atomic_replace
+
+                atomic_replace(metadata_path, earlier_metadata, mode=0o600)
+            raise
     except OSError as exc:
         fail("import", f"Could not stage {resolved} in daemon inbox: {exc}")
 
