@@ -16,6 +16,7 @@ cases fail.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -44,6 +45,7 @@ from polylogue.sources.parsers.local_agent import (
     parse_gemini_cli,
     parse_hermes,
 )
+from polylogue.sources.parsers.otel_genai import parse as parse_otel_genai
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
@@ -57,6 +59,7 @@ UNSUPPORTED = ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT.value
 TRUNCATED = ToolResultUnknownReason.SOURCE_TRUNCATED.value
 
 Triple = tuple[str, int | None, str | None]
+_FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -199,6 +202,31 @@ def _gemini_cli_payload(tool_record: dict[str, Any]) -> dict[str, Any]:
             },
         ],
     }
+
+
+def _otel_genai_payload(status: dict[str, Any] | None) -> dict[str, Any]:
+    """One OTLP ``execute_tool`` span; ``status`` absent means unset."""
+    span: dict[str, Any] = {
+        "traceId": "0af7651916cd43dd8448eb211c80319c",
+        "spanId": "b7ad6b7169203331",
+        "name": "execute_tool search",
+        "startTimeUnixNano": "1767225600000000000",
+        "endTimeUnixNano": "1767225601000000000",
+        "attributes": [
+            {"key": "gen_ai.operation.name", "value": {"stringValue": "execute_tool"}},
+            {"key": "gen_ai.conversation.id", "value": {"stringValue": "otel-outcome"}},
+            {"key": "gen_ai.tool.name", "value": {"stringValue": "search"}},
+            {"key": "gen_ai.tool.call.id", "value": {"stringValue": "call-1"}},
+            {"key": "gen_ai.tool.call.arguments", "value": {"stringValue": '{"q": "x"}'}},
+            {"key": "gen_ai.tool.call.result", "value": {"stringValue": "result"}},
+        ],
+    }
+    if status is not None:
+        span["status"] = status
+    fixture = json.loads((_FIXTURES / "otel-genai" / "trace.json").read_text(encoding="utf-8"))
+    scope_spans = fixture["resourceSpans"][0]["scopeSpans"][0]
+    scope_spans["spans"] = [span]
+    return fixture
 
 
 def _drive_payload(outcome: str | None) -> dict[str, Any]:
@@ -525,6 +553,20 @@ _ROUTES: tuple[tuple[str, Provider, Callable[[Path], ParsedSession], Triple, str
         lambda _root: parse_chunked_prompt(Provider.DRIVE, _drive_payload(None), "drive-outcome"),
         (ToolOutcome.UNKNOWN.value, None, NOT_REPORTED),
         None,
+    ),
+    (
+        "otel-genai-unset-status",
+        Provider.OTEL_GENAI,
+        lambda _root: parse_otel_genai(_otel_genai_payload(None), "otel-outcome")[0],
+        (ToolOutcome.UNKNOWN.value, None, NOT_REPORTED),
+        "outcome_unknown",
+    ),
+    (
+        "otel-genai-unmapped-status-code",
+        Provider.OTEL_GENAI,
+        lambda _root: parse_otel_genai(_otel_genai_payload({"code": 7}), "otel-outcome")[0],
+        (ToolOutcome.UNKNOWN.value, None, UNSUPPORTED),
+        "outcome_unknown",
     ),
     (
         "hermes-unread-exit-code",

@@ -14,7 +14,7 @@ from polylogue.config import Config, Source
 from polylogue.logging import get_logger
 from polylogue.readiness import ReadinessReport
 from polylogue.services import RuntimeServices
-from polylogue.storage.embeddings import embedding_status_payload
+from polylogue.storage.embeddings.status_payload import embedding_status_payload
 from polylogue.ui.theme import provider_color
 
 logger = get_logger(__name__)

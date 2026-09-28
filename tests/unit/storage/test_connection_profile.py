@@ -139,6 +139,33 @@ def test_readonly_temp_staging_cannot_write_persistent_or_attached_database(tmp_
         reader.close()
 
 
+def test_attach_database_on_a_profiled_reader_is_read_only(tmp_path: Path) -> None:
+    """A reader's sibling attachment succeeds and cannot write the sibling.
+
+    Anti-vacuity: route ``attach_database`` through a plain parameterized
+    ATTACH and the read authorizer denies it; open the sibling without
+    ``mode=ro`` and the INSERT below succeeds.
+    """
+    db_path = tmp_path / "index.db"
+    sibling_path = tmp_path / "source.db"
+    with sqlite3.connect(db_path) as writer:
+        writer.execute("CREATE TABLE evidence (value TEXT)")
+    with sqlite3.connect(sibling_path) as writer:
+        writer.execute("CREATE TABLE raw (value TEXT)")
+        writer.execute("INSERT INTO raw VALUES ('source')")
+
+    reader = connection_profile.open_readonly_connection(db_path, validate_schema=False)
+    try:
+        connection_profile.attach_database(reader, sibling_path, alias="source_tier")
+        assert reader.execute("SELECT value FROM source_tier.raw").fetchone() == ("source",)
+        with pytest.raises(sqlite3.DatabaseError):
+            reader.execute("INSERT INTO source_tier.raw VALUES ('wrong')")
+        with pytest.raises(sqlite3.DatabaseError):
+            reader.execute("PRAGMA busy_timeout = 1")
+    finally:
+        reader.close()
+
+
 @pytest.mark.parametrize(
     ("profile_name", "expected_busy_timeout_ms", "expected_query_only"),
     [

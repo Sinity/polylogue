@@ -51,7 +51,11 @@ from polylogue.storage.sqlite.archive_tiers.embedding_write import (
     replace_message_embedding_derivation,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection, open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import (
+    attach_database,
+    open_isolated_write_connection,
+    open_readonly_connection,
+)
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
@@ -313,7 +317,7 @@ class EmbeddingDerivationAdapter:
         with open_readonly_connection(index_path, timeout_class="background-read", validate_schema=False) as conn:
             if not table_exists(conn, "messages"):
                 return (), None
-            conn.execute("ATTACH DATABASE ? AS embeddings", (str(self._embeddings_path),))
+            attach_database(conn, self._embeddings_path, alias="embeddings")
             if not table_exists(conn, "message_embedding_refs", schema="embeddings"):
                 return (), None
             relation = archive_embeddable_messages_relation(conn, alias="desired", recipe=self._recipe)
@@ -379,7 +383,7 @@ class EmbeddingDerivationAdapter:
         with open_readonly_connection(index_path, timeout_class="background-read", validate_schema=False) as index:
             embeddings_attached = self._embeddings_path.exists()
             if embeddings_attached:
-                index.execute("ATTACH DATABASE ? AS embeddings", (str(self._embeddings_path),))
+                attach_database(index, self._embeddings_path, alias="embeddings")
             has_refs = embeddings_attached and table_exists(index, "message_embedding_refs", schema="embeddings")
             has_meta = embeddings_attached and table_exists(index, "message_embeddings_meta", schema="embeddings")
             has_vectors = embeddings_attached and table_exists(index, "message_embeddings", schema="embeddings")
