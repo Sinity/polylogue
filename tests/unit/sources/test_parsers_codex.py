@@ -3584,3 +3584,12 @@ def test_streamed_jsonl_decoder_reads_a_cesu8_pair_as_one_character() -> None:
     line = b'{"type": "note", "text": "a\xed\xa0\xbd\xed\xb8\x80 \xed\xa0\x80"}\n'
     (record,) = list(_iter_json_stream(io.BytesIO(line), "rollout.jsonl"))
     assert record["text"] == "a\U0001f600 \ud800"  # type: ignore[index,call-overload]
+
+
+def test_core_loads_still_reads_a_utf8_bom_document() -> None:
+    """Anti-vacuity: hand a BOM-prefixed document to the provider decoder and
+    the stdlib parse of the resulting string rejects the leading U+FEFF."""
+    from polylogue.core.json import loads
+
+    assert loads(b'\xef\xbb\xbf{"a": 1}') == {"a": 1}
+    assert loads(b'{"a": "x\xed\xa0\xbd\xed\xb8\x80"}') == {"a": "x\U0001f600"}

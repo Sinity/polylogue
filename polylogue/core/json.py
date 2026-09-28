@@ -474,10 +474,10 @@ def loads(obj: str | bytes | bytearray) -> JSONValue:
         return _loaded_json_value(_raw_loads(obj))
     except JSONDecodeError as exc:
         second: str | bytes | bytearray = obj
-        if isinstance(obj, bytes | bytearray):
+        if isinstance(obj, bytes | bytearray) and bytes(obj[:3]) != b"\xef\xbb\xbf":
             # Provider bytes decode as every provider reader decodes them:
-            # directly encoded surrogates kept, CESU-8 pairs joined. Other
-            # encodings are left to the stdlib's own detection.
+            # directly encoded surrogates kept, CESU-8 pairs joined. A BOM
+            # and other encodings are left to the stdlib's own detection.
             with suppress(UnicodeDecodeError):
                 second = decode_provider_utf8(bytes(obj))
         try:
