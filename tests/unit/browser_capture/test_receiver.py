@@ -563,6 +563,7 @@ def test_receiver_declares_durable_browser_backfill_ack_contract(tmp_path: Path)
     assert response.status == HTTPStatus.OK
     assert response.getheader("X-Request-ID")
     assert body.durable_ack_fields == ("receiver_request_id", "content_hash")
+    assert body.assertion_candidates is True
 
 
 def test_receiver_rejects_extra_web_origin_without_token(tmp_path: Path) -> None:

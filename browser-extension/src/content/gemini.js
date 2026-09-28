@@ -47,7 +47,18 @@
     if (!providerSessionId) return { ok: false, error: "cannot_capture_gemini_without_conversation_id" };
     const visibleTurnCount = collectTurnElements().length;
     const turns = collectTurns();
-    if (!turns.length) return { ok: false, error: "no_turns" };
+    if (!turns.length) {
+      await chrome.runtime.sendMessage({
+        type: "polylogue.captureHealth",
+        event: "capture_error",
+        provider: "gemini",
+        provider_session_id: providerSessionId,
+        visible_count: visibleTurnCount,
+        captured_count: 0,
+        reason: "no_turns",
+      });
+      return { ok: false, error: "no_turns" };
+    }
     if (visibleTurnCount > turns.length) {
       await chrome.runtime.sendMessage({
         type: "polylogue.captureHealth",
@@ -63,7 +74,6 @@
       provider: "gemini",
       adapterName: "gemini-dom-v1",
       providerSessionId,
-      title: document.title || providerSessionId,
       turns,
       providerMeta: { visible_turn_count: visibleTurnCount },
     });
@@ -83,6 +93,18 @@
   }
 
   window.polylogueCapture.capturePage = capture;
+  let lastTurnSignature = collectTurns().map((turn) => `${turn.role}:${turn.text}`).join("\n");
+  let recaptureTimer = null;
+  const freshnessObserver = new MutationObserver(() => {
+    let signature;
+    try { signature = collectTurns().map((turn) => `${turn.role}:${turn.text}`).join("\n"); }
+    catch { return; }
+    if (!signature || signature === lastTurnSignature) { lastTurnSignature = signature; return; }
+    lastTurnSignature = signature;
+    if (recaptureTimer !== null) clearTimeout(recaptureTimer);
+    recaptureTimer = setTimeout(() => { recaptureTimer = null; void capture("gemini_dom_changed"); }, 500);
+  });
+  freshnessObserver.observe(document.documentElement, { childList: true, characterData: true, subtree: true });
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type !== "polylogue.capturePage") return false;
     capture(message.reason || null).then(sendResponse).catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));

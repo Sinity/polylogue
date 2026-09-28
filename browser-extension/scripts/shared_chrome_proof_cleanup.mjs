@@ -1,10 +1,9 @@
-const DEFAULT_CLEANUP_TIMEOUT_MS = 2000;
+const DEFAULT_CLEANUP_TIMEOUT_MS = 30_000;
 
 function boundedCleanup(cleanup, timeoutMs) {
   let timeout = null;
-  const deadline = new Promise((resolve) => {
-    timeout = setTimeout(resolve, timeoutMs);
-    timeout.unref?.();
+  const deadline = new Promise((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(`owned Chrome target cleanup timed out after ${timeoutMs} ms`)), timeoutMs);
   });
   return Promise.race([Promise.resolve().then(cleanup), deadline]).finally(() => {
     if (timeout !== null) clearTimeout(timeout);

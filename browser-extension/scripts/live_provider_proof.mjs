@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { firstControlJson } from "./shared_chrome_control.mjs";
 
 const PROVIDERS = {
   chatgpt: { host: "chatgpt.com", url: "https://chatgpt.com/", provider: "chatgpt", adapters: ["chatgpt-native-v1", "chatgpt-dom-v1"] },
@@ -89,7 +90,7 @@ async function runChromeControl(args, timeoutMs = _CONTROL_TIMEOUT_MS) {
     child.once("error", finish(reject));
     child.once("close", (code) => {
       if (code !== 0) finish(reject)(new Error("shared Chrome control command failed"));
-      else finish(resolve)(stdout.trim());
+      else finish(resolve)(firstControlJson(stdout));
     });
   });
 }
@@ -103,10 +104,11 @@ export function assertAgentWindow(candidate, expectedUrl) {
   return candidate.id;
 }
 
-async function openAgentWindow(url, timeoutMs) {
-  const response = await runChromeControl(["agent-window", "--url", url], timeoutMs);
+export async function openAgentWindow(url, timeoutMs, onCreated = () => {}, control = runChromeControl) {
+  const response = await control(["agent-window", "--url", url], timeoutMs);
   try {
-    return assertAgentWindow(JSON.parse(response), url);
+    if (response && typeof response.id === "string" && /^[A-F0-9]{32}$/i.test(response.id)) onCreated(response.id);
+    return assertAgentWindow(response, url);
   } catch (error) {
     if (error instanceof SyntaxError) throw new Error("shared Chrome control returned invalid agent-window JSON");
     throw error;
@@ -266,8 +268,12 @@ function providerSummary(provider, payload) {
   };
 }
 
-async function closeProofTargets(browserClient, targetIds) {
-  await Promise.allSettled(targetIds.map((targetId) => browserClient.call("Target.closeTarget", { targetId })));
+export async function closeProofTargets(browserClient, targetIds) {
+  const results = await Promise.allSettled(targetIds.map((targetId) => browserClient.call("Target.closeTarget", { targetId })));
+  const failures = results.flatMap((result, index) => result.status === "rejected"
+    ? [`${targetIds[index]}: ${result.reason?.message || result.reason}`]
+    : result.value?.success === false ? [`${targetIds[index]}: closeTarget returned success=false`] : []);
+  if (failures.length) throw new Error(`failed to close proof targets: ${failures.join("; ")}`);
 }
 
 let activeBrowserClient = null;
@@ -323,8 +329,7 @@ async function runLiveProviderProof() {
     await configureReceiver(workerClient, receiverBaseUrl.replace(/\/+$/, ""), receiverToken);
     const proofTargets = [];
     for (const provider of selected) {
-      const targetId = await openAgentWindow(provider.url, Math.min(_CONTROL_TIMEOUT_MS, remaining(`open ${provider.host}`)));
-      createdTargetIds.push(targetId);
+      const targetId = await openAgentWindow(provider.url, Math.min(_CONTROL_TIMEOUT_MS, remaining(`open ${provider.host}`)), (id) => createdTargetIds.push(id));
       proofTargets.push({ provider, windowId: await proofWindowId(activeBrowserClient, targetId) });
     }
     if (interactiveWaitMs > 0) await sleep(Math.min(interactiveWaitMs, remaining("interactive wait")));

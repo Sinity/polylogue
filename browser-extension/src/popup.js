@@ -29,6 +29,7 @@ function hostLabel(url) {
     const parsed = new URL(url);
     if (hostMatches(parsed.hostname, "chatgpt.com")) return "ChatGPT";
     if (hostMatches(parsed.hostname, "claude.ai")) return "Claude.ai";
+    if (hostMatches(parsed.hostname, "gemini.google.com")) return "Gemini";
     if (hostMatches(parsed.hostname, "grok.com")) return "Grok";
     if (hostMatches(parsed.hostname, "x.com") || hostMatches(parsed.hostname, "twitter.com")) return "Grok / X";
     return parsed.hostname;
@@ -42,6 +43,7 @@ function providerFromUrl(url) {
     const parsed = new URL(url || "");
     if (hostMatches(parsed.hostname, "chatgpt.com")) return "chatgpt";
     if (hostMatches(parsed.hostname, "claude.ai")) return "claude-ai";
+    if (hostMatches(parsed.hostname, "gemini.google.com")) return "gemini";
     if (hostMatches(parsed.hostname, "grok.com") || hostMatches(parsed.hostname, "x.com") || hostMatches(parsed.hostname, "twitter.com")) {
       return "grok";
     }
@@ -55,6 +57,7 @@ function providerLogo(provider) {
   const labels = {
     chatgpt: "GPT",
     "claude-ai": "C",
+    gemini: "Gm",
     grok: "G",
     unknown: "?",
   };
@@ -115,6 +118,7 @@ function tabState(tab, ledger) {
       const parts = url.pathname.split("/").filter(Boolean);
       if (provider === "chatgpt") return parts[parts.indexOf("c") + 1] || null;
       if (provider === "claude-ai") return parts[0] === "chat" ? parts[1] || null : null;
+      if (provider === "gemini") return parts[0] === "app" ? parts[1] || null : url.searchParams.get("conversation") || url.searchParams.get("id");
       if (provider === "grok") {
         const pathId = parts.find((part, index) => parts[index - 1] === "chat" || parts[index - 1] === "grok");
         if (pathId) return pathId;
@@ -512,7 +516,7 @@ document.getElementById("browser-action-decline")?.addEventListener("click", asy
 
 async function loadMissionSnapshot() {
   try {
-    const result = await chrome.runtime.sendMessage({ type: "polylogue.missionControl.status", refresh: false });
+    const result = await chrome.runtime.sendMessage({ type: "polylogue.missionControl.status", refresh: false, include_intelligence: true });
     if (!result?.ok || (!result.state && !result.work && !result.receiver)) return null;
     return result;
   } catch {
@@ -624,16 +628,9 @@ async function render() {
   const receiverContract = document.getElementById("receiver-contract");
   if (receiverContract) {
     receiverContract.textContent = [
-      mission?.receiver?.health?.api_schema,
+      mission?.receiver?.health?.receiver_status?.api_schema || mission?.receiver?.pairing?.api_schema,
       mission?.extension?.contract_epoch,
     ].filter(Boolean).join(" · ") || "Not reported";
-  }
-  const writeExclusion = document.getElementById("write-exclusion");
-  if (writeExclusion) {
-    const exclusion = mission?.receiver?.health?.write_exclusion
-      || state?.write_exclusion
-      || state?.archive_state?.write_exclusion;
-    writeExclusion.textContent = exclusion ? String(exclusion) : "Not reported";
   }
   const cooldown = document.getElementById("cooldown");
   if (cooldown) {

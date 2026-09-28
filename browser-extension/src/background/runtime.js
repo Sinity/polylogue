@@ -183,7 +183,13 @@ async function commitCaptureJobsToReceiver(instanceId, checkpoint) {
       await client.checkpoint(adopted, payload);
       return null;
     } catch (error) {
-      return { job_id: job.id, error: String(error?.message || error) };
+      return {
+        job_id: job.id,
+        error: String(error?.message || error),
+        outcome: error?.outcome || null,
+        retry_after_ms: Number.isFinite(error?.retryAfterMs) ? error.retryAfterMs : null,
+        retry_until_ms: Number.isFinite(error?.retryUntilMs) ? error.retryUntilMs : null,
+      };
     }
   }));
   return { failures: results.filter(Boolean) };
@@ -1606,6 +1612,7 @@ async function missionIntelligenceProjection(state, configuredUrl) {
   });
   if (state?.error === "unauthorized") return unavailable("unauthorized", "receiver_authorization_required");
   if (state?.online === false) return unavailable("offline", "receiver_unavailable");
+  if (state?.archive_state?.state === "failed") return unavailable("failed", state.archive_state.reason || state.archive_state.error || "archive_ingest_failed");
   if (!indexedSessionId) return unavailable("uncaptured", "canonical_session_not_indexed");
 
   const encodedProvider = encodeURIComponent(state.provider || "");
@@ -1617,7 +1624,8 @@ async function missionIntelligenceProjection(state, configuredUrl) {
       MISSION_INTELLIGENCE_TIMEOUT_MS,
     );
   } catch (error) {
-    return unavailable(error?.status === 401 ? "unauthorized" : "offline", error?.message || "projection_unavailable");
+    const status = error?.status === 401 ? "unauthorized" : error?.status === 404 ? "incompatible" : error?.status ? "receiver_error" : "offline";
+    return unavailable(status, error?.message || "projection_unavailable");
   }
   return {
     ...projection,
@@ -1865,6 +1873,7 @@ function withProviderTransportOperation(provider, operation, { checkThrottle = t
 function providerThrottleError(deadline, nowMs) {
   const error = new Error("provider_rate_limited");
   error.outcome = "rate_limited";
+  error.retryUntilMs = deadline;
   error.retryAfterMs = Math.max(0, deadline - nowMs);
   error.retryAfterSeconds = Math.ceil(error.retryAfterMs / 1000);
   error.providerThrottleApplied = true;
@@ -2030,7 +2039,7 @@ async function providerAccountHandle(provider) {
       }
       throw error;
     }
-  }, { checkThrottle: false });
+  });
 }
 
 async function cleanupBackfillTransportTab(alarmName) {
@@ -3108,7 +3117,7 @@ function stateSnapshotForTab(tab, globalState, ledger, pairing, health) {
   };
 }
 
-async function missionControlSnapshot(tab = null, { refresh = true } = {}) {
+async function missionControlSnapshot(tab = null, { refresh = true, includeIntelligence = false } = {}) {
   const resolvedTab = tab || (runtimeChrome.tabs?.query
     ? (await runtimeChrome.tabs.query({ active: true, currentWindow: true }))[0]
     : null);
@@ -3160,7 +3169,15 @@ async function missionControlSnapshot(tab = null, { refresh = true } = {}) {
     ? stored[CONVERSATION_TIMELINE_KEY]?.[timelineKey] || []
     : [];
   const settings = await receiverSettings();
-  const intelligence = await missionIntelligenceProjection(state, settings.baseUrl);
+  const intelligence = includeIntelligence ? await missionIntelligenceProjection(state, settings.baseUrl) : null;
+  let assertionCapability = false;
+  if (includeIntelligence && receiverOnline) {
+    try {
+      const capabilities = await getJson("/v1/browser-captures/capabilities", PROVIDER_REQUEST_TIMEOUT_MS);
+      assertionCapability = capabilities?.assertion_candidates === true
+        || capabilities?.capabilities?.assertion_candidates === true;
+    } catch { /* Old receivers fail closed and leave Save unavailable. */ }
+  }
   const acceptedIdentityMap = await runtimeChrome.storage.local.get({ [ACCEPTED_MESSAGE_IDENTITIES_KEY]: {} });
   const acceptedIdentity = state.provider && state.provider_session_id
     ? acceptedIdentityMap[ACCEPTED_MESSAGE_IDENTITIES_KEY]?.[sessionKey(state.provider, state.provider_session_id)] || null
@@ -3195,11 +3212,11 @@ async function missionControlSnapshot(tab = null, { refresh = true } = {}) {
     ambient,
     assertions: {
       selection_candidate_supported: true,
-      persistence_supported: true,
+      persistence_supported: assertionCapability,
       accepted_identity: acceptedIdentity,
-      reason: "candidate_assertion_route",
+      reason: assertionCapability ? "candidate_assertion_route" : "receiver_capability_unavailable",
     },
-    intelligence,
+    ...(includeIntelligence ? { intelligence } : {}),
   };
 }
 
@@ -3258,7 +3275,7 @@ void ensureCaptureFreshnessAlarms();
 runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     if (message.type === "polylogue.missionControl.status") {
-      sendResponse(await missionControlSnapshot(sender.tab || null, { refresh: message.refresh !== false }));
+      sendResponse(await missionControlSnapshot(sender.tab || null, { refresh: message.refresh !== false, includeIntelligence: message.include_intelligence === true }));
       return;
     }
     if (message.type === "polylogue.providerThrottle") {

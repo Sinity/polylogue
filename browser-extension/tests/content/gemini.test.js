@@ -49,11 +49,14 @@ describe("Gemini DOM capture contract", () => {
     dom.window.close();
   });
 
-  it("fails loudly when the provider page has no supported turn boundary", async () => {
-    const { dom } = harness();
+  it("anti-vacuity: emits capture health when the provider has no readable turns", async () => {
+    const { dom, messages } = harness();
     dom.window.document.querySelector("user-query").remove();
     dom.window.document.querySelector("model-response").remove();
     await expect(dom.window.polylogueCapture.capturePage()).resolves.toMatchObject({ ok: false, error: "no_turns" });
+    expect(messages).toContainEqual(expect.objectContaining({
+      type: "polylogue.captureHealth", event: "capture_error", provider: "gemini", reason: "no_turns",
+    }));
     dom.window.close();
   });
 
@@ -69,6 +72,26 @@ describe("Gemini DOM capture contract", () => {
       visible_count: 3,
       captured_count: 2,
     });
+    dom.window.close();
+  });
+
+  it("anti-vacuity: keeps the tab title marked as page provenance", async () => {
+    const { dom, messages } = harness();
+    await dom.window.polylogueCapture.capturePage("fixture");
+    const capture = messages.find((message) => message.type === "polylogue.capture").envelope;
+    expect(capture.session.title_source).toBe("page");
+    dom.window.close();
+  });
+
+  it("anti-vacuity: schedules recapture after an already captured turn changes", async () => {
+    const { dom, messages } = harness();
+    await dom.window.polylogueCapture.capturePage("initial");
+    const response = dom.window.document.querySelector("model-response message-content");
+    response.textContent = "Updated answer";
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const captures = messages.filter((message) => message.type === "polylogue.capture");
+    expect(captures).toHaveLength(2);
+    expect(captures[1].envelope.session.turns[1].text).toBe("Updated answer");
     dom.window.close();
   });
 });
