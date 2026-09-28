@@ -58,6 +58,22 @@ def test_integer_and_non_literal_membership_lists_are_ignored() -> None:
     assert verify_durable_enum_checks.scan_ddl_for_enum_membership_checks(fixture_ddl, tier="fixture") == []
 
 
+def test_comments_and_non_check_membership_are_ignored() -> None:
+    """Anti-vacuity: only executable CHECK bodies can trigger this policy gate."""
+    members = ", ".join(f"'{member.value}'" for member in Origin)
+    ddl = f"""
+    -- origin IN ({members})
+    CREATE TABLE t (origin TEXT);
+    CREATE INDEX i ON t(origin) WHERE origin IN ({members});
+    """
+    assert (
+        verify_durable_enum_checks.scan_ddl_for_enum_membership_checks(
+            ddl, tier="source", enums_by_members={frozenset(member.value for member in Origin): "Origin"}
+        )
+        == []
+    )
+
+
 def test_grandfathered_waiver_is_keyed_on_its_exact_member_set() -> None:
     """A waived column that changes vocabulary loses its waiver, so the column
     is re-examined instead of silently re-widened."""

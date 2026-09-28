@@ -618,7 +618,7 @@ def inspect_raw_authority_frontier(config: Config) -> RawAuthorityFrontierCensus
     state_counts_counter = Counter(item.state.value for item in all_items)
     state_counts = json_document(dict(sorted(state_counts_counter.items())))
     inventory_digest = _digest([item.to_dict() for item in all_items])
-    gap_items = tuple(item for item in all_items if item.state is not RawAuthorityFrontierState.PROVEN_CURRENT)
+    gap_items = tuple(item for item in all_items if item.state in _OBLIGATION_STATES)
     plans = tuple(_plan(item) for item in gap_items)
     plan_inventory_digest = _digest([plan.to_dict() for plan in plans])
     pass_id = f"raw-authority-frontier-pass:{inventory_digest}"

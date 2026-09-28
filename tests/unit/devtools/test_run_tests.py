@@ -206,13 +206,22 @@ def test_outliers_aggregate_phases_and_report_test_and_file_shares(
         ),
         encoding="utf-8",
     )
+    for name, nodeid, duration in (
+        ("last-pytest-serial.json", "tests/unit/serial.py::test_serial", 4.0),
+        ("last-pytest-storage-scale.json", "tests/unit/storage_scale.py::test_scale", 5.0),
+    ):
+        (report_dir / name).write_text(
+            json.dumps({"tests": [{"nodeid": nodeid, "call": {"duration": duration}}]}), encoding="utf-8"
+        )
 
-    assert run_tests.print_outliers(2, root=tmp_path) == 0
+    assert run_tests.print_outliers(5, root=tmp_path) == 0
     output = capsys.readouterr().out
-    assert "Full-run receipts: 1; tests: 3; serial time: 17.20s" in output
-    assert "Top 2 slowest tests (93.0% of serial time):" in output
+    assert "Full-run receipts: 3; tests: 5; serial time: 26.20s" in output
+    assert "tests/unit/serial.py::test_serial" in output
+    assert "tests/unit/storage_scale.py::test_scale" in output
+    assert "Top 5 slowest tests (100.0% of serial time):" in output
     assert "tests/unit/slow.py::test_a" in output
-    assert "Top 2 slowest files (100.0% of serial time):" in output
+    assert "Top 4 slowest files (100.0% of serial time):" in output
     assert "tests/unit/slow.py" in output
 
 

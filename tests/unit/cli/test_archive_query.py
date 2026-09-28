@@ -969,6 +969,30 @@ def test_validate_cursor_request_identity_accepts_matching_query() -> None:
     _validate_cursor_request_identity(cursor, "query-a")
 
 
+def test_cursor_identity_ignores_presentation_options_but_keeps_ranked_selection() -> None:
+    from polylogue.surfaces.cursor_identity import search_cursor_request_identity
+
+    base = {"query": "needle", "origin": "codex-session", "limit": 20}
+    shown_differently = {
+        **base,
+        "output_format": "json",
+        "fields": "title",
+        "verbose": True,
+        "plain": True,
+        "no_daemon": True,
+    }
+    assert search_cursor_request_identity(base) == search_cursor_request_identity(shown_differently)
+    assert search_cursor_request_identity(base) != search_cursor_request_identity({**base, "origin": "claude-code"})
+
+
+def test_field_projection_keeps_terminal_outcome() -> None:
+    payload = {"mode": "stats", "total_sessions": 2, "outcome": {"state": "matched"}}
+    assert _project_payload(payload, "total_sessions") == {
+        "total_sessions": 2,
+        "outcome": {"state": "matched"},
+    }
+
+
 class TestEmitDeleteMachineModeNoPrompt:
     """`_emit_delete` must never block on an interactive prompt in machine mode (#1818 P6).
 
@@ -1345,6 +1369,57 @@ class TestEmitDeleteMachineModeNoPrompt:
 
 
 class TestSessionSummaryText:
+    def test_transcript_omits_reasoning_and_renders_structured_tool_call(self) -> None:
+        """Transcript rendering keeps authored text and structured calls only.
+
+        Anti-vacuity: flatten every block's ``text`` and reasoning leaks while
+        the textless tool invocation disappears.
+        """
+        rendered = _session_text(
+            {
+                "session_id": "fixture-session",
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "blocks": [
+                            {"block_type": "thinking", "text": "private reasoning"},
+                            {"block_type": "tool_use", "tool_name": "shell", "tool_input": {"command": "pytest"}},
+                        ],
+                    }
+                ],
+            }
+        )
+        assert "private reasoning" not in rendered
+        assert "shell" in rendered and '"command": "pytest"' in rendered
+
+    def test_transcript_window_retries_oversized_first_page_smaller(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A pageable transcript does not fail on its oversized default window.
+
+        Anti-vacuity: make the first 200-row request exceed the operation byte
+        bound while a 100-row retry succeeds; without reduction the typed error
+        escapes before any export can be produced.
+        """
+        from polylogue.cli import archive_query
+        from polylogue.cli.operation_kernel import OperationFailedError
+
+        limits: list[int | None] = []
+
+        def dispatch(_config: object, request: object, **_kwargs: object) -> tuple[dict[str, object], None]:
+            limit = request.payload.get("limit")  # type: ignore[attr-defined]
+            limits.append(limit if isinstance(limit, int) else None)
+            if len(limits) == 1:
+                raise OperationFailedError("result_too_large", "oversized fixture page")
+            return {"session": {"session_id": "fixture", "messages": []}, "complete": True}, None
+
+        monkeypatch.setattr(archive_query, "dispatch_read", dispatch)
+        assert (
+            archive_query._read_session_windows(cast(Config, object()), "session:fixture", daemon_disabled=True)[
+                "messages"
+            ]
+            == []
+        )
+        assert limits == [200, 100]
+
     """``read --view summary`` must render a condensed synopsis, not the full
     transcript (#analyze-perf): previously ``summary`` and ``transcript``
     both routed to the same renderer and produced byte-identical output for

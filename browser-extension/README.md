@@ -86,8 +86,9 @@ retries, sync jobs, or provider inventory work. It refreshes receiver status
 automatically when opened and then on a short cadence while it remains open.
 
 For branch-local development, use the declared `dev_loop_proof` AgentCTL
-operation. Its job result is the authority for the leased receiver URL and
-lifecycle. Each status/archive/capture request sends `X-Request-ID`; the
+operation. Its job result is the authority for the receiver URL selected by
+the Polylogue proof process and for the outer lifecycle. Each
+status/archive/capture request sends `X-Request-ID`; the
 popup shows the receiver's echoed request id and records the request/response
 stage in **Debug log**. Use **Export JSON** to save the redacted debug packet
 and correlate popup action, service-worker request, receiver decision,
@@ -101,7 +102,7 @@ agentctl job start polylogue dev_loop_proof --workspace <workspace-id>
 agentctl job result <job-id>
 ```
 
-The proof starts a temporary receiver, proves unauthenticated rejection, asks Sinnix's shared-Chrome control boundary to load the unpacked extension and create one parked `agentbrowser` window, submits deterministic ChatGPT and Claude captures through the receiver, and verifies archive/API convergence without cookies or raw turn text in its bounded result. It never launches Chrome or Chromium, creates a browser profile, or allocates a private CDP port. AgentCTL owns the process, ports, timeout, cancellation, and cleanup. The shared-Chrome provider proof runs only through the declared `live_provider_proof` AgentCTL operation. It opens parked, proof-owned windows in the authenticated browser and does not create another Polylogue daemon lifecycle.
+The proof starts a temporary receiver, proves unauthenticated rejection, asks Sinnix's shared-Chrome control boundary to load the unpacked extension and create one parked `agentbrowser` window, submits deterministic ChatGPT and Claude captures through the receiver, and verifies archive/API convergence without cookies or raw turn text in its bounded result. It never launches Chrome or Chromium, creates a browser profile, or allocates a private CDP port. AgentCTL owns process supervision, timeout, cancellation, and cleanup; the proof service selects its loopback receiver port. The shared-Chrome provider proof runs only through the declared `live_provider_proof` AgentCTL operation. It opens parked, proof-owned windows in the authenticated browser and does not create another Polylogue daemon lifecycle.
 
 ## Capture status, pairing, and ambient status
 
