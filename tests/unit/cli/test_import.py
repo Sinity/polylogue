@@ -356,8 +356,8 @@ def test_failed_restage_keeps_the_earlier_import(tmp_path: Path, workspace_env: 
 def test_failed_restage_keeps_the_earlier_snapshot_provenance(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
     """A failed restage over a staged snapshot keeps its provenance sidecar.
 
-    Anti-vacuity: unlink the sidecar before the replacement and never restore
-    it, and the preserved snapshot loses its original source path.
+    Anti-vacuity: unlink the sidecar before the copy and never restore it,
+    and the preserved snapshot loses its original source path.
     """
     from polylogue.cli.commands import import_command
     from polylogue.sources.sqlite_snapshot import (
@@ -393,6 +393,86 @@ def test_failed_restage_keeps_the_earlier_snapshot_provenance(tmp_path: Path, wo
     assert staged.read_bytes() == earlier
     assert sqlite_staging_metadata_path(staged).exists()
     assert original_sqlite_source_path(staged) == first.resolve()
+
+
+def test_restage_keeps_snapshot_provenance_for_the_whole_copy(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+    """The earlier snapshot's sidecar exists while its replacement is copied.
+
+    Anti-vacuity: unlink the sidecar before the copy starts and the copy
+    observes the still-visible old database without its provenance.
+    """
+    import shutil
+
+    from polylogue.cli.commands import import_command
+    from polylogue.sources.sqlite_snapshot import sqlite_staging_metadata_path, stage_sqlite_snapshot
+
+    first_root = tmp_path / "hermes"
+    first_root.mkdir()
+    first = first_root / "state.db"
+    with sqlite3.connect(first) as conn:
+        conn.execute("CREATE TABLE evidence(value TEXT)")
+    staged = workspace_env["archive_root"] / "inbox" / "state.db"
+    stage_sqlite_snapshot(first, staged)
+    metadata_path = sqlite_staging_metadata_path(staged)
+
+    replacement_root = tmp_path / "replacement"
+    replacement_root.mkdir()
+    replacement = replacement_root / "state.db"
+    replacement.write_bytes(b"not a Hermes database")
+
+    during_copy: list[bool] = []
+    real_copy = shutil.copyfileobj
+
+    def observing_copy(source: object, target: object, *args: object) -> None:
+        during_copy.append(metadata_path.exists())
+        real_copy(source, target, *args)  # type: ignore[arg-type]
+
+    with (
+        patch("polylogue.core.durable_fs.reflink_into", return_value=False),
+        patch("polylogue.core.durable_fs.shutil.copyfileobj", side_effect=observing_copy),
+    ):
+        assert import_command._stage_for_daemon(replacement) == staged
+
+    assert during_copy == [True]
+    assert staged.read_bytes() == replacement.read_bytes()
+    assert not metadata_path.exists()
+
+
+def test_failed_directory_restage_restores_read_only_modes(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+    """A directory restage that fails puts the staged tree's modes back.
+
+    Anti-vacuity: leave the owner-write bits added for the restage and the
+    staged ``0555`` directory is ``0755`` after the failure.
+    """
+    import os
+    import stat
+
+    from polylogue.cli.commands import import_command
+
+    export = tmp_path / "export"
+    locked = export / "locked"
+    locked.mkdir(parents=True)
+    (locked / "member.json").write_text('{"first": true}')
+    locked.chmod(0o555)
+    staged_locked = workspace_env["archive_root"] / "inbox" / "export" / "locked"
+    try:
+        staged = import_command._stage_for_daemon(export)
+        assert stat.S_IMODE(os.stat(staged / "locked").st_mode) == 0o555
+
+        def failing_copytree(*_args: object, **_kwargs: object) -> None:
+            raise OSError(errno.EACCES, "injected source scan failure")
+
+        with (
+            patch("polylogue.cli.commands.import_command.shutil.copytree", side_effect=failing_copytree),
+            pytest.raises(SystemExit),
+        ):
+            import_command._stage_for_daemon(export)
+
+        assert stat.S_IMODE(os.stat(staged_locked).st_mode) == 0o555
+    finally:
+        locked.chmod(0o755)
+        if staged_locked.exists():
+            staged_locked.chmod(0o755)
 
 
 def test_restage_publishes_into_a_read_only_staged_directory(tmp_path: Path, workspace_env: dict[str, Path]) -> None:

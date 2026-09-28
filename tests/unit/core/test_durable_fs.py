@@ -66,3 +66,32 @@ def test_clone_or_copy_replace_stages_a_maximal_component_name(tmp_path: Path) -
     assert stat.S_IMODE(destination.stat().st_mode) == 0o640
     assert destination.stat().st_mtime_ns == 2_000_000_000
     assert [path.name for path in destination.parent.iterdir()] == [destination.name]
+
+
+def test_clone_or_copy_replace_sets_metadata_before_its_file_barrier(tmp_path: Path) -> None:
+    """Mode and timestamps are on the temporary before its ``fsync``.
+
+    Anti-vacuity: apply them after the only file ``fsync`` and the barrier
+    observes the ``mkstemp`` defaults instead of the source's mode and mtime.
+    """
+    from unittest.mock import patch
+
+    from polylogue.core.durable_fs import clone_or_copy_replace
+
+    source = tmp_path / "source.json"
+    source.write_text("{}")
+    source.chmod(0o640)
+    os.utime(source, ns=(1_000_000_000, 2_000_000_000))
+    observed: list[tuple[int, int]] = []
+    real_fsync = os.fsync
+
+    def observing_fsync(fd: int) -> None:
+        info = os.fstat(fd)
+        if stat.S_ISREG(info.st_mode):
+            observed.append((stat.S_IMODE(info.st_mode), info.st_mtime_ns))
+        real_fsync(fd)
+
+    with patch("polylogue.core.durable_fs.os.fsync", side_effect=observing_fsync):
+        clone_or_copy_replace(source, tmp_path / "staged" / "source.json")
+
+    assert observed == [(0o640, 2_000_000_000)]
