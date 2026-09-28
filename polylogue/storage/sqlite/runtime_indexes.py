@@ -114,6 +114,12 @@ def restore_deferred_secondary_indexes_sync(conn: sqlite3.Connection) -> None:
     for sql in _DEFERRED_SECONDARY_INDEX_SQL:
         conn.execute(sql)
     ensure_runtime_indexes_sync(conn)
+    # DROP INDEX removes its sqlite_stat1 row. Rebuild the seeded planner
+    # statistics after restoring the deferred set, before this generation can
+    # be published to readers.
+    from polylogue.storage.sqlite.maintenance import analyze_planner_stats_tables
+
+    analyze_planner_stats_tables(conn)
 
 
 async def ensure_runtime_indexes_async(conn: aiosqlite.Connection) -> None:
