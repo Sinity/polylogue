@@ -337,6 +337,10 @@ class SessionDigestEvent(ArchiveInsightModel):
         "command_failed",
         "test_passed",
         "test_failed",
+        "tool_run",
+        "subagent_spawn",
+        "decision",
+        "artifact_change",
     ]
     summary: str
     raw_refs: tuple[TransformRawRef, ...]
@@ -1884,6 +1888,22 @@ def _extract_events(session: Session, messages: Sequence[Message]) -> Iterable[S
     result carries no structured outcome yields no event (NULL = unknown,
     never a fabricated positive).
     """
+    for event in sorted(session.session_events, key=lambda item: item.event_index):
+        if event.event_type not in {"tool_run", "subagent_spawn", "decision", "artifact_change"}:
+            continue
+        payload = event.payload
+        summary = payload.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            summary = event.event_type.replace("_", " ")
+        yield SessionDigestEvent(
+            kind=event.event_type,
+            summary=summary,
+            raw_refs=(TransformRawRef(session_id=str(session.id), ref_kind="session", preview=summary),),
+            tool_name=_optional_text(payload.get("tool_name")),
+            tool_id=_optional_text(payload.get("tool_id")),
+            status=_optional_text(payload.get("status")),
+        )
+
     result_by_tool_id: dict[str, Mapping[str, object]] = {}
     for message in messages:
         for block in message.blocks:
