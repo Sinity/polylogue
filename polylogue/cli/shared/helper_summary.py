@@ -8,13 +8,13 @@ from typing import Protocol
 
 from polylogue.analysis.archive import ArchiveCoverageInsight
 from polylogue.api.sync.bridge import run_coroutine_sync
+from polylogue.cli.shared.embed_stats import embedding_status_payload
 from polylogue.cli.shared.helper_support import load_effective_config
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config, Source
 from polylogue.logging import get_logger
 from polylogue.readiness import ReadinessReport
 from polylogue.services import RuntimeServices
-from polylogue.storage.embeddings.status_payload import embedding_status_payload
 from polylogue.ui.theme import provider_color
 
 logger = get_logger(__name__)

@@ -223,7 +223,7 @@ def _otel_genai_payload(status: dict[str, Any] | None) -> dict[str, Any]:
     }
     if status is not None:
         span["status"] = status
-    fixture = json.loads((_FIXTURES / "otel-genai" / "trace.json").read_text(encoding="utf-8"))
+    fixture: dict[str, Any] = json.loads((_FIXTURES / "otel-genai" / "trace.json").read_text(encoding="utf-8"))
     scope_spans = fixture["resourceSpans"][0]["scopeSpans"][0]
     scope_spans["spans"] = [span]
     return fixture
