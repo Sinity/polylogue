@@ -690,12 +690,21 @@ def grade_formulation(
     required_tools = {requirement.tool for requirement in scenario.discovery_requirements}
     visible = set(capture.tools)
     missing_from_wire = sorted(required_tools - visible)
+    missing_arguments = {
+        requirement.tool: sorted(
+            set(requirement.required_arguments)
+            - set(capture.tool_schemas.get(requirement.tool, {}).get("input_schema", {}).get("properties", {}))
+        )
+        for requirement in scenario.discovery_requirements
+        if set(requirement.required_arguments)
+        - set(capture.tool_schemas.get(requirement.tool, {}).get("input_schema", {}).get("properties", {}))
+    }
     grades.append(
         ColdModelAxisGrade(
             "discovery",
-            "fail" if missing_from_wire else "pass",
-            f"tools missing from wire discovery: {missing_from_wire}"
-            if missing_from_wire
+            "fail" if missing_from_wire or missing_arguments else "pass",
+            f"tools missing from wire discovery: {missing_from_wire}; required arguments missing: {missing_arguments}"
+            if missing_from_wire or missing_arguments
             else f"{len(capture.tools)} tools and {len(capture.examples)} examples captured over the wire",
         )
     )
@@ -727,9 +736,7 @@ def grade_formulation(
         field for projection in scenario.evidence_projections if (field := _citable_field(projection.path))
     }
     cited = set(plan.citation_fields)
-    # A scenario with no declared evidence projection requires no citation; one
-    # that has them requires the plan to name at least one of them.
-    citations_ok = not required_citations or bool(cited & required_citations)
+    citations_ok = required_citations <= cited
     grades.append(
         ColdModelAxisGrade(
             "citations",
@@ -746,13 +753,12 @@ def grade_formulation(
         )
     )
 
-    declared_stops = bool(plan.stop_conditions)
+    declared_stops = set(scenario.stop_conditions) <= set(plan.stop_conditions)
     grades.append(
         ColdModelAxisGrade(
             "stop_conditions",
             "pass" if declared_stops else "fail",
-            f"plan declared {len(plan.stop_conditions)} stop conditions "
-            f"against {len(scenario.stop_conditions)} required",
+            f"plan declared {sorted(plan.stop_conditions)} against {len(scenario.stop_conditions)} required",
         )
     )
     return tuple(grades)
@@ -763,6 +769,7 @@ def grade_execution(replay_result: Mapping[str, JSONValue]) -> tuple[ColdModelAx
     diagnostics = replay_result.get("diagnostics")
     diagnostic_count = len(diagnostics) if isinstance(diagnostics, list) else 0
     projection_failures = 0
+    execution_prevented_projection = status != "pass"
     if isinstance(diagnostics, list):
         projection_failures = sum(
             1
@@ -777,7 +784,7 @@ def grade_execution(replay_result: Mapping[str, JSONValue]) -> tuple[ColdModelAx
         ),
         ColdModelAxisGrade(
             "projection",
-            "pass" if projection_failures == 0 else "fail",
+            "pass" if projection_failures == 0 and not execution_prevented_projection else "fail",
             f"{projection_failures} fact/coverage diagnostics from the independent oracle",
         ),
     )

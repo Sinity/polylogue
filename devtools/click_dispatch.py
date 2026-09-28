@@ -165,6 +165,10 @@ def _make_command(spec: CommandSpec) -> click.Command:
         epilog=_build_epilog(spec),
         callback=callback,
         params=params,
+        # The argparse-backed command owns its complete native help surface.
+        # Let --help pass through as an unknown option instead of letting
+        # Click shadow it with wrapper-only options.
+        context_settings={"help_option_names": []},
     )
     # Subcommands use argparse internally, so unknown options must be forwarded
     # as-is rather than rejected by Click's option parser.
