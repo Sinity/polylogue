@@ -43,6 +43,7 @@ from devtools.checkout_identity import (
     default_branch_refusal,
 )
 from devtools.pytest_invocation import (
+    ASSERT_PLAIN_ARGS,
     CLEAR_CONFIGURED_ADDOPTS,
     IGNORED_COLLECTION_ARGS,
     SUITE_COST_PLUGIN_NAME,
@@ -369,6 +370,7 @@ def build_pytest_cmd(selection: list[str], *, report_path: Path = PYTEST_REPORT_
         SUITE_COST_PLUGIN_NAME,
         *managed_plugin_args(testmon=False, xdist=_has_worker_flag(selection)),
         CLEAR_CONFIGURED_ADDOPTS,
+        ASSERT_PLAIN_ARGS,
         report_file_argument(report_path),
         *collection_args,
         *selection,
