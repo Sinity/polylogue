@@ -1429,14 +1429,16 @@ def _run_launch(launch_path: Path) -> int:
                 stderr=log,
                 start_new_session=True,
             )
-            first_run = child
+            # The process being measured; the in-slot rerun replaces it, and
+            # live telemetry names whichever attempt is running now.
+            measured = [child]
             sampler = ProcessGroupMemorySampler(
-                first_run.pid,
+                child.pid,
                 snapshot_path=telemetry_path,
                 snapshot_context=lambda: {
                     "status": "running",
-                    "pid": first_run.pid,
-                    "process_group": first_run.pid,
+                    "pid": measured[0].pid,
+                    "process_group": measured[0].pid,
                     "sizing": sizing,
                     "progress": progress(),
                 },
@@ -1448,6 +1450,7 @@ def _run_launch(launch_path: Path) -> int:
                 def register(process: subprocess.Popen[Any]) -> None:
                     nonlocal child
                     child = process
+                    measured[0] = process
                     if sampler is not None:
                         sampler.follow(process.pid)
 

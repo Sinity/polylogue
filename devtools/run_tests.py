@@ -613,6 +613,10 @@ def _selected_test_modules(selection: list[str]) -> int:
         for index, argument in enumerate(selection)
         if not (index and selection[index - 1] in _VALUE_TAKING_OPTIONS)
     ]
+    if not any(not argument.startswith("-") for argument in certain):
+        # No path operand: pytest collects its configured ``testpaths``, the
+        # whole test tree, so the selection is counted as that tree.
+        certain = [*certain, "tests"]
     for argument in certain:
         if argument.startswith("-"):
             continue
@@ -676,10 +680,20 @@ def build_pytest_cmd(selection: list[str], *, report_path: Path = PYTEST_REPORT_
         CLEAR_CONFIGURED_ADDOPTS,
         report_file_argument(report_path),
         *collection_args,
-        *selection,
-        *worker_args,
-        *_xdist_distribution_args(selection, worker_args),
+        *_before_separator(selection, [*worker_args, *_xdist_distribution_args(selection, worker_args)]),
     ]
+
+
+def _before_separator(selection: list[str], options: list[str]) -> list[str]:
+    """``selection`` with ``options`` placed before any ``--``.
+
+    After ``--`` pytest reads every argument as a path, so generated options
+    appended there would be looked up as files.
+    """
+    if "--" not in selection:
+        return [*selection, *options]
+    index = selection.index("--")
+    return [*selection[:index], *options, *selection[index:]]
 
 
 def focused_pytest_env(*, run: VerifyRun, artifacts: PytestStepArtifacts) -> dict[str, str]:

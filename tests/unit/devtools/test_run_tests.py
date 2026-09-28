@@ -1488,3 +1488,20 @@ def test_a_standalone_long_flag_before_a_directory_keeps_xdist() -> None:
     swallows the directory, so no workers are requested."""
     cmd = run_tests.build_pytest_cmd(["--strict-markers", "tests/unit/devtools"])
     assert cmd[cmd.index("-n") + 1] == str(FOCUSED_MAX_WORKERS)
+
+
+def test_a_pathless_selection_counts_as_the_whole_test_tree() -> None:
+    """``-k expr`` alone collects ``testpaths``, so it is broad work.
+
+    Anti-vacuity: count only explicit operands and ``-k`` counts zero modules,
+    running the whole tree serially on the focused sizing.
+    """
+    assert run_tests._selected_test_modules(["-k", "never_matches"]) >= run_tests.BROAD_SELECTION_MODULES
+
+
+def test_generated_worker_options_go_before_the_path_separator() -> None:
+    """Anti-vacuity: append after ``--`` and pytest looks for a file named ``-n``."""
+    cmd = run_tests.build_pytest_cmd(["--", "tests/unit/devtools"])
+    separator = cmd.index("--")
+    assert cmd.index("-n") < separator
+    assert cmd[separator + 1 :] == ["tests/unit/devtools"]
