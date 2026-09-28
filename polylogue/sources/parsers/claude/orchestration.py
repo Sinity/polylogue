@@ -288,9 +288,22 @@ def _journal_fact(source_path: str, line: int, payload: Mapping[str, object]) ->
 #: its parent block, so it must never be read as a prefix.
 DISPATCH_IDENTITY_FIELDS = frozenset({"toolUseId", "tool_use_id"})
 
+#: Identity fields the parser reads through aliases, each in the order its
+#: ``_first_string`` picks them. A reader of a document's envelope keeps the
+#: selected alias of each exact, so it accepts and refuses what this parser
+#: accepts and refuses (a surrogate in any of them is refused by name).
+IDENTITY_FIELD_GROUPS: tuple[tuple[str, ...], ...] = (
+    ("runId", "run_id", "workflowRunId", "workflow_run_id", "id"),
+    ("agentId", "agent_id", "sessionId", "session_id"),
+    ("contentKey", "content_key", "callKey", "call_key", "key"),
+    ("attemptId", "attempt_id", "attempt"),
+    ("toolUseId", "tool_use_id"),
+)
+
 
 __all__ = [
     "DISPATCH_IDENTITY_FIELDS",
+    "IDENTITY_FIELD_GROUPS",
     "DOCUMENT_READ_FIELDS",
     "ClaudeOrchestrationArtifact",
     "ClaudeOrchestrationFact",

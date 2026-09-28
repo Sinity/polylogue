@@ -17,7 +17,7 @@ import sqlite3
 import sys
 from collections.abc import Iterable, Iterator
 from functools import cache
-from typing import IO, Protocol
+from typing import IO, Protocol, cast
 
 #: Characters of a top-level string an envelope keeps. The source-class
 #: signatures read only the type and short leading text of root fields.
@@ -600,6 +600,7 @@ def _envelopes(
     expand_arrays: bool,
     fields: frozenset[str],
     exact_fields: frozenset[str] = frozenset(),
+    identity_groups: tuple[tuple[str, ...], ...] = (),
 ) -> Iterator[object]:
     depth = 0
     root: object = None
@@ -640,10 +641,12 @@ def _envelopes(
         if event in ("end_map", "end_array"):
             depth -= 1
             if depth == 0 and not expanding:
-                if substituted_exact:
+                refused = _selected_substituted(root, substituted_exact, identity_groups)
+                if refused is not None:
                     # Refused only once duplicate keys have settled on their
-                    # final value, as the full decoder's last-key-wins reads it.
-                    raise EnvelopeValueUnrepresentableError(min(substituted_exact))
+                    # final value, as the full decoder's last-key-wins reads it,
+                    # and only for the alias its reader selects.
+                    raise EnvelopeValueUnrepresentableError(refused)
                 yield root
             elif depth == 1 and expanding:
                 yield element
@@ -707,12 +710,32 @@ def _first_significant(handle: IO[bytes]) -> bytes:
     return b""
 
 
+def _selected_alias(root: dict[object, object], group: tuple[str, ...]) -> str | None:
+    """The first alias of ``group`` holding a non-empty string, as its reader picks it."""
+    for field in group:
+        value = root.get(field)
+        if isinstance(value, str) and value:
+            return field
+    return None
+
+
+def _selected_substituted(root: object, substituted: set[str], groups: tuple[tuple[str, ...], ...]) -> str | None:
+    if not substituted or not isinstance(root, dict):
+        return None
+    for group in groups:
+        selected = _selected_alias(root, group)
+        if selected is not None and selected in substituted:
+            return selected
+    return None
+
+
 def top_level_envelopes(
     handle: IO[bytes],
     *,
     expand_arrays: bool,
     fields: frozenset[str],
     whole_fields: frozenset[str] = frozenset(),
+    identity_groups: tuple[tuple[str, ...], ...] = (),
 ) -> Iterator[object]:
     """Stream one JSON document's envelope, or one per element of an array document.
 
@@ -725,8 +748,16 @@ def top_level_envelopes(
     with :class:`EnvelopeValueUnrepresentableError` when it holds a surrogate
     code unit -- never shortened or altered. Numbers are read exactly, so no
     magnitude makes a document unreadable. A malformed document raises ``ijson.JSONError``.
+
+    ``identity_groups`` are identities read through aliases in precedence
+    order: only the alias its reader selects (the first holding a non-empty
+    string) is read whole and checked. ``whole_fields`` are single-alias
+    groups.
     """
     import ijson
+
+    identity_groups = (*identity_groups, *((field,) for field in sorted(whole_fields)))
+    whole_fields = frozenset(field for group in identity_groups for field in group)
 
     if whole_fields and not expand_arrays:
         # Exact identity fields live only on an object root. Any other root is
@@ -743,12 +774,22 @@ def top_level_envelopes(
         # Streamed: an array document's elements are never held together.
         yield from _envelopes(events, reader, expand_arrays=expand_arrays, fields=fields)
         return
-    envelopes = list(_envelopes(events, reader, expand_arrays=False, fields=fields, exact_fields=whole_fields))
+    envelopes = list(
+        _envelopes(
+            events,
+            reader,
+            expand_arrays=False,
+            fields=fields,
+            exact_fields=whole_fields,
+            identity_groups=identity_groups,
+        )
+    )
     if envelopes:
         for envelope in envelopes:
             if not isinstance(envelope, dict):
                 continue
-            for field in sorted(whole_fields & envelope.keys()):
+            selected = {_selected_alias(envelope, group) for group in identity_groups} - {None}
+            for field in sorted(cast(set[str], selected)):
                 value = envelope[field]
                 if not isinstance(value, _TruncatedText):
                     continue

@@ -90,8 +90,8 @@ from polylogue.sources.parsers.base import (
 )
 from polylogue.sources.parsers.base_support import derive_attachment_provenance
 from polylogue.sources.parsers.claude.orchestration import (
-    DISPATCH_IDENTITY_FIELDS,
     DOCUMENT_READ_FIELDS,
+    IDENTITY_FIELD_GROUPS,
     parse_claude_orchestration_artifact,
 )
 from polylogue.sources.parsers.hermes_identity import split_qualified_session_id
@@ -10904,7 +10904,7 @@ def _sidecar_dispatch_tool_ids(
                         handle,
                         expand_arrays=False,
                         fields=DOCUMENT_READ_FIELDS,
-                        whole_fields=DISPATCH_IDENTITY_FIELDS,
+                        identity_groups=IDENTITY_FIELD_GROUPS,
                     )
                 # Only an object root carries dispatch identity; a scalar root
                 # must not be decoded a second time into a document.
@@ -11474,7 +11474,9 @@ def _stored_session_native_id(native_id: str) -> str:
     messages, so an unidentifiable session must fail loudly rather than
     silently write a self-mismatched row.
     """
-    stripped = native_id.strip()
+    # The same surrogate substitution ``messages.native_id`` applies: a lone
+    # surrogate cannot be bound as SQLite text.
+    stripped = (_sqlite_text(native_id) or "").strip()
     if not stripped:
         raise ValueError("session native_id cannot be empty")
     return stripped

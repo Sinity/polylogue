@@ -2065,3 +2065,43 @@ def test_orchestration_identity_with_a_surrogate_is_refused() -> None:
         parse_claude_orchestration_artifact(
             "/home/u/.claude/projects/p/s/subagents/workflows/run-1/journal.jsonl", payload
         )
+
+
+def test_identity_aliases_are_checked_as_the_parser_selects_them() -> None:
+    """Only the alias the parser reads is exact; every identity it reads is.
+
+    Anti-vacuity: refuse any substituted alias and a valid preferred
+    ``toolUseId`` is lost to an ignored ``tool_use_id``; keep only the
+    dispatch aliases exact and a long ``agentId`` with a surrogate past its
+    prefix is accepted here while the full parser refuses it.
+    """
+    import io
+
+    from polylogue.core.json_envelope import EnvelopeValueUnrepresentableError, top_level_envelopes
+    from polylogue.sources.parsers.claude.orchestration import DOCUMENT_READ_FIELDS, IDENTITY_FIELD_GROUPS
+
+    surrogate = b"\xed\xa0\x80"
+    preferred = b'{"toolUseId": "toolu_valid", "tool_use_id": "t' + surrogate + b'"}'
+    (envelope,) = top_level_envelopes(
+        io.BytesIO(preferred), expand_arrays=False, fields=DOCUMENT_READ_FIELDS, identity_groups=IDENTITY_FIELD_GROUPS
+    )
+    assert isinstance(envelope, dict) and envelope["toolUseId"] == "toolu_valid"
+
+    long_agent = b'{"toolUseId": "toolu_valid", "agentId": "' + b"a" * 5000 + surrogate + b'"}'
+    with pytest.raises(EnvelopeValueUnrepresentableError):
+        list(
+            top_level_envelopes(
+                io.BytesIO(long_agent),
+                expand_arrays=False,
+                fields=DOCUMENT_READ_FIELDS,
+                identity_groups=IDENTITY_FIELD_GROUPS,
+            )
+        )
+
+
+def test_a_session_native_id_with_a_surrogate_is_stored_substituted() -> None:
+    """Anti-vacuity: bind the provider session id unsanitized and SQLite raises
+    ``UnicodeEncodeError`` for every admitted surrogate-bearing session."""
+    from polylogue.storage.sqlite.archive_tiers.write import _stored_session_native_id
+
+    assert _stored_session_native_id(" s\ud800 ") == "s�"
