@@ -1490,6 +1490,65 @@ def test_decoder_valid_exponent_beyond_decimal_range_keeps_the_document_readable
         list(top_level_envelopes(io.BytesIO(b'{"n": 1e+99999999999999999999.}'), expand_arrays=False, fields=fields))
 
 
+def test_hermes_jsonl_first_line_byte_order_mark_is_stripped_as_the_decoder_strips_it(tmp_path: Path) -> None:
+    """The JSONL decoder strips a BOM from the first line and keeps that record.
+
+    Anti-vacuity: leave the BOM in place and the tokenizer skips the first
+    line, so only the ATOF record is sampled and the mixed file is admitted.
+    """
+    from polylogue.sources.origin_specs import recognize_source_class
+
+    atof = b'{"atof_version": "0.1", "kind": "mark", "uuid": "u", "timestamp": "t", "name": "n"}'
+    mixed = tmp_path / "mixed.jsonl"
+    mixed.write_bytes(b"\xef\xbb\xbf" + b'{"other": 1}\n' + atof + b"\n")
+    pure = tmp_path / "pure.jsonl"
+    pure.write_bytes(b"\xef\xbb\xbf" + atof + b"\n" + atof + b"\n")
+
+    mixed_recognition = recognize_source_class(Provider.HERMES, mixed)
+    pure_recognition = recognize_source_class(Provider.HERMES, pure)
+    assert mixed_recognition is not None and mixed_recognition.source_class == "unsupported"
+    assert pure_recognition is not None and pure_recognition.source_class == "session"
+
+
+def test_directly_encoded_surrogates_are_read_as_the_decoder_reads_them(tmp_path: Path) -> None:
+    """The decoder keeps a surrogate code unit encoded as three UTF-8 bytes
+    (``surrogatepass``); other malformed UTF-8 is still refused.
+
+    Anti-vacuity: validate the skipped suffix strictly, or pass the bytes to
+    the tokenizer unchanged, and the ATOF records are dropped, so the file is
+    ``unsupported``. An identity field holding one is refused, never altered.
+    """
+    import io
+
+    import pytest
+
+    from polylogue.core.json_envelope import (
+        EnvelopeValueUnrepresentableError,
+        jsonl_record_envelopes,
+        top_level_envelopes,
+    )
+    from polylogue.sources.origin_specs import recognize_source_class
+
+    surrogate = b"\xed\xa0\x80"
+    suffix = b'{"atof_version": "0.1", "kind": "mark", "uuid": "u", "timestamp": "t", "name": "n", "padding": "'
+    long_record = suffix + b"x" * (200 * 1024) + surrogate + b'"}'
+    short_record = suffix + surrogate + b'"}'
+    path = tmp_path / "surrogates.jsonl"
+    path.write_bytes(long_record + b"\n" + short_record + b"\n")
+    recognition = recognize_source_class(Provider.HERMES, path)
+    assert recognition is not None and recognition.source_class == "session"
+
+    fields = frozenset({"atof_version"})
+    broken = suffix + b"x" * (200 * 1024) + b"\xed\xa0" + b'"}'
+    assert list(jsonl_record_envelopes(io.BytesIO(broken), fields=fields)) == []
+
+    identity = frozenset({"toolUseId"})
+    for value in (b"t" + surrogate, b"t" + b"a" * (60 * 1024) + surrogate):
+        document = b'{"toolUseId": "' + value + b'"}'
+        with pytest.raises(EnvelopeValueUnrepresentableError):
+            list(top_level_envelopes(io.BytesIO(document), expand_arrays=False, fields=identity, whole_fields=identity))
+
+
 def test_array_document_recognition_reads_a_bounded_sample(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Recognizing a JSON array reads only the leading records, not the whole array.
 

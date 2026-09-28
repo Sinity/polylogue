@@ -64,6 +64,13 @@ _NUMBER_VIEW_BYTES = 8192
 #: significand) stays inside ``Decimal``'s range.
 _NUMBER_EXPONENT_DIGITS = 17
 
+#: A UTF-16 surrogate code unit encoded directly as three UTF-8 bytes. The
+#: production decoder keeps these (``surrogatepass``) in historical provider
+#: data; the tokenizer rejects them, so string content reaches it with each
+#: one replaced by U+FFFD, which has the same encoded length.
+_SURROGATE_BYTES = re.compile(rb"\xed[\xa0-\xbf][\x80-\xbf]")
+_SURROGATE_STAND_IN = "\ufffd".encode()
+
 #: RFC 8259 number grammar as a byte-driven automaton, so a token too long to
 #: pass exactly is still checked in full before it is replaced by a
 #: placeholder. States: 0 start, 1 sign, 2 leading zero, 3 integer digits,
@@ -91,6 +98,18 @@ def _number_step(state: int, byte: int) -> int:
     if state in (7, 8):
         return 8 if byte in _DIGITS else -1
     return -1
+
+
+class EnvelopeValueUnrepresentableError(ValueError):
+    """A declared identity field holds a surrogate code unit.
+
+    The tokenizer carries only a stand-in for it, so the exact identifier is
+    unavailable; it is refused by name rather than returned altered.
+    """
+
+    def __init__(self, field: str) -> None:
+        super().__init__(f"root field {field!r} holds a UTF-16 surrogate code unit the tokenizer cannot carry")
+        self.field = field
 
 
 class EnvelopeValueTooLargeError(ValueError):
@@ -180,6 +199,9 @@ class _PrefixStringReader:
         self._ordinal = 0
         #: Raw byte length of each string token passed on as a prefix only.
         self.truncated: dict[int, int] = {}
+        #: Ordinals of string tokens whose passed content had a surrogate
+        #: code unit replaced by a stand-in.
+        self.substituted: set[int] = set()
         self._skipped_bytes = 0
         self._skip_carry = b""
         self._skip_invalid = False
@@ -319,11 +341,11 @@ class _PrefixStringReader:
                 self._string += piece
                 if len(self._string) > _STRING_PREFIX_BYTES and self._ordinal not in self._whole_ordinals:
                     cut = _prefix_cut(bytes(self._string[:_STRING_PREFIX_BYTES]))
-                    out += self._string[:cut]
+                    self._emit_string(bytes(self._string[:cut]), out)
                     self._skipped_bytes = len(self._string)
                     self._skip_carry = b""
                     self._skip_invalid = False
-                    self._skip_decoder = codecs.getincrementaldecoder("utf-8")()
+                    self._skip_decoder = codecs.getincrementaldecoder("utf-8")(errors="surrogatepass")
                     self._validate_skipped(bytes(self._string[cut:]), out)
                     self._string = bytearray()
                     self._skipping = True
@@ -343,17 +365,24 @@ class _PrefixStringReader:
                         out += _INVALID_ESCAPE
                 self.truncated[self._ordinal] = self._skipped_bytes
             else:
-                out += self._string
+                self._emit_string(bytes(self._string), out)
             out += b'"'
             self._in_string = False
             self._string = bytearray()
             position = end + 1
 
+    def _emit_string(self, content: bytes, out: bytearray) -> None:
+        replaced, count = _SURROGATE_BYTES.subn(_SURROGATE_STAND_IN, content)
+        if count:
+            self.substituted.add(self._ordinal)
+        out += replaced
+
     def _validate_skipped(self, piece: bytes, out: bytearray) -> None:
         """Check that a skipped string suffix is valid JSON string content.
 
-        The tokenizer never sees the suffix, so an invalid UTF-8 sequence,
-        invalid escape or raw control character there is injected as an
+        The tokenizer never sees the suffix, so an invalid UTF-8 sequence
+        (a directly encoded surrogate code unit is valid, as the production
+        decoder's ``surrogatepass`` retry keeps it), invalid escape or raw control character there is injected as an
         invalid escape: the document is then rejected exactly as the full
         decoder rejects it.
         """
@@ -415,6 +444,14 @@ class _LineSource:
             return None
         return _Line(self)
 
+    def strip_leading_byte_order_marks(self) -> None:
+        while True:
+            while len(self._buffer) < len(codecs.BOM_UTF8) and not self._eof:
+                self._fill()
+            if not self._buffer.startswith(codecs.BOM_UTF8):
+                return
+            self._buffer = self._buffer[len(codecs.BOM_UTF8) :]
+
     def _fill(self) -> None:
         chunk = self._handle.read(_READ_BYTES)
         if chunk:
@@ -473,6 +510,7 @@ def _envelopes(
     *,
     expand_arrays: bool,
     fields: frozenset[str],
+    exact_fields: frozenset[str] = frozenset(),
 ) -> Iterator[object]:
     depth = 0
     root: object = None
@@ -518,12 +556,14 @@ def _envelopes(
         if depth == 0 or (depth == 1 and expanding):
             yield scalar
         elif depth == 1 and isinstance(root, dict) and key in fields:
+            if key in exact_fields and event == "string" and ordinal in reader.substituted:
+                raise EnvelopeValueUnrepresentableError(key)
             root[key] = scalar
         elif depth == 2 and expanding and isinstance(element, dict) and element_key in fields:
             element[element_key] = scalar
 
 
-def _whole_string(handle: IO[bytes], ordinal: int) -> str:
+def _whole_string(handle: IO[bytes], ordinal: int, field: str) -> str:
     """Re-read the string token at ``ordinal`` of a seekable document whole.
 
     Every other string is still passed on as a prefix only, so the re-read
@@ -538,6 +578,8 @@ def _whole_string(handle: IO[bytes], ordinal: int) -> str:
         if event in ("map_key", "string"):
             seen += 1
             if seen == ordinal and isinstance(value, str):
+                if ordinal in reader.substituted:
+                    raise EnvelopeValueUnrepresentableError(field)
                 return value
     raise ValueError(f"string token {ordinal} vanished between two reads of the same document")
 
@@ -556,9 +598,10 @@ def top_level_envelopes(
     for container values, so a document of any width costs the same memory.
     A string in ``whole_fields`` is an identity used as an exact join key: it
     is re-read whole from ``handle`` (which must then be seekable), or refused
-    with :class:`EnvelopeValueTooLargeError` beyond SQLite's value limit -- never
-    shortened. Numbers are read exactly, so no magnitude makes a document
-    unreadable. A malformed document raises ``ijson.JSONError``.
+    with :class:`EnvelopeValueTooLargeError` beyond SQLite's value limit, or
+    with :class:`EnvelopeValueUnrepresentableError` when it holds a surrogate
+    code unit -- never shortened or altered. Numbers are read exactly, so no
+    magnitude makes a document unreadable. A malformed document raises ``ijson.JSONError``.
     """
     import ijson
 
@@ -568,7 +611,7 @@ def top_level_envelopes(
         # Streamed: an array document's elements are never held together.
         yield from _envelopes(events, reader, expand_arrays=expand_arrays, fields=fields)
         return
-    envelopes = list(_envelopes(events, reader, expand_arrays=False, fields=fields))
+    envelopes = list(_envelopes(events, reader, expand_arrays=False, fields=fields, exact_fields=whole_fields))
     if envelopes:
         for envelope in envelopes:
             if not isinstance(envelope, dict):
@@ -580,7 +623,7 @@ def top_level_envelopes(
                 limit = _sqlite_value_limit()
                 if value.raw_bytes > limit:
                     raise EnvelopeValueTooLargeError(field, value.raw_bytes, limit)
-                envelope[field] = _whole_string(handle, value.ordinal)
+                envelope[field] = _whole_string(handle, value.ordinal, field)
     yield from envelopes
 
 
@@ -595,6 +638,8 @@ def jsonl_record_envelopes(handle: IO[bytes], *, fields: frozenset[str]) -> Iter
     import ijson
 
     lines = _LineSource(handle)
+    # The decoder strips byte-order marks from the start of the first line.
+    lines.strip_leading_byte_order_marks()
     while (line := lines.next_line()) is not None:
         reader = _PrefixStringReader(line)
         try:
@@ -613,6 +658,7 @@ __all__ = [
     "ENVELOPE_TEXT_PREFIX_CHARS",
     "UNDECLARED_FIELDS",
     "EnvelopeValueTooLargeError",
+    "EnvelopeValueUnrepresentableError",
     "jsonl_record_envelopes",
     "top_level_envelopes",
 ]
