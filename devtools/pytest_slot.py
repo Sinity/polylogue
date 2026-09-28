@@ -1341,9 +1341,12 @@ def _rerun_failures_in_slot(
     try:
         spec = json.loads(raw)
         report_path, step_dir, root = Path(spec["report_path"]), Path(spec["step_dir"]), Path(spec["root"])
-        options = [str(option) for option in spec.get("options") or []]
+        command = [str(argument) for argument in spec.get("command") or []]
     except (ValueError, KeyError, TypeError):
         return
+    from devtools.pytest_rerun import semantic_rerun_options
+
+    options = semantic_rerun_options(command) if command else []
     plan = build_rerun(report_path=report_path, step_dir=step_dir, root=root, options=options)
     if plan is None:
         return

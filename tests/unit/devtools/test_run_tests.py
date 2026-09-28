@@ -42,6 +42,8 @@ def _no_receipt_reuse(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setenv(run_tests.REUSE_ENV, "0")
     monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
+    # History resolves relative to the root under test, never the host's.
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HISTORY_PATH", ".cache/verify/history.jsonl")
 
 
 def _write_passing_evidence(root: Path, run: VerifyRun) -> None:
@@ -124,8 +126,6 @@ def test_build_pytest_cmd_forwards_exactly_one_xdist_worker_request(
 ) -> None:
     command = run_tests.build_pytest_cmd(selection)
 
-    for arg in selection:
-        assert arg in command
     worker_flags = [
         arg for arg in command if arg in {"-n", "--numprocesses"} or arg.startswith(("-n", "--numprocesses="))
     ]
@@ -174,15 +174,16 @@ def test_build_pytest_cmd_preserves_explicit_xdist_distribution() -> None:
     assert "--dist=loadgroup" not in cmd
 
 
-@pytest.mark.parametrize("cluster", ["-vn2", "-xvn", "-qn2"])
-def test_a_worker_count_inside_a_short_option_cluster_is_the_callers(cluster: str) -> None:
+@pytest.mark.parametrize(("cluster", "expected"), [("-vn2", "2"), ("-qn2", "2"), ("-xvn3", "3")])
+def test_a_worker_count_inside_a_short_option_cluster_is_the_callers(cluster: str, expected: str) -> None:
     """Anti-vacuity (Codex P2, #5708): detect ``-n`` only as a whole-argument
     prefix and ``-vn2`` gets a managed ``-n`` appended after it, which argparse
-    lets override the caller's own worker request."""
+    lets override the caller's own worker request. The cluster reaches pytest
+    as separate options, so the slot's resizer sees its worker count."""
     cmd = run_tests.build_pytest_cmd(["tests/unit/devtools", cluster])
 
-    assert "-n" not in cmd
-    assert cmd.count(cluster) == 1
+    assert cmd.count("-n") == 1
+    assert pytest_command_worker_request(cmd) == expected
 
 
 def test_an_n_inside_an_attached_value_is_not_a_worker_count() -> None:
@@ -1717,3 +1718,75 @@ def test_a_clustered_capture_flag_keeps_xdist_off() -> None:
     cmd = run_tests.build_pytest_cmd(["tests/unit/devtools", "-sv"])
 
     assert "-n" not in cmd
+
+
+def test_pruned_red_history_is_read_from_the_configured_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pruned-red check reads the history the writer appends to.
+
+    Anti-vacuity (Codex P1, #5708): hard-code the checkout-local
+    ``.cache/verify/history.jsonl`` and a red recorded at the configured
+    (XDG) history path is missed, so the older green is reused.
+    """
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py"]
+    _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
+    history = tmp_path / "state" / "history.jsonl"
+    history.parent.mkdir()
+    history.write_text(
+        json.dumps({"run_id": "20260101T000000Z-focused-test-1-a", "status": "success"})
+        + "\n"
+        + json.dumps({"run_id": "20260102T000000Z-focused-test-2-b", "status": "failed"})
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HISTORY_PATH", str(history))
+
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
+
+
+@pytest.mark.parametrize(
+    ("cluster", "expanded"),
+    [(["-vn8"], ["-v", "-n", "8"]), (["-vpno:xdist"], ["-v", "-p", "no:xdist"]), (["-k", "-vx"], ["-k", "-vx"])],
+)
+def test_short_clusters_are_expanded_as_argparse_reads_them(cluster: list[str], expanded: list[str]) -> None:
+    """Anti-vacuity (Codex P1/P2, #5708): leave ``-vn8`` whole and the slot's
+    worker resizer, which reads only ``-n``/``--numprocesses``, keeps eight
+    workers; leave ``-vpno:xdist`` whole and ``-n 4`` is added to a run that
+    disabled xdist. An option's value is never split."""
+    from devtools.pytest_options import expand_short_clusters
+
+    assert expand_short_clusters(cluster) == expanded
+
+
+def test_a_clustered_xdist_disable_gets_no_workers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P2, #5708): check only the cluster's flags and
+    ``-vpno:xdist`` still gets ``-n 4`` appended."""
+    monkeypatch.setattr(run_tests, "_selected_test_modules", lambda _selection: run_tests.LARGE_SELECTION_MODULES)
+    command = run_tests.build_pytest_cmd(["-vpno:xdist", "tests/unit"], report_path=tmp_path / "report.json")
+
+    assert "-n" not in command
+
+
+def test_an_interrupted_example_write_still_moves_the_revision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A save that fails midway leaves a revision no earlier receipt carries.
+
+    Anti-vacuity (Codex P2, #5708): bump the marker only after the write and
+    a failed or killed save keeps the old token, so a stale green is reused.
+    """
+    from hypothesis.database import DirectoryBasedExampleDatabase
+
+    from devtools.hypothesis_database import RevisionedExampleDatabase, read_revision
+
+    examples = tmp_path / "examples"
+    database = RevisionedExampleDatabase(examples)
+    database.save(b"k", b"v1")
+    before = read_revision(examples)
+
+    def interrupted(self: DirectoryBasedExampleDatabase, key: bytes, value: bytes) -> None:
+        raise OSError("killed mid-write")
+
+    monkeypatch.setattr(DirectoryBasedExampleDatabase, "save", interrupted)
+    with pytest.raises(OSError):
+        database.save(b"k", b"v2")
+
+    assert read_revision(examples) != before

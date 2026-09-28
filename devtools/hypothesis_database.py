@@ -48,15 +48,23 @@ class RevisionedExampleDatabase(DirectoryBasedExampleDatabase):
         staging.write_text(uuid.uuid4().hex, encoding="utf-8")
         os.replace(staging, marker)
 
+    # The marker moves before each mutation, so a write interrupted or
+    # failing midway leaves a token no earlier receipt carries, and again
+    # after it, so a receipt taken while the write ran cannot match the data
+    # it did not see.
+
     def save(self, key: bytes, value: bytes) -> None:
+        self._bump()
         super().save(key, value)
         self._bump()
 
     def delete(self, key: bytes, value: bytes) -> None:
+        self._bump()
         super().delete(key, value)
         self._bump()
 
     def move(self, src: bytes, dest: bytes, value: bytes) -> None:
+        self._bump()
         super().move(src, dest, value)
         self._bump()
 

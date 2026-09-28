@@ -191,6 +191,43 @@ def split_short_cluster(argument: str, value_short: frozenset[str]) -> tuple[lis
     return flags, None, None
 
 
+def expand_short_clusters(arguments: Sequence[str]) -> list[str]:
+    """``arguments`` with each short-option cluster written as separate options.
+
+    ``-vn8`` becomes ``-v -n 8`` and ``-vpno:xdist`` becomes ``-v -p no:xdist``,
+    as argparse reads them. Option values, long options and everything after
+    ``--`` are left as given. Pytest's option table is read only when a
+    cluster is present.
+    """
+    expanded: list[str] = []
+    value_short: frozenset[str] | None = None
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            expanded.extend(arguments[index:])
+            break
+        if argument.startswith("-") and not argument.startswith("--") and len(argument) > 2:
+            if value_short is None:
+                value_short = short_options_with_value(caller_plugins(arguments))
+            flags, option, attached = split_short_cluster(argument, value_short)
+            expanded.extend(flags)
+            if option is not None:
+                expanded.append(option)
+                if attached:
+                    expanded.append(attached.removeprefix("="))
+                else:
+                    # The value is the next argument, taken as is.
+                    expanded.extend(arguments[index + 1 : index + 2])
+                    index += 1
+            index += 1
+            continue
+        span = 1 + operand_count(arguments, index) if argument.startswith("-") else 1
+        expanded.extend(arguments[index : index + span])
+        index += span
+    return expanded
+
+
 def short_options_with_value(plugins: tuple[str, ...] = ()) -> frozenset[str]:
     """Single-letter options that take a value, which may be attached (``-n8``)."""
     return frozenset(
@@ -203,6 +240,7 @@ def short_options_with_value(plugins: tuple[str, ...] = ()) -> frozenset[str]:
 __all__ = [
     "PytestOptionTableError",
     "caller_plugins",
+    "expand_short_clusters",
     "split_short_cluster",
     "operand_count",
     "pytest_option_nargs",

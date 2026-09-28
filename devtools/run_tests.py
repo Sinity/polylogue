@@ -55,7 +55,13 @@ from devtools.pytest_invocation import (
     effective_hypothesis_profile,
     managed_plugin_args,
 )
-from devtools.pytest_options import caller_plugins, operand_count, short_options_with_value, split_short_cluster
+from devtools.pytest_options import (
+    caller_plugins,
+    expand_short_clusters,
+    operand_count,
+    short_options_with_value,
+    split_short_cluster,
+)
 from devtools.pytest_rerun import RERUN_IN_SLOT_ENV, rerun_failed_once, semantic_rerun_options
 from devtools.pytest_slot import (
     WORKTREE_PROVENANCE_ENV,
@@ -82,6 +88,7 @@ from devtools.verify_runs import (
     git_worktree_content_sha256,
     prune_successful_verify_runs,
     pytest_command_worker_request,
+    verify_history_path,
 )
 from devtools.worker_memory import CHARGE_PROFILE_ENV, FOCUSED_MAX_WORKERS
 
@@ -483,7 +490,7 @@ def _later_failure_pruned(root: Path, *, after: str) -> bool:
     """
     runs_root = root / ".cache" / "verify" / "runs"
     try:
-        with (root / ".cache" / "verify" / "history.jsonl").open(encoding="utf-8") as handle:
+        with verify_history_path(root=root).open(encoding="utf-8") as handle:
             for line in handle:
                 if "-focused-test-" not in line:
                     continue
@@ -769,6 +776,9 @@ def _xdist_distribution_args(selection: list[str], worker_args: list[str]) -> li
 
 def build_pytest_cmd(selection: list[str], *, report_path: Path = PYTEST_REPORT_PATH) -> list[str]:
     """Compose the pytest command for a focused selection."""
+    # ``-vn8`` is ``-v -n 8``: the worker resizer, the xdist policy and the
+    # disable checks read separate options.
+    selection = expand_short_clusters(selection)
     worker_args = _worker_args(selection)
     collection_args = () if _selection_targets_benchmarks(selection) else IGNORED_COLLECTION_ARGS
     return [
@@ -854,7 +864,10 @@ def _run(
                 "report_path": str(report_path),
                 "step_dir": str(artifacts.step_dir),
                 "root": str(ROOT),
-                "options": semantic_rerun_options(command),
+                # The slot derives the rerun's options inside its admitted job:
+                # reading pytest's option table configures pytest and imports
+                # the suite's conftests, which is test work.
+                "command": command,
             }
         )
         output_option = {"stdout": stdout} if stdout is not None else {}
