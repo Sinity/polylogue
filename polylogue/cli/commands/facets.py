@@ -77,7 +77,11 @@ def _fetch_daemon_facets(
     disabled: bool,
 ) -> FacetsResponse:
     """Use the same supplied-reader facet operation for both serving modes."""
-    from polylogue.cli.operation_kernel import OperationUnavailableError, configured_read_operation
+    from polylogue.cli.operation_kernel import (
+        OperationKernelError,
+        OperationUnavailableError,
+        configured_read_operation,
+    )
     from polylogue.cli.shared.helpers import DaemonRequiredError, load_effective_config
     from polylogue.config import load_polylogue_config
     from polylogue.surfaces.payloads import FacetsResponse
@@ -105,4 +109,11 @@ def _fetch_daemon_facets(
         # "start polylogued run" belongs. The delete route already converts it
         # this way (archive_query.py:1590); facets is the read-side gap.
         raise DaemonRequiredError(str(exc), operation=exc.operation) from None
+    except OperationKernelError as exc:
+        # Any other typed failure (a dropped connection, a deadline, a
+        # cancellation) leaves through the shared read-failure terminal, like
+        # every other read route, instead of escaping as a traceback.
+        from polylogue.cli.render.outcome import exit_for_read_failure
+
+        exit_for_read_failure(exc)
     return FacetsResponse.model_validate(result.value)
