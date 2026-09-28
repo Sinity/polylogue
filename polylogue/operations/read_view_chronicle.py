@@ -23,7 +23,7 @@ from polylogue.surfaces.chronicle import (
 
 if TYPE_CHECKING:
     from polylogue.archive.query.plan import SessionQueryPlan
-    from polylogue.archive.session.domain_models import SessionSummary
+    from polylogue.archive.session.domain_models import Session, SessionSummary
     from polylogue.core.protocols import VectorProvider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -204,9 +204,14 @@ def _select_summaries(
         default_limit=5,
         complete=complete,
     )
-    row_by_id = {row.session_id: row for row in rows}
     summaries: list[SessionSummary] = [archive_summary_to_domain(row) for row in rows]
-    if plan.needs_content_loading():
+    summary_by_id = {str(summary.id): summary for summary in summaries}
+    if plan.needs_content_loading() or composed_order:
+        # One hydration per candidate, chunk by chunk. A composed-count order
+        # keeps only the best ``offset + limit`` sessions seen so far, so a
+        # one-row page over a large archive never holds every transcript.
+        bound = (plan.offset or 0) + plan.limit if plan.limit is not None else None
+        best: list[Session] = []
         matched_ids: set[str] = set()
         for start in range(0, len(rows), _POST_FILTER_CHUNK):
             chunk = rows[start : start + _POST_FILTER_CHUNK]
@@ -218,25 +223,19 @@ def _select_summaries(
                 )
                 for row in chunk
             ]
-            matched_ids.update(str(session.id) for session in plan._apply_full_filters(sessions, sql_pushed=True))
-        candidates = [summary for summary in summaries if str(summary.id) in matched_ids]
+            kept = plan._apply_full_filters(sessions, sql_pushed=True)
+            if composed_order:
+                best = plan._sort_sessions([*best, *kept])
+                if bound is not None:
+                    best = best[:bound]
+            else:
+                matched_ids.update(str(session.id) for session in kept)
+        if composed_order:
+            ordered = [summary_by_id[str(session.id)] for session in best]
+        else:
+            ordered = order_query_summaries(plan, [summary for summary in summaries if str(summary.id) in matched_ids])
     else:
-        candidates = plan._apply_common_filters(summaries, sql_pushed=True)
-
-    if composed_order:
-        hydrated = [
-            archive_envelope_to_session(
-                archive.read_session(str(candidate.id)),
-                display_label=row_by_id[str(candidate.id)].display_label,
-                display_label_source=row_by_id[str(candidate.id)].display_label_source,
-            )
-            for candidate in candidates
-        ]
-        ordered_sessions = plan._sort_sessions(hydrated)
-        summary_by_id = {str(candidate.id): candidate for candidate in candidates}
-        ordered = [summary_by_id[str(session.id)] for session in ordered_sessions]
-    else:
-        ordered = order_query_summaries(plan, candidates)
+        ordered = order_query_summaries(plan, plan._apply_common_filters(summaries, sql_pushed=True))
     ranked = bool(plan.similar_text or plan.similar_session_id or plan.retrieval_lane in {"semantic", "hybrid"})
     if (plan.has_post_filters() or ranked or composed_order) and plan.offset:
         ordered = ordered[plan.offset :]

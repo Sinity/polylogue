@@ -153,6 +153,8 @@ def _semantic_hits(
 #: Sorts over per-session counters, which the index stores for a lineage
 #: child's own tail only.
 _COMPOSED_COUNT_SORTS = frozenset({"messages", "words", "longest", "tokens"})
+#: Sessions hydrated at once while a complete composed sort selects its page.
+_COMPOSED_SORT_CHUNK = 200
 
 
 def _ranked_window(plan: SessionQueryPlan) -> bool:
@@ -498,11 +500,35 @@ async def list_archive(
         # Each candidate is hydrated and filtered once; the survivors are
         # kept as hydrated, so no predicate runs twice for one session.
         kept_sessions: dict[str, Session] = {}
+        # A complete composed sort keeps only the best ``offset + limit``
+        # hydrated sessions seen so far: a one-row page over a large archive
+        # must not hold every recomposed transcript at once.
+        bound = (plan.offset or 0) + plan.limit if plan.limit is not None else None
+        best: list[Session] = []
+
+        def retain(sessions: list[Session]) -> None:
+            nonlocal best
+            best = plan._sort_sessions([*best, *sessions])
+            if bound is not None:
+                best = best[:bound]
 
         def keep(rows: list[ArchiveSessionSummary]) -> list[ArchiveSessionSummary]:
             # Predicates see the same fully hydrated Session the caller gets:
             # display label and requested units included.
-            for session in plan._apply_full_filters(attach(archive, hydrate(archive, rows)), sql_pushed=True):
+            if complete:
+                # Hydrated a chunk at a time: a candidate page may be wider
+                # than what the sort should hold.
+                survivor_ids: set[str] = set()
+                for start in range(0, len(rows), _COMPOSED_SORT_CHUNK):
+                    chunk = rows[start : start + _COMPOSED_SORT_CHUNK]
+                    chunk_survivors = plan._apply_full_filters(
+                        attach(archive, hydrate(archive, chunk)), sql_pushed=True
+                    )
+                    retain(chunk_survivors)
+                    survivor_ids.update(str(session.id) for session in chunk_survivors)
+                return [row for row in rows if row.session_id in survivor_ids]
+            survivors = plan._apply_full_filters(attach(archive, hydrate(archive, rows)), sql_pushed=True)
+            for session in survivors:
                 kept_sessions[str(session.id)] = session
             return [row for row in rows if row.session_id in kept_sessions]
 
@@ -516,11 +542,18 @@ async def list_archive(
             keep=keep if filtering else None,
             complete=complete,
         )
-        if filtering:
-            candidates = [kept_sessions[row.session_id] for row in archive_rows]
+        if complete:
+            if not filtering:
+                for start in range(0, len(archive_rows), _COMPOSED_SORT_CHUNK):
+                    chunk = archive_rows[start : start + _COMPOSED_SORT_CHUNK]
+                    retain(plan._apply_full_filters(hydrate(archive, chunk), sql_pushed=True))
+            ordered = best
         else:
-            candidates = plan._apply_full_filters(hydrate(archive, archive_rows), sql_pushed=True)
-        ordered = plan._sort_sessions(candidates) if composed_order else order_query_sessions(plan, candidates)
+            if filtering:
+                candidates = [kept_sessions[row.session_id] for row in archive_rows]
+            else:
+                candidates = plan._apply_full_filters(hydrate(archive, archive_rows), sql_pushed=True)
+            ordered = plan._sort_sessions(candidates) if composed_order else order_query_sessions(plan, candidates)
         if (complete or filtering or ranked_window) and plan.offset:
             ordered = ordered[plan.offset :]
         # Filtered survivors already carry the page-width projection their

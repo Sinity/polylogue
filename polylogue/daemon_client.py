@@ -233,7 +233,7 @@ class DaemonClient:
             expected_archive_identity=expected_archive_identity,
             expected_generation_id=expected_generation_id,
             request_id=request_id or uuid.uuid4().hex,
-            deadline_ms=deadline_ms or max(1, round(spec.deadline_s * 1000)),
+            deadline_ms=deadline_ms or max(1, round(_request_deadline_s(operation, payload or {}) * 1000)),
             cancellation_token=cancellation_token,
         )
         request = DaemonOperationRequest.from_dict(request.to_dict())
@@ -630,3 +630,10 @@ __all__ = [
     "DaemonOperationRejectedError",
     "DaemonSocketOwnershipError",
 ]
+
+
+def _request_deadline_s(operation: str, payload: Mapping[str, Any]) -> float:
+    """The request's own deadline: a scan-shaped read carries the scan deadline."""
+    from polylogue.operations.daemon_reads import operation_deadline_s
+
+    return operation_deadline_s(operation, payload)

@@ -11,6 +11,7 @@ from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.core.enums import Origin
 from polylogue.operations.read_view_chronicle import _chronicle_edges, execute_chronicle_read
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.builders import make_conv, make_msg
 
 
 def test_chronicle_edges_reads_composed_pages_and_counts_only_authored_dialogue(
@@ -172,3 +173,64 @@ def test_a_complete_chronicle_count_sort_is_admitted_as_scan_work(params: dict[s
 
     assert read_is_archive_scan("read.chronicle", {"params": params}) is scan
     assert read_is_archive_scan("cli.query", {"params": params}) is False
+
+
+def test_a_chronicle_count_sort_hydrates_each_candidate_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A count-sorted chronicle page reads every candidate once, not twice.
+
+    Anti-vacuity (Codex P2, #5695): hydrate for the content filters and then
+    again for the composed order and ``read_session`` runs twice per session.
+    """
+    import polylogue.archive.query.archive_execution as archive_execution
+    import polylogue.operations.read_view_chronicle as read_view_chronicle
+
+    rows = [
+        SimpleNamespace(session_id=f"codex-session:{index}", display_label=None, display_label_source=None)
+        for index in range(5)
+    ]
+    summaries = {
+        row.session_id: SessionSummary(
+            id=row.session_id,
+            origin=Origin.from_string("codex-session"),
+            updated_at=datetime(2026, 1, index + 1, tzinfo=timezone.utc),
+        )
+        for index, row in enumerate(rows)
+    }
+    archive = Mock(archive_root="/tmp/archive")
+    monkeypatch.setattr(archive_execution, "_archive_summaries", lambda *args, **kwargs: rows)
+    monkeypatch.setattr(read_view_chronicle, "archive_summary_to_domain", lambda row: summaries[row.session_id])
+    monkeypatch.setattr(
+        "polylogue.archive.hydration.archive_envelope_to_session",
+        lambda envelope, **kwargs: make_conv(
+            id=envelope.session_id,
+            messages=[make_msg(id=f"m{i}", text="x") for i in range(int(envelope.session_id.rsplit(":", 1)[1]) + 1)],
+        ),
+    )
+    monkeypatch.setattr(read_view_chronicle, "_chronicle_edges", lambda *args, **kwargs: ([], [], 0))
+    archive.read_session.side_effect = lambda session_id: SimpleNamespace(session_id=session_id)
+
+    result = execute_chronicle_read({"params": {"sort": "messages", "limit": 1}}, archive=archive, vector_provider=None)
+
+    body = result["payload"]
+    assert isinstance(body, dict)
+    sessions = body["sessions"]
+    assert isinstance(sessions, list)
+    assert sessions[0]["session_id"] == "codex-session:4"
+    assert archive.read_session.call_count == len(rows)
+
+
+def test_clients_send_the_scan_deadline_for_a_scan_shaped_chronicle() -> None:
+    """The client-side deadline follows the request's shape, as the runtime's does.
+
+    Anti-vacuity (Codex P2, #5695): fill an omitted deadline from the spec
+    alone and a count-sorted chronicle still carries two seconds, so the
+    runtime's scan deadline never takes effect.
+    """
+    from polylogue.cli.operation_kernel import OperationRequest, _declared_deadline_s
+    from polylogue.daemon_client import _request_deadline_s
+    from polylogue.operations.daemon_reads import READ_SCAN_DEADLINE_S
+
+    scan = {"params": {"sort": "messages"}}
+    assert _request_deadline_s("read.chronicle", scan) == READ_SCAN_DEADLINE_S
+    assert _declared_deadline_s(OperationRequest("read.chronicle", scan)) == READ_SCAN_DEADLINE_S
+    assert _request_deadline_s("read.chronicle", {"params": {"sort": "date"}}) == 2.0

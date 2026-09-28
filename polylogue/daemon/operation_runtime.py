@@ -36,7 +36,7 @@ from polylogue.operations.daemon_protocol import (
     DaemonOperationRequest,
     daemon_operation_spec,
 )
-from polylogue.operations.daemon_reads import READ_SCAN_DEADLINE_S, DaemonReadDependencies, read_is_archive_scan
+from polylogue.operations.daemon_reads import DaemonReadDependencies, operation_deadline_s, read_is_archive_scan
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.mutation_transaction import MutationPrincipal
 from polylogue.operations.operation_context import (
@@ -386,7 +386,7 @@ class DaemonOperationRuntime:
         archive_scan = spec.authority is DaemonAuthority.READ and read_is_archive_scan(
             request.operation, request.payload
         )
-        deadline_s = READ_SCAN_DEADLINE_S if archive_scan else spec.deadline_s
+        deadline_s = operation_deadline_s(request.operation, request.payload)
         deadline = started + min(deadline_s, (request.deadline_ms or int(deadline_s * 1000)) / 1000)
         read_control = (
             QueryExecutionContext(

@@ -283,3 +283,36 @@ async def test_complete_composed_sort_is_admitted_as_a_scan(tmp_path: Path, monk
     await list_archive(SessionQueryPlan(sort="messages", limit=1), archive_root=tmp_path, config=None)
 
     assert classes == ["scan"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("filtered", [False, True])
+async def test_a_complete_composed_sort_holds_only_its_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, filtered: bool
+) -> None:
+    """A one-row composed page never sorts (and so never holds) every candidate at once.
+
+    Anti-vacuity (Codex P2, #5695): collect every hydrated candidate before
+    sorting and the sort sees all 250 sessions in one list.
+    """
+    from polylogue.archive.query import archive_execution
+    from polylogue.archive.query import plan as plan_module
+
+    for index in range(250):
+        _seed(tmp_path, f"s{index:03d}", updated_at="2026-01-01T00:00:00Z", messages=1 + index % 7)
+    widest: list[int] = []
+    original = plan_module.SessionQueryPlan._sort_sessions
+
+    def measured(self: SessionQueryPlan, sessions: list[Session]) -> list[Session]:
+        widest.append(len(sessions))
+        return original(self, sessions)
+
+    monkeypatch.setattr(plan_module.SessionQueryPlan, "_sort_sessions", measured)
+    predicates = (lambda session: True,) if filtered else ()
+    sessions = await list_archive(
+        SessionQueryPlan(sort="messages", limit=1, predicates=predicates), archive_root=tmp_path, config=None
+    )
+
+    assert len(sessions) == 1
+    assert len(sessions[0].messages) == 7
+    assert max(widest) <= archive_execution._COMPOSED_SORT_CHUNK + 1

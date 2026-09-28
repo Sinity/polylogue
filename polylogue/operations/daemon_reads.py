@@ -330,6 +330,24 @@ def read_is_archive_scan(name: str, payload: Mapping[str, object]) -> bool:
         return False
 
 
+def operation_deadline_s(name: str, payload: Mapping[str, object]) -> float:
+    """The execution deadline one request carries, decided from its shape.
+
+    The declared spec deadline, except a read that is archive-scan work, which
+    gets the scan deadline. Clients and the runtime read the same value, so a
+    client never sends (or waits with) a deadline shorter than the one the
+    runtime admits the request under.
+    """
+    from polylogue.operations.daemon_protocol import DaemonAuthority, daemon_operation_spec
+
+    spec = daemon_operation_spec(name)
+    if spec is None:
+        raise ValueError(f"operation is not declared: {name}")
+    if spec.authority is DaemonAuthority.READ and read_is_archive_scan(name, payload):
+        return READ_SCAN_DEADLINE_S
+    return spec.deadline_s
+
+
 def requires_vector_snapshot(name: str, payload: Mapping[str, object]) -> bool:
     """Return whether this declared read needs a coherent vector handle."""
 
