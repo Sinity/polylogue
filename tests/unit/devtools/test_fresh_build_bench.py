@@ -379,6 +379,30 @@ def test_seal_detects_edited_aggregates(tmp_path: Path) -> None:
         verify_manifest(corpus, manifest)
 
 
+def test_seal_detects_an_edited_population_parameter(tmp_path: Path) -> None:
+    """A projection's denominator (parameters.population) is part of the sealed
+    identity too: verify_manifest recomputes file rows from the corpus tree,
+    but population describes the pre-sampling source tree, which nothing on
+    disk here can recompute -- so an edit to it alone must still invalidate
+    the digest, not pass silently under the original file bytes.
+
+    Anti-vacuity: verify a manifest whose digest was sealed without folding
+    in parameters and an edited population.<origin>.bytes passes.
+    """
+    corpus = tmp_path / "corpus"
+    transcript = corpus / "home" / ".codex" / "sessions" / "rollout.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text("{}\n", encoding="utf-8")
+    manifest = seal(
+        corpus,
+        kind="sample",
+        parameters={"population": {"codex": {"units": 10, "bytes": 1000}}},
+    )
+    manifest["parameters"]["population"]["codex"]["bytes"] = 10_000_000
+    with pytest.raises(ValueError, match="digest"):
+        verify_manifest(corpus, manifest)
+
+
 def test_private_corpora_are_owner_only(tmp_path: Path) -> None:
     """Anti-vacuity: default creation modes leave the copy world-readable."""
     home = tmp_path / "home"

@@ -79,10 +79,24 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def corpus_digest(files: Iterable[CorpusFile]) -> str:
+def corpus_digest(files: Iterable[CorpusFile], parameters: dict[str, Any] | None = None) -> str:
+    """Hash the file list together with the sealed *parameters*.
+
+    ``parameters`` (a sample's ``population``, ``fraction``, ``seed``, ...)
+    is not file-derived, so nothing here can recompute it from the corpus
+    tree the way ``by_origin``/``files`` are recomputed and compared in
+    :func:`verify_manifest`. Folding it into the digest instead means an edit
+    that touches ``parameters`` alone -- e.g. an inflated or reduced
+    ``population.<origin>.bytes`` -- no longer leaves ``digest`` matching,
+    closing the gap where a run could qualify under an edited projection
+    denominator while still carrying the originally sealed file bytes.
+    """
     digest = hashlib.sha256()
     for item in sorted(files, key=lambda entry: entry.path):
         digest.update(f"{item.path}\0{item.bytes}\0{item.sha256}\n".encode())
+    if parameters is not None:
+        digest.update(b"\0parameters\0")
+        digest.update(json.dumps(parameters, sort_keys=True, default=str).encode())
     return digest.hexdigest()
 
 
@@ -116,7 +130,7 @@ def seal(root: Path, *, kind: str, parameters: dict[str, Any]) -> dict[str, Any]
         "format": MANIFEST_FORMAT,
         "kind": kind,
         "parameters": parameters,
-        "digest": corpus_digest(files),
+        "digest": corpus_digest(files, parameters),
         "file_count": len(files),
         "total_bytes": sum(item.bytes for item in files),
         "by_origin": dict(sorted(by_origin.items())),
@@ -173,7 +187,7 @@ def verify_manifest(root: Path, manifest: dict[str, Any]) -> None:
     edited = sum(present[relative][1] != sha256 for relative, (_size, sha256) in sealed.items())
     if edited:
         raise ValueError(f"{edited} corpus file(s) changed content since sealing")
-    if corpus_digest(current) != manifest["digest"]:
+    if corpus_digest(current, manifest.get("parameters")) != manifest["digest"]:
         raise ValueError("corpus manifest digest does not match its file list")
     # The digest covers the file rows only; the aggregates a receipt reads
     # (bytes, counts, per-origin split) are recomputed and compared too.
@@ -334,8 +348,14 @@ def sample_real(
                     copied += destination.stat().st_size
                 if copied != size:
                     # The census (population and stratum goal) saw other bytes
-                    # than the sample now holds: a live transcript grew.
-                    raise ValueError(f"source changed while sampling: {paths[0]}")
+                    # than the sample now holds: a live transcript grew. Report
+                    # only origin and the changed unit's file count -- the
+                    # operator source path is private and this can run in an
+                    # AgentCTL/CI job whose log is not private (the later
+                    # census-revalidation error below follows the same rule).
+                    raise ValueError(
+                        f"{source.origin} source changed while sampling ({len(paths)} file(s) in the unit)"
+                    )
                 taken += size
                 if boundary:
                     break

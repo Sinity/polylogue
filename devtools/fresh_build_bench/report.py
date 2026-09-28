@@ -564,6 +564,13 @@ def _derive_dependents(receipt: dict[str, Any]) -> None:
     """
     timing = receipt["timing_s"]
     promoted, terminal_at = timing.get("promotion"), timing.get("terminal")
+    # The receipt's timings are reductions of the event log (see
+    # build_receipt); a refresh that re-reads a moved milestone must move
+    # this check with it, or a formerly missing milestone that is now
+    # recovered stays falsely unqualified, and one no longer recovered can
+    # leave a terminal receipt qualified with "promotion": null.
+    if "checks" in receipt:
+        receipt["checks"]["milestones_recorded"] = promoted is not None
     total_mib = receipt["corpus"]["total_bytes"] / 2**20
     timing["derived_after_promotion"] = (
         round(terminal_at - promoted, 3) if terminal_at is not None and promoted is not None else None
@@ -649,6 +656,15 @@ def build_receipt(
         # undelivered event makes them understate.
         "events_lossless": delivery is not None
         and not (delivery.get("dropped") or delivery.get("failures") or delivery.get("undrained")),
+        # A nonempty corpus (total_bytes > 0) that qualifies with zero
+        # sessions/messages materialized did no conversational work: an
+        # accepted-but-empty export (e.g. a ChatGPT "[]" file) can settle its
+        # cursor and promote an empty index, and "0 == 0" alone already
+        # passes the fts_exact check above. Require positive output whenever
+        # there was anything to materialize.
+        "positive_output": total_bytes == 0
+        or bool(census.get("rows", {}).get("sessions"))
+        and bool(census.get("rows", {}).get("messages")),
     }
     receipt: dict[str, Any] = {
         "format": RECEIPT_FORMAT,

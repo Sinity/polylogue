@@ -31,6 +31,8 @@ from pathlib import Path
 from typing import Any
 
 from devtools.fresh_build_bench.corpus import load_manifest, refuse_inside_checkout, verify_manifest
+from polylogue.core.enums import Provider
+from polylogue.sources.origin_specs import recognize_source_class
 
 _PROVIDER_BY_ORIGIN = {
     "claude-code": "claude-code",
@@ -46,11 +48,24 @@ def _corpus_files(
 ) -> list[tuple[Path, str, int]]:
     verify_manifest(corpus, manifest)
     wanted = set(origins) if origins else None
-    files = [
-        (corpus / relative, origin, size)
-        for relative, size, _digest, origin in manifest["files"]
-        if origin in _PROVIDER_BY_ORIGIN and (wanted is None or origin in wanted)
-    ]
+    files = []
+    for relative, size, _digest, origin in manifest["files"]:
+        if origin not in _PROVIDER_BY_ORIGIN or (wanted is not None and origin not in wanted):
+            continue
+        path = corpus / relative
+        # The production prefetch stage hands live_parse_path_worker only
+        # candidates recognize_source_class classifies as a session (the same
+        # predicate census_source_root uses); a retained sidecar
+        # (tool-results/*.txt, tool-outputs/**/*.txt) is a non_session
+        # candidate the walk discovers separately (source_walk.py's
+        # discover_sidecars), never parsed as its own transcript. Sending
+        # one here either errors the worker or measures work production
+        # never performs.
+        provider = Provider.from_string(origin)
+        recognition = recognize_source_class(provider, path)
+        if recognition is not None and recognition.source_class != "session":
+            continue
+        files.append((path, origin, size))
     files.sort(key=lambda item: str(item[0]))
     return files[:limit] if limit else files
 
@@ -93,11 +108,11 @@ def _timed_map(
     """
     counts: dict[str, int] = defaultdict(int)
 
-    def run(item: tuple[Path, str, int]) -> tuple[str, int, float, dict[str, int]]:
+    def run(item: tuple[Path, str, int]) -> tuple[str, int, float, Callable[[], dict[str, int]]]:
         began = time.perf_counter()
         finish = work(item)
         elapsed = time.perf_counter() - began
-        return item[1], item[2], elapsed, finish()
+        return item[1], item[2], elapsed, finish
 
     began = time.perf_counter()
     if workers <= 1:
@@ -106,10 +121,16 @@ def _timed_map(
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="component") as pool:
             results = list(pool.map(run, files))
     wall = time.perf_counter() - began
+    # ``finish()`` (artifact rereads, session/message counting) is the
+    # caller's own consumption, not the timed production stage; calling it
+    # here, after ``wall`` is fixed, keeps it out of both the per-file
+    # ``elapsed`` boundary (already true above) and this outer wall timer --
+    # `pool.map` above would otherwise not return until every `finish()` had
+    # also run, folding that consumption into `wall`/`mib_per_s_wall`.
     rows = []
-    for origin, size, seconds, produced in results:
+    for origin, size, seconds, finish in results:
         rows.append((origin, size, seconds))
-        for key, value in produced.items():
+        for key, value in finish().items():
             counts[key] += value
     return rows, wall, dict(counts)
 

@@ -149,10 +149,19 @@ def main(argv: list[str] | None = None) -> int:
         from devtools.fresh_build_bench.run import RunConfig, run_build
 
         _refuse_repo_path(args.work, "--work")
+        _refuse_repo_path(args.corpus, "--corpus")
         candidate_root = args.candidate.resolve()
         work = args.work.resolve()
         if work == candidate_root or candidate_root in work.parents:
             raise SystemExit(f"--work must live outside the candidate checkout ({candidate_root})")
+        corpus_path = args.corpus.resolve()
+        if corpus_path == candidate_root or candidate_root in corpus_path.parents:
+            # A corpus copied or hand-built under the candidate checkout
+            # would otherwise reach load_manifest below without the
+            # checkout-path refusal --out/corpus-create apply: its transcript
+            # copies and manifest are untracked repository content that can
+            # be staged accidentally.
+            raise SystemExit(f"--corpus must live outside the candidate checkout ({candidate_root})")
         manifest = load_manifest(args.corpus)
         verify_manifest(args.corpus, manifest)
         if not manifest["file_count"]:

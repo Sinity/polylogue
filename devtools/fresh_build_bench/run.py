@@ -618,6 +618,11 @@ def _measure_and_write_receipt(
                 observation.raw_pending,
                 observation.memberships_pending,
                 observation.open_debt,
+                # A stage that resolves one debt row while the next stage
+                # creates another leaves the total unchanged even though the
+                # daemon is actively converging; the per-stage breakdown
+                # moves and must count as progress too.
+                tuple(sorted(observation.debt_by_stage.items())),
                 observation.promoted_index,
                 # Derived convergence after promotion may move nothing but
                 # readiness; each domain turning ready is progress.
