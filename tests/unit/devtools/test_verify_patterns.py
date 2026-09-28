@@ -258,3 +258,42 @@ def test_merging_the_base_branch_does_not_count_its_exemptions_as_growth(
     payload = verify_patterns._payload(tmp_path)
 
     assert not any("committed baseline grew" in error for error in payload["required_gate"]["details"])
+
+
+def test_a_merge_parent_without_the_baseline_file_contributes_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A base branch that predates a feature's new baseline file does not fail the gate.
+
+    Anti-vacuity (Codex P2, #5755): require the file at every parent and the
+    merge of that older base is a blocking input error.
+    """
+    git = ["git", "-C", str(tmp_path)]
+    subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)
+    subprocess.run([*git, "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run([*git, "config", "user.name", "Pattern Test"], check=True)
+    (tmp_path / "seed.txt").write_text("seed", encoding="utf-8")
+    subprocess.run([*git, "add", "seed.txt"], check=True)
+    subprocess.run([*git, "commit", "-qm", "seed"], check=True)
+    subprocess.run([*git, "checkout", "-qb", "feature"], check=True)
+    rule = _rule(tmp_path)
+    subprocess.run([*git, "add", "."], check=True)
+    subprocess.run([*git, "commit", "-qm", "feature adds the baseline"], check=True)
+    subprocess.run([*git, "checkout", "-q", "main"], check=True)
+    (tmp_path / "base.txt").write_text("base", encoding="utf-8")
+    subprocess.run([*git, "add", "base.txt"], check=True)
+    subprocess.run([*git, "commit", "-qm", "base moves on"], check=True)
+    subprocess.run([*git, "checkout", "-q", "feature"], check=True)
+    subprocess.run([*git, "merge", "-q", "--no-edit", "main"], check=True)
+    monkeypatch.setattr(verify_patterns, "_rules", lambda _root: (rule,))
+    monkeypatch.setattr(
+        verify_patterns,
+        "_scan",
+        lambda _root, _rule: Counter(
+            {("polylogue/existing.py", hashlib.sha1(b"return None").hexdigest(), "a" * 40): 1}
+        ),
+    )
+
+    payload = verify_patterns._payload(tmp_path)
+
+    assert payload["required_gate"]["error_count"] == 0, payload["required_gate"]["details"]

@@ -190,15 +190,24 @@ def _trusted_baseline(root: Path, path: Path) -> Counter[tuple[str, str]] | None
         ).stdout.split()
         if not parents:
             raise ValueError("HEAD has no parent revision")
+        # A parent that predates the baseline file (a base branch merged into
+        # the feature that introduced it) contributes nothing; a file no
+        # parent carries has no trusted revision at all.
         contents = [
-            subprocess.run(
-                ["git", "-C", repository, "show", f"{parent}:{relative}"],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout
+            completed.stdout
             for parent in parents
+            if (
+                completed := subprocess.run(
+                    ["git", "-C", repository, "show", f"{parent}:{relative}"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            ).returncode
+            == 0
         ]
+        if not contents:
+            raise ValueError(f"no parent revision carries {relative}")
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         if not (root / ".git").exists():
             return None
