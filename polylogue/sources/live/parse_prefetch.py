@@ -501,11 +501,21 @@ class LiveParseStage:
         if self._shard_directory is None:
             return 0
         self._stage_calls += 1
-        for source_path, _provider, _is_stream in candidates:
-            if self._speculative.pop(source_path, None) is None:
-                continue
-            claimed = self._path_results.get(source_path)
-            if claimed is not None and claimed.error is not None and claimed.deferred:
+        deadline = time.monotonic() + self._warm_timeout_seconds
+        claimed = [source_path for source_path, _p, _s in candidates if source_path in self._speculative]
+        # A speculative preparation this warm now needs is awaited first, so
+        # that a retryable failure it produced (the source moved while it was
+        # read ahead of time) is known before the warm decides what to submit.
+        running = [self._path_futures[path] for path in claimed if path in self._path_futures]
+        if running:
+            wait(running, timeout=max(0.0, deadline - time.monotonic()))
+            for source_path, future in tuple(self._path_futures.items()):
+                if future.done():
+                    self._collect_path_future(source_path, future)
+        for source_path in claimed:
+            self._speculative.pop(source_path, None)
+            result = self._path_results.get(source_path)
+            if result is not None and result.error is not None and result.deferred:
                 # A retryable failure of a speculative preparation is not this
                 # warm's answer: prepare the path again now.
                 self._path_results.pop(source_path).discard()
@@ -516,7 +526,6 @@ class LiveParseStage:
                         None, None, None, "worker stop could not be verified; scratch cleanup is blocked", deferred=True
                     )
             return len(candidates)
-        deadline = time.monotonic() + self._warm_timeout_seconds
         remaining = list(candidates)
         while remaining:
             remaining = self._submit_path_candidates(remaining)
@@ -565,6 +574,13 @@ class LiveParseStage:
             )
         self._drop_stale_speculation()
         return len(candidates)
+
+    def _expired_speculative_futures(self) -> list[str]:
+        return [
+            path
+            for path, submitted_at in self._speculative.items()
+            if path in self._path_futures and self._stage_calls - submitted_at >= _SPECULATIVE_LIFETIME_CALLS
+        ]
 
     def _drop_stale_speculation(self) -> None:
         """Discard prefetched results no warm claimed within their lifetime."""
@@ -626,8 +642,13 @@ class LiveParseStage:
                         None, None, None, f"source stat failed: {type(exc).__name__}"[:500], deferred=True
                     )
                 continue
-            if len(self._path_futures) >= self._max_path_pending or (
-                self._path_futures and self._path_inflight_bytes + source_bytes > self._max_path_bytes
+            # Expired speculation (a read-ahead no warm claimed) still runs
+            # to completion, but it must not hold back a warm's required work.
+            expired = [] if speculative else self._expired_speculative_futures()
+            pending_count = len(self._path_futures) - len(expired)
+            inflight = self._path_inflight_bytes - sum(self._path_sizes.get(path, 0) for path in expired)
+            if pending_count >= self._max_path_pending or (
+                pending_count and inflight + source_bytes > self._max_path_bytes
             ):
                 next_wave.append((source_path, provider, is_stream))
                 continue

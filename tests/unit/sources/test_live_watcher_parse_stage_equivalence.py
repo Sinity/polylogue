@@ -1091,6 +1091,45 @@ def test_a_prefetch_only_walk_does_not_accumulate_results(tmp_path: Path) -> Non
         stage.shutdown()
 
 
+def test_a_speculative_failure_finishing_during_the_warm_is_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: dropping the speculative marker before the running
+    read-ahead finishes hands the warm its retryable failure."""
+    import hashlib
+    import threading
+
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+
+    [path] = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    released = threading.Event()
+    original_worker = parse_prefetch.live_parse_path_worker
+    calls = 0
+
+    def flaky_worker(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            released.wait(timeout=5)
+            return PreparedJsonl(None, None, None, "source changed", deferred=True)
+        return original_worker(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", flaky_worker)
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    candidate = [(str(path), Provider.CODEX, True)]
+    try:
+        assert stage.prefetch_paths(candidate) == 1
+        threading.Timer(0.05, released.set).start()
+        stage.warm_paths(candidate)
+        result = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+        assert result is not None and result.error is None
+        assert calls == 2
+    finally:
+        released.set()
+        stage.shutdown()
+
+
 def test_a_failed_prefetch_stat_is_retried_by_the_warm(tmp_path: Path) -> None:
     """Anti-vacuity: caching the speculative stat failure makes the warm
     return that failure for a file that exists by the time it is needed."""
