@@ -2856,8 +2856,15 @@ def _prepare_ingest_unit_sync(
         cohort_ids = tuple(sorted({raw_id, *(str(row[members.columns.index("raw_id")]) for row in members.rows)}))
         cohort_marks = ",".join("?" for _ in cohort_ids)
         census = _source_snapshot(source, "raw_membership_census", f"raw_id IN ({cohort_marks})", cohort_ids)
+        # Membership classification queries source-generation ownership
+        # (#5630), so the scratch needs the relation's shape. The Drive route
+        # classifies without a source generation (``raw_membership_raw_ids``
+        # in ``_bind_drive_revision_lineage``), so no ownership row can match:
+        # copying the cohort's rows would only let a raw retained across many
+        # generations exceed the row cap and go permanently stale.
+        generation_members = _source_snapshot(source, "source_item_raw_members", "0", ())
         artifacts = _source_snapshot(source, "raw_artifacts", "raw_id=?", (raw_id,))
-    snapshots = (raw, members, census, artifacts)
+    snapshots = (raw, members, census, generation_members, artifacts)
     raw_id_position = raw.columns.index("raw_id")
     stale = not any(row[raw_id_position] == raw_id and row == input_row for row in raw.rows)
     stale |= any(len(snapshot.rows) > _DRIVE_COHORT_MAX_ROWS for snapshot in snapshots)
