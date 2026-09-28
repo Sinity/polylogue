@@ -165,6 +165,28 @@ def codex_unknown_wire_type(value: object) -> str | None:
     return None
 
 
+def hermes_unknown_wire_type(value: object) -> str | None:
+    """Return an unknown Hermes wire type read only from its discriminators.
+
+    An ATOF record's discriminators are its own ``type``/``kind``; an ATIF
+    document's are its own and each step's. Tool-call ``arguments`` and
+    every other nested value are user data, so ``{"type": "unknown"}`` inside
+    them is not a provider wire type.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    for key in ("type", "kind", "record_type"):
+        if _is_unknown_sentinel(value.get(key)):
+            return cast(str, value.get(key))
+    steps = value.get("steps")
+    for step in steps if isinstance(steps, list) else ():
+        if isinstance(step, Mapping):
+            for key in ("type", "kind"):
+                if _is_unknown_sentinel(step.get(key)):
+                    return cast(str, step.get(key))
+    return None
+
+
 def _unknown_wire_type(value: object) -> str | None:
     """Return a deliberately future-shaped wire type, if one is visible.
 
@@ -208,7 +230,9 @@ class AdmissionObserver:
         self._scan = scan if scan is not None else _unknown_wire_type
         self._ledger = AdmissionLedger()
         self._count = 0
-        self._unknowns: list[tuple[int, str]] = []
+        #: The first source index of each unknown wire type: one event per
+        #: type is emitted, so later occurrences are not retained.
+        self._unknowns: dict[str, int] = {}
 
     def observe(self, item: object, source_index: int | None = None, *, recognized: bool = True) -> None:
         """Classify one record at dense ledger ordinal ``self._count``.
@@ -240,7 +264,7 @@ class AdmissionObserver:
             self._ledger.materialized(AdmissionUnit.OUTER_RECORD, ordinal, "parsed")
         else:
             self._ledger.unknown(AdmissionUnit.OUTER_RECORD, ordinal, wire_type)
-            self._unknowns.append((source_index if source_index is not None else ordinal + 1, wire_type))
+            self._unknowns.setdefault(wire_type, source_index if source_index is not None else ordinal + 1)
 
     def observing(self, payload: Iterable[Any]) -> Iterator[Any]:
         """Yield a one-pass payload through, observing each record as it is pulled."""
@@ -276,10 +300,27 @@ class AdmissionObserver:
         accounting.assert_conserved()
         return session.model_copy(update={"session_events": events, "unit_accounting": accounting})
 
+    def apply_each(self, sessions: Sequence[ParsedSession], provider: str) -> list[ParsedSession]:
+        """``apply`` for every session one observed stream produced.
+
+        Each session without its parser's own ledger gets the stream's proof,
+        closed once and shared.
+        """
+        accounting: ParseAccounting | None = None
+        admitted: list[ParsedSession] = []
+        for session in sessions:
+            if session.unit_accounting is None:
+                if accounting is None:
+                    self._ledger.expect(AdmissionUnit.OUTER_RECORD, self._count)
+                    accounting = self._ledger.close()
+                session = session.model_copy(update={"unit_accounting": accounting})
+            admitted.append(self.apply(session, provider))
+        return admitted
+
     def _append_unknown_events(
         self, events: MutableSequence[ParsedSessionEvent], existing_types: set[str], provider: str
     ) -> None:
-        for index, wire_type in self._unknowns:
+        for wire_type, index in self._unknowns.items():
             if wire_type in existing_types:
                 continue
             events.append(
@@ -308,11 +349,20 @@ def admit_parsed_sessions(provider: str, payload: object, sessions: list[ParsedS
         if session.unit_accounting is not None:
             admitted.append(session)
             continue
-        observer = AdmissionObserver()
+        observer = AdmissionObserver(_ADMISSION_SCANS.get(provider))
         for item in items:
             observer.observe(item)
         admitted.append(observer.apply(session, provider))
     return admitted
+
+
+#: Origins whose outer records have declared discriminators; any other origin
+#: uses the conservative whole-record scan.
+_ADMISSION_SCANS: dict[str, Callable[[object], str | None]] = {
+    "hermes": hermes_unknown_wire_type,
+    "codex": codex_unknown_wire_type,
+    "claude_code": claude_code_unknown_wire_type,
+}
 
 
 def _payload_parameter(parser: Callable[..., ParsedSession]) -> tuple[int, str]:

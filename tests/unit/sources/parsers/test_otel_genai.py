@@ -683,21 +683,23 @@ def test_unnamed_resource_identity_survives_an_application_upgrade() -> None:
 
     Anti-vacuity (Codex P2, #5711): hash ``service.version`` into the
     fallback resource identity and the post-upgrade export imports as a
-    second session. A changed non-version attribute still separates resources.
+    second session. A changed non-version attribute still separates the
+    unnamed resources of one document.
     """
 
-    def export(version: str, environment: str = "prod") -> str:
-        payload = _document(
-            (
-                [_attr("deployment.environment", environment), _attr("service.version", version)],
-                [_chat("e" * 32, "5" * 16, 1_000, ["Q"], "A")],
-            )
+    def resource(version: str, environment: str = "prod") -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+        return (
+            [_attr("deployment.environment", environment), _attr("service.version", version)],
+            [_chat("e" * 32, "5" * 16, 1_000, ["Q"], "A")],
         )
-        (session,) = otel_genai.parse(payload, "ignored")
-        return session.provider_session_id
 
-    assert export("1.0.0") == export("1.1.0")
-    assert export("1.0.0") != export("1.0.0", environment="staging")
+    def export(*resources: tuple[list[dict[str, object]], list[dict[str, object]]]) -> list[str]:
+        return sorted(session.provider_session_id for session in otel_genai.parse(_document(*resources), "ignored"))
+
+    assert export(resource("1.0.0"), resource("1.0.0", "staging")) == export(
+        resource("1.1.0"), resource("1.1.0", "staging")
+    )
+    assert len(export(resource("1.0.0"), resource("1.0.0", "staging"))) == 2
 
 
 def test_unnamed_resource_identity_ignores_instance_attributes() -> None:
@@ -735,3 +737,36 @@ def test_every_session_of_a_multi_conversation_document_is_admitted() -> None:
 
     assert len(sessions) == 2
     assert all(session.unit_accounting is not None for session in sessions)
+
+
+def test_a_single_unnamed_resource_keeps_its_legacy_identity() -> None:
+    """A document with one unnamed resource names the session as earlier parses did.
+
+    Anti-vacuity (Codex P2, #5711): always hash the stable attributes and a
+    replay of the same bytes keys ``resource-<hash>`` instead of ``resource``,
+    importing a second session.
+    """
+    payload = _document(([_attr("deployment.environment", "prod")], [_chat("a" * 32, "1" * 16, 1_000, ["Q"], "A")]))
+
+    sessions = otel_genai.parse(payload, "ignored")
+
+    assert len(sessions) == 1
+    assert sessions[0].provider_session_id.startswith("resource:")
+
+
+def test_a_conversation_id_in_a_conflicting_copy_names_the_session() -> None:
+    """A conversation id surviving only in a conflicting copy still keys the session.
+
+    Anti-vacuity (Codex P2, #5711): read the conversation from the selected
+    ordinary copy alone and the session is keyed by trace, so a later clean
+    export of the GenAI copy imports a second session.
+    """
+    trace = "d" * 32
+    plain = _span(trace, "a" * 16, 1_000, [])
+    genai = _span(
+        trace, "a" * 16, 1_000, [_attr("gen_ai.operation.name", "chat"), _attr("gen_ai.conversation.id", "chat-9")]
+    )
+    conflicted = otel_genai.parse(_document(([_attr("service.name", "agent")], [plain, genai])), "ignored")
+    clean = otel_genai.parse(_document(([_attr("service.name", "agent")], [genai])), "ignored")
+
+    assert [session.provider_session_id for session in conflicted] == [session.provider_session_id for session in clean]

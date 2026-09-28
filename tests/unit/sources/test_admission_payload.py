@@ -362,3 +362,16 @@ def test_a_claude_admission_event_takes_its_declared_place() -> None:
     admitted = observer.apply(session, "claude_code")
 
     assert [event.event_type for event in admitted.session_events] == ["claude_code_unknown_input", "compaction"]
+
+
+def test_repeated_unknown_records_keep_one_pending_event_per_type() -> None:
+    """Observing many records of one unknown type retains one pending event, not one per record.
+
+    Anti-vacuity (Codex P1, #5711): keep a tuple per unknown record and the
+    pending list grows with the stream.
+    """
+    observer = base_support.AdmissionObserver(scan=lambda record: "future_record_kind")
+    for _ in range(1_000):
+        observer.observe({"type": "future_record_kind"})
+
+    assert len(observer._unknowns) == 1

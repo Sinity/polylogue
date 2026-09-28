@@ -323,6 +323,32 @@ def test_the_first_anonymous_trajectory_keeps_its_id_when_a_second_arrives(tmp_p
     assert len(set(after)) == 2
 
 
+def test_deleting_an_anonymous_trajectory_does_not_rename_the_next(tmp_path: Path) -> None:
+    """A surviving anonymous row keeps its identity when an earlier one is deleted.
+
+    Anti-vacuity (Codex P2, #5711): derive the id from the enumeration index
+    and the second row, alone after the first is deleted, takes over the bare
+    ``x`` of the deleted trajectory.
+    """
+    path = tmp_path / "conversation.db"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+            CREATE TABLE steps (idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT);
+            INSERT INTO trajectory_meta VALUES (NULL, NULL);
+            INSERT INTO trajectory_meta VALUES (NULL, NULL);
+            """
+        )
+    before = [session.provider_session_id for session in parse_trajectory_db(path, fallback_id="x")]
+    with sqlite3.connect(path) as connection:
+        connection.execute("DELETE FROM trajectory_meta WHERE rowid = 1")
+    after = [session.provider_session_id for session in parse_trajectory_db(path, fallback_id="x")]
+
+    assert before == ["x", "x:trajectory-1"]
+    assert after == ["x:trajectory-1"]
+
+
 def test_the_bare_fallback_is_not_taken_when_a_native_id_occupies_it(tmp_path: Path) -> None:
     """An anonymous first row never takes a fallback another row already names.
 

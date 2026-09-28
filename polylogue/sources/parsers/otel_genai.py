@@ -214,7 +214,17 @@ def _is_deployment_version(key: str) -> bool:
     return key == "version" or key.endswith((".version", "_version"))
 
 
-def _resource_id(resource_attrs: dict[str, object]) -> str:
+def _stable_resource_attributes(resource_attrs: dict[str, object]) -> str:
+    """The canonical JSON of a resource's identity-bearing attributes."""
+    stable = {
+        key: _json_value(value)
+        for key, value in resource_attrs.items()
+        if not key.startswith(_INSTANCE_RESOURCE_PREFIXES) and not _is_deployment_version(key)
+    }
+    return json.dumps(stable, sort_keys=True, separators=(",", ":"))
+
+
+def _resource_id(resource_attrs: dict[str, object], *, distinguish: bool = True) -> str:
     """Name one OTLP resource by its service, or by its stable attributes.
 
     Two ``resourceSpans`` entries without ``service.name`` are still distinct
@@ -228,12 +238,11 @@ def _resource_id(resource_attrs: dict[str, object]) -> str:
     service_name = optional_string(resource_attrs.get("service.name"))
     if service_name:
         return service_name
-    stable = {
-        key: _json_value(value)
-        for key, value in resource_attrs.items()
-        if not key.startswith(_INSTANCE_RESOURCE_PREFIXES) and not _is_deployment_version(key)
-    }
-    canonical = json.dumps(stable, sort_keys=True, separators=(",", ":"))
+    if not distinguish:
+        # The one unnamed resource of its document keeps the identity every
+        # earlier parse gave it.
+        return "resource"
+    canonical = _stable_resource_attributes(resource_attrs)
     return f"resource-{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:16]}"
 
 
@@ -241,10 +250,22 @@ def _iter_spans(payload: dict[str, object]) -> Iterable[tuple[str, dict[str, obj
     resource_spans = payload.get("resourceSpans", payload.get("resource_spans"))
     if not isinstance(resource_spans, list):
         return
+    # Unnamed resources are told apart by their stable attributes only when a
+    # document carries several distinct ones -- the shape that used to
+    # collapse into one session. A document with a single unnamed resource
+    # keeps the legacy ``resource`` identity, so replaying it names the same
+    # session as before.
+    unnamed = {
+        _stable_resource_attributes(attrs)
+        for attrs in (
+            _attributes(_mapping(_mapping(item).get("resource")).get("attributes")) for item in resource_spans
+        )
+        if not optional_string(attrs.get("service.name"))
+    }
     for resource_span in resource_spans:
         resource = _mapping(resource_span)
         resource_attrs = _attributes(_mapping(resource.get("resource")).get("attributes"))
-        resource_id = _resource_id(resource_attrs)
+        resource_id = _resource_id(resource_attrs, distinguish=len(unnamed) > 1)
         scopes = resource.get("scopeSpans", resource.get("instrumentationLibrarySpans", ()))
         if not isinstance(scopes, list):
             continue
@@ -480,9 +501,20 @@ def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
         trace_id = optional_string(span.get("traceId")) or optional_string(span.get("trace_id"))
         span_id = optional_string(span.get("spanId")) or optional_string(span.get("span_id"))
         if trace_id and span_id:
-            attrs = _attributes(span.get("attributes"))
+            # The conversation is read from every copy of the coordinate, as
+            # membership is: a conversation id surviving only in a conflicting
+            # copy still names the session, so a later clean export of that
+            # copy keys the same one.
+            conversation_id = next(
+                (
+                    found
+                    for copy, _url in sorted(variants[_span_coordinate(resource_id, span)], key=_span_variant_key)
+                    if (found := optional_string(_attributes(copy.get("attributes")).get("gen_ai.conversation.id")))
+                ),
+                None,
+            )
             span_details[(resource_id, trace_id, span_id)] = (
-                optional_string(attrs.get("gen_ai.conversation.id")),
+                conversation_id,
                 optional_string(span.get("parentSpanId")) or optional_string(span.get("parent_span_id")),
             )
 

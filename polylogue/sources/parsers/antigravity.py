@@ -838,7 +838,7 @@ def parse_trajectory_db(
                     parent_refs.setdefault(str(child), []).append(
                         _event_payload_row({str(key): value for key, value in zip(row.keys(), row, strict=True)})
                     )
-        meta_query = "SELECT * FROM trajectory_meta ORDER BY rowid"
+        meta_query = "SELECT rowid AS _polylogue_meta_rowid, * FROM trajectory_meta ORDER BY rowid"
         meta_rows = connection.execute(meta_query).fetchall()
         if not meta_rows:
             # A structurally valid empty export still gets an attributable
@@ -862,7 +862,6 @@ def parse_trajectory_db(
         known_native_ids |= set(summaries)
         matched_summary_keys: set[str] = set()
         has_step_identity = bool({"trajectory_id", "cascade_id"}.intersection(step_columns))
-        first_anonymous_taken = False
         for meta_index, meta in enumerate(meta_rows):
             trajectory_id = (
                 str(meta["trajectory_id"])
@@ -875,18 +874,18 @@ def parse_trajectory_db(
                 else None
             )
             # Several unidentified rows would all take the one path-derived
-            # fallback and address a single archive session repeatedly. The
-            # first unidentified row keeps the path-derived fallback -- the
-            # identity it had while it was the only row, so an export that
-            # grows a second row does not rename it -- and each later one
-            # gets a stable row-specific identity.
+            # fallback and address a single archive session repeatedly. Each
+            # identity is keyed on the row's own rowid, never its position:
+            # the original single row (rowid 1) keeps the path-derived
+            # fallback it had while alone, and row ``n`` is
+            # ``<fallback>:trajectory-<n-1>``, so neither appending a row nor
+            # deleting an earlier one renames a trajectory. The bare fallback
+            # is kept only while no native id or unmatched summary occupies it.
             row_fallback_id = fallback_id
             if fallback_id and trajectory_id is None and cascade_id is None:
-                # The bare fallback is kept only while no native id or
-                # unmatched summary already occupies it.
-                if first_anonymous_taken or fallback_id in known_native_ids:
-                    row_fallback_id = _unused_row_id(f"{fallback_id}:trajectory-{meta_index}", known_native_ids)
-                first_anonymous_taken = True
+                rowid = int(meta["_polylogue_meta_rowid"]) if meta is not None else 1
+                if rowid != 1 or fallback_id in known_native_ids:
+                    row_fallback_id = _unused_row_id(f"{fallback_id}:trajectory-{rowid - 1}", known_native_ids)
             native_id = trajectory_id or cascade_id or row_fallback_id
             if not native_id:
                 continue

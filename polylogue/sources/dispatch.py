@@ -57,6 +57,7 @@ from .parsers.base_support import (
     admit_parsed_sessions,
     claude_code_unknown_wire_type,
     codex_unknown_wire_type,
+    hermes_unknown_wire_type,
     iter_messages_from_list,
 )
 from .parsers.claude import code_parser as claude_code_parser
@@ -2270,11 +2271,13 @@ def parse_stream_payload(
         )
         return [observer.apply(session, "codex")]
     if runtime_provider is Provider.HERMES:
-        return hermes_spans.parse_atof_stream(
-            payloads,
+        observer = AdmissionObserver(hermes_unknown_wire_type)
+        sessions = hermes_spans.parse_atof_stream(
+            observer.observing(payloads),
             fallback_id,
             profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)) if source_path else None,
         )
+        return observer.apply_each(sessions, "hermes")
     raise ValueError(f"provider {runtime_provider} does not support stream parsing")
 
 
