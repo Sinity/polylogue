@@ -445,8 +445,47 @@ def reusable_green_receipt(
             and payload.get("exit_code") == 0
             and (payload.get("pytest_aggregate") or {}).get("terminal_green") is True
         )
-        return receipt if green else None
+        if not green or _later_failure_pruned(root, after=entry.name):
+            return None
+        return receipt
     return None
+
+
+def _later_failure_pruned(root: Path, *, after: str) -> bool:
+    """Whether a focused run newer than ``after`` failed and lost its detail.
+
+    Retention keeps fewer failed details than green ones, so a later red of
+    the same inputs can be pruned while the older green survives. The
+    append-only history still names every run; a failed one without its
+    detail directory has unknown inputs and may be that red. Unreadable
+    history answers the same way: reuse is refused, never assumed. Without
+    a history file nothing was pruned, since retention prunes only runs the
+    history records.
+    """
+    runs_root = root / ".cache" / "verify" / "runs"
+    try:
+        with (root / ".cache" / "verify" / "history.jsonl").open(encoding="utf-8") as handle:
+            for line in handle:
+                if "-focused-test-" not in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                run_id = row.get("run_id") if isinstance(row, dict) else None
+                if (
+                    isinstance(run_id, str)
+                    and "-focused-test-" in run_id
+                    and run_id > after
+                    and row.get("status") != "success"
+                    and not (runs_root / run_id).exists()
+                ):
+                    return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return False
 
 
 def _parse_runner(selection: list[str]) -> tuple[str, list[str]]:
@@ -618,6 +657,7 @@ _VALUE_TAKING_OPTIONS = frozenset(
         "--config-file",
         "--capture",
         "--import-mode",
+        "-r",
     }
 )
 
@@ -651,9 +691,15 @@ def _selected_test_modules(selection: list[str]) -> int:
 
 
 def _xdist_disabled(selection: list[str]) -> bool:
-    """Whether the caller disabled xdist (``-p no:xdist``) explicitly."""
+    """Whether the caller disabled xdist or asked for output it cannot carry.
+
+    ``-p no:xdist`` disables it outright; ``-s``/``--capture=no`` asks for
+    live output, which xdist workers cannot forward.
+    """
     return any(
-        argument in {"-pno:xdist", "-p=no:xdist"} or (argument == "no:xdist" and index and selection[index - 1] == "-p")
+        argument in {"-pno:xdist", "-p=no:xdist", "-s", "--capture=no"}
+        or (argument == "no:xdist" and index and selection[index - 1] == "-p")
+        or (argument == "no" and index and selection[index - 1] == "--capture")
         for index, argument in enumerate(selection)
     )
 

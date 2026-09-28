@@ -97,6 +97,7 @@ RERUN_IN_SLOT_RESULT = "pytest-rerun-in-slot.json"
 #: ``--import-mode``) changes how a test executes and is kept.
 _RERUN_DROPPED_WITH_VALUE = frozenset(
     {
+        "-r",
         "-k",
         "-m",
         "-n",
@@ -152,11 +153,17 @@ def semantic_rerun_options(command: list[str]) -> list[str]:
             break
         name = argument.split("=", 1)[0]
         takes_value = "=" not in argument and name in _RERUN_KEPT_WITH_VALUE | _RERUN_DROPPED_WITH_VALUE
+        if not argument.startswith("--") and len(argument) > 2 and argument[:2] in _SHORT_WITH_VALUE:
+            # ``-n8``, ``-kexpr``, ``-rf``: a short option with its value attached.
+            name, takes_value = argument[:2], False
         if not argument.startswith("-"):
             index += 1
             continue
         if name in _RERUN_DROPPED_WITH_VALUE or argument in _RERUN_DROPPED_FLAGS or _is_managed(argument):
             index += 2 if takes_value else 1
+            continue
+        if name == "-p" and len(argument) > 2 and not argument[2:].lstrip("=").startswith("no:"):
+            index += 1
             continue
         if argument == "-p" and index + 1 < len(arguments) and not arguments[index + 1].startswith("no:"):
             # Plugin loads are the managed profile, which the rerun supplies
@@ -189,6 +196,12 @@ _RERUN_KEPT_WITH_VALUE = frozenset(
         "--capture",
         "--tb",
     }
+)
+
+
+#: Short options whose value may be attached (``-n8``); matched by prefix.
+_SHORT_WITH_VALUE = frozenset(
+    option for option in _RERUN_KEPT_WITH_VALUE | _RERUN_DROPPED_WITH_VALUE if len(option) == 2
 )
 
 

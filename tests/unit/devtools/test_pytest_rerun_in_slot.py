@@ -308,6 +308,13 @@ def test_a_rerun_keeps_the_first_runs_execution_options() -> None:
     ]
 
 
+def test_attached_short_option_values_are_classified_by_their_option() -> None:
+    """Anti-vacuity: classify ``-n8`` by its whole spelling and it is kept, so
+    the adjudicating rerun fans out to eight workers instead of running alone."""
+    command = ["python", "-m", "pytest", "tests/test_w.py", "-n8", "-kslow", "-rf", "-pfoo", "-pno:randomly", "-Werror"]
+    assert pytest_rerun.semantic_rerun_options(command) == ["-pno:randomly", "-Werror"]
+
+
 def test_scratch_is_kept_when_the_rerun_ran_other_content(tmp_path: Path) -> None:
     """Anti-vacuity: ignore provenance in the cleanup decision and a rejected
     rerun deletes the red run's diagnostic scratch."""

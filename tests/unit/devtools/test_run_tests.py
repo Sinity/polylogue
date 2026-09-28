@@ -1139,6 +1139,25 @@ def test_a_red_or_foreign_run_is_never_reused(tmp_path: Path, overrides: dict[st
     assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
 
 
+def test_a_green_older_than_a_pruned_red_is_not_reused(tmp_path: Path) -> None:
+    """Anti-vacuity: skip the history check and the surviving older green is
+    returned although a later red of unknown inputs was pruned."""
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py"]
+    expected = _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
+    history = tmp_path / ".cache" / "verify" / "history.jsonl"
+    history.write_text(
+        json.dumps({"run_id": "20260101T000000Z-focused-test-1-a", "status": "success"}) + "\n",
+        encoding="utf-8",
+    )
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") == expected
+
+    with history.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"run_id": "20260102T000000Z-focused-test-2-b", "status": "failed"}) + "\n")
+
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
+
+
 def test_main_reuses_a_green_receipt_without_queueing(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
@@ -1379,6 +1398,19 @@ def test_explicit_xdist_disablement_is_honored_for_any_selection() -> None:
     """Anti-vacuity: guard only benchmarks and ``-p no:xdist`` gets ``-n 4`` beside it."""
     cmd = run_tests.build_pytest_cmd(["tests/unit/devtools", "-p", "no:xdist"])
     assert "-n" not in cmd
+
+
+@pytest.mark.parametrize("capture", [["-s"], ["--capture=no"], ["--capture", "no"]])
+def test_uncaptured_output_keeps_a_large_selection_serial(capture: list[str]) -> None:
+    """Anti-vacuity: drop the capture override and ``-n 4`` swallows the live output ``-s`` asked for."""
+    cmd = run_tests.build_pytest_cmd(["tests/unit/devtools", *capture])
+    assert "-n" not in cmd
+
+
+def test_the_report_chars_operand_is_not_a_path() -> None:
+    """Anti-vacuity: drop ``-r`` from the value-taking options and ``f`` is the
+    only (missing) path, so a pathless run counts zero modules."""
+    assert run_tests._selected_test_modules(["-r", "f"]) == run_tests._selected_test_modules([])
 
 
 def test_an_isolated_run_is_never_answered_from_a_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
