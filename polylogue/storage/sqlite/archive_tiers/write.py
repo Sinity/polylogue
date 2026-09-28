@@ -280,7 +280,7 @@ def _attachment_availability(
     return resolve_attachment_availability(
         blob_hash=blob_hash,
         acquisition_status=acquisition_status,
-        verify=store.verify,
+        verify=store.verify_for_read,
         exists=store.exists,
         generation_id=generation_id,
     )
