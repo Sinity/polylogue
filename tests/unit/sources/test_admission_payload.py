@@ -280,13 +280,13 @@ def test_claude_code_tool_input_is_not_a_wire_type() -> None:
             "message": {"role": "assistant", "content": [block]},
         }
 
-    tool_call = {"type": "tool_use", "id": "t-1", "name": "Probe", "input": {"type": "unknown"}}
+    tool_call: dict[str, object] = {"type": "tool_use", "id": "t-1", "name": "Probe", "input": {"type": "unknown"}}
     (session,) = parse_stream_payload(Provider.CLAUDE_CODE, iter([assistant("a-1", tool_call)]), "cc-tool-input")
     assert "claude_code_unknown_input" not in [event.event_type for event in session.session_events]
     accounting = session.unit_accounting
     assert accounting is not None
     assert all(outcome.disposition is not AdmissionDisposition.TYPED_UNKNOWN for outcome in accounting.outcomes)
 
-    future_block = {"type": "future_block_kind", "text": "neutral"}
+    future_block: dict[str, object] = {"type": "future_block_kind", "text": "neutral"}
     (session,) = parse_stream_payload(Provider.CLAUDE_CODE, iter([assistant("a-2", future_block)]), "cc-tool-input")
     assert [event.payload["wire_type"] for event in session.session_events] == ["future_block_kind"]
