@@ -137,7 +137,9 @@ async def build_search_envelope_for_spec(
         hit_payloads,
         total=total,
         limit=display_limit,
-        offset=display_offset,
+        # A cursor page starts after its anchor's rank, so the continuation
+        # fields describe the page actually fetched, not the request's offset.
+        offset=decoded_cursor.r if decoded_cursor is not None else display_offset,
         query=query if query is not None else _search_query_text(spec),
         retrieval_lane=resolved_lane,
         sort=spec.sort,

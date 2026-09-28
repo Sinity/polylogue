@@ -486,6 +486,7 @@ def judge_command(
     selected = _choose_candidate(rows)
     if selected is None:
         _render_rows(filtered)
+        _exit_for_listing_outcome(visible_payload.outcome)
         return
     action = click.prompt("Judge [a]ccept/[r]eject/[d]efer/[e]dit-and-accept/[s]kip", default="s")
     if action in {"s", "d"}:

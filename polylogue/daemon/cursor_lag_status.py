@@ -143,12 +143,6 @@ def cursor_lag_summary_info(dbf: Path, *, now: datetime | None = None, ops_db: P
         # as available would report a stale or quiet ledger as measured.
         return _unavailable(ops_error)
     if not dbf.exists():
-        # The index fallback cannot substitute for a ledger that raised. When
-        # the fallback has nothing of its own to measure either, nothing
-        # observed this archive's cursors, and reporting an empty ledger would
-        # attribute the ops failure's silence to a clean archive.
-        if ops_error is not None:
-            return _unavailable(ops_error)
         return CursorLagSummary()
     # A bare CursorLagSummary() reports zero families/stuck files, which reads
     # identically to "archive genuinely has no cursor lag" (polylogue-cpf.4).
@@ -159,9 +153,8 @@ def cursor_lag_summary_info(dbf: Path, *, now: datetime | None = None, ops_db: P
     except _CursorLedgerReadError as exc:
         return _unavailable(exc.reason)
     if rows is None:
-        # No ``live_cursor`` relation: a measured empty ledger, unless the ops
-        # read this fell back from had already failed.
-        return _unavailable(ops_error) if ops_error is not None else CursorLagSummary()
+        # No ``live_cursor`` relation: a measured empty ledger.
+        return CursorLagSummary()
 
     summary = _project_rows(rows, now=resolved_now)
     return _decorate_with_baselines(summary, dbf, now=resolved_now, ops_db=resolved_ops_db)

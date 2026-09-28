@@ -91,7 +91,9 @@ async def test_spec_builder_preserves_filters_when_advancing_cursor_fetch(
     assert fetch_spec.limit == 20
     assert fetch_spec.cursor == cursor
     assert envelope.limit == 10
-    assert envelope.offset == 20
+    # The page was fetched after the cursor anchor (rank 1), not at the
+    # request's offset, so the envelope reports the offset it actually used.
+    assert envelope.offset == 1
 
 
 @pytest.mark.asyncio
@@ -154,7 +156,9 @@ async def test_filter_only_structured_spec_lists_sessions_with_absolute_ranks(
 
     monkeypatch.setattr(SessionQuerySpec, "count", _fake_count)
 
-    def hit_from_session(session: SessionSummary, *, query_terms: tuple[str, ...], rank: int, **kwargs: object):
+    def hit_from_session(
+        session: SessionSummary, *, query_terms: tuple[str, ...], rank: int, **kwargs: object
+    ) -> object:
         del query_terms
         return session_search_hit_from_summary(
             session, rank=rank, retrieval_lane="auto", match_surface="session", message_id=None, snippet=""
@@ -175,3 +179,49 @@ async def test_filter_only_structured_spec_lists_sessions_with_absolute_ranks(
 
     operations.list_sessions_for_spec.assert_awaited_once()
     assert [hit.match.rank for hit in envelope.hits] == [6, 7]
+
+
+@pytest.mark.asyncio
+async def test_filter_only_cursor_page_reports_its_own_offset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cursor page's continuation fields describe the page it fetched.
+
+    Anti-vacuity: pass the request's display offset (0) to the envelope again
+    and page two reports ``next_offset == 2`` while returning ranks 3-4.
+    """
+    import polylogue.archive.query.search_hits as search_hits
+
+    async def count_ten(self: SessionQuerySpec, config: object, *, vector_provider: object = None) -> int:
+        del self, config, vector_provider
+        return 10
+
+    monkeypatch.setattr(SessionQuerySpec, "count", count_ten)
+
+    def hit_from_session(
+        session: SessionSummary, *, query_terms: tuple[str, ...], rank: int, **kwargs: object
+    ) -> object:
+        del query_terms
+        return session_search_hit_from_summary(
+            session, rank=rank, retrieval_lane="auto", match_surface="session", message_id=None, snippet=""
+        )
+
+    monkeypatch.setattr(search_hits, "session_search_hit_from_session", hit_from_session)
+    pages = [
+        [SessionSummary(id=SessionId(f"chatgpt:{name}"), origin=Origin.CHATGPT_EXPORT, title=name) for name in names]
+        for names in (("a", "b"), ("c", "d"))
+    ]
+    operations = AsyncMock()
+    operations.search_session_hits = AsyncMock(return_value=[])
+    operations.list_sessions_for_spec = AsyncMock(side_effect=pages)
+
+    first = await build_search_envelope_for_spec(
+        operations, SessionQuerySpec.from_params({"origin": "chatgpt-export", "limit": 2}), limit=2
+    )
+    assert first.next_cursor is not None
+    second = await build_search_envelope_for_spec(
+        operations,
+        SessionQuerySpec.from_params({"origin": "chatgpt-export", "limit": 2, "cursor": first.next_cursor}),
+        limit=2,
+    )
+
+    assert [hit.match.rank for hit in second.hits] == [3, 4]
+    assert second.next_offset == 4

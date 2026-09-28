@@ -439,3 +439,7 @@ def test_failed_backfill_receipt_decodes_as_failed() -> None:
 
     assert decoded is not None
     assert decoded["outcome"] == "failed"
+    # Red if the failure certifies zero work: what it changed is unknown.
+    assert decoded["effect"] == "indeterminate"
+    assert decoded["affected_count"] is None
+    assert decoded["result"] == {"done": None, "pending": None, "failed": None}

@@ -1850,9 +1850,11 @@ function withProviderTransportOperation(provider, operation, { checkThrottle = t
       // Some operations report a provider refusal as a resolved failure
       // result rather than a throw; a rate limit there must still set the
       // shared cooldown, or the next request contacts the provider during
-      // its advertised Retry-After.
-      if (value && value.ok === false && value.retry_after_seconds != null) {
-        const refusal = new Error(value.detail || "provider_rate_limited");
+      // its advertised Retry-After. A 429 without a Retry-After header is
+      // still a rate limit; the recorder supplies the default delay.
+      if (value && value.ok === false) {
+        const refusal = new Error(value.detail || "browser_action_failed");
+        if (value.outcome) refusal.outcome = value.outcome;
         refusal.retryAfterSeconds = Number(value.retry_after_seconds) || null;
         const classified = classifyBrowserActionFailure(refusal, refusal.retryAfterSeconds);
         if (classified.outcome === "rate_limited") await recordProviderThrottle(provider, refusal, classified);

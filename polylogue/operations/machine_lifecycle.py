@@ -56,11 +56,18 @@ def _embedding_terminal_receipt(raw: object) -> dict[str, object] | None:
     result = value.get("result")
     if not isinstance(progress, dict) or not isinstance(result, dict):
         return None
+    # A failed run whose effect is unknown carries no counters: ``None`` there
+    # is "not measured", never a zero.
+    unmeasured = value.get("outcome") == "failed" and value.get("effect") == "indeterminate"
     for field in ("computed", "failed", "done", "pending"):
         container = progress if field in {"computed", "failed"} else result
+        if unmeasured and container.get(field) is None:
+            continue
         if type(container.get(field)) is not int or container[field] < 0:
             return None
     cost = progress.get("estimated_cost_usd")
+    if unmeasured and cost is None:
+        return value
     if not isinstance(cost, (int, float)) or isinstance(cost, bool):
         return None
     if not math.isfinite(float(cost)) or cost < 0:
@@ -208,6 +215,7 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
         "outcome": outcome,
         "effect": "indeterminate"
         if outcome in {"indeterminate", "running", "accepted"}
+        or (result is not None and result.get("effect") == "indeterminate")
         else ("committed" if affected else "no-effect"),
         "completed_chunks": completed,
         "affected_count": affected,

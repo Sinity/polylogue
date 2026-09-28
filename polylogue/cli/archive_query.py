@@ -1299,16 +1299,18 @@ def _emit_stats(
     from polylogue.cli.render.outcome import convergence_warning_line
 
     convergence_warning = convergence_warning_line()
+    # Totals over a partially materialized archive are an undercount, not
+    # a complete census: the warning is a named gap on the outcome.
+    outcome = decide_outcome(
+        matched=stats.total_sessions,
+        degraded=("archive_not_converged",) if convergence_warning is not None else (),
+    )
+    exit_code = outcome_exit_code(outcome)
     payload = {
         "mode": "stats",
         "origin": origin,
         "query": query or None,
-        # Totals over a partially materialized archive are an undercount, not
-        # a complete census: the warning is a named gap on the outcome.
-        "outcome": decide_outcome(
-            matched=stats.total_sessions,
-            degraded=("archive_not_converged",) if convergence_warning is not None else (),
-        ).to_dict(),
+        "outcome": outcome.to_dict(),
         **stats.to_dict(),
     }
     if convergence_warning is not None:
@@ -1316,15 +1318,19 @@ def _emit_stats(
         payload["convergence_warning"] = convergence_warning
     if output_format == "json":
         click.echo(json.dumps(project_payload(payload, fields), indent=2, sort_keys=True))
+        if exit_code:
+            raise SystemExit(exit_code)
         return
     if output_format == "yaml":
         import yaml
 
         click.echo(yaml.safe_dump(project_payload(payload, fields), sort_keys=False, allow_unicode=True), nl=False)
+        if exit_code:
+            raise SystemExit(exit_code)
         return
     if output_format not in {"markdown", "plaintext"}:
         raise click.UsageError(f"Stats do not support --format {output_format}.")
-    outcome_line = render_outcome_line(OutcomeEnvelope.model_validate(payload["outcome"]))
+    outcome_line = render_outcome_line(outcome)
     lines = [
         f"Sessions: {stats.total_sessions}",
         f"Messages: {stats.total_messages}",
@@ -1337,6 +1343,8 @@ def _emit_stats(
     if outcome_line is not None:
         lines.insert(0, outcome_line)
     click.echo("\n".join(lines))
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 def _emit_stats_by(

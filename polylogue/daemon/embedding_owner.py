@@ -673,18 +673,21 @@ async def execute_embedding_backfill_operation(
 def failed_backfill_terminal(operation: str, exc: BaseException) -> dict[str, object]:
     """Terminal receipt for a backfill that raised after durable acceptance.
 
-    It carries the same decodable shape as a completed run, so the persisted
-    receipt reads back as ``failed`` rather than degrading the attempt to
-    ``indeterminate`` and replaying that on every retry of the request id.
+    The run is settled as ``failed`` so a retry of the request id reads back a
+    decoded terminal instead of an undecodable attempt. What it changed before
+    raising is unknown -- a rebuild may already have marked sessions for
+    reindex, or convergence may have published some vectors -- so the effect
+    is ``indeterminate`` and every counter is ``None`` rather than a zero it
+    never measured.
     """
     return {
         "operation": operation,
         "outcome": "failed",
         "sequence": 1,
-        "effect": "no-effect",
-        "affected_count": 0,
+        "effect": "indeterminate",
+        "affected_count": None,
         "stop_reason": "refused",
-        "progress": {"state": "stopped", "computed": 0, "failed": 0, "estimated_cost_usd": 0.0},
-        "result": {"done": 0, "pending": 0, "failed": 0},
-        "error": str(exc)[:512],
+        "progress": {"state": "stopped", "computed": None, "failed": None, "estimated_cost_usd": None},
+        "result": {"done": None, "pending": None, "failed": None},
+        "error": {"type": type(exc).__name__, "message": str(exc)},
     }
