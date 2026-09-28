@@ -149,20 +149,6 @@ def _tool_call_texts(tool_record: JSONDocument) -> list[str]:
     return texts
 
 
-#: How many copies of one sidecar a join holds at its peak (bytes, decoded
-#: text up to four bytes per character, the bound SQLite value), with margin.
-_SIDECAR_MEMORY_COPIES = 8
-
-
-def _gemini_sidecar_limit_bytes() -> int:
-    from polylogue.pipeline.parsed_tree_size import effective_physical_memory_bytes
-
-    physical = effective_physical_memory_bytes()
-    if physical is None:
-        return value_bounds.MAX_STORABLE_VALUE_BYTES
-    return min(value_bounds.MAX_STORABLE_VALUE_BYTES, physical // _SIDECAR_MEMORY_COPIES)
-
-
 class GeminiToolOutputIndex:
     """Disk-backed owner, pointer, and replacement state for one checkpoint."""
 
@@ -258,11 +244,11 @@ class GeminiToolOutputIndex:
             full_text = ""
             if owner is None:
                 reason = "no_owning_tool_call"
-            elif entry.byte_size > _gemini_sidecar_limit_bytes():
-                # A sidecar is read whole and held as bytes, as decoded text
-                # and as a bound SQLite value at once, so the physical limit
-                # is the smaller of one SQLite cell and a share of this
-                # process's memory -- refused typed, never truncated.
+            elif entry.byte_size > value_bounds.MAX_STORABLE_VALUE_BYTES:
+                # The one physical limit: a value SQLite cannot store in a
+                # cell is refused typed, never truncated. Files are joined one
+                # at a time, and the replaced block carries the full text
+                # anyway, so no machine-dependent memory share applies.
                 reason = value_bounds.VALUE_BOUND_REFUSED
             else:
                 try:

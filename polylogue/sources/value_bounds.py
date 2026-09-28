@@ -55,6 +55,10 @@ MAX_STORABLE_VALUE_BYTES: Final = _sqlite_max_length()
 
 #: The stable token parse errors, logs and source conservation key on.
 VALUE_BOUND_REFUSED: Final = "value_bound_refused"
+#: The serialized head of every :class:`ValueBoundRefusedError` message.
+#: Classifiers match this head, never the bare token: a source path or other
+#: user-controlled text may contain ``value_bound_refused`` on its own.
+VALUE_BOUND_REFUSED_HEAD: Final = f"{VALUE_BOUND_REFUSED}: a decoded "
 
 
 class ValueBoundRefusedError(Exception):
@@ -67,7 +71,7 @@ class ValueBoundRefusedError(Exception):
 
     def __init__(self, kind: str, observed: int, bound: int) -> None:
         super().__init__(
-            f"{VALUE_BOUND_REFUSED}: a decoded {kind} of {observed} UTF-8 bytes exceeds SQLite's "
+            f"{VALUE_BOUND_REFUSED_HEAD}{kind} of {observed} UTF-8 bytes exceeds SQLite's "
             f"maximum value length of {bound} bytes"
         )
         self.kind = kind
@@ -91,6 +95,7 @@ def require_storable_string(value: str, *, kind: str = "string", bound: int | No
 __all__ = [
     "MAX_STORABLE_VALUE_BYTES",
     "VALUE_BOUND_REFUSED",
+    "VALUE_BOUND_REFUSED_HEAD",
     "ValueBoundRefusedError",
     "require_storable_string",
 ]

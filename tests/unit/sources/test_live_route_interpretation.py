@@ -701,3 +701,27 @@ def test_enrichment_frames_rebind_and_refuse_moved_evidence(tmp_path: Path, monk
             frames.current(digest)
     finally:
         frames.close()
+
+
+def test_parsed_sidecars_of_another_origin_are_released(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Enriching a Codex file releases the parsed Claude Code sidecars first.
+
+    Anti-vacuity (Codex P1, #5643): keep one entry per kind for every origin
+    and a worker holds both origins' indexes and histories at once.
+    """
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from polylogue.sources import retained_assembly
+
+    retained_assembly._parsed_retained_cache.clear()
+    monkeypatch.setattr(retained_assembly, "_read", lambda _store, _artifact: b"payload")
+    store = cast(Any, SimpleNamespace(root="/archive/blob"))
+    for kind, digest in (("claude_code.session_index", "a"), ("claude_code.history_paste_index", "b")):
+        retained_assembly._read_parsed(store, cast(Any, SimpleNamespace(blob_hash=digest, source_path=kind)), kind, len)
+    retained_assembly._read_parsed(
+        store, cast(Any, SimpleNamespace(blob_hash="c", source_path="codex")), "codex.session_index", len
+    )
+
+    assert set(retained_assembly._parsed_retained_cache) == {"codex.session_index"}
+    retained_assembly._parsed_retained_cache.clear()

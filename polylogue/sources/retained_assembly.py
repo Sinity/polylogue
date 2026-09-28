@@ -161,8 +161,10 @@ _Parsed = TypeVar("_Parsed")
 #: O(files x history bytes). A retained blob is content-addressed and
 #: immutable, so its parsed form is keyed by hash, parser and anchor path.
 #: One parsed artifact is kept per kind -- the one the last enrichment of
-#: that kind already had to hold -- so residency never exceeds what a
-#: single enrichment needs, whatever the parsed size.
+#: that kind already had to hold -- and only for one origin at a time
+#: (``claude_code.*`` or ``codex.*``): enriching another origin's file
+#: releases the previous origin's artifacts first, so residency never
+#: exceeds what a single enrichment needs, whatever the parsed size.
 _parsed_retained_cache: dict[str, tuple[tuple[str, str, str], object]] = {}
 _parsed_retained_lock = threading.Lock()
 
@@ -178,8 +180,11 @@ def _read_parsed(
         cached = _parsed_retained_cache.get(kind)
         if cached is not None and cached[0] == key:
             return cast("_Parsed", cached[1])
-        # Release the previous artifact of this kind before parsing the next.
-        _parsed_retained_cache.pop(kind, None)
+        # Release the previous artifact of this kind, and every artifact of
+        # another origin, before parsing the next.
+        origin = kind.split(".", 1)[0]
+        for held in [held for held in _parsed_retained_cache if held == kind or held.split(".", 1)[0] != origin]:
+            del _parsed_retained_cache[held]
     payload = _read(blob_store, artifact)
     if payload is None:
         return None

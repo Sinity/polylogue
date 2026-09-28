@@ -504,12 +504,12 @@ def test_a_same_length_replacement_after_enumeration_is_read_error_debt(tmp_path
     assert debt.reason == "read_error:SidecarChangedDuringReadError"
 
 
-def test_a_sidecar_beyond_the_memory_bound_is_typed_debt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A sidecar the join could not hold in memory is refused typed, not read.
+def test_a_storable_sidecar_is_joined_whatever_the_host_memory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A sidecar SQLite can store is joined on a small host as on a large one.
 
-    Anti-vacuity (Codex P1, #5643): bound sidecars only by the SQLite cell
-    ceiling and a sidecar far beyond this process's memory share is read
-    whole and joined.
+    Anti-vacuity (Codex P1, #5643): cap sidecars at a share of detected
+    memory and on an 8 KiB host this ordinary sidecar becomes
+    ``value_bound_refused`` debt, keeping the masked output.
     """
 
     filename = "run_shell_command_run_shell_command_1773524726450_0_keyt3f.txt"
@@ -520,6 +520,5 @@ def test_a_sidecar_beyond_the_memory_bound_is_typed_debt(tmp_path: Path, monkeyp
 
     result = join_gemini_tool_output_sidecars(json.loads(snapshot.read_text(encoding="utf-8")), _dir_scope(outputs))
 
-    assert not result.matched
-    [debt] = result.debt
-    assert debt.reason == "value_bound_refused"
+    assert result.matched
+    assert not result.debt

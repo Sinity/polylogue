@@ -645,6 +645,39 @@ def test_value_bound_token_is_matched_literally(tmp_path: Path) -> None:
     assert _count(check, "parse_failure") == 1
 
 
+def test_a_path_naming_the_refusal_token_is_an_ordinary_parse_failure(tmp_path: Path) -> None:
+    """Only the typed error's serialized head types a raw as ``value_bound_refused``.
+
+    Anti-vacuity (Codex P2, #5643): search the diagnostic for the bare token
+    and an unsupported input at ``/imports/value_bound_refused.json`` is
+    counted as a physical value-bound refusal.
+    """
+    _seed(tmp_path)
+    source = _write_source(tmp_path, "value_bound_refused.json", b"{}")
+    blob_hash = BlobStore(tmp_path / "blob").write_from_bytes(b"{}")[0]
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        _insert_raw(
+            source_conn,
+            raw_id="raw-named",
+            origin="chatgpt-export",
+            native_id="named",
+            source_path=source,
+            blob_hash=blob_hash,
+            parsed=True,
+        )
+        source_conn.execute(
+            "UPDATE raw_sessions SET parse_error = ? WHERE raw_id = 'raw-named'",
+            ("parse: unsupported input /imports/value_bound_refused.json",),
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+    check = _run(tmp_path)
+    assert _count(check, "value_bound_refused") == 0
+    assert _count(check, "parse_failure") == 1
+
+
 def test_check_json_carries_every_term_with_its_rule(tmp_path: Path) -> None:
     _seed(tmp_path)
     payload = _run(tmp_path).to_json()
