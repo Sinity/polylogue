@@ -185,6 +185,7 @@ def test_every_session_keyed_relation_in_the_live_schema_is_declared(tmp_path: P
     # The detection actually found the known carriers, so "ok" is not vacuous.
     assert {
         "raw_sessions",
+        "raw_existence_changes",
         "raw_hook_events",
         "source_items",
         "pending_accepted_marker_inputs",

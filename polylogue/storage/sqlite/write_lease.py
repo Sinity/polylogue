@@ -339,7 +339,11 @@ def grant_write_lease_thread() -> WriteLeaseThreadGrant:
     authority the caller does not have. The owner mints this *before* starting
     the worker thread; the worker calls :func:`bind_write_lease_thread` with it.
     """
-    lease = require_write_lease("granting a write lease thread binding")
+    active_lease = _ACTIVE.get()
+    lease = require_write_lease(
+        "granting a write lease thread binding",
+        archive_root=active_lease.archive_root if active_lease is not None else None,
+    )
     if lease is None:
         raise UnleasedWriteError(
             "cannot grant a write lease thread binding without holding the lease; "

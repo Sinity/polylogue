@@ -19,11 +19,13 @@ from polylogue.api import Polylogue
 from polylogue.archive.message.roles import Role
 from polylogue.archive.query.expression import parse_unit_source_expression
 from polylogue.core.enums import AssertionKind, BlockType, BranchType, Provider
+from polylogue.daemon.socket_path import daemon_socket_path
 from polylogue.operations.bindings import OperationBinding
 from polylogue.operations.mutation_transaction import OperationExecutor
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import judge_assertion_candidate
+from tests.infra.daemon_operations import running_daemon_operations
 from tests.infra.live_ingest import write_index_session
 from tests.infra.user_tier import connect_user_db
 
@@ -288,37 +290,42 @@ async def test_import_uses_concrete_delegation_schema_and_exact_retry_is_idempot
         prompt_ref=evidence_ref,
     )
 
-    async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
-        first = await import_annotation_batch(poly, request)
-        replayed = await import_annotation_batch(poly, request)
-        disagreement_rows: list[dict[str, object]] = []
-        for row in valid_rows:
-            value = dict(cast(dict[str, object], row["value"]))
-            value["directive_mode"] = "collaborative"
-            disagreement_rows.append({**row, "value": value})
-        second = await import_annotation_batch(
-            poly,
-            request.model_copy(
-                update={
-                    "batch_id": "delegation-disagreement",
-                    "jsonl": "\n".join(json.dumps(row) for row in disagreement_rows),
-                }
-            ),
-        )
-        missing_target = request.model_copy(update={"batch_id": "missing-target", "target_ref": "delegation:missing"})
-        with pytest.raises(ValueError, match="does not resolve"):
-            await import_annotation_batch(poly, missing_target)
+    with running_daemon_operations(archive_root, socket_path=daemon_socket_path(archive_root)):
+        async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
+            first = await import_annotation_batch(poly, request)
+            replayed = await import_annotation_batch(poly, request)
+            disagreement_rows: list[dict[str, object]] = []
+            for row in valid_rows:
+                value = dict(cast(dict[str, object], row["value"]))
+                value["directive_mode"] = "collaborative"
+                disagreement_rows.append({**row, "value": value})
+            second = await import_annotation_batch(
+                poly,
+                request.model_copy(
+                    update={
+                        "batch_id": "delegation-disagreement",
+                        "jsonl": "\n".join(json.dumps(row) for row in disagreement_rows),
+                    }
+                ),
+            )
+            missing_target = request.model_copy(
+                update={"batch_id": "missing-target", "target_ref": "delegation:missing"}
+            )
+            with pytest.raises(ValueError, match="does not resolve"):
+                await import_annotation_batch(poly, missing_target)
 
-        first_refs = [row.assertion_ref for row in first.rows if row.status == "imported"]
-        judgments = []
-        for candidate_ref, decision in zip(first_refs[:3], ("accept", "reject", "defer"), strict=True):
-            assert candidate_ref is not None
-            judgments.append(await poly.judge_assertion_candidate(candidate_ref=candidate_ref, decision=decision))
+            first_refs = [row.assertion_ref for row in first.rows if row.status == "imported"]
+            judgments = []
+            for candidate_ref, decision in zip(first_refs[:3], ("accept", "reject", "defer"), strict=True):
+                assert candidate_ref is not None
+                judgments.append(await poly.judge_assertion_candidate(candidate_ref=candidate_ref, decision=decision))
 
-        typed = await poly.query_units("assertions where kind:annotation AND status:active AND value.confidence:>=0.8")
-        assert judgments[0].resulting_assertion is not None
-        active_render = await poly.resolve_ref(f"assertion:{judgments[0].resulting_assertion.assertion_id}")
-        unresolved = await poly.list_assertion_candidate_reviews(kinds=(AssertionKind.ANNOTATION,))
+            typed = await poly.query_units(
+                "assertions where kind:annotation AND status:active AND value.confidence:>=0.8"
+            )
+            assert judgments[0].resulting_assertion is not None
+            active_render = await poly.resolve_ref(f"assertion:{judgments[0].resulting_assertion.assertion_id}")
+            unresolved = await poly.list_assertion_candidate_reviews(kinds=(AssertionKind.ANNOTATION,))
 
     assert replayed == first
     assert first.status == "partial"

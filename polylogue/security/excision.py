@@ -1249,6 +1249,13 @@ def _apply_single_session_excision(
                     counts["source_blob_refs"] += max(cursor.rowcount, 0)
                     cursor = conn.execute("DELETE FROM raw_sessions WHERE raw_id = ?", (raw_target.raw_id,))
                     counts["source_raw_rows"] += max(cursor.rowcount, 0)
+                    if _table_exists(conn, "raw_existence_changes"):
+                        cursor = conn.execute(
+                            "DELETE FROM raw_existence_changes WHERE raw_id = ?", (raw_target.raw_id,)
+                        )
+                        counts["source_raw_existence_changes"] = counts.get("source_raw_existence_changes", 0) + max(
+                            cursor.rowcount, 0
+                        )
                     for blob_hash in sibling_hashes:
                         record_excised_blob_hash(
                             conn,

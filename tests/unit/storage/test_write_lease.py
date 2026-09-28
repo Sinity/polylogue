@@ -741,6 +741,20 @@ def test_a_granted_thread_may_bind_and_write() -> None:
         assert threading.get_ident() in lease.authorized_threads()
 
 
+def test_archive_bound_lease_can_grant_a_thread_without_dropping_identity(tmp_path: Path) -> None:
+    """Thread handoff preserves the archive identity already held by the owner.
+
+    Anti-vacuity: omit ``archive_root`` in ``grant_write_lease_thread``'s
+    admission check and this archive-bound lease is refused before minting.
+    """
+    from polylogue.storage.sqlite.write_lease import grant_write_lease_thread
+
+    with arm_write_lease_enforcement(), write_lease("daemon.writer", archive_root=tmp_path) as lease:
+        grant = grant_write_lease_thread()
+
+    assert grant.lease is lease
+
+
 def test_a_reused_thread_ident_does_not_inherit_a_retired_workers_authority() -> None:
     """Authority belongs to the bound thread object, not its reusable ident.
 

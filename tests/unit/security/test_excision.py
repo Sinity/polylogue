@@ -230,6 +230,7 @@ class TestApplySessionExcision:
         assert receipt.counts["index_messages"] == 1
         assert receipt.counts["index_blocks"] == 1
         assert receipt.counts["source_raw_rows"] == 1
+        assert receipt.counts["source_raw_existence_changes"] == 1
         assert receipt.counts["source_blob_refs"] == 1
         assert receipt.counts["embeddings_vectors"] == 1
         assert len(receipt.removed_blob_hashes) == 1
@@ -254,6 +255,7 @@ class TestApplySessionExcision:
         try:
             assert source_conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
             assert source_conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone()[0] == 0
+            assert source_conn.execute("SELECT COUNT(*) FROM raw_existence_changes").fetchone()[0] == 0
         finally:
             source_conn.close()
 
