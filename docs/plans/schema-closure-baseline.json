@@ -170,6 +170,7 @@
     "polylogue/core/sqlite_scratch.py",
     "polylogue/core/stage_admission.py",
     "polylogue/core/stats.py",
+    "polylogue/core/storage_faults.py",
     "polylogue/core/temporal.py",
     "polylogue/core/text_identity.py",
     "polylogue/core/timestamp_authority.py",

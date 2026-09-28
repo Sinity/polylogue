@@ -127,6 +127,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from devtools.ast_cache import parse_path, walk_module
 from devtools.sql_statement_text import (
     HOLE,
     SQL_EXECUTION_METHODS,
@@ -407,7 +408,7 @@ def _substitution_sites(
     ``.K``, and ``stored.K or <derived>`` supplied as the new value of ``K``.
     """
     found: list[tuple[str, str, int]] = []
-    for node in ast.walk(tree):
+    for node in walk_module(tree):
         if isinstance(node, ast.If | ast.IfExp):
             guard = _attribute_names(node.test)
             body = node.body if isinstance(node, ast.If) else [node.body]
@@ -440,7 +441,7 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
 
     for path in sorted(package_root.rglob("*.py")):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = parse_path(path)
         except (SyntaxError, UnicodeDecodeError):
             continue
         relative = path.relative_to(repo_root).as_posix()
@@ -458,7 +459,7 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
         module_reads_archive = False
         module_writes = False
 
-        for node in ast.walk(tree):
+        for node in walk_module(tree):
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
                 continue
             if node.func.attr not in SQL_EXECUTION_METHODS or not node.args:

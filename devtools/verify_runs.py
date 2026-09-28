@@ -330,6 +330,8 @@ class VerifyRun:
         # Kept on every receipt so later classification does not depend on a
         # live interpreter or a reconstructed shell environment.
         self._payload["environment_fingerprint"] = environment_fingerprint(root=self.root)
+        # Static gates start and finish steps from several threads at once.
+        self._lock = threading.RLock()
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.write()
 
@@ -338,9 +340,10 @@ class VerifyRun:
         return VERIFY_RUNS_DIR / self.run_id
 
     def write(self) -> None:
-        _write_json(self.run_dir / "run.json", self._payload)
-        if self.mirror_current:
-            _write_json(self.root / CURRENT_RUN_PATH, self._payload)
+        with self._lock:
+            _write_json(self.run_dir / "run.json", self._payload)
+            if self.mirror_current:
+                _write_json(self.root / CURRENT_RUN_PATH, self._payload)
 
     def record_execution_environment_key(self, key: str) -> None:
         """Bind the run to the caller environment that shaped its execution."""
@@ -386,6 +389,10 @@ class VerifyRun:
         self.write()
 
     def start_step(self, *, label: str, cmd: list[str]) -> PytestStepArtifacts:
+        with self._lock:
+            return self._start_step(label=label, cmd=cmd)
+
+    def _start_step(self, *, label: str, cmd: list[str]) -> PytestStepArtifacts:
         step_id = f"{len(self._payload['steps']) + 1:02d}-{_slug(label)}"
         step_dir = self.run_dir / "steps" / step_id
         step_dir.mkdir(parents=True, exist_ok=True)
@@ -414,6 +421,10 @@ class VerifyRun:
         return artifacts
 
     def finish_step(self, *, step_id: str, result: Mapping[str, Any]) -> dict[str, Any] | None:
+        with self._lock:
+            return self._finish_step(step_id=step_id, result=result)
+
+    def _finish_step(self, *, step_id: str, result: Mapping[str, Any]) -> dict[str, Any] | None:
         for step in self._payload["steps"]:
             if step.get("step_id") != step_id:
                 continue

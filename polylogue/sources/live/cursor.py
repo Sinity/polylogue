@@ -1042,11 +1042,16 @@ class CursorStore:
         paths: list[Path],
         input_bytes: int,
         queued_file_count: int,
+        attempt_id: str | None = None,
     ) -> str:
-        """Record a durable in-flight live-ingest attempt."""
+        """Record a durable in-flight live-ingest attempt.
+
+        A caller may choose ``attempt_id`` so it knows the row's key before
+        the write lands (a cancelled caller can still name it).
+        """
         now = datetime.now(UTC).isoformat()
         now_ms = _required_epoch_ms(now)
-        attempt_id = str(uuid.uuid4())
+        attempt_id = attempt_id or str(uuid.uuid4())
         with self._connect_ops() as conn:
             record_archive_ingest_attempt(
                 conn,
@@ -2075,12 +2080,62 @@ class CursorStore:
         """Clear derived convergence debt after successful convergence."""
         self._clear_convergence_debt_from_ops(subject_type=subject_type, subject_id=subject_id, stage=stage)
 
+    def release_deferred_convergence_debt(self) -> int:
+        """Make every deferred debt row due now; failed rows keep their backoff.
+
+        A deferral is backpressure, not a failure. When the condition it waited
+        on ends (a cold build's promotion), the exponential backoff it accrued
+        while re-deferred only delays work that can now run.
+        """
+        released = 0
+
+        def write() -> None:
+            nonlocal released
+            with self._connect_ops() as conn:
+                cursor = conn.execute(
+                    "UPDATE convergence_debt SET next_retry_at = NULL "
+                    "WHERE status = 'deferred' AND next_retry_at IS NOT NULL"
+                )
+                released = int(cursor.rowcount or 0)
+                conn.commit()
+
+        if not best_effort_cursor_write("archive ops convergence debt release", write):
+            # The rows keep their backoff; say so rather than reporting a
+            # release of zero rows as success.
+            raise RuntimeError("deferred convergence debt was not released: ops.db stayed locked")
+        return released
+
+    def clear_stage_convergence_debt(self, *, stage: str, recorded_before_ms: int) -> int:
+        """Clear every subject's debt for one archive-wide stage.
+
+        A stage whose work is a function of the whole archive converges for
+        all of its subjects at once. Rows recorded at or after the instant the
+        converging run started may describe changes it did not see (the clock
+        has millisecond resolution), so they are kept.
+        """
+        cleared = 0
+
+        def write() -> None:
+            nonlocal cleared
+            with self._connect_ops() as conn:
+                cursor = conn.execute(
+                    "DELETE FROM convergence_debt WHERE stage = ? AND updated_at_ms < ?",
+                    (stage, recorded_before_ms),
+                )
+                cleared = int(cursor.rowcount or 0)
+                conn.commit()
+
+        if not best_effort_cursor_write("archive ops convergence debt stage clear", write):
+            raise RuntimeError(f"{stage} convergence debt was not cleared: ops.db stayed locked")
+        return cleared
+
     def list_convergence_debt(
         self,
         *,
         limit: int = 20,
         stage: str | None = None,
         retry_due_only: bool = False,
+        exclude_stages: Iterable[str] = (),
     ) -> list[LiveConvergenceDebt]:
         """Return recent derived convergence debt records.
 
@@ -2098,6 +2153,12 @@ class CursorStore:
         if retry_due_only:
             clauses.append("(next_retry_at IS NULL OR next_retry_at <= ?)")
             params.append(now)
+        excluded = tuple(sorted(set(exclude_stages)))
+        if excluded:
+            # Filtered in the query, not after it: rows owned elsewhere would
+            # otherwise fill the page and starve the caller's own stages.
+            clauses.append(f"stage NOT IN ({','.join('?' for _ in excluded)})")
+            params.extend(excluded)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         # Placeholder order follows the statement text: the WHERE clauses, then
         # the ORDER BY's retry-due discriminator, then LIMIT.

@@ -32,6 +32,8 @@ from collections import Counter
 from pathlib import Path
 from typing import TypeAlias
 
+from devtools.ast_cache import parse_source, walk_module
+
 __all__ = [
     "DegradationAnchor",
     "anchor_text",
@@ -105,12 +107,11 @@ def census_sqlite_degradation_anchors(repo_root: Path, roots: tuple[str, ...]) -
             continue
         for py_file in sorted(root_path.rglob("*.py")):
             try:
-                source = py_file.read_text(encoding="utf-8")
-                tree = ast.parse(source)
+                source, tree = parse_source(py_file)
             except (OSError, SyntaxError, UnicodeDecodeError):
                 continue
             file_rel = py_file.relative_to(repo_root).as_posix()
-            for node in ast.walk(tree):
+            for node in walk_module(tree):
                 if isinstance(node, ast.ExceptHandler) and _handles_sqlite(node) and _returns_value(node):
                     anchors[(file_rel, normalized_handler_digest(source, node))] += 1
     return anchors

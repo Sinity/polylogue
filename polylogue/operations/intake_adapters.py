@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
 
 from polylogue.core.durable_fs import DurableFilesystemError
+from polylogue.core.storage_faults import ArchiveStorageFaultError
 from polylogue.daemon.intake import (
     DEFAULT_INTAKE_BYTE_BUDGET,
     UNMEASURABLE_INTAKE_COST_BYTES,
@@ -32,11 +33,12 @@ from polylogue.daemon.intake import (
     IntakeItem,
     IntakePass,
 )
-from polylogue.logging import WARNING, emit
+from polylogue.logging import ERROR, WARNING, emit
 from polylogue.maintenance.candidate_capacity import ArchiveCapacityError, InsufficientCapacityError
 from polylogue.maintenance.receipt_fs import MaintenanceReceiptPathError
 from polylogue.sources.live.cold_build import (
     ColdBuildGeneration,
+    active_cold_build_generation,
     active_index_generation_is_empty,
     clear_cold_build_generation,
     is_transient_cold_storage_errno,
@@ -70,6 +72,7 @@ __all__ = [
     "active_index_generation_is_empty",
     "build_intake_adapters",
     "clear_cold_build_generation",
+    "active_cold_build_generation",
     "discover_pending_raw_ids",
     "register_cold_build_generation",
 ]
@@ -791,6 +794,25 @@ class FileIntakeAdapter(IntakeAdapter):
                 skipped_file_count=len(skipped),
                 whole_archive_convergence=False,
             )
+        except ArchiveStorageFaultError as exc:
+            # Archive storage refused the page's writes (full disk, I/O error,
+            # corrupt page, read-only mount). No item is at fault and none was
+            # marked failed or quarantined; every one stays retryable. This is
+            # an operator condition, so it is reported at ERROR with the fault
+            # kind as its reason rather than as ordinary admission churn.
+            emit(
+                "daemon.intake.page_refused",
+                level=ERROR,
+                outcome="error",
+                reason=exc.reason,
+                component=self.class_name,
+                files=len(batch),
+                error_type=type(exc.__cause__ or exc).__name__,
+                error_detail=str(exc),
+            )
+            for item in batch:
+                outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.RETRYABLE, reason=str(exc))
+            return outcomes
         except (OSError, ValueError, RuntimeError) as exc:
             # A cursor-authority refusal lands here too: it is retryable for
             # every item in the page, and nothing in the archive changed. Say

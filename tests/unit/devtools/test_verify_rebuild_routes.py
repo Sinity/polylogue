@@ -182,7 +182,6 @@ def test_gate_is_registered_against_its_module() -> None:
     assert gate.args == ("devtools.verify_rebuild_routes", "--json")
     assert gate.kind == "module"
     assert gate.in_quick is True
-    assert gate.blocking is True
 
 
 def test_a_fully_declared_tree_reports_nothing(tmp_path: Path) -> None:

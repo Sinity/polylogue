@@ -93,7 +93,7 @@ SCHEMA_SUBJECTS: Final[tuple[SchemaSubjectSpec, ...]] = (
             "$id polylogue://schemas/claude-ai/... and Claude.ai's document shape (chat_messages, "
             "uuid, account, project) -- so it was removed rather than relabelled (polylogue-n61h5). "
             "Regenerate from real Grok artifacts to restore a package; "
-            "`devtools gate schema-provider-identity` refuses another subject's elements landing here."
+            "`tests/unit/schemas/test_provider_identity_audit.py` refuses another subject's elements landing here."
         ),
     ),
     SchemaSubjectSpec(

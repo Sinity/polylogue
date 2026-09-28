@@ -5,8 +5,9 @@ but that declaration was invisible to the shared kernel: nothing resolved a
 marker's lowering owner, its production handlers, or its authoring examples
 until a rebuild hit them.  This module projects every registered
 :class:`~polylogue.markers.models.MarkerKindSpec` into a
-:class:`~polylogue.declarations.DeclarationSpec` so ``devtools gate
-declaration-bindings`` resolves the family against the live checkout.
+:class:`~polylogue.declarations.DeclarationSpec` so
+``tests/unit/devtools/test_declaration_binding_registries.py`` resolves the
+family against the live checkout.
 
 The projection deliberately lives *beside* the registry rather than inside it.
 ``polylogue/markers/registry.py`` and ``polylogue/markers/models.py`` are both

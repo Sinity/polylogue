@@ -8,9 +8,8 @@ catch is a *new* surface, or a future edit to an existing one, quietly calling
 a call would still return the right ids for a first page -- so the differential
 would stay green while that surface silently lost snapshot binding.
 
-This module is that guard. It is an AST census over the production surface
-packages, in the same shape as the controlled-read boundary guard
-(``tests/unit/archive/query/test_read_surface_control.py``).
+This module is that guard: an AST census over the production surface
+packages.
 
 Anti-vacuity: re-split the route -- point the CLI, MCP or HTTP transcript
 window back at ``get_messages_paginated`` -- and

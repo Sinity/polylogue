@@ -107,6 +107,31 @@ def installed_runtime_services(archive_root: Path) -> Iterator[None]:
         server_support._set_runtime_services(original)
 
 
+@contextmanager
+def daemon_served_runtime_services(archive_root: Path) -> Iterator[None]:
+    """:func:`installed_runtime_services` with the archive's resident writer running.
+
+    Public archive writes are daemon-owned (#5550): the facade submits a
+    declared operation to ``polylogued run`` and refuses with
+    ``FacadeDaemonRequiredError`` when none answers. A test that writes
+    through an MCP tool enters this once per test, around an already seeded
+    archive, so the write reaches the production operation stack on the
+    archive's own socket. Start one per archive at a time; a second stack on
+    the same root does not come up until the first has fully stopped.
+    """
+    from unittest.mock import patch
+
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from tests.infra.daemon_operations import running_daemon_operations
+
+    with (
+        patch("polylogue.daemon.api_auth.resolve_api_auth_token", return_value=None),
+        running_daemon_operations(archive_root, socket_path=daemon_socket_path(archive_root)),
+        installed_runtime_services(archive_root),
+    ):
+        yield
+
+
 def build_tools(
     capabilities: MCPCapabilities = MCPCapabilities(),
 ) -> dict[str, Callable[..., str | Awaitable[str]]]:

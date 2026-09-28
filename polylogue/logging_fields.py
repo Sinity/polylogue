@@ -102,6 +102,9 @@ def _fields() -> dict[str, FieldKind]:
         "pass_id",
         "operation_id",
         "request_id",
+        # the ``ingest_attempts`` row key; joins an ingest page's events to its
+        # ops-tier attempt row and ``daemon_stage_events``.
+        "attempt_id",
     )
 
     # -- subject identity ------------------------------------------------

@@ -89,7 +89,10 @@ def driven(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], dict[str, Any]]:
 def test_a_red_static_gate_does_not_skip_pytest(driven: tuple[list[str], dict[str, Any]]) -> None:
     executed, payload = driven
     assert verify_module._main(["--all"]) == 1
-    assert executed == ["gate js-tests", "gate layering", "pytest (all)"]
+    # Static gates run side by side, so only membership is ordered: every
+    # gate ran, and pytest ran after all of them.
+    assert sorted(executed[:2]) == ["gate js-tests", "gate layering"]
+    assert executed[2] == "pytest (all)"
     # Every gate's outcome reaches the receipt, not only the first red one.
     receipt = payload["workload_receipt"]
     assert receipt is not None
@@ -112,13 +115,14 @@ def test_pytest_state_is_distinguishable_from_unmeasured(driven: tuple[list[str]
 def test_quick_records_every_static_gate_after_a_failure(driven: tuple[list[str], dict[str, Any]]) -> None:
     executed, payload = driven
     assert verify_module._main(["--quick"]) == 1
-    assert executed == ["gate js-tests", "gate layering"]
+    assert sorted(executed) == ["gate js-tests", "gate layering"]
     assert payload["exit_code"] == 1
+    # The diagnosis is the first failure in declared order, not finish order.
     assert payload["diagnosis"] == "js_failed"
     assert payload["pytest_aggregate"]["selection_mode"] == "quick"
     assert payload["pytest_aggregate"]["selected_union_count"] == 0
     assert payload["workload_receipt"]["status"] == "failed"
-    assert [phase["name"] for phase in payload["workload_receipt"]["phases"]] == executed
+    assert [phase["name"] for phase in payload["workload_receipt"]["phases"]] == ["gate js-tests", "gate layering"]
 
 
 def test_quick_receipt_keeps_all_blocking_gate_failures(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -145,9 +149,10 @@ def test_quick_receipt_keeps_all_blocking_gate_failures(monkeypatch: pytest.Monk
     receipt = json.loads((tmp_path / history["artifact_dir"] / "run.json").read_text())
     assert receipt["exit_code"] == 4
     assert receipt["diagnosis"] == "gate_first_failed"
-    assert [(step["name"], step["exit"]) for step in receipt["steps"]] == [
+    # Gates start side by side, so the receipt holds each once, in start order.
+    assert sorted((step["name"], step["exit"]) for step in receipt["steps"]) == [
         ("gate first", 4),
-        ("gate second", 2),
         ("gate last", 0),
+        ("gate second", 2),
     ]
     assert receipt["pytest_aggregate"]["selected_union_count"] == 0

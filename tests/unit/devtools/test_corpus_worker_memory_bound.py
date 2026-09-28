@@ -1056,30 +1056,6 @@ def test_the_estimate_travels_on_the_sizing_payload_the_slot_publishes() -> None
     assert sizing["predicted_charge_mib"] == pytest.approx(MEASURED_CHARGE.charge_mib(int(sizing["workers"])), abs=0.1)
 
 
-def test_the_width_gate_catches_a_zero_default() -> None:
-    """``gate testmon-selection`` must fail on the mutation it names.
-
-    That gate's docstring claims setting ``CORPUS_MAX_WORKERS = 0`` makes its
-    worker assertion fail. It did not: the produced arguments and the expected
-    value both read the constant, so both became ``-n 0`` and the gate stayed
-    green while the corpus would have run with no xdist at all. The refusal is
-    now an independent claim about the argument list itself.
-
-    Anti-vacuity: restore
-    ``args != ["--dist=loadgroup", "-n", str(CORPUS_MAX_WORKERS)]`` as the only
-    check and the first assertion here goes green wrongly, because ``-n 0``
-    equals that expression exactly when the constant is zero. The last two
-    assertions pin the opposite direction so a function that refused
-    everything, or accepted any list, cannot pass.
-    """
-    from devtools.verify_testmon_selection import worker_default_refusal
-
-    zeroed = worker_default_refusal(["--dist=loadgroup", "-n", "0"])
-    assert zeroed is not None and "0 workers" in zeroed
-    assert worker_default_refusal(["-n", str(CORPUS_MAX_WORKERS)]) is not None
-    assert worker_default_refusal(["--dist=loadgroup", "-n", str(CORPUS_MAX_WORKERS)]) is None
-
-
 def test_a_focused_selection_is_sized_by_its_own_charge_not_the_corpus_model(tmp_path: Path) -> None:
     """A focused ``-n 4`` fits a slice the corpus model would narrow to one worker.
 

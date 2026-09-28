@@ -43,7 +43,12 @@ from polylogue.archive.query.transaction import QueryTransaction
 from polylogue.mcp.declarations.models import MCPCapabilities
 from polylogue.mcp.payloads import MCPArchiveStatsPayload
 from polylogue.mcp.server_support import MCP_RESPONSE_BUDGET_BYTES
-from tests.infra.mcp import MCPServerUnderTest, installed_runtime_services, invoke_surface_async
+from tests.infra.mcp import (
+    MCPServerUnderTest,
+    daemon_served_runtime_services,
+    installed_runtime_services,
+    invoke_surface_async,
+)
 
 
 def _seed_archive(
@@ -373,8 +378,13 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
     markers = tuple(f"needle-mcp-load-{index:03d}" for index in range(request_count))
     server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
 
-    with installed_runtime_services(archive_root):
+    # Context deliveries are daemon-owned writes (#5550); seed them through a
+    # resident operation stack, then measure the read surface without one so
+    # its descriptors and files are the read path's alone.
+    with daemon_served_runtime_services(archive_root):
         snapshot_refs = asyncio.run(_seed_context_deliveries(server, markers))
+
+    with installed_runtime_services(archive_root):
         before_fds = _require_fd_probe(archive_root)
 
         reset_default_admission_controller_for_tests()

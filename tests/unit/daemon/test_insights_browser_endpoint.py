@@ -377,15 +377,18 @@ class TestUnavailableInsightSurface:
         handler = _make_handler("GET", f"/api/insights/sessions/{session_id}?include=profile,threads")
         _, send_json = _capture_responses(handler)
         if fail:
-            from polylogue.api import Polylogue
+            # The route reads insights from one pinned archive snapshot
+            # (``operations/http_read_models.read_session_insights``), so the
+            # thread surface fails at the store it actually reads.
+            from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
             monkeypatch = _pytest.MonkeyPatch()
 
-            async def _unavailable(*_args: object, **_kwargs: object) -> object:
+            def _unavailable(*_args: object, **_kwargs: object) -> object:
                 raise ArchiveInsightUnavailableError("thread insight surface is unavailable")
 
             try:
-                monkeypatch.setattr(Polylogue, "list_thread_insights", _unavailable, raising=True)
+                monkeypatch.setattr(ArchiveStore, "list_thread_insights", _unavailable, raising=True)
                 handler.do_GET()
             finally:
                 monkeypatch.undo()

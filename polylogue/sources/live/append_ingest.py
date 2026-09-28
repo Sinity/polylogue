@@ -20,7 +20,13 @@ from polylogue.archive.revision_authority import (
 from polylogue.core.degraded import degraded_reason
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
-from polylogue.logging import get_logger
+from polylogue.core.storage_faults import (
+    ARCHIVE_SIDE_FAULTS,
+    StorageFaultKind,
+    raise_if_storage_fault,
+    storage_fault_kind,
+)
+from polylogue.logging import ERROR, emit, get_logger
 from polylogue.sources.artifact_observations import record_session_artifact_observation
 from polylogue.sources.live.archive_open import _open_archive_for_live_write, _source_tier_acquisition_required
 from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
@@ -174,6 +180,23 @@ def reset_transient_raw_parse_state(
             detection_warnings=None,
         ),
     )
+
+
+def _append_fault_kinds(exc: BaseException) -> frozenset[StorageFaultKind] | None:
+    """The storage faults an append may escape with.
+
+    SQLite reports archive-side results, so every storage kind applies. A bare
+    ``OSError`` can come from the source file itself (``stat`` or a read
+    reporting ``EIO``), which is this file's own failure; only capacity and
+    read-only faults are archive-side by construction.
+    """
+    return ARCHIVE_SIDE_FAULTS if isinstance(exc, OSError) else None
+
+
+def _append_storage_fault(exc: BaseException) -> bool:
+    kind = storage_fault_kind(exc)
+    kinds = _append_fault_kinds(exc)
+    return kind is not None and (kinds is None or kind in kinds)
 
 
 def ingest_append_plans(owner: _AppendIngestOwner, plans: list[_AppendPlan]) -> _AppendResult:
@@ -464,6 +487,27 @@ def _ingest_append_plans_archive(
                         if provider is not None and raw_id is not None:
                             reset_transient_raw_parse_state(archive, raw_id, provider=provider)
                         raise
+                    if _append_storage_fault(exc):
+                        # A full disk, I/O error or corrupt page is not this
+                        # append's defect. The index write may already have
+                        # recorded a failure state on the raw; leave it
+                        # pending, as for contention. If the same storage
+                        # refuses that too, the original fault is still the
+                        # one reported.
+                        if provider is not None and raw_id is not None:
+                            try:
+                                reset_transient_raw_parse_state(archive, raw_id, provider=provider)
+                            except Exception as reset_exc:
+                                emit(
+                                    "live.ingest.raw_state_reset_failed",
+                                    level=ERROR,
+                                    outcome="error",
+                                    reason="storage_fault",
+                                    raw_id=raw_id,
+                                    error_type=type(reset_exc).__name__,
+                                    error_detail=str(reset_exc),
+                                )
+                        raise_if_storage_fault(exc, kinds=_append_fault_kinds(exc))
                     if provider is not None and raw_id is not None:
                         archive.mark_raw_parse_failed(
                             raw_id,
@@ -475,6 +519,7 @@ def _ingest_append_plans_archive(
     except Exception as exc:
         if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
             raise
+        raise_if_storage_fault(exc, kinds=_append_fault_kinds(exc))
         logger.warning("live.watcher: archive append ingest failed: %s", exc)
         return _AppendResult(succeeded=[], failed=plans, worker_count=0, stage_timings_s=timings)
     return _AppendResult(

@@ -3860,7 +3860,7 @@ def _get_json_ex(base_url: str, path: str) -> tuple[int, dict[str, object]]:
 class TestDeclaredRouteExamples:
     """Every declared daemon-route example must be accepted by its live handler.
 
-    ``devtools gate declaration-bindings`` enforces that each ``RouteSpec``
+    ``tests/unit/devtools/test_declaration_binding_registries.py`` enforces that each ``RouteSpec``
     declares an example, but a gate only reads the declaration -- it cannot
     tell a real request shape from an invented one. This class closes that
     gap: it replays every declared ``ExampleSpec`` against the production

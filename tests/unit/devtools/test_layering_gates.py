@@ -163,12 +163,51 @@ def test_layering_ratchet_reports_stale_baseline_entry(
         ],
     )
     monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
+    baseline_path = tmp_path / "docs/plans/ratchet-baseline.json"
+    committed = baseline_path.read_bytes()
+
+    # The plain gate is read-only: the stale exemption is a blocking finding
+    # that names the prune command, and the baseline file is untouched.
     exit_code = verify_layering.main([])
     out = capsys.readouterr().out
-    assert exit_code == 0
-    assert "pruned 1 stale layering baseline entr" in out
-    baseline = json.loads((tmp_path / "docs/plans/ratchet-baseline.json").read_text(encoding="utf-8"))
+    assert exit_code == 1
+    assert "layering_baseline_stale" in out
+    assert "devtools gate layering --prune-baselines" in out
+    assert baseline_path.read_bytes() == committed
+
+    # The explicit prune removes it, after which the gate is clean.
+    assert verify_layering.main(["--prune-baselines"]) == 0
+    assert "pruned 1 stale layering baseline entr" in capsys.readouterr().out
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
     assert baseline == [{"target": "polylogue/cli", "file": "polylogue/cli/commands.py", "import": "polylogue.storage"}]
+    assert verify_layering.main([]) == 0
+
+
+def test_layering_gate_never_writes_the_checkout_without_prune_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A gate run must leave every baseline byte-identical (polylogue-hzyyv).
+
+    Verify voids a run whose Git-visible content changed while it ran, so a gate
+    that rewrote its own baseline voided every CI run on a branch that carried a
+    stale entry.
+
+    Anti-vacuity: prune unconditionally again (drop the ``args.prune_baselines``
+    guard) and both baseline files change here.
+    """
+    _write_ratchet_fixture(
+        tmp_path,
+        baseline_entries=[
+            {"target": "polylogue/cli", "file": "polylogue/cli/gone.py", "import": "polylogue.storage.gone"},
+        ],
+    )
+    monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
+    ratchet = tmp_path / "docs/plans/ratchet-baseline.json"
+    before = ratchet.read_bytes()
+    assert verify_layering.main(["--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert "layering_baseline_stale" in {violation["rule"] for violation in payload["violations"]}
+    assert ratchet.read_bytes() == before
 
 
 def test_fixed_layering_violation_is_not_exempt_when_reintroduced(
@@ -184,7 +223,7 @@ def test_fixed_layering_violation_is_not_exempt_when_reintroduced(
     commands = tmp_path / "polylogue/cli/commands.py"
     commands.write_text("# fixed\n", encoding="utf-8")
 
-    assert verify_layering.main([]) == 0
+    assert verify_layering.main(["--prune-baselines"]) == 0
     capsys.readouterr()
     assert json.loads((tmp_path / "docs/plans/ratchet-baseline.json").read_text(encoding="utf-8")) == []
 
@@ -262,7 +301,7 @@ def test_layering_plaintext_names_a_baseline_anchor_that_no_longer_reproduces(
     )
     monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
 
-    exit_code = verify_layering.main([])
+    exit_code = verify_layering.main(["--prune-baselines"])
 
     out = capsys.readouterr().out
     assert exit_code == 1, "the fixture's unanchored live handler is a blocking finding"
@@ -292,19 +331,19 @@ def test_layering_plaintext_and_json_report_the_same_shrunk_anchors(
 
     json_code = verify_layering.main(["--json"])
     payload = json.loads(capsys.readouterr().out)
-    assert json_code == 0
+    assert json_code == 1, "a stale anchor blocks until the shrink is committed"
 
     shrunk = payload["sqlite_degradation_shrunk"]
     assert [entry["digest"] for entry in shrunk] == ["1" * 40]
     for entry in shrunk:
         assert str(entry["removed"]) == "2"
 
-    # The JSON run pruned the stale anchor, so the following human run sees
-    # the same clean gate without repeating a stale-baseline advisory.
+    # The read-only runs agree, and the plaintext names the same anchor.
     plaintext_code = verify_layering.main([])
     plaintext = capsys.readouterr().out
     assert plaintext_code == json_code
-    assert "no longer reproduce" not in plaintext
+    assert "sqlite_degradation_baseline_stale" in plaintext
+    assert "1" * 40 in plaintext
 
 
 def test_fixed_sqlite_degradation_anchor_is_not_exempt_when_reintroduced(
@@ -320,7 +359,7 @@ def test_fixed_sqlite_degradation_anchor_is_not_exempt_when_reintroduced(
     handler = tmp_path / "polylogue/storage/degraded.py"
     handler.write_text("def read(connection):\n    raise RuntimeError('closed')\n", encoding="utf-8")
 
-    assert verify_layering.main([]) == 0
+    assert verify_layering.main(["--prune-baselines"]) == 0
     capsys.readouterr()
     baseline = json.loads((tmp_path / "docs/plans/sqlite-degradation-baseline.json").read_text(encoding="utf-8"))
     assert baseline["anchors"] == []

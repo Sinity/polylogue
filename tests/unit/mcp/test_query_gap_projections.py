@@ -18,7 +18,12 @@ import pytest
 
 from polylogue.mcp.declarations.models import MCPCapabilities
 from tests.infra.live_ingest import write_index_session
-from tests.infra.mcp import build_tools, installed_runtime_services, invoke_surface_async
+from tests.infra.mcp import (
+    build_tools,
+    daemon_served_runtime_services,
+    installed_runtime_services,
+    invoke_surface_async,
+)
 
 
 def _seed_archive(archive_root: Path) -> str:
@@ -238,7 +243,7 @@ class TestPersonalStateProjections:
         tools = build_tools(MCPCapabilities(write=True))
         query_fn, write_fn = tools["query"], tools["write"]
 
-        with installed_runtime_services(archive_root):
+        with daemon_served_runtime_services(archive_root):
             added = json.loads(
                 await invoke_surface_async(
                     write_fn, operation="add_mark", session_id=session_id, fields={"mark_type": "star"}
@@ -258,7 +263,7 @@ class TestPersonalStateProjections:
         tools = build_tools(MCPCapabilities(write=True))
         query_fn, write_fn = tools["query"], tools["write"]
 
-        with installed_runtime_services(archive_root):
+        with daemon_served_runtime_services(archive_root):
             saved = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -280,7 +285,7 @@ class TestPersonalStateProjections:
         tools = build_tools(MCPCapabilities(write=True))
         query_fn, write_fn = tools["query"], tools["write"]
 
-        with installed_runtime_services(archive_root):
+        with daemon_served_runtime_services(archive_root):
             saved = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -302,7 +307,7 @@ class TestPersonalStateProjections:
         tools = build_tools(MCPCapabilities(write=True))
         query_fn, write_fn = tools["query"], tools["write"]
 
-        with installed_runtime_services(archive_root):
+        with daemon_served_runtime_services(archive_root):
             saved = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -327,7 +332,7 @@ class TestPersonalStateProjections:
         tools = build_tools(MCPCapabilities(write=True))
         query_fn, write_fn = tools["query"], tools["write"]
 
-        with installed_runtime_services(archive_root):
+        with daemon_served_runtime_services(archive_root):
             saved = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -348,7 +353,7 @@ class TestPersonalStateProjections:
         tools = build_tools(MCPCapabilities(write=True))
         query_fn, write_fn = tools["query"], tools["write"]
 
-        with installed_runtime_services(archive_root):
+        with daemon_served_runtime_services(archive_root):
             recorded = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -370,7 +375,7 @@ class TestPersonalStateProjections:
         tools = build_tools(MCPCapabilities(write=True))
         query_fn, write_fn = tools["query"], tools["write"]
 
-        with installed_runtime_services(archive_root):
+        with daemon_served_runtime_services(archive_root):
             # author_kind="user" is required for the note to land as an
             # active (visible) blackboard note: the promotion gate coerces
             # any other author_kind (the "agent" default) to a candidate

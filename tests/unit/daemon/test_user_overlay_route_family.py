@@ -120,7 +120,13 @@ def test_get_absent_overlay_maps_typed_absence_to_404(monkeypatch: pytest.Monkey
 def test_delete_mark_retains_query_filters() -> None:
     handler = _Handler()
     user_overlay.handle_delete(handler, ["api", "user", "marks"], {"session_id": ["s"], "mark_type": ["star"]})
-    assert handler.calls == [("user.mark.remove", {"session_id": "s", "mark_type": "star"})]
+    # The request model normalizes the payload with its declared defaults.
+    assert handler.calls == [
+        (
+            "user.mark.remove",
+            {"session_id": "s", "mark_type": "star", "target_type": "session", "target_id": None, "message_id": None},
+        )
+    ]
 
 
 def test_canonical_overlay_reads_use_durable_rows(workspace_env: dict[str, Path]) -> None:

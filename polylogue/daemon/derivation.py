@@ -242,6 +242,10 @@ class Budget:
     publication: int | None = None
     retained_outcomes: int | None = None
     deadline_s: float | None = None
+    #: An absolute ``time.monotonic`` instant the pass must stop by, for a
+    #: caller whose wall budget started before the pass could (owner lock,
+    #: compute queue). Checked alongside the relative ``deadline_s``.
+    deadline_at: float | None = None
 
     def __post_init__(self) -> None:
         if self.page < 1:
@@ -614,8 +618,11 @@ class _Pass:
     # ── bounds ─────────────────────────────────────────────────────
 
     def out_of_time(self) -> bool:
+        now = time.monotonic()
         deadline = self.budget.deadline_s
-        return deadline is not None and time.monotonic() - self.started >= deadline
+        if deadline is not None and now - self.started >= deadline:
+            return True
+        return self.budget.deadline_at is not None and now >= self.budget.deadline_at
 
     def work_exhausted(self, *, inspected: bool = False) -> bool:
         """True when no further key in this pass can be computed or published."""
