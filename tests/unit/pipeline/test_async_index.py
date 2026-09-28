@@ -21,29 +21,33 @@ pytestmark = pytest.mark.uses_real_clock(
 
 
 class TestAsyncEnsureIndex:
-    """Tests for ensure_index."""
+    """The FTS ensure route creates the index once and is idempotent."""
 
     @pytest.mark.asyncio
     async def test_creates_fts_table(self) -> None:
-        from polylogue.pipeline.services.indexing import ensure_index, index_status
+        from polylogue.pipeline.services.indexing import index_status
+        from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_async
 
         with tempfile.TemporaryDirectory() as tmpdir:
             backend = SQLiteBackend(db_path=Path(tmpdir) / "index.db")
             await backend.queries.list_sessions(SessionRecordQuery())
-            await ensure_index(backend)
+            async with backend.connection() as conn:
+                await ensure_fts_index_async(conn)
             status = await index_status(backend)
             assert status["exists"] is True
             await backend.close()
 
     @pytest.mark.asyncio
     async def test_idempotent(self) -> None:
-        from polylogue.pipeline.services.indexing import ensure_index
+        from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_async
 
         with tempfile.TemporaryDirectory() as tmpdir:
             backend = SQLiteBackend(db_path=Path(tmpdir) / "index.db")
             await backend.queries.list_sessions(SessionRecordQuery())
-            await ensure_index(backend)
-            await ensure_index(backend)
+            async with backend.connection() as conn:
+                await ensure_fts_index_async(conn)
+            async with backend.connection() as conn:
+                await ensure_fts_index_async(conn)
             await backend.close()
 
 

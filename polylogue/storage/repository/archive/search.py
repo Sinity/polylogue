@@ -147,15 +147,6 @@ class RepositoryArchiveSearchMixin:
         hits, records = await self._search_records(query, limit=limit, origins=origins)
         return await self._hydrate_sessions(records, ordered_ids=hits.session_ids())
 
-    async def search_actions(
-        self,
-        query: str,
-        limit: int = 20,
-        origins: builtins.list[str] | None = None,
-    ) -> builtins.list[Session]:
-        hits, records = await self._search_action_records(query, limit=limit, origins=origins)
-        return await self._hydrate_sessions(records, ordered_ids=hits.session_ids())
-
     async def _search_records(
         self,
         query: str,
@@ -164,19 +155,6 @@ class RepositoryArchiveSearchMixin:
         origins: builtins.list[str] | None,
     ) -> tuple[SessionSearchResult, builtins.list[SessionRecord]]:
         hits = await self.queries.search_session_hits(query, limit=limit, origins=origins)
-        if not hits.hits:
-            return hits, []
-        records = await self.queries.get_sessions_batch(hits.session_ids())
-        return hits, records
-
-    async def _search_action_records(
-        self,
-        query: str,
-        *,
-        limit: int,
-        origins: builtins.list[str] | None,
-    ) -> tuple[SessionSearchResult, builtins.list[SessionRecord]]:
-        hits = await self.queries.search_action_session_hits(query, limit=limit, origins=origins)
         if not hits.hits:
             return hits, []
         records = await self.queries.get_sessions_batch(hits.session_ids())

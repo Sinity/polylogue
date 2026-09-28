@@ -10,7 +10,6 @@ from typing_extensions import TypedDict
 
 from polylogue.logging import get_logger
 from polylogue.storage.fts.fts_lifecycle import (
-    ensure_fts_index_async,
     fts_index_status_async,
     rebuild_fts_index_async,
     repair_fts_index_async,
@@ -45,12 +44,6 @@ def _status_int(value: object) -> int:
         except ValueError:
             return 0
     return 0
-
-
-async def ensure_index(backend: SQLiteBackend) -> None:
-    """Ensure the FTS5 table exists on the archive backend."""
-    async with backend.connection() as conn:
-        await ensure_fts_index_async(conn)
 
 
 async def rebuild_index(

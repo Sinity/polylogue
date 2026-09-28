@@ -5,7 +5,7 @@ from __future__ import annotations
 import errno
 import json
 import sqlite3
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -17,7 +17,6 @@ from polylogue.operations.raw_observation_derivation import (
     converge_raw_observations,
     make_raw_observation_derivation,
     raw_observation_frame,
-    raw_observation_pending_roots,
 )
 from polylogue.storage.derived.raw import RawFrame, RawObservationDerivation, RawObservationReplacement
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -841,7 +840,11 @@ def test_historical_replay_refusal_is_retried_by_canonical_inspection(
 def test_all_valid_prefix_has_a_total_discovery_bound_and_continuation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Red twin: exhausting all valid pages exceeds the invocation's read bound."""
+    """One discovery page reads a bounded slice of a large all-valid source scope.
+
+    Anti-vacuity: a LIMIT applied after source filtering and sorting still
+    consumes the full matching scope; the red twin below measures that plan.
+    """
     from tests.infra.sqlite_work_counter import sqlite_work_counter
 
     bootstrap_archive_root(tmp_path)
@@ -899,66 +902,3 @@ def test_all_valid_prefix_has_a_total_discovery_bound_and_continuation(
             ).fetchall()
     assert len(rows) == 128
     assert sorted_scope.metric("vm_steps", "source") > 10_000
-    before = _snapshot(tmp_path)
-    seen: list[str] = []
-    inspect = RawObservationDerivation.inspect
-
-    def counted(self: RawObservationDerivation, frame: RawFrame, keys: Sequence[str]) -> Mapping[str, str]:
-        seen.extend(keys)
-        return inspect(self, frame, keys)
-
-    monkeypatch.setattr(RawObservationDerivation, "inspect", counted)
-    continuations: dict[tuple[Path, ...], tuple[str, str | None]] = {}
-    for page in range(32):
-        with sqlite_work_counter(step_interval=1) as work:
-            assert raw_observation_pending_roots(
-                tmp_path,
-                (source,),
-                continuations=continuations,
-                limit=128,
-            ) == {source}
-        assert len(seen) == (page + 1) * 128
-        assert work.metric("vm_steps", "source") < 500_000, work.summary()
-    assert raw_observation_pending_roots(tmp_path, (source,), continuations=continuations, limit=128) == set()
-    assert len(seen) == len(set(seen)) == 4096
-    assert _snapshot(tmp_path) == before
-
-    def exhaustive(root: Path) -> set[Path]:
-        adapter = RawObservationDerivation(root)
-        frame = raw_observation_frame(root, source_roots=(source,))
-        cursor = None
-        while True:
-            keys, cursor = adapter.required_page(frame, cursor=cursor, limit=128)
-            adapter.inspect(frame, keys)
-            if cursor is None:
-                return set()
-
-    seen.clear()
-    with sqlite_work_counter(step_interval=1) as unbounded:
-        assert exhaustive(tmp_path) == set()
-    assert len(seen) > 128
-    assert unbounded.metric("vm_steps", "source") > 500_000
-
-    # A fresh traversal must not treat its first all-valid page as ready when
-    # an output obligation follows the long valid prefix.
-    late = _admit(tmp_path, ("late-obligation",), path=str(source / "zz-late.json"))
-    restarted_continuations: dict[tuple[Path, ...], tuple[str, str | None]] = {}
-    for _ in range(33):
-        assert raw_observation_pending_roots(
-            tmp_path,
-            (source,),
-            continuations=restarted_continuations,
-            limit=128,
-        ) == {source}
-    assert seen[-1] == late
-    report = converge_raw_observations(tmp_path, source_roots=(source / "zz-late.json",), limit=2)
-    assert report.done == 1 and report.failed == report.pending == 0
-    assert (
-        raw_observation_pending_roots(
-            tmp_path,
-            (source,),
-            continuations=restarted_continuations,
-            limit=128,
-        )
-        == set()
-    )

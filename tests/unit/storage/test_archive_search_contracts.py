@@ -60,15 +60,6 @@ class _FakeQueries(SQLiteQueryStore):
         del query, limit, origins
         return self.hits
 
-    async def search_action_session_hits(
-        self,
-        query: str,
-        limit: int = 20,
-        origins: list[str] | None = None,
-    ) -> SessionSearchResult:
-        del query, limit, origins
-        return self.hits
-
     async def search_session_evidence_hits(
         self,
         query: str,
@@ -313,7 +304,7 @@ async def test_gemini_drive_attachment_id_is_searchable_after_parse_and_prepare(
 
 
 @pytest.mark.asyncio
-async def test_repository_search_and_action_search_pass_ordered_ids_to_hydration() -> None:
+async def test_repository_search_passes_ordered_ids_to_hydration() -> None:
     hits = SessionSearchResult.from_ids(["conv-b", "conv-a"])
     queries = _FakeQueries(
         hits=hits,
@@ -326,10 +317,6 @@ async def test_repository_search_and_action_search_pass_ordered_ids_to_hydration
 
     search_result = await repo.search("storage", limit=5)
     assert [str(session.id) for session in search_result] == ["conv-b", "conv-a"]
-    assert repo.ordered_ids_seen == ["conv-b", "conv-a"]
-
-    action_result = await repo.search_actions("storage", limit=5)
-    assert [str(session.id) for session in action_result] == ["conv-b", "conv-a"]
     assert repo.ordered_ids_seen == ["conv-b", "conv-a"]
 
 

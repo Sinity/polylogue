@@ -69,12 +69,13 @@ def test_statistics_change_keeps_version_and_element_denominators(
     )
     assert first.catalog is not None
     assert current.evidence_by_element == unchanged
-    workflow.generate_provider_schema_from_sources(
+    workflow.build_provider_bundle_from_sources(
         "claude-code",
         source_inputs=inputs,
         cache_path=None,
         max_workers=1,
         privacy_config=None,
+        prior_catalog=None,
     )
     assert current.evidence_by_element == unchanged
     current = source_result(records=5, session_kind=session_kind)
@@ -98,13 +99,14 @@ def test_statistics_change_keeps_version_and_element_denominators(
         "agent_sidecar_meta": 1,
     }
     assert second.result.schema != first.result.schema
-    preview = workflow.generate_provider_schema_from_sources(
+    preview = workflow.build_provider_bundle_from_sources(
         "claude-code",
         source_inputs=inputs,
         cache_path=None,
         max_workers=1,
         privacy_config=None,
-    )
+        prior_catalog=None,
+    ).result
     assert preview.schema == second.result.schema
     assert preview.artifact_counts == second.result.artifact_counts
 

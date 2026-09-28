@@ -187,19 +187,3 @@ def test_write_gateway_repairs_fts_when_live_triggers_were_missing(
 
     assert result.status == COMMITTED
     assert repaired == ["messages"]
-
-
-@pytest.mark.asyncio
-async def test_write_gateway_async_commit_uses_same_local_effects_path(tmp_path: Path) -> None:
-    db_path = tmp_path / "archive.db"
-    with open_connection(db_path) as conn:
-        result = await ArchiveWriteGateway(db_path).commit_write(
-            WriteOperation.INGEST,
-            {
-                "_connection": conn,
-                "changed_session_ids": (),
-            },
-        )
-
-        assert result.operation is WriteOperation.INGEST
-        assert result.status == COMMITTED
