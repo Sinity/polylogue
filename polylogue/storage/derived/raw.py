@@ -64,7 +64,6 @@ if TYPE_CHECKING:
     from polylogue.sources.revision_backfill import (
         PreparedRetainedAggregate,
         PreparedRetainedInput,
-        RawParsePrefetchCache,
     )
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.revision_governance import PreparedRawRevisionClassification
@@ -150,7 +149,9 @@ class StagedBlobRestorations:
 class RawObservationReplacement:
     key: str
     input_binding: str
-    payload: RawParsePrefetchCache | None
+    # ``ReplacementLike`` requires a payload; this adapter carries its inputs
+    # in the typed fields below instead.
+    payload: None
     raw_ids: tuple[str, ...]
     prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None
     prepared_aggregates: Mapping[str, PreparedRetainedAggregate] | None = None
@@ -1239,7 +1240,6 @@ class RawObservationDerivation:
                     active_index_path=Path(frame.source_revision),
                     selected_raw_ids=list(replacement.raw_ids),
                     max_payload_bytes=None,
-                    prefetch_cache=replacement.payload,
                     prepared_inputs=replacement.prepared_inputs,
                     prepared_aggregates=replacement.prepared_aggregates,
                     prepared_writes=replacement.prepared_writes,

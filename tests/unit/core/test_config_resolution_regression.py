@@ -311,64 +311,6 @@ class TestDirectEnvBypassCallersRouteThroughResolver:
         assert configured_scratch.is_dir()
 
 
-class TestNewlyInventoriedSettingsRouteThroughResolver:
-    """polylogue-uu8r: settings that had NO config-inventory entry at all
-    before this change (not merely a bypassing caller for an
-    already-inventoried key, unlike the class above) -- each test pins one
-    setting family against its real runtime consumer.
-    """
-
-    def test_daemon_parse_stage_knobs_toml_only_reach_prefetch_resolution(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        workspace_env: dict[str, Path],
-    ) -> None:
-        """Reverted-mutation witness: restore any of the four
-        ``os.environ.get("POLYLOGUE_DAEMON_PARSE_STAGE_...")`` reads in
-        ``polylogue/daemon/parse_prefetch.py`` -- the corresponding assertion
-        then fails because no environment variable is set (TOML-only
-        configuration) and that helper falls back to its adaptive
-        physical-RAM-derived or hardcoded default instead of the configured
-        value. These four knobs are read from a daemon-owned
-        ``ThreadPoolExecutor`` in-process (never inside a spawned/forked
-        worker), so ``load_polylogue_config()`` at this call site carries no
-        multiprocessing-spawn hazard.
-        """
-        from polylogue.daemon.parse_prefetch import (
-            daemon_parse_stage_max_cached_tree_bytes,
-            daemon_parse_stage_max_inflight_bytes,
-            daemon_parse_stage_stall_report_seconds,
-            daemon_parse_stage_worker_count,
-        )
-
-        _disable_site(monkeypatch)
-        for env_var in (
-            "POLYLOGUE_DAEMON_PARSE_STAGE_WORKERS",
-            "POLYLOGUE_DAEMON_PARSE_STAGE_MAX_INFLIGHT_BYTES",
-            "POLYLOGUE_DAEMON_PARSE_STAGE_MAX_CACHED_TREE_BYTES",
-            "POLYLOGUE_DAEMON_PARSE_STAGE_STALL_REPORT_SECONDS",
-        ):
-            monkeypatch.delenv(env_var, raising=False)
-        user = tmp_path / "user.toml"
-        user.write_text(
-            """
-[daemon.raw_materialization]
-parse_stage_workers = 3
-parse_stage_max_inflight_bytes = 999999
-parse_stage_max_cached_tree_bytes = 8888888
-parse_stage_stall_report_seconds = 12.5
-""",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("POLYLOGUE_CONFIG", str(user))
-
-        assert daemon_parse_stage_worker_count() == 3
-        assert daemon_parse_stage_max_inflight_bytes() == 999999
-        assert daemon_parse_stage_max_cached_tree_bytes() == 8888888
-        assert daemon_parse_stage_stall_report_seconds() == 12.5
-
-
 _HOSTILE_PROJECT_TOML = """
 [mcp]
 write_enabled = true

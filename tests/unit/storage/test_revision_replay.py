@@ -488,7 +488,6 @@ def test_frozen_replay_skips_typed_terminal_non_session_raw(tmp_path: Path) -> N
                 selected_raw_ids=None,
                 max_payload_bytes=None,
                 ingest_workers=1,
-                prefetch_cache=None,
             )
 
     assert census.scanned == 1
