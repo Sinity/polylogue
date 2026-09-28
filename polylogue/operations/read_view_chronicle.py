@@ -13,6 +13,7 @@ from polylogue.archive.hydration import (
     archive_summary_to_domain,
 )
 from polylogue.archive.message.models import Message
+from polylogue.archive.query.sorting import SessionReservoir
 from polylogue.core.enums import MaterialOrigin, Origin
 from polylogue.operations.daemon_protocol import MAX_OPERATION_RESULT_BYTES
 from polylogue.operations.query_lowering import cli_read_request
@@ -138,7 +139,9 @@ def _chronicle_plan(payload: Mapping[str, object], *, vector_provider: VectorPro
     if not isinstance(params_raw, Mapping):
         raise ValueError("chronicle params must be an object")
     params = {str(key): value for key, value in params_raw.items()}
-    params.setdefault("limit", 5)
+    # A null limit is the declared five-session default, as an absent one is.
+    if params.get("limit") is None:
+        params["limit"] = 5
     query_terms = params.get("query", ())
     if not isinstance(query_terms, (list, tuple)):
         raise ValueError("chronicle query terms must be a list")
@@ -210,9 +213,11 @@ def _select_summaries(
         # One hydration per candidate, chunk by chunk. A composed-count order
         # keeps only the best ``offset + limit`` sessions seen so far, so a
         # one-row page over a large archive never holds every transcript.
-        # A sampled request draws from every qualified candidate.
-        bound = None if plan.sample or plan.limit is None else (plan.offset or 0) + plan.limit
+        # A sampled request draws uniformly from every qualified candidate
+        # through a reservoir of the sample's size.
+        bound = None if plan.limit is None else (plan.offset or 0) + plan.limit
         best: list[Session] = []
+        reservoir: SessionReservoir[Session] | None = SessionReservoir(plan.sample) if plan.sample else None
         matched_ids: set[str] = set()
         for start in range(0, len(rows), _POST_FILTER_CHUNK):
             chunk = rows[start : start + _POST_FILTER_CHUNK]
@@ -225,7 +230,10 @@ def _select_summaries(
                 for row in chunk
             ]
             kept = plan._apply_full_filters(sessions, sql_pushed=True)
-            if composed_order:
+            if composed_order and reservoir is not None:
+                reservoir.offer(kept)
+                best = reservoir.items()
+            elif composed_order:
                 best = plan._sort_sessions([*best, *kept])
                 if bound is not None:
                     best = best[:bound]

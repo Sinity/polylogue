@@ -10,6 +10,7 @@ move a late row ahead of a kept one (polylogue-6xrab, polylogue-ztm1t).
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -337,11 +338,14 @@ async def test_a_composed_sort_without_a_limit_serves_the_default_page(tmp_path:
 
 @pytest.mark.asyncio
 async def test_a_sampled_composed_sort_samples_every_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A sampled composed page draws from every qualified candidate.
+    """A sampled composed page draws from every qualified candidate, holding only the sample.
 
     Anti-vacuity (Codex P2, #5695): keep the top ``limit`` before sampling and
-    only the largest session can ever be sampled.
+    only the largest session is ever sampled; lift the bound without a
+    reservoir and ``_finalize`` receives every hydrated session.
     """
+    import random
+
     from polylogue.archive.query import plan as plan_module
 
     for index in range(5):
@@ -354,6 +358,72 @@ async def test_a_sampled_composed_sort_samples_every_candidate(tmp_path: Path, m
         return original(self, items)
 
     monkeypatch.setattr(plan_module.SessionQueryPlan, "_finalize", finalize)
-    await list_archive(SessionQueryPlan(sort="messages", limit=1, sample=1), archive_root=tmp_path, config=None)
+    drawn: set[int] = set()
+    for seed in range(40):
+        random.seed(seed)
+        sessions = await list_archive(
+            SessionQueryPlan(sort="messages", limit=1, sample=1), archive_root=tmp_path, config=None
+        )
+        drawn.update(len(session.messages) for session in sessions)
 
-    assert offered == [5]
+    assert set(offered) == {1}
+    assert len(drawn) > 1
+
+
+@pytest.mark.asyncio
+async def test_a_composed_delete_targets_what_the_list_selects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A composed count sort deletes the session its list page shows.
+
+    Anti-vacuity (Codex P1, #5695): select delete targets from the tail-only
+    summaries and the order differs from the composed list's.
+    """
+    from polylogue.archive.query import archive_execution
+
+    for index in range(3):
+        _seed(tmp_path, f"x{index}", updated_at="2026-01-01T00:00:00Z", messages=1 + index)
+    plan = SessionQueryPlan(sort="messages", limit=1)
+    listed = await list_archive(plan, archive_root=tmp_path, config=None)
+    chosen: list[str] = []
+
+    async def fake_list(plan_arg: SessionQueryPlan, **kwargs: object) -> list[Session]:
+        sessions = await list_archive(plan_arg, archive_root=tmp_path, config=None)
+        chosen.extend(str(session.id) for session in sessions)
+        return sessions
+
+    monkeypatch.setattr(archive_execution, "list_archive", fake_list)
+    monkeypatch.setattr(
+        archive_execution,
+        "list_summaries_archive",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("composed delete used summaries")),
+    )
+    await archive_execution.delete_archive(plan, archive_root=tmp_path, config=None)
+
+    assert chosen == [str(session.id) for session in listed]
+
+
+@pytest.mark.asyncio
+async def test_units_of_a_default_composed_page_get_the_default_page_allowance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Units of a limit-less composed page are projected with the default page's allowance.
+
+    Anti-vacuity (Codex P2, #5695): leave ``unit_page`` unset when ``limit`` is
+    omitted and each candidate chunk is projected with the chunk's width.
+    """
+    from polylogue.archive.query import archive_execution
+
+    for index in range(4):
+        _seed(tmp_path, f"u{index}", updated_at="2026-01-01T00:00:00Z", messages=1 + index)
+    widths: list[int | None] = []
+    original = archive_execution._attach_units_to_domain
+
+    def attach(*args: Any, **kwargs: Any) -> Any:
+        widths.append(kwargs.get("page_width"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(archive_execution, "_attach_units_to_domain", attach)
+    await list_archive(
+        SessionQueryPlan(sort="messages"), archive_root=tmp_path, config=None, default_limit=3, with_units=("messages",)
+    )
+
+    assert widths and set(widths) == {3}

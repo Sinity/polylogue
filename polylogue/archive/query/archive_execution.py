@@ -21,6 +21,7 @@ from polylogue.archive.hydration import archive_envelope_to_session, archive_sum
 from polylogue.archive.query.filter_kwargs import (
     plan_filter_kwargs,
 )
+from polylogue.archive.query.sorting import SessionReservoir
 from polylogue.archive.query.spec import DEFAULT_SESSION_LIST_LIMIT
 from polylogue.archive.query.transaction import archive_read_context, run_archive_read
 from polylogue.archive.session.domain_models import Session, SessionSummary
@@ -468,7 +469,13 @@ async def list_archive(
     # budget), and always with the allowance of a full requested page. A
     # predicate therefore sees exactly the rows the served session carries,
     # however its candidate chunk or served page happens to be filled.
-    unit_page = plan.limit if plan.limit is not None and plan.limit > 0 else None
+    unit_page = (
+        plan.limit
+        if plan.limit is not None and plan.limit > 0
+        # A complete composed sort serves the default page; its units get
+        # that page's allowance, not a candidate chunk's.
+        else (default_limit if complete else None)
+    )
 
     def attach(archive: ArchiveStore, sessions: list[Session]) -> list[Session]:
         width = unit_page or max(len(sessions), 1)
@@ -503,17 +510,22 @@ async def list_archive(
         # A complete composed sort keeps only the best ``offset + limit``
         # hydrated sessions seen so far: a one-row page over a large archive
         # must not hold every recomposed transcript at once.
-        # A sampled page draws from every qualified candidate, so nothing is
-        # cut before ``_finalize`` samples; an omitted limit is the default page.
+        # A sampled page draws uniformly from every qualified candidate
+        # through a reservoir of the sample's size, so neither kind of page
+        # holds more sessions than it can serve. An omitted limit is the
+        # default page.
         page_width = plan.limit if plan.limit is not None else default_limit
-        bound = None if plan.sample else (plan.offset or 0) + page_width
+        bound = (plan.offset or 0) + page_width
         best: list[Session] = []
+        reservoir: SessionReservoir[Session] | None = SessionReservoir(plan.sample) if plan.sample else None
 
         def retain(sessions: list[Session]) -> None:
             nonlocal best
-            best = plan._sort_sessions([*best, *sessions])
-            if bound is not None:
-                best = best[:bound]
+            if reservoir is not None:
+                reservoir.offer(sessions)
+                best = reservoir.items()
+                return
+            best = plan._sort_sessions([*best, *sessions])[:bound]
 
         def keep(rows: list[ArchiveSessionSummary]) -> list[ArchiveSessionSummary]:
             # Predicates see the same fully hydrated Session the caller gets:
@@ -768,7 +780,9 @@ async def delete_archive(
     archive_root: Path,
     config: Config | None,
 ) -> int:
-    if plan.can_use_summaries():
+    # A composed count order ranks recomposed sessions, which the tail-only
+    # summaries cannot: the targets are chosen exactly as ``list`` chooses them.
+    if plan.can_use_summaries() and plan.sort not in _COMPOSED_COUNT_SORTS:
         summaries = await list_summaries_archive(
             plan,
             archive_root=archive_root,

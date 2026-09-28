@@ -266,7 +266,21 @@ def test_a_sampled_chronicle_count_sort_samples_every_candidate(monkeypatch: pyt
         {"params": {"sort": "messages", "limit": 1, "sample": 1}}, archive=archive, vector_provider=None
     )
 
-    assert offered == [len(rows)]
+    # A reservoir of the sample's size: only one hydrated session is held.
+    assert offered == [1]
+
+
+def test_a_null_chronicle_limit_is_the_default_page() -> None:
+    """``limit: null`` compiles to the five-session default, not an unbounded scan.
+
+    Anti-vacuity (Codex P2, #5695): leave the null in place and the plan has
+    ``limit=None``.
+    """
+    from polylogue.operations.read_view_chronicle import _chronicle_plan
+
+    plan = _chronicle_plan({"params": {"sort": "messages", "limit": None}}, vector_provider=None)
+
+    assert plan.limit == 5
 
 
 def test_clients_send_the_scan_deadline_for_a_scan_shaped_chronicle() -> None:

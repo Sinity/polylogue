@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import random
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Protocol, TypeAlias, TypeVar
+from typing import TYPE_CHECKING, Generic, Protocol, TypeAlias, TypeVar
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Session, SessionSummary
@@ -137,6 +137,34 @@ def sort_summaries(
     return sort_generic(plan, summaries, lambda summary: summary.updated_at or summary.created_at or dt_min)
 
 
+class SessionReservoir(Generic[_T]):
+    """A uniform random sample of fixed size over a stream (Algorithm R).
+
+    Holds at most ``size`` items however many are offered, and draws the same
+    distribution as ``random.sample`` over the whole stream.
+    """
+
+    def __init__(self, size: int) -> None:
+        self._size = size
+        self._seen = 0
+        self._items: list[_T] = []
+
+    def offer(self, items: Iterable[_T]) -> None:
+        for item in items:
+            self._seen += 1
+            if len(self._items) < self._size:
+                self._items.append(item)
+            else:
+                slot = random.randrange(self._seen)
+                if slot < self._size:
+                    self._items[slot] = item
+
+    def items(self) -> list[_T]:
+        sampled = list(self._items)
+        random.shuffle(sampled)
+        return sampled
+
+
 def finalize_results(
     plan: QuerySortPlan,
     items: list[_T],
@@ -161,6 +189,7 @@ __all__ = [
     "finalize_results",
     "finalize_window",
     "QuerySortPlan",
+    "SessionReservoir",
     "ResultWindow",
     "sort_sessions",
     "sort_generic",
