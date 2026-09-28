@@ -567,8 +567,12 @@ def archive_search_hits(
             [(hit.session_id, 0.0) for hit in semantic_hits],
         )
         page = fused[offset : offset + limit]
-        text_ranks = {hit.session_id: rank for rank, hit in enumerate(lexical_hits, start=1)}
-        vector_ranks = {hit.session_id: rank for rank, hit in enumerate(semantic_hits, start=1)}
+        text_ranks: dict[str, int] = {}
+        vector_ranks: dict[str, int] = {}
+        for rank, hit in enumerate(lexical_hits, start=1):
+            text_ranks.setdefault(hit.session_id, rank)
+        for rank, hit in enumerate(semantic_hits, start=1):
+            vector_ranks.setdefault(hit.session_id, rank)
         ranked = [
             _replace(
                 hit_by_session[session_id],
