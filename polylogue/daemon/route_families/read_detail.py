@@ -65,7 +65,7 @@ def _handle_get_messages(self: Any, conv_id: str, params: dict[str, list[str]]) 
     offset = max(0, self._get_int(params, "offset", 0))
     continuation = self._get_param(params, "continuation")
     around = self._get_param(params, "around")
-    if not self._accept_message_window_anchor(around, continuation):
+    if not self._accept_message_window_anchor(around, continuation, offset):
         return
 
     archive_root = _web_reader_archive_root()
