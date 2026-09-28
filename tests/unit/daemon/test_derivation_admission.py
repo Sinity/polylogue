@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -19,6 +20,7 @@ from polylogue.daemon.derivation import (
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.intake import (
     AdmissionOutcome,
+    AdmissionResult,
     FairIntakeDispatcher,
     IntakeClassSpec,
     IntakeItem,
@@ -83,7 +85,7 @@ async def test_admission_keeps_the_byte_estimate_as_its_cost() -> None:
         async def discover(self, *, limit: int) -> list[IntakeItem]:
             return [IntakeItem("raw-a", class_name="raw", estimated_cost=4096)][:limit]
 
-        async def admit(self, item: IntakeItem) -> object:
+        async def admit(self, item: IntakeItem) -> AdmissionResult:
             return _derivation_admission(report, item.item_id, subject="raw observation")
 
         async def acknowledge(self, item: IntakeItem) -> None:
@@ -102,7 +104,7 @@ async def test_admission_keeps_the_byte_estimate_as_its_cost() -> None:
 
 
 @pytest.mark.asyncio
-async def test_invalid_retained_payload_is_terminal_across_restart(tmp_path) -> None:
+async def test_invalid_retained_payload_is_terminal_across_restart(tmp_path: Path) -> None:
     """A syntactically invalid payload converges to a durable terminal verdict.
 
     Red if the parse failure only raises (RETRYABLE in memory) instead of
