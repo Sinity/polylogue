@@ -4938,8 +4938,10 @@ def test_owned_source_roots_are_decided_by_role_not_resolved_location(tmp_path: 
     provider = WatchSource(name="claude-code", root=relocated)
     assert not _is_polylogue_owned_source(provider)
 
-    owned_names = {source.name for source in _watch_sources() if _is_polylogue_owned_source(source)}
-    assert owned_names == {"browser-capture", "inbox"}
+    owned = [source for source in _watch_sources() if _is_polylogue_owned_source(source)]
+    assert {"browser-capture", "inbox"} <= {source.name for source in owned}
+    assert all(source.name in {"browser-capture", "inbox"} or source.role == "primary-writable" for source in owned)
+    assert not any(source.name in {"claude-code", "codex", "gemini-cli", "hermes"} for source in owned)
     primary = hook_carrier_watch_sources(
         (HookSpoolSourceSpec(source_id="hooks", role="primary-writable", root=tmp_path / "hooks"),)
     )

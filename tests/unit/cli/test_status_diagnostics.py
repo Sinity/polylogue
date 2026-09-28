@@ -208,6 +208,19 @@ class TestDiagnoseNoSources:
         diag = diagnose_first_run(daemon_alive=False)
         assert diag.kind == "no_daemon"
 
+    def test_a_staged_inbox_import_is_a_source(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Anti-vacuity: ignore the archive inbox and a staged export with no
+        provider directory reports ``no_sources`` and asks for another import."""
+        from polylogue.config import resolve_runtime_config
+
+        data_home, _ = _set_xdg(monkeypatch, tmp_path)
+        _create_index_db(data_home)
+        inbox = resolve_runtime_config().source_paths.inbox
+        inbox.mkdir(parents=True, exist_ok=True)
+        (inbox / "export.zip").write_bytes(b"PK\x05\x06" + bytes(18))
+        diag = diagnose_first_run(daemon_alive=False)
+        assert diag.kind == "no_daemon"
+
     def test_a_present_chat_tool_is_a_source(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         data_home, _ = _set_xdg(monkeypatch, tmp_path)
         _create_index_db(data_home)

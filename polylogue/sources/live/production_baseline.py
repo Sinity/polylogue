@@ -31,6 +31,7 @@ from polylogue.sources.decoder_zip import (
 )
 from polylogue.sources.dispatch import (
     LOCATION_VALIDATION_PREFIX_BYTES,
+    BoundRecordValidator,
     ForeignOriginContentError,
     bound_location_provider,
     refuse_foreign_material,
@@ -385,13 +386,18 @@ def _revision(
         return sqlite_member_revision_and_size(path)
     digest = hashlib.sha256()
     size = 0
+    # Every record is validated, as live capture validates it, or the
+    # baseline would accept a file whose raw revision live intake refuses.
+    records = BoundRecordValidator(path, location)
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             _check_observation_cancelled(cancelled)
             if size == 0 and location is not None:
                 refuse_foreign_material(path, location, prefix=chunk[:LOCATION_VALIDATION_PREFIX_BYTES])
+            records.feed(chunk)
             digest.update(chunk)
             size += len(chunk)
+    records.finish()
     return digest.hexdigest(), size
 
 

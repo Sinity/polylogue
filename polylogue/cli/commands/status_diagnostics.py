@@ -11,6 +11,7 @@ operator should see — never a traceback. (#1263)
 from __future__ import annotations
 
 import importlib.util
+import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -253,12 +254,17 @@ def _probe_no_sources() -> StatusDiagnostic | None:
     """Return a ``no_sources`` diagnostic when no chat tool directory exists.
 
     Sources are read from their canonical locations, so "no sources" means
-    none of those provider directories is present on this machine.
+    none of those provider directories is present on this machine and the
+    archive inbox holds no staged import either: the daemon would ingest
+    either one once started.
     """
     from polylogue.cli.commands.init import detect_chat_sources
+    from polylogue.config import resolve_runtime_config
 
     detected = [source for source in detect_chat_sources() if source.family != "hooks"]
     if any(source.present for source in detected):
+        return None
+    if _has_staged_import(resolve_runtime_config().source_paths.inbox):
         return None
     return StatusDiagnostic(
         kind="no_sources",
@@ -270,6 +276,15 @@ def _probe_no_sources() -> StatusDiagnostic | None:
         ),
         next_action="polylogue import <path>",
     )
+
+
+def _has_staged_import(inbox: Path) -> bool:
+    """Whether the archive inbox holds any entry for the daemon to ingest."""
+    try:
+        with os.scandir(inbox) as entries:
+            return any(True for _entry in entries)
+    except OSError:
+        return False
 
 
 def _probe_missing_optional_dep() -> StatusDiagnostic | None:

@@ -81,7 +81,10 @@ same directory tree.
 - `polylogued run` watches each origin at its canonical location and owns ingestion. There are no configurable source roots.
 - Use `polylogue import PATH` to ask the running daemon to import an explicit
   file or directory.
-- Directory names are for organization only; providers are detected from content.
+- A canonical location binds its origin: content there is validated against
+  that origin, and another origin's shape is refused, never reclassified.
+  Only the import inbox and browser-capture envelopes (which declare their
+  provider) detect the provider from content.
 
 ## Configuration Model
 

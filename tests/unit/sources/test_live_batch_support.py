@@ -209,6 +209,31 @@ def test_claude_frontier_rejects_body_rewrite(tmp_path: Path) -> None:
     assert processor._append_plan(path) is None
 
 
+def test_a_foreign_appended_record_falls_back_to_the_refusing_full_route(tmp_path: Path) -> None:
+    """An appended Codex record under Claude Code is not retained as an append.
+
+    Anti-vacuity: skip validating the append delta and this plan carries the
+    Codex bytes as Claude Code raw evidence; the full route, which records the
+    typed foreign-origin refusal, is never taken.
+    """
+    path, plan, owner, processor = _seed_claude_live_append_plan(
+        tmp_path,
+        native_id="foreign-append",
+        append=b'{"type":"assistant","message":{"role":"assistant","content":"one"},"uuid":"message-1"}\n',
+    )
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+    assert processor._record_append_cursor(plan)
+    accepted = path.read_bytes()
+    codex = b'{"type":"session_meta","payload":{"id":"codex-session-1","timestamp":"2026-01-01T10:00:00Z"}}\n'
+    path.write_bytes(accepted + codex)
+
+    assert processor._append_plan(path) is None
+
+    own = b'{"type":"assistant","message":{"role":"assistant","content":"two"},"uuid":"message-2"}\n'
+    path.write_bytes(accepted + own)
+    assert isinstance(processor._append_plan(path), _AppendPlan)
+
+
 def test_append_prefix_cursor_refuses_a_rewritten_accepted_prefix_after_persistence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

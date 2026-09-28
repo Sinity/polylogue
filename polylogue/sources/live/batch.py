@@ -103,6 +103,7 @@ from polylogue.sources.decoder_zip import (
 from polylogue.sources.decoders import JsonlDecodeError, _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import (
     BUNDLE_PROVIDERS,
+    BoundRecordValidator,
     ForeignOriginContentError,
     bound_location_provider,
     is_jsonl_source_path,
@@ -6540,6 +6541,19 @@ class LiveBatchProcessor:
             return None
         if _file_observation(final_stat) != _file_observation(stat):
             return _DEFER_APPEND
+        # The append delta is retained under the location's origin exactly as
+        # a full capture is, so every appended record is validated. A foreign
+        # record falls back to the full route, whose captured-blob validation
+        # records the typed refusal.
+        append_source = self._source_name_for(path)
+        appended = BoundRecordValidator(
+            path, Provider.from_string(canonical_acquisition_provider(append_source, source_name=append_source))
+        )
+        try:
+            appended.feed(complete_payload)
+            appended.finish()
+        except ForeignOriginContentError:
+            return None
         append_result = self._append_payload_for_provider(path, self._source_name_for(path), complete_payload)
         if append_result is None:
             return None

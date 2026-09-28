@@ -21,6 +21,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
+from devtools.isolated_environment import isolated_home_environment
 from devtools.measurement_receipts import emit_receipt
 
 SESSION_IDS = tuple(f"claude-code-session:ccccd500-0000-0000-0000-{i:012d}" for i in range(3))
@@ -551,10 +552,12 @@ def qualify(
     projects = home / ".claude" / "projects"
     if not projects.is_symlink():
         projects.symlink_to(source, target_is_directory=True)
-    env = os.environ.copy()
+    # Every discovery root (HOME, the XDG roots, Polylogue path overrides) is
+    # pointed into the isolated home: an inherited XDG config or state root
+    # would otherwise hand the daemon the operator's Drive credentials.
+    env = isolated_home_environment(os.environ, home=home)
     env.update(
         {
-            "HOME": str(home),
             "POLYLOGUE_ARCHIVE_ROOT": str(archive),
             "POLYLOGUE_CONFIG": str(config),
             "POLYLOGUE_SITE_CONFIG": "",

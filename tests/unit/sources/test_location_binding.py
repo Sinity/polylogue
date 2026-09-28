@@ -454,6 +454,33 @@ def test_production_baseline_excludes_refused_plain_files(tmp_path: Path) -> Non
     assert by_name["bad69218-73bd-490a-869a-2b3a30bf421b.jsonl"].disposition == "accepted"
 
 
+def test_production_baseline_validates_every_record(tmp_path: Path) -> None:
+    """The baseline refuses a foreign record past the prefix, as live capture does.
+
+    Anti-vacuity: validate only the first chunk's prefix and this file is
+    baselined as ``accepted`` while live capture refuses it, so the cold
+    build waits for a raw revision that is never produced.
+    """
+    from polylogue.sources.dispatch import LOCATION_VALIDATION_PREFIX_BYTES
+    from polylogue.sources.live.production_baseline import capture_production_source_baseline
+    from polylogue.sources.live.watcher import WatchSource
+
+    root = tmp_path / "projects"
+    project = root / "proj"
+    project.mkdir(parents=True)
+    padded = [dict(record) for record in _CLAUDE_CODE_TRANSCRIPT]
+    padded[0]["message"] = {"role": "user", "content": "x" * (LOCATION_VALIDATION_PREFIX_BYTES * 2)}
+    name = "bad69218-73bd-490a-869a-2b3a30bf421b.jsonl"
+    (project / name).write_bytes(_jsonl([*padded, *_CODEX_ROLLOUT]))
+    baseline = capture_production_source_baseline(
+        (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),),
+        operation_id="op-test",
+    )
+    [decision] = [decision for decision in baseline.decisions if Path(decision.path).name == name]
+    assert decision.disposition == "excluded"
+    assert "foreign_origin_content" in decision.reason
+
+
 def test_publisher_discards_one_refused_pending_blob(tmp_path: Path) -> None:
     """A refused blob's queued publication is dropped before any flush.
 

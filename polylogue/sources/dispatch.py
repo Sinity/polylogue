@@ -516,61 +516,81 @@ _RECORD_VALIDATION_CHUNK_BYTES = 1 << 20
 def refuse_foreign_records(handle: BinaryIO, path: Path | str, location: Provider | str | None) -> None:
     """Validate every record of a bound JSONL stream against its location.
 
+    Reads ``handle`` to its end through :class:`BoundRecordValidator`.
+    """
+    validator = BoundRecordValidator(path, location)
+    if not validator.active:
+        return
+    while chunk := handle.read(_RECORD_VALIDATION_CHUNK_BYTES):
+        validator.feed(chunk)
+    validator.finish()
+
+
+class BoundRecordValidator:
+    """Incremental per-record origin validation of a bound JSONL stream.
+
     The prefix check in :func:`refuse_foreign_material` sees only the leading
     records; a foreign record anywhere later would otherwise be retained and
-    parsed as the location's origin. Every line is validated here: a line
-    that fits the validation window is decoded whole, and a longer one is
-    validated from the completed structure of its leading bytes, so memory
-    stays bounded by the window whatever a record's size. A malformed line
-    is the parser's typed concern, not a foreign-origin claim.
+    parsed as the location's origin. Fed the stream in chunks (so a caller
+    that is already reading the bytes, to hash or to capture them, validates
+    the same bytes in the same pass), it validates every line: a line that
+    fits the validation window is decoded whole, and a longer one from the
+    completed structure of its leading bytes, so memory stays bounded by the
+    window whatever a record's size. A malformed line is the parser's typed
+    concern, not a foreign-origin claim. ``feed`` and ``finish`` raise
+    :class:`ForeignOriginContentError`.
     """
-    bound = bound_location_provider(location)
-    if bound is None:
-        return
-    source = Path(path)
-    if not is_jsonl_source_path(source.name):
-        return
-    from .origin_specs import path_declaration_refuses_session
 
-    if path_declaration_refuses_session(bound, source):
-        return
-    for head, complete in _iter_line_heads(handle, LOCATION_VALIDATION_PREFIX_BYTES):
-        if not head.strip():
-            continue
-        if complete:
-            try:
-                record = json.loads(head)
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                continue
-            detect_provider_evidence([record], expected=bound)
-            continue
-        partial = _completed_prefix_structure(head)
-        if isinstance(partial, dict):
-            detect_provider_evidence([partial], expected=bound)
+    def __init__(self, path: Path | str, location: Provider | str | None) -> None:
+        self._bound = bound_location_provider(location)
+        source = Path(path)
+        active = self._bound is not None and is_jsonl_source_path(source.name)
+        if active and self._bound is not None:
+            from .origin_specs import path_declaration_refuses_session
 
+            active = not path_declaration_refuses_session(self._bound, source)
+        self.active = active
+        self._head = bytearray()
+        self._overflowed = False
 
-def _iter_line_heads(handle: BinaryIO, window: int) -> Iterator[tuple[bytes, bool]]:
-    """Yield each line's leading ``window`` bytes and whether the line fit whole."""
-    head = bytearray()
-    overflowed = False
-    while chunk := handle.read(_RECORD_VALIDATION_CHUNK_BYTES):
+    def feed(self, chunk: bytes) -> None:
+        if not self.active:
+            return
+        window = LOCATION_VALIDATION_PREFIX_BYTES
         start = 0
         while start < len(chunk):
             newline = chunk.find(b"\n", start)
             end = len(chunk) if newline == -1 else newline
-            if not overflowed:
-                room = window - len(head)
+            if not self._overflowed:
+                room = window - len(self._head)
                 piece = chunk[start:end]
-                head += piece[:room]
-                overflowed = len(piece) > room
+                self._head += piece[:room]
+                self._overflowed = len(piece) > room
             if newline == -1:
-                break
-            yield bytes(head), not overflowed
-            head.clear()
-            overflowed = False
+                return
+            self._validate_line()
             start = newline + 1
-    if head or overflowed:
-        yield bytes(head), not overflowed
+
+    def finish(self) -> None:
+        if self.active and (self._head or self._overflowed):
+            self._validate_line()
+
+    def _validate_line(self) -> None:
+        head, complete = bytes(self._head), not self._overflowed
+        self._head.clear()
+        self._overflowed = False
+        if not head.strip():
+            return
+        if complete:
+            try:
+                record = json.loads(head)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return
+            detect_provider_evidence([record], expected=self._bound)
+            return
+        partial = _completed_prefix_structure(head)
+        if isinstance(partial, dict):
+            detect_provider_evidence([partial], expected=self._bound)
 
 
 def _completed_prefix_structure(prefix: bytes) -> object:
@@ -2476,6 +2496,7 @@ __all__ = [
     "refuse_foreign_material",
     "LOCATION_VALIDATION_PREFIX_BYTES",
     "refuse_foreign_records",
+    "BoundRecordValidator",
     "detect_provider_evidence",
     "detect_provider_from_raw_bytes_evidence",
     "is_jsonl_source_path",
