@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import threading
 import time
 import uuid
@@ -296,10 +297,19 @@ def live_lookahead_path_worker(
 
     Candidate sampling reads the source, so it runs here, where a stuck read
     can be reaped with its worker, rather than on a parent thread nothing can
-    stop. A path that is not a preparation candidate yields a retryable
-    result, which a claiming warm discards and prepares itself.
+    stop. A path that is not a regular file (discovery saw one, but it may
+    since have become a symlink out of the source) is refused before any
+    read. A refused path, or one that is not a preparation candidate, yields
+    a retryable result, which a claiming warm discards and prepares itself.
     """
     from polylogue.sources.live.batch import _live_parse_stage_path_candidates
+
+    try:
+        regular = stat.S_ISREG(os.lstat(source_path).st_mode)
+    except OSError:
+        regular = False
+    if not regular:
+        return LivePathPreparation(None, None, None, "read-ahead path is not a regular file", deferred=True)
 
     selected = _live_parse_stage_path_candidates(
         [Path(source_path)], fallback_provider=Provider.from_string(fallback_provider_value)

@@ -102,6 +102,16 @@ def _stalled_process_worker(marker: str) -> None:
     time.sleep(30)
 
 
+def _fifo_blocked_lookahead_worker(
+    fallback_provider_value: str, source_path: str, fallback_id: str, **_kwargs: object
+) -> NoReturn:
+    # Opening a FIFO with no writer blocks in the kernel, like a read on a
+    # stalled mount: nothing in the worker can observe a cancellation.
+    with open(Path(source_path).with_suffix(".fifo"), "rb"):
+        pass
+    raise AssertionError("the FIFO gained a writer")
+
+
 def _dead_process_worker() -> None:
     import os
 
@@ -1003,6 +1013,22 @@ async def test_lookahead_reads_no_source_on_the_admission_path(tmp_path: Path) -
     assert processor._parse_lookahead is None
 
 
+def test_read_ahead_refuses_a_path_swapped_for_a_symlink(tmp_path: Path) -> None:
+    """Anti-vacuity: sample without the ``lstat`` check and the worker reads
+    and seals the symlink's target outside the source."""
+    from polylogue.sources.live.parse_prefetch import live_lookahead_path_worker
+
+    (outside,) = _write_fixture_corpus(tmp_path / "outside", count=1)
+    link = tmp_path / "sessions" / "swapped.jsonl"
+    link.parent.mkdir()
+    link.symlink_to(outside)
+    shards = tmp_path / "parse-shards"
+    result = live_lookahead_path_worker(Provider.CODEX.value, str(link), "swapped", shard_directory=str(shards))
+    assert result.error == "read-ahead path is not a regular file"
+    assert result.deferred
+    assert not shards.exists() or not any(shards.iterdir())
+
+
 def test_a_stalled_read_ahead_cannot_wedge_required_work(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Unclaimed read-ahead holding the byte budget is preempted, then reaped.
 
@@ -1048,20 +1074,22 @@ def test_a_stalled_read_ahead_cannot_wedge_required_work(tmp_path: Path, monkeyp
 
 
 @pytest.mark.uses_real_clock("waits for a real worker process to block in a source read")
-def test_an_abandoned_read_ahead_stuck_in_a_source_read_is_reaped(tmp_path: Path) -> None:
+def test_an_abandoned_read_ahead_stuck_in_a_source_read_is_reaped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Read-ahead blocked in a source read is stopped with its worker process.
 
-    The FIFO has no writer, so the worker's candidate sampling blocks in
-    ``open`` as it would on a stalled mount. Anti-vacuity: drop an expired
-    read-ahead without reaping it (or sample on a parent thread) and the
-    worker process is still alive after expiry.
+    The worker blocks in ``open`` on a FIFO with no writer, as a read on a
+    stalled mount would. Anti-vacuity: drop an expired read-ahead without
+    reaping it and the worker process is still alive after expiry.
     """
     import os
 
-    source = tmp_path / "sessions"
-    source.mkdir()
-    stuck = source / "stuck.jsonl"
-    os.mkfifo(stuck)
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    (stuck,) = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    os.mkfifo(stuck.with_suffix(".fifo"))
+    monkeypatch.setattr(parse_prefetch, "live_lookahead_path_worker", _fifo_blocked_lookahead_worker)
     stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards", use_processes=True)
     try:
         assert stage.prefetch_paths([str(stuck)], fallback_provider=Provider.CODEX) == 1
@@ -1074,8 +1102,6 @@ def test_an_abandoned_read_ahead_stuck_in_a_source_read_is_reaped(tmp_path: Path
         assert workers
         time.sleep(0.5)
         assert not stage._path_futures[str(stuck)].done()
-        import polylogue.sources.live.parse_prefetch as parse_prefetch
-
         for _ in range(parse_prefetch._SPECULATIVE_LIFETIME_CALLS):
             stage.prefetch_paths([], fallback_provider=Provider.CODEX)
         assert stage._path_futures == {}
