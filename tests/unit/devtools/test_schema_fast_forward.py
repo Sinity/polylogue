@@ -147,7 +147,20 @@ def test_a_newline_separated_transition_still_applies() -> None:
     assert conn.execute("SELECT note FROM records WHERE value = 'kept'").fetchone()[0] == "a;b"
 
 
-@pytest.mark.parametrize("control", ["COMMIT;", "ROLLBACK;", "BEGIN;", "END;", "SAVEPOINT s;", "RELEASE s;"])
+@pytest.mark.parametrize(
+    "control",
+    [
+        "COMMIT;",
+        "ROLLBACK;",
+        "BEGIN;",
+        "END;",
+        "SAVEPOINT s;",
+        "RELEASE s;",
+        "-- explanation\nCOMMIT;",
+        "/* explanation */ COMMIT;",
+        "/* a */ -- b\n  /* c\n */ROLLBACK;",
+    ],
+)
 def test_transaction_control_is_refused_before_it_runs(control: str) -> None:
     """A step may not end or nest the engine's transaction.
 

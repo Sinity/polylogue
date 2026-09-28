@@ -509,7 +509,9 @@ def _normalize_nested_for_hash(value: object, *, path: str = "payload") -> objec
       ``["a", "b"]`` must not move every affected ``content_identity``.
     - ``Decimal``: ``float`` when the float round-trips exactly, else
       ``{"$decimal": "<exact text>"}``, so precision beyond a float never
-      merges two values and never collides with an equal string. The
+      merges two values and never collides with an equal string. A mapping
+      key spelled ``$decimal`` (or with more leading ``$``) gains one more
+      ``$``, so no admitted mapping can construct the tag. The
       float case is the same lowering ``core/json.py`` declares for
       a JSON parser's ``Decimal`` (``_lower_decimals``, ``_default_encoder``).
       The ``QUERY`` digest profile ``hash_payload`` uses reaches stdlib
@@ -539,6 +541,23 @@ def _normalize_nested_for_hash(value: object, *, path: str = "payload") -> objec
         return _normalize_declared_for_hash(value, path=path)
 
 
+_DECIMAL_TAG = "$decimal"
+
+
+def _hash_key(key: object) -> object:
+    """NFC a string key and escape any spelling of the reserved ``$decimal`` tag.
+
+    The escape prepends one ``$`` to ``$decimal``, ``$$decimal``, ... and is
+    injective, so a mapping key can never produce the tag itself.
+    """
+    if not isinstance(key, str):
+        return key
+    key = nfc(key)
+    if key.endswith(_DECIMAL_TAG) and not key[: -len(_DECIMAL_TAG)].strip("$"):
+        return "$" + key
+    return key
+
+
 class _OutsidePlainVocabularyError(Exception):
     """Internal signal: the path-free fast walk met a value it cannot lower."""
 
@@ -558,9 +577,7 @@ def _normalize_plain_for_hash(value: object) -> object:
     if isinstance(value, str):
         return _EMPTY_SENTINEL if value == "" else nfc(value)
     if isinstance(value, dict):
-        return {
-            (nfc(key) if isinstance(key, str) else key): _normalize_plain_for_hash(item) for key, item in value.items()
-        }
+        return {_hash_key(key): _normalize_plain_for_hash(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_normalize_plain_for_hash(item) for item in value]
     cls = type(value)
@@ -578,10 +595,7 @@ def _normalize_declared_for_hash(value: object, *, path: str) -> object:
     if isinstance(value, str):
         return _EMPTY_SENTINEL if value == "" else nfc(value)
     if isinstance(value, Mapping):
-        return {
-            nfc(key) if isinstance(key, str) else key: _normalize_declared_for_hash(item, path=f"{path}.{key}")
-            for key, item in value.items()
-        }
+        return {_hash_key(key): _normalize_declared_for_hash(item, path=f"{path}.{key}") for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_normalize_declared_for_hash(item, path=f"{path}[]") for item in value]
     if isinstance(value, (set, frozenset)):
@@ -597,7 +611,7 @@ def _normalize_declared_for_hash(value: object, *, path: str) -> object:
         # values differing beyond float precision cannot share a fallback id.
         as_float = float(value)
         # Tagged, so an exact decimal never hashes like the equal string.
-        return as_float if Decimal(as_float) == value else {"$decimal": str(value)}
+        return as_float if Decimal(as_float) == value else {_DECIMAL_TAG: str(value)}
     if isinstance(value, (bytes, bytearray, memoryview)):
         return bytes(value).hex()
     if isinstance(value, (datetime, date, time)):

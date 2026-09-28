@@ -168,17 +168,18 @@ def session_events_from_meta_blocks(
     """Project Gemini reasoning-continuity evidence dropped by ``parsed_blocks_from_meta``.
 
     One event per THINKING block whose metadata carries thinking-budget or
-    thought-signature evidence; everything else stays block-scoped-only (see
-    the disposition note above ``parsed_blocks_from_meta``).
+    thought-signature evidence, and one per other block carrying a thought
+    signature: ``parsed_blocks_from_meta`` strips signatures from every block
+    type, so every stripped signature must land here. Everything else stays
+    block-scoped-only (see the disposition note above
+    ``parsed_blocks_from_meta``).
     """
 
     events: list[ParsedSessionEvent] = []
     for block_index, block in enumerate(json_document_list(blocks)):
-        block_type = block.get("type")
-        if block_type != "thinking":
-            continue
+        evidence_keys = _GEMINI_THINKING_EVIDENCE_KEYS if block.get("type") == "thinking" else _THOUGHT_SIGNATURE_KEYS
         metadata = json_document(block.get("metadata"))
-        evidence = {key: value for key, value in metadata.items() if key in _GEMINI_THINKING_EVIDENCE_KEYS}
+        evidence = {key: value for key, value in metadata.items() if key in evidence_keys}
         if not evidence:
             continue
         events.append(

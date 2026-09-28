@@ -1083,3 +1083,24 @@ def test_a_singular_thought_signature_survives_as_session_evidence() -> None:
     )
 
     assert any("sig" in str(event.payload) for event in events)
+
+
+def test_a_signature_on_a_non_thinking_part_survives_as_session_evidence() -> None:
+    """A text part's ``thoughtSignature`` is stripped from the block, so it must become evidence.
+
+    Anti-vacuity: project evidence from THINKING blocks only and the text
+    part's signature leaves no copy anywhere in the parsed session.
+    """
+    from polylogue.sources.parsers.drive_support_blocks import (
+        parsed_blocks_from_meta,
+        session_events_from_meta_blocks,
+    )
+
+    payload = [
+        {"type": "text", "text": "answer", "metadata": {"thoughtSignature": "sig-text", "role": "model"}},
+    ]
+    blocks = parsed_blocks_from_meta(payload)
+    events = session_events_from_meta_blocks(payload, source_message_provider_id="m1", timestamp=None)
+
+    assert "thoughtSignature" not in (blocks[0].metadata or {})
+    assert [event.payload for event in events] == [{"block_index": 0, "thoughtSignature": "sig-text"}]
