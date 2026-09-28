@@ -1957,6 +1957,23 @@ def _delete_sessions_without_fk_cascade(conn: sqlite3.Connection, session_ids: S
             conn.execute(f"UPDATE {table} SET {column} = NULL WHERE {column} IN ({placeholders})", params)
         elif on_delete.upper() == "CASCADE":
             conn.execute(f"DELETE FROM {table} WHERE {column} IN ({placeholders})", params)
+    # Bulk ingest disables SQLite FK actions. Owner rows may reference only
+    # the compound (message_id, session_id) key, so they are invisible to the
+    # direct-session scan above. Delete those message-owned rows explicitly
+    # while their session_id still identifies the stale subtree.
+    table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    for table_row in table_rows:
+        table_name = str(table_row[0])
+        owns_message_rows = False
+        for fk in conn.execute(f"PRAGMA foreign_key_list({_quote_identifier(table_name)})").fetchall():
+            if str(fk[2]) == "messages" and str(fk[6]).upper() == "CASCADE" and str(fk[3]) == "session_id":
+                owns_message_rows = True
+                break
+        if owns_message_rows:
+            conn.execute(
+                f"DELETE FROM {_quote_identifier(table_name)} WHERE {_quote_identifier('session_id')} IN ({placeholders})",
+                params,
+            )
 
 
 def _session_foreign_key_actions(conn: sqlite3.Connection) -> list[tuple[str, str, str]]:
