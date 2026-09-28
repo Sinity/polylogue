@@ -49,3 +49,18 @@ def test_a_changed_blob_file_is_hashed_again_and_refused(tmp_path: Path) -> None
 
 def test_missing_blob_is_unreadable(tmp_path: Path) -> None:
     assert BlobStore(tmp_path).verify_for_read("0" * 64) is False
+
+
+def test_a_permission_change_forces_reverification(tmp_path: Path) -> None:
+    """Anti-vacuity: leave ctime out of the memo key and an unreadable blob still reads as available."""
+    store = BlobStore(tmp_path)
+    digest = _store_blob(store, b"attachment bytes")
+    assert store.verify_for_read(digest) is True
+    path = store.blob_path(digest)
+    path.chmod(0o000)
+    try:
+        if os.access(path, os.R_OK):
+            pytest.skip("running with privileges that ignore file modes")
+        assert store.verify_for_read(digest) is False
+    finally:
+        path.chmod(0o600)

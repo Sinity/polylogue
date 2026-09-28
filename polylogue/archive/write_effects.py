@@ -101,25 +101,40 @@ class WriteEffect:
 class DeferredEffectQueue:
     """Bounded process-local delivery for effects that must not delay writes.
 
-    Only in-flight work is retained: the pending set de-duplicates an effect
-    already queued for the same staleness key. A settled delivery keeps no
+    Only outstanding work is retained: the pending set de-duplicates an effect
+    already queued for the same staleness key, and a failed delivery is kept
+    as a retry obligation until it succeeds. A successful delivery keeps no
     record (polylogue-yooge) -- nothing reads one, and a process-lifetime map
-    keyed by every distinct ingest batch grew without bound. A failed
-    delivery is reported through ``archive.write_effect.failed``.
+    keyed by every distinct ingest batch grew without bound. Failed work is
+    retried at the next enqueue, and every failure is reported through
+    ``archive.write_effect.failed`` with the staleness key and sessions.
     """
 
     def __init__(self, *, max_workers: int = 1) -> None:
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="polylogue-write-effect")
         self._lock = threading.Lock()
         self._pending: set[str] = set()
+        self._failed: dict[str, tuple[WriteEffect, WriteEffectContext]] = {}
 
     @property
     def pending_count(self) -> int:
         with self._lock:
             return len(self._pending)
 
+    @property
+    def failed_count(self) -> int:
+        with self._lock:
+            return len(self._failed)
+
     def enqueue(self, effect: WriteEffect, ctx: WriteEffectContext) -> None:
-        key = f"{effect.name}:{ctx.staleness_key}"
+        with self._lock:
+            retries = list(self._failed.items())
+            self._failed.clear()
+        for failed_key, (failed_effect, failed_ctx) in retries:
+            self._submit(failed_key, failed_effect, failed_ctx)
+        self._submit(f"{effect.name}:{ctx.staleness_key}", effect, ctx)
+
+    def _submit(self, key: str, effect: WriteEffect, ctx: WriteEffectContext) -> None:
         with self._lock:
             if key in self._pending:
                 return
@@ -138,7 +153,12 @@ class DeferredEffectQueue:
                 phase=effect.phase,
                 error_type=type(exc).__name__,
                 error_detail=str(exc),
+                staleness_key=ctx.staleness_key,
+                session_count=len(ctx.changed_session_ids),
+                retry="next_enqueue",
             )
+            with self._lock:
+                self._failed[key] = (effect, ctx)
         finally:
             with self._lock:
                 self._pending.discard(key)

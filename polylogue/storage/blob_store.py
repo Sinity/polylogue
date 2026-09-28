@@ -122,7 +122,7 @@ class BlobStore:
     def __init__(self, root: Path) -> None:
         self.root = root
         self._read_verification_lock = threading.Lock()
-        self._read_verified: OrderedDict[tuple[str, int, int, int, int], None] = OrderedDict()
+        self._read_verified: OrderedDict[tuple[str, int, int, int, int, int], None] = OrderedDict()
 
     @property
     def staging_root(self) -> Path:
@@ -529,8 +529,8 @@ class BlobStore:
         attachments cost their full size each time (polylogue-1gxyu). A blob
         is content-addressed and published atomically, so a successful
         verification stays valid while the file keeps the same device, inode,
-        size and nanosecond mtime; any of those changing forces a full
-        re-hash. The memo is a recomputation cache only -- evicting an entry
+        size, and nanosecond mtime and ctime; any of those changing (including
+        a permission change) forces a full re-hash. The memo is a recomputation cache only -- evicting an entry
         re-hashes, it never changes an answer -- so its size is a pacing
         bound. ``verify`` and ``verify_all`` stay uncached integrity checks.
         """
@@ -539,12 +539,18 @@ class BlobStore:
             info = path.stat()
         except OSError:
             return False
-        identity = (hash_hex, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+        # ctime covers what mtime does not: a mode, owner or content change
+        # always moves it, and it cannot be set back from userspace.
+        identity = (hash_hex, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
         with self._read_verification_lock:
             if identity in self._read_verified:
                 self._read_verified.move_to_end(identity)
                 return True
-        if not self.verify(hash_hex):
+        try:
+            verified = self.verify(hash_hex)
+        except OSError:
+            return False
+        if not verified:
             return False
         with self._read_verification_lock:
             self._read_verified[identity] = None

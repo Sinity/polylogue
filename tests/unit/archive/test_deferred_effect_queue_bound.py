@@ -57,3 +57,28 @@ def test_in_flight_duplicate_is_not_delivered_twice() -> None:
 
     assert calls == ["same"]
     assert queue.pending_count == 0
+
+
+def test_failed_delivery_is_retained_and_retried() -> None:
+    """Anti-vacuity: drop the failed map and the committed invalidation is never retried."""
+    queue = DeferredEffectQueue()
+    attempts: list[str] = []
+    fail_once = {"armed": True}
+
+    def flaky(ctx: WriteEffectContext) -> None:
+        attempts.append(ctx.staleness_key)
+        if fail_once["armed"]:
+            fail_once["armed"] = False
+            raise RuntimeError("connection unavailable")
+
+    flaky_effect = WriteEffect(name="invalidate", phase="async-deferred", run=flaky)
+    queue.enqueue(flaky_effect, _ctx("batch-1"))
+    queue._executor.submit(lambda: None).result(5)
+    assert queue.failed_count == 1
+
+    queue.enqueue(WriteEffect(name="other", phase="async-deferred", run=lambda _ctx: None), _ctx("batch-2"))
+    queue._executor.shutdown(wait=True)
+
+    assert attempts == ["batch-1", "batch-1"]
+    assert queue.failed_count == 0
+    assert queue.pending_count == 0
