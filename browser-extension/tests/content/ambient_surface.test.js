@@ -94,7 +94,7 @@ function manifestDom(url) {
   return dom;
 }
 
-function mount(dom, response = missionFixture()) {
+function mount(dom, response = missionFixture(), options = {}) {
   const runtime = {
     sendMessage: vi.fn(async (message) => {
       if (message.type === "polylogue.missionControl.status") return response;
@@ -106,6 +106,7 @@ function mount(dom, response = missionFixture()) {
     runtime,
     selectionSource: dom.window,
     locationSource: dom.window.location,
+    ...options,
   });
   mounted.push(api);
   return { api, runtime };
@@ -289,6 +290,33 @@ describe("ambient capture status surface", () => {
     dom.window.document.dispatchEvent(new dom.window.Event("selectionchange"));
     expect(api.getSelectionCandidate()).toBeNull();
     expect(dom.window.PolylogueAmbientSurface.deriveSelectionCandidate(crossMessageSelection)).toBeNull();
+  });
+
+  it("enables saving for every accepted native message identity in the conversation", async () => {
+    const messageRef = "chatgpt:conversation-1:n:message-2";
+    const evidenceRef = "browser-capture:artifact#message:message-2";
+    const dom = freshDom(`<!doctype html><html><body>
+      <article data-message-author-role="assistant" data-message-id="message-2"><span id="inside">Accepted turn</span></article>
+    </body></html>`);
+    const observation = {
+      origin: "chatgpt",
+      provider_conversation_id: "conversation-1",
+      provider_message_id: "message-2",
+      adapter_name: "ambient-selection",
+      fidelity: "native",
+    };
+    const { api } = mount(dom, missionFixture({ assertions: {
+      selection_candidate_supported: true,
+      persistence_supported: true,
+      accepted_identities: { [messageRef]: { message_ref: messageRef, evidence_ref: evidenceRef, fidelity: "native" } },
+    } }), { identityForNode: () => observation });
+    await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
+    const range = dom.window.document.createRange();
+    range.selectNodeContents(dom.window.document.getElementById("inside"));
+    dom.window.getSelection().addRange(range);
+    dom.window.document.dispatchEvent(new dom.window.Event("selectionchange"));
+
+    expect(api.getSelectionCandidate().evidence_ref).toBe(evidenceRef);
   });
 
   it.each([

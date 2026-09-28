@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 
 import { PolylogueClient } from '../api/generated';
 import { parseObservabilityPayload, parseStatusObservation, type InsightPanel, type ObservabilityPayload, type ObservabilityStatus, type StatusComponentSnapshot } from '../contracts/observability';
-import { ensureWebCredential } from '../lib/api';
+import { ensureWebCredential, retryCredentialRejectedRequest } from '../lib/api';
 
 const observabilityClient = new PolylogueClient();
 const STATUS_POLL_MS = 2_000;
@@ -169,7 +169,7 @@ export function ObservabilityIsland({
         try {
           await ensureCredential();
           if (stopped || requestController.signal.aborted || requestGeneration !== generation) return;
-          const raw = await client.getStatus({}, { signal: requestController.signal, timeoutMs: STATUS_TIMEOUT_MS });
+          const raw = await retryCredentialRejectedRequest(() => client.getStatus({}, { signal: requestController.signal, timeoutMs: STATUS_TIMEOUT_MS }));
           const status = parseStatusObservation(raw);
           if (!stopped && !requestController.signal.aborted && requestGeneration === generation) {
             setObservation({ status, connection: 'online', receivedAt: Date.now(), error: null });
@@ -227,7 +227,7 @@ export function ObservabilityIsland({
     setInsightsLoading(true);
     try {
       await ensureCredential();
-      const response = await client.getWebuiObservability();
+      const response = await retryCredentialRejectedRequest(() => client.getWebuiObservability());
       const parsed = parseObservabilityPayload(response);
       setInsights(parsed.insights);
       setInsightsLoaded(true);
@@ -245,7 +245,7 @@ export function ObservabilityIsland({
     setActionStatus('Inspecting exact source…');
     try {
       await ensureCredential();
-      setSourceResult(await client.getWebuiFreshness({ source }));
+      setSourceResult(await retryCredentialRejectedRequest(() => client.getWebuiFreshness({ source })));
       setActionStatus('Source freshness loaded.');
     } catch (error) {
       setActionStatus(error instanceof Error ? error.message : 'Source freshness failed.');

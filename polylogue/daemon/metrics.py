@@ -165,7 +165,11 @@ def _collect_group(
         )
         available = 0
     else:
-        lines.extend(pending)
+        # Collector groups build in isolation. Shared family declarations must
+        # still be unique after those buffers are merged (Prometheus rejects
+        # duplicate HELP/TYPE lines for one family).
+        declared = {line for line in lines if line.startswith(("# HELP ", "# TYPE "))}
+        lines.extend(line for line in pending if not line.startswith(("# HELP ", "# TYPE ")) or line not in declared)
         reason = "none"
         available = 1
     states.append(({"group": group}, available))

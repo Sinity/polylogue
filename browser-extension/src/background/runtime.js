@@ -18,7 +18,7 @@ import {
   runningPollDelayMs,
   scheduleFreshnessHint,
 } from "../capture/freshness.js";
-import { clampProviderCooldownMs } from "../capture/provider_cooldown.js";
+import { MAX_PROVIDER_COOLDOWN_MS, clampProviderCooldownMs } from "../capture/provider_cooldown.js";
 import { BACKGROUND_ALARMS } from "./adapters.js";
 import { registerBackgroundEvents } from "./events.js";
 
@@ -1627,9 +1627,16 @@ async function missionIntelligenceProjection(state, configuredUrl) {
     const status = error?.status === 401 ? "unauthorized" : error?.status === 404 ? "incompatible" : error?.status ? "receiver_error" : "offline";
     return unavailable(status, error?.message || "projection_unavailable");
   }
+  const archiveUrl = new URL(base);
+  // The receiver (8765) does not serve archive pages. The daemon's canonical
+  // reader is the separate web endpoint (8766) and uses /s/:session_id.
+  if (archiveUrl.port === "8765") archiveUrl.port = "8766";
+  archiveUrl.pathname = `/s/${encodeURIComponent(indexedSessionId)}`;
+  archiveUrl.search = "";
+  archiveUrl.hash = "";
   return {
     ...projection,
-    archive: { ...projection.archive, url: `${base}/?q=${encodeURIComponent(indexedSessionId)}` },
+    archive: { ...projection.archive, url: archiveUrl.toString() },
     cost: {
       ...(projection.cost || {}),
       status: projection.cost?.status === "unavailable" ? "unknown" : (projection.cost?.status || "unknown"),
@@ -1849,14 +1856,39 @@ function providerTab(provider, { allowCreate = false } = {}) {
   return tracked;
 }
 
+// A provider-controlled Retry-After can parse to Infinity or NaN. Only a
+// finite positive number of seconds is a usable delay; anything else falls
+// back to the default rate-limit delay rather than an unbounded deadline.
+// A finite but huge value (1e307) still overflows once converted to
+// milliseconds, so seconds are bounded by the cooldown ceiling here, before
+// any conversion.
+function finiteRetryAfterSeconds(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  return Math.min(seconds, MAX_PROVIDER_COOLDOWN_MS / 1000);
+}
+
 function withProviderTransportOperation(provider, operation, { checkThrottle = true } = {}) {
   const prior = providerTransportOperations.get(provider) || Promise.resolve();
   const result = prior.catch(() => undefined).then(async () => {
     if (checkThrottle) await requireProviderThrottleAvailability(provider);
     try {
-      return await operation();
+      const value = await operation();
+      // Some operations report a provider refusal as a resolved failure
+      // result rather than a throw; a rate limit there must still set the
+      // shared cooldown, or the next request contacts the provider during
+      // its advertised Retry-After. A 429 without a Retry-After header is
+      // still a rate limit; the recorder supplies the default delay.
+      if (value && value.ok === false) {
+        const refusal = new Error(value.detail || "browser_action_failed");
+        if (value.outcome) refusal.outcome = value.outcome;
+        refusal.retryAfterSeconds = finiteRetryAfterSeconds(value.retry_after_seconds);
+        const classified = classifyBrowserActionFailure(refusal, refusal.retryAfterSeconds);
+        if (classified.outcome === "rate_limited") await recordProviderThrottle(provider, refusal, classified);
+      }
+      return value;
     } catch (error) {
-      const classified = classifyBrowserActionFailure(error, error?.retryAfterSeconds || null);
+      const classified = classifyBrowserActionFailure(error, finiteRetryAfterSeconds(error?.retryAfterSeconds));
       if (classified.outcome === "rate_limited" && !error?.providerThrottleApplied) {
         await recordProviderThrottle(provider, error, classified);
       }
@@ -3179,8 +3211,8 @@ async function missionControlSnapshot(tab = null, { refresh = true, includeIntel
     } catch { /* Old receivers fail closed and leave Save unavailable. */ }
   }
   const acceptedIdentityMap = await runtimeChrome.storage.local.get({ [ACCEPTED_MESSAGE_IDENTITIES_KEY]: {} });
-  const acceptedIdentity = state.provider && state.provider_session_id
-    ? acceptedIdentityMap[ACCEPTED_MESSAGE_IDENTITIES_KEY]?.[sessionKey(state.provider, state.provider_session_id)] || null
+  const acceptedIdentities = state.provider && state.provider_session_id
+    ? acceptedIdentityMap[ACCEPTED_MESSAGE_IDENTITIES_KEY]?.[sessionKey(state.provider, state.provider_session_id)] || {}
     : null;
 
   return {
@@ -3213,7 +3245,7 @@ async function missionControlSnapshot(tab = null, { refresh = true, includeIntel
     assertions: {
       selection_candidate_supported: true,
       persistence_supported: assertionCapability,
-      accepted_identity: acceptedIdentity,
+      accepted_identities: acceptedIdentities,
       reason: assertionCapability ? "candidate_assertion_route" : "receiver_capability_unavailable",
     },
     ...(includeIntelligence ? { intelligence } : {}),
@@ -3403,9 +3435,13 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (Array.isArray(result?.accepted_identities)) {
           const current = await runtimeChrome.storage.local.get({ [ACCEPTED_MESSAGE_IDENTITIES_KEY]: {} });
           const key = sessionKey(summary.provider, summary.providerSessionId);
-          const native = result.accepted_identities.find((item) => item?.fidelity === "native") || null;
+          const identities = Object.fromEntries(
+            result.accepted_identities
+              .filter((item) => item?.fidelity === "native" && typeof item?.message_ref === "string" && item.message_ref)
+              .map((item) => [item.message_ref, item]),
+          );
           await runtimeChrome.storage.local.set({
-            [ACCEPTED_MESSAGE_IDENTITIES_KEY]: { ...current[ACCEPTED_MESSAGE_IDENTITIES_KEY], [key]: native },
+            [ACCEPTED_MESSAGE_IDENTITIES_KEY]: { ...current[ACCEPTED_MESSAGE_IDENTITIES_KEY], [key]: identities },
           });
         }
       } catch (error) {

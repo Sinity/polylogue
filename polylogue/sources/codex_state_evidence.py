@@ -314,7 +314,7 @@ def _unreceipted_codex_state_raw_ids(source_db: Path) -> list[str]:
                   OR lower(r.source_path) GLOB '*.sqlite3'
                   OR lower(r.source_path) GLOB '*.db'
               )
-            ORDER BY r.raw_id
+            ORDER BY r.acquired_at_ms, r.raw_id
             """,
             (origin,),
         ).fetchall()
@@ -415,7 +415,17 @@ def resolve_retained_codex_state_receipts(archive_root: Path) -> int:
                 continue
             if not is_declared_logical_export(state_path, source_path):
                 continue
-            state_kind = codex_state.classify_codex_sqlite_path(state_path, immutable=True)
+            try:
+                state_kind = codex_state.classify_codex_sqlite_path(state_path, immutable=True)
+            except (sqlite3.DatabaseError, OSError, ValueError) as exc:
+                emit(
+                    "sources.codex_state.snapshot_finalize_refused",
+                    outcome="degraded",
+                    reason="retained_snapshot_schema_unreadable",
+                    raw_id=raw_id,
+                    error_type=type(exc).__name__,
+                )
+                continue
             if state_kind not in codex_state.IN_SCOPE_KINDS:
                 continue
             observed_at_ms = archive.raw_revision_observed_at_ms(raw_id)

@@ -54,10 +54,16 @@ def tier_for_path(path: str | Path) -> Tier | None:
 
 
 def _inside_writer_lease() -> bool:
-    if current_write_lease() is None:
+    lease = current_write_lease()
+    if lease is None:
         return False
     try:
-        return require_write_lease("I/O phase ownership sample") is not None
+        # Echo the held lease's own archive_root: this sampler has no
+        # archive of its own to assert, it only wants to know whether a
+        # lease is held. Passing None here would otherwise read as an
+        # omission on an archive-bound lease and misreport every sample as
+        # unowned (see write_guard.py's identical rationale).
+        return require_write_lease("I/O phase ownership sample", archive_root=lease.archive_root) is not None
     except UnleasedWriteError:
         return False
 

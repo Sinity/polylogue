@@ -158,28 +158,9 @@ def _embeddings_db_present() -> bool:
 
 def _unresolvable_raw_source_count() -> int:
     """Count raw source rows whose original source path is no longer readable."""
+    from polylogue.operations.reset_safety import unresolvable_raw_source_count
 
-    source_db = _source_db_path()
-    if not source_db.exists():
-        return 0
-    conn = open_readonly_connection(source_db, validate_schema=False)
-    try:
-        rows = conn.execute(
-            """
-            SELECT COALESCE(NULLIF(source_path, ''), '') AS source_path, COUNT(*)
-            FROM raw_sessions
-            WHERE source_path IS NOT NULL
-              AND source_path != ''
-            GROUP BY source_path
-            """
-        ).fetchall()
-    finally:
-        conn.close()
-    at_risk = 0
-    for source_path, count in rows:
-        if not Path(str(source_path)).exists():
-            at_risk += int(count)
-    return at_risk
+    return unresolvable_raw_source_count(_archive_root())
 
 
 def _resolve_archive_session_ids(tokens: list[str]) -> list[str]:
@@ -438,7 +419,7 @@ def reset_command(
         result = _submit(
             env,
             "mutation.identity-reset",
-            {"session_ids": session_ids, "reason": reason},
+            {"session_ids": session_ids, "reason": reason, "confirm": True},
         )
         result_payload = result.get("result")
         result_payload = result_payload if isinstance(result_payload, dict) else {}
@@ -558,6 +539,8 @@ def reset_command(
             "cache": cache,
             "auth": auth,
             "reset_all": reset_all,
+            "confirm": True,
+            "expected_targets": [str(path.resolve()) for _name, path in targets],
         },
     )
     deleted_value = result.get("affected_count", 0)

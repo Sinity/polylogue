@@ -36,6 +36,33 @@ export async function ensureWebCredential(): Promise<void> {
   }
 }
 
+function isCredentialRejection(error: unknown): boolean {
+  return error instanceof DaemonHttpError && [
+    'web_credential_missing',
+    'web_credential_invalid',
+    'web_credential_expired',
+    'web_credential_revoked',
+  ].includes(error.code ?? '');
+}
+
+/** Retry once after the daemon has lost or revoked its process-local credential. */
+export async function withWebCredential<T>(request: () => Promise<T>): Promise<T> {
+  await ensureWebCredential();
+  return retryCredentialRejectedRequest(request);
+}
+
+/** Retry a credentialed request after an injected bootstrap has already run. */
+export async function retryCredentialRejectedRequest<T>(request: () => Promise<T>): Promise<T> {
+  try {
+    return await request();
+  } catch (error) {
+    if (!isCredentialRejection(error)) throw error;
+    credentialExpiresAtMs = 0;
+    await ensureWebCredential();
+    return request();
+  }
+}
+
 /**
  * An archive request the daemon refused, carrying the daemon's own typed
  * refusal code. Callers that must distinguish refusals — a deep link naming a
@@ -64,15 +91,14 @@ export async function fetchSessionListPage(
   filters: SessionListFilters,
   offset: number,
 ): Promise<SessionListPage> {
-  await ensureWebCredential();
   try {
-    return parseSessionListPage(await credentialClient.searchSessions({
+    return parseSessionListPage(await withWebCredential(() => credentialClient.searchSessions({
       ...(filters.origin ? { origin: filters.origin } : {}),
       ...(filters.since ? { since: filters.since } : {}),
       ...(filters.repo ? { repo: filters.repo } : {}),
       limit: SESSION_LIST_LIMIT,
       offset,
-    }));
+    })));
   } catch (error) {
     if (error instanceof DaemonHttpError) throw new ArchiveRequestError(error.code ?? `HTTP ${error.status}`, error.status);
     throw error;
@@ -91,14 +117,13 @@ export async function fetchSessionMessagesPage(
   sessionId: string,
   window: SessionMessageWindow,
 ): Promise<SessionMessagePage> {
-  await ensureWebCredential();
   try {
-    return parseSessionMessagePage(await credentialClient.readSessionView({
+    return parseSessionMessagePage(await withWebCredential(() => credentialClient.readSessionView({
       session_id: sessionId,
       view: 'messages',
       limit: SESSION_READ_MESSAGE_LIMIT,
       ...('around' in window ? { around: window.around } : { offset: window.offset }),
-    }));
+    })));
   } catch (error) {
     if (error instanceof DaemonHttpError) throw new ArchiveRequestError(error.code ?? `HTTP ${error.status}`, error.status);
     throw error;

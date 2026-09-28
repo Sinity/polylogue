@@ -106,6 +106,9 @@ class DaemonOperationRuntime:
         self._read_dependencies_factory = read_dependencies_factory
         self._owner_loop = owner_loop
         self._session_maintenance = session_maintenance
+        # The daemon CLI installs its resident embedding convergence owner
+        # here so staged backfill operations share the same pass lock.
+        self.embedding_convergence: object | None = None
         self._condition = threading.Condition(threading.RLock())
         self._exchanges: dict[str, _Exchange] = {}
         self._closing = False

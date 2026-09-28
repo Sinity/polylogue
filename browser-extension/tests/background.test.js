@@ -2390,6 +2390,81 @@ describe("background receiver diagnostics", () => {
     expect(freshnessAlarms.at(-1)[1]).toEqual({ when: 173_000 });
   });
 
+  // Anti-vacuity: restore `Number(value.retry_after_seconds) || null` and an
+  // Infinity Retry-After passes through, so no finite cooldown is stored.
+  it("uses the default rate-limit delay for a non-finite resolved Retry-After", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(100_000);
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/infinite-retry", title: "ChatGPT" }];
+    stored.polylogueReceiverPairing = {
+      state: "online",
+      receiver_id: "rx-infinite-retry",
+      api_schema: "polylogue-browser-capture/v1",
+      endpoint: "http://127.0.0.1:8875",
+    };
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({ ok: true, receiver_id: "rx-infinite-retry", api_schema: "polylogue-browser-capture/v1" });
+      }
+      throw new Error(`unexpected receiver request: ${url}`);
+    });
+    globalThis.chrome.tabs.sendMessage = vi.fn(async () => ({
+      ok: false,
+      error: "rate_limited",
+      outcome: "rate_limited",
+      retry_after_seconds: Infinity,
+    }));
+
+    await sendRuntimeMessage({
+      type: "polylogue.captureFreshnessHint",
+      provider: "chatgpt",
+      provider_session_id: "infinite-retry",
+      reason: "generation_completed",
+      delay_ms: 0,
+    });
+
+    alarmListener({ name: "polylogueCaptureFreshnessWake" });
+    await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.provider_cooldowns.chatgpt)
+      .toBe(100_000 + 15 * 60_000));
+  });
+
+  // Anti-vacuity (Codex P2, #5700): accept any finite seconds value and a
+  // 307-digit Retry-After becomes Infinity once converted to milliseconds,
+  // storing an unbounded cooldown instead of the 24-hour ceiling.
+  it("bounds a huge finite resolved Retry-After at the cooldown ceiling", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(100_000);
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/huge-retry", title: "ChatGPT" }];
+    stored.polylogueReceiverPairing = {
+      state: "online",
+      receiver_id: "rx-huge-retry",
+      api_schema: "polylogue-browser-capture/v1",
+      endpoint: "http://127.0.0.1:8875",
+    };
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({ ok: true, receiver_id: "rx-huge-retry", api_schema: "polylogue-browser-capture/v1" });
+      }
+      throw new Error(`unexpected receiver request: ${url}`);
+    });
+    globalThis.chrome.tabs.sendMessage = vi.fn(async () => ({
+      ok: false,
+      error: "rate_limited",
+      outcome: "rate_limited",
+      retry_after_seconds: 1e307,
+    }));
+
+    await sendRuntimeMessage({
+      type: "polylogue.captureFreshnessHint",
+      provider: "chatgpt",
+      provider_session_id: "huge-retry",
+      reason: "generation_completed",
+      delay_ms: 0,
+    });
+
+    alarmListener({ name: "polylogueCaptureFreshnessWake" });
+    await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.provider_cooldowns.chatgpt)
+      .toBe(100_000 + 24 * 60 * 60 * 1000));
+  });
+
   it("persists a content-reported rate limit before another conversation can capture", async () => {
     vi.spyOn(Date, "now").mockReturnValue(100_000);
     tabs = [{ id: 42, url: "https://chatgpt.com/c/content-rate-limit", title: "ChatGPT" }];
@@ -3118,6 +3193,51 @@ describe("provider-neutral browser action worker", () => {
     alarmListener({ name: "polylogueBrowserActionWake" });
     await vi.waitFor(() => expect(updates.at(-1)?.outcome).toBe("rate_limited"));
     expect(updates.at(-1)).toMatchObject({ retry_after_seconds: 75, phase: "provider_action_failed" });
+  });
+
+  it("records a provider cooldown for a resolved 429 without Retry-After", async () => {
+    const action = {
+      action_id: "action-rate-bare",
+      receiver_id: "rx-action-test",
+      provider: "chatgpt",
+      operation: "conversation.create",
+      target: { conversation_id: "new", conversation_url: null, project_ref: null },
+      text: "Harmless rate-limit fixture.",
+      attachments: [],
+      presentation: { surface: "chat", model_slug: "gpt-5-6-pro", model_label: "GPT-5.6 Sol", effort_label: "Pro" },
+      submit_policy: "submit_once",
+      status: "leased",
+    };
+    const updates = [];
+    let claimed = false;
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({ ok: true, receiver_id: "rx-action-test", api_schema: "polylogue-browser-capture/v1" });
+      }
+      if (String(url).includes("/v1/browser-actions?claim_by=")) {
+        if (claimed) return responseJson({ actions: [] });
+        claimed = true;
+        return responseJson({ actions: [action] });
+      }
+      if (String(url).endsWith("/v1/browser-actions/action-rate-bare/events")) {
+        updates.push(JSON.parse(options.body));
+        return responseJson({ action });
+      }
+      return responseJson({ error: "unexpected" }, { ok: false, status: 500 });
+    });
+    globalThis.chrome.scripting.executeScript = vi.fn(async () => [{ result: {
+      ok: false,
+      detail: "provider response http_429",
+      retry_after_seconds: null,
+      submission_may_have_occurred: false,
+    } }]);
+
+    alarmListener({ name: "polylogueBrowserActionWake" });
+    await vi.waitFor(() => expect(updates.at(-1)?.outcome).toBe("rate_limited"));
+    // Red if the transport wrapper records a cooldown only when the resolved
+    // failure carried a Retry-After: the next operation would reach the
+    // provider immediately.
+    expect(stored.polylogueCaptureFreshnessQueue?.provider_cooldowns?.chatgpt).toBeGreaterThan(Date.now());
   });
 
   it("stops reading an attachment response at the extension transport limit", async () => {

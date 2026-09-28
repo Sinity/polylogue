@@ -187,7 +187,7 @@ def consume_cli_delete_many(archive_root: Path, tokens: tuple[str, ...], princip
     for index, token in enumerate(tokens):
         try:
             affected_count += consume_cli_delete(archive_root, token, principal).affected_count
-        except ValueError as exc:
+        except Exception as exc:
             # The failing chunk's index is exactly the number that committed
             # before it. Index zero means nothing committed and the batch was
             # refused, which the caller already reports correctly; past that

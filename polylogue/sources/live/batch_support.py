@@ -319,6 +319,7 @@ class _FullIngestResult:
     ingested_message_count: int = 0
     changed_session_count: int = 0
     excised_skips: int = 0
+    excised_paths: tuple[Path, ...] = ()
     stage_timings_s: dict[str, float] = field(default_factory=dict)
     # Real session ids materialized by this full-ingest group (polylogue-20d.13),
     # threaded from ``_IngestBatchSummary.changed_session_ids`` so callers can
@@ -355,6 +356,7 @@ def _full_ingest_result_from_summary(
     captured_file_observations: dict[Path, tuple[int, int, int, int, int]] | None = None,
     summary: object | None,
     excised_skips: int = 0,
+    excised_paths: tuple[Path, ...] = (),
     time_budget_exceeded: bool = False,
     write_hold_exhausted: bool = False,
 ) -> _FullIngestResult:
@@ -379,6 +381,7 @@ def _full_ingest_result_from_summary(
         ingested_message_count=int(getattr(summary, "total_msgs", 0)) if summary is not None else 0,
         changed_session_count=len(getattr(summary, "changed_session_ids", ())) if summary is not None else 0,
         excised_skips=excised_skips,
+        excised_paths=excised_paths,
         changed_session_ids=tuple(getattr(summary, "changed_session_ids", ()) or ()) if summary is not None else (),
         stage_timings_s=dict(getattr(summary, "stage_timings_s", {})) if summary is not None else {},
         time_budget_exceeded=time_budget_exceeded,
@@ -1094,8 +1097,23 @@ _RETRYABLE_READ_ERRNOS = frozenset(
 )
 
 
+class RetryableSourceReadError(RuntimeError):
+    """A source read failed for a reason a later pass can clear.
+
+    Raised by :func:`classify_pre_acquisition` so callers handle a retryable
+    read as a typed outcome instead of catching raw SQLite or OS errors.
+    """
+
+    def __init__(self, path: Path, cause: BaseException) -> None:
+        super().__init__(f"{path}: {cause}")
+        self.path = path
+        self.cause = cause
+
+
 def retryable_read_fault(exc: BaseException) -> bool:
     """Whether a source read failed for a reason a later read can clear."""
+    if isinstance(exc, RetryableSourceReadError):
+        return True
     sqlite_code = getattr(exc, "sqlite_errorcode", None)
     return (isinstance(exc, OSError) and exc.errno in _RETRYABLE_READ_ERRNOS) or (
         isinstance(exc, sqlite3.Error)
@@ -1157,20 +1175,34 @@ def classify_pre_acquisition(
     instead, so the caller retries the file rather than excluding a valid
     database for good; bytes that are not a readable database stay excluded.
     """
-    decision = _classify_pre_acquisition(
-        path,
-        fallback_provider=fallback_provider,
-        source_only=source_only,
-        size_bytes=size_bytes,
-        checkpoint=checkpoint,
-    )
+    try:
+        decision = _classify_pre_acquisition(
+            path,
+            fallback_provider=fallback_provider,
+            source_only=source_only,
+            size_bytes=size_bytes,
+            checkpoint=checkpoint,
+        )
+    except (OSError, sqlite3.Error) as exc:
+        if retryable_read_fault(exc):
+            raise RetryableSourceReadError(path, exc) from exc
+        raise
     if decision.excluded_reason is not None and is_sqlite_path(path):
-        try:
-            probe_sqlite_readable(path)
-        except (OSError, sqlite3.Error) as exc:
-            if retryable_read_fault(exc):
-                raise
+        _raise_retryable_probe_fault(path)
     return decision
+
+
+def _raise_retryable_probe_fault(path: Path) -> None:
+    """Raise :class:`RetryableSourceReadError` if the database cannot be read now.
+
+    Any other probe failure (bytes that are not a database) leaves the
+    exclusion standing, so it is deliberately not raised.
+    """
+    try:
+        probe_sqlite_readable(path)
+    except (OSError, sqlite3.Error) as exc:
+        if retryable_read_fault(exc):
+            raise RetryableSourceReadError(path, exc) from exc
 
 
 def _classify_pre_acquisition(

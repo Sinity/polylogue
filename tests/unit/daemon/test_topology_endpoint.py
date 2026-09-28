@@ -240,6 +240,18 @@ class TestEnvelopeProjection:
         assert env["readiness"] == READINESS_PARTIAL
         assert env["cycle_detected"] is True
 
+    def test_conflicting_parent_marks_singleton_partial(self) -> None:
+        """A conflicting parent cannot be presented as an empty lineage.
+
+        Anti-vacuity: removing conflicting_parent_detected from the readiness
+        calculation makes this singleton report ``empty`` and fails here.
+        """
+        topo = _topology(target="child", root="child", nodes=[("child", 0, True)], edges=[]).model_copy(
+            update={"conflicting_parent_detected": True}
+        )
+        env = build_topology_envelope(topo)
+        assert env["readiness"] == READINESS_PARTIAL
+
     def test_node_limit_is_bounded_and_signals_truncation(self) -> None:
         """#1121 AC: lineage rendering is bounded — does not unbound expand."""
         topo = _topology(

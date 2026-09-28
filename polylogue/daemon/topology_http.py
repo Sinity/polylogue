@@ -79,6 +79,7 @@ def _readiness(
     truncated_count: int,
     unresolved_edge_count: int,
     cycle_detected: bool,
+    conflicting_parent_detected: bool,
     node_count: int,
 ) -> str:
     """Map structural state to the chip vocabulary.
@@ -90,9 +91,15 @@ def _readiness(
     is ``ok``.
     """
 
-    if node_count <= 1 and truncated_count == 0 and unresolved_edge_count == 0 and not cycle_detected:
+    if (
+        node_count <= 1
+        and truncated_count == 0
+        and unresolved_edge_count == 0
+        and not cycle_detected
+        and not conflicting_parent_detected
+    ):
         return READINESS_EMPTY
-    if truncated_count > 0 or unresolved_edge_count > 0 or cycle_detected:
+    if truncated_count > 0 or unresolved_edge_count > 0 or cycle_detected or conflicting_parent_detected:
         return READINESS_PARTIAL
     return READINESS_OK
 
@@ -130,6 +137,7 @@ def build_topology_envelope(
         truncated_count=truncated_count,
         unresolved_edge_count=unresolved_edge_count,
         cycle_detected=topology.cycle_detected,
+        conflicting_parent_detected=topology.conflicting_parent_detected,
         node_count=len(kept_nodes),
     )
 

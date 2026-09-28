@@ -609,6 +609,24 @@ describe("background backfill coordinator", () => {
     expect(await store.getJob("local-claude")).toMatchObject({ id: "local-claude" });
   });
 
+  it("treats a shared provider cooldown as a rate limit, not a transport failure", async () => {
+    // Anti-vacuity: route the shared-cooldown refusal back through
+    // retryTransport and the job counts transport failures and pauses as
+    // repeated_transport_failures although no provider request was made.
+    const adapter = new FixtureAdapter(["one"]);
+    const cooldown = Object.assign(new Error("provider_rate_limited"), { outcome: "rate_limited", retryAfterSeconds: 30 });
+    const h = harness({ adapter, policy: { breakerThreshold: 2 } });
+    const job = await startJob(h);
+    await enumerateThenAdvance(h, job);
+    adapter.fetchError = cooldown;
+    await h.coordinator.wake(job.id);
+    const status = await h.coordinator.status(job.id);
+    expect(status.cooldown_reason).toBe("provider_rate_limited");
+    expect(status.cooldown_until_ms).toBe(h.now() + 30000);
+    expect(status.transport_failures || 0).toBe(0);
+    expect(status.status).not.toBe("paused");
+  });
+
   it("honors Retry-After exactly and opens a circuit after repeated 429s", async () => {
     const adapter = new FixtureAdapter(["one"]);
     adapter.responses = [response({}, { status: 429, retryAfter: "60" }), response({}, { status: 429, retryAfter: "60" })];
