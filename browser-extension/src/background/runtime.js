@@ -18,7 +18,7 @@ import {
   runningPollDelayMs,
   scheduleFreshnessHint,
 } from "../capture/freshness.js";
-import { clampProviderCooldownMs } from "../capture/provider_cooldown.js";
+import { MAX_PROVIDER_COOLDOWN_MS, clampProviderCooldownMs } from "../capture/provider_cooldown.js";
 import { BACKGROUND_ALARMS } from "./adapters.js";
 import { registerBackgroundEvents } from "./events.js";
 
@@ -1848,14 +1848,39 @@ function providerTab(provider, { allowCreate = false } = {}) {
   return tracked;
 }
 
+// A provider-controlled Retry-After can parse to Infinity or NaN. Only a
+// finite positive number of seconds is a usable delay; anything else falls
+// back to the default rate-limit delay rather than an unbounded deadline.
+// A finite but huge value (1e307) still overflows once converted to
+// milliseconds, so seconds are bounded by the cooldown ceiling here, before
+// any conversion.
+function finiteRetryAfterSeconds(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  return Math.min(seconds, MAX_PROVIDER_COOLDOWN_MS / 1000);
+}
+
 function withProviderTransportOperation(provider, operation, { checkThrottle = true } = {}) {
   const prior = providerTransportOperations.get(provider) || Promise.resolve();
   const result = prior.catch(() => undefined).then(async () => {
     if (checkThrottle) await requireProviderThrottleAvailability(provider);
     try {
-      return await operation();
+      const value = await operation();
+      // Some operations report a provider refusal as a resolved failure
+      // result rather than a throw; a rate limit there must still set the
+      // shared cooldown, or the next request contacts the provider during
+      // its advertised Retry-After. A 429 without a Retry-After header is
+      // still a rate limit; the recorder supplies the default delay.
+      if (value && value.ok === false) {
+        const refusal = new Error(value.detail || "browser_action_failed");
+        if (value.outcome) refusal.outcome = value.outcome;
+        refusal.retryAfterSeconds = finiteRetryAfterSeconds(value.retry_after_seconds);
+        const classified = classifyBrowserActionFailure(refusal, refusal.retryAfterSeconds);
+        if (classified.outcome === "rate_limited") await recordProviderThrottle(provider, refusal, classified);
+      }
+      return value;
     } catch (error) {
-      const classified = classifyBrowserActionFailure(error, error?.retryAfterSeconds || null);
+      const classified = classifyBrowserActionFailure(error, finiteRetryAfterSeconds(error?.retryAfterSeconds));
       if (classified.outcome === "rate_limited" && !error?.providerThrottleApplied) {
         await recordProviderThrottle(provider, error, classified);
       }

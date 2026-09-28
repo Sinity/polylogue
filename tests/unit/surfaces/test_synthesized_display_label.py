@@ -157,9 +157,11 @@ def test_composed_label_names_the_dominant_action_family(tmp_path: Path) -> None
         summary = archive.read_summary(archive.resolve_session_id("codex-echo-2"))
 
     label = summary.display_label or ""
-    # The dominant family (two Edit calls beat one Read) is a component of the
-    # label, so sibling sessions in one repo differ by what they did.
-    assert "file_edit" in label, label
+    # Internal action-family identifiers are analysis vocabulary, not label
+    # text (analysis/session_label.py): the label names counts a reader can
+    # use instead.
+    assert label, label
+    assert "file_edit" not in label, label
     assert "msgs" in label
 
 
