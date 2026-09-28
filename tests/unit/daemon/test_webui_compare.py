@@ -118,7 +118,7 @@ def test_pasted_diff_span_includes_file_headers(diff: str) -> None:
     spans = detect_paste_spans(diff)
     assert len(spans) == 1
     assert spans[0]["start"] == 0
-    assert diff[slice(spans[0]["start"], spans[0]["end"])] == diff
+    assert diff[slice(spans[0]["start"], cast(int, spans[0]["end"]))] == diff
 
 
 @pytest.mark.parametrize(("raw", "expected"), [("0", None), ("12", 12)])

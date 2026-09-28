@@ -365,6 +365,6 @@ def test_bounding_topology_filters_helpers_and_preserves_page_offset() -> None:
         "outcome": {"state": "ok", "detail": {}},
     }
     bounded = bound_topology_envelope(envelope, node_limit=2, source_node_offset=500)
-    kept = {row["session_id"] for row in bounded["nodes"]}
+    kept = {row["session_id"] for row in cast(list[dict[str, str]], bounded["nodes"])}
     assert bounded["continuation"] == "node-offset:502"
-    assert all(set(bounded[key]) <= kept for key in ("ancestors", "descendants", "siblings", "thread"))
+    assert all(set(cast(list[str], bounded[key])) <= kept for key in ("ancestors", "descendants", "siblings", "thread"))

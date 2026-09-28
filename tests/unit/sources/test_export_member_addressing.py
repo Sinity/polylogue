@@ -51,7 +51,7 @@ def _row(
     source_path: str,
     *,
     payload: bytes,
-    source_index: int,
+    source_index: int | None,
     addressing_mode: str = "",
 ) -> dict[str, object]:
     return {

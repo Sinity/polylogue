@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
@@ -104,7 +105,7 @@ def test_member_hash_uses_one_descriptor_and_captured_append_length(
     member = root / "events.jsonl"
     original = b"first\n"
     member.write_bytes(original)
-    real_fstat = source_snapshot.os.fstat
+    real_fstat = os.fstat
     captured = False
 
     def append_after_capture(fd: int) -> Any:
@@ -116,7 +117,7 @@ def test_member_hash_uses_one_descriptor_and_captured_append_length(
                 output.write(b"later\n")
         return info
 
-    monkeypatch.setattr(source_snapshot.os, "fstat", append_after_capture)
+    monkeypatch.setattr(os, "fstat", append_after_capture)
     observed = source_snapshot.observe_source_members(SourceDeclaration("append", SourceRole.APPEND_JSONL, root, True))
 
     assert len(observed) == 1

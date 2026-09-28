@@ -250,10 +250,10 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
             }
             if citation:
                 context_item["citation"] = citation
-                current = evidence.get(sid)
-                if current is not None and citation not in current.citations:
+                cited = evidence.get(sid)
+                if cited is not None and citation not in cited.citations:
                     evidence[sid] = TopicPackEvidence(
-                        current.session_id, current.reason, current.evidence, (*current.citations, citation)
+                        cited.session_id, cited.reason, cited.evidence, (*cited.citations, citation)
                     )
             context_pack.append(context_item)
             message_count += 1
@@ -277,9 +277,9 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
             if topology is None:
                 continue
             retrieval_lanes["topology"] += len(getattr(topology, "nodes", ()))
-            current = evidence.get(_session_id(summary))
-            if current is not None:
-                details = dict(current.evidence)
+            expanded = evidence.get(_session_id(summary))
+            if expanded is not None:
+                details = dict(expanded.evidence)
                 details["topology"] = {
                     "root_id": str(getattr(topology, "root_id", "")),
                     "node_count": len(getattr(topology, "nodes", ())),
@@ -287,7 +287,7 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
                     "cycle_detected": bool(getattr(topology, "cycle_detected", False)),
                 }
                 evidence[_session_id(summary)] = TopicPackEvidence(
-                    current.session_id, current.reason, details, current.citations
+                    expanded.session_id, expanded.reason, details, expanded.citations
                 )
 
     return TopicPackResult(

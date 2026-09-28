@@ -67,7 +67,7 @@ async def test_topic_pack_vector_lane_is_provider_general_and_bounded() -> None:
     assert result.metadata["vector_status"] == "ready"
     assert cast(dict[str, int], result.metadata["bounds"])["max_sessions"] == 1
     assert {item.reason for item in result.evidence} == {"fts"}
-    assert "embedding" not in result.metadata["retrieval_channels_attempted"]
+    assert "embedding" not in cast(list[str], result.metadata["retrieval_channels_attempted"])
 
 
 @pytest.mark.asyncio
@@ -136,7 +136,7 @@ async def test_topic_pack_prefers_bounded_paged_read_with_hydrated_block_hash() 
     result = await build_topic_pack(cast(Any, store), TopicPackRequest("topic", max_messages=1))
     assert store.requested_limit == 1
     assert result.metadata["content_hash_citations"] == 1
-    assert result.context_pack[0]["citation"].endswith("sha256:" + "ab" * 32)
+    assert str(result.context_pack[0]["citation"]).endswith("sha256:" + "ab" * 32)
 
 
 def test_signals_require_issue_identifiers_and_stop_after_sixteen_candidates() -> None:

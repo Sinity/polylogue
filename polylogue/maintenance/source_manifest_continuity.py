@@ -695,6 +695,7 @@ def build_source_frontier(declarations: Iterable[SourceDeclaration]) -> SourceFr
             continue
         states[declaration.source_id] = FrontierState.PRESENT if observed else FrontierState.VALID_EMPTY
         for item in observed:
+            identity: tuple[int, ...]
             if declaration.role is SourceRole.ARCHIVE_MEMBER:
                 # Archive member identity includes archive device/inode and
                 # the ZIP header offset; equal payloads remain distinct.

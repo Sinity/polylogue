@@ -7,6 +7,7 @@ import subprocess
 import time
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -449,7 +450,7 @@ def test_invalid_daemon_path_drops_telemetry_without_replacing_route_error(tmp_p
     _init_ops(tmp_path)
     with pytest.raises(RuntimeError, match="operation failed"):
         with observe_route(archive_root=tmp_path, surface="cli", route="cli.invalid-path") as obs:
-            obs.daemon_path = "socket"  # type: ignore[assignment]
+            obs.daemon_path = "socket"
             raise RuntimeError("operation failed")
     assert route_observation_drops().by_reason.get("emit_failed") == 1
     conn = sqlite3.connect(tmp_path / "ops.db")
@@ -566,7 +567,7 @@ def test_drops_for_a_route_without_a_surviving_bucket_remain_attributed() -> Non
     )
     report = compute_latency_percentiles([_observation(surface="cli", route="status", duration_ms=12)], drops=drops)
     assert report.unattributed_drops == 4
-    assert report.to_payload()["drops"]["by_route"] == {"cli\tvanished": 4}
+    assert cast(dict[str, object], report.to_payload()["drops"])["by_route"] == {"cli\tvanished": 4}
 
 
 def test_unknown_drop_accounting_is_not_reported_as_zero_drops() -> None:
