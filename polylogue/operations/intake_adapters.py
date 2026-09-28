@@ -193,6 +193,13 @@ class FileIntakeAdapter(IntakeAdapter):
         self._discovery_thread = threading.local()
 
     async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+        from polylogue.core.degraded import is_fully_degraded
+
+        if is_fully_degraded():
+            # Discovery reads the cursor tier (due retries, pending fresh
+            # pages); a structurally degraded daemon must not touch it on every
+            # event, and has nothing to admit anyway (#1003).
+            return ()
         # Filesystem enumeration and path probes can be slow on mounted
         # sources. Keep them off the daemon's event loop.
         cancelled = threading.Event()
@@ -693,10 +700,16 @@ class FileIntakeAdapter(IntakeAdapter):
             # A structurally degraded daemon admits nothing and touches nothing:
             # no authority gate (it reads the archive's existence journals), no
             # cursor initialization, no selection. Every item stays retryable,
-            # so nothing is lost once the degradation is cleared (#1003).
-            reason = degraded_reason()
-            detail = f"archive ingest is degraded: {reason.code if reason is not None else 'unknown'}"
-            return {item.item_id: AdmissionResult(AdmissionOutcome.RETRYABLE, reason=detail) for item in items}
+            # so nothing is lost once the degradation is cleared (#1003), and
+            # costs nothing, so the class deficit is not charged for work that
+            # did not happen. Discovery normally returns no page while
+            # degraded; this covers a page discovered just before.
+            degradation = degraded_reason()
+            detail = f"archive ingest is degraded: {degradation.code if degradation is not None else 'unknown'}"
+            return {
+                item.item_id: AdmissionResult(AdmissionOutcome.RETRYABLE, reason=detail, actual_cost=0)
+                for item in items
+            }
         outcomes: dict[str, AdmissionResult] = {}
         batch: list[IntakeItem] = []
         nonregular_paths: list[Path] = []

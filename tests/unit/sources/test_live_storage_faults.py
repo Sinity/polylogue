@@ -534,9 +534,10 @@ async def test_degraded_daemon_admits_nothing_and_reads_no_authority(
 ) -> None:
     """The production intake route short-circuits a structurally degraded daemon.
 
-    Anti-vacuity: drop the degraded check from ``FileIntakeAdapter.admit_page``
-    and the page reaches ``require_cursor_authority`` (which reads the archive's
-    existence journals) and cursor initialization before any batch-level check.
+    Anti-vacuity: drop the degraded check from ``FileIntakeAdapter.discover``
+    and degraded discovery returns a page; drop it from ``admit_page`` and the
+    page reaches ``require_cursor_authority`` (which reads the archive's
+    existence journals) and cursor initialization.
     """
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
@@ -546,12 +547,26 @@ async def test_degraded_daemon_admits_nothing_and_reads_no_authority(
         raise AssertionError("a degraded daemon must not run the source-selection gate")
 
     monkeypatch.setattr(watcher._batch_processor, "require_cursor_authority", authority_must_not_run)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(
+            archive_root=Path(watcher._polylogue.archive_root),
+            watcher=watcher,
+            sources=watcher._sources,
+        ),
+        watcher._sources[0],
+    )
+    # A page discovered while healthy, then admitted after degradation.
+    page = await adapter.discover(limit=8)
+    assert page
     set_degraded(DegradedReason(code="schema_version_mismatch", message="v12 vs v9"))
     try:
-        outcomes = await _admit(watcher)
+        # Discovery reads the cursor tier; degraded, it returns no page at all.
+        assert list(await adapter.discover(limit=8)) == []
+        outcomes = dict(await adapter.admit_page(page))
     finally:
         clear_degraded()
 
-    assert outcomes
     assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.RETRYABLE}
     assert all("degraded" in (result.reason or "") for result in outcomes.values())
+    # No admission work happened, so none is charged to the class deficit.
+    assert {result.actual_cost for result in outcomes.values()} == {0}
