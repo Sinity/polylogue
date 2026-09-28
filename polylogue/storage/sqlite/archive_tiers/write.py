@@ -994,12 +994,19 @@ def _copied_prefix_start(digests: Sequence[str], scope: _IdentityScope, count: i
     """
     if not scope.prefix_digest:
         return 0
-    for start in range(0, len(digests) - count + 1):
-        if digests[start] != scope.first_identity:
-            continue
-        if _identity_sequence_digest(digests[start : start + count]) == scope.prefix_digest:
-            return start
-    return 0
+    matches = [
+        start
+        for start in range(0, len(digests) - count + 1)
+        if digests[start] == scope.first_identity
+        and _identity_sequence_digest(digests[start : start + count]) == scope.prefix_digest
+    ]
+    if len(matches) > 1:
+        # Two runs hold the copied content: choosing one could hand a new
+        # message a stored ID. Refused by name rather than guessed.
+        raise InheritedPrefixMaterializationError(
+            f"the materialized prefix appears {len(matches)} times in this transcript; its stored IDs are ambiguous"
+        )
+    return matches[0] if matches else 0
 
 
 class _ScopedMessages(_MessageTail):
@@ -1311,7 +1318,9 @@ def _prepared_message_context(
     # A child whose prefix was materialized owns its whole transcript and the
     # IDs recorded for it; a replay keeps it spawned-fresh rather than slicing
     # it against whatever the parent holds now, which would move those IDs.
-    identity_scope = None if merge_append else _materialized_identity_scope(conn, session_id)
+    # Loaded for an append too: the append rewrites the edge, and the scope
+    # must be carried onto it; only a full write re-applies it to IDs.
+    identity_scope = _materialized_identity_scope(conn, session_id)
     if not merge_append:
         lineage_session = session
         if hook_parent_provider_id is not None:
@@ -1372,7 +1381,7 @@ def _prepared_message_context(
             if branch_point_message_id is not None:
                 branch_point_content_address = _message_content_address_for_id(conn, branch_point_message_id)
     scoped_identities: tuple[MessageContentIdentity, ...] | None = None
-    if identity_scope is not None:
+    if identity_scope is not None and not merge_append:
         scoped_view, scoped_identities = _scoped_identities(messages, identity_scope)
         messages = scoped_view
         remapped_events = scoped_view.remap_events(list(effective_session.session_events))

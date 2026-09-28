@@ -4461,3 +4461,47 @@ def test_a_scoped_replay_keeps_a_prefix_native_id_a_new_row_repeats(tmp_path: Pa
     replayed = _replay_child(tmp_path, extended)
     assert set(materialized) <= set(replayed)
     assert len(replayed) == 4
+
+
+def test_a_scoped_replay_refuses_a_prefix_that_appears_twice(tmp_path: Path) -> None:
+    """Anti-vacuity: take the first matching run and a prepended copy of the
+    prefix takes the stored native IDs of the materialized one."""
+    from polylogue.storage.sqlite.archive_tiers.write import InheritedPrefixMaterializationError
+
+    parent = [_msg("m0", Role.USER, "hello", 0), _msg("m1", Role.ASSISTANT, "hi there", 1)]
+    child = [*parent, _msg("x", Role.USER, "child diverges here", 2)]
+    _materialize_then_replay(tmp_path, parent, child, [_msg("m0", Role.USER, "hello", 0)])
+    doubled = [
+        *parent,
+        *(message.model_copy(update={"position": (message.position or 0) + 2}) for message in child),
+    ]
+    with pytest.raises(InheritedPrefixMaterializationError, match="ambiguous"):
+        _replay_child(tmp_path, doubled)
+
+
+def test_an_append_keeps_the_materialized_identity_scope(tmp_path: Path) -> None:
+    """Anti-vacuity: skip the scope on an append and the edge it rewrites loses
+    it, so the next full replay slices the child against its parent again."""
+    parent = [_msg("m0", Role.USER, "hello", 0), _msg("m1", Role.ASSISTANT, "hi there", 1)]
+    child = [*parent, _msg("x", Role.USER, "child diverges here", 2)]
+    _inheriting, materialized, _replayed = _materialize_then_replay(
+        tmp_path, parent, child, [_msg("m0", Role.USER, "hello", 0)]
+    )
+    conn = _connect(tmp_path / "index.db")
+    appended = _msg("y", Role.ASSISTANT, "appended reply", 3)
+    write_parsed_session_to_archive(
+        conn,
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="child",
+            title="child",
+            parent_session_provider_id="parent",
+            branch_type=BranchType.FORK,
+            messages=[appended],
+        ),
+        merge_append=True,
+    )
+    conn.commit()
+    conn.close()
+    replayed = _replay_child(tmp_path, [*child, appended])
+    assert set(materialized) <= set(replayed)
