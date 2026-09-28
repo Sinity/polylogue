@@ -307,6 +307,29 @@ def _cacheable_read(name: str, payload: Mapping[str, object]) -> bool:
     return False
 
 
+#: Deadline of a declared read that a request's own shape makes archive-scan
+#: work; matches the declared deadline of the daemon's other scan operations.
+READ_SCAN_DEADLINE_S = 120.0
+
+
+def read_is_archive_scan(name: str, payload: Mapping[str, object]) -> bool:
+    """Whether this read request must read every candidate, decided before it runs.
+
+    A chronicle page ordered by a composed count hydrates every matching
+    session whatever its page size, so it is admitted as scan work rather
+    than against the capacity and deadline reserved for interactive reads.
+    """
+    if name != "read.chronicle":
+        return False
+    from polylogue.operations.read_view_chronicle import chronicle_payload_is_scan
+
+    try:
+        return chronicle_payload_is_scan(payload)
+    except ValueError:
+        # An invalid request is refused by execution with its typed error.
+        return False
+
+
 def requires_vector_snapshot(name: str, payload: Mapping[str, object]) -> bool:
     """Return whether this declared read needs a coherent vector handle."""
 

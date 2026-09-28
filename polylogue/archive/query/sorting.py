@@ -48,7 +48,7 @@ class ResultWindow:
 def sort_generic(
     plan: QuerySortPlan,
     items: list[_T],
-    key_fn: Callable[[_T], SortKey],
+    key_fn: Callable[[_T], SortKey | tuple[SortKey, datetime, str]],
 ) -> list[_T]:
     if plan.sort == "random":
         shuffled = list(items)
@@ -90,6 +90,12 @@ def sort_sessions(
 ) -> list[Session]:
     dt_min = datetime.min.replace(tzinfo=timezone.utc)
 
+    def _ties(session: Session) -> tuple[datetime, str]:
+        # SQL breaks every count order by ``sort_key_ms`` then ``session_id``,
+        # in the same direction (``_summary_order_by``); a missing sort key
+        # is SQLite's NULL, the smallest value.
+        return session.updated_at or session.created_at or dt_min, str(session.id)
+
     if plan.sort == "tokens":
         # A composite key alone (unmeasured, total) can't share sort_generic's
         # single reversal: reversing would also flip "unmeasured" to sort
@@ -98,21 +104,25 @@ def sort_sessions(
         scored = [(session, *_session_measured_tokens(session)) for session in sessions]
         measured = sorted(
             ((session, total) for session, unmeasured, total in scored if not unmeasured),
-            key=lambda pair: pair[1],
+            key=lambda pair: (pair[1], *_ties(pair[0])),
             reverse=not plan.reverse,
         )
-        unmeasured = [session for session, is_unmeasured, _total in scored if is_unmeasured]
+        unmeasured = sorted(
+            (session for session, is_unmeasured, _total in scored if is_unmeasured),
+            key=lambda session: (0, *_ties(session)),
+            reverse=not plan.reverse,
+        )
         return [session for session, _total in measured] + unmeasured
 
-    def _key(session: Session) -> SortKey:
+    def _key(session: Session) -> SortKey | tuple[SortKey, datetime, str]:
         if plan.sort == "date":
             return session.updated_at or dt_min
         if plan.sort == "messages":
-            return len(session.messages)
+            return (len(session.messages), *_ties(session))
         if plan.sort == "words":
-            return sum(message.word_count for message in session.messages)
+            return (sum(message.word_count for message in session.messages), *_ties(session))
         if plan.sort == "longest":
-            return max((message.word_count for message in session.messages), default=0)
+            return (max((message.word_count for message in session.messages), default=0), *_ties(session))
         return session.updated_at or dt_min
 
     return sort_generic(plan, sessions, _key)

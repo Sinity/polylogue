@@ -127,3 +127,48 @@ def test_chronicle_operation_applies_exclude_text_before_offset_and_limit(monkey
     assert isinstance(sessions, list)
     assert sessions[0]["session_id"] == "codex-session:3"
     assert archive.read_session.call_count == 3
+
+
+def test_ranked_chronicle_count_sort_keeps_the_requested_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P1, #5695): clear the window for a ranked count sort
+    and the semantic pool falls back to its default size, so ``offset=150``
+    removes every candidate even when more matches exist."""
+    import polylogue.archive.query.archive_execution as archive_execution
+    from polylogue.archive.query.plan import SessionQueryPlan
+
+    fetched: list[tuple[SessionQueryPlan, object]] = []
+
+    def capture(plan: SessionQueryPlan, *_args: object, **kwargs: object) -> list[object]:
+        fetched.append((plan, kwargs.get("complete")))
+        return []
+
+    monkeypatch.setattr(archive_execution, "_archive_summaries", capture)
+    execute_chronicle_read(
+        {"params": {"similar_text": "neutral probe", "sort": "messages", "offset": 150, "limit": 1}},
+        archive=Mock(archive_root="/tmp/archive"),
+        vector_provider=None,
+    )
+
+    ((plan, complete),) = fetched
+    assert complete is False
+    assert plan.offset == 150
+    assert plan.limit == 1
+
+
+@pytest.mark.parametrize(
+    ("params", "scan"),
+    [
+        ({"sort": "messages"}, True),
+        ({"sort": "tokens", "limit": 1}, True),
+        ({"sort": "date"}, False),
+        ({"sort": "messages", "similar_text": "neutral probe"}, False),
+    ],
+)
+def test_a_complete_chronicle_count_sort_is_admitted_as_scan_work(params: dict[str, object], scan: bool) -> None:
+    """Anti-vacuity (Codex P2, #5695): classify ``read.chronicle`` by its spec
+    alone and a count-sorted page that hydrates every candidate runs under the
+    interactive-read class and its two-second deadline."""
+    from polylogue.operations.daemon_reads import read_is_archive_scan
+
+    assert read_is_archive_scan("read.chronicle", {"params": params}) is scan
+    assert read_is_archive_scan("cli.query", {"params": params}) is False

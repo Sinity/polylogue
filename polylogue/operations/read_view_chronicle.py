@@ -22,6 +22,7 @@ from polylogue.surfaces.chronicle import (
 )
 
 if TYPE_CHECKING:
+    from polylogue.archive.query.plan import SessionQueryPlan
     from polylogue.archive.session.domain_models import SessionSummary
     from polylogue.core.protocols import VectorProvider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -132,6 +133,38 @@ def _chronicle_edges(
     return first, last_messages, total_matching
 
 
+def _chronicle_plan(payload: Mapping[str, object], *, vector_provider: VectorProvider | None) -> SessionQueryPlan:
+    params_raw = payload.get("params", {})
+    if not isinstance(params_raw, Mapping):
+        raise ValueError("chronicle params must be an object")
+    params = {str(key): value for key, value in params_raw.items()}
+    params.setdefault("limit", 5)
+    query_terms = params.get("query", ())
+    if not isinstance(query_terms, (list, tuple)):
+        raise ValueError("chronicle query terms must be a list")
+    params["query"] = list(query_terms)
+    session_id = payload.get("session_id")
+    if session_id is not None:
+        params["conv_id"] = str(session_id)
+    return cli_read_request(params).selection.to_plan(vector_provider=vector_provider)
+
+
+def chronicle_needs_complete_scan(plan: SessionQueryPlan) -> bool:
+    """Whether this chronicle selection must read and hydrate every candidate.
+
+    A composed-count sort ranks sessions by their recomposed totals, which the
+    index cannot order; a ranked route keeps its sized candidate pool instead.
+    """
+    from polylogue.archive.query.archive_execution import _COMPOSED_COUNT_SORTS, _ranked_window
+
+    return plan.sort in _COMPOSED_COUNT_SORTS and not _ranked_window(plan)
+
+
+def chronicle_payload_is_scan(payload: Mapping[str, object]) -> bool:
+    """Whether a ``read.chronicle`` request is archive-scan work, decided before it runs."""
+    return chronicle_needs_complete_scan(_chronicle_plan(payload, vector_provider=None))
+
+
 def _select_summaries(
     payload: Mapping[str, object],
     *,
@@ -149,20 +182,7 @@ def _select_summaries(
         order_query_summaries,
     )
 
-    params_raw = payload.get("params", {})
-    if not isinstance(params_raw, Mapping):
-        raise ValueError("chronicle params must be an object")
-    params = {str(key): value for key, value in params_raw.items()}
-    params.setdefault("limit", 5)
-    query_terms = params.get("query", ())
-    if not isinstance(query_terms, (list, tuple)):
-        raise ValueError("chronicle query terms must be a list")
-    params["query"] = list(query_terms)
-    session_id = payload.get("session_id")
-    if session_id is not None:
-        params["conv_id"] = str(session_id)
-
-    plan = cli_read_request(params).selection.to_plan(vector_provider=vector_provider)
+    plan = _chronicle_plan(payload, vector_provider=vector_provider)
     # A composed-count sort (messages/words/longest/tokens) ranks a lineage
     # child by its full inherited-prefix-plus-tail total, but the index only
     # stores that child's own tail count; windowing the SQL fetch by the
@@ -171,14 +191,18 @@ def _select_summaries(
     # sessions instead, exactly as the generic session-list route does
     # (``archive_execution.read``'s ``composed_order``/``complete`` path).
     composed_order = plan.sort in _COMPOSED_COUNT_SORTS
-    fetch_plan = replace(plan, limit=None, offset=0) if composed_order else plan
+    # A ranked route already fetches an unwindowed candidate pool sized from
+    # the requested window; clearing that window would shrink the pool to its
+    # default, so it keeps the requested plan (as the generic route does).
+    complete = chronicle_needs_complete_scan(plan)
+    fetch_plan = replace(plan, limit=None, offset=0) if complete else plan
     rows = _archive_summaries(
         fetch_plan,
         archive,
         config=None,
         archive_root=archive.archive_root,
         default_limit=5,
-        complete=composed_order,
+        complete=complete,
     )
     row_by_id = {row.session_id: row for row in rows}
     summaries: list[SessionSummary] = [archive_summary_to_domain(row) for row in rows]

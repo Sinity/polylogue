@@ -53,3 +53,26 @@ def test_token_total_sums_every_measured_field_not_text_length() -> None:
     descending = sort_sessions(_Plan(sort="tokens", reverse=False), [long_unmeasured, short_measured])
 
     assert [str(session.id) for session in descending] == ["short", "long"]
+
+
+def test_composed_count_ties_break_by_sort_key_then_session_id() -> None:
+    """Anti-vacuity (Codex P2, #5695): sort by the count alone and a tie keeps
+    its incoming order, so the older session stays first under ``limit=1``
+    although SQL breaks the tie by ``sort_key_ms`` then ``session_id``."""
+    from datetime import datetime, timezone
+
+    older = make_conv(
+        id="older",
+        messages=[make_msg(id="m1", text="a"), make_msg(id="m2", text="b")],
+        updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    newer = make_conv(
+        id="newer",
+        messages=[make_msg(id="m1", text="a"), make_msg(id="m2", text="b")],
+        updated_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+    )
+
+    descending = sort_sessions(_Plan(sort="messages", reverse=False), [older, newer])
+    assert [str(session.id) for session in descending] == ["newer", "older"]
+    ascending = sort_sessions(_Plan(sort="messages", reverse=True), [newer, older])
+    assert [str(session.id) for session in ascending] == ["older", "newer"]
