@@ -85,8 +85,12 @@ class QueryOutputSpec:
     @classmethod
     def from_params(cls, params: Mapping[str, object]) -> QueryOutputSpec:
         output_dest = str(params.get("output") or "stdout")
-        destinations = tuple(QueryDeliveryTarget.parse(part) for part in output_dest.split(",") if part.strip()) or (
-            QueryDeliveryTarget.parse(RenderDestination.STDOUT.value),
+        typed_target = params.get("_output_target")
+        destinations = (
+            (typed_target,)
+            if isinstance(typed_target, QueryDeliveryTarget)
+            else tuple(QueryDeliveryTarget.parse(part) for part in output_dest.split(",") if part.strip())
+            or (QueryDeliveryTarget.parse(RenderDestination.STDOUT.value),)
         )
         return cls(
             output_format=str(params.get("output_format") or "markdown"),
