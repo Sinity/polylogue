@@ -133,6 +133,7 @@ _SHORT_HELP: dict[str, str] = {
 _COMMAND_NAMES: dict[str, str] = {
     "check": "doctor",
     "import_command": "import",
+    "insights_alias": "insights",
 }
 
 _GROUP_ATTRS: dict[str, str] = {
@@ -147,6 +148,7 @@ _GROUP_ATTRS: dict[str, str] = {
     "embed": "embed_command",
     "hooks": "hooks_command",
     "insights": "ops_insights_command",
+    "insights_alias": "insights_alias_command",
     "maintenance": "maintenance_group",
     "ops": "ops_command",
     "setting": "setting_command",
@@ -186,6 +188,7 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("facets"),
     _L("hooks"),
     _L("import_command"),
+    _L("insights_alias"),
     _L("init"),
     _L("judge"),
     _L("manual"),

@@ -172,6 +172,7 @@ def test_paths_json_reports_raw_materialization_debt_as_not_ready(
 def test_paths_readiness_resolves_active_generation_with_root_source_tier(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import shutil
 
@@ -181,6 +182,17 @@ def test_paths_readiness_resolves_active_generation_with_root_source_tier(
     shutil.copy2(archive_root / "index.db", generation_index)
     (archive_root / ".index-active-pointer").write_text(str(generation_index.resolve()), encoding="utf-8")
 
+    selected_indexes: list[object] = []
+    from polylogue.operations import archive_debt
+
+    original_debt_list = archive_debt.archive_debt_list
+
+    def capture_debt_list(**kwargs: object) -> object:
+        selected_indexes.append(kwargs.get("index_db_path"))
+        return original_debt_list(**kwargs)
+
+    monkeypatch.setattr(archive_debt, "archive_debt_list", capture_debt_list)
+
     result = cli_runner.invoke(paths_command, ["--format", "json"], catch_exceptions=False)
 
     assert result.exit_code == 0
@@ -188,6 +200,7 @@ def test_paths_readiness_resolves_active_generation_with_root_source_tier(
     assert payload["active_index_database_path"] == str(generation_index.resolve())
     readiness = payload["raw_materialization_readiness"]
     assert readiness["available"] is True
+    assert selected_indexes == [generation_index.resolve()]
     assert "source.db or index.db missing" not in str(readiness.get("error"))
 
 
