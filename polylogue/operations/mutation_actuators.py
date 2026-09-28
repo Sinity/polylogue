@@ -23,26 +23,28 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, ClassVar, Literal, cast
 
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.protocols import ProgressCallback
 from polylogue.core.refs import ObjectRef, normalize_object_ref_text, parse_public_ref
 from polylogue.operations.mutation_transaction import (
     ConfirmationStrength,
+    ConvergentReplay,
     DestructiveClass,
     MutationPlan,
     MutationReceipt,
     MutationTargetStatus,
-    RecoveryDisposition,
-    RecoveryOperation,
-    RecoveryTargetDisposition,
-    _FailClosedRecovery,
+    RecoveryDeferredError,
+    RecoveryResolution,
+    ReplayHandles,
     build_plan,
     make_target_ref,
+    register_recovery_route,
 )
 from polylogue.security.lifecycle import LifecycleMode
 from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
@@ -76,7 +78,7 @@ class SessionDeleteArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class SessionDeleteActuator(_FailClosedRecovery):
+class SessionDeleteActuator(ConvergentReplay):
     """Actuator for ``mutate-delete-session``: permanent, re-ingest-resurrectable removal.
 
     Real production mutation: ``ArchiveStore.delete_sessions`` -- the single
@@ -109,7 +111,10 @@ class SessionDeleteActuator(_FailClosedRecovery):
     def apply(self, plan: MutationPlan, args: SessionDeleteArgs) -> MutationReceipt:
         if any(not target_ref.startswith("session:") for target_ref in plan.target_refs):
             raise ValueError("session delete plan contains a non-session target")
-        session_ids = tuple(target_ref.removeprefix("session:") for target_ref in plan.target_refs)
+        planned = tuple(target_ref.removeprefix("session:") for target_ref in plan.target_refs)
+        # A re-applied plan converges: a target an interrupted apply already
+        # removed is satisfied, and ``delete_sessions`` refuses an unknown id.
+        session_ids = tuple(sid for sid in planned if _session_exists(args.archive, sid))
         deleted = args.archive.delete_sessions(session_ids) if session_ids else 0
         status: MutationTargetStatus = "applied" if deleted else "already_satisfied"
         return MutationReceipt(
@@ -121,34 +126,13 @@ class SessionDeleteActuator(_FailClosedRecovery):
             detail=None if deleted else "no_matching_sessions",
             receipt_ref=None,
             applied_at=plan.prepared_at,
-            domain_receipt={"deleted_count": deleted, "session_count": len(session_ids)},
+            domain_receipt={"deleted_count": deleted, "session_count": len(planned)},
         )
 
-    def inspect_recovery(self, operation: RecoveryOperation, args: SessionDeleteArgs) -> RecoveryDisposition:
-        """Classify a dead delete from the archive, never from audit state.
-
-        Delete is convergent per target.  A mixed result can therefore only be
-        resumed by an exact retry over the original typed target identity.
-        """
-
-        if not operation.target_evidence_complete or not operation.targets:
-            return RecoveryDisposition("unknown", "operator-blocking", operation.target_evidence_detail)
-        if any(target.kind != "session" or not target.ref.startswith("session:") for target in operation.targets):
-            return RecoveryDisposition("unknown", "operator-blocking", "delete recovery target identity is invalid")
-        outcomes = tuple(
-            RecoveryTargetDisposition(
-                target.ref,
-                "not-applied" if _session_exists(args.archive, target.ref.removeprefix("session:")) else "applied",
-                "retry-exact" if _session_exists(args.archive, target.ref.removeprefix("session:")) else "forward",
-            )
-            for target in operation.targets
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> SessionDeleteArgs:
+        return SessionDeleteArgs(
+            archive=handles.archive, session_ids=tuple(cast("list[str]", plan.context["session_ids"]))
         )
-        existing = sum(outcome.state == "not-applied" for outcome in outcomes)
-        if existing == 0:
-            return RecoveryDisposition("confirmed-applied", "forward", "all delete targets are absent", outcomes)
-        if existing == len(operation.targets):
-            return RecoveryDisposition("confirmed-not-applied", "retry-exact", "all delete targets remain", outcomes)
-        return RecoveryDisposition("confirmed-partial", "retry-exact", "some delete targets remain", outcomes)
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +152,7 @@ class SessionExcisionArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class SessionExcisionActuator(_FailClosedRecovery):
+class SessionExcisionActuator(ConvergentReplay):
     """Actuator for ``mutate-session-excision``: durable, re-ingest-proof removal.
 
     Real production mutation: ``security.excision.plan_session_excision`` /
@@ -198,6 +182,8 @@ class SessionExcisionActuator(_FailClosedRecovery):
             affected_tiers=("source", "index", "embeddings", "user"),
             reversible=False,
             context={
+                "session_id": args.session_id,
+                "actor": args.actor,
                 "found": plan.found,
                 "reason": args.reason,
                 "cascade_lineage": args.cascade_lineage,
@@ -241,16 +227,102 @@ class SessionExcisionActuator(_FailClosedRecovery):
                 receipt_ref=None,
                 applied_at=plan.prepared_at,
             )
+        # Excision writes its durable user.db record before it drops the
+        # rebuildable index row, and ``found`` is read from that index. A
+        # session no longer found is therefore excised only if its record
+        # exists; an absent index row alone proves nothing (the index may be
+        # rebuilding), so that case fails visibly instead of passing.
+        if not receipt.found and not _excision_recorded(args.archive_root, args.session_id):
+            return MutationReceipt(
+                operation=self.operation,
+                plan_hash=plan.plan_hash,
+                status="failed",
+                target_refs=plan.target_refs,
+                affected_count=0,
+                detail="session is absent from the index and has no excision record; re-issue after convergence",
+                receipt_ref=None,
+                applied_at=plan.prepared_at,
+            )
         return MutationReceipt(
             operation=self.operation,
             plan_hash=plan.plan_hash,
-            status="applied" if receipt.found else "unknown",
+            status="applied" if receipt.found else "already_satisfied",
             target_refs=plan.target_refs,
             affected_count=receipt.counts.get("index_sessions", 0),
             detail=None,
             receipt_ref=receipt.receipt_assertion_id,
             applied_at=plan.prepared_at,
             domain_receipt=receipt.as_dict(),
+        )
+
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> SessionExcisionArgs:
+        return SessionExcisionArgs(
+            archive_root=handles.archive_root,
+            session_id=str(plan.context["session_id"]),
+            reason=str(plan.context["reason"]),
+            actor=str(plan.context["actor"]),
+            cascade_lineage=bool(plan.context["cascade_lineage"]),
+        )
+
+    def recover(self, handles: ReplayHandles, plan: MutationPlan) -> RecoveryResolution:
+        """Finish excising exactly the recorded cascade set.
+
+        The live lineage links are what an interrupted cascade was deleting,
+        so rediscovering dependents from them can miss a grandchild whose
+        parent link is already gone. Each recorded session is excised on its
+        own, dependents before the sessions they depend on; one that no
+        longer resolves must carry its excision record.
+        """
+        from polylogue.security.excision import LineageDependentsError, apply_session_excision
+
+        args = self.replay_args(handles, plan)
+        remaining = [*cast("list[str]", plan.context["lineage_dependent_session_ids"]), args.session_id]
+        excised = 0
+        while remaining:
+            progressed = False
+            for session_id in list(remaining):
+                try:
+                    receipt = apply_session_excision(
+                        args.archive_root, session_id, reason=args.reason, actor=args.actor, cascade_lineage=False
+                    )
+                except LineageDependentsError:
+                    continue
+                if not receipt.found and not _excision_recorded(args.archive_root, session_id):
+                    return RecoveryResolution(
+                        "replay-failed",
+                        f"{session_id} is absent from the index and has no excision record; re-issue after convergence",
+                    )
+                excised += int(receipt.found)
+                remaining.remove(session_id)
+                progressed = True
+            if not progressed:
+                return RecoveryResolution(
+                    "replay-failed", f"lineage dependents outside the recorded cascade still hold {remaining}"
+                )
+        return RecoveryResolution(
+            "complete",
+            "excised the recorded cascade set",
+            MutationReceipt(
+                operation=self.operation,
+                plan_hash=plan.plan_hash,
+                status="applied" if excised else "already_satisfied",
+                target_refs=plan.target_refs,
+                affected_count=excised,
+                detail=None,
+                receipt_ref=None,
+                applied_at=plan.prepared_at,
+            ),
+        )
+
+
+def _excision_recorded(archive_root: Path, session_id: str) -> bool:
+    with closing(open_readonly_connection(archive_root / "user.db", timeout_class="background-read")) as conn:
+        return (
+            conn.execute(
+                "SELECT 1 FROM assertions WHERE target_ref = ? AND kind = ? LIMIT 1",
+                (f"session:{session_id}", AssertionKind.EXCISION_RECORD.value),
+            ).fetchone()
+            is not None
         )
 
 
@@ -272,7 +344,7 @@ class SessionLifecycleRequestArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class SessionLifecycleRequestActuator(_FailClosedRecovery):
+class SessionLifecycleRequestActuator(ConvergentReplay):
     """Create the local lifecycle request through the audit-backed executor."""
 
     operation: str = "mutate-session-lifecycle-request"
@@ -286,7 +358,7 @@ class SessionLifecycleRequestActuator(_FailClosedRecovery):
             target_refs=(make_target_ref("session", args.session_id),),
             affected_tiers=("user",),
             reversible=True,
-            context={"mode": args.mode, "reason": args.reason},
+            context={"mode": args.mode, "reason": args.reason, "actor": args.actor, "now_ms": args.now_ms},
         )
 
     def apply(self, plan: MutationPlan, args: SessionLifecycleRequestArgs) -> MutationReceipt:
@@ -314,6 +386,16 @@ class SessionLifecycleRequestActuator(_FailClosedRecovery):
             domain_receipt={"assertion_id": submission.assertion_id, "mode": args.mode},
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> SessionLifecycleRequestArgs:
+        return SessionLifecycleRequestArgs(
+            archive_root=handles.archive_root,
+            session_id=plan.target_refs[0].removeprefix("session:"),
+            mode=cast(LifecycleMode, plan.context["mode"]),
+            reason=str(plan.context["reason"]),
+            actor=str(plan.context["actor"]),
+            now_ms=int(cast(int, plan.context["now_ms"])),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Derived reset / identity tombstone (mutate-identity-reset)
@@ -330,7 +412,7 @@ class IdentityResetArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class IdentityResetActuator(_FailClosedRecovery):
+class IdentityResetActuator(ConvergentReplay):
     """Actuator for ``mutate-identity-reset``: tombstone + rebuildable-row delete.
 
     Real production mutation: the ``polylogue ops reset --session/--source``
@@ -396,7 +478,10 @@ class IdentityResetActuator(_FailClosedRecovery):
             conn.execute("BEGIN IMMEDIATE")
             try:
                 for session_id in session_ids:
-                    upsert_suppression(conn, session_id=session_id, reason=args.reason, mode="hide")
+                    # A replayed apply leaves an identical suppression untouched
+                    # rather than restamping it as a fresh edit.
+                    if not _suppression_matches(conn, session_id, reason=args.reason, mode="hide"):
+                        upsert_suppression(conn, session_id=session_id, reason=args.reason, mode="hide")
                 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
 
                 ArchiveWriteGateway(user_db).commit_write_sync(
@@ -418,7 +503,10 @@ class IdentityResetActuator(_FailClosedRecovery):
         # ``tombstoned_without_index_row`` set the receipt names below, and
         # deleting a row that is not there is a no-op anyway.
         prepared_present = set(cast("list[str]", plan.context.get("present_in_index") or ()))
-        present_in_index = tuple(sid for sid in session_ids if sid in prepared_present)
+        # Re-resolve against the live index so a re-applied plan converges:
+        # rows an interrupted apply already dropped are not deleted twice.
+        live_present = set(_resolve_existing_session_ids(args.archive_root, session_ids))
+        present_in_index = tuple(sid for sid in session_ids if sid in prepared_present and sid in live_present)
         deleted = 0
         if present_in_index and _index_db_path(args.archive_root).exists():
             from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -449,6 +537,23 @@ class IdentityResetActuator(_FailClosedRecovery):
             },
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> IdentityResetArgs:
+        return IdentityResetArgs(
+            archive_root=handles.archive_root,
+            session_ids=tuple(cast("list[str]", plan.context["session_ids"])),
+            reason=str(plan.context["reason"]),
+        )
+
+
+def _suppression_matches(conn: sqlite3.Connection, session_id: str, *, reason: str, mode: str) -> bool:
+    from polylogue.storage.sqlite.archive_tiers.user_write import read_archive_suppression_envelope
+
+    try:
+        existing = read_archive_suppression_envelope(conn, session_id)
+    except KeyError:
+        return False
+    return existing.reason == reason and existing.mode == mode
+
 
 # ---------------------------------------------------------------------------
 # Filesystem reset (polylogue-4fbgw)
@@ -467,7 +572,7 @@ class FilesystemResetArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class FilesystemResetActuator(_FailClosedRecovery):
+class FilesystemResetActuator(ConvergentReplay):
     """Actuator for ``mutate-filesystem-reset``: delete archive files and trees.
 
     This is the largest destructive surface in the product -- it unlinks
@@ -487,9 +592,11 @@ class FilesystemResetActuator(_FailClosedRecovery):
     operation: str = "mutate-filesystem-reset"
     destructive_class: DestructiveClass = "reset"
     required_confirmation: ConfirmationStrength = "bound_token"
+    replaces_archive_files: ClassVar[bool] = True
 
     def prepare(self, args: FilesystemResetArgs) -> MutationPlan:
-        present = tuple((name, path) for name, path in args.targets if path.exists())
+        # ``lexists`` semantics: apply deletes a dangling symlink too.
+        present = tuple((name, path) for name, path in args.targets if path.is_symlink() or path.exists())
         return build_plan(
             operation=self.operation,
             destructive_class="reset",
@@ -499,6 +606,9 @@ class FilesystemResetActuator(_FailClosedRecovery):
             context={
                 "targets": [[name, str(path)] for name, path in args.targets],
                 "present": [str(path) for _name, path in present],
+                # The authorized objects, not just their names: recovery must
+                # not delete something recreated at the same path afterwards.
+                "identities": {str(path): _path_identity(path) for _name, path in present},
             },
         )
 
@@ -536,6 +646,60 @@ class FilesystemResetActuator(_FailClosedRecovery):
             },
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> FilesystemResetArgs:
+        return FilesystemResetArgs(
+            archive_root=handles.archive_root,
+            targets=tuple(
+                (str(name), Path(str(path))) for name, path in cast("list[list[str]]", plan.context["targets"])
+            ),
+        )
+
+    def recover(self, handles: ReplayHandles, plan: MutationPlan) -> RecoveryResolution:
+        """Finish deleting only the objects the plan authorized.
+
+        A path whose authorized object is gone was reset; one recreated since
+        (a new login token, a fresh cache) holds content nobody previewed and
+        is left alone. Identity is checked immediately before each deletion.
+        """
+        import shutil
+
+        identities = cast("dict[str, list[int]]", plan.context["identities"])
+        deleted: list[str] = []
+        for name, path in self.replay_args(handles, plan).targets:
+            if str(path) not in identities or _path_identity(path) != identities[str(path)]:
+                continue
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            deleted.append(name)
+        receipt = MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status="applied" if deleted else "already_satisfied",
+            target_refs=plan.target_refs,
+            affected_count=len(deleted),
+            detail=None if deleted else "authorized_objects_already_gone",
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={"deleted": len(deleted), "targets": deleted},
+        )
+        return RecoveryResolution("complete", "deleted the authorized objects that remained", receipt)
+
+
+def _view_watched(handles: ReplayHandles, name: str) -> bool:
+    with closing(open_readonly_connection(handles.archive_root / "user.db", timeout_class="background-read")) as conn:
+        row = conn.execute("SELECT watch FROM query_names WHERE name = ?", (name,)).fetchone()
+    return row is not None and bool(row[0])
+
+
+def _path_identity(path: Path) -> list[int] | None:
+    try:
+        stat = path.lstat()
+    except FileNotFoundError:
+        return None
+    return [stat.st_dev, stat.st_ino]
+
 
 # ---------------------------------------------------------------------------
 # Blob publication receipt abandonment
@@ -551,7 +715,7 @@ class BlobPublicationAbandonArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class BlobPublicationAbandonActuator(_FailClosedRecovery):
+class BlobPublicationAbandonActuator(ConvergentReplay):
     """Discharge named publication-reservation debt without touching blob bytes.
 
     Publication reconciliation has no TTL and never treats age as proof that a
@@ -629,6 +793,12 @@ class BlobPublicationAbandonActuator(_FailClosedRecovery):
             },
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> BlobPublicationAbandonArgs:
+        return BlobPublicationAbandonArgs(
+            archive_root=handles.archive_root,
+            publication_ids=tuple(cast("list[str]", plan.context["requested"])),
+        )
+
 
 def _index_db_path(archive_root: Path) -> Path:
     from polylogue.storage.archive_identity import ArchiveLocation
@@ -675,7 +845,7 @@ class TagAddArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class TagAddActuator(_FailClosedRecovery):
+class TagAddActuator(ConvergentReplay):
     """Actuator for ``mutate-add-tag``: reversible user.db tag assertion.
 
     Real production mutation: ``ArchiveStore.add_user_tags`` -- the same
@@ -698,14 +868,22 @@ class TagAddActuator(_FailClosedRecovery):
             target_refs=(make_target_ref("session", resolved),),
             affected_tiers=("user",),
             reversible=True,
-            context={"session_id": resolved, "tag": args.tag},
+            context={
+                "session_id": resolved,
+                "tag": args.tag,
+                "author_ref": args.author_ref,
+                "author_kind": args.author_kind,
+            },
         )
 
     def apply(self, plan: MutationPlan, args: TagAddArgs) -> MutationReceipt:
         session_id = str(plan.context["session_id"])
         tag = str(plan.context["tag"])
         changed = args.archive.add_user_tags(
-            (session_id,), (tag,), author_ref=args.author_ref, author_kind=args.author_kind
+            (session_id,),
+            (tag,),
+            author_ref=cast("str | None", plan.context["author_ref"]),
+            author_kind=cast("str | None", plan.context["author_kind"]),
         )
         status: MutationTargetStatus = "applied" if changed else "already_satisfied"
         return MutationReceipt(
@@ -720,6 +898,15 @@ class TagAddActuator(_FailClosedRecovery):
             domain_receipt={"changed": changed},
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> TagAddArgs:
+        return TagAddArgs(
+            archive=handles.archive,
+            session_id=str(plan.context["session_id"]),
+            tag=str(plan.context["tag"]),
+            author_ref=cast("str | None", plan.context["author_ref"]),
+            author_kind=cast("str | None", plan.context["author_kind"]),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class TagRemoveArgs:
@@ -731,7 +918,7 @@ class TagRemoveArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class TagRemoveActuator(_FailClosedRecovery):
+class TagRemoveActuator(ConvergentReplay):
     """Actuator for ``mutate-remove-tag``: reversible user.db tag retraction.
 
     Real production mutation: ``ArchiveStore.remove_user_tags`` -- marks the
@@ -771,6 +958,11 @@ class TagRemoveActuator(_FailClosedRecovery):
             domain_receipt={"changed": changed},
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> TagRemoveArgs:
+        return TagRemoveArgs(
+            archive=handles.archive, session_id=str(plan.context["session_id"]), tag=str(plan.context["tag"])
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class BulkTagArgs:
@@ -784,7 +976,7 @@ class BulkTagArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class BulkTagActuator(_FailClosedRecovery):
+class BulkTagActuator(ConvergentReplay):
     """Actuator for ``mutate-bulk-tag-sessions``: reversible multi-target tagging.
 
     Real production mutation: ``ArchiveStore.add_user_tags`` applied per
@@ -852,6 +1044,15 @@ class BulkTagActuator(_FailClosedRecovery):
             },
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> BulkTagArgs:
+        # The machine plan context is closed (``machine_plan_context``) and
+        # carries no author: production bulk tagging never sets one.
+        return BulkTagArgs(
+            archive=handles.archive,
+            session_ids=tuple(cast("list[str]", plan.context["session_ids"])),
+            tags=tuple(cast("list[str]", plan.context["tags"])),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Metadata mutations (mutate-set-metadata / mutate-delete-metadata)
@@ -869,7 +1070,7 @@ class MetadataSetArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class MetadataSetActuator(_FailClosedRecovery):
+class MetadataSetActuator(ConvergentReplay):
     """Actuator for ``mutate-set-metadata``: reversible user.db metadata write.
 
     Real production mutation: ``ArchiveStore.set_user_metadata``. Key
@@ -911,6 +1112,14 @@ class MetadataSetActuator(_FailClosedRecovery):
             domain_receipt={"changed": changed},
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> MetadataSetArgs:
+        return MetadataSetArgs(
+            archive=handles.archive,
+            session_id=str(plan.context["session_id"]),
+            key=str(plan.context["key"]),
+            value=plan.context["value"],
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class BulkMetadataSetArgs:
@@ -922,7 +1131,7 @@ class BulkMetadataSetArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class BulkMetadataSetActuator(_FailClosedRecovery):
+class BulkMetadataSetActuator(ConvergentReplay):
     """Actuator for ``mutate-bulk-set-metadata``: reversible multi-target metadata.
 
     Real production mutation: ``ArchiveStore.set_user_metadata`` applied per
@@ -991,6 +1200,13 @@ class BulkMetadataSetActuator(_FailClosedRecovery):
             },
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> BulkMetadataSetArgs:
+        return BulkMetadataSetArgs(
+            archive=handles.archive,
+            session_ids=tuple(cast("list[str]", plan.context["session_ids"])),
+            pairs=tuple((str(pair[0]), pair[1]) for pair in cast("list[list[object]]", plan.context["pairs"])),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class MetadataDeleteArgs:
@@ -1002,7 +1218,7 @@ class MetadataDeleteArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class MetadataDeleteActuator(_FailClosedRecovery):
+class MetadataDeleteActuator(ConvergentReplay):
     """Actuator for ``mutate-delete-metadata``: reversible user.db metadata retraction.
 
     Real production mutation: ``ArchiveStore.delete_user_metadata``, which
@@ -1041,6 +1257,11 @@ class MetadataDeleteActuator(_FailClosedRecovery):
             domain_receipt={"changed": changed},
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> MetadataDeleteArgs:
+        return MetadataDeleteArgs(
+            archive=handles.archive, session_id=str(plan.context["session_id"]), key=str(plan.context["key"])
+        )
+
 
 # ---------------------------------------------------------------------------
 # Mark mutations (mutate-add-mark / mutate-remove-mark) -- the first
@@ -1070,7 +1291,7 @@ class MarkArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class MarkAddActuator(_FailClosedRecovery):
+class MarkAddActuator(ConvergentReplay):
     """Actuator for ``mutate-add-mark``: reversible user.db mark assertion.
 
     Real production mutation: ``ArchiveStore.add_mark``, the same primitive
@@ -1118,9 +1339,29 @@ class MarkAddActuator(_FailClosedRecovery):
             domain_receipt={"added": added},
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> MarkArgs:
+        return MarkArgs(
+            archive=handles.archive,
+            target_type=str(plan.context["target_type"]),
+            target_id=str(plan.context["target_id"]),
+            mark_type=str(plan.context["mark_type"]),
+            owner_session_id=cast("str | None", plan.context["owner_session_id"]),
+        )
+
+    def already_applied(self, handles: ReplayHandles, plan: MutationPlan) -> bool:
+        owner = plan.context["owner_session_id"]
+        return any(
+            owner is None or mark["session_id"] == owner
+            for mark in handles.archive.list_marks(
+                mark_type=str(plan.context["mark_type"]),
+                target_type=str(plan.context["target_type"]),
+                target_id=str(plan.context["target_id"]),
+            )
+        )
+
 
 @dataclass(frozen=True, slots=True)
-class MarkRemoveActuator(_FailClosedRecovery):
+class MarkRemoveActuator(ConvergentReplay):
     """Actuator for ``mutate-remove-mark``: reversible user.db mark retraction.
 
     Real production mutation: ``ArchiveStore.remove_mark`` (undo =
@@ -1159,6 +1400,15 @@ class MarkRemoveActuator(_FailClosedRecovery):
             receipt_ref=None,
             applied_at=plan.prepared_at,
             domain_receipt={"removed": removed},
+        )
+
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> MarkArgs:
+        return MarkArgs(
+            archive=handles.archive,
+            target_type=str(plan.context["target_type"]),
+            target_id=str(plan.context["target_id"]),
+            mark_type=str(plan.context["mark_type"]),
+            owner_session_id=cast("str | None", plan.context["owner_session_id"]),
         )
 
 
@@ -1270,7 +1520,7 @@ def _capture_candidate_inputs(args: CaptureAssertionCandidateArgs) -> dict[str, 
 
 
 @dataclass(frozen=True, slots=True)
-class CaptureAssertionCandidateActuator(_FailClosedRecovery):
+class CaptureAssertionCandidateActuator(ConvergentReplay):
     """Actuator for the durable terminal assertion candidate capture."""
 
     operation: str = "mutate-capture-assertion-candidate"
@@ -1369,6 +1619,24 @@ class CaptureAssertionCandidateActuator(_FailClosedRecovery):
             domain_receipt={"envelope": envelope},
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> CaptureAssertionCandidateArgs:
+        # ``apply`` reads only the archive handle and the resolved plan
+        # context; the remaining fields restate that context.
+        context = plan.context
+        return CaptureAssertionCandidateArgs(
+            archive=handles.archive,
+            body_text=str(context["body_text"]),
+            kind=AssertionKind.from_string(str(context["kind"])),
+            refs=tuple(cast("list[str]", context["resolved_refs"])),
+            scope_refs=tuple(cast("list[str]", context["scope_refs"])),
+            cwd=None,
+            author_ref=str(context["author_ref"]),
+            author_kind=str(context["author_kind"]),
+            idempotency_key=None,
+            assertion_id=str(context["assertion_id"]),
+            ttl_seconds=cast("int | None", context["ttl_seconds"]),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class SetUserSettingArgs:
@@ -1381,7 +1649,7 @@ class SetUserSettingArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class SetUserSettingActuator(_FailClosedRecovery):
+class SetUserSettingActuator(ConvergentReplay):
     """Actuator for ``mutate-set-user-setting``: a reversible user.db setting upsert.
 
     polylogue-r29bv: ``polylogue setting set`` wrote ``user.db`` directly from
@@ -1421,7 +1689,7 @@ class SetUserSettingActuator(_FailClosedRecovery):
         )
 
     def apply(self, plan: MutationPlan, args: SetUserSettingArgs) -> MutationReceipt:
-        from polylogue.storage.sqlite.archive_tiers.user_settings_write import set_user_setting
+        from polylogue.storage.sqlite.archive_tiers.user_settings_write import get_user_setting, set_user_setting
 
         context = plan.context
         setting_key = str(context["setting_key"])
@@ -1433,6 +1701,26 @@ class SetUserSettingActuator(_FailClosedRecovery):
             conn.row_factory = sqlite3.Row
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                existing = get_user_setting(conn, setting_key)
+                if (
+                    existing is not None
+                    and existing.value == context["value"]
+                    and existing.author_ref == str(context["author_ref"])
+                ):
+                    # The setting already holds this value from this author:
+                    # a re-applied plan converges without restamping it.
+                    conn.commit()
+                    return MutationReceipt(
+                        operation=self.operation,
+                        plan_hash=plan.plan_hash,
+                        status="already_satisfied",
+                        target_refs=plan.target_refs,
+                        affected_count=0,
+                        detail="setting_unchanged",
+                        receipt_ref=None,
+                        applied_at=plan.prepared_at,
+                        domain_receipt={"envelope": existing},
+                    )
                 envelope = set_user_setting(
                     conn,
                     setting_key,
@@ -1454,6 +1742,14 @@ class SetUserSettingActuator(_FailClosedRecovery):
             receipt_ref=None,
             applied_at=plan.prepared_at,
             domain_receipt={"envelope": envelope},
+        )
+
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> SetUserSettingArgs:
+        return SetUserSettingArgs(
+            archive=handles.archive,
+            setting_key=str(plan.context["setting_key"]),
+            value=plan.context["value"],
+            author_ref=str(plan.context["author_ref"]),
         )
 
 
@@ -1483,7 +1779,7 @@ class AnnotationSaveArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class AnnotationSaveActuator(_FailClosedRecovery):
+class AnnotationSaveActuator(ConvergentReplay):
     """Actuator for ``mutate-save-annotation``: reversible user.db annotation upsert.
 
     Real production mutation: ``ArchiveStore.save_annotation``, the same
@@ -1540,6 +1836,26 @@ class AnnotationSaveActuator(_FailClosedRecovery):
             domain_receipt={"created": created},
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> AnnotationSaveArgs:
+        return AnnotationSaveArgs(
+            archive=handles.archive,
+            annotation_id=str(plan.context["annotation_id"]),
+            target_type=str(plan.context["target_type"]),
+            target_id=str(plan.context["target_id"]),
+            note_text=str(plan.context["note_text"]),
+            owner_session_id=cast("str | None", plan.context["owner_session_id"]),
+        )
+
+    def already_applied(self, handles: ReplayHandles, plan: MutationPlan) -> bool:
+        stored = handles.archive.get_annotation(str(plan.context["annotation_id"]))
+        owner = plan.context["owner_session_id"]
+        return (
+            stored is not None
+            and (stored["target_type"], stored["target_id"], stored["note_text"])
+            == (plan.context["target_type"], plan.context["target_id"], plan.context["note_text"])
+            and (owner is None or stored["session_id"] == owner)
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class AnnotationDeleteArgs:
@@ -1550,7 +1866,7 @@ class AnnotationDeleteArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class AnnotationDeleteActuator(_FailClosedRecovery):
+class AnnotationDeleteActuator(ConvergentReplay):
     """Actuator for ``mutate-delete-annotation``: reversible user.db annotation retraction.
 
     Real production mutation: ``ArchiveStore.delete_annotation``, which marks
@@ -1588,6 +1904,9 @@ class AnnotationDeleteActuator(_FailClosedRecovery):
             domain_receipt={"deleted": deleted},
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> AnnotationDeleteArgs:
+        return AnnotationDeleteArgs(archive=handles.archive, annotation_id=str(plan.context["annotation_id"]))
+
 
 # ---------------------------------------------------------------------------
 # Raw-authority blocker resolution (mutate-resolve-raw-authority-blocker) --
@@ -1608,7 +1927,7 @@ class BlockerResolveArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class BlockerResolveActuator(_FailClosedRecovery):
+class BlockerResolveActuator(ConvergentReplay):
     """Actuator for ``mutate-resolve-raw-authority-blocker``: reopen raw replanning.
 
     Real production mutation: ``raw_authority.resolve_raw_authority_blocker``
@@ -1663,11 +1982,25 @@ class BlockerResolveActuator(_FailClosedRecovery):
                 receipt_ref=None,
                 applied_at=plan.prepared_at,
             )
-        receipt = resolve_raw_authority_blocker(
-            args.archive_root,
-            args.blocker_id,
-            resolution=args.resolution,
-        )
+        try:
+            receipt = resolve_raw_authority_blocker(
+                args.archive_root,
+                args.blocker_id,
+                resolution=args.resolution,
+            )
+        except KeyError:
+            # Only an unresolved blocker is found, so a re-applied plan whose
+            # first apply committed the resolution converges here.
+            return MutationReceipt(
+                operation=self.operation,
+                plan_hash=plan.plan_hash,
+                status="already_satisfied",
+                target_refs=plan.target_refs,
+                affected_count=0,
+                detail="blocker_already_resolved",
+                receipt_ref=None,
+                applied_at=plan.prepared_at,
+            )
         receipt_dict = dict(receipt)
         return MutationReceipt(
             operation=self.operation,
@@ -1679,6 +2012,13 @@ class BlockerResolveActuator(_FailClosedRecovery):
             receipt_ref=str(receipt_dict.get("detail_query_handle") or "") or None,
             applied_at=plan.prepared_at,
             domain_receipt=receipt_dict,
+        )
+
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> BlockerResolveArgs:
+        return BlockerResolveArgs(
+            archive_root=handles.archive_root,
+            blocker_id=str(plan.context["blocker_id"]),
+            resolution=str(plan.context["resolution"]),
         )
 
 
@@ -1707,7 +2047,7 @@ class SavedViewSaveArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class SavedViewSaveActuator(_FailClosedRecovery):
+class SavedViewSaveActuator(ConvergentReplay):
     """Actuator for ``mutate-save-saved-view``: reversible user.db saved-view upsert.
 
     Real production mutation: ``ArchiveStore.save_view``, the same primitive
@@ -1774,6 +2114,33 @@ class SavedViewSaveActuator(_FailClosedRecovery):
             domain_receipt={"created": created, "collision_view_id": collision_view_id, "watch": watch},
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> SavedViewSaveArgs:
+        return SavedViewSaveArgs(
+            archive=handles.archive,
+            view_id=str(plan.context["view_id"]),
+            name=str(plan.context["name"]),
+            query_json=str(plan.context["query_json"]),
+            watch=bool(plan.context.get("watch")),
+        )
+
+    def already_applied(self, handles: ReplayHandles, plan: MutationPlan) -> bool:
+        stored = handles.archive.get_view(str(plan.context["view_id"]))
+        return (
+            stored is not None
+            and stored["name"] == plan.context["name"]
+            and json.loads(stored["query_json"]) == json.loads(str(plan.context["query_json"]))
+            and _view_watched(handles, str(plan.context["name"])) == bool(plan.context.get("watch"))
+        )
+
+    def replay_refusal(self, handles: ReplayHandles, plan: MutationPlan) -> str | None:
+        collision = handles.archive.get_view_by_name(str(plan.context["name"]))
+        live = (
+            collision["view_id"] if collision is not None and collision["view_id"] != plan.context["view_id"] else None
+        )
+        if live != plan.context["collision_view_id"]:
+            return f"saved view name is now held by {live!r}, which the authorized plan did not name"
+        return None
+
 
 @dataclass(frozen=True, slots=True)
 class SavedViewDeleteArgs:
@@ -1784,7 +2151,7 @@ class SavedViewDeleteArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class SavedViewDeleteActuator(_FailClosedRecovery):
+class SavedViewDeleteActuator(ConvergentReplay):
     """Actuator for ``mutate-delete-saved-view``: reversible user.db saved-view retraction.
 
     Real production mutation: ``ArchiveStore.delete_view``, which marks the
@@ -1821,6 +2188,14 @@ class SavedViewDeleteActuator(_FailClosedRecovery):
             domain_receipt={"deleted": deleted},
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> SavedViewDeleteArgs:
+        return SavedViewDeleteArgs(archive=handles.archive, view_id=str(plan.context["view_id"]))
+
+    def already_applied(self, handles: ReplayHandles, plan: MutationPlan) -> bool:
+        # A committed delete must not run again: it clears the name-based
+        # watch, which may now belong to a view saved under the name since.
+        return handles.archive.get_view(str(plan.context["view_id"])) is None
+
 
 # ---------------------------------------------------------------------------
 # Recall-pack mutations (mutate-save-recall-pack / mutate-delete-recall-pack)
@@ -1846,7 +2221,7 @@ class RecallPackSaveArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class RecallPackSaveActuator(_FailClosedRecovery):
+class RecallPackSaveActuator(ConvergentReplay):
     """Actuator for ``mutate-save-recall-pack``: reversible user.db recall-pack upsert.
 
     Real production mutation: ``ArchiveStore.save_recall_pack``, the same
@@ -1890,6 +2265,24 @@ class RecallPackSaveActuator(_FailClosedRecovery):
             domain_receipt={"created": created},
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> RecallPackSaveArgs:
+        return RecallPackSaveArgs(
+            archive=handles.archive,
+            pack_id=str(plan.context["pack_id"]),
+            label=str(plan.context["label"]),
+            session_ids_json=str(plan.context["session_ids_json"]),
+            payload_json=str(plan.context["payload_json"]),
+        )
+
+    def already_applied(self, handles: ReplayHandles, plan: MutationPlan) -> bool:
+        stored = handles.archive.get_recall_pack(str(plan.context["pack_id"]))
+        return (
+            stored is not None
+            and stored["label"] == plan.context["label"]
+            and json.loads(stored["session_ids_json"]) == json.loads(str(plan.context["session_ids_json"]))
+            and json.loads(stored["payload_json"]) == json.loads(str(plan.context["payload_json"]))
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class RecallPackDeleteArgs:
@@ -1900,7 +2293,7 @@ class RecallPackDeleteArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class RecallPackDeleteActuator(_FailClosedRecovery):
+class RecallPackDeleteActuator(ConvergentReplay):
     """Actuator for ``mutate-delete-recall-pack``: reversible user.db recall-pack retraction.
 
     Real production mutation: ``ArchiveStore.delete_recall_pack`` (undo =
@@ -1937,6 +2330,9 @@ class RecallPackDeleteActuator(_FailClosedRecovery):
             domain_receipt={"deleted": deleted},
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> RecallPackDeleteArgs:
+        return RecallPackDeleteArgs(archive=handles.archive, pack_id=str(plan.context["pack_id"]))
+
 
 # ---------------------------------------------------------------------------
 # Workspace mutations (mutate-save-workspace / mutate-delete-workspace)
@@ -1963,7 +2359,7 @@ class WorkspaceSaveArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class WorkspaceSaveActuator(_FailClosedRecovery):
+class WorkspaceSaveActuator(ConvergentReplay):
     """Actuator for ``mutate-save-workspace``: reversible user.db workspace upsert.
 
     Real production mutation: ``ArchiveStore.save_workspace``, the same
@@ -2023,6 +2419,35 @@ class WorkspaceSaveActuator(_FailClosedRecovery):
             domain_receipt={"created": created, "collision_workspace_id": collision_workspace_id},
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> WorkspaceSaveArgs:
+        return WorkspaceSaveArgs(
+            archive=handles.archive,
+            workspace_id=str(plan.context["workspace_id"]),
+            name=str(plan.context["name"]),
+            mode=str(plan.context["mode"]),
+            open_targets_json=str(plan.context["open_targets_json"]),
+            layout_json=str(plan.context["layout_json"]),
+            active_target_json=str(plan.context["active_target_json"]),
+        )
+
+    def already_applied(self, handles: ReplayHandles, plan: MutationPlan) -> bool:
+        stored = handles.archive.get_workspace(str(plan.context["workspace_id"]))
+        return stored is not None and all(
+            stored[key] == plan.context[key]
+            for key in ("name", "mode", "open_targets_json", "layout_json", "active_target_json")
+        )
+
+    def replay_refusal(self, handles: ReplayHandles, plan: MutationPlan) -> str | None:
+        collision = handles.archive.get_workspace_by_name(str(plan.context["name"]))
+        live = (
+            collision["workspace_id"]
+            if collision is not None and collision["workspace_id"] != plan.context["workspace_id"]
+            else None
+        )
+        if live != plan.context["collision_workspace_id"]:
+            return f"workspace name is now held by {live!r}, which the authorized plan did not name"
+        return None
+
 
 @dataclass(frozen=True, slots=True)
 class WorkspaceDeleteArgs:
@@ -2033,7 +2458,7 @@ class WorkspaceDeleteArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class WorkspaceDeleteActuator(_FailClosedRecovery):
+class WorkspaceDeleteActuator(ConvergentReplay):
     """Actuator for ``mutate-delete-workspace``: reversible user.db workspace retraction.
 
     Real production mutation: ``ArchiveStore.delete_workspace`` (undo =
@@ -2070,6 +2495,9 @@ class WorkspaceDeleteActuator(_FailClosedRecovery):
             domain_receipt={"deleted": deleted},
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> WorkspaceDeleteArgs:
+        return WorkspaceDeleteArgs(archive=handles.archive, workspace_id=str(plan.context["workspace_id"]))
+
 
 # ---------------------------------------------------------------------------
 # Learning corrections (mutate-record-correction / mutate-delete-correction /
@@ -2092,7 +2520,7 @@ class CorrectionRecordArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class CorrectionRecordActuator(_FailClosedRecovery):
+class CorrectionRecordActuator(ConvergentReplay):
     """Actuator for ``mutate-record-correction``: reversible user.db correction upsert.
 
     Real production mutation: ``ArchiveStore.record_correction``, the same
@@ -2145,6 +2573,17 @@ class CorrectionRecordActuator(_FailClosedRecovery):
             domain_receipt={"correction": correction},
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> CorrectionRecordArgs:
+        return CorrectionRecordArgs(
+            archive=handles.archive,
+            session_id=str(plan.context["session_id"]),
+            kind=str(plan.context["kind"]),
+            payload=dict(cast("dict[str, str]", plan.context["payload"])),
+            note=cast("str | None", plan.context["note"]),
+            author_ref=cast("str | None", plan.context["author_ref"]),
+            author_kind=cast("str | None", plan.context["author_kind"]),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class CorrectionDeleteArgs:
@@ -2156,7 +2595,7 @@ class CorrectionDeleteArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class CorrectionDeleteActuator(_FailClosedRecovery):
+class CorrectionDeleteActuator(ConvergentReplay):
     """Actuator for ``mutate-delete-correction``: reversible user.db correction retraction.
 
     Real production mutation: ``ArchiveStore.delete_correction``, which
@@ -2196,6 +2635,11 @@ class CorrectionDeleteActuator(_FailClosedRecovery):
             domain_receipt={"deleted": deleted},
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> CorrectionDeleteArgs:
+        return CorrectionDeleteArgs(
+            archive=handles.archive, session_id=str(plan.context["session_id"]), kind=str(plan.context["kind"])
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class CorrectionsClearArgs:
@@ -2206,7 +2650,7 @@ class CorrectionsClearArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class CorrectionsClearActuator(_FailClosedRecovery):
+class CorrectionsClearActuator(ConvergentReplay):
     """Actuator for ``mutate-clear-corrections``: reversible bulk user.db retraction.
 
     Real production mutation: ``ArchiveStore.clear_corrections``. Unlike
@@ -2253,6 +2697,37 @@ class CorrectionsClearActuator(_FailClosedRecovery):
             domain_receipt={"cleared_count": cleared},
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> CorrectionsClearArgs:
+        return CorrectionsClearArgs(archive=handles.archive, session_id=str(plan.context["session_id"]))
+
+    def recover(self, handles: ReplayHandles, plan: MutationPlan) -> RecoveryResolution:
+        """Clear only the kinds the plan authorized, not any recorded since."""
+        session_id = str(plan.context["session_id"])
+        try:
+            cleared = sum(
+                bool(handles.archive.delete_correction(session_id, kind))
+                for kind in cast("list[str]", plan.context["kinds"])
+            )
+        except KeyError as exc:
+            # The session is not in the rebuildable index yet; the durable
+            # corrections stay live until convergence restores it.
+            raise RecoveryDeferredError(f"{plan.operation} target does not resolve yet: {exc}") from exc
+        return RecoveryResolution(
+            "complete",
+            "cleared the authorized correction kinds that remained",
+            MutationReceipt(
+                operation=self.operation,
+                plan_hash=plan.plan_hash,
+                status="applied" if cleared else "already_satisfied",
+                target_refs=plan.target_refs,
+                affected_count=cleared,
+                detail=None if cleared else "no_corrections",
+                receipt_ref=None,
+                applied_at=plan.prepared_at,
+                domain_receipt={"cleared_count": cleared},
+            ),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Blackboard post (mutate-blackboard-post) -- phase 6 (t46.9/kwsb.2): closes
@@ -2288,7 +2763,7 @@ class BlackboardPostArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class BlackboardPostActuator(_FailClosedRecovery):
+class BlackboardPostActuator(ConvergentReplay):
     """Actuator for ``mutate-blackboard-post``: append-only user.db note insert.
 
     Real production mutation: ``ArchiveStore.post_blackboard_note``, the same
@@ -2353,6 +2828,31 @@ class BlackboardPostActuator(_FailClosedRecovery):
             },
         )
 
+    def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> BlackboardPostArgs:
+        context = plan.context
+        return BlackboardPostArgs(
+            archive=handles.archive,
+            note_id=str(context["note_id"]),
+            body=str(context["body"]),
+            target_type=cast("str | None", context["target_type"]),
+            target_id=cast("str | None", context["target_id"]),
+            author_ref=cast("str | None", context["author_ref"]),
+            author_kind=str(context["author_kind"]),
+            evidence_refs=tuple(cast("list[str]", context["evidence_refs"])),
+            staleness=cast("dict[str, object] | None", context["staleness"]),
+            context_policy=cast("dict[str, object] | None", context["context_policy"]),
+        )
+
+    def already_applied(self, handles: ReplayHandles, plan: MutationPlan) -> bool:
+        stored = next(
+            (note for note in handles.archive.list_blackboard_notes() if note.note_id == plan.context["note_id"]), None
+        )
+        return stored is not None and (stored.body, stored.target_type, stored.target_id) == (
+            plan.context["body"],
+            plan.context["target_type"],
+            plan.context["target_id"],
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class InsightsRebuildArgs:
@@ -2364,7 +2864,7 @@ class InsightsRebuildArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class InsightsRebuildActuator(_FailClosedRecovery):
+class InsightsRebuildActuator(ConvergentReplay):
     """Actuator for the canonical durable session-insight materializer."""
 
     operation: str = "mutate-rebuild-insights"
@@ -2446,6 +2946,19 @@ class InsightsRebuildActuator(_FailClosedRecovery):
             domain_receipt=counts.to_dict(),
         )
 
+    def recover(self, _handles: ReplayHandles, _plan: MutationPlan) -> RecoveryResolution:
+        """An interrupted insight page is terminalized, not re-derived here.
+
+        Every run of this family is a sealed machine part whose completion is
+        an ``InsightPartHistoricalReceipt`` only the staged owner produces, and
+        a page's ``scope_kind`` can still say ``full``. The derived rows it was
+        rebuilding reconverge through ordinary convergence or a new rebuild
+        request; the interrupted part reports failed instead of hanging.
+        """
+        return RecoveryResolution(
+            "not-replayable", "an interrupted insight page is re-derived by convergence or a new rebuild request"
+        )
+
 
 #: The one named gap a multi-target mutation reports when the caller named a
 #: session the archive could not resolve at PREPARE time.
@@ -2496,6 +3009,39 @@ def _narrowed_plan_detail(*, affected: int, unresolved: Sequence[str]) -> str | 
         return UNRESOLVED_SESSION_GAP
     return None if affected else "no_sessions_changed"
 
+
+register_recovery_route(
+    SessionDeleteActuator(),
+    SessionExcisionActuator(),
+    SessionLifecycleRequestActuator(),
+    IdentityResetActuator(),
+    FilesystemResetActuator(),
+    BlobPublicationAbandonActuator(),
+    TagAddActuator(),
+    TagRemoveActuator(),
+    BulkTagActuator(),
+    MetadataSetActuator(),
+    BulkMetadataSetActuator(),
+    MetadataDeleteActuator(),
+    MarkAddActuator(),
+    MarkRemoveActuator(),
+    CaptureAssertionCandidateActuator(),
+    SetUserSettingActuator(),
+    AnnotationSaveActuator(),
+    AnnotationDeleteActuator(),
+    BlockerResolveActuator(),
+    SavedViewSaveActuator(),
+    SavedViewDeleteActuator(),
+    RecallPackSaveActuator(),
+    RecallPackDeleteActuator(),
+    WorkspaceSaveActuator(),
+    WorkspaceDeleteActuator(),
+    CorrectionRecordActuator(),
+    CorrectionDeleteActuator(),
+    CorrectionsClearActuator(),
+    BlackboardPostActuator(),
+    InsightsRebuildActuator(),
+)
 
 __all__ = [
     "UNRESOLVED_SESSION_GAP",

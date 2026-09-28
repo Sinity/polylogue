@@ -11,8 +11,10 @@ from polylogue.operations.mutation_transaction import (
     MutationPlan,
     MutationReceipt,
     MutationTarget,
-    RecoveryDisposition,
+    RecoveryResolution,
+    ReplayHandles,
     build_typed_plan,
+    register_recovery_route,
 )
 from polylogue.storage.derived.session.derivation import SESSION_PROFILE_RECIPE_VERSION
 from polylogue.storage.sqlite.archive_tiers.source_items import FrozenSourceManifest, SealedSourceManifestRef
@@ -72,6 +74,25 @@ def ingest_plan(
 
 
 @dataclass(frozen=True, slots=True)
+class IngestRecovery:
+    """Recovery route for an interrupted ingest, which is not re-driven here.
+
+    Startup recovery cannot run the daemon's phased ingest driver, and a
+    resumed request for an accepted generation without a terminal checkpoint
+    reports its indeterminate state rather than replaying it. The run is
+    terminalized so it is not a barrier; the accepted generation itself stays
+    in ``source.db`` for an owner that re-drives it (polylogue-x7u3x).
+    """
+
+    operation: str = INGEST_OPERATION
+
+    def recover(self, _handles: ReplayHandles, _plan: MutationPlan) -> RecoveryResolution:
+        return RecoveryResolution(
+            "not-replayable", "the accepted source generation is retained but not re-driven by startup recovery"
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class IngestActuator:
     """Plan/inspection adapter; only the daemon's phased owner publishes."""
 
@@ -96,5 +117,8 @@ class IngestActuator:
     def apply(self, _plan: MutationPlan, _args: object) -> MutationReceipt:
         raise RuntimeError("ingest runtime publication is owned by the daemon phased driver")
 
-    def inspect_recovery(self, _operation: object, _args: object) -> RecoveryDisposition:
-        return RecoveryDisposition("unknown", "operator-blocking", "ingest publication requires exact domain evidence")
+    def recover(self, handles: ReplayHandles, plan: MutationPlan) -> RecoveryResolution:
+        return IngestRecovery().recover(handles, plan)
+
+
+register_recovery_route(IngestRecovery())

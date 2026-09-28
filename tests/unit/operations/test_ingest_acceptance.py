@@ -10,6 +10,7 @@ from polylogue.operations.audit import AuditRepository, MachineRequestBinding, M
 from polylogue.operations.bindings import runtime_operation_binding
 from polylogue.operations.ingest_acceptance import IngestActuator, ingest_plan
 from polylogue.operations.machine_lifecycle import machine_request_state
+from polylogue.operations.mutation_replay import recover_interrupted_operations
 from polylogue.operations.mutation_transaction import (
     AuthorizationMismatchError,
     MutationAuthorization,
@@ -17,7 +18,6 @@ from polylogue.operations.mutation_transaction import (
     MutationPreview,
     MutationPrincipal,
     OperationExecutor,
-    recover_interrupted_operations,
 )
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.source_items import (
