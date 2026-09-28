@@ -163,10 +163,13 @@ def frame_request(
         {**original_arguments, "limit": transaction.page_size, "offset": transaction.offset}
     )
     reference = {**_window_arguments(original), **dict(extra_arguments or {})}
-    if dict(transaction.arguments) != reference and dict(transaction.arguments) != {
+    # Only the legacy transcript token ({ref, projection: "<name>"}) is exempt;
+    # a modern token's projection object must match the request exactly.
+    legacy_token = isinstance(legacy_projection, str) and dict(transaction.arguments) == {
         "ref": original.ref,
         "projection": legacy_projection,
-    }:
+    }
+    if dict(transaction.arguments) != reference and not legacy_token:
         raise QueryContinuationInvalidError("continuation arguments do not match the requested transcript window")
     supplied = request.model_dump(mode="json", exclude_unset=True, exclude={"continuation", "operation", "limit"})
     for name, value in supplied.items():
