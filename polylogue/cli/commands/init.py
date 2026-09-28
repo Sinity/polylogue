@@ -81,12 +81,12 @@ def detect_chat_sources() -> tuple[DetectedSource, ...]:
 
 
 def render_starter_toml(detected: tuple[DetectedSource, ...]) -> str:
-    """Render a ``polylogue.toml`` body from the detected sources.
+    """Render a ``polylogue.toml`` body for a fresh install.
 
-    Only present sources are emitted as active entries; absent
-    sources are written as commented hints so the user can uncomment
-    them once the chat tool is installed without having to re-read
-    docs to know the path.
+    Sources are not configured: the daemon reads each origin from its
+    canonical location. The detected directories are listed as comments so
+    the operator can see what will be acquired, and every emitted setting is
+    one the loader reads (an unread key is refused at load).
     """
     from polylogue.paths import archive_root
 
@@ -97,23 +97,14 @@ def render_starter_toml(detected: tuple[DetectedSource, ...]) -> str:
         "[archive]",
         f'root = "{archive_root()}"',
         "",
-        "[sources]",
-        "# Auto-detected chat source roots. Add or remove freely.",
+        "# Sources are read from their canonical locations; they are not configured here.",
     ]
-    present = [d for d in detected if d.present]
-    absent = [d for d in detected if not d.present]
-    if present:
-        rendered = ", ".join(f'"{d.path}"' for d in present)
-        lines.append(f"roots = [{rendered}]")
-    else:
-        lines.append("roots = []")
-    if absent:
-        lines.append("")
-        lines.append("# Absent on this machine. Uncomment after installing the tool:")
-        for d in absent:
-            lines.append(f'#   "{d.path}"   # {d.description}')
+    for d in detected:
+        state = "present" if d.present else "absent"
+        lines.append(f"#   {d.family}: {d.path} ({state}) — {d.description}")
+    lines.append("# Account exports are imported with `polylogue import <path>`.")
     lines.append("")
-    lines.append("[daemon]")
+    lines.append("[daemon.api]")
     lines.append('host = "127.0.0.1"')
     lines.append("port = 8766")
     lines.append("")

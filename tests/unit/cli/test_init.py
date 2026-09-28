@@ -50,19 +50,27 @@ def test_detect_chat_sources_marks_present(isolated_home: Path) -> None:
 
 
 def test_render_starter_toml_lists_present_and_comments_absent(isolated_home: Path) -> None:
+    """The starter config loads, and only describes sources in comments.
+
+    Anti-vacuity: emit ``[sources] roots`` or the unread ``[daemon] host``
+    again and loading the rendered file raises ``ConfigError``.
+    """
+    from polylogue.config import load_polylogue_config
+
     (isolated_home / ".claude" / "projects").mkdir(parents=True)
     detected = detect_chat_sources()
     body = render_starter_toml(detected)
 
     assert "[archive]" in body
-    assert "[sources]" in body
-    assert "[daemon]" in body
-    assert "roots = [" in body
-    assert ".claude/projects" in body
-    # Absent ones must appear only as commented hints.
+    assert "[daemon.api]" in body
     for line in body.splitlines():
-        if "codex/sessions" in line:
-            assert line.lstrip().startswith("#"), f"absent source must be commented: {line!r}"
+        if ".claude/projects" in line or "codex/sessions" in line:
+            assert line.lstrip().startswith("#"), f"sources are described, not configured: {line!r}"
+    assert any("claude/projects" in line and "(present)" in line for line in body.splitlines())
+
+    config = isolated_home / "polylogue.toml"
+    config.write_text(body, encoding="utf-8")
+    load_polylogue_config(config_path=config)
 
 
 def test_init_command_writes_starter_config(isolated_home: Path) -> None:

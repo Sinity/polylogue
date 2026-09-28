@@ -36,11 +36,8 @@ Accepted ingest records changed session IDs in its terminal audit receipt. Up to
 
 ## Auto-Discovery
 
-The daemon watches typed provider sources, the archive inbox, browser-capture
-spool, and hook-event carriers by default. Custom roots add ordinary export sources;
-they do not replace those defaults:
-
-Examples include:
+The daemon watches typed provider sources, the archive inbox, the
+browser-capture spool, and hook-event carriers. Examples include:
 
 ```
 ~/.claude/projects/       Claude Code sessions

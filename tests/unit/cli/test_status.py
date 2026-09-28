@@ -1120,7 +1120,7 @@ class TestStatusDiagnosticIntegration:
 
     @pytest.mark.integration
     def test_status_subprocess_no_sources(self, tmp_path: Path) -> None:
-        """An empty roots config surfaces the no-sources hint."""
+        """A machine with no chat tool directory surfaces the no-sources hint."""
         import sqlite3
 
         from tests.infra.cli_subprocess import run_cli
@@ -1128,9 +1128,6 @@ class TestStatusDiagnosticIntegration:
         data_home = tmp_path / "data" / "polylogue"
         data_home.mkdir(parents=True, exist_ok=True)
         sqlite3.connect(data_home / "index.db").close()
-        config_home = tmp_path / "config" / "polylogue"
-        config_home.mkdir(parents=True, exist_ok=True)
-        (config_home / "polylogue.toml").write_text("[sources]\nroots = []\n")
 
         result = run_cli(["--plain", "ops", "status"], env=self._xdg_env(tmp_path))
         self._assert_daemon_required(result)
