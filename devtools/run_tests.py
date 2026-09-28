@@ -415,19 +415,26 @@ def reusable_green_receipt(
         return None
     runs_root = root / ".cache" / "verify" / "runs"
     try:
-        candidates = sorted(
+        # Run ids carry time to the second only, so the name bounds the
+        # lookup and the recorded start orders the runs within it.
+        entries = sorted(
             (entry for entry in runs_root.iterdir() if "-focused-test-" in entry.name),
             reverse=True,
         )[:REUSE_LOOKUP_LIMIT]
     except OSError:
         return None
-    interpreter = (sys.executable, platform.python_version())
-    for entry in candidates:
-        receipt = entry / "run.json"
+    loaded: list[tuple[str, Path, dict[str, Any]]] = []
+    for entry in entries:
         try:
-            payload = json.loads(receipt.read_text(encoding="utf-8"))
+            payload = json.loads((entry / "run.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
+        if isinstance(payload, dict):
+            loaded.append((f"{entry.name[:16]}|{payload.get('started_at') or ''}", entry, payload))
+    loaded.sort(key=lambda item: item[0], reverse=True)
+    interpreter = (sys.executable, platform.python_version())
+    for _order, entry, payload in loaded:
+        receipt = entry / "run.json"
         fingerprint = payload.get("environment_fingerprint") or {}
         same_inputs = (
             payload.get("argv") == selection
@@ -658,6 +665,65 @@ _VALUE_TAKING_OPTIONS = frozenset(
         "--capture",
         "--import-mode",
         "-r",
+        "--color",
+        "--code-highlight",
+        "--durations",
+        "--durations-min",
+        "--verbosity",
+        "--pastebin",
+        "--junit-prefix",
+        "--report-log",
+        "--doctest-glob",
+        "--doctest-report",
+        "--last-failed-no-failures",
+        "--lfnf",
+        "--log-level",
+        "--log-format",
+        "--log-date-format",
+        "--log-cli-level",
+        "--log-cli-format",
+        "--log-cli-date-format",
+        "--log-file-level",
+        "--log-file-format",
+        "--log-file-date-format",
+        "--log-file-mode",
+        "--log-auto-indent",
+        "--log-disable",
+        "--maxprocesses",
+        "--max-worker-restart",
+        "--tx",
+        "--rsyncdir",
+        "--rsyncignore",
+        "--timeout-method",
+        "--hypothesis-verbosity",
+        "--randomly-seed",
+        "--cov",
+        "--cov-report",
+        "--cov-config",
+        "--cov-fail-under",
+        "--cov-context",
+        "--benchmark-sort",
+        "--benchmark-group-by",
+        "--benchmark-columns",
+        "--benchmark-name",
+        "--benchmark-save",
+        "--benchmark-autosave",
+        "--benchmark-compare",
+        "--benchmark-compare-fail",
+        "--benchmark-min-time",
+        "--benchmark-max-time",
+        "--benchmark-min-rounds",
+        "--benchmark-timer",
+        "--benchmark-calibration-precision",
+        "--benchmark-warmup",
+        "--benchmark-warmup-iterations",
+        "--benchmark-storage",
+        "--benchmark-json",
+        "--benchmark-histogram",
+        "--benchmark-cprofile",
+        "--benchmark-time-unit",
+        "--snapshot-update-dir",
+        "--snapshot-default-extension",
     }
 )
 

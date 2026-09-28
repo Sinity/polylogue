@@ -1278,6 +1278,7 @@ def _rerun_failures_in_slot(
     cwd: str,
     log: IO[bytes],
     on_start: Callable[[subprocess.Popen[Any]], None],
+    first_group: int | None = None,
 ) -> None:
     """Rerun a failed run's failures once, alone, while this job holds the slot.
 
@@ -1315,6 +1316,17 @@ def _rerun_failures_in_slot(
         with contextlib.suppress(OSError):
             (step_dir / RERUN_IN_SLOT_RESULT).write_text(
                 json.dumps({"attempted": failed, "rerun_exit": 125, "provenance_error": str(exc)[:500]}),
+                encoding="utf-8",
+            )
+        return
+    if first_group is not None and not _group_reaped(first_group):
+        # A descendant of the first attempt (a server, a lock holder) would
+        # share the rerun's slot and state, so no rerun happens and the
+        # failures stand.
+        log.write(f"\n  rerun skipped: first attempt's process group {first_group} survived termination\n".encode())
+        with contextlib.suppress(OSError):
+            (step_dir / RERUN_IN_SLOT_RESULT).write_text(
+                json.dumps({"attempted": failed, "rerun_exit": 125, "first_group_survived": first_group}),
                 encoding="utf-8",
             )
         return
@@ -1360,6 +1372,33 @@ def _rerun_failures_in_slot(
             json.dumps({"attempted": failed, "rerun_exit": rerun_exit, "worktree_provenance": provenance}),
             encoding="utf-8",
         )
+
+
+def _group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _group_reaped(pgid: int) -> bool:
+    """Terminate what is left of a process group; whether it is gone.
+
+    The group leader is already reaped, so what remains are its descendants,
+    which are waited on by polling the group rather than by ``wait``.
+    """
+    for sig, grace in ((signal.SIGTERM, STOP_TERM_GRACE_S), (signal.SIGKILL, STOP_KILL_GRACE_S)):
+        if not _group_alive(pgid):
+            return True
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pgid, sig)
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline and _group_alive(pgid):
+            time.sleep(0.05)
+    return not _group_alive(pgid)
 
 
 def _run_launch(launch_path: Path) -> int:
@@ -1462,7 +1501,13 @@ def _run_launch(launch_path: Path) -> int:
                     if sampler is not None:
                         sampler.follow(process.pid)
 
-                _rerun_failures_in_slot(environment, cwd=launch["working_directory"], log=log, on_start=register)
+                _rerun_failures_in_slot(
+                    environment,
+                    cwd=launch["working_directory"],
+                    log=log,
+                    on_start=register,
+                    first_group=child.pid,
+                )
         except OSError as exc:
             log.write(f"devtools.pytest_slot: could not start pytest: {exc}\n".encode())
             return 125

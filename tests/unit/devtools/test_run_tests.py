@@ -1158,6 +1158,31 @@ def test_a_green_older_than_a_pruned_red_is_not_reused(tmp_path: Path) -> None:
     assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
 
 
+def test_a_later_red_in_the_same_second_outranks_a_green(tmp_path: Path) -> None:
+    """Anti-vacuity: order by directory name alone and the green, whose random
+    suffix sorts higher, is returned although the red started after it."""
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py"]
+    _green_receipt(
+        runs,
+        "20260101T000000Z-focused-test-1-ff",
+        argv=selection,
+        digest="d1",
+        started_at="2026-01-01T00:00:00.1+00:00",
+    )
+    _green_receipt(
+        runs,
+        "20260101T000000Z-focused-test-1-00",
+        argv=selection,
+        digest="d1",
+        started_at="2026-01-01T00:00:00.9+00:00",
+        status="failed",
+        exit_code=1,
+    )
+
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
+
+
 def test_main_reuses_a_green_receipt_without_queueing(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
@@ -1411,6 +1436,7 @@ def test_the_report_chars_operand_is_not_a_path() -> None:
     """Anti-vacuity: drop ``-r`` from the value-taking options and ``f`` is the
     only (missing) path, so a pathless run counts zero modules."""
     assert run_tests._selected_test_modules(["-r", "f"]) == run_tests._selected_test_modules([])
+    assert run_tests._selected_test_modules(["--color", "yes"]) == run_tests._selected_test_modules([])
 
 
 def test_an_isolated_run_is_never_answered_from_a_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

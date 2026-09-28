@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -311,8 +312,37 @@ def test_a_rerun_keeps_the_first_runs_execution_options() -> None:
 def test_attached_short_option_values_are_classified_by_their_option() -> None:
     """Anti-vacuity: classify ``-n8`` by its whole spelling and it is kept, so
     the adjudicating rerun fans out to eight workers instead of running alone."""
-    command = ["python", "-m", "pytest", "tests/test_w.py", "-n8", "-kslow", "-rf", "-pfoo", "-pno:randomly", "-Werror"]
+    command = [
+        "python",
+        "-m",
+        "pytest",
+        "tests/test_w.py",
+        "-n8",
+        "-kslow",
+        "-rf",
+        "-pxdist",
+        "-pno:randomly",
+        "-Werror",
+    ]
     assert pytest_rerun.semantic_rerun_options(command) == ["-pno:randomly", "-Werror"]
+
+
+def test_a_callers_plugin_load_survives_into_the_rerun() -> None:
+    """Anti-vacuity: drop every positive ``-p`` and a failure a caller plugin
+    causes passes on the plugin-free rerun, so it is called flaky."""
+    command = ["python", "-m", "pytest", "-p", "xdist", "-p", "custom_plugin", "-pother", "tests/test_w.py"]
+    assert pytest_rerun.semantic_rerun_options(command) == ["-p", "custom_plugin", "-pother"]
+
+
+def test_the_first_attempts_descendants_are_reaped_before_a_rerun() -> None:
+    """Anti-vacuity: skip ``_group_reaped`` and the backgrounded ``sleep`` the
+    failed attempt left behind is still in its group when the rerun starts."""
+    leader = subprocess.Popen(["sh", "-c", "sleep 60 & exit 1"], start_new_session=True)
+    assert leader.wait() == 1
+    assert pytest_slot._group_alive(leader.pid)
+
+    assert pytest_slot._group_reaped(leader.pid)
+    assert not pytest_slot._group_alive(leader.pid)
 
 
 def test_scratch_is_kept_when_the_rerun_ran_other_content(tmp_path: Path) -> None:
