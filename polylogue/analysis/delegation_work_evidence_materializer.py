@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from contextlib import closing
+import sqlite3
 from pathlib import Path
 
 from polylogue.analysis.delegation_work_evidence import materialize_delegation_work_evidence_graph
@@ -12,8 +12,7 @@ from polylogue.archive.query.predicate import QueryBoolPredicate
 from polylogue.core.refs import ObjectRef
 from polylogue.core.stage_admission import admit_stage_write
 from polylogue.operations.operation_context import open_operation_read
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
 DELEGATION_WORK_EVIDENCE_GRAPH_ID = "delegation:archive"
@@ -33,6 +32,27 @@ MAX_DELEGATION_SNAPSHOT_BYTES = 64 * 1024 * 1024
 _SNAPSHOT_ROW_SEPARATOR = b"\x1e"
 
 
+def _snapshot_connection(conn: sqlite3.Connection) -> ObjectRef:
+    """Digest delegation facts using the caller's already-pinned index view."""
+
+    digest = hashlib.sha256()
+    byte_count = 0
+    # ``SELECT *`` deliberately: the digest must stay as sensitive as the
+    # whole relation, and a hand-kept column list would silently stop tracking
+    # a column added later.
+    cursor = conn.execute("SELECT * FROM delegation_facts ORDER BY delegation_id")
+    for row_count, row in enumerate(cursor, start=1):
+        if row_count > MAX_DELEGATION_SNAPSHOT_ROWS:
+            raise ValueError("delegation work-evidence materialization exceeded its bounded population")
+        payload = json.dumps(list(row), separators=(",", ":"), default=str).encode()
+        byte_count += len(payload)
+        if byte_count > MAX_DELEGATION_SNAPSHOT_BYTES:
+            raise ValueError("delegation work-evidence materialization exceeded its bounded population")
+        digest.update(payload)
+        digest.update(_SNAPSHOT_ROW_SEPARATOR)
+    return ObjectRef(kind="context-snapshot", object_id=f"delegations:{digest.hexdigest()[:24]}")
+
+
 def delegation_work_evidence_snapshot(archive_root: Path) -> ObjectRef:
     """Return a content-derived snapshot for the current delegation facts.
 
@@ -44,49 +64,17 @@ def delegation_work_evidence_snapshot(archive_root: Path) -> ObjectRef:
     instead of growing the daemon's RSS on every convergence pass.
     """
 
-    index_db = Path(archive_root) / "index.db"
-    digest = hashlib.sha256()
-    row_count = 0
-    byte_count = 0
-    with closing(
-        open_readonly_connection(index_db.absolute(), tier=ArchiveTier.INDEX, timeout_class="background-read")
-    ) as conn:
-        # ``SELECT *`` deliberately: the digest must stay as sensitive as the
-        # whole relation, and a hand-kept column list would silently stop
-        # tracking a column added later -- freshness would go blind exactly
-        # where a new field carries new evidence. The table's own declaration
-        # fixes the column order, so the digest is stable across runs, and a
-        # genuine schema change correctly forces one re-materialization.
-        # polylogue-a7xr.22: reads ``delegation_facts`` (the rename-only
-        # ``delegations`` view is gone). ``delegation_id`` is the primary key
-        # and is content-derived (``COALESCE(instruction_tool_use_block_id,
-        # parent || ':' || child)``), so ordering by it is both a total order
-        # -- the previous parent/child ordering left ties free to permute
-        # between runs -- and deterministic across rebuilds.
-        cursor = conn.execute("SELECT * FROM delegation_facts ORDER BY delegation_id")
-        for row in cursor:
-            row_count += 1
-            if row_count > MAX_DELEGATION_SNAPSHOT_ROWS:
-                raise ValueError("delegation work-evidence materialization exceeded its bounded population")
-            payload = json.dumps(list(row), separators=(",", ":"), default=str).encode()
-            byte_count += len(payload)
-            if byte_count > MAX_DELEGATION_SNAPSHOT_BYTES:
-                raise ValueError("delegation work-evidence materialization exceeded its bounded population")
-            digest.update(payload)
-            digest.update(_SNAPSHOT_ROW_SEPARATOR)
-    return ObjectRef(kind="context-snapshot", object_id=f"delegations:{digest.hexdigest()[:24]}")
+    with open_operation_read(Path(archive_root)) as pinned:
+        return _snapshot_connection(pinned.archive._conn)
 
 
 def materialize_delegation_work_evidence_archive(archive_root: Path) -> int:
     """Replace the archive delegation projection and return its row count."""
 
     archive_root = Path(archive_root)
-    snapshot = delegation_work_evidence_snapshot(archive_root)
-    # Archive reads are pinned and lifecycle-controlled.  Publication remains
-    # the synchronous transaction below and is intentionally independent of
-    # this read boundary.
     with open_operation_read(archive_root) as pinned:
         archive = pinned.archive
+        snapshot = _snapshot_connection(archive._conn)
         rows = archive.query_delegations(QueryBoolPredicate("and", ()), limit=100_001)
     if len(rows) > 100_000:
         raise ValueError("delegation work-evidence materialization exceeded its bounded population")
@@ -98,7 +86,8 @@ def materialize_delegation_work_evidence_archive(archive_root: Path) -> int:
     # The projection above is archive-wide compute; only this replacement is
     # a write, so it is the only part that enters the daemon writer.
     admit_stage_write(
-        "convergence.stage.delegation_work_evidence.publish", lambda: _replace_graph(archive_root / "index.db", graph)
+        "convergence.stage.delegation_work_evidence.publish",
+        lambda: _replace_graph(resolve_active_index_path(archive_root), graph),
     )
     return len(rows)
 
@@ -106,12 +95,9 @@ def materialize_delegation_work_evidence_archive(archive_root: Path) -> int:
 def delegation_work_evidence_materialization_needed(archive_root: Path) -> bool:
     """Return whether the stored delegation graph represents current evidence."""
 
-    index_db = Path(archive_root) / "index.db"
-    snapshot = delegation_work_evidence_snapshot(archive_root).format()
-    with closing(
-        open_readonly_connection(index_db.absolute(), tier=ArchiveTier.INDEX, timeout_class="background-read")
-    ) as conn:
-        row = conn.execute(
+    with open_operation_read(Path(archive_root)) as pinned:
+        snapshot = _snapshot_connection(pinned.archive._conn).format()
+        row = pinned.archive._conn.execute(
             "SELECT corpus_snapshot_ref FROM work_evidence_graphs WHERE graph_id = ?",
             (DELEGATION_WORK_EVIDENCE_GRAPH_ID,),
         ).fetchone()
