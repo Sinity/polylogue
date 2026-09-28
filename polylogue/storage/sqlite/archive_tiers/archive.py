@@ -5706,15 +5706,15 @@ class ArchiveStore:
         conn = connect_measured(self.index_db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
-        # This recovery path uses executescript(), which commits implicitly.
-        # Restore missing triggers before the delete transaction so a later
-        # trigger-install failure cannot commit the destructive work early.
-        from polylogue.storage.fts.fts_lifecycle import ensure_fts_triggers_sync
-
-        ensure_fts_triggers_sync(conn)
         deleted = 0
         deleted_session_ids: list[str] = []
         try:
+            # This recovery path uses executescript(), which commits implicitly.
+            # Restore missing triggers before the delete transaction so a later
+            # trigger-install failure cannot commit the destructive work early.
+            from polylogue.storage.fts.fts_lifecycle import ensure_fts_triggers_sync
+
+            ensure_fts_triggers_sync(conn)
             conn.execute("BEGIN IMMEDIATE")
             try:
                 for session_id in resolved_session_ids:
