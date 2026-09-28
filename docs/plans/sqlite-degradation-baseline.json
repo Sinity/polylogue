@@ -920,10 +920,6 @@
     },
     {
       "file": "polylogue/storage/sqlite/agent_thread_state.py",
-      "digest": "4a5bdd9359f15bafda7bf01f764e2efc6a7f9492"
-    },
-    {
-      "file": "polylogue/storage/sqlite/agent_thread_state.py",
       "digest": "521aacc1dc4345c4827c7c3ace113ce663bd8b96"
     },
     {
