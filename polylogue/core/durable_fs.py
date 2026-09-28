@@ -122,7 +122,9 @@ def clone_or_copy_replace(source: Path, destination: Path) -> None:
     if not stat.S_ISREG(info.st_mode):
         raise OSError(errno.EINVAL, f"not a regular file: {source}")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    handle, temporary = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+    # A short fixed prefix: embedding the destination name could push a valid
+    # 255-byte member name past the filesystem's component limit.
+    handle, temporary = tempfile.mkstemp(prefix=".stage-", dir=destination.parent)
     temporary_path = Path(temporary)
     try:
         with source.open("rb") as stream:
@@ -132,7 +134,11 @@ def clone_or_copy_replace(source: Path, destination: Path) -> None:
         os.fsync(handle)
         os.close(handle)
         handle = -1
-        shutil.copystat(source, temporary_path)
+        # Mode and timestamps only: copystat would also copy BSD/macOS file
+        # flags, and an immutable temporary could be neither renamed into
+        # place nor cleaned up.
+        shutil.copymode(source, temporary_path)
+        os.utime(temporary_path, ns=(info.st_atime_ns, info.st_mtime_ns))
         os.replace(temporary_path, destination)
     except BaseException:
         if handle >= 0:

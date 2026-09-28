@@ -44,3 +44,25 @@ def test_write_once_refuses_existing_path(tmp_path: Path) -> None:
         write_once(path, b"replacement")
 
     assert path.read_bytes() == b"original"
+
+
+def test_clone_or_copy_replace_stages_a_maximal_component_name(tmp_path: Path) -> None:
+    """A 255-byte member name stages; the temporary name stays short.
+
+    Anti-vacuity: build the temporary from the destination name (as
+    ``.<name>.XXXXXXXX``) and ``mkstemp`` fails with ``ENAMETOOLONG``.
+    """
+    from polylogue.core.durable_fs import clone_or_copy_replace
+
+    source = tmp_path / "source.json"
+    source.write_bytes(b'{"member": 1}')
+    source.chmod(0o640)
+    os.utime(source, ns=(1_000_000_000, 2_000_000_000))
+    destination = tmp_path / "staged" / ("m" * 250 + ".json")
+
+    clone_or_copy_replace(source, destination)
+
+    assert destination.read_bytes() == b'{"member": 1}'
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o640
+    assert destination.stat().st_mtime_ns == 2_000_000_000
+    assert [path.name for path in destination.parent.iterdir()] == [destination.name]

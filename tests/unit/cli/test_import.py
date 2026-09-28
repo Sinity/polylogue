@@ -11,6 +11,7 @@ have to fail loudly and name the staged file — only their seam moved.
 
 from __future__ import annotations
 
+import errno
 import json
 import sqlite3
 from pathlib import Path
@@ -335,12 +336,18 @@ def test_failed_restage_keeps_the_earlier_import(tmp_path: Path, workspace_env: 
     source.write_text('{"first": true}')
     staged = import_command._stage_for_daemon(source)
     source.write_text('{"second": true}')
-    source.chmod(0)
-    try:
-        with pytest.raises(SystemExit):
-            import_command._stage_for_daemon(source)
-    finally:
-        source.chmod(0o600)
+
+    # A deterministic mid-copy read failure; permission bits would not stop
+    # a restage running as root.
+    def failing_copy(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EIO, "injected read failure")
+
+    with (
+        patch("polylogue.core.durable_fs.reflink_into", return_value=False),
+        patch("polylogue.core.durable_fs.shutil.copyfileobj", side_effect=failing_copy),
+        pytest.raises(SystemExit),
+    ):
+        import_command._stage_for_daemon(source)
 
     assert staged.read_text() == '{"first": true}'
     assert [path.name for path in staged.parent.iterdir()] == [staged.name]
