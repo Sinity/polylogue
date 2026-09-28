@@ -1270,3 +1270,27 @@ def test_a_git_ignored_selection_is_never_reused(tmp_path: Path) -> None:
 
     assert run_tests._reuse_eligible([".cache/test_x.py"], root=tmp_path) is False
     assert run_tests._reuse_eligible(["test_y.py"], root=tmp_path) is True
+
+
+def test_reuse_is_refused_when_the_tree_changes_during_lookup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A save between digest and return means the receipt describes another tree.
+
+    Anti-vacuity: drop the second digest comparison and ``main`` returns the
+    reused receipt instead of reaching the (fake) slot.
+    """
+    monkeypatch.setenv(run_tests.REUSE_ENV, "1")
+    monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
+    digests = iter(["before", "after", "after", "after", "after"])
+    monkeypatch.setattr(run_tests, "git_worktree_content_sha256", lambda _root: next(digests, "after"))
+    monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: tmp_path / "run.json")
+
+    queued: list[bool] = []
+
+    def reached_the_slot(*_args: Any, **_kwargs: Any) -> Any:
+        queued.append(True)
+        raise RuntimeError("stop after admission")
+
+    monkeypatch.setattr("devtools.run_tests.run_pytest", reached_the_slot)
+
+    assert run_tests.main(["tests/unit/devtools/test_run_tests.py"]) != 0
+    assert queued == [True]

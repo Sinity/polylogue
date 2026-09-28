@@ -834,12 +834,24 @@ def main(argv: list[str] | None = None) -> int:
         # Two callers in one checkout asking for the same selection share one
         # run: the second waits here, then finds the first's receipt below.
         _hold_selection_lock(selection)
+        # The wait for the lock can be long: the checkout may have changed
+        # branch meanwhile, so admission is decided again before any reuse.
+        identity = checkout_identity(ROOT)
+        refusal = default_branch_refusal(identity, command="devtools test", allowed=on_default_branch)
+        if refusal is not None:
+            sys.stderr.write(refusal + "\n")
+            return REFUSAL_EXIT
+        digest = git_worktree_content_sha256(ROOT)
         reused = reusable_green_receipt(
             selection,
             root=ROOT,
-            content_sha256=git_worktree_content_sha256(ROOT),
+            content_sha256=digest,
             environment_key=_reuse_environment_key(),
         )
+        if reused is not None and git_worktree_content_sha256(ROOT) != digest:
+            # A save landed during the lookup: the receipt no longer describes
+            # this tree, so the selection runs.
+            reused = None
         if reused is not None:
             if use_json:
                 with contextlib.suppress(OSError, ValueError):
