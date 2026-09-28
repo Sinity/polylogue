@@ -862,7 +862,7 @@ export type ListAssertionClaimsError = QueryErrorPayload | WebCredentialFailureP
 
 export type MintWebSignInTicketParameters = Record<string, never>;
 export type MintWebSignInTicketResponse = WebSignInTicketPayload;
-export type MintWebSignInTicketError = QueryErrorPayload;
+export type MintWebSignInTicketError = QueryErrorPayload | QueryFailurePayload;
 
 export type QueryUnitsParameters = {
   readonly action?: string;
