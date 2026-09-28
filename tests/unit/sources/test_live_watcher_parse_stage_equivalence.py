@@ -1143,6 +1143,53 @@ def test_a_single_worker_stage_reads_nothing_ahead(tmp_path: Path) -> None:
         stage.shutdown()
 
 
+def test_a_claimed_failure_finishing_after_the_warm_is_prepared_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: forgetting the claim when the warm times out publishes
+    the late retryable failure on the next warm instead of re-preparing."""
+    import hashlib
+    import threading
+
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+
+    [path] = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    released = threading.Event()
+    finished = threading.Event()
+    original_worker = parse_prefetch.live_parse_path_worker
+    calls = 0
+
+    def flaky_worker(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            released.wait(timeout=5)
+            finished.set()
+            return PreparedJsonl(None, None, None, "source changed", deferred=True)
+        return original_worker(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", flaky_worker)
+    stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards", warm_timeout_seconds=0.05)
+    candidate = [(str(path), Provider.CODEX, True)]
+    try:
+        assert stage.prefetch_paths(candidate) == 1
+        stage.warm_paths(candidate)
+        released.set()
+        assert finished.wait(timeout=5)
+        stage._path_futures[str(path)].result(timeout=5)
+        stage.warm_paths(candidate)
+        if str(path) in stage._path_futures:
+            stage._path_futures[str(path)].result(timeout=10)
+        stage.warm_paths(candidate)
+        result = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+        assert result is not None and result.error is None
+        assert calls == 2
+    finally:
+        released.set()
+        stage.shutdown()
+
+
 def test_a_failed_prefetch_stat_is_retried_by_the_warm(tmp_path: Path) -> None:
     """Anti-vacuity: caching the speculative stat failure makes the warm
     return that failure for a file that exists by the time it is needed."""

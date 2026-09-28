@@ -426,6 +426,10 @@ class LiveParseStage:
         #: unclaimed guess is dropped after ``_SPECULATIVE_LIFETIME_CALLS``
         #: stage calls rather than held, with its scratch, until shutdown.
         self._speculative: dict[str, int] = {}
+        #: Claimed read-ahead still running when its warm ended. A retryable
+        #: failure it produces later is dropped at collection, so the next
+        #: warm prepares the path again instead of publishing the failure.
+        self._reprepare_on_failure: set[str] = set()
         self._stage_calls = 0
         self._path_sizes: dict[str, int] = {}
         self._path_attempt_dirs: dict[str, Path] = {}
@@ -521,6 +525,7 @@ class LiveParseStage:
         retry = self._discard_retryable(claimed)
         if retry and deadline > time.monotonic():
             self._warm_until([candidate for candidate in candidates if candidate[0] in retry], deadline)
+        self._reprepare_on_failure.update(path for path in claimed if path in self._path_futures)
         if archive_root is not None:
             self._prepare_existing_session_writes(
                 archive_root,
@@ -865,6 +870,11 @@ class LiveParseStage:
             self._speculative.pop(source_path, None)
             result.discard()
             return
+        if source_path in self._reprepare_on_failure:
+            self._reprepare_on_failure.discard(source_path)
+            if result.error is not None and result.deferred:
+                result.discard()
+                return
         self._path_results[source_path] = result
 
     def _new_attempt_directory(self) -> Path:

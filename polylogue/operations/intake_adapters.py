@@ -954,6 +954,23 @@ class FileIntakeAdapter(IntakeAdapter):
         prefetch = getattr(self.context.watcher, "prefetch_parse_paths", None)
         if not callable(prefetch) or not paths:
             return
+
+        def still_owned(path: Path) -> bool:
+            # The same carrier checks admission applies, re-read now: a path
+            # discovered earlier may since have become a symlink or moved.
+            try:
+                regular = stat.S_ISREG(path.lstat().st_mode)
+            except OSError:
+                return False
+            return (
+                regular
+                and deepest_source_for_path(path, self.context.sources) is self.source
+                and self.source.accepts(path)
+            )
+
+        paths = [path for path in paths if still_owned(path)]
+        if not paths:
+            return
         cursor = getattr(self.context.watcher, "_cursor", None)
         get_records = getattr(cursor, "get_records", None)
         try:
