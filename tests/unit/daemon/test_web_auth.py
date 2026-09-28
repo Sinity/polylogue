@@ -487,3 +487,45 @@ def test_the_exchange_page_is_served_even_to_a_credentialed_browser() -> None:
     status, body = send_html.call_args.args
     assert status == HTTPStatus.OK
     assert body == WEB_SIGN_IN_HTML
+
+
+def test_peer_ownership_is_decided_without_procfs_on_non_linux_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A host without ``/proc/net/tcp`` still attributes the peer socket to its uid.
+
+    Anti-vacuity (Codex P1, #5704): consult only procfs and a macOS peer is
+    never the owner, so every valid cookie is discarded and the signed-in
+    shell answers 401. Our own accepted socket (named the other way round)
+    must not count as the peer.
+    """
+    import subprocess
+    from types import SimpleNamespace
+
+    from polylogue.daemon import http as daemon_http
+
+    listings = {
+        "peer": "p100\nn127.0.0.1:52345->127.0.0.1:8765\n",
+        "server_side_only": "p200\nn127.0.0.1:8765->127.0.0.1:52345\n",
+    }
+    listing = "peer"
+
+    def fake_run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        assert command[0].endswith("lsof")
+        assert "-iTCP@127.0.0.1:52345" in command
+        return SimpleNamespace(returncode=0, stdout=listings[listing], stderr="")
+
+    monkeypatch.setattr(daemon_http.sys, "platform", "darwin")
+    monkeypatch.setattr(daemon_http.shutil, "which", lambda _name: "/usr/sbin/lsof")
+    monkeypatch.setattr(daemon_http.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        daemon_http, "_tcp_socket_owner_uid", lambda *_args: pytest.fail("procfs is not consulted off Linux")
+    )
+
+    assert daemon_http._peer_socket_owned_by_current_uid(8765, "127.0.0.1", 52345) is True
+    listing = "server_side_only"
+    assert daemon_http._peer_socket_owned_by_current_uid(8765, "127.0.0.1", 52345) is False
+
+    def missing(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        raise subprocess.TimeoutExpired("lsof", 5)
+
+    monkeypatch.setattr(daemon_http.subprocess, "run", missing)
+    assert daemon_http._peer_socket_owned_by_current_uid(8765, "127.0.0.1", 52345) is False

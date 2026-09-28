@@ -10,8 +10,11 @@ import hmac
 import json
 import os
 import select
+import shutil
 import socket
 import sqlite3
+import subprocess
+import sys
 import threading
 from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping, Sequence
 from concurrent.futures import TimeoutError as FutureTimeoutError
@@ -1304,7 +1307,8 @@ def _tcp_socket_owner_uid(local_port: int, remote_ip: str, remote_port: int) -> 
     those are enforced for a raw (non-browser) client. ``/proc/net/tcp`` is the kernel's
     own connection table: the uid it reports for the peer's socket cannot be forged by
     anything the peer sends over the connection. Returns ``None`` when the entry is
-    missing or the table is unavailable (a non-Linux host); callers then fail closed.
+    missing or the table is unavailable; callers then fail closed. Hosts without
+    procfs answer through ``_lsof_peer_is_current_uid``.
     """
     try:
         remote_octets = [int(part) for part in remote_ip.split(".")]
@@ -1331,6 +1335,40 @@ def _tcp_socket_owner_uid(local_port: int, remote_ip: str, remote_port: int) -> 
             except ValueError:
                 return None
     return None
+
+
+def _lsof_peer_is_current_uid(local_port: int, remote_ip: str, remote_port: int) -> bool:
+    """Whether this uid owns the peer socket ``remote_ip:remote_port -> 127.0.0.1:local_port``.
+
+    The portable counterpart of ``/proc/net/tcp`` for hosts without procfs
+    (macOS): ``lsof -u <uid>`` lists only sockets this uid's processes hold,
+    and the peer's own entry is named ``<remote>-><local>``. Our accepted
+    socket is named the other way round, so it can never satisfy the match.
+    Fails closed when ``lsof`` is missing or does not answer.
+    """
+    lsof = shutil.which("lsof") or ("/usr/sbin/lsof" if Path("/usr/sbin/lsof").exists() else None)
+    if lsof is None:
+        return False
+    try:
+        result = subprocess.run(
+            [lsof, "-nP", "-a", "-u", str(os.getuid()), f"-iTCP@{remote_ip}:{remote_port}", "-Fn"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    peer_name = f"n{remote_ip}:{remote_port}->127.0.0.1:{local_port}"
+    return any(line.strip() == peer_name for line in result.stdout.splitlines())
+
+
+def _peer_socket_owned_by_current_uid(local_port: int, remote_ip: str, remote_port: int) -> bool:
+    """Whether the kernel attributes the TCP peer's socket to this process's uid."""
+    if sys.platform.startswith("linux"):
+        uid = _tcp_socket_owner_uid(local_port, remote_ip, remote_port)
+        return uid is not None and uid == os.getuid()
+    return _lsof_peer_is_current_uid(local_port, remote_ip, remote_port)
 
 
 def _check_host_admission_logic(host_header: str, api_host: str) -> bool:
@@ -1438,8 +1476,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         server_address = getattr(self.server, "server_address", None)
         if not isinstance(server_address, tuple) or len(server_address) < 2:
             return False
-        uid = _tcp_socket_owner_uid(int(server_address[1]), str(client_address[0]), int(client_address[1]))
-        return uid is not None and uid == os.getuid()
+        return _peer_socket_owned_by_current_uid(int(server_address[1]), str(client_address[0]), int(client_address[1]))
 
     def _web_credential_decision(self, required_scope: WebCredentialScope) -> WebCredentialDecision:
         return self._web_credentials.validate(

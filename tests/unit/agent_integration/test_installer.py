@@ -554,3 +554,31 @@ def test_killed_upgrade_after_removing_a_dropped_operation_converges(
     claude_json = home / ".claude.json"
     assert not claude_json.exists() or "polylogue" not in json.loads(claude_json.read_text()).get("mcpServers", {})
     assert fresh.status()["blocking"] is False
+
+
+def test_a_drifted_prepared_only_operation_is_retained_when_no_longer_requested(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity (Codex P2, #5704): drop unconfirmed prepared-only records
+    from planning and the rerun without MCP reports success with no drift,
+    leaving the operator-edited MCP entry untracked by status and uninstall."""
+    manager, home, polylogue, server = _manager(tmp_path)
+    _kill_after_native_writes(monkeypatch, writes_before_kill=1)
+    with pytest.raises(_KilledMidInstall):
+        manager.install(_options(polylogue, server, clients=("claude-code",)))
+    monkeypatch.undo()
+    claude_json = home / ".claude.json"
+    document = json.loads(claude_json.read_text())
+    assert "polylogue" in document["mcpServers"]
+    document["mcpServers"]["polylogue"] = {"command": "operator-edited"}
+    claude_json.write_text(json.dumps(document))
+
+    fresh = AgentIntegrationManager(home=home, environment=manager.environment)
+    receipt = fresh.install(_options(polylogue, server, clients=("claude-code",), install_mcp=False))
+
+    drift = cast(list[dict[str, str]], receipt["retained_drift"])
+    assert [item["client"] for item in drift] == ["claude-code"]
+    assert json.loads(claude_json.read_text())["mcpServers"]["polylogue"] == {"command": "operator-edited"}
+    uninstall = fresh.uninstall()
+    clients = cast(list[dict[str, object]], uninstall["clients"])
+    assert any(client["retained_drift"] for client in clients)

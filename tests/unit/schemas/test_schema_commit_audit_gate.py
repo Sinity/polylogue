@@ -125,3 +125,28 @@ def test_commit_removes_a_first_publication_that_fails_audit(tmp_path: Path, mon
         commit._persist_audited(output_dir, "chatgpt", object())  # type: ignore[arg-type]
 
     assert list(output_dir.iterdir()) == []
+
+
+def test_commit_carries_the_live_providers_history_through_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity (Codex P1, #5704): persist into an empty stage and the
+    merging persistence sees no prior catalog, so publishing the stage drops
+    the provider's historical ``v1`` package."""
+    output_dir = tmp_path / "providers"
+    _write_tree(output_dir / "chatgpt", "created_at")
+    prior_seen: list[bool] = []
+
+    def merging_persist(root: Path, provider: str, _bundle: object) -> None:
+        prior_seen.append((root / provider / "versions" / "v1").exists())
+        element = root / provider / "versions" / "v2" / "elements" / "session_document.json"
+        element.parent.mkdir(parents=True, exist_ok=True)
+        element.write_text(json.dumps(_element("updated_at")))
+
+    monkeypatch.setattr(commit, "persist_generated_provider_bundle", merging_persist)
+
+    commit._persist_audited(output_dir, "chatgpt", object())  # type: ignore[arg-type]
+
+    assert prior_seen == [True]
+    versions = output_dir / "chatgpt" / "versions"
+    assert sorted(path.name for path in versions.iterdir()) == ["v1", "v2"]

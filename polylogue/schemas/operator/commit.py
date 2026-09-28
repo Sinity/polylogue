@@ -130,14 +130,21 @@ def _persist_audited(output_dir: Path, provider_token: str, bundle: _ProviderBun
     ):
         stage_root_path = Path(stage_root)
         staged_dir = stage_root_path / provider_token
+        live_snapshot = read_provider_snapshot(provider_dir)
+        if provider_dir.is_dir():
+            # Persistence merges into the provider's existing catalog, carrying
+            # historical versions and elements forward; it must see the live
+            # tree, or publishing the stage would drop them.
+            shutil.copytree(provider_dir, staged_dir, symlinks=True)
+        seeded_snapshot = read_provider_snapshot(staged_dir)
         persist_generated_provider_bundle(stage_root_path, provider_token, bundle)
-        if not staged_dir.exists():
+        if not staged_dir.exists() or read_provider_snapshot(staged_dir) == seeded_snapshot:
             # bundle.result.success was False: nothing rendered to publish.
             return
         report = audit_schema_artifacts(staged_dir)
         if report.blockers:
             raise SchemaCommitAuditError(provider_token, report.blockers)
-        publish_provider_tree(staged_dir, provider_dir, expected_snapshot=read_provider_snapshot(provider_dir))
+        publish_provider_tree(staged_dir, provider_dir, expected_snapshot=live_snapshot)
 
 
 def _refuse_private_retained_values(provider: str, bundle: _ProviderBundle) -> None:

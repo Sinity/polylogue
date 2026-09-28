@@ -1219,14 +1219,17 @@ class AgentIntegrationManager:
                     previous_client = cast(dict[str, object], raw_previous) if isinstance(raw_previous, dict) else {}
                     committed_identities = set(_as_operation_map(previous_client.get("operations")))
                     previous_operations: dict[str, dict[str, object]] = {}
-                    # Committed records whose journaled removal may already
-                    # have happened: removed again only if still present.
+                    # Records whose effect is unconfirmed: a committed record
+                    # whose journaled removal may already have happened, or a
+                    # prepared-only operation an interrupted install may have
+                    # written. Either is removed only if still present, and a
+                    # drifted value is retained rather than dropped untracked.
                     unconfirmed_removals: dict[str, dict[str, object]] = {}
                     for operation, unconfirmed in _reconciled_operations(previous_client):
                         identity = cast(str, operation["identity"])
                         if not unconfirmed:
                             previous_operations[identity] = operation
-                        elif identity in committed_identities:
+                        else:
                             unconfirmed_removals[identity] = operation
                     desired_operations = _client_desired_operations(
                         client,

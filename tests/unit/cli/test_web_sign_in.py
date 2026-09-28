@@ -27,8 +27,9 @@ def test_opened_url_carries_a_ticket_fragment_minted_with_the_bearer(monkeypatch
     fragment to the archive URL and an already-credentialed browser never consumes it."""
     seen: list[Any] = []
 
-    def fake_urlopen(request: Any, *, timeout: float) -> _Response:
-        del timeout
+    def fake_urlopen(request: Any, **kwargs: object) -> _Response:
+        # A deadline would turn a slow ticket mint into an unsigned URL.
+        assert kwargs.get("timeout") is None
         seen.append(request)
         return _Response(json.dumps({"ok": True, "ticket": "t/1", "expires_at": "2026-01-01T00:00:00Z"}).encode())
 
@@ -50,7 +51,7 @@ def test_opened_url_carries_a_ticket_fragment_minted_with_the_bearer(monkeypatch
 
 
 def test_unreachable_daemon_falls_back_to_the_plain_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    def refuse(_request: Any, *, timeout: float) -> _Response:
+    def refuse(_request: Any, **_kwargs: object) -> _Response:
         raise URLError("connection refused")
 
     monkeypatch.setattr(web_sign_in, "_api_token", lambda _env: "owner-token")

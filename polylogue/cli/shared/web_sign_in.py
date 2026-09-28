@@ -31,8 +31,6 @@ from urllib.request import Request, urlopen
 
 from polylogue.cli.shared.types import AppEnv
 
-_TICKET_TIMEOUT_S = 5.0
-
 
 def _local_redirect_url(target: str) -> str:
     """Write an owner-only redirect page to *target* and return its ``file://`` URL."""
@@ -80,7 +78,10 @@ def signed_in_web_url(env: AppEnv, daemon_url: str, web_url: str) -> str:
         headers={"Authorization": f"Bearer {token}"},
     )
     try:
-        with urlopen(request, timeout=_TICKET_TIMEOUT_S) as response:
+        # No deadline: a daemon that is merely slow to mint the ticket (CPU
+        # starved) is waited for, since a deadline would turn slowness into an
+        # unsigned URL and a sign-in page. An absent daemon refuses at once.
+        with urlopen(request) as response:
             payload = json.load(response)
     except (URLError, OSError, ValueError):
         return web_url
