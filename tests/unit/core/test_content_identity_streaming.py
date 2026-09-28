@@ -315,21 +315,18 @@ def test_a_value_is_measured_by_its_decoded_utf8_size(payload: bytes, monkeypatc
 @pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"])
 def test_a_wide_member_is_read_as_the_source_decoder_reads_it(encoding: str, bom: bool) -> None:
     """A UTF-16/32 member, with or without a byte-order mark, shares the
-    identity of its UTF-8 serialization exactly when the source decoder reads
-    it as that value; otherwise it keeps its byte identity.
+    identity of its UTF-8 serialization exactly when the record parser's
+    ``json.load`` reads it as that value; otherwise it keeps its byte identity.
 
     Anti-vacuity: read only BOM-bearing members (or only UTF-8) and the
     BOM-less UTF-16-LE and UTF-32-LE members, which the decoder reads, fall
     back to their byte digests.
     """
-    from polylogue.sources.decoder_json import decode_json_bytes
-
     value = {"title": "caf\u00e9 \U0001f600", "n": [1, 2.5, None, True]}
     text = json.dumps(value, ensure_ascii=False)
     payload = ("\ufeff".encode(encoding) if bom else b"") + text.encode(encoding)
-    decoded = decode_json_bytes(payload)
     try:
-        decoder_reads_value = decoded is not None and loads(decoded) == value
+        decoder_reads_value = json.loads(payload) == value
     except ValueError:
         decoder_reads_value = False
 
@@ -339,8 +336,13 @@ def test_a_wide_member_is_read_as_the_source_decoder_reads_it(encoding: str, bom
         assert decoder_reads_value
 
 
-def test_nul_bytes_are_dropped_as_the_source_decoder_drops_them() -> None:
-    assert payload_content_identity(b'{"a":\x00 1}') == payload_content_identity(b'{"a": 1}')
+def test_a_raw_nul_keeps_the_byte_identity_the_record_parser_implies() -> None:
+    """Anti-vacuity: drop NULs before tokenizing and the malformed member
+    shares the clean document's identity although ``json.load`` rejects it."""
+    payload = b'{"a":\x00 1}'
+    with pytest.raises(ValueError):
+        json.loads(payload)
+    assert payload_content_identity(payload) == sha256(payload).hexdigest()
 
 
 def test_deeply_nested_arrays_stream_in_constant_memory() -> None:

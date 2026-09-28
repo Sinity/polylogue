@@ -34,10 +34,9 @@ _CONTENT_IDENTITY_DOMAIN = b"polylogue:member-content:v2\0"
 
 _UTF8_BOM = b"\xef\xbb\xbf"
 
-#: Text encodings the source decoder tries, in order, for a JSON member
-#: (``decoder_json.decode_json_bytes``): the first under which the whole
-#: payload decodes, with NUL characters and leading byte-order marks removed,
-#: is the member's text. The identity reads a member exactly the same way.
+#: Text encodings the lenient detection decoder tries, in order, for a JSON
+#: member (``decoder_json.decode_json_bytes``). Content identity does not use
+#: them: it reads a member as the record parser's ``json.load`` does.
 JSON_TEXT_ENCODINGS: tuple[str, ...] = (
     "utf-8",
     "utf-8-sig",
@@ -1115,11 +1114,11 @@ class _EncodingMismatchError(Exception):
 class _DecodedText:
     """A member's bytes as the source decoder reads them, re-encoded as UTF-8.
 
-    Decodes with one of :data:`JSON_TEXT_ENCODINGS` one window at a time,
-    drops NUL characters and any leading byte-order marks as
-    ``decode_json_bytes`` does, and raises :class:`_EncodingMismatchError`
-    when a byte does not decode or nothing is left -- the two conditions
-    under which the decoder moves on to its next encoding.
+    Decodes with the encoding the record parser's ``json.load`` detects
+    (``json.detect_encoding``: its codec consumes a byte-order mark) one
+    window at a time, keeping every character, a NUL included, so bytes the
+    parser rejects are rejected here too. Raises :class:`_EncodingMismatchError`
+    when a byte does not decode or nothing is left.
     """
 
     def __init__(self, handle: IO[bytes], start: int, encoding: str, errors: str = "strict") -> None:
@@ -1137,9 +1136,7 @@ class _DecodedText:
                 text = self._decoder.decode(chunk, final=self._eof)
             except UnicodeDecodeError as exc:
                 raise _EncodingMismatchError from exc
-            text = text.replace("\x00", "")
             if self._at_start:
-                text = text.lstrip("\ufeff")
                 if not text:
                     if self._eof:
                         raise _EncodingMismatchError
@@ -1196,24 +1193,26 @@ def _identity_as(handle: IO[bytes], start: int, encoding: str, errors: str) -> s
 def stream_payload_content_identity(handle: IO[bytes]) -> str:
     """Return :func:`payload_content_identity` of a seekable handle's bytes.
 
-    The member is read as the source decoder reads it (:data:`JSON_TEXT_ENCODINGS`),
+    The member is read as the record parser's ``json.load`` reads it,
     tokenized in fixed windows and hashed as it streams, so memory holds each
     open object's (key, digest) entries and at most one window of any scalar,
     never the whole document. Every size takes this one route.
     """
+    import json
+
     import ijson
 
     start = handle.tell()
     try:
-        for encoding in JSON_TEXT_ENCODINGS:
-            try:
-                return _identity_as(handle, start, encoding, "strict")
-            except _EncodingMismatchError:
-                continue
-        # No encoding decodes the payload whole. The decoder's lossy last
-        # resort can turn such bytes into a clean document's text, so they
-        # keep their byte identity instead of sharing that document's.
-        raise _NotJsonError
+        # The record parser (``decoder_json.iter_json_stream_with``) falls
+        # back to ``json.load`` on the member's bytes, whose encoding comes
+        # from ``json.detect_encoding``; bytes that do not decode under it,
+        # or that it would not parse, keep their byte identity.
+        encoding = json.detect_encoding(handle.read(4))
+        try:
+            return _identity_as(handle, start, encoding, "strict")
+        except _EncodingMismatchError:
+            raise _NotJsonError from None
     except (_NotJsonError, ijson.JSONError, UnicodeDecodeError, TypeError, ValueError, ArithmeticError):
         handle.seek(start)
         opaque = sha256()
