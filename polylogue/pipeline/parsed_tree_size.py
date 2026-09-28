@@ -15,8 +15,8 @@ from pathlib import Path, PurePosixPath
 
 from polylogue.sources.parsers.base import ParsedSession
 
-# Calibration (measured 2026-07-20, see test_parse_prefetch.py for the exact
-# reproducer): a manual deep-object-graph walk (sys.getsizeof over every
+# Calibration (measured 2026-07-20, see tests/unit/pipeline/test_parsed_tree_size.py
+# for the exact reproducer): a manual deep-object-graph walk (sys.getsizeof over every
 # reachable dict/list/model instance, the same technique pympler.asizeof
 # uses, without adding a new dependency for one calibration script) against
 # synthetic ParsedSession trees of increasing size gave:

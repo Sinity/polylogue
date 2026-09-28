@@ -341,10 +341,6 @@ A few keys not shown in the full example above, with their TOML path:
 | `ingest_commit_batch_messages` | `sources.ingest_commit_batch_messages` | Messages per commit batch during ingest (default 8000). |
 | `ingest_parse_workers` | `POLYLOGUE_INGEST_PARSE_WORKERS` (env only) | Worker count for CPU-bound source parsing. Read from the environment; there is no TOML key. The default adapts to the interpreter — `min(16, cpus-2)` on a free-threaded build (the packaged daemon), `min(8, cpus-1)` under the GIL. Set to `1` to disable pooling. |
 | `live_full_ingest_workers` | `sources.live_full_ingest_workers` | Parallel workers for a live full-reingest pass (default 1). |
-| `daemon_parse_stage_workers` | `daemon.raw_materialization.parse_stage_workers` | Worker cap for the daemon-owned pre-parse thread pool (polylogue-m6tp phase (a); always runs -- pre-parses raw-materialization census candidates in a bounded thread pool before the writer hold); unset/`<=0` uses the adaptive `cpu_count - 1` default. |
-| `daemon_parse_stage_max_inflight_bytes` | `daemon.raw_materialization.parse_stage_max_inflight_bytes` | Whale-memory budget (bytes) for raw payloads admitted while prefetch parses are in flight; unset/`<=0` uses the adaptive 1/16-physical-RAM default (clamped [64 MiB, 2 GiB]). |
-| `daemon_parse_stage_max_cached_tree_bytes` | `daemon.raw_materialization.parse_stage_max_cached_tree_bytes` | Whole-cache budget (bytes) for estimated parsed-tree bytes held resident between `warm()` passes; unset/`<=0` uses the adaptive 1/8-physical-RAM default (clamped [256 MiB, 4 GiB]). |
-| `daemon_parse_stage_warm_timeout_seconds` | `daemon.raw_materialization.parse_stage_warm_timeout_seconds` | Bound (seconds) on how long a prefetch `warm()` pass waits for its dispatched workers; unset/`<=0` uses the 300s default. |
 | `live_watcher_parse_stage_workers` | `watcher.parse_stage_workers` | Worker cap for the watcher-owned pre-parse thread pool (polylogue-wf8a; always runs -- pre-parses the live watcher's full-ingest catch-up/live-batch candidates in a bounded thread pool before the writer hold); unset/`<=0` uses the adaptive `cpu_count - 1` default. |
 | `live_watcher_parse_stage_max_inflight_bytes` | `watcher.parse_stage_max_inflight_bytes` | Whale-memory budget (bytes) for in-flight watcher prefetch payloads; unset/`<=0` uses the adaptive 1/32-physical-RAM default (clamped [64 MiB, 512 MiB]). |
 | `live_watcher_parse_stage_warm_timeout_seconds` | `watcher.parse_stage_warm_timeout_seconds` | Bound (seconds) on how long a watcher prefetch `warm()` pass waits for its dispatched workers; unset/`<=0` uses the 60s default. |
@@ -395,10 +391,6 @@ Common runtime overrides:
 | `POLYLOGUE_CREDENTIAL_PATH` | Drive auth | OAuth client JSON path. |
 | `POLYLOGUE_TOKEN_PATH` | Drive auth | OAuth token path. |
 | `POLYLOGUE_HOOK_PROVIDER` | `hook_provider` | Force hook-harness detection to `claude-code`/`codex`. |
-| `POLYLOGUE_DAEMON_PARSE_STAGE_WORKERS` | `daemon_parse_stage_workers` | Worker cap for the daemon-owned pre-parse thread pool. |
-| `POLYLOGUE_DAEMON_PARSE_STAGE_MAX_INFLIGHT_BYTES` | `daemon_parse_stage_max_inflight_bytes` | In-flight raw-payload budget for the prefetch cache. |
-| `POLYLOGUE_DAEMON_PARSE_STAGE_MAX_CACHED_TREE_BYTES` | `daemon_parse_stage_max_cached_tree_bytes` | Resident parsed-tree budget for the prefetch cache. |
-| `POLYLOGUE_DAEMON_PARSE_STAGE_WARM_TIMEOUT_SECONDS` | `daemon_parse_stage_warm_timeout_seconds` | Timeout for a prefetch `warm()` pass. |
 | `POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WORKERS` | `live_watcher_parse_stage_workers` | Worker cap for the watcher-owned pre-parse thread pool. |
 | `POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_MAX_INFLIGHT_BYTES` | `live_watcher_parse_stage_max_inflight_bytes` | In-flight payload budget for the watcher prefetch cache. |
 | `POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WARM_TIMEOUT_SECONDS` | `live_watcher_parse_stage_warm_timeout_seconds` | Timeout for a watcher prefetch `warm()` pass. |

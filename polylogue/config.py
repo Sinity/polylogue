@@ -637,54 +637,6 @@ class PolylogueConfig:
         return max(1, int(str(self._data.get("live_full_ingest_workers", 1))))
 
     @property
-    def daemon_parse_stage_workers(self) -> int | None:
-        """Worker cap for the daemon-owned pre-parse thread pool.
-
-        ``None``/absent or <=0 falls back to the adaptive available-CPU-minus-one
-        default. See ``polylogue.daemon.parse_prefetch``.
-        """
-        value = self._data.get("daemon_parse_stage_workers")
-        if value is None:
-            return None
-        return int(str(value))
-
-    @property
-    def daemon_parse_stage_max_inflight_bytes(self) -> int | None:
-        """Whale-memory budget (bytes) for in-flight prefetch payloads.
-
-        ``None``/absent or <=0 falls back to the adaptive 1/16-physical-RAM
-        default. See ``polylogue.daemon.parse_prefetch``.
-        """
-        value = self._data.get("daemon_parse_stage_max_inflight_bytes")
-        if value is None:
-            return None
-        return int(str(value))
-
-    @property
-    def daemon_parse_stage_max_cached_tree_bytes(self) -> int | None:
-        """Whole-cache budget (bytes) for ESTIMATED resident parsed-tree bytes.
-
-        ``None``/absent or <=0 falls back to the adaptive 1/8-physical-RAM
-        default. See ``polylogue.daemon.parse_prefetch``.
-        """
-        value = self._data.get("daemon_parse_stage_max_cached_tree_bytes")
-        if value is None:
-            return None
-        return int(str(value))
-
-    @property
-    def daemon_parse_stage_warm_timeout_seconds(self) -> float | None:
-        """Bound (seconds) on how long a prefetch warm() pass waits for workers.
-
-        ``None``/absent or <=0 falls back to the 300s default. See
-        ``polylogue.daemon.parse_prefetch``.
-        """
-        value = self._data.get("daemon_parse_stage_warm_timeout_seconds")
-        if value is None:
-            return None
-        return float(str(value))
-
-    @property
     def live_watcher_parse_stage_workers(self) -> int | None:
         """Worker cap for the watcher-owned pre-parse thread pool.
 
@@ -1402,54 +1354,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         ),
     ),
     ConfigInventoryEntry(
-        "daemon_parse_stage_workers",
-        toml_path="daemon.raw_materialization.parse_stage_workers",
-        env_var="POLYLOGUE_DAEMON_PARSE_STAGE_WORKERS",
-        owner_class="resource-policy",
-        reload_behavior="daemon-loop",
-        description=(
-            "Worker cap for the daemon-owned pre-parse thread pool "
-            "(polylogue-m6tp phase (a)); default available-CPU-minus-one. <=0 falls "
-            "back to the adaptive default."
-        ),
-    ),
-    ConfigInventoryEntry(
-        "daemon_parse_stage_max_inflight_bytes",
-        toml_path="daemon.raw_materialization.parse_stage_max_inflight_bytes",
-        env_var="POLYLOGUE_DAEMON_PARSE_STAGE_MAX_INFLIGHT_BYTES",
-        owner_class="resource-policy",
-        reload_behavior="daemon-loop",
-        description=(
-            "Whale-memory budget (bytes) for raw payloads admitted while "
-            "prefetch parses are in flight; default 1/16 physical RAM "
-            "clamped [64 MiB, 2 GiB]. <=0 falls back to the adaptive default."
-        ),
-    ),
-    ConfigInventoryEntry(
-        "daemon_parse_stage_max_cached_tree_bytes",
-        toml_path="daemon.raw_materialization.parse_stage_max_cached_tree_bytes",
-        env_var="POLYLOGUE_DAEMON_PARSE_STAGE_MAX_CACHED_TREE_BYTES",
-        owner_class="resource-policy",
-        reload_behavior="daemon-loop",
-        description=(
-            "Whole-cache budget (bytes) for ESTIMATED parsed-tree bytes held "
-            "resident between warm() passes; default 1/8 physical RAM "
-            "clamped [256 MiB, 4 GiB]. <=0 falls back to the adaptive default."
-        ),
-    ),
-    ConfigInventoryEntry(
-        "daemon_parse_stage_warm_timeout_seconds",
-        toml_path="daemon.raw_materialization.parse_stage_warm_timeout_seconds",
-        env_var="POLYLOGUE_DAEMON_PARSE_STAGE_WARM_TIMEOUT_SECONDS",
-        owner_class="resource-policy",
-        reload_behavior="daemon-loop",
-        description=(
-            "Bound (seconds) on how long a prefetch warm() pass waits for "
-            "its dispatched workers before leaving stragglers uncached. "
-            "<=0 falls back to the 300s default."
-        ),
-    ),
-    ConfigInventoryEntry(
         "live_watcher_parse_stage_workers",
         toml_path="watcher.parse_stage_workers",
         env_var="POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WORKERS",
@@ -1545,9 +1449,6 @@ _INT_CONFIG_KEYS = frozenset(
         "memory_budget_bytes",
         "judgment_automation_interval_s",
         "judgment_automation_batch_limit",
-        "daemon_parse_stage_workers",
-        "daemon_parse_stage_max_inflight_bytes",
-        "daemon_parse_stage_max_cached_tree_bytes",
         "live_watcher_parse_stage_workers",
         "live_watcher_parse_stage_max_inflight_bytes",
     }
@@ -1555,7 +1456,6 @@ _INT_CONFIG_KEYS = frozenset(
 _FLOAT_CONFIG_KEYS = frozenset(
     {
         "embedding_max_cost_usd",
-        "daemon_parse_stage_warm_timeout_seconds",
         "live_watcher_parse_stage_warm_timeout_seconds",
     }
 )
@@ -1780,10 +1680,6 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "live_full_ingest_workers": 1,
         "memory_budget_bytes": None,
         "subscription_plans": (),
-        "daemon_parse_stage_workers": None,
-        "daemon_parse_stage_max_inflight_bytes": None,
-        "daemon_parse_stage_max_cached_tree_bytes": None,
-        "daemon_parse_stage_warm_timeout_seconds": None,
         "live_watcher_parse_stage_workers": None,
         "live_watcher_parse_stage_max_inflight_bytes": None,
         "live_watcher_parse_stage_warm_timeout_seconds": None,

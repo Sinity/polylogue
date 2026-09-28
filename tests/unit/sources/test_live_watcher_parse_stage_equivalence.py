@@ -1,10 +1,8 @@
 """Equivalence: watcher parse-stage prefetch (flag on) vs. in-hold parse (flag off).
 
 polylogue-wf8a. ``LiveParseStage`` pre-parses small JSONL full-ingest
-candidates off the writer hold (mirrors ``DaemonParseStage``, polylogue-m6tp
-phase (a), for the watcher's catch-up/live-batch route instead of the
-raw-materialization census route). This proves two end-to-end claims against
-a real archive:
+candidates off the writer hold for the watcher's catch-up/live-batch route.
+This proves two end-to-end claims against a real archive:
 
 1. Running ``LiveBatchProcessor.ingest_files`` over the SAME fixture files,
    once with a ``LiveParseStage`` warming candidates ahead of the writer
