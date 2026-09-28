@@ -191,3 +191,37 @@ def test_disk_backed_event_sink_is_kept_not_copied() -> None:
     kept: object = admitted.session_events
     assert kept is sink
     assert [event.event_type for event in sink.items] == ["compaction", "codex_unknown_input"]
+
+
+def test_interleaved_claude_code_unknown_keeps_its_file_line() -> None:
+    """A per-session admission event names the record's position in the file.
+
+    Anti-vacuity: count positions per session group and the second session's
+    unknown record at file line 3 is reported as ``source_index`` 2.
+    """
+    from polylogue.sources.dispatch import parse_stream_payload
+
+    def user(session_id: str, uuid: str) -> dict[str, object]:
+        return {
+            "type": "user",
+            "sessionId": session_id,
+            "uuid": uuid,
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {"role": "user", "content": "hello"},
+        }
+
+    records: list[object] = [
+        user("cc-a", "a-1"),
+        user("cc-b", "b-1"),
+        {"type": "future_record_kind", "sessionId": "cc-b", "uuid": "b-2"},
+    ]
+
+    sessions = parse_stream_payload(Provider.CLAUDE_CODE, iter(records), "cc-a")
+
+    unknowns = [
+        event.payload
+        for session in sessions
+        for event in session.session_events
+        if event.event_type == "claude_code_unknown_input"
+    ]
+    assert unknowns == [{"source_index": 3, "wire_type": "future_record_kind"}]

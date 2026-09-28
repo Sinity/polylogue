@@ -223,3 +223,30 @@ def test_preflight_bounds_a_large_trajectory_store_and_says_so(tmp_path: Path) -
     assert result.status is ImportPreflightStatus.SUPPORTED
     assert result.providers == (Provider.ANTIGRAVITY,)
     assert any("the remainder was not inspected" in caveat for caveat in result.caveats)
+
+
+def test_unidentified_trajectory_rows_keep_distinct_identities(tmp_path: Path) -> None:
+    """Several trajectory rows without ids do not share the path fallback id.
+
+    Anti-vacuity: give every unidentified row the bare ``fallback_id`` again
+    and both sessions carry ``provider_session_id == "unnamed"``.
+    """
+    from polylogue.sources.parsers import antigravity
+
+    source = tmp_path / "unnamed.sqlite"
+    with sqlite3.connect(source) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+            CREATE TABLE steps (idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT);
+            INSERT INTO trajectory_meta VALUES (NULL, NULL);
+            INSERT INTO trajectory_meta VALUES ('', NULL);
+            """
+        )
+
+    sessions = list(antigravity.parse_trajectory_db(source, fallback_id="unnamed"))
+
+    assert [session.provider_session_id for session in sessions] == [
+        "unnamed:trajectory-0",
+        "unnamed:trajectory-1",
+    ]

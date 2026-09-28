@@ -507,3 +507,47 @@ def test_usage_only_span_attributes_usage_to_response_model() -> None:
     usage = [event.payload for event in session.session_events if event.event_type == "message_usage"]
     assert usage == [{"last_token_usage": {"input_tokens": 3}, "model": "served-model"}]
     assert session.models_used == ["served-model"]
+
+
+def test_repeated_input_only_turn_is_a_second_occurrence() -> None:
+    """Two input-only spans carrying the same message both emit it.
+
+    Anti-vacuity: let the overlap cover the whole input and the second
+    ``continue`` is swallowed as replayed history.
+    """
+    trace = "a" * 32
+
+    def input_only(span_id: str, start_ns: int) -> dict[str, object]:
+        return _span(
+            trace,
+            span_id,
+            start_ns,
+            [
+                _attr("gen_ai.operation.name", "chat"),
+                _attr("gen_ai.conversation.id", "chat-1"),
+                _attr("gen_ai.input.messages", [{"role": "user", "content": "continue"}]),
+            ],
+        )
+
+    payload = _document(([_attr("service.name", "agent")], [input_only("8" * 16, 1_000), input_only("9" * 16, 2_000)]))
+
+    (session,) = otel_genai.parse(payload, "ignored")
+
+    assert [message.text for message in session.messages] == ["continue", "continue"]
+
+
+def test_genai_trace_found_only_in_a_conflicting_copy_is_kept() -> None:
+    """A trace whose GenAI attributes live only in a conflict variant stays.
+
+    Anti-vacuity: decide trace membership from the selected copies alone and
+    the document yields no session and loses the conflict evidence.
+    """
+    trace = "b" * 32
+    plain = _span(trace, "a" * 16, 1_000, [])
+    genai = _span(trace, "a" * 16, 1_000, [_attr("gen_ai.operation.name", "chat")])
+    payload = _document(([_attr("service.name", "agent")], [plain, genai]))
+
+    sessions = otel_genai.parse(payload, "ignored")
+
+    assert len(sessions) == 1
+    assert "otel_conflicting_span_id" in [event.event_type for event in sessions[0].session_events]

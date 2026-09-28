@@ -159,7 +159,13 @@ class AdmissionObserver:
         self._count = 0
         self._unknowns: list[tuple[int, str]] = []
 
-    def observe(self, item: object) -> None:
+    def observe(self, item: object, source_index: int | None = None) -> None:
+        """Classify one record at dense ledger ordinal ``self._count``.
+
+        ``source_index`` is the record's 1-based position in the source file
+        when that differs from its position in this session (an interleaved
+        multi-session stream); the typed unknown event names that position.
+        """
         ordinal = self._count
         self._count += 1
         if not isinstance(item, Mapping):
@@ -172,7 +178,7 @@ class AdmissionObserver:
             self._ledger.materialized(AdmissionUnit.OUTER_RECORD, ordinal, "parsed")
         else:
             self._ledger.unknown(AdmissionUnit.OUTER_RECORD, ordinal, wire_type)
-            self._unknowns.append((ordinal + 1, wire_type))
+            self._unknowns.append((source_index if source_index is not None else ordinal + 1, wire_type))
 
     def observing(self, payload: Iterable[Any]) -> Iterator[Any]:
         """Yield a one-pass payload through, observing each record as it is pulled."""

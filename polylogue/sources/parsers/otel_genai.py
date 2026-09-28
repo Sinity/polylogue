@@ -270,7 +270,12 @@ def _history_overlap(inputs: list[_TranscriptEntry], transcript: list[_Transcrip
     material; re-emitting the prefix duplicated every earlier message once
     per later span.
     """
-    for size in range(min(len(inputs), len(transcript)), 0, -1):
+    # A request carries at least one new message: the current turn. Only a
+    # trailing tool entry (a result the tool span already recorded) may be
+    # replayed whole; an identical input-only turn repeated by the user is a
+    # second occurrence, not history.
+    largest = len(inputs) if inputs and inputs[-1][2] else len(inputs) - 1
+    for size in range(min(largest, len(transcript)), 0, -1):
         if inputs[:size] == transcript[-size:]:
             return size
     return 0
@@ -410,15 +415,18 @@ def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
     # one. Only traces that contain a GenAI span become sessions; their
     # non-GenAI spans stay as topology evidence inside that session. A trace
     # with no GenAI span at all is not this origin's material.
+    # Membership reads every variant of a coordinate, so a trace whose GenAI
+    # attributes survive only in a conflicting copy keeps its session and the
+    # ``otel_conflicting_span_id`` evidence.
     genai_traces = {
-        (resource_id, optional_string(span.get("traceId")) or optional_string(span.get("trace_id")))
-        for resource_id, span, _schema_url in spans
-        if any(key.startswith("gen_ai.") for key in _attributes(span.get("attributes")))
+        coordinate[:2]
+        for coordinate, copies in variants.items()
+        if any(any(key.startswith("gen_ai.") for key in _attributes(copy.get("attributes"))) for copy, _ in copies)
     }
     spans = [
         (resource_id, span, schema_url)
         for resource_id, span, schema_url in spans
-        if (resource_id, optional_string(span.get("traceId")) or optional_string(span.get("trace_id"))) in genai_traces
+        if _span_coordinate(resource_id, span)[:2] in genai_traces
     ]
     span_details: dict[tuple[str, str, str], tuple[str | None, str | None]] = {}
     for resource_id, span, _schema_url in spans:

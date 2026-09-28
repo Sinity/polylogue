@@ -856,7 +856,13 @@ def parse_trajectory_db(
                 if meta is not None and "cascade_id" in meta_columns and meta["cascade_id"] not in (None, "")
                 else None
             )
-            native_id = trajectory_id or cascade_id or fallback_id
+            # Several unidentified rows would all take the one path-derived
+            # fallback and address a single archive session repeatedly; each
+            # row gets a stable row-specific identity instead.
+            row_fallback_id = (
+                f"{fallback_id}:trajectory-{meta_index}" if fallback_id and len(meta_rows) > 1 else fallback_id
+            )
+            native_id = trajectory_id or cascade_id or row_fallback_id
             if not native_id:
                 continue
             if has_step_identity:
