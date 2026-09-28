@@ -12,8 +12,11 @@ A corpus is a directory with `home/` (a stand-in `$HOME`: the daemon's typed
 default sources resolve `~/.claude/projects`, `~/.codex/sessions` and
 `~/.gemini/tmp` inside it), optional `exports/<name>/` roots configured as
 additional sources, and `manifest.json`, which seals every file's path, size
-and SHA-256 under one digest. Every run and component re-hashes the tree
-against the seal and refuses an edited, added or missing file. Receipts compare
+and SHA-256 under one digest, plus the mtime of each parser sidecar
+(`tool-results/`, `tool-outputs/`), which parsing turns into the sidecar
+event's timestamp; sampling keeps the source mtimes. Every run and component
+re-hashes the tree against the seal and refuses an edited, added, missing or
+re-timed file. Receipts compare
 only when their corpus digests match.
 
 | Kind | Command | Use |
@@ -79,7 +82,7 @@ summarises it or writes flame-graph input.
 
 `compare BEFORE AFTER` prints the deltas and whether the per-table output
 digests are identical, and exits non-zero unless the receipts are comparable:
-same corpus, same run configuration, interpreter (version, GIL mode, build string and resolved executable) and host (architecture, CPU count, memory, work filesystem), and both qualified.
+same corpus, same run configuration, same benchmark implementation (a digest of the driver and report code, since `--candidate` may name another checkout), interpreter (version, GIL mode, build string and resolved executable) and host (architecture, CPU count, memory, the effective CPU and memory limits the daemon sizes itself from, work filesystem), and both qualified.
 `--allow-unqualified` admits a run that promoted but did not settle, with a
 warning; it never admits a run whose candidate or corpus changed during the
 build or whose event log lost events. An optimisation claims equivalence only on identical digests from
@@ -89,7 +92,8 @@ comparable receipts.
 
 `components parse|blob --corpus DIR --scratch DIR [--workers N]` times one
 production stage over the corpus's files: the off-writer parse and
-preparation a worker runs per file, or blob acquisition. Parse runs on
+preparation a worker runs per session file, or blob acquisition of every file,
+sidecars included. A selection that matches no file fails. Parse runs on
 threads, so it isolates per-file cost; process-pool start-up and IPC belong to
 the end-to-end run. Any worker error, or a corpus file that changed during
 the timed work, exits non-zero. They iterate in seconds;
