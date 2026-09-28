@@ -455,6 +455,43 @@ def detect_provider_evidence(
     return provider, evidence
 
 
+#: Bounded prefix every acquisition route validates a bound source file with.
+LOCATION_VALIDATION_PREFIX_BYTES = 8192
+
+
+def refuse_foreign_material(
+    path: Path | str,
+    location: Provider | str | None,
+    *,
+    prefix: bytes | None = None,
+) -> None:
+    """The one bind-then-validate check every acquisition route applies.
+
+    A source file at a bound location is validated against that location's
+    origin from a bounded prefix before any of its bytes are retained,
+    published, parsed or baselined; another origin's shape raises
+    :class:`ForeignOriginContentError`. Unbound locations (the import inbox),
+    declared ``raw-only`` paths (classified by location alone) and
+    non-JSON material pass untouched. ``prefix`` lets a caller that already
+    holds the leading bytes avoid a second read.
+    """
+    bound = bound_location_provider(location)
+    if bound is None:
+        return
+    source = Path(path)
+    name = source.name
+    if not (name.lower().endswith(".json") or is_jsonl_source_path(name)):
+        return
+    from .origin_specs import path_declaration_refuses_session
+
+    if path_declaration_refuses_session(bound, source):
+        return
+    if prefix is None:
+        with source.open("rb") as handle:
+            prefix = handle.read(LOCATION_VALIDATION_PREFIX_BYTES)
+    detect_provider_from_raw_bytes_evidence(prefix, name, bound, truncated_tail_ok=True)
+
+
 def same_origin(left: Provider, right: Provider) -> bool:
     """Whether two provider wires name the same archive origin.
 
@@ -2328,6 +2365,8 @@ __all__ = [
     "ForeignOriginContentError",
     "bound_location_provider",
     "same_origin",
+    "refuse_foreign_material",
+    "LOCATION_VALIDATION_PREFIX_BYTES",
     "detect_provider_evidence",
     "detect_provider_from_raw_bytes_evidence",
     "is_jsonl_source_path",

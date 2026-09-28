@@ -104,11 +104,11 @@ from polylogue.sources.dispatch import (
     BUNDLE_PROVIDERS,
     ForeignOriginContentError,
     bound_location_provider,
-    detect_provider_from_raw_bytes_evidence,
     is_jsonl_source_path,
     is_stream_record_provider,
     parse_payload,
     parse_stream_payload,
+    refuse_foreign_material,
     require_positive_conversational_evidence,
 )
 from polylogue.sources.live.append_ingest import (
@@ -249,8 +249,6 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-#: Bounded prefix used to validate a bound raw on the source-only route.
-_SOURCE_ONLY_VALIDATION_PREFIX_BYTES = 8192
 
 #: Convergence-debt stage name for the recurring raw-retention owner. Raw
 #: retention is one of the four derived/durable-storage domains
@@ -823,6 +821,9 @@ class LiveBatchProcessor:
         self._polylogue = polylogue
         self._sources = tuple(sources)
         self._cursor = cursor
+        # ZIP member coordinates refused during the current archive pass, so
+        # debt for members a later revision removed can be cleared.
+        self._zip_member_refusals_this_pass: dict[str, set[str]] = {}
         self._parser_fingerprint = parser_fingerprint
         self._converger = converger
         self._stop_requested = stop_requested or (lambda: False)
@@ -3150,29 +3151,20 @@ class LiveBatchProcessor:
                 # admit a candidate to the Hermes parser; unknown/config/cache
                 # material is a typed non-session observation instead --
                 # unless it carries another origin's shape, which is refused.
-                if bound_location_provider(fallback_provider) is not None and (
-                    path.suffix.lower() == ".json" or is_jsonl_source_path(str(path))
-                ):
-                    try:
-                        with path.open("rb") as source_handle:
-                            detect_provider_from_raw_bytes_evidence(
-                                source_handle.read(_SOURCE_ONLY_VALIDATION_PREFIX_BYTES),
-                                path.name,
-                                fallback_provider,
-                                truncated_tail_ok=True,
-                            )
-                    except ForeignOriginContentError as exc:
-                        self._mark_refused_cursor(
-                            path,
-                            stat,
-                            source_name=fallback_provider.value,
-                            reason=f"{exc.code}: {exc}",
-                            excluded=excluded_paths,
-                        )
-                        continue
-                    except OSError:
-                        failed.append(path)
-                        continue
+                try:
+                    refuse_foreign_material(path, fallback_provider)
+                except ForeignOriginContentError as exc:
+                    self._mark_refused_cursor(
+                        path,
+                        stat,
+                        source_name=fallback_provider.value,
+                        reason=f"{exc.code}: {exc}",
+                        excluded=excluded_paths,
+                    )
+                    continue
+                except OSError:
+                    failed.append(path)
+                    continue
                 logger.info(
                     "live.source_candidate_not_admitted path=%s provider=%s source_class=%s reason=%s",
                     path,
@@ -3453,34 +3445,22 @@ class LiveBatchProcessor:
                 if fallback_provider is Provider.ANTIGRAVITY and path.name.endswith(".metadata.json"):
                     failed.append(path)
                     continue
-                if (
-                    bound_location_provider(fallback_provider) is not None
-                    and (path.suffix.lower() == ".json" or is_jsonl_source_path(str(path)))
-                    and not path_declaration_refuses_session(fallback_provider, path)
-                ):
-                    # The retained replay trusts a bound raw's stored provider,
-                    # so a foreign document must be refused here, from a
-                    # bounded prefix, before its bytes are retained.
-                    try:
-                        with path.open("rb") as source_handle:
-                            detect_provider_from_raw_bytes_evidence(
-                                source_handle.read(_SOURCE_ONLY_VALIDATION_PREFIX_BYTES),
-                                path.name,
-                                fallback_provider,
-                                truncated_tail_ok=True,
-                            )
-                    except ForeignOriginContentError as exc:
-                        self._mark_refused_cursor(
-                            path,
-                            stat,
-                            source_name=fallback_provider.value,
-                            reason=f"{exc.code}: {exc}",
-                            excluded=excluded_paths,
-                        )
-                        continue
-                    except OSError:
-                        failed.append(path)
-                        continue
+                # The retained replay trusts a bound raw's stored provider, so a
+                # foreign document is refused here, before its bytes are kept.
+                try:
+                    refuse_foreign_material(path, fallback_provider)
+                except ForeignOriginContentError as exc:
+                    self._mark_refused_cursor(
+                        path,
+                        stat,
+                        source_name=fallback_provider.value,
+                        reason=f"{exc.code}: {exc}",
+                        excluded=excluded_paths,
+                    )
+                    continue
+                except OSError:
+                    failed.append(path)
+                    continue
                 provider = fallback_provider
                 source_name = provider.value
                 try:
@@ -3716,6 +3696,9 @@ class LiveBatchProcessor:
                             )
                         )
                     except ForeignOriginContentError as exc:
+                        from polylogue.storage.blob_publication import discard_pending_blob
+
+                        discard_pending_blob(blob_store, raw_id)
                         self._mark_refused_cursor(
                             path,
                             stat,
@@ -5508,6 +5491,15 @@ class LiveBatchProcessor:
             raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
             logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
             return [], 0
+        if bound_location_provider(fallback_provider) is not None:
+            # Members a later archive revision removed keep no refusal gap:
+            # clear every member debt this pass did not re-record.
+            self._cursor.clear_convergence_debt_under_prefix(
+                stage="live_ingest_admission",
+                subject_type="source_path",
+                prefix=f"{path}:",
+                keep=frozenset(self._zip_member_refusals_this_pass.pop(str(path), ())),
+            )
         return records, total_bytes
 
     def _extract_source_only_zip_member_records(
@@ -5651,6 +5643,7 @@ class LiveBatchProcessor:
         pass that admits the member clears it.
         """
         member_path = f"{path}:{member}"
+        self._zip_member_refusals_this_pass.setdefault(str(path), set()).add(member_path)
         emit(
             "live.ingest.zip_member_refused",
             level=WARNING,

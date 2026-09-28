@@ -229,6 +229,20 @@ class ArchiveBlobPublisher(BlobStore):
         self._pending_by_hash.clear()
         return receipts
 
+    def discard_pending_hash(self, blob_hash: str) -> bool:
+        """Drop the queued publication of one refused blob before any flush.
+
+        Returns whether it was pending. Bytes already published are left to
+        ordinary GC through ``release_refused_publication_receipt``.
+        """
+        prepared = self._pending_by_hash.pop(blob_hash, None)
+        if prepared is None:
+            return False
+        self._pending = [(receipt, item) for receipt, item in self._pending if item is not prepared]
+        self._latest_receipt_by_hash.pop(blob_hash, None)
+        self._store.discard_prepared(prepared)
+        return True
+
     def discard_pending(self) -> None:
         for _receipt, prepared in self._pending:
             self._store.discard_prepared(prepared)
@@ -254,6 +268,12 @@ class ArchiveBlobPublisher(BlobStore):
 
     def read_all(self, hash_hex: str) -> bytes:
         return self.blob_path(hash_hex).read_bytes()
+
+
+def discard_pending_blob(blob_store: BlobStore, blob_hash: str) -> bool:
+    """Drop a refused blob's queued publication when the store batches them."""
+    discard = getattr(blob_store, "discard_pending_hash", None)
+    return bool(discard(blob_hash)) if callable(discard) else False
 
 
 def publication_receipt_id(blob_store: BlobStore, blob_hash: str) -> str | None:

@@ -402,3 +402,71 @@ def test_baseline_keeps_inbox_archives_unbound(tmp_path: Path) -> None:
 
     decisions = _archive_members(archive, "inbox")
     assert not [decision for decision in decisions if "foreign_origin_content" in decision.reason]
+
+
+def test_one_choke_point_refuses_foreign_material(tmp_path: Path) -> None:
+    """``refuse_foreign_material`` is the shared bind-then-validate check.
+
+    It refuses a foreign JSONL at a bound location and passes the inbox,
+    declared raw-only paths and non-JSON material.
+
+    Anti-vacuity: without the location binding the Codex rollout passes at a
+    Claude Code location.
+    """
+    from polylogue.sources.dispatch import refuse_foreign_material
+
+    rollout = tmp_path / "projects" / "proj" / "c0ffee00-1111-2222-3333-444455556666.jsonl"
+    rollout.parent.mkdir(parents=True)
+    rollout.write_bytes(_jsonl(_CODEX_ROLLOUT))
+    with pytest.raises(ForeignOriginContentError):
+        refuse_foreign_material(rollout, Provider.CLAUDE_CODE)
+    refuse_foreign_material(rollout, Provider.UNKNOWN)
+    refuse_foreign_material(rollout, Provider.CODEX)
+    history = tmp_path / "history.jsonl"
+    history.write_bytes(_jsonl(_CODEX_ROLLOUT))
+    refuse_foreign_material(history, Provider.CLAUDE_CODE)
+    notes = tmp_path / "notes.md"
+    notes.write_text("# notes", encoding="utf-8")
+    refuse_foreign_material(notes, Provider.CLAUDE_CODE)
+
+
+def test_production_baseline_excludes_refused_plain_files(tmp_path: Path) -> None:
+    """The baseline expects no raw row for a file live intake refuses.
+
+    Anti-vacuity: without the choke point in the baseline, the Codex rollout
+    under a Claude Code root is recorded as ``accepted``.
+    """
+    from polylogue.sources.live.production_baseline import capture_production_source_baseline
+    from polylogue.sources.live.watcher import WatchSource
+
+    root = tmp_path / "projects"
+    project = root / "proj"
+    project.mkdir(parents=True)
+    (project / "c0ffee00-1111-2222-3333-444455556666.jsonl").write_bytes(_jsonl(_CODEX_ROLLOUT))
+    (project / "bad69218-73bd-490a-869a-2b3a30bf421b.jsonl").write_bytes(_jsonl(_CLAUDE_CODE_TRANSCRIPT))
+    baseline = capture_production_source_baseline(
+        (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),),
+        operation_id="op-test",
+    )
+    by_name = {Path(decision.path).name: decision for decision in baseline.decisions}
+    assert by_name["c0ffee00-1111-2222-3333-444455556666.jsonl"].disposition == "excluded"
+    assert "foreign_origin_content" in by_name["c0ffee00-1111-2222-3333-444455556666.jsonl"].reason
+    assert by_name["bad69218-73bd-490a-869a-2b3a30bf421b.jsonl"].disposition == "accepted"
+
+
+def test_publisher_discards_one_refused_pending_blob(tmp_path: Path) -> None:
+    """A refused blob's queued publication is dropped before any flush.
+
+    Anti-vacuity: without ``discard_pending_hash`` the refused blob stays
+    queued and a later flush reserves it with no raw row to consume it.
+    """
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher, discard_pending_blob
+
+    publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+    kept, _ = publisher.write_from_bytes(b"kept")
+    refused, _ = publisher.write_from_bytes(b"refused")
+    assert discard_pending_blob(publisher, refused) is True
+    assert discard_pending_blob(publisher, refused) is False
+    assert publisher.receipt_id(refused) is None
+    assert publisher.receipt_id(kept) is not None
+    assert publisher.has_pending

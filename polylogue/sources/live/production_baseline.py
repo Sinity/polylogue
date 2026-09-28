@@ -29,7 +29,7 @@ from polylogue.sources.decoder_zip import (
     is_declared_artifact_path,
     provider_detection_path,
 )
-from polylogue.sources.dispatch import ForeignOriginContentError, bound_location_provider
+from polylogue.sources.dispatch import ForeignOriginContentError, bound_location_provider, refuse_foreign_material
 from polylogue.sources.live.discovery import _source_path_steps
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.source_acquisition_components import (
@@ -581,6 +581,18 @@ def capture_production_source_baseline(
                     members = _archive_members(path, source_name, cancelled=cancelled, progress=progress)
                     decisions.append(SourceDecision(source_name, str(path), "excluded", "expanded_to_members"))
                     decisions.extend(members)
+                    continue
+                # Live intake refuses a foreign file at a bound location, so
+                # the baseline must not expect a raw row for it.
+                location = bound_location_provider(
+                    Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
+                )
+                try:
+                    refuse_foreign_material(path, location)
+                except ForeignOriginContentError as exc:
+                    decisions.append(
+                        SourceDecision(source_name, str(path), "excluded", f"{exc.code}:{exc.found.value}")
+                    )
                     continue
                 revision, material_bytes = _revision(path, cancelled=cancelled)
                 if progress is not None:

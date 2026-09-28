@@ -40,7 +40,12 @@ from polylogue.storage.cursor_state import CursorStatePayload
 
 from . import decoders as _decoders
 from .decoders import _zip_entry_provider_hint
-from .dispatch import GROUP_PROVIDERS, bound_location_provider, detect_provider, detect_provider_from_raw_bytes_evidence
+from .dispatch import (
+    GROUP_PROVIDERS,
+    detect_provider,
+    detect_provider_from_raw_bytes_evidence,
+    refuse_foreign_material,
+)
 from .parsers.base import RawSessionData
 from .sqlite_snapshot import is_sqlite_path, original_sqlite_source_path, snapshot_sqlite_to_blob
 
@@ -423,18 +428,9 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
             detection_evidence = "sqlite_snapshot.snapshot_sqlite_to_blob (Hermes sqlite state/sidecar)"
     else:
         if context.retained_blob is None:
-            if bound_location_provider(context.provider_hint) is not None and not path_declaration_refuses_session(
-                context.provider_hint, context.path
-            ):
-                # Validate from the source path before streaming, so a refused
-                # file never enters the pending publication batch.
-                with context.path.open("rb") as source_handle:
-                    detect_provider_from_raw_bytes_evidence(
-                        source_handle.read(_DETECTION_PREFIX_SIZE),
-                        context.path.name,
-                        context.provider_hint,
-                        truncated_tail_ok=True,
-                    )
+            # Validate from the source path before streaming, so a refused file
+            # never enters the pending publication batch.
+            refuse_foreign_material(context.path, context.provider_hint)
             blob_hash, blob_size = stream_path_to_blob(
                 context.blob_store,
                 context.path,

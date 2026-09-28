@@ -26,6 +26,7 @@ from polylogue.sources.decoder_zip import (
     is_declared_artifact_path,
     provider_detection_path,
 )
+from polylogue.sources.dispatch import ForeignOriginContentError, bound_location_provider
 from polylogue.sources.live.admission import ArtifactIdentity
 from polylogue.sources.origin_specs import database_member_for_filename
 from polylogue.sources.parsers.base import RawSessionData
@@ -75,6 +76,9 @@ def iter_retained_source_records(
     except ValueError:
         declared_provider = Provider.UNKNOWN
     provider = binding.provider if binding is not None else declared_provider
+    # The declared source location binds (not a sniffed dominant provider), so
+    # an operator-imported archive stays unbound and classifies its members.
+    location_binding = bound_location_provider(declared_provider)
     if logical_path.suffix.lower() != ".zip":
         data = read_plain_source_file(
             SourceReadContext(
@@ -145,8 +149,23 @@ def iter_retained_source_records(
             entry_provider = provider
             if provider is Provider.UNKNOWN:
                 entry_provider = declared_artifact_provider(entry.filename) or provider
-            context = ZipEntryReadContext(source, logical_path, entry, None, entry_provider, blob_store)
-            for data in iter_zip_entry_raw_data(archive, context):
+            context = ZipEntryReadContext(
+                source,
+                logical_path,
+                entry,
+                None,
+                entry_provider,
+                blob_store,
+                bound_provider=location_binding,
+            )
+            try:
+                member_records = list(iter_zip_entry_raw_data(archive, context))
+            except ForeignOriginContentError as exc:
+                # The declared source binds; a foreign member is a typed
+                # refusal in the member denominator, never a retained raw.
+                record_rejected(entry, f"{exc.code}: {exc}")
+                continue
+            for data in member_records:
                 split = data.source_index or 0
                 mode = data.addressing_mode
                 if mode not in {MemberAddressingMode.WHOLE_MEMBER, MemberAddressingMode.ELEMENT_OF_CONTAINER}:
