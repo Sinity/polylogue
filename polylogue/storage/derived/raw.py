@@ -27,7 +27,7 @@ from polylogue.archive.revision_authority import (
     durable_authority_logical_keys,
     parser_census_is_complete,
 )
-from polylogue.core.compute_cancel import compute_cancel
+from polylogue.core.compute_cancel import compute_cancel, compute_cancel_requested
 from polylogue.core.enums import Origin
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
@@ -634,7 +634,7 @@ class RawObservationDerivation:
                                 raise RetainedPreparationRetryableError(
                                     f"retained raw blob disappeared: {raw_id}"
                                 ) from exc
-                            if not blob_store.verify(blob_hash, stop=_compute_cancel_requested):
+                            if not blob_store.verify(blob_hash, stop=compute_cancel_requested):
                                 raise RetainedPreparationRetryableError(f"retained raw blob changed: {raw_id}")
                             native_id = archive.raw_native_id(raw_id) if kind.value == "append" else None
                             fallback_timestamp = archive.raw_revision_file_mtime(raw_id)
@@ -671,7 +671,7 @@ class RawObservationDerivation:
                                     raise RetainedPreparationRetryableError(
                                         f"retained worker exited before preparing raw {raw_id}"
                                     ) from exc
-                            if not blob_store.verify(blob_hash, stop=_compute_cancel_requested):
+                            if not blob_store.verify(blob_hash, stop=compute_cancel_requested):
                                 raise RetainedPreparationRetryableError(f"retained raw blob changed: {raw_id}")
                             try:
                                 after = self._blob_stat_identity(blob_path)
@@ -693,7 +693,7 @@ class RawObservationDerivation:
                             if artifact.error is None:
                                 try:
                                     artifact.verify_files(
-                                        full=artifact_key not in prepared_artifacts, stop=_compute_cancel_requested
+                                        full=artifact_key not in prepared_artifacts, stop=compute_cancel_requested
                                     )
                                 except (OSError, ValueError) as exc:
                                     raise RetainedPreparationRetryableError(
@@ -776,7 +776,7 @@ class RawObservationDerivation:
                                     f"retained cohort source dependency changed for {logical_key}"
                                 )
                             try:
-                                aggregate.verify_files(full=True, stop=_compute_cancel_requested)
+                                aggregate.verify_files(full=True, stop=compute_cancel_requested)
                             except (OSError, ValueError) as exc:
                                 raise RetainedPreparationRetryableError(
                                     f"retained cohort preparation seal changed for {logical_key}"
@@ -830,7 +830,9 @@ class RawObservationDerivation:
                                 archive.source_connection, logical_key
                             ):
                                 continue
-                            selected = selected_prepared_membership_head(archive, logical_key, prepared)
+                            selected = selected_prepared_membership_head(
+                                archive, logical_key, prepared, stop=compute_cancel_requested
+                            )
                             if selected is None:
                                 continue
                             accepted_raw_id, accepted_session = selected
@@ -1037,14 +1039,9 @@ _RETAINED_PREPARATION_STALL_REPORT_SECONDS = 600.0
 _STILL_RUNNING = object()
 
 
-def _compute_cancel_requested() -> bool:
-    cancelled = compute_cancel.get()
-    return cancelled is not None and cancelled.is_set()
-
-
 def _raise_if_compute_cancelled(subject: str) -> None:
     """A checkpoint between retained-preparation phases (hashing, reconciliation)."""
-    if _compute_cancel_requested():
+    if compute_cancel_requested():
         from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
 
         raise RetainedPreparationRetryableError(f"retained preparation cancelled for {subject}")

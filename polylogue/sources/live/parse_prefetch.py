@@ -514,6 +514,11 @@ class LiveParseStage:
         #: the active warm's cancellation and takes this lock before it stops
         #: the pool, so no stage call mutates bookkeeping shutdown is clearing.
         self._stage_lock = threading.Lock()
+        #: Guards ``_closing`` against ``_active_cancel``: a warm publishes its
+        #: event only while the stage is open, and shutdown closes the stage
+        #: and reads the event in one step, so it can never miss an entering
+        #: warm.
+        self._publish_lock = threading.Lock()
         self._active_cancel: threading.Event | None = None
         self._path_sizes: dict[str, int] = {}
         self._path_attempt_dirs: dict[str, Path] = {}
@@ -598,10 +603,11 @@ class LiveParseStage:
         if self._shard_directory is None or self._closing:
             return frozenset()
         with self._stage_lock:
-            if self._closing:
-                return frozenset()
             active = cancelled if cancelled is not None else threading.Event()
-            self._active_cancel = active
+            with self._publish_lock:
+                if self._closing:
+                    return frozenset()
+                self._active_cancel = active
             try:
                 return self._warm_paths_locked(
                     candidates,
@@ -612,7 +618,8 @@ class LiveParseStage:
                     cancelled=active,
                 )
             finally:
-                self._active_cancel = None
+                with self._publish_lock:
+                    self._active_cancel = None
 
     def _warm_paths_locked(
         self,
@@ -668,6 +675,10 @@ class LiveParseStage:
             )
         self._drop_stale_speculation()
         return held
+
+    def _cancel_predicate(self) -> Callable[[], bool] | None:
+        active = self._active_cancel
+        return None if active is None else active.is_set
 
     def _verify_claimed(self, source_path: str, *, cancelled: threading.Event | None = None) -> None:
         result = self._path_results.get(source_path)
@@ -837,7 +848,9 @@ class LiveParseStage:
         reaped = set(paths)
         if isinstance(self._executor, ProcessPoolExecutor):
             affected = tuple(self._path_futures)
-            self._restart_broken_process_pool(reason="worker pool restarted to reap read-ahead")
+            self._restart_broken_process_pool(
+                reason="worker pool restarted to reap read-ahead", discard=frozenset(reaped)
+            )
             if self._cleanup_blocked:
                 return
             for source_path in affected:
@@ -1227,7 +1240,14 @@ class LiveParseStage:
                 # A full byte scan belongs at the prefetch boundary, before
                 # the caller enters the writer runner. Publication only needs
                 # the cheap exact-inode check in pop_path/iter_sessions.
-                result.verify_files(full=True)
+                result.verify_files(full=True, stop=self._cancel_predicate())
+            except VerificationCancelledError:
+                # The warm was cancelled mid-scan: record nothing.
+                result.discard()
+                old = self._path_results.pop(source_path, None)
+                if old is not None:
+                    old.discard()
+                return
             except (OSError, ValueError) as exc:
                 result.discard()
                 result = LivePathPreparation(
@@ -1288,6 +1308,7 @@ class LiveParseStage:
         *,
         failed_attempt: Path | None = None,
         reason: str = "worker process died during preparation",
+        discard: frozenset[str] = frozenset(),
     ) -> None:
         if not isinstance(self._executor, ProcessPoolExecutor):
             return
@@ -1314,14 +1335,26 @@ class LiveParseStage:
                     result = future.result()
                 except Exception:
                     result = None
+                if pending_path in discard:
+                    # Reaped read-ahead: dropped without a digest.
+                    if result is not None:
+                        result.discard()
+                    if attempt_directory is not None:
+                        self._remove_attempt_directory(attempt_directory)
+                    continue
                 if result is not None and result.error is None and attempt_directory is not None:
                     try:
                         self._validate_attempt_result(result, attempt_directory)
-                        result.verify_files(full=True)
+                        if pending_path in self._speculative:
+                            # Unclaimed read-ahead keeps its digest owed to
+                            # the warm that claims it.
+                            self._unverified.add(pending_path)
+                        else:
+                            result.verify_files(full=True, stop=self._cancel_predicate())
                         result = replace(result, attempt_directory=attempt_directory)
                         self._path_results[pending_path] = result
                         continue
-                    except (OSError, ValueError):
+                    except (OSError, ValueError, VerificationCancelledError):
                         pass
             self._path_results[pending_path] = LivePathPreparation(None, None, None, reason, deferred=True)
             if attempt_directory is not None:
@@ -1449,11 +1482,12 @@ class LiveParseStage:
         # A process worker may outlive a warm window indefinitely. Stop and
         # join it before removing scratch, so daemon stop stays bounded and
         # no worker can seal a carrier after cleanup.
-        self._closing = True
         # A warm may still be running on another thread (daemon stop runs
         # before intake is cancelled). Cancel it and let it settle before
         # anything it owns is torn down.
-        active = self._active_cancel
+        with self._publish_lock:
+            self._closing = True
+            active = self._active_cancel
         if active is not None:
             active.set()
         with self._stage_lock:

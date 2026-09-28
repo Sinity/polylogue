@@ -1256,6 +1256,121 @@ def test_stage_shutdown_settles_an_active_warm(tmp_path: Path, monkeypatch: pyte
     assert not attempts.exists() or [entry for entry in attempts.iterdir() if entry.name.startswith("attempt-")] == []
 
 
+def test_shutdown_cannot_miss_a_warm_that_is_publishing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shutdown racing a warm's publication still cancels that warm.
+
+    The instrumented lock starts shutdown while the warm is inside its
+    publication step. Anti-vacuity: read the active warm without the lock
+    that guards publication and shutdown sees no warm, then blocks behind a
+    warm nobody cancelled, so the warm is still waiting on its held worker.
+    """
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    (path,) = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    released = threading.Event()
+    original_worker = parse_prefetch.live_parse_path_worker
+
+    def held_worker(provider_value: str, source_path: str, *args: object, **kwargs: object) -> object:
+        released.wait(timeout=30)
+        return original_worker(provider_value, source_path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", held_worker)
+    monkeypatch.setattr(parse_prefetch, "_PROGRESS_POLL_SECONDS", 0.05)
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    stopper = threading.Thread(target=stage.shutdown)
+    real_lock = stage._publish_lock
+
+    class RacingLock:
+        entered = 0
+
+        def __enter__(self) -> None:
+            real_lock.acquire()
+            if threading.current_thread() is not stopper and RacingLock.entered == 0:
+                RacingLock.entered += 1
+                stopper.start()
+                time.sleep(0.2)  # shutdown now runs inside the publication window
+
+        def __exit__(self, *exc: object) -> None:
+            real_lock.release()
+
+    stage._publish_lock = RacingLock()  # type: ignore[assignment]
+    warm = threading.Thread(target=stage.warm_paths, args=([(str(path), Provider.CODEX, True)],))
+    try:
+        warm.start()
+        warm.join(timeout=10)
+        assert not warm.is_alive(), "shutdown missed the publishing warm"
+    finally:
+        released.set()
+        warm.join(timeout=30)
+        stopper.join(timeout=30)
+    assert not stopper.is_alive()
+
+
+@pytest.mark.uses_real_clock("waits for a real process worker to finish")
+def test_reaped_read_ahead_is_dropped_without_a_digest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: salvage a finished reaped read-ahead through the pool
+    restart and its artifact is fully re-hashed by a warm that never claims it."""
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+
+    (path,) = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    full_scans: list[bool] = []
+    original_verify = PreparedJsonl.verify_files
+
+    def recording_verify(self: PreparedJsonl, *, full: bool, stop: object = None) -> None:
+        full_scans.append(full)
+        original_verify(self, full=full, stop=stop)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(PreparedJsonl, "verify_files", recording_verify)
+    stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards", use_processes=True)
+    try:
+        assert stage.prefetch_paths([str(path)], fallback_provider=Provider.CODEX) == 1
+        stage._path_futures[str(path)].result(timeout=60)
+        stage._reap_speculation([str(path)], reason="test")
+        assert True not in full_scans
+        assert str(path) not in stage._path_results and str(path) not in stage._speculative
+        attempts = tmp_path / "parse-shards" / ".live-parse-attempts"
+        assert [entry for entry in attempts.iterdir() if entry.name.startswith("attempt-")] == []
+    finally:
+        stage.shutdown()
+
+
+def test_a_claimed_read_ahead_finishing_after_cancel_is_not_scanned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A read-ahead still running at claim is verified under the warm's cancellation.
+
+    Anti-vacuity: verify its completion without the warm's stop predicate and
+    the cancelled warm pays the full digest and records the result.
+    """
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    (path,) = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    cancelled = threading.Event()
+    claimed = threading.Event()
+    original_worker = parse_prefetch.live_parse_path_worker
+
+    def cancelling_worker(provider_value: str, source_path: str, *args: object, **kwargs: object) -> object:
+        claimed.wait(timeout=30)
+        result = original_worker(provider_value, source_path, *args, **kwargs)  # type: ignore[arg-type]
+        cancelled.set()  # the warm is cancelled as this preparation completes
+        return result
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", cancelling_worker)
+    # A long poll: the warm wakes only when the preparation completes, so it
+    # collects that completion (under cancellation) before its next check.
+    monkeypatch.setattr(parse_prefetch, "_PROGRESS_POLL_SECONDS", 30.0)
+    stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards")
+    try:
+        assert stage.prefetch_paths([str(path)], fallback_provider=Provider.CODEX) == 1
+        threading.Timer(0.1, claimed.set).start()
+        assert stage.warm_paths([(str(path), Provider.CODEX, True)], cancelled=cancelled) == frozenset()
+        assert str(path) not in stage._path_futures
+        assert str(path) not in stage._path_results
+    finally:
+        claimed.set()
+        stage.shutdown()
+
+
 def test_a_stalled_read_ahead_cannot_wedge_required_work(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Unclaimed read-ahead holding the byte budget is preempted, then reaped.
 
@@ -1711,12 +1826,12 @@ def test_a_slow_process_worker_is_awaited_and_verified_off_the_writer(
     inside_writer = False
     full_verifications = 0
 
-    def verify_outside_writer(self: PreparedJsonl, *, full: bool) -> None:
+    def verify_outside_writer(self: PreparedJsonl, *, full: bool, stop: object = None) -> None:
         nonlocal full_verifications
         if full:
             assert not inside_writer, "full artifact digest ran under writer admission"
             full_verifications += 1
-        original_verify(self, full=full)
+        original_verify(self, full=full, stop=stop)  # type: ignore[arg-type]
 
     monkeypatch.setattr(PreparedJsonl, "verify_files", verify_outside_writer)
     try:

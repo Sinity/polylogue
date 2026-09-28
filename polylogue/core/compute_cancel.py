@@ -17,4 +17,11 @@ import threading
 #: event is set when that owner is cancelled.
 compute_cancel: contextvars.ContextVar[threading.Event | None] = contextvars.ContextVar("compute_cancel", default=None)
 
-__all__ = ["compute_cancel"]
+
+def compute_cancel_requested() -> bool:
+    """Whether the compute owner running this code has been cancelled."""
+    cancelled = compute_cancel.get()
+    return cancelled is not None and cancelled.is_set()
+
+
+__all__ = ["compute_cancel", "compute_cancel_requested"]
