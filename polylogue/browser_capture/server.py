@@ -709,19 +709,33 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                     getattr(config, "api_auth_token", None),
                     allow_no_auth=getattr(config, "api_allow_no_auth", False),
                 ),
-            ).operation(
+            ).operation_to_completion(
+                # A mutation is accepted before it completes; follow it to the
+                # terminal receipt rather than reading "accepted" as failure.
                 "mutation.assertion.candidate.capture",
                 {
                     "body_text": payload["body_text"],
                     "kind": candidate_capture_kind(payload["kind"]).value,
-                    "refs": [f"message:{provider_message_id}"],
-                    "scope_refs": [evidence_refs[0]],
+                    "refs": [f"message:{expected_message_ref}"],
+                    # An assertion's scope is an object ref. The capture
+                    # artifact's evidence ref is not one, so scope the
+                    # candidate to the selected message's session.
+                    "scope_refs": [
+                        f"session:{observation.get('origin')}:{observation.get('provider_conversation_id')}"
+                    ],
                     "author_ref": str(payload.get("author_ref") or "user:browser-extension"),
                     "author_kind": str(payload.get("author_kind") or "user"),
                     "idempotency_key": payload.get("idempotency_key"),
                 },
                 archive_root=str(root),
             )
+            if response is not None and response.get("outcome") == "rejected":
+                # The daemon refused this request's content; that is the
+                # caller's error to fix, not an unavailable daemon.
+                error = response.get("error")
+                code = error.get("code") if isinstance(error, dict) else None
+                self._safe_error(HTTPStatus.BAD_REQUEST, str(code or "daemon_candidate_capture_rejected"))
+                return
             if response is None or response.get("outcome") not in {"completed", "no-effect"}:
                 self._safe_error(HTTPStatus.SERVICE_UNAVAILABLE, "daemon_candidate_capture_unavailable")
                 return

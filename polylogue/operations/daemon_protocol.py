@@ -806,7 +806,9 @@ class ResetRequest(_OperationPayload):
     auth: bool = False
     reset_all: bool = False
     confirm: bool = False
-    expected_targets: list[str] = Field(default_factory=list, max_length=10_000)
+    # Omitted means "no preview was asserted"; an explicit list, even an empty
+    # one, must equal the resolved targets.
+    expected_targets: list[str] | None = Field(default=None, max_length=10_000)
 
 
 class BlobPublicationsAbandonRequest(_OperationPayload):

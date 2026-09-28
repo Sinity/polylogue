@@ -1179,3 +1179,54 @@ def test_receiver_rejects_wrong_token(tmp_path: Path) -> None:
 
     assert response.status == HTTPStatus.UNAUTHORIZED
     assert error.error == "unauthorized"
+
+
+@pytest.mark.uses_real_clock("starts the real UDS operation stack; wall-clock events bound its writer handoff")
+def test_selected_message_candidate_persists_through_the_daemon_actuator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A browser selection save reaches ``user.db`` with its canonical message target.
+
+    Anti-vacuity: restore the bare ``message:<provider id>`` ref in the receiver,
+    drop message-ref support from ``resolve_assertion_candidate_refs``, pass the
+    capture evidence ref as the assertion scope, or read the accepted mutation
+    envelope as a failure, and the request fails before an assertion row is
+    written.
+    """
+    from tests.infra.daemon_operations import running_daemon_operations
+
+    archive_root = tmp_path / "archive"
+    message_ref = "chatgpt-export:conv-123:n:turn-1"
+    with running_daemon_operations(archive_root) as stack:
+        monkeypatch.setattr("polylogue.daemon.socket_path.daemon_socket_path", lambda _root: stack.socket_path)
+        monkeypatch.setattr("polylogue.daemon.api_auth.resolve_api_auth_token", lambda *_a, **_k: None)
+        with _running_receiver(tmp_path / "spool", archive_root=stack.archive_root) as (host, port):
+            response = _request(
+                host,
+                port,
+                "POST",
+                "/v1/assertion-candidates",
+                body={
+                    "body_text": "remember this turn",
+                    "kind": "lesson",
+                    # The capture artifact's evidence ref, as the receiver returns it.
+                    "evidence_refs": ["chatgpt/conv-123.json#message:turn-1"],
+                    "target_ref": message_ref,
+                    "source_observation": {
+                        "fidelity": "native",
+                        "origin": "chatgpt-export",
+                        "provider_conversation_id": "conv-123",
+                        "provider_message_id": "turn-1",
+                    },
+                    "idempotency_key": "selection-1",
+                    "context_policy": {"inject": False},
+                },
+                origin=_EXTENSION_ORIGIN,
+            )
+            body = json.loads(response.read())
+        assert response.status == HTTPStatus.ACCEPTED, body
+        with sqlite3.connect(stack.archive_root / "user.db") as conn:
+            rows = conn.execute(
+                "SELECT target_ref, scope_ref, body_text FROM assertions WHERE key = 'terminal-note'"
+            ).fetchall()
+    assert rows == [(f"message:{message_ref}", "session:chatgpt-export:conv-123", "remember this turn")]

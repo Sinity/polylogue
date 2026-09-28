@@ -166,7 +166,7 @@ def _scan(root: Path, rule: Rule) -> Counter[Anchor]:
     return matches
 
 
-def _trusted_baseline(root: Path, path: Path) -> Counter[tuple[str, str]] | None:
+def _trusted_baseline(root: Path, path: Path) -> Counter[Anchor] | None:
     """Read the parent revisions' exemption set; synthetic roots have none.
 
     A merge commit has several parents: an exemption any parent already
@@ -212,19 +212,25 @@ def _trusted_baseline(root: Path, path: Path) -> Counter[tuple[str, str]] | None
         if not (root / ".git").exists():
             return None
         raise ValueError(f"cannot load trusted parent baseline for {path}") from exc
-    trusted: Counter[tuple[str, str]] = Counter()
+    trusted: Counter[Anchor] = Counter()
     for content in contents:
         trusted |= _baseline_text(content)
     return trusted
 
 
-def _baseline_text(content: str) -> Counter[tuple[str, str]]:
-    anchors: Counter[tuple[str, str]] = Counter()
+def _baseline_text(content: str) -> Counter[Anchor]:
+    """Parse a trusted revision's entries as full ``(file, digest, context)`` anchors.
+
+    A context-free legacy entry keeps an empty context, so it never authorizes
+    an entry in any recorded AST context.
+    """
+    anchors: Counter[Anchor] = Counter()
     for raw_line in content.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
         parts = line.rsplit(":", 3)
+        context = ""
         if len(parts) == 2:
             file_name, digest = parts
             count = 1
@@ -239,7 +245,7 @@ def _baseline_text(content: str) -> Counter[tuple[str, str]]:
             count = int(raw_count)
         else:
             raise ValueError(f"invalid trusted baseline entry: {raw_line!r}")
-        anchors[(file_name, digest)] += count
+        anchors[(file_name, digest, context)] += count
     return anchors
 
 
@@ -282,17 +288,11 @@ def _payload(root: Path) -> dict[str, Any]:
         new = matches - baseline
         stale = baseline - matches
         if rule.status == "enforcing" and trusted_baseline is not None:
-            current_baseline_counts: Counter[tuple[str, str]] = Counter()
-            for (file_name, digest, _context), count in baseline.items():
-                current_baseline_counts[(file_name, digest)] += count
-            baseline_growth = current_baseline_counts - trusted_baseline
+            baseline_growth = baseline - trusted_baseline
             if baseline_growth:
                 errors.append(
                     f"{rule.rule_id}: committed baseline grew: "
-                    + ", ".join(
-                        f"{file_name}:{digest}:{count}"
-                        for (file_name, digest), count in sorted(baseline_growth.items())
-                    )
+                    + ", ".join(_anchor_text(anchor, count) for anchor, count in sorted(baseline_growth.items()))
                 )
         inspected += 1
         if rule.status == "pending":

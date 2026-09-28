@@ -15,7 +15,7 @@ from polylogue.config import Config
 from polylogue.config import active_archive_root as _active_archive_root
 from polylogue.context.compiler import ContextImage
 from polylogue.core.enums import AssertionKind, AssertionStatus
-from polylogue.core.refs import ObjectRef, normalize_object_ref_text, parse_public_ref
+from polylogue.core.refs import normalize_object_ref_text, parse_public_ref
 from polylogue.operations.archive_mutation import require_archive_write_authority as _require_archive_write_authority
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 from polylogue.storage.sqlite.connection_profile import open_connection
@@ -161,43 +161,11 @@ def _archive_capture_assertion_candidate(
             f"{normalized_author_ref}\0{normalized_idempotency_key}".encode("utf-8", errors="surrogatepass")
         ).hexdigest()
         assertion_id = f"assertion-terminal-note:{identity}"
-    resolved_refs: list[str] = []
     _require_archive_write_authority(config, "api.capture_assertion_candidate")
     with ArchiveStore.open_existing(_active_archive_root(config), read_only=False) as archive:
-        for ref in refs:
-            if ref == "last":
-                resolved_cwd = (cwd or Path.cwd()).resolve()
-                repo_root = next(
-                    (candidate for candidate in (resolved_cwd, *resolved_cwd.parents) if (candidate / ".git").exists()),
-                    resolved_cwd,
-                )
-                summaries = archive.list_summaries(cwd_prefix=str(repo_root), limit=1)
-                if not summaries:
-                    raise ValueError("--ref last found no archived session for the current repository/cwd")
-                session_ref = f"session:{summaries[0].session_id}"
-                resolved_refs.append(session_ref)
-                continue
-            parsed = parse_public_ref(ref)
-            if isinstance(parsed, ObjectRef):
-                if parsed.kind == "message":
-                    resolved_refs.append(parsed.format())
-                    continue
-                if parsed.kind != "session":
-                    raise ValueError("--ref must be a session or message ref, or 'last'")
-                try:
-                    session_id = archive.resolve_session_id(parsed.object_id)
-                except KeyError:
-                    raise ValueError(f"session ref not found: {parsed.object_id}") from None
-                resolved_refs.append(f"session:{session_id}")
-            else:
-                if parsed.message_id is None or parsed.block_index is not None:
-                    raise ValueError("--ref must identify a session or message")
-                try:
-                    session_id = archive.resolve_session_id(parsed.session_id)
-                except KeyError:
-                    raise ValueError(f"session ref not found: {parsed.session_id}") from None
-                resolved_refs.append(f"{session_id}::{parsed.message_id}")
+        from polylogue.operations.mutation_actuators import resolve_assertion_candidate_refs
 
+        resolved_refs = resolve_assertion_candidate_refs(archive, refs, cwd=cwd)
         normalized_scope_refs = [parse_public_ref(ref).format() for ref in scope_refs]
         target_ref = resolved_refs[0] if resolved_refs else f"assertion:{assertion_id}"
         user_db = archive.user_db_path
