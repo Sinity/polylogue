@@ -141,6 +141,22 @@ def test_gc_rejects_non_finite_grace_period(tmp_path: Path) -> None:
             )
 
 
+def test_route_refuses_receipt_beneath_artifact_candidates(tmp_path: Path) -> None:
+    """A GC receipt cannot recreate debris in the namespace GC scans.
+
+    Anti-vacuity: removing the containment refusal lets the call proceed and
+    creates ``artifacts/gc.json``, which the next pass classifies as corrupt.
+    """
+    cache_root = tmp_path / "cache"
+    artifact_root = cache_root / "artifacts"
+    artifact_root.mkdir(parents=True)
+    receipt = artifact_root / "gc.json"
+    output = io.StringIO()
+    assert command.main(["--cache-root", str(cache_root), "--receipt", str(receipt), "--json"], stdout=output) == 1
+    assert "outside the managed artifacts directory" in output.getvalue()
+    assert not receipt.exists()
+
+
 def test_route_returns_nonzero_when_deletion_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A deletion failure must fail the operation, not silently succeed.
 

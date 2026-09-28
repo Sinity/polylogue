@@ -210,10 +210,13 @@ class SchemaFastForwardEngine:
         # version whose operation was only partially applied.
         savepoint = f"schema_fast_forward_{step.version}"
         own_transaction = not conn.in_transaction
+        if not own_transaction:
+            raise SchemaFastForwardError("schema fast-forward requires a connection with no active transaction")
         if own_transaction:
-            conn.execute("BEGIN IMMEDIATE")
-        else:
-            conn.execute(f'SAVEPOINT "{savepoint}"')
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+            except sqlite3.DatabaseError as exc:
+                raise SchemaFastForwardError(f"{step.label} could not acquire transaction: {exc}") from exc
         try:
             if isinstance(step.apply, str):
                 _execute_sql(conn, step.apply, label=step.label)
