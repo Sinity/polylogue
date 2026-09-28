@@ -18,7 +18,9 @@ from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 from polylogue.operations.raw_observation_derivation import (
     RAW_OBSERVATION_DOMAIN,
+    finalize_codex_state_raw,
     make_raw_observation_derivation,
+    raw_needs_codex_state_receipt,
     raw_observation_frame,
 )
 
@@ -77,18 +79,13 @@ class RawObservationConvergenceOwner:
         sits behind that gate. The receipt comes from the immutable retained
         export, published through the daemon writer.
         """
-        from polylogue.sources.codex_state_evidence import (
-            resolve_retained_codex_state_receipts,
-            unreceipted_codex_state_raw_ids,
-        )
-
-        if not unreceipted_codex_state_raw_ids(self._archive_root, (raw_id,)):
+        if not raw_needs_codex_state_receipt(self._archive_root, raw_id):
             return
         await asyncio.to_thread(
             self._write_bridge.run_sync_with_timeout,
             "raw_observation.codex_state_receipt",
             None,
-            functools.partial(resolve_retained_codex_state_receipts, self._archive_root, raw_ids=(raw_id,)),
+            functools.partial(finalize_codex_state_raw, self._archive_root, raw_id),
         )
 
     def _require_source_frontier_authority(self, raw_id: str) -> None:
