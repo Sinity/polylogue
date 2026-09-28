@@ -154,9 +154,23 @@ def test_census_counts_an_unmatched_physical_result(test_db: Path) -> None:
 def test_census_reports_its_query_plan_and_runtime(test_db: Path) -> None:
     """The report carries the plan it ran, so an unindexed regression is visible."""
     write_session_sync(test_db, _codex_session())
+    orphan = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="sidecar-census-orphan",
+        messages=[
+            ParsedMessage(
+                provider_message_id="orphan-result",
+                role=Role.TOOL,
+                blocks=[
+                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="orphan", text="unowned", is_error=False)
+                ],
+            )
+        ],
+    )
+    write_session_sync(test_db, orphan)
     report = _census(test_db)
     plans = {item["query"]: item for item in report["plan"]}
-    assert {"calls_by_identity", "results_by_identity"} <= set(plans)
+    assert {"calls_by_identity", "results_by_identity", "session_event_sidecar_ownership"} <= set(plans)
     assert all(isinstance(item["seconds"], float) for item in plans.values())
     result_plan = " ".join(plans["results_by_identity"]["steps"])
     assert "idx_blocks_tool_result_outcome" in result_plan

@@ -30,6 +30,8 @@ class CommandSpec:
     json_flag: bool = False
     #: Flags surfaced in this command's own ``--help`` and forwarded verbatim.
     flags: tuple[tuple[str, str], ...] = ()
+    #: Value-taking options surfaced in ``--help`` and forwarded as pairs.
+    value_options: tuple[tuple[str, str, str], ...] = ()
     use_when: str | None = None
     examples: tuple[str, ...] = ()
     featured: bool = False
@@ -164,7 +166,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
                 "Run in a checkout on the default branch deliberately; without it the verifier refuses there.",
             ),
         ),
-        use_when="Run the gates and bounded affected tests locally before pushing. --quick stops at static gates; --all runs the complete corpus at the explicit master/corpus boundary. Unknown or oversized affected plans are refused before pytest and name the count, reason, and next boundary.",
+        use_when="Run the gates and bounded affected tests locally before pushing. --quick stops at static gates; --all runs the complete corpus at the explicit master/corpus boundary. Unknown or oversized affected plans are refused before pytest and name the count, reason, and next boundary. Pattern baselines use path:sha1[:count] content anchors, not source line numbers.",
         examples=("devtools verify", "devtools verify --quick", "devtools verify --all"),
         featured=True,
     ),
@@ -460,7 +462,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Measure what a pytest selection costs to collect, before any test runs.",
         "devtools.collection_cost",
         json_flag=True,
-        flags=(("--budget-mib", "Exit 3 when the collection peak exceeds this many MiB."),),
         use_when=(
             "Reproduce the per-worker collection cost a width is bounded by, before and after a change, on one head."
         ),
@@ -469,6 +470,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools bench collection --budget-mib 430",
             "devtools bench collection tests/unit/devtools/",
         ),
+    ),
+    CommandSpec(
+        "bench ingest-throughput",
+        "benchmarking",
+        "Measure ingest throughput against synthetic source records.",
+        "devtools.ingest_throughput_probe",
+        json_flag=True,
+        examples=("devtools bench ingest-throughput --json",),
     ),
     CommandSpec(
         "bench baseline",
@@ -536,14 +545,15 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Classify every archived tool result by origin, construct, outcome and unknown reason.",
         "devtools.tool_outcome_census",
         json_flag=True,
+        value_options=(("--archive-root", "PATH", "Required candidate archive root to census."),),
         use_when=(
             "Before accepting a rebuilt archive, prove the tool-outcome contract holds over the whole "
             "candidate: no unknown outcome without a reason, no known outcome carrying one, no reason "
             "an origin's parsers do not own, and no public projection that disagrees with the block."
         ),
         examples=(
-            "devtools archive tool-outcome-census --archive-root /path/to/archive",
-            "devtools archive tool-outcome-census --archive-root /path/to/archive --json",
+            "devtools archive tool-outcome-census --archive-root /candidate/archive",
+            "devtools archive tool-outcome-census --archive-root /candidate/archive --json",
         ),
     ),
     CommandSpec(

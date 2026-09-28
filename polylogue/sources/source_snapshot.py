@@ -895,6 +895,11 @@ def execute_source_cut(preflight: SourceCutPreflight, destination: Path) -> Sour
     destination = destination.absolute()
     destination.parent.mkdir(parents=True, exist_ok=True)
     _reclaim_orphaned_staging(destination.parent, preflight.request_id)
+    if not destination.exists():
+        # A crash can land after the active spool was renamed but before the
+        # candidate directory was published. Restore the retired generation
+        # before root verification so the same preflight remains retryable.
+        _recover_markerless_spool_handoffs(preflight)
     if destination.exists():
         try:
             preflight.verify_roots(allow_handed_off_spools=True)

@@ -48,7 +48,7 @@ These are the commands worth remembering during normal repo work:
   Common forms: `devtools test tests/unit/pipeline`, `devtools test -k hybrid`, `devtools test tests/unit/storage -x`, `devtools test --outliers 20`.
 - `devtools why`: A verify failed, bootstrapped unexpectedly, or refused to run, and you want the cause without reading receipt JSON by hand.
   Common forms: `devtools why`, `devtools why --history 24`, `devtools why --run 20260817T213631Z-2709409-d5c6e72c`.
-- `devtools verify`: Run the gates and bounded affected tests locally before pushing. --quick stops at static gates; --all runs the complete corpus at the explicit master/corpus boundary. Unknown or oversized affected plans are refused before pytest and name the count, reason, and next boundary.
+- `devtools verify`: Run the gates and bounded affected tests locally before pushing. --quick stops at static gates; --all runs the complete corpus at the explicit master/corpus boundary. Unknown or oversized affected plans are refused before pytest and name the count, reason, and next boundary. Pattern baselines use path:sha1[:count] content anchors, not source line numbers.
   Common forms: `devtools verify`, `devtools verify --quick`, `devtools verify --all`.
 - `devtools gate`: Run a single gate in isolation, or list the declared gates and which of them verify --quick runs.
   Common forms: `devtools gate --list`, `devtools gate layering`, `devtools gate mypy`.
@@ -105,6 +105,7 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools bench baseline` | List or record committed measurement receipts under tests/benchmarks/baselines/. |
 | `devtools bench collection` | Measure what a pytest selection costs to collect, before any test runs. |
+| `devtools bench ingest-throughput` | Measure ingest throughput against synthetic source records. |
 | `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |
 | `devtools bench parser-census` | Parse a recorded source denominator with no archive and diff the result against the last census. |
 | `devtools bench pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |

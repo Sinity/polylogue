@@ -1,17 +1,20 @@
 import { useRef, useState } from 'preact/hooks';
 import { PolylogueClient, type SearchPage, type SessionSearchHitPayload } from '../api/generated';
+import { withWebCredential } from '../lib/api';
 
 type PageLoader = (query: string, cursor: string) => Promise<SearchPage>;
 
 const client = new PolylogueClient();
 
 async function loadSearchPage(query: string, cursor: string): Promise<SearchPage> {
-  const pages = client.search({ query, cursor });
-  const first = await pages[Symbol.asyncIterator]().next();
-  if (first.done) {
-    throw new TypeError('Search returned no page.');
-  }
-  return first.value;
+  return withWebCredential(async () => {
+    const pages = client.search({ query, cursor });
+    const first = await pages[Symbol.asyncIterator]().next();
+    if (first.done) {
+      throw new TypeError('Search returned no page.');
+    }
+    return first.value;
+  });
 }
 
 export interface SearchIslandProps {
