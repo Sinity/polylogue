@@ -1460,8 +1460,11 @@ class LiveBatchProcessor:
                 # nothing here was attempted, so nothing to mark failed.
                 break
             progress_groups = list(_full_parse_progress_groups(grouped_paths))
+            held_pending: list[Path] = []
             while progress_groups:
                 source_paths = progress_groups.pop(0)
+                if held_pending and source_paths is held_pending:
+                    held_pending = []
                 if self._stop_requested():
                     break
                 if is_fully_degraded():
@@ -1509,7 +1512,8 @@ class LiveBatchProcessor:
                     if full_result.ordering_held:
                         # Later revisions of a session this group published
                         # go next, warmed against that publication.
-                        progress_groups.insert(0, list(full_result.ordering_held))
+                        held_pending = list(full_result.ordering_held)
+                        progress_groups.insert(0, held_pending)
                     if full_result.time_budget_exceeded:
                         full_ingest_time_budget_exceeded = True
                     ingest_worker_count_max = max(ingest_worker_count_max, full_result.worker_count)
@@ -1720,6 +1724,20 @@ class LiveBatchProcessor:
                         reason="writer hold spent after the archive commit; the batch ends with its cursors recorded",
                     )
                     break
+            # A held revision the loop ended before reaching was never
+            # attempted: it stays retryable instead of reading as settled.
+            failed_now = set(failed_paths)
+            for path in held_pending:
+                if str(path) in failed_now:
+                    continue
+                deferred_paths.append(path)
+                preparation_deferred_paths.add(path)
+                await self._run_ops_write(
+                    "cursor_deferred_preparation",
+                    self._defer_full_cursor_retry,
+                    path,
+                    source_name=source_name,
+                )
 
         summary_stage_payload = _single_route_stage_payload(
             append_file_count=append_file_count,
