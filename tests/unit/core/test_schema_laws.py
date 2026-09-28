@@ -225,6 +225,18 @@ def test_observed_structure_merge_preserves_static_fields_with_dynamic_map() -> 
     assert "additionalProperties" in merged
 
 
+def test_high_cardinality_merge_retains_named_fields_after_later_merge() -> None:
+    """A third merge must not erase properties retained by the two-sample promotion."""
+    first = observed_structure_schema({f"ordinary-key-{index}": {"value": index} for index in range(128)})
+    second = observed_structure_schema({f"ordinary-key-{index}": {"value": index} for index in range(128, 256)})
+    promoted = merge_observed_structure_schemas([first, second])
+    retained = set(schema_properties(promoted))
+
+    after_third = merge_observed_structure_schemas([promoted, observed_structure_schema({"third": {"value": 1}})])
+
+    assert retained <= set(schema_properties(after_third)), "a later merge collapsed previously retained properties"
+
+
 def _named_property_paths(schema: object, *, path: str = "$") -> set[str]:
     """Every property name reachable in a schema, including composite branches."""
     node = schema_node(schema)

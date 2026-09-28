@@ -26,6 +26,7 @@ from polylogue.storage.fts.pl_fold import pl_fold
 from polylogue.storage.runtime import (
     SessionProfileRecord,
 )
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.async_sqlite_archive import SQLiteArchiveMixin
 from polylogue.storage.sqlite.async_sqlite_raw import SQLiteRawMixin
 from polylogue.storage.sqlite.connection_profile import (
@@ -62,6 +63,12 @@ _SIBLING_TIER_ATTACHMENTS: tuple[tuple[str, str], ...] = (
     ("embeddings", "embeddings.db"),
     ("ops_tier", "ops.db"),
 )
+_SIBLING_ARCHIVE_TIERS = {
+    "source_tier": ArchiveTier.SOURCE,
+    "user_tier": ArchiveTier.USER,
+    "embeddings": ArchiveTier.EMBEDDINGS,
+    "ops_tier": ArchiveTier.OPS,
+}
 
 
 async def _attach_sibling_tiers(conn: aiosqlite.Connection, *, read_only: bool = False) -> None:
@@ -85,6 +92,10 @@ async def _attach_sibling_tiers(conn: aiosqlite.Connection, *, read_only: bool =
         return
     from pathlib import Path as _Path
 
+    from polylogue.core.errors import SchemaSkew
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.schema_identity import DerivedTier, derived_schema_identity
+
     main = _Path(main_path)
     if main.name != "index.db":
         return
@@ -96,6 +107,22 @@ async def _attach_sibling_tiers(conn: aiosqlite.Connection, *, read_only: bool =
         if sibling.exists():
             target = f"file:{quote(str(sibling))}?mode=ro" if read_only else str(sibling)
             await conn.execute(f"ATTACH DATABASE ? AS {schema_name}", (target,))
+            tier = _SIBLING_ARCHIVE_TIERS[schema_name]
+            cursor = await conn.execute(f"PRAGMA {schema_name}.user_version")
+            version_row = await cursor.fetchone()
+            found = int(version_row[0]) if version_row is not None else 0
+            expected = ARCHIVE_VERSION_BY_TIER[tier]
+            if found != expected:
+                raise SchemaSkew(tier.value, expected, found)
+            if tier in {ArchiveTier.INDEX, ArchiveTier.EMBEDDINGS, ArchiveTier.OPS}:
+                identity_cursor = await conn.execute(
+                    f"SELECT identity FROM {schema_name}.schema_identity WHERE tier = ?", (tier.value,)
+                )
+                identity_row = await identity_cursor.fetchone()
+                identity = str(identity_row[0]) if identity_row is not None else None
+                expected_identity = derived_schema_identity(DerivedTier(tier.value))
+                if identity != expected_identity:
+                    raise SchemaSkew(tier.value, expected_identity, identity)
 
 
 async def configure_connection(conn: aiosqlite.Connection) -> None:
@@ -158,10 +185,11 @@ def initialize_backend_state(backend: SQLiteBackend, db_path: Path | None) -> No
     backend._db_path = requested_path if requested_path.name == "index.db" else archive_root / "index.db"
     backend._source_db_path = archive_root / "source.db"
     backend._db_path.parent.mkdir(parents=True, exist_ok=True)
-    if not _is_initialized_archive_index(backend._db_path):
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-        initialize_active_archive_root(archive_root)
+    # Existing tier files do not prove format lineage; admit the root through
+    # its marker before constructing sync or async connections.
+    initialize_active_archive_root(archive_root)
     if backend._db_path.exists():
         backend._db_path.chmod(0o600)
 

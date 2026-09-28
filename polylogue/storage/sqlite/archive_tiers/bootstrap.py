@@ -1210,7 +1210,7 @@ def open_initialized_tier_connection(
             # Performance only: the redundant whole-tier DDL goes, the identity
             # policy this route has always applied stays. See
             # converge_same_version_tier on why the two are separable.
-            converge_same_version_tier(conn, tier, derived_identity="stamp")
+            converge_same_version_tier(conn, tier, derived_identity="verify")
         else:
             initialize_archive_tier(conn, tier)
         assert_tier_schema_supported(conn, path, tier)
