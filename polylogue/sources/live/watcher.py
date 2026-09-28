@@ -1223,11 +1223,11 @@ class LiveWatcher:
         """
         from polylogue.core.degraded import is_fully_degraded
 
-        if not is_fully_degraded():
-            # A degraded batch returns its skip metrics without the gate.
-            self._batch_processor.require_cursor_authority(paths)
-        async with self._ingest_lock:
-            try:
+        try:
+            if not is_fully_degraded():
+                # A degraded batch returns its skip metrics without the gate.
+                self._batch_processor.require_cursor_authority(paths)
+            async with self._ingest_lock:
                 return await self._batch_processor.ingest_files(
                     paths,
                     queued_file_count=queued_file_count,
@@ -1235,9 +1235,10 @@ class LiveWatcher:
                     max_pass_seconds=_LIVE_INGEST_MAX_PASS_SECONDS,
                     whole_archive_convergence=whole_archive_convergence,
                 )
-            finally:
-                # A lookahead belongs to the batch it was offered beside.
-                self._batch_processor.drop_parse_lookahead()
+        finally:
+            # A lookahead belongs to the batch it was offered beside, including
+            # one the authority gate refused before it took the lock.
+            self._batch_processor.drop_parse_lookahead()
 
     async def _converge_embeddings_off_writer(self, paths: Sequence[Path]) -> None:
         """Converge this batch's embeddings after the ingest lease is released."""

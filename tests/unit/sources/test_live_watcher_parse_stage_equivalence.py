@@ -1110,6 +1110,58 @@ def test_a_cancelled_retained_preparation_stops_its_worker(tmp_path: Path) -> No
         pool.shutdown(wait=False, cancel_futures=True)
 
 
+def test_a_cancelled_pass_refuses_an_already_finished_preparation(tmp_path: Path) -> None:
+    """Anti-vacuity: check cancellation only after a timed-out wait and a
+    preparation that finishes within the poll is accepted after cancel."""
+    from concurrent.futures import Future
+
+    from polylogue.core.compute_cancel import compute_cancel
+    from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
+    from polylogue.storage.derived import raw as raw_derivation
+
+    finished: Future[str] = Future()
+    finished.set_result("prepared")
+    cancelled = threading.Event()
+    cancelled.set()
+    pool = ProcessPoolExecutor(max_workers=1)
+    token = compute_cancel.set(cancelled)
+    try:
+        with pytest.raises(RetainedPreparationRetryableError, match="cancelled"):
+            raw_derivation._await_reporting_stalls(finished, subject="raw example", pool=pool)
+    finally:
+        compute_cancel.reset(token)
+        pool.shutdown(wait=False)
+    assert raw_derivation._await_reporting_stalls(finished, subject="raw example", pool=pool) == "prepared"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_batch_drops_its_lookahead_offer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: drop the offer only inside the locked ingest and a batch
+    the authority gate refuses leaves its lookahead for the next batch."""
+    (path,) = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    stage = LiveParseStage(max_workers=1)
+    watcher = LiveWatcher(
+        Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
+        (WatchSource(name="codex", root=path.parent),),
+        cursor=CursorStore(archive_root / "index.db"),
+        parse_stage=stage,
+    )
+
+    def refuse(_paths: object) -> None:
+        raise RuntimeError("cursor authority refused")
+
+    monkeypatch.setattr(watcher._batch_processor, "require_cursor_authority", refuse)
+    try:
+        watcher.offer_parse_lookahead([path], source_name="codex")
+        with pytest.raises(RuntimeError, match="refused"):
+            await watcher._ingest_files([path])
+        assert watcher._batch_processor._parse_lookahead is None
+    finally:
+        stage.shutdown()
+
+
 def test_a_stalled_read_ahead_cannot_wedge_required_work(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Unclaimed read-ahead holding the byte budget is preempted, then reaped.
 
@@ -1752,13 +1804,26 @@ def test_path_preparation_refuses_source_changed_after_worker_seal(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_a_warm_cancelled_during_reconciliation_installs_no_prepared_write(tmp_path: Path) -> None:
-    """A reconciliation that finishes after cancellation is closed, not installed.
+async def test_a_warm_cancelled_during_reconciliation_installs_no_prepared_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reconciliation cancelled mid-carrier stops and installs nothing.
 
     Anti-vacuity: install every finished reconciliation regardless of the
     event and the result carries the prepared write built from the snapshot
-    the cancelled warm pinned.
+    the cancelled warm pinned; check the event only before the carrier and
+    the replacement write is still built.
     """
+    import polylogue.storage.sqlite.archive_tiers.write as archive_write
+
+    built: list[object] = []
+    original_prepare = archive_write.prepare_session_write
+
+    def recording_prepare(*args: object, **kwargs: object) -> object:
+        built.append(args)
+        return original_prepare(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(archive_write, "prepare_session_write", recording_prepare)
     archive_root = tmp_path / "archive"
     path = _write_fixture_corpus(tmp_path / "sessions", count=1)[0]
     await _ingest(archive_root, [path], parse_stage=None)
@@ -1781,6 +1846,7 @@ async def test_a_warm_cancelled_during_reconciliation_installs_no_prepared_write
         kept = stage._path_results[str(path)]
         assert kept.error is None
         assert kept.prepared_writes == ()
+        assert built == []
     finally:
         stage.shutdown()
 

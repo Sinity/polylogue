@@ -1054,6 +1054,12 @@ class LiveParseStage:
                         bytes.fromhex(result.blob_hash),
                     )
                     for session in result.iter_sessions():
+                        if cancelled is not None and cancelled.is_set():
+                            # Cancelled mid-carrier: nothing from this
+                            # snapshot is installed, so stop here.
+                            for partial in writes:
+                                partial.close()
+                            return result, frozenset()
                         session_id = archive_session_id(
                             origin_from_provider(session.source_name).value,
                             session.provider_session_id,

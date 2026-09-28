@@ -1037,18 +1037,27 @@ def _await_reporting_stalls(future: Future[T], *, subject: str, pool: ProcessPoo
     cancelled = compute_cancel.get()
     window = _RETAINED_PREPARATION_STALL_REPORT_SECONDS
     step = window if cancelled is None else min(window, _RETAINED_PREPARATION_CANCEL_POLL_SECONDS)
+
+    def refuse_if_cancelled() -> None:
+        if cancelled is not None and cancelled.is_set():
+            terminate_process_pool(pool)
+            raise RetainedPreparationRetryableError(f"retained preparation cancelled for {subject}")
+
     waited = 0.0
     unreported = 0.0
     while True:
+        # Checked before each wait and before a finished result is accepted,
+        # so a run of fast preparations cannot carry a cancelled pass on.
+        refuse_if_cancelled()
         try:
-            return future.result(timeout=step)
+            result = future.result(timeout=step)
         except TimeoutError:
             if future.done():
                 # The worker itself raised TimeoutError: a result, not a wait.
                 raise
-        if cancelled is not None and cancelled.is_set():
-            terminate_process_pool(pool)
-            raise RetainedPreparationRetryableError(f"retained preparation cancelled for {subject}")
+        else:
+            refuse_if_cancelled()
+            return result
         waited += step
         unreported += step
         if unreported >= window:
