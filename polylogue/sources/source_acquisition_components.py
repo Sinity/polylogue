@@ -139,6 +139,12 @@ class SplitPayloadBuffer:
             content_identity=identity,
         )
 
+    def add_grouped(self, provider: Provider, payload_bytes: bytes) -> SerializedSplitPayload | None:
+        """A grouped-provider element observed after the split; it takes the next index, emitted or refused."""
+        index = self._next_source_index
+        self._next_source_index += 1
+        return self.element(provider, payload_bytes, index)
+
     def add(self, provider: Provider, payload_bytes: bytes) -> tuple[SerializedSplitPayload, ...]:
         if self.did_split:
             payload = self.element(provider, payload_bytes, self._next_source_index)
@@ -553,8 +559,16 @@ def stream_preserved_zip_entry_raw_data(
         )
     # Derive structural identity from the published bytes. The identity
     # streams, so this re-read holds one window, never the whole member.
-    with context.blob_store.open(blob_hash) as stored_handle:
-        content_identity = stream_payload_content_identity(stored_handle)
+    try:
+        with context.blob_store.open(blob_hash) as stored_handle:
+            content_identity = stream_payload_content_identity(stored_handle)
+    except ContentIdentityRefusal:
+        # The refused member has no raw record, so a queued publication of
+        # its bytes would be reserved with nothing to reference it.
+        discard_queued = getattr(context.blob_store, "discard_queued", None)
+        if discard_queued is not None:
+            discard_queued(blob_hash)
+        raise
     from polylogue.storage.blob_publication import publication_receipt_id
 
     publication_id = publication_receipt_id(context.blob_store, blob_hash)
@@ -615,9 +629,7 @@ def _iter_zip_entry_split_payloads(
                 # emitted split siblings remain valid and must not be rolled
                 # back.
                 if split_buffer.did_split:
-                    grouped = split_buffer.element(
-                        detected.provider, json_dumps_bytes(detected.payload), split_buffer.pending_index
-                    )
+                    grouped = split_buffer.add_grouped(detected.provider, json_dumps_bytes(detected.payload))
                     if grouped is not None:
                         yield grouped
                     continue
@@ -686,9 +698,16 @@ def replay_zip_entry_acquisition_payloads(
 
     state = _ZipEntrySplitState()
     split_payloads = _iter_zip_entry_split_payloads(zf, context, state)
-    for payload in split_payloads:
-        state.did_split = True
-        yield payload
+    try:
+        for payload in split_payloads:
+            state.did_split = True
+            yield payload
+    except ContentIdentityRefusal:
+        # A refused element is the member's recorded gap; every element that
+        # was acquired beside it stays a replay candidate.
+        if not state.did_split:
+            raise
+        return
     if state.did_split:
         return
 

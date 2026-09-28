@@ -298,6 +298,9 @@ class _SpilledStrings:
         self._keys[marker] = key
         return marker.encode("ascii")
 
+    def is_refused_key(self, key: str) -> bool:
+        return key.startswith(f"polylogue-refused-key-{self._nonce}-")
+
     def take_key(self, marker: str) -> str:
         return self._keys.pop(marker, marker) if self._keys else marker
 
@@ -935,7 +938,7 @@ class _Frame:
     not a hasher and a member table each.
     """
 
-    __slots__ = ("depth", "entries", "is_map", "key", "outer", "poisoned", "refused", "value")
+    __slots__ = ("depth", "entries", "is_map", "key", "outer", "poisoned", "refused", "refused_key", "value")
 
     def __init__(self, *, is_map: bool, outer: _Sink | None) -> None:
         self.is_map = is_map
@@ -951,6 +954,9 @@ class _Frame:
         self.poisoned = False
         #: An element was refused (arrays only).
         self.refused = False
+        #: A key past the limit (objects only): the object is refused if it
+        #: survives, as a refused value is.
+        self.refused_key = False
         #: Arrays in this run (arrays only).
         self.depth = 1
 
@@ -1016,6 +1022,8 @@ def _stream_identity_into(events: Iterator[tuple[str, object]], spills: _Spilled
             top = stack[-1]
             top.key = spills.take_key(str(value))
             top.value = None
+            if spills.is_refused_key(top.key):
+                top.refused_key = True
         elif event == "start_map":
             if stack and stack[-1].is_map and stack[-1].key is None:
                 raise _NotJsonError
@@ -1038,7 +1046,7 @@ def _stream_identity_into(events: Iterator[tuple[str, object]], spills: _Spilled
                 if entries is not None and entries.poisoned():
                     finished_value(poisoned=True)
                     continue
-                if entries is not None and entries.refused():
+                if frame.refused_key or (entries is not None and entries.refused()):
                     finished_value(refused=True)
                     continue
                 sink = current()
@@ -1171,12 +1179,12 @@ def _identity_as(handle: IO[bytes], start: int, encoding: str, errors: str) -> s
             # byte still moves it to the next encoding.
             text.drain()
             raise
-        # The document is JSON, so an overlong key, or an overlong value that
-        # no later duplicate key replaced, is a real refusal.
-        if spills.key_refusal is not None:
-            raise spills.key_refusal
-        if spills.surviving_refusal and spills.value_refusal is not None:
-            raise spills.value_refusal
+        # The document is JSON, so an overlong key or value that no later
+        # duplicate key replaced is a real refusal.
+        if spills.surviving_refusal:
+            refusal = spills.value_refusal or spills.key_refusal
+            assert refusal is not None
+            raise refusal
         return digest
     finally:
         spills.close()

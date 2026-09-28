@@ -10,6 +10,7 @@ import pytest
 
 from polylogue.config import Source
 from polylogue.core import content_identity
+from polylogue.core.enums import Provider
 from polylogue.sources.source_acquisition import iter_source_raw_data
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
@@ -154,3 +155,69 @@ def test_a_refused_split_element_does_not_drop_the_elements_after_it(
     assert any(
         failure["path"] == f"{zip_path}:conversations.json" and "object key" in failure["error"] for failure in failures
     )
+
+    # Replay keeps every acquired element as a candidate beside the gap.
+    from polylogue.sources.source_acquisition_components import (
+        ZipEntryReadContext,
+        replay_zip_entry_acquisition_payloads,
+    )
+
+    with zipfile.ZipFile(zip_path) as archive:
+        context = ZipEntryReadContext(
+            source=Source(name="chatgpt", path=source_root),
+            zip_path=zip_path,
+            entry=archive.getinfo("conversations.json"),
+            file_mtime=None,
+            provider_hint=Provider.CHATGPT,
+            blob_store=BlobStore(tmp_path / "replay-blob"),
+        )
+        replayed = list(replay_zip_entry_acquisition_payloads(archive, context))
+    assert [payload.source_index for payload in replayed] == [0, 1, 3]
+
+
+def test_a_refused_grouped_element_still_takes_its_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: leave the index unadvanced for a refused grouped element
+    and the next session is stored at the refused element's coordinate."""
+    from polylogue.sources.source_acquisition_components import SplitPayloadBuffer
+
+    monkeypatch.setattr(content_identity, "_SPILL_STRING_BYTES", 16)
+    monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 64)
+    buffer = SplitPayloadBuffer()
+    emitted = [*buffer.add(Provider.CHATGPT, b'{"id": "a"}'), *buffer.add(Provider.CHATGPT, b'{"id": "b"}')]
+    assert buffer.add_grouped(Provider.CHATGPT, b'{"' + b"k" * 200 + b'": 1}') is None
+    emitted.extend(buffer.add(Provider.CHATGPT, b'{"id": "c"}'))
+    assert [payload.source_index for payload in emitted] == [0, 1, 3]
+    assert len(buffer.refusals) == 1
+
+
+def test_a_refused_preserved_member_leaves_no_queued_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: propagate the refusal without discarding the queued blob
+    and the next flush reserves bytes no raw record references."""
+    from polylogue.sources.source_acquisition_components import (
+        ZipEntryReadContext,
+        stream_preserved_zip_entry_raw_data,
+    )
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+    monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 64)
+    zip_path = tmp_path / "export.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("a.json", b'{"n": 1.' + b"2" * 200 + b"}")
+    publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+    with zipfile.ZipFile(zip_path) as archive, pytest.raises(content_identity.ContentIdentityRefusal):
+        stream_preserved_zip_entry_raw_data(
+            archive,
+            ZipEntryReadContext(
+                source=Source(name="chatgpt", path=tmp_path),
+                zip_path=zip_path,
+                entry=archive.getinfo("a.json"),
+                file_mtime=None,
+                provider_hint=Provider.CHATGPT,
+                blob_store=publisher,
+            ),
+            provider_hint=Provider.CHATGPT,
+        )
+    assert not publisher.has_pending
+    assert not any(path.is_file() for path in (tmp_path / "blob").rglob("*"))

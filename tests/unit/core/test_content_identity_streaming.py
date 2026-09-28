@@ -491,3 +491,22 @@ def test_a_duplicate_key_drops_a_discarded_refused_member(monkeypatch: pytest.Mo
             payload_content_identity(b'{"a":1,"a":' + overlong + b"}")
         with pytest.raises(content_identity.ContentIdentityRefusal):
             payload_content_identity(b'{"a":[1,' + overlong + b'],"b":2}')
+
+
+def test_a_duplicate_key_drops_an_object_holding_a_refused_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An overlong key refuses the object that holds it, not the document.
+
+    Anti-vacuity: keep key refusals document-wide and ``{"a":{<overlong key>:1},"a":1}``
+    is refused instead of receiving the identity of ``{"a":1}``.
+    """
+    from polylogue.core import content_identity
+
+    monkeypatch.setattr(content_identity, "_SPILL_STRING_BYTES", 16)
+    monkeypatch.setattr(content_identity, "_STREAM_READ_BYTES", 8)
+    monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 32)
+    inner = b'{"' + b"k" * 64 + b'":1}'
+    assert payload_content_identity(b'{"a":' + inner + b',"a":1}') == payload_content_identity(b'{"a":1}')
+    for survivor in (inner, b'{"a":1,"a":' + inner + b"}"):
+        with pytest.raises(content_identity.ContentIdentityRefusal) as refusal:
+            payload_content_identity(survivor)
+        assert refusal.value.token == "object key"
