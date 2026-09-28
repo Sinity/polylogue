@@ -28,7 +28,7 @@ from polylogue.analysis.archive import (
     UsageTimelineInsightQuery,
 )
 from polylogue.analysis.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
-from polylogue.analysis.cost_enrichment import enrich_session_cost_insights
+from polylogue.analysis.cost_enrichment import enrich_session_cost_insight, enrich_session_cost_insights
 from polylogue.analysis.lineage_graph import CompactLineageGraph
 from polylogue.analysis.tag_rollups import synthesize_origin_tag_rollups
 from polylogue.analysis.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
@@ -118,41 +118,27 @@ if TYPE_CHECKING:
         ) -> list[ArchiveDebtInsight]: ...
 
 
-#: Candidate sessions read per archive page while ``status``/``model`` filters
-#: are evaluated on enriched estimates. A pacing bound only: pages are read
-#: until the requested page is full or the matched scope ends.
-SESSION_COST_FILTER_PAGE = 2_000
-
-
 def _session_cost_insight_page(archive: ArchiveStore, request: SessionCostInsightQuery) -> list[SessionCostInsight]:
     """One page of enriched session cost insights, filtered before the page cut.
 
     ``status`` and ``model`` are decided on the *enriched* estimate, so neither
     can be pushed into the archive query: filtering an already-cut page would
     answer "of the newest N, the matching ones". The matched scope is scanned
-    page by page until the requested page is full.
+    in one forward pass until the requested page is full.
     """
 
-    since_ms = _archive_query_date_ms("since", request.since)
-    until_ms = _archive_query_date_ms("until", request.until)
-
-    def fetch(limit: int | None, offset: int) -> list[SessionCostInsight]:
-        return archive.list_session_cost_insights(
+    def scan(*, limit: int | None = None, offset: int = 0) -> Iterator[SessionCostInsight]:
+        return archive.iter_session_cost_insights(
             session_id=request.session_id,
             origin=request.origin,
-            status=None,
-            model=None,
-            since_ms=since_ms,
-            until_ms=until_ms,
+            since_ms=_archive_query_date_ms("since", request.since),
+            until_ms=_archive_query_date_ms("until", request.until),
             limit=limit,
             offset=offset,
         )
 
     if request.status is None and request.model is None:
-        return enrich_session_cost_insights(
-            archive,
-            fetch(request.limit, request.offset),
-        )
+        return enrich_session_cost_insights(archive, list(scan(limit=request.limit, offset=request.offset)))
 
     def matches(insight: SessionCostInsight) -> bool:
         if request.status is not None and insight.estimate.status != request.status:
@@ -162,20 +148,16 @@ def _session_cost_insight_page(archive: ArchiveStore, request: SessionCostInsigh
             insight.estimate.model_name,
         }
 
-    def scan() -> Iterator[SessionCostInsight]:
-        page_offset = 0
-        while True:
-            rows = fetch(SESSION_COST_FILTER_PAGE, page_offset)
-            yield from (insight for insight in enrich_session_cost_insights(archive, rows) if matches(insight))
-            if len(rows) < SESSION_COST_FILTER_PAGE:
-                return
-            page_offset += len(rows)
-
-    # ``islice`` skips the offset without retaining it and stops the scan as
-    # soon as the page is full.
+    # One forward scan of the matched scope: ``islice`` skips the offset
+    # without retaining it and stops as soon as the page is full.
+    matching = (
+        enriched
+        for enriched in (enrich_session_cost_insight(archive, insight) for insight in scan())
+        if matches(enriched)
+    )
     start = max(int(request.offset), 0)
     stop = None if request.limit is None else start + max(int(request.limit), 0)
-    return list(itertools.islice(scan(), start, stop))
+    return list(itertools.islice(matching, start, stop))
 
 
 class _RepositorySurface(Protocol):

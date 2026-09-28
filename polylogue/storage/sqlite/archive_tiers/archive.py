@@ -657,10 +657,13 @@ class _InactiveCandidateBlobPublisher(ArchiveBlobPublisher):
         return None
 
 
-#: Candidate sessions ``list_session_cost_insights`` reads per SQL page when a
-#: ``status`` filter must be evaluated before the page is cut. A pacing bound
-#: only: pages are read until the requested page is full or the scope ends.
-COST_STATUS_FILTER_PAGE = 2_000
+#: Rows ``iter_summaries``/``iter_search_summaries`` fetch per batch from their
+#: single cursor. A memory bound only: ``limit=None`` streams the whole scope.
+SUMMARY_FETCH_BATCH = 500
+
+#: Rows ``iter_session_cost_insights`` fetches and prices per batch from its
+#: single cursor. A memory bound only: the whole matched scope is streamed.
+COST_INSIGHT_FETCH_BATCH = 500
 
 
 def _assert_active_cold_build_index_only(index_path: Path, *, durable_paths: tuple[Path, ...]) -> None:
@@ -3080,42 +3083,32 @@ class ArchiveStore:
             thread=payload,
         )
 
-    def list_session_cost_insights(
+    def iter_session_cost_insights(
         self,
         *,
         session_id: str | None = None,
         origin: str | None = None,
-        status: str | None = None,
-        model: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
-        limit: int | None = 50,
+        limit: int | None = None,
         offset: int = 0,
-    ) -> list[SessionCostInsight]:
-        """List archive session cost insights from sessions plus session_profiles.
+    ) -> Iterator[SessionCostInsight]:
+        """Stream archive session cost insights, newest first, over one cursor.
 
-        ``model`` has no SQL reduction on this route and is refused rather than
-        silently ignored. ``status`` is derived per row after the query, so it
-        is evaluated over the whole matched scope *before* the page is cut:
-        post-filtering a page would answer "of the newest N, the matching ones"
-        while reporting it as "the newest N matching".
+        Rows are fetched and priced in batches of
+        :data:`COST_INSIGHT_FETCH_BATCH`, so a caller that filters per row
+        scans the matched scope once with bounded memory.
         """
-        if model is not None:
-            raise UnsupportedInsightFilterError(
-                filter_name="model",
-                route="list_session_cost_insights",
-                detail="the route selects one dominant model per session and cannot filter on it",
-            )
         where: list[str] = []
         params: list[object] = []
         if session_id is not None:
             try:
                 resolved_session_id = self.resolve_session_id(session_id)
             except KeyError:
-                # Unknown session id: no cost insight exists. Returning [] lets
-                # the daemon cost endpoint run its existence check and answer
-                # 404 instead of surfacing this as an opaque 500.
-                return []
+                # Unknown session id: no cost insight exists. An empty stream
+                # lets the daemon cost endpoint run its existence check and
+                # answer 404 instead of surfacing this as an opaque 500.
+                return
             where.append("s.session_id = ?")
             params.append(resolved_session_id)
         origin = _origin_value(origin)
@@ -3148,39 +3141,56 @@ class ArchiveStore:
             {clause}
             ORDER BY s.sort_key_ms DESC, s.session_id
             """
-
-        def insights_for(rows: list[sqlite3.Row]) -> list[SessionCostInsight]:
+        if limit is not None or offset:
+            base_sql += " LIMIT ? OFFSET ?"
+            params.extend([-1 if limit is None else max(int(limit), 0), max(int(offset), 0)])
+        cursor = self._conn.execute(base_sql, tuple(params))
+        while rows := cursor.fetchmany(COST_INSIGHT_FETCH_BATCH):
             canonical = session_usage_costs_for_connection(self._conn, [str(row["session_id"]) for row in rows])
-            return [
-                _session_cost_insight_from_archive_row(self._conn, row, canonical.get(str(row["session_id"])))
-                for row in rows
-            ]
+            for row in rows:
+                yield _session_cost_insight_from_archive_row(self._conn, row, canonical.get(str(row["session_id"])))
 
-        start = max(int(offset), 0)
+    def list_session_cost_insights(
+        self,
+        *,
+        session_id: str | None = None,
+        origin: str | None = None,
+        status: str | None = None,
+        model: str | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        limit: int | None = 50,
+        offset: int = 0,
+    ) -> list[SessionCostInsight]:
+        """List archive session cost insights from sessions plus session_profiles.
+
+        ``model`` has no SQL reduction on this route and is refused rather than
+        silently ignored. ``status`` is derived per row after the query, so it
+        is evaluated over the whole matched scope *before* the page is cut:
+        post-filtering a page would answer "of the newest N, the matching ones"
+        while reporting it as "the newest N matching".
+        """
+        if model is not None:
+            raise UnsupportedInsightFilterError(
+                filter_name="model",
+                route="list_session_cost_insights",
+                detail="the route selects one dominant model per session and cannot filter on it",
+            )
+
+        def scan(*, limit: int | None = None, offset: int = 0) -> Iterator[SessionCostInsight]:
+            return self.iter_session_cost_insights(
+                session_id=session_id, origin=origin, since_ms=since_ms, until_ms=until_ms, limit=limit, offset=offset
+            )
+
         if status is None:
-            if limit is None:
-                return insights_for(self._conn.execute(base_sql, tuple(params)).fetchall())
-            rows = self._conn.execute(base_sql + " LIMIT ? OFFSET ?", (*params, max(int(limit), 0), start)).fetchall()
-            return insights_for(rows)
-
+            return list(scan(limit=limit, offset=offset))
         # A ``status`` filter is decided per row, so the SQL page cannot be cut
-        # first: scan the matched scope page by page and stop once the
-        # requested page is full.
-        def scan() -> Iterator[SessionCostInsight]:
-            page_offset = 0
-            while True:
-                rows = self._conn.execute(
-                    base_sql + " LIMIT ? OFFSET ?", (*params, COST_STATUS_FILTER_PAGE, page_offset)
-                ).fetchall()
-                yield from (insight for insight in insights_for(rows) if insight.estimate.status == status)
-                if len(rows) < COST_STATUS_FILTER_PAGE:
-                    return
-                page_offset += len(rows)
-
-        # ``islice`` skips the offset without retaining it and stops the scan
-        # as soon as the page is full.
+        # first: one forward scan of the matched scope, where ``islice`` skips
+        # the offset without retaining it and stops once the page is full.
+        start = max(int(offset), 0)
         stop = None if limit is None else start + max(int(limit), 0)
-        return list(itertools.islice(scan(), start, stop))
+        matching = (insight for insight in scan() if insight.estimate.status == status)
+        return list(itertools.islice(matching, start, stop))
 
     def list_cost_rollup_insights(
         self,
@@ -6245,10 +6255,10 @@ class ArchiveStore:
             ),
         )
 
-    def list_summaries(
+    def iter_summaries(
         self,
         *,
-        limit: int = 50,
+        limit: int | None = None,
         offset: int = 0,
         origin: str | None = None,
         origins: tuple[str, ...] = (),
@@ -6285,8 +6295,12 @@ class ArchiveStore:
         sample: bool = False,
         sort: str | None = None,
         reverse: bool = False,
-    ) -> list[ArchiveSessionSummary]:
-        """List session summaries ordered like the normal archive recency view."""
+    ) -> Iterator[ArchiveSessionSummary]:
+        """Stream session summaries ordered like the normal archive recency view.
+
+        One cursor serves the whole read, fetched in batches of
+        :data:`SUMMARY_FETCH_BATCH`; ``limit=None`` streams the matched scope.
+        """
         where, params = _session_filter_clause(
             "s",
             origin=origin,
@@ -6326,12 +6340,12 @@ class ArchiveStore:
             try:
                 resolved_id = self.resolve_session_id(session_id)
             except KeyError:
-                return []
+                return
             where = f"{where} AND s.session_id = ?" if where else "WHERE s.session_id = ?"
             params.append(resolved_id)
         order_by = _summary_order_by(sample=sample, sort=sort, reverse=reverse)
-        params.extend([limit, 0 if sample else offset])
-        rows = self._conn.execute(
+        params.extend([-1 if limit is None else limit, 0 if sample else offset])
+        cursor = self._conn.execute(
             f"""
             SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
                    s.parent_session_id, s.branch_type,
@@ -6371,14 +6385,21 @@ class ArchiveStore:
             LIMIT ? OFFSET ?
             """,
             params,
-        ).fetchall()
-        return [_summary_from_row(row, self._conn) for row in rows]
+        )
+        while rows := cursor.fetchmany(SUMMARY_FETCH_BATCH):
+            for row in rows:
+                yield _summary_from_row(row, self._conn)
 
-    def search_summaries(
+    def list_summaries(self, *, limit: int = 50, **filters: Any) -> list[ArchiveSessionSummary]:
+        """List one page of session summaries; see :meth:`iter_summaries`."""
+
+        return list(self.iter_summaries(limit=limit, **filters))
+
+    def iter_search_summaries(
         self,
         query: str,
         *,
-        limit: int = 20,
+        limit: int | None = None,
         offset: int = 0,
         sort: str | None = None,
         reverse: bool = False,
@@ -6414,14 +6435,18 @@ class ArchiveStore:
         since_session_id: str | None = None,
         boolean_predicate: QueryPredicate | None = None,
         root: bool | None = None,
-    ) -> list[ArchiveSessionSearchHit]:
-        """Search archive block text and return session-level hits with snippets."""
+    ) -> Iterator[ArchiveSessionSearchHit]:
+        """Stream block-text search hits with snippets over one cursor.
+
+        ``limit=None`` streams every hit; rows are fetched in batches of
+        :data:`SUMMARY_FETCH_BATCH`.
+        """
         match_query = normalize_fts5_query(query)
         if match_query is None:
             # Empty / whitespace / asterisk-only query: no FTS expression to
             # run. Mirror the read model lexical path and return no hits rather
             # than raising ``fts5: syntax error``.
-            return []
+            return
         # A real query needs the block FTS index. Surface a degraded index as a
         # sanitized DatabaseError (→ 503 "Search index") instead of a raw
         # ``no such table`` 500 or a misleading empty-result 200.
@@ -6474,8 +6499,8 @@ class ArchiveStore:
             filter_params.append(session_id)
         order_by = _search_order_by(sort=sort, reverse=reverse)
         params: list[object] = [match_query, *filter_params]
-        params.extend([limit, offset])
-        rows = self._conn.execute(
+        params.extend([-1 if limit is None else limit, offset])
+        cursor = self._conn.execute(
             f"""
             SELECT b.block_id, b.message_id, b.session_id, s.origin, s.native_id, s.title,
                    b.search_text AS fallback_text,
@@ -6490,23 +6515,31 @@ class ArchiveStore:
             LIMIT ? OFFSET ?
             """,
             params,
-        ).fetchall()
-        return [
-            ArchiveSessionSearchHit(
-                rank=index,
-                session_id=str(row["session_id"]),
-                block_id=str(row["block_id"]),
-                message_id=str(row["message_id"]),
-                origin=str(row["origin"]),
-                title=str(row["title"]) if row["title"] is not None else None,
-                snippet=_highlight_search_snippet(
-                    str(row["snippet"] or ""),
-                    fallback=str(row["fallback_text"] or ""),
-                    query=match_query,
-                ),
-            )
-            for index, row in enumerate(rows, start=offset + 1)
-        ]
+        )
+        index = offset
+        while rows := cursor.fetchmany(SUMMARY_FETCH_BATCH):
+            for row in rows:
+                index += 1
+                yield (
+                    ArchiveSessionSearchHit(
+                        rank=index,
+                        session_id=str(row["session_id"]),
+                        block_id=str(row["block_id"]),
+                        message_id=str(row["message_id"]),
+                        origin=str(row["origin"]),
+                        title=str(row["title"]) if row["title"] is not None else None,
+                        snippet=_highlight_search_snippet(
+                            str(row["snippet"] or ""),
+                            fallback=str(row["fallback_text"] or ""),
+                            query=match_query,
+                        ),
+                    )
+                )
+
+    def search_summaries(self, query: str, *, limit: int = 20, **filters: Any) -> list[ArchiveSessionSearchHit]:
+        """Return one page of block-text search hits; see :meth:`iter_search_summaries`."""
+
+        return list(self.iter_search_summaries(query, limit=limit, **filters))
 
     def count_search_sessions(
         self,

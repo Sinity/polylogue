@@ -849,15 +849,15 @@ def build_facets_response(
     )
 
 
-#: Sessions read per page while a facet aggregation walks its scope. A pacing
-#: bound only: every page is read, so the denominator is the whole scope.
-#: ``spec.limit`` is deliberately *not* an aggregate input (a page size must
-#: never become the denominator).
-FACET_SCOPE_PAGE = 10_000
-
-
 def _iter_facet_scope(archive: Any, spec: SessionQuerySpec | None) -> Iterator[ArchiveSessionSummary]:
-    """Every session in the matched scope, read page by page."""
+    """Every session in the matched scope, streamed in one forward pass.
+
+    Offset paging over an ordered/grouped scan redoes O(N) work per page
+    (page k re-walks all k-1 earlier pages), so a facet aggregation over a
+    large archive used to approach the read deadline. Each branch below now
+    drives a single cursor -- ``archive.iter_summaries``/``iter_search_summaries``
+    with ``limit=None`` -- instead of paging with a growing ``offset``.
+    """
     from dataclasses import replace
 
     # Order and sampling are display choices like ``limit``; a sampled read
@@ -874,22 +874,19 @@ def _iter_facet_scope(archive: Any, spec: SessionQuerySpec | None) -> Iterator[A
         )
         yield from _iter_post_filtered_summaries(archive, scope_spec, candidates, needed=None)
         return
-    offset = 0
-    while True:
-        if scope_spec is None:
-            page = cast(list[ArchiveSessionSummary], archive.list_summaries(limit=FACET_SCOPE_PAGE, offset=offset))
-        else:
-            page = _archive_list_summaries_for_spec(
-                archive,
-                scope_spec,
-                default_limit=FACET_SCOPE_PAGE,
-                limit=FACET_SCOPE_PAGE,
-                offset=offset,
-            )
-        yield from page
-        if len(page) < FACET_SCOPE_PAGE:
-            return
-        offset += len(page)
+    if scope_spec is None:
+        yield from cast(Iterator[ArchiveSessionSummary], archive.iter_summaries(limit=None))
+        return
+    query_text = _archive_text_query(scope_spec)
+    query_kwargs = _archive_query_kwargs(scope_spec, default_limit=None)
+    query_kwargs["limit"] = None
+    query_kwargs.pop("offset", None)
+    if query_text is not None:
+        query_kwargs.pop("sample", None)
+        for hit in cast(Iterator[Any], archive.iter_search_summaries(query_text, **query_kwargs)):
+            yield archive.read_summary(hit.session_id)
+        return
+    yield from cast(Iterator[ArchiveSessionSummary], archive.iter_summaries(**query_kwargs))
 
 
 def _archive_facet_buckets(
