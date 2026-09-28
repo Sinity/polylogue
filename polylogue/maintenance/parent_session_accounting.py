@@ -349,7 +349,7 @@ def audit_parent_session_accounting(
                    r.parsed_at_ms, r.parse_error, r.validation_status,
                    r.revision_authority,
                    (SELECT a.artifact_kind FROM raw_artifacts a WHERE a.raw_id = r.raw_id ORDER BY a.artifact_id LIMIT 1) AS artifact_kind,
-                   (SELECT a.parse_as_session FROM raw_artifacts a WHERE a.raw_id = r.raw_id ORDER BY a.artifact_id LIMIT 1) AS parse_as_session
+                   (SELECT CASE WHEN SUM(a.parse_as_session IS NULL) > 0 THEN NULL ELSE MAX(a.parse_as_session) END FROM raw_artifacts a WHERE a.raw_id = r.raw_id) AS parse_as_session
             FROM raw_sessions AS r
             WHERE r.origin = ? AND (r.native_id = ? OR r.logical_source_key = ?)
             ORDER BY r.raw_id
@@ -431,7 +431,7 @@ def audit_parent_session_accounting(
                r.blob_hash, r.parsed_at_ms, r.parse_error, r.validation_status,
                r.revision_authority,
                    (SELECT a.artifact_kind FROM raw_artifacts a WHERE a.raw_id = r.raw_id ORDER BY a.artifact_id LIMIT 1) AS artifact_kind,
-                   (SELECT a.parse_as_session FROM raw_artifacts a WHERE a.raw_id = r.raw_id ORDER BY a.artifact_id LIMIT 1) AS parse_as_session
+                   (SELECT CASE WHEN SUM(a.parse_as_session IS NULL) > 0 THEN NULL ELSE MAX(a.parse_as_session) END FROM raw_artifacts a WHERE a.raw_id = r.raw_id) AS parse_as_session
         FROM raw_sessions AS r
         WHERE r.origin IN ({placeholders})
         ORDER BY r.origin, r.raw_id

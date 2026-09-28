@@ -526,6 +526,10 @@ def audit_chatgpt_content_conservation(
             if len(unreadable_raws) < sample_limit:
                 unreadable_raws.append(str(raw_id))
             continue
+        # The blob was read: count it as readable before classifying its
+        # contents, so malformed JSON is reported as such, not as unreadable.
+        blobs_readable += 1
+        bytes_scanned += len(blob)
         try:
             payload = json.loads(blob)
         except (ValueError, TypeError):
@@ -533,8 +537,6 @@ def audit_chatgpt_content_conservation(
             if len(unreadable_raws) < sample_limit:
                 unreadable_raws.append(str(raw_id))
             continue
-        blobs_readable += 1
-        bytes_scanned += len(blob)
         documents = lower_chatgpt_documents(payload, str(raw_id))
         if not documents:
             unsupported_envelope_classes["unsupported_or_malformed"] += 1
