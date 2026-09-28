@@ -146,6 +146,14 @@ def admit_affected_selection(
                 f"cap of {AFFECTED_MAX_SELECTED_TESTS}; no partial prefix is allowed"
             ),
         )
+    if estimated_seconds is None:
+        return AffectedAdmission(
+            status="unknown",
+            selected_count=selected_count,
+            estimated_seconds=None,
+            unrecorded_tests=unrecorded_tests,
+            reason="affected selection runtime estimate is unknown; refusing an unbounded pytest launch",
+        )
     if estimated_seconds is not None and estimated_seconds > AFFECTED_MAX_ESTIMATED_SECONDS:
         return AffectedAdmission(
             status="refused",

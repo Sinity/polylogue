@@ -192,3 +192,16 @@ def test_route_emits_json_error_payload_for_refusals_in_json_mode(
     assert exit_code == 1
     payload = json.loads(output.getvalue())
     assert "simulated inventory failure" in payload["refused"]
+
+
+def test_json_refusal_payload_bounds_untrusted_error_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: oversized exception text cannot make an unbounded receipt."""
+
+    def _explode() -> SeededArchiveReachabilityInventory:
+        raise RuntimeError("x" * 5_000)
+
+    monkeypatch.setattr(command, "current_seeded_archive_reachability", _explode)
+    output = io.StringIO()
+    assert command.main(["--cache-root", str(tmp_path), "--json"], stdout=output) == 1
+    payload = json.loads(output.getvalue())
+    assert len(payload["refused"]) == 2_048

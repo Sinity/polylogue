@@ -189,7 +189,7 @@ def _literal_string_sequence(expression: ast.AST, values: Mapping[str, tuple[str
 _BINDING_NODES = (ast.Assign, ast.AnnAssign, ast.For, ast.AsyncFor)
 
 
-def string_values(tree: ast.Module) -> dict[str, tuple[str, ...]]:
+def string_values(tree: ast.Module, *, scope: str | None = None) -> dict[str, tuple[str, ...]]:
     """Resolve string-valued names to the *union* of what they can hold.
 
     The union rather than the last assignment is the load-bearing choice. A
@@ -208,9 +208,16 @@ def string_values(tree: ast.Module) -> dict[str, tuple[str, ...]]:
         if not resolved:
             return
         merged = tuple(dict.fromkeys(values.get(name, ()) + resolved))
-        values[name] = merged[:_VALUE_LIMIT]
+        sentinels = tuple(value for value in merged if value in {"", HOLE})
+        ordinary = tuple(value for value in merged if value not in {"", HOLE})
+        values[name] = tuple(dict.fromkeys((*sentinels, *ordinary[: max(0, _VALUE_LIMIT - len(sentinels))])))
 
-    bindings = [node for node in walk_module(tree) if isinstance(node, _BINDING_NODES)]
+    scopes = function_scopes(tree)
+    bindings = [
+        node
+        for node in walk_module(tree)
+        if isinstance(node, _BINDING_NODES) and (scope is None or scopes.get(node, "<module>") in {scope, "<module>"})
+    ]
     for _ in range(3):
         for node in bindings:
             if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
