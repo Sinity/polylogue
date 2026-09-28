@@ -112,11 +112,40 @@ def _session_id(value: Any) -> str:
     return str(getattr(value, "id", getattr(value, "session_id", value)))
 
 
-async def _iter_limited(messages: Iterable[Any], limit: int) -> AsyncIterator[Any]:
-    for index, message in enumerate(messages):
-        if index >= limit:
-            return
+async def _iter_messages(messages: Iterable[Any]) -> AsyncIterator[Any]:
+    for message in messages:
         yield message
+
+
+async def _session_messages(store: Any, session_id: str, page_size: int) -> AsyncIterator[Any] | None:
+    """Stream one session's messages in bounded pages until the caller stops.
+
+    The caller's bound counts text-bearing output, not raw rows, so paging
+    continues past rows it discards; ``None`` means the session is gone.
+    """
+    pager = getattr(store, "get_messages_paginated", None)
+    iterator = getattr(store, "iter_messages", None)
+    if callable(pager):
+
+        async def paged() -> AsyncIterator[Any]:
+            offset = 0
+            while True:
+                page = await pager(session_id, limit=page_size, offset=offset)
+                rows = tuple(page[0])
+                for row in rows:
+                    yield row
+                if len(rows) < page_size:
+                    return
+                offset += len(rows)
+
+        return paged()
+    if callable(iterator):
+        streamed: AsyncIterator[Any] = iterator(session_id)
+        return streamed
+    session = await store.get(session_id)
+    if session is None:
+        return None
+    return _iter_messages(getattr(session, "messages", ()))
 
 
 def _signals(context_pack: list[dict[str, object]]) -> dict[str, list[str]]:
@@ -216,6 +245,31 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
                 if lane is not None:
                     retrieval_lanes[lane] += 1
 
+    # A seed-free query still gets an independent recovery pass. This keeps an
+    # empty FTS result from being treated as proof that the topic is absent.
+    if not sessions:
+        neighbor_attempted = True
+        try:
+            recovery = await discover_neighbor_candidates(
+                store,
+                NeighborDiscoveryRequest(query=query, limit=min(request.neighbor_limit, request.max_sessions)),
+            )
+        except Exception as exc:
+            gaps.append(f"precursor recovery failed: {type(exc).__name__}")
+        else:
+            for candidate in recovery:
+                if len(sessions) >= request.max_sessions:
+                    break
+                sessions[candidate.session_id] = candidate.summary
+                evidence[candidate.session_id] = TopicPackEvidence(
+                    candidate.session_id,
+                    "precursor-recovery",
+                    {"lane": "query-neighbor", "reasons": [reason.detail for reason in candidate.reasons]},
+                )
+                for reason in candidate.reasons:
+                    if reason.kind == "content_similarity":
+                        retrieval_lanes["content"] += 1
+
     ordered = tuple(sessions.values())[: request.max_sessions]
     timeline = tuple(
         {"session_id": _session_id(item), "title": getattr(item, "title", None), "position": index}
@@ -225,20 +279,10 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
     message_count = 0
     for summary in ordered:
         sid = _session_id(summary)
-        remaining = request.max_messages - message_count
-        pager = getattr(store, "get_messages_paginated", None)
-        iterator = getattr(store, "iter_messages", None)
-        if callable(pager):
-            page = await pager(sid, limit=remaining, offset=0)
-            messages = _iter_limited(page[0], remaining)
-        elif callable(iterator):
-            messages = iterator(sid, limit=remaining)
-        else:
-            session = await store.get(sid)
-            if session is None:
-                gaps.append(f"session disappeared during read: {_session_id(summary)}")
-                continue
-            messages = _iter_limited(getattr(session, "messages", ()), remaining)
+        messages = await _session_messages(store, sid, max(1, request.max_messages - message_count))
+        if messages is None:
+            gaps.append(f"session disappeared during read: {_session_id(summary)}")
+            continue
         async for message in messages:
             if not getattr(message, "text", None):
                 continue
@@ -257,6 +301,8 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
                     )
             context_pack.append(context_item)
             message_count += 1
+            if message_count >= request.max_messages:
+                break
         if message_count >= request.max_messages:
             break
 

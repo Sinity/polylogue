@@ -1297,3 +1297,29 @@ def test_retired_maintenance_verb_fails_discovery(verb: str, cli_runner: CliRunn
 
     assert result.exit_code != 0
     assert "No such command" in result.output
+
+
+def test_blob_publication_abandonment_chunks_instead_of_refusing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: sending 257 IDs in one request is refused by the 256-ID request bound."""
+    from polylogue.cli import operation_kernel
+    from polylogue.cli.commands.maintenance import _blob_publications
+    from polylogue.config import Config
+    from polylogue.operations.daemon_protocol import BlobPublicationsAbandonRequest
+
+    batches: list[list[str]] = []
+
+    def fake_mutation(_config: object, _operation: str, payload: dict[str, list[str]]) -> dict[str, object]:
+        BlobPublicationsAbandonRequest.model_validate(payload)
+        batches.append(payload["publication_ids"])
+        return {"result": {"abandoned": list(payload["publication_ids"])}, "receipt_ref": f"r{len(batches)}"}
+
+    monkeypatch.setattr(operation_kernel, "configured_mutation_operation", fake_mutation)
+    ids = tuple(f"pub-{index}" for index in range(257))
+
+    merged = _blob_publications._submit_abandonment(
+        Config(archive_root=Path("/archive"), render_root=Path("/render"), sources=[]), ids
+    )
+
+    assert [len(batch) for batch in batches] == [256, 1]
+    assert merged["result"] == {"abandoned": list(ids)}
+    assert merged["receipt_ref"] == "r1,r2"

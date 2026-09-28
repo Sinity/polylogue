@@ -165,7 +165,7 @@ def raw_observation_backlog_snapshot(
         }
     with adapter._read() as conn:
         selected = conn.execute(
-            f"SELECT raw_id, origin, source_path, blob_size FROM raw_sessions "
+            f"SELECT raw_id, origin, detected_provider, source_path, blob_size FROM raw_sessions "
             f"WHERE raw_id IN ({','.join('?' for _ in pending_ids)})",
             pending_ids,
         ).fetchall()
@@ -177,7 +177,11 @@ def raw_observation_backlog_snapshot(
                 "source_path": str(row["source_path"] or ""),
                 "blob_size": int(row["blob_size"] or 0),
                 "oversized": int(row["blob_size"] or 0) > 64 * 1024 * 1024,
-                "stream_safe": is_stream_record_provider(str(row["source_path"] or ""), str(row["origin"])),
+                # Stream safety is a provider-wire property: use the acquisition
+                # provider evidence, never a reversed public origin token.
+                "stream_safe": is_stream_record_provider(
+                    str(row["source_path"] or ""), str(row["detected_provider"] or "")
+                ),
             }
             for row in selected
         ),

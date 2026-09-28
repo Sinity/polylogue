@@ -111,15 +111,33 @@ async def test_seed_free_topic_uses_the_vector_lane_once_as_independent_retrieva
 @pytest.mark.asyncio
 async def test_topic_pack_uses_limited_message_iterator() -> None:
     class IterStore(FakeStore):
-        async def iter_messages(self, session_id: str, *, limit: int) -> Any:
-            self.requested_limit = limit
-            for message in self.session.messages[:limit]:
+        yielded = 0
+
+        async def iter_messages(self, session_id: str, *, limit: int | None = None) -> Any:
+            for message in self.session.messages:
+                self.yielded += 1
                 yield message
 
     store = IterStore()
     result = await build_topic_pack(cast(Any, store), TopicPackRequest("topic", max_messages=1))
-    assert store.requested_limit == 1
+    # The lazy iterator stops as soon as the text-bearing bound is filled.
+    assert store.yielded == 1
     assert len(result.context_pack) == 1
+
+
+@pytest.mark.asyncio
+async def test_topic_pack_pages_past_messages_without_text() -> None:
+    """Anti-vacuity: a raw-row page limit of max_messages returns only the empty first row."""
+
+    class PagedStore(FakeStore):
+        async def get_messages_paginated(self, session_id: str, *, limit: int, offset: int) -> Any:
+            rows = [SimpleNamespace(id="empty", text=None), *self.session.messages]
+            return rows[offset : offset + limit], len(rows), None
+
+    store = PagedStore()
+    result = await build_topic_pack(cast(Any, store), TopicPackRequest("topic", max_messages=1))
+    assert len(result.context_pack) == 1
+    assert result.context_pack[0]["message_id"] != "empty"
 
 
 @pytest.mark.asyncio

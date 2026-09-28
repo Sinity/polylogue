@@ -873,18 +873,18 @@ def test_daemon_workload_probe_reports_weighted_raw_replay_backlog(tmp_path: Pat
         conn.execute(
             """
             INSERT INTO raw_sessions (
-                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                raw_id, origin, detected_provider, native_id, source_path, blob_hash, blob_size,
                 parsed_at_ms, validation_status, acquired_at_ms
-            ) VALUES ('raw-small', 'codex-session', 'native-small', '/src/small.jsonl', ?, ?, 1, 'passed', 1)
+            ) VALUES ('raw-small', 'codex-session', 'codex', 'native-small', '/src/small.jsonl', ?, ?, 1, 'passed', 1)
             """,
             (bytes.fromhex(small_hash), small_size),
         )
         conn.execute(
             """
             INSERT INTO raw_sessions (
-                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                raw_id, origin, detected_provider, native_id, source_path, blob_hash, blob_size,
                 parsed_at_ms, validation_status, acquired_at_ms
-            ) VALUES ('raw-large', 'codex-session', 'native-large', '/src/large.jsonl', ?, ?, 1, 'passed', 2)
+            ) VALUES ('raw-large', 'codex-session', 'codex', 'native-large', '/src/large.jsonl', ?, ?, 1, 'passed', 2)
             """,
             (bytes.fromhex(large_hash), large_size),
         )

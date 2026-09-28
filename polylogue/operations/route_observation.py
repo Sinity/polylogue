@@ -190,25 +190,26 @@ class RouteObservationDropLedger:
     instead is :attr:`RouteObservationDrops.accounting_complete`.
     """
 
-    __slots__ = ("_events",)
+    __slots__ = ("_counts",)
 
     def __init__(self) -> None:
-        self._events: list[tuple[int, str, str, str, int]] = []
+        # Aggregated counters: bounded by the declared reasons and routes,
+        # not by lifetime request volume.
+        self._counts: dict[tuple[str, str], int] = {}
 
     def record(self, reason: RouteObservationDropReason, *, surface: str, route: str, count: int = 1) -> None:
         if count <= 0:
             return
-        self._events.append((int(time.time() * 1000), reason.value, surface, route, count))
+        key = (reason.value, route_key(surface, route))
+        self._counts[key] = self._counts.get(key, 0) + count
 
-    def snapshot(self, *, since_ms: int | None = None) -> RouteObservationDrops:
+    def snapshot(self) -> RouteObservationDrops:
         """Return the drops this process has seen. Never claims completeness."""
-        events = [event for event in self._events if since_ms is None or event[0] >= since_ms]
         reasons: dict[str, int] = {}
         routes: dict[str, int] = {}
-        for _time, reason, surface, route, count in events:
+        for (reason, route), count in self._counts.items():
             reasons[reason] = reasons.get(reason, 0) + count
-            key = route_key(surface, route)
-            routes[key] = routes.get(key, 0) + count
+            routes[route] = routes.get(route, 0) + count
         return RouteObservationDrops(
             accounting_complete=False,
             by_reason=reasons,
@@ -216,15 +217,15 @@ class RouteObservationDropLedger:
         )
 
     def reset(self) -> None:
-        self._events.clear()
+        self._counts.clear()
 
 
 _DROP_LEDGER = RouteObservationDropLedger()
 
 
-def route_observation_drops(*, since_ms: int | None = None) -> RouteObservationDrops:
+def route_observation_drops() -> RouteObservationDrops:
     """Return this process's route-observation drop counts."""
-    return _DROP_LEDGER.snapshot(since_ms=since_ms)
+    return _DROP_LEDGER.snapshot()
 
 
 def reset_route_observation_drops() -> None:
@@ -660,11 +661,8 @@ def _emit_best_effort(*, archive_root: Path | None, receipt: RouteObservationRec
 
         conn = open_observation_connection(ops_db)
         try:
-            before_routes = {
-                str(row[0]): (str(row[1]), str(row[2]))
-                for row in conn.execute("SELECT observation_id, surface, route FROM route_observations")
-            }
-            observation_id = record_route_observation(
+            pruned: list[tuple[str, str]] = []
+            record_route_observation(
                 conn,
                 trace_id=receipt.trace_id,
                 surface=spec.surface,
@@ -678,20 +676,14 @@ def _emit_best_effort(*, archive_root: Path | None, receipt: RouteObservationRec
                 archive_epoch=receipt.archive_epoch,
                 attributes=receipt.to_attributes(),
                 sampled=receipt.sampled,
+                pruned=pruned,
             )
-            # Compare row identities around the writer's retention and cap
-            # pruning so each removed observation stays attributed to its row.
-            remaining = {str(row[0]) for row in conn.execute("SELECT observation_id FROM route_observations")}
-            removed: dict[str, int] = {}
-            for identifier, (surface, route) in before_routes.items():
-                if identifier not in remaining:
-                    key = route_key(surface, route)
-                    removed[key] = removed.get(key, 0) + 1
-            if observation_id not in remaining:
-                key = route_key(spec.surface, spec.route)
-                removed[key] = removed.get(key, 0) + 1
-            for key, count in removed.items():
-                surface, route = key.split("\t", 1)
+            # The writer reports each row its retention and cap prunes
+            # removed, so every drop stays attributed to its own route.
+            removed: dict[tuple[str, str], int] = {}
+            for identity in pruned:
+                removed[identity] = removed.get(identity, 0) + 1
+            for (surface, route), count in removed.items():
                 _DROP_LEDGER.record(RouteObservationDropReason.PRUNED, surface=surface, route=route, count=count)
         finally:
             conn.close()

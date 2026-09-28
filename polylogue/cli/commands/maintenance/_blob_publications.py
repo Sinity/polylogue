@@ -20,14 +20,62 @@ from polylogue.storage.blob_publication import inspect_blob_publication_receipts
 
 
 def _submit_abandonment(config: Config, publication_ids: tuple[str, ...]) -> dict[str, object]:
+    """Abandon every requested receipt, one bounded daemon request per chunk.
+
+    The daemon request carries at most ``BlobPublicationsAbandonRequest``'s
+    per-request bound so its result stays within the operation result budget;
+    a longer operator selection is chunked here rather than refused.
+    """
     from polylogue.cli.operation_kernel import OperationKernelError, configured_mutation_operation
     from polylogue.cli.shared.helpers import mutation_refusal
+    from polylogue.operations.daemon_protocol import BlobPublicationsAbandonRequest
 
     operation = "maintenance.blob-publications.abandon"
-    try:
-        return configured_mutation_operation(config, operation, {"publication_ids": list(publication_ids)})
-    except OperationKernelError as exc:
-        raise mutation_refusal(exc, operation) from exc
+    chunk = _abandon_chunk_size(BlobPublicationsAbandonRequest)
+    results: list[dict[str, object]] = []
+    for start in range(0, len(publication_ids), chunk):
+        try:
+            results.append(
+                configured_mutation_operation(
+                    config, operation, {"publication_ids": list(publication_ids[start : start + chunk])}
+                )
+            )
+        except OperationKernelError as exc:
+            raise mutation_refusal(exc, operation) from exc
+    return _merge_abandonment_results(results)
+
+
+def _abandon_chunk_size(request_type: type[object]) -> int:
+    field = request_type.model_fields["publication_ids"]  # type: ignore[attr-defined]
+    for item in field.metadata:
+        bound = getattr(item, "max_length", None)
+        if isinstance(bound, int):
+            return bound
+    raise RuntimeError("publication_ids declares no per-request bound")
+
+
+def _merge_abandonment_results(results: list[dict[str, object]]) -> dict[str, object]:
+    """Combine per-chunk results: lists concatenate, counts add, receipts accumulate."""
+    if len(results) == 1:
+        return results[0]
+    merged: dict[str, object] = {}
+    receipt_refs: list[str] = []
+    for result in results:
+        receipt_ref = result.get("receipt_ref")
+        if receipt_ref is not None:
+            receipt_refs.append(str(receipt_ref))
+        value = result.get("result")
+        if not isinstance(value, dict):
+            continue
+        for key, item in value.items():
+            current = merged.get(key)
+            if isinstance(item, list) and isinstance(current, list):
+                merged[key] = [*current, *item]
+            elif isinstance(item, int) and not isinstance(item, bool) and isinstance(current, int):
+                merged[key] = current + item
+            else:
+                merged[key] = item
+    return {"result": merged, "receipt_ref": ",".join(receipt_refs) if receipt_refs else None}
 
 
 @click.command("blob-publications")

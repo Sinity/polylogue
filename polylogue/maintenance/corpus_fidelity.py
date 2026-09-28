@@ -293,7 +293,9 @@ def audit_revision_fidelity(
     worst: list[dict[str, Any]] = []
     for (origin, provider_session_id), best_count in best.items():
         session_id = f"{origin}:{provider_session_id}"
-        have_messages = messages.get(session_id)
+        # An indexed session with no message rows has zero messages; it is
+        # compared like any other rather than left unresolved.
+        have_messages = messages.get(session_id, 0 if session_id in indexed_sessions else None)
         have_events = events.get(session_id, 0)
         state = "unresolved_shortfall"
         reasons: list[str] = []
@@ -334,8 +336,6 @@ def audit_revision_fidelity(
                         state = "prefix_composed"
                 except (KeyError, sqlite3.Error) as exc:
                     reasons.append("lineage_read_failed:" + type(exc).__name__)
-        elif have_messages is None and session_id in indexed_sessions:
-            have_messages = 0
         elif have_messages is None:
             reasons.append("indexed_messages_missing")
         elif have_messages == best_count:

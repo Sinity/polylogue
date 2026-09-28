@@ -152,10 +152,13 @@ def frame_request(
         actual = f"{transaction.operation}/{transaction.projection}"
         expected = f"{operation}/{projection}"
         raise QueryContinuationInvalidError(f"continuation dialect mismatch: expected {expected}, got {actual}")
+    # Read the legacy token's projection before modern extra arguments (which
+    # may themselves include ``projection``) are filtered out.
+    legacy_projection = transaction.arguments.get("projection")
     original_arguments = {
         key: value for key, value in transaction.arguments.items() if key not in (extra_arguments or {})
     }
-    legacy_projection = original_arguments.pop("projection", None)
+    original_arguments.pop("projection", None)
     original = SessionRead.model_validate(
         {**original_arguments, "limit": transaction.page_size, "offset": transaction.offset}
     )

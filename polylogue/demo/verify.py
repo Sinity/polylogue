@@ -7,23 +7,52 @@ from pathlib import Path
 
 from polylogue.archive.query.transaction import run_archive_read_sync
 from polylogue.scenarios import DEMO_CLAUDE_CODE_SESSION_ID, DEMO_HERMES_SESSION_ID, DEMO_SESSION_IDS
+from polylogue.sources.parsers.hermes_identity import (
+    profile_key,
+    profile_root_for_artifact,
+    qualified_session_id,
+)
 
 from .constructs import construct_problem_messages, evaluate_demo_constructs
 from .models import DemoVerifyResult
 from .seed import DEMO_SOURCE_DIRNAME
 
 
-def _expected_demo_session_ids(session_ids: set[str]) -> set[str]:
-    """Return seeded ids while preserving Hermes identity from the archive."""
+def _expected_demo_session_ids(archive_root: Path) -> set[str]:
+    """Return the seeded ids, deriving Hermes identity from retained seed evidence.
 
-    hermes_prefix = f"{DEMO_HERMES_SESSION_ID}@profile-"
-    hermes_ids = {session_id for session_id in session_ids if session_id.startswith(hermes_prefix)}
-    if len(hermes_ids) != 1:
-        return set(DEMO_SESSION_IDS)
+    Hermes ids carry a profile qualifier hashed from the install root the
+    parser saw. The seeded raw row retains that source path, so an
+    inode-preserving archive relocation still derives the original qualifier,
+    and the archive's own session ids are never used as the oracle.
+    """
+
+    hermes_snapshot = _recorded_hermes_source_path(archive_root) or (
+        archive_root / DEMO_SOURCE_DIRNAME / "hermes" / "demo-00.json"
+    )
+    hermes_id = qualified_session_id(
+        DEMO_HERMES_SESSION_ID.removeprefix("hermes-session:"),
+        profile_key(profile_root_for_artifact(hermes_snapshot)),
+    )
     expected_ids = set(DEMO_SESSION_IDS)
     expected_ids.remove(DEMO_HERMES_SESSION_ID)
-    expected_ids.update(hermes_ids)
+    expected_ids.add(f"hermes-session:{hermes_id}")
     return expected_ids
+
+
+def _recorded_hermes_source_path(archive_root: Path) -> Path | None:
+    """The one retained raw source path of the seeded Hermes snapshot, if unambiguous."""
+
+    source_db = archive_root / "source.db"
+    if not source_db.exists():
+        return None
+    suffix = f"/{DEMO_SOURCE_DIRNAME}/hermes/demo-00.json"
+    with _connect(source_db) as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT source_path FROM raw_sessions WHERE substr(source_path, -length(?)) = ? LIMIT 2",
+            (suffix, suffix),
+        ).fetchall()
+    return Path(str(rows[0]["source_path"])) if len(rows) == 1 else None
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -127,7 +156,7 @@ def verify_demo_archive(
             problems=(f"archive unreadable: {exc}",),
         )
 
-    expected_ids = _expected_demo_session_ids(session_ids)
+    expected_ids = _expected_demo_session_ids(archive_root)
     if session_ids != expected_ids:
         problems.append(f"expected demo sessions {sorted(expected_ids)}, found {sorted(session_ids)}")
     expected_session_count = len(DEMO_SESSION_IDS)
