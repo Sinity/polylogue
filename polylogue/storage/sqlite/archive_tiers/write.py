@@ -10706,7 +10706,16 @@ def _materialize_inherited_prefix(
     shifted = _make_room_below(conn, "messages", child, slots)
     if shifted:
         # A compaction boundary over the child's own tail moves with it; one
-        # over the inherited prefix keeps addressing the copied rows.
+        # over the inherited prefix keeps addressing the copied rows. A range
+        # that starts in the inherited prefix but ends in the shifted tail
+        # has each endpoint shifted independently, so the tail-side endpoint
+        # still lands on the row it originally addressed.
+        conn.execute(
+            """UPDATE session_events
+               SET boundary_end_position = boundary_end_position + ?
+               WHERE session_id = ? AND boundary_end_position >= ? AND boundary_start_position < ?""",
+            (shifted, child, tail_start, tail_start),
+        )
         conn.execute(
             """UPDATE session_events
                SET boundary_start_position = boundary_start_position + ?,
@@ -10847,7 +10856,16 @@ def _moved_id(column: str) -> str:
 
 _DEPENDENT_OVERRIDES: dict[str, dict[str, str]] = {
     "blocks": {"session_id": ":child", "message_id": "p.new_id"},
-    "attachment_refs": {"session_id": ":child", "message_id": "p.new_id"},
+    "attachment_refs": {
+        "session_id": ":child",
+        "message_id": "p.new_id",
+        # A generated ``message:<old_id>`` producer ref names the very row
+        # being re-rooted; a parser-supplied provider reference (anything
+        # else) is left untouched.
+        "producer_ref": (
+            "CASE WHEN s.producer_ref = 'message:' || s.message_id THEN 'message:' || p.new_id ELSE s.producer_ref END"
+        ),
+    },
     "paste_spans": {"session_id": ":child", "message_id": "p.new_id"},
     "web_content_constructs": {"session_id": ":child", "message_id": "p.new_id", "block_id": _moved_id("block_id")},
     "file_edits": {
