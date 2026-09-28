@@ -557,11 +557,14 @@ def test_focused_profile_requires_a_behavioral_pytest_selection() -> None:
     assert focused["result"] == "pytest"
     assert operation["exec"] == ["devtools", "verify", "--quick"]
     assert operation["result"] == "json"
+    assert operation["timeout_seconds"] == 2400
     assert affected["exec"] == ["devtools", "verify"]
     assert affected["pool"] == "pytest"
     assert affected["result"] == "pytest"
     assert affected["cache"] == "tree+environment"
     assert affected["timeout_seconds"] == 7200
+    # Anti-vacuity: deleting either operation's descriptor deadline makes
+    # this fail, even if AgentCTL applies a host default.
     assert complete["exec"] == ["devtools", "verify", "--all"]
     # polylogue-p2mbi AC4 (#5405): `checkout = "candidate"`. The unset default
     # does not select a tree, it REFUSES every workspace but the project root
@@ -576,6 +579,19 @@ def test_focused_profile_requires_a_behavioral_pytest_selection() -> None:
     assert complete["timeout_seconds"] == 14400
     assert projection["kind"] == "polylogue.verification-result"
     assert projection["operation"] == "verify_quick"
+
+
+def test_verification_docs_distinguish_local_receipts_and_sidecars() -> None:
+    """Anti-vacuity: docs must name real mutable DB files and local run evidence."""
+    sidecars = (verify.ROOT / "docs/sidecars.md").read_text(encoding="utf-8")
+    authority = (verify.ROOT / "docs/verification-authority.md").read_text(encoding="utf-8")
+
+    assert ".cache/testmon/testmondata` plus `-wal`, `-shm`, and `-journal" in sidecars
+    assert "`.cache/verify/graph/**`" in sidecars
+    assert "`.testmondata.bound-*`" in sidecars
+    assert "append them to the checkout-local run" in authority
+    assert "AgentCTL-managed job evidence" in authority
+    assert "no AgentCTL run record" not in authority
 
 
 def test_agentctl_parser_preserves_distinct_verification_pools() -> None:
