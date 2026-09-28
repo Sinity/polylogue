@@ -698,6 +698,51 @@ def test_receiver_does_not_double_prefix_prefixed_capture_id(tmp_path: Path) -> 
     assert state.spooled is True
 
 
+def test_assertion_candidate_capture_preserves_browser_source_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: accepting the route while dropping source_observation loses its acquisition provenance."""
+    from types import SimpleNamespace
+
+    from polylogue.operations import facade_writers
+
+    captured: dict[str, object] = {}
+    observation = {
+        "origin": "chatgpt-export",
+        "provider_conversation_id": "conv-123",
+        "provider_message_id": "message-1",
+        "adapter_version": "v7",
+        "fidelity": "native",
+    }
+
+    def capture(_config: object, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return SimpleNamespace(model_dump=lambda **_kwargs: {"value": {"capture_surface": "browser"}})
+
+    monkeypatch.setattr(facade_writers, "_archive_capture_assertion_candidate", capture)
+    with _running_receiver(tmp_path) as (host, port):
+        response = _request(
+            host,
+            port,
+            "POST",
+            "/v1/assertion-candidates",
+            body={
+                "body_text": "A synthetic assertion",
+                "kind": "note",
+                "evidence_refs": ["message:ref"],
+                "source_observation": observation,
+                "target_ref": "message:ref",
+                "context_policy": {"inject": False},
+            },
+            origin=_EXTENSION_ORIGIN,
+        )
+        body = json.loads(response.read())
+
+    assert response.status == HTTPStatus.ACCEPTED
+    assert body["candidate"]["value"]["capture_surface"] == "browser"
+    assert captured["capture_provenance"] == observation
+
+
 def test_mission_control_reports_uncaptured_without_archive_facts(tmp_path: Path) -> None:
     """An unindexed conversation must project 'uncaptured', never a zero cost."""
     with _running_receiver(tmp_path, archive_root=tmp_path) as (host, port):
@@ -810,6 +855,42 @@ def test_mission_control_archive_facts_read_a_real_archive(empty_archive_templat
     assert cost == {"status": "unknown", "total_usd": None, "provenance": []}
     assert assertions["status"] == "available"
     assert assertions["items"] == []
+
+
+def test_mission_control_reads_only_judged_session_and_message_assertions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: candidates and message-targeted judgments must not disappear from this projection."""
+    from types import SimpleNamespace
+
+    import polylogue
+
+    calls: list[tuple[str, tuple[str, ...]]] = []
+
+    class FakePolylogue:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def list_session_cost_insights(self, _query: object) -> list[object]:
+            return []
+
+        async def get_session(self, _session_id: str) -> object:
+            return SimpleNamespace(messages=[SimpleNamespace(id="message-1")])
+
+        async def list_assertion_claim_payloads(
+            self, *, target_ref: str, statuses: tuple[str, ...], limit: int
+        ) -> list[object]:
+            calls.append((target_ref, statuses))
+            return []
+
+    monkeypatch.setattr(polylogue, "Polylogue", FakePolylogue)
+    result = mission_control_archive_facts(tmp_path, "chatgpt:conversation")
+
+    assert result is not None
+    assert calls == [
+        ("session:chatgpt:conversation", ("active",)),
+        ("message:chatgpt:conversation:message-1", ("active",)),
+    ]
 
 
 def test_mission_control_archive_facts_degrade_on_an_unreadable_archive(tmp_path: Path) -> None:

@@ -6,6 +6,7 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from http.client import HTTPConnection
@@ -16,6 +17,7 @@ from typing import Any, cast
 import pytest
 
 from polylogue.browser_capture import capture_jobs as capture_jobs_module
+from polylogue.browser_capture.capture_job_events import read_capture_job_events
 from polylogue.browser_capture.capture_jobs import (
     CaptureJobRegistry,
     canonical_digest,
@@ -499,6 +501,19 @@ def test_events_are_receiver_ordered_scoped_and_idempotent(tmp_path: Path) -> No
         assert page["timelines"] == {"conversation:1": [first["event"]]}
 
 
+def test_http_rejects_event_cursor_outside_sqlite_integer_range(tmp_path: Path) -> None:
+    """Anti-vacuity: passing this cursor to sqlite binding raises OverflowError."""
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+        path = (
+            f"/v1/capture-jobs/{job['job_id']}/events?provider=chatgpt&account_scope={SCOPE}"
+            "&client_protocol=1&before_revision=999999999999999999999999999999"
+        )
+        status, response = request(host, port, "GET", path, {})
+    assert status == 400
+    assert response["error"] == "invalid_capture_job_events_query"
+
+
 def test_timeline_uses_receiver_order_and_gc_requires_terminal_retention(tmp_path: Path) -> None:
     """Anti-vacuity: timestamp order or retention/terminal/lease bypass makes this fail.
 
@@ -703,10 +718,77 @@ def test_orphan_census_reports_unreadable_files_and_refreshes_diagnostics(tmp_pa
         refreshed = next(entry for entry in second if entry["orphan_kind"] == "malformed_legacy_checkpoint")
         assert refreshed["diagnostic"] == "account scope unavailable; explicit migration or abandonment required"
         unreadable_entry = next(entry for entry in second if entry["orphan_kind"] == "unreadable_legacy_checkpoint")
-        assert unreadable_entry["path"] == str(unreadable)
+        assert unreadable_entry["source_digest"].startswith("path-sha256:")
+        assert str(unreadable) not in json.dumps(unreadable_entry)
         assert unreadable_entry["errno_class"] == "PermissionError"
     finally:
         connection.close()
+
+
+def test_schema_open_seeds_legacy_jobs_with_created_event(tmp_path: Path) -> None:
+    """Anti-vacuity: without schema-open backfill, an existing job has no baseline event."""
+    registry = CaptureJobRegistry(tmp_path, "receiver")
+    with registry._connection() as connection:
+        connection.execute(
+            "INSERT INTO capture_jobs (job_id, provider, account_scope, intent_key, intent_json, revision, "
+            "retry_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 4, ?, ?, ?)",
+            (
+                "legacy-job",
+                "chatgpt",
+                SCOPE,
+                INTENT_KEY,
+                canonical_json({"version": 1, "digest": "d", "intent_key": INTENT_KEY, "payload": {}}),
+                canonical_json({"state": "ready", "attempt": 0}),
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+    with registry._connection() as connection:
+        events, _ = read_capture_job_events(connection, "legacy-job", 10)
+    assert len(events) == 1
+    assert events[0]["kind"] == "created"
+    assert events[0]["job_revision"] == 4
+
+
+def test_concurrent_first_registry_opens_serialize_schema_upgrade(tmp_path: Path) -> None:
+    """Anti-vacuity: racing ALTER TABLE callers must not see duplicate-column errors."""
+    registries = [CaptureJobRegistry(tmp_path, f"receiver-{index}") for index in range(8)]
+
+    def open_and_close(registry: CaptureJobRegistry) -> None:
+        connection = registry._connect()
+        connection.close()
+
+    with ThreadPoolExecutor(max_workers=len(registries)) as pool:
+        list(pool.map(open_and_close, registries))
+
+
+def test_timeline_retention_ignores_empty_and_non_string_refs(tmp_path: Path) -> None:
+    """Anti-vacuity: SQL IS NOT NULL counted refs the projection cannot timeline."""
+    registry = CaptureJobRegistry(tmp_path, "receiver")
+    _, created = registry.create(
+        {
+            "provider": "chatgpt",
+            "account_scope": SCOPE,
+            "client_protocol": 1,
+            "intent": {
+                "schema_version": 1,
+                "version": 1,
+                "intent_key": INTENT_KEY,
+                "payload": {},
+                "digest": canonical_digest({}),
+            },
+        }
+    )
+    job_id = created["job"]["job_id"]
+    with registry._connection() as connection:
+        for index, ref in enumerate(("", None, 17)):
+            connection.execute(
+                "INSERT INTO capture_job_events "
+                "(event_id, job_id, event_revision, job_revision, kind, refs_json, payload_json, request_id, occurred_at) "
+                "VALUES (?, ?, ?, 0, 'first-seen', ?, '{}', ?, '2026-01-01T00:00:00Z')",
+                (f"bad-ref-{index}", job_id, index + 1, canonical_json({"conversation_ref": ref}), f"bad-{index}"),
+            )
+        assert CaptureJobRegistry._holds_conversation_timeline(connection, job_id) is False
 
 
 def test_registry_uses_full_synchronous_mode(tmp_path: Path) -> None:

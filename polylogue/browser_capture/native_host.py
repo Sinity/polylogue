@@ -64,7 +64,11 @@ def install_native_host(
         "description": "Polylogue browser-capture secure credential bootstrap",
         "path": launcher,
         "type": "stdio",
-        "allowed_origins": [f"chrome-extension://{item}/" for item in ids],
+        **(
+            {"allowed_extensions": list(ids)}
+            if browser == "firefox"
+            else {"allowed_origins": [f"chrome-extension://{item}/" for item in ids]}
+        ),
     }
     fd, temporary = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
     try:
@@ -106,9 +110,9 @@ def main() -> int:
     from polylogue.runtime import require_free_threaded_runtime
 
     require_free_threaded_runtime(consumer="polylogue browser native host")
-    origin = sys.argv[1] if len(sys.argv) > 1 else ""
+    sender = sys.argv[1] if len(sys.argv) > 1 else ""
     extension_id = (
-        origin.removeprefix("chrome-extension://").rstrip("/") if origin.startswith("chrome-extension://") else ""
+        sender.removeprefix("chrome-extension://").rstrip("/") if sender.startswith("chrome-extension://") else sender
     )
     request = _read_message()
     if not extension_id or request is None:

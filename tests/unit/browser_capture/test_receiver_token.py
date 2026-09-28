@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import stat
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from http import HTTPStatus
 from http.client import HTTPConnection
@@ -88,6 +89,15 @@ def test_load_or_mint_receiver_token_rotate_changes_the_value(tmp_path: Path) ->
     assert reloaded == rotated
 
 
+def test_concurrent_first_token_creation_returns_one_shared_credential(tmp_path: Path) -> None:
+    """Anti-vacuity: without the interprocess lock, racing creators return different tokens."""
+    token_path = tmp_path / "receiver-token"
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        values = list(pool.map(lambda _index: load_or_mint_receiver_token(token_path), range(8)))
+    assert len(set(values)) == 1
+    assert token_path.read_text(encoding="utf-8") == values[0]
+
+
 def test_load_or_mint_rejects_a_token_file_with_group_readable_permissions(tmp_path: Path) -> None:
     """polylogue-n6pz: mirrors the daemon API token's ownership check -- an
     existing receiver token file with looser-than-0600 permissions must not
@@ -150,7 +160,7 @@ def test_resolve_receiver_auth_token_prefers_explicit_token(tmp_path: Path) -> N
     resolved = resolve_receiver_auth_token("explicit-secret", token_path=token_path)
 
     assert resolved == "explicit-secret"
-    assert not token_path.exists()
+    assert token_path.read_text(encoding="utf-8") == "explicit-secret"
 
 
 def test_resolve_receiver_auth_token_allow_no_auth_returns_none(tmp_path: Path) -> None:

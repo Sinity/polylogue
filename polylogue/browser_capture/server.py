@@ -151,9 +151,15 @@ def mission_control_archive_facts(
                 "total_usd": None if estimate.total_usd is None else float(estimate.total_usd),
                 "provenance": list(estimate.provenance),
             }
-        claims = run_coroutine_sync(
-            poly.list_assertion_claim_payloads(target_ref=f"session:{indexed_session_id}", limit=5)
-        )
+        session = run_coroutine_sync(poly.get_session(indexed_session_id))
+        targets = [f"session:{indexed_session_id}"]
+        if session is not None:
+            targets.extend(f"message:{indexed_session_id}:{message.id}" for message in session.messages)
+        claims = []
+        for target in targets:
+            claims.extend(
+                run_coroutine_sync(poly.list_assertion_claim_payloads(target_ref=target, statuses=("active",), limit=5))
+            )
         assertions: _MissionControlAssertionsPayload = {
             "status": "available",
             "items": [claim.model_dump(mode="json") for claim in claims],
@@ -460,6 +466,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                     limit = min(max(int(params.get("limit", ["100"])[0]), 1), 500)
                     raw_cursor = params.get("before_revision", [""])[0]
                     before_revision = int(raw_cursor) if raw_cursor else None
+                    if before_revision is not None and before_revision > (1 << 63) - 1:
+                        raise ValueError("cursor outside SQLite integer range")
                 except ValueError:
                     self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_capture_job_events_query")
                     return
@@ -703,6 +711,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 author_ref=str(payload.get("author_ref") or "user:browser-extension"),
                 author_kind=str(payload.get("author_kind") or "user"),
                 idempotency_key=payload.get("idempotency_key"),
+                capture_provenance=observation,
             )
         except (ValueError, KeyError) as exc:
             self._safe_error(HTTPStatus.BAD_REQUEST, str(exc))
