@@ -1416,6 +1416,30 @@ def test_cli_delete_pages_every_phase_past_one_machine_batch(monkeypatch: pytest
     with sqlite3.connect(archive_root / "audit.db") as conn:
         kinds = sorted(str(row[0]) for row in conn.execute("SELECT artifact_kind FROM machine_requests"))
         assert kinds == ["authorization-batch", "execution-batch", "preview-batch"]
+        expiries = {int(row[0]) for row in conn.execute("SELECT expires_at_ms FROM operation_previews")}
+        assert len(expiries) == 1, "pages of one preview expire together"
         assert {int(row[0]) for row in conn.execute("SELECT part_count FROM machine_requests")} == {4}
     with sqlite3.connect(archive_root / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+
+
+def test_cli_delete_cancels_a_preview_of_many_pages(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: cancel every preview ref in one batch and a preview wider
+    than one page cannot be released."""
+    from polylogue.operations import daemon_mutations
+
+    monkeypatch.setattr(daemon_mutations, "MAX_MUTATION_PLAN_TARGETS", 2)
+    monkeypatch.setattr(daemon_mutations, "MACHINE_PAGE_PARTS", 1)
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    session_ids = _seed_delete_authority_archive(archive_root, 5)
+
+    with _delete_authority_daemon(monkeypatch, archive_root) as client:
+        preview = _delete_operation(client, "preview", {"session_ids": list(session_ids)})
+        preview_refs = preview["preview_refs"]
+        assert isinstance(preview_refs, list) and len(preview_refs) == 3
+        cancelled = _delete_operation(client, "cancel", {"preview_refs": preview_refs})
+        assert cancelled["preview_refs"] == preview_refs
+    with sqlite3.connect(archive_root / "audit.db") as conn:
+        states = {str(row[0]) for row in conn.execute("SELECT state FROM operation_previews")}
+    assert states == {"cancelled"}

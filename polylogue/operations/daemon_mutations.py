@@ -523,6 +523,8 @@ def _previews(
     snapshot: PinnedOperationRead,
     operation: OperationBinding[Any, object],
     args: tuple[object, ...],
+    *,
+    expires_at_ms: int | None = None,
 ) -> tuple[MutationPreview, ...]:
     executor = OperationExecutor()
     instance = audit.ensure_archive_authority(now_ms=int(time() * 1000))
@@ -538,9 +540,16 @@ def _previews(
                 archive_identity_digest=snapshot.identity.authority_identity_digest,
                 parameter_digest=compute_parameter_digest(raw_plan),
                 raw_plan=raw_plan,
+                expires_at_ms=expires_at_ms,
             )
         )
     return tuple(previews)
+
+
+#: The delete preview's request budget (its operation deadline) and a
+#: preview's lifetime once prepared (``OperationExecutor.prepare_bound``).
+_DELETE_PREVIEW_BUDGET_MS = 300_000
+_PREVIEW_LIFETIME_MS = 60_000
 
 
 def _accepted_pages(audit: AuditRepository, binding: MachineRequestBinding, kind: str) -> int | None:
@@ -549,6 +558,9 @@ def _accepted_pages(audit: AuditRepository, binding: MachineRequestBinding, kind
     if prior is None:
         return 0
     if prior["artifact_kind"] == machine_pages_kind(kind):
+        if prior.get("stop_reason"):
+            # Startup fenced a request its dead daemon left half-accepted.
+            raise ValueError(f"{binding.operation_name} was interrupted before it was fully accepted; submit it again")
         return _audit_int(prior["part_count"], field="part count")
     return None
 
@@ -576,9 +588,15 @@ def mutation_session_delete_preview(
         chunks = [
             ids[offset : offset + MAX_MUTATION_PLAN_TARGETS] for offset in range(0, len(ids), MAX_MUTATION_PLAN_TARGETS)
         ]
+        # Every page expires together, a full preview lifetime after the
+        # request's own budget from its durable acceptance, so no page lapses
+        # while the same request is still preparing later ones.
+        staged = audit.machine_request(binding)
+        accepted_at_ms = int(cast(int, staged["accepted_at_ms"])) if staged is not None else int(time() * 1000)
+        expires_at_ms = accepted_at_ms + _DELETE_PREVIEW_BUDGET_MS + _PREVIEW_LIFETIME_MS
         for offset, end, final in _page_bounds(len(chunks), accepted):
             args = tuple(SessionDeleteArgs(snapshot.archive, chunk) for chunk in chunks[offset:end])
-            previews = _previews(request, context, audit, snapshot, operation, args)
+            previews = _previews(request, context, audit, snapshot, operation, args, expires_at_ms=expires_at_ms)
             with audit.bind_machine_request(binding, transition="create_preview_batch", page=(offset, final)):
                 audit.create_preview_batch(tuple(preview.plan for preview in previews), context.principal)
     refs = tuple(str(part["artifact_ref"]) for part in audit.machine_parts(binding))
@@ -626,13 +644,13 @@ def mutation_session_delete_cancel(
     snapshot: PinnedOperationRead,
 ) -> dict[str, object]:
     binding = _binding(request, context, snapshot)
-    if audit.machine_request(binding) is None:
-        previews = tuple(
-            audit.preview_for_principal(ref, context.principal) for ref in _refs(request.payload, "preview_ref")
-        )
-        with audit.bind_machine_request(binding, transition="cancel_preview_batch"):
-            audit.cancel_preview_batch(previews, context.principal)
     refs = _refs(request.payload, "preview_ref")
+    accepted = _accepted_pages(audit, binding, "cancelled-preview-batch")
+    if accepted is not None:
+        for offset, end, final in _page_bounds(len(refs), accepted):
+            previews = tuple(audit.preview_for_principal(ref, context.principal) for ref in refs[offset:end])
+            with audit.bind_machine_request(binding, transition="cancel_preview_batch", page=(offset, final)):
+                audit.cancel_preview_batch(previews, context.principal)
     return {"status": "cancelled", "preview_ref": refs[0], "preview_refs": list(refs)}
 
 

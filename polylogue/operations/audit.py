@@ -95,6 +95,7 @@ _PAGED_MACHINE_KINDS: dict[str, str] = {
     "create_preview_batch": "preview-batch",
     "issue_authorization_batch": "authorization-batch",
     "accept_execution_batch": "execution-batch",
+    "cancel_preview_batch": "cancelled-preview-batch",
 }
 
 
@@ -1357,7 +1358,7 @@ class AuditRepository:
             }
         if kind == "stop_machine_batch":
             reason = str(args[1])
-            if reason not in {"cancelled", "deadline", "refused", "indeterminate"}:
+            if reason not in {"cancelled", "deadline", "refused", "indeterminate", "interrupted"}:
                 raise ValueError("unknown machine stop reason")
             return {
                 "binding": cast(MachineRequestBinding, args[0]).to_dict(),
@@ -1872,6 +1873,24 @@ class AuditRepository:
     def cancel_preview_batch(self, previews: tuple[MutationPreview, ...], principal: MutationPrincipal) -> list[str]:
         """Cancel an exact ordered preview set without consuming its authority."""
         return self._apply_authority_batch()
+
+    def fence_staged_machine_pages(self) -> int:
+        """Stop every paged batch a dead daemon left half-accepted.
+
+        Runs at the single-writer startup seam, where no handler can still be
+        appending pages. The request reads as interrupted, so a caller
+        following it reaches a terminal outcome and submits it again.
+        """
+        placeholders = ",".join("?" for _ in MACHINE_PAGE_KINDS)
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""SELECT archive_identity, request_id, principal_ref, fingerprint, operation_name
+                    FROM machine_requests WHERE stop_reason IS NULL AND artifact_kind IN ({placeholders})""",
+                tuple(sorted(MACHINE_PAGE_KINDS)),
+            ).fetchall()
+        for row in rows:
+            self.stop_machine_batch(MachineRequestBinding(*(str(value) for value in row)), "interrupted")
+        return len(rows)
 
     @_continuity_mutation("stop_machine_batch")
     def stop_machine_batch(self, binding: MachineRequestBinding, reason: str) -> None:

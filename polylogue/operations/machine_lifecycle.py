@@ -101,7 +101,10 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
     if kind == "insight-preview-pages":
         return {**state, "outcome": "running", "effect": "no-effect", "accepted": False}
     if kind in MACHINE_PAGE_KINDS:
-        # A paged batch still accepting pages: durably accepted, not done.
+        # A paged batch still accepting pages: durably accepted, not done --
+        # or fenced at startup because the daemon preparing it died.
+        if record.get("stop_reason"):
+            return {**state, "outcome": "interrupted", "effect": "no-effect", "stop_reason": record["stop_reason"]}
         return {**state, "outcome": "running", "effect": "no-effect"}
     if kind not in {"operation", "execution-batch", "source-generation"}:
         refs = [part["artifact_ref"] for part in parts] or [record["artifact_ref"]]

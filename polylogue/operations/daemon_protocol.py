@@ -1210,14 +1210,9 @@ class AcceptedOperationReference(_OperationPayload):
     artifact_kind: str = Field(min_length=1)
     artifact_ref: str = Field(min_length=1)
     accepted_at_ms: int = Field(ge=0)
-    part_count: int = Field(ge=1, le=4096)
+    #: Paged machine batches accept any number of parts (polylogue-zxbbl).
+    part_count: int = Field(ge=1)
     accepted_deadline_unix_ms: int | None
-
-    @model_validator(mode="after")
-    def operation_part_bound(self) -> AcceptedOperationReference:
-        if self.operation_name != "maintenance.insights.rebuild" and self.part_count > 40:
-            raise ValueError("operation exceeds its forty-part acceptance bound")
-        return self
 
     def to_dict(self) -> dict[str, object]:
         return self.model_dump(mode="json")

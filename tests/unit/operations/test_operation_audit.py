@@ -2771,3 +2771,33 @@ def test_paged_machine_batch_stages_then_completes_and_survives_recovery(tmp_pat
     with recovered.bind_machine_request(binding, transition="accept_execution_batch", page=(3, True)):
         with pytest.raises(MachineRequestRecoveredError):
             recovered.accept_execution_batch(refs[:1], _principal())
+
+
+def test_startup_fences_a_half_accepted_paged_batch(tmp_path: Path) -> None:
+    """Anti-vacuity: leave a staged request unfenced at startup and it reads as
+    running forever, so a follower never reaches a terminal outcome."""
+    from polylogue.operations.daemon_protocol import AcceptedOperationReference
+
+    audit = _audit(tmp_path)
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit)
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:fixture",
+        archive_identity_digest="identity:fixture",
+        parameter_digest="params:fence",
+    )
+    authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
+    binding = MachineRequestBinding("identity:fixture", "request:fence", "actor:test", "e" * 64, "mutation.fixture")
+    with audit.bind_machine_request(binding, transition="accept_execution_batch", page=(0, False)):
+        audit.accept_execution_batch((str(authorization.authorization_id),), _principal())
+
+    assert audit.fence_staged_machine_pages() == 1
+    record = audit.machine_request(binding)
+    assert record is not None
+    assert machine_request_state(audit, record)["outcome"] == "interrupted"
+    assert audit.fence_staged_machine_pages() == 0
+    reference = AcceptedOperationReference.from_record({**record, "part_count": 41})
+    assert reference.part_count == 41
