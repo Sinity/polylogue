@@ -107,6 +107,18 @@ class IngestStoppedError(RuntimeError):
         super().__init__(reason)
 
 
+class IngestReprepareRequiredError(RuntimeError):
+    """The pinned generation moved under this attempt; nothing here is permanent.
+
+    Raised by :meth:`IngestExecution.archive_write` when a concurrent index
+    promotion or writer already advanced the archive past the snapshot this
+    attempt pinned. The work this attempt already did is still valid (the
+    manifest and prepared source are content-addressed), only the active
+    generation changed underneath it -- the caller must reprepare or retry
+    against the new generation, never terminalize as failed.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class SourceReceiptSpool:
     """One pinned source/index projection reduced on disk by raw and logical ID."""
@@ -421,10 +433,10 @@ class IngestExecution:
                 expected.authority_identity_digest,
                 expected.active_generation,
             ):
-                raise ValueError("ingest publication generation changed; reprepare required")
+                raise IngestReprepareRequiredError("ingest publication generation changed; reprepare required")
             with ArchiveStore.open_existing(self.archive_root, read_only=False) as archive:
                 if archive.index_db_path.resolve() != location.active_index_path.resolve():
-                    raise ValueError("ingest writer opened another index generation")
+                    raise IngestReprepareRequiredError("ingest writer opened another index generation")
                 result = work(archive)
                 archive.commit()
                 return result
@@ -1319,6 +1331,20 @@ async def redrive_accepted_ingests(
                 await execution.mark_unknown("the ingest owner stopped before the terminal checkpoint")
                 return
             await execution.settle_failed(f"the ingest request was stopped ({exc.reason}) during its re-drive")
+        except IngestReprepareRequiredError as exc:
+            # The pinned generation moved under this attempt; nothing here is
+            # a permanent refusal. Leave the accepted record un-terminalized
+            # (never settle_failed) so the next redrive sweep -- this daemon
+            # start's retry pass, or the next restart's discovery -- picks it
+            # up again against the current generation, instead of excluding
+            # it from re-drive forever.
+            emit(
+                "ingest.redrive.reprepare_required",
+                operation_id=operation_id,
+                request_id=request_id,
+                outcome="interrupted",
+                error_detail=str(exc)[:512],
+            )
         except Exception as exc:
             emit(
                 "ingest.redrive.failed",

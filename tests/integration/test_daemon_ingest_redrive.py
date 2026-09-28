@@ -239,3 +239,44 @@ async def test_undrivable_generation_fails_instead_of_waiting(tmp_path: Path, mo
         run = audit.get_operation(operation_id)
     assert run is not None and (run["status"], run["terminal_reason"]) == ("failed", "domain_failure")
     assert state["outcome"] == "failed"
+
+
+@pytest.mark.timeout(300)
+async def test_reprepare_required_stays_redrivable_instead_of_failing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A concurrent generation promotion under a re-drive must not terminalize it as failed.
+
+    Anti-vacuity (Codex P1, #5717): ``IngestExecution.archive_write`` raises
+    ``IngestReprepareRequiredError`` when the pinned snapshot's generation
+    moved underneath this attempt -- the work already done is still valid,
+    only the active generation changed. Catching it with the same broad
+    ``except Exception`` that ``settle_failed``s a genuine permanent refusal
+    (as in ``test_undrivable_generation_fails_instead_of_waiting`` above)
+    terminalizes an accepted, still-recoverable run: future daemon starts
+    would exclude it from re-drive discovery forever, so it stays
+    permanently unmaterialized even though its next redrive attempt would
+    succeed against the current generation.
+    """
+    from polylogue.operations.daemon_ingest import IngestReprepareRequiredError
+
+    archive_root, source = _archive(tmp_path)
+    await _die_after_acceptance(archive_root, source, monkeypatch)
+
+    async def reprepare_required(self: IngestExecution, work: object) -> object:
+        raise IngestReprepareRequiredError("ingest publication generation changed; reprepare required")
+
+    monkeypatch.setattr(IngestExecution, "archive_write", reprepare_required)
+
+    await _restart_and_settle(archive_root)
+
+    assert _session_titles(archive_root) == []
+    operation_id, record = _only_request(archive_root)
+    audit = AuditRepository.for_archive_root(archive_root)
+    with audit.settled_machine_read():
+        state = machine_request_state(audit, record)
+        run = audit.get_operation(operation_id)
+    # Never terminalized as failed: the run stays eligible for the next
+    # re-drive discovery pass instead of being excluded from it forever.
+    assert run is not None and run["status"] != "failed", run
+    assert state["outcome"] != "failed", state

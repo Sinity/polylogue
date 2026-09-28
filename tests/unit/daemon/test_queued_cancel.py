@@ -114,3 +114,78 @@ def test_cancel_of_an_unknown_reference_is_refused(tmp_path: Path) -> None:
     error = envelope.get("error")
     assert isinstance(error, dict)
     assert error["code"] == "operation_reference_unknown"
+
+
+def test_cancel_fences_a_live_redrive_despite_a_resent_exchange(tmp_path: Path, monkeypatch: object) -> None:
+    """A resent request's own live exchange must not skip the durable fence.
+
+    Anti-vacuity (#5717): a client resending the original ingest request
+    while its startup re-drive still runs creates its own ``_exchanges``
+    entry. Gating the durable fence and the re-drive cancellation flag on
+    ``exchange is None`` alone treats that resend as pre-acceptance and
+    skips both, so a live re-drive of this exact target observes neither
+    signal and can still materialize and finalize after the client believes
+    it cancelled. The fix keys the fence on ``exchange.acceptance_started``
+    instead: this test proves the fence step is *entered* (the bridge is
+    asked to run it) for an accepted, resent exchange, and stays skipped
+    for a genuinely pre-acceptance one -- the opposite-direction pin.
+    """
+    from concurrent.futures import Future
+
+    from polylogue.daemon.operation_runtime import _Exchange
+    from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
+    from polylogue.operations.operation_context import OperationContext
+
+    fenced_actors: list[str] = []
+    original_run_sync = DaemonWriteThreadBridge.run_sync_with_timeout
+
+    def recording_run_sync(self, actor, timeout, function, *args, **kwargs):
+        if actor == "operation.cancel":
+            fenced_actors.append(actor)
+            return None
+        return original_run_sync(self, actor, timeout, function, *args, **kwargs)
+
+    monkeypatch.setattr(DaemonWriteThreadBridge, "run_sync_with_timeout", recording_run_sync)
+
+    def _cancel_with_resent_exchange(stack, *, acceptance_started: bool, request_id: str) -> None:
+        principal = _principal()
+        request = DaemonOperationRequest(
+            "mutation.session.delete.preview",
+            {"session_ids": ["codex:absent"]},
+            request_id=request_id,
+            archive_root=str(stack.archive_root),
+        )
+        context = OperationContext(archive_root=stack.archive_root, principal=principal, serving_identity="daemon")
+        exchange = _Exchange(
+            request=request,
+            context=context,
+            deadline=1e18,
+            deadline_unix_ms=0,
+            future=Future(),
+            acceptance_started=acceptance_started,
+        )
+        with stack.runtime._condition:
+            stack.runtime._exchanges[request_id] = exchange
+
+        cancel = DaemonOperationRequest(
+            "operation.cancel",
+            {"request_id": request_id},
+            request_id=f"{request_id}-cancel",
+            archive_root=str(stack.archive_root),
+        )
+        stack.runtime.call(cancel, principal)
+
+        with stack.runtime._condition:
+            stack.runtime._exchanges.pop(request_id, None)
+        exchange.future.set_result({})
+
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        # Opposite-direction pin first: a genuinely pre-acceptance resend
+        # must still skip the fence, exactly as before this fix.
+        _cancel_with_resent_exchange(stack, acceptance_started=False, request_id="pre-acceptance-resend")
+        assert fenced_actors == []
+
+        # The defect's exact shape: an accepted, resent exchange.
+        _cancel_with_resent_exchange(stack, acceptance_started=True, request_id="accepted-resend")
+
+    assert fenced_actors == ["operation.cancel"]

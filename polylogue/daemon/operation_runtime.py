@@ -827,7 +827,20 @@ class DaemonOperationRuntime:
                     cancelled_before_acceptance = not exchange.acceptance_started
                     exchange.cancellation.cancel()
                     self._condition.notify_all()
-            if exchange is None:
+                    # A retry resend of the original request creates its own
+                    # exchange entry, so ``exchange is None`` alone cannot
+                    # gate the durable fence: a resumed ingest crossed
+                    # ``before_machine_prepare`` on an earlier attempt and
+                    # never re-enters this exchange's own acceptance path,
+                    # so a live re-drive can still be running this exact
+                    # target. Cancelling only the exchange's reporting
+                    # coroutine leaves that re-drive unfenced and unnotified,
+                    # and it can still materialize and finalize the
+                    # generation after the client believes it cancelled.
+                    apply_durable_fence = exchange.acceptance_started
+                else:
+                    apply_durable_fence = True
+            if apply_durable_fence:
                 # A settled request has no live worker. Queue the durable fence
                 # through the same writer owner, never under the waiter lock.
                 def fence() -> None:
