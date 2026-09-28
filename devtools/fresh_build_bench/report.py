@@ -578,11 +578,18 @@ def benchmark_implementation_sha256() -> str:
     """
     digest = hashlib.sha256()
     package = Path(__file__).resolve().parent
-    for path in sorted(package.glob("*.py")):
+    for path in (*sorted(package.glob("*.py")), *_FINGERPRINT_DEPENDENCIES):
         digest.update(path.name.encode() + b"\0")
         digest.update(path.read_bytes())
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+#: Modules outside the package whose code decides the output fingerprint
+#: (table census, volatile columns, row normalization).
+_FINGERPRINT_DEPENDENCIES: Final = (
+    Path(__file__).resolve().parents[2] / "tests" / "infra" / "reindex_differential.py",
+)
 
 
 def config_digest(config: Any) -> str:
@@ -910,6 +917,7 @@ def comparability_problems(before: dict[str, Any], after: dict[str, Any]) -> lis
     # from: two runs on one host under different cgroup quotas differ.
     for key in (
         "machine",
+        "cpu_model",
         "host_cpu_count",
         "host_mem_total_kib",
         "effective_cpus",
@@ -946,7 +954,12 @@ def compare(before: dict[str, Any], after: dict[str, Any], *, allow_unqualified:
     derived phase did not settle; the verdict line says so.
     """
     problems = comparability_problems(before, after)
-    blocking = [problem for problem in problems if "not qualified" not in problem or not allow_unqualified]
+    # Only a run that promoted (and so has an output to compare) may have its
+    # qualification waived; one that stalled before promotion never can.
+    promoted = all((receipt.get("checks") or {}).get("promoted") is True for receipt in (before, after))
+    blocking = [
+        problem for problem in problems if "not qualified" not in problem or not allow_unqualified or not promoted
+    ]
     lines = [f"NOT COMPARABLE: {problem}" for problem in blocking]
     lines += [f"WARNING: {problem}" for problem in problems if problem not in blocking]
     lines.append(
@@ -1032,6 +1045,12 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
         manifest,
         events.get("by_source") or {},
         (milestones.get("last_chunk_done_s") or 0) - (milestones.get("preparation_done_s") or 0) or None,
+    )
+    # The refreshed sections were reduced by this implementation, the rest by
+    # the recording one: the identity names both, so a refreshed receipt
+    # compares only with receipts refreshed the same way.
+    receipt["benchmark_implementation_sha256"] = (
+        f"{receipt.get('benchmark_implementation_sha256')}+refresh:{benchmark_implementation_sha256()}"
     )
     # Atomic: the receipt is replaced only by a complete document.
     staging = receipt_path.with_name(receipt_path.name + ".tmp")

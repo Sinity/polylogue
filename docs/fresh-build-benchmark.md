@@ -40,8 +40,8 @@ Start runs through the declared AgentCTL operation
 isolates `HOME`, every XDG root and `POLYLOGUE_ARCHIVE_ROOT` inside the work
 directory, writes structured events as JSON lines, samples the daemon's whole
 process tree once a second, and polls the archive read-only until the build is
-terminal, stops making progress (`--stall-timeout`), or exceeds
-`--settle-timeout` after promotion. It then stops the daemon with SIGINT and
+terminal or stops making progress (`--stall-timeout`); a build that keeps
+converging runs until it settles. It then stops the daemon with SIGINT and
 writes `receipt.json`. `--env POLYLOGUE_NAME=value` tunes the daemon but may
 not override a variable the driver sets (archive root, config, logs, sampler).
 Corpus, work and scratch directories must lie outside the checkout.
@@ -82,9 +82,9 @@ summarises it or writes flame-graph input.
 
 `compare BEFORE AFTER` prints the deltas and whether the per-table output
 digests are identical, and exits non-zero unless the receipts are comparable:
-same corpus, same run configuration, same benchmark implementation (a digest of the driver and report code, since `--candidate` may name another checkout), interpreter (version, GIL mode, build string and resolved executable) and host (architecture, CPU count, memory, the effective CPU and memory limits the daemon sizes itself from, work filesystem), and both qualified.
-`--allow-unqualified` admits a run that promoted but did not settle, with a
-warning; it never admits a run whose candidate or corpus changed during the
+same corpus, same run configuration, same benchmark implementation (a digest of the driver and report code, since `--candidate` may name another checkout), interpreter (version, GIL mode, build string and resolved executable) and host (architecture, CPU model, CPU count, memory, the effective CPU and memory limits the daemon sizes itself from, work filesystem), and both qualified.
+`--allow-unqualified` admits a run that promoted but did not settle (never one
+that stalled before promotion), with a warning; it never admits a run whose candidate or corpus changed during the
 build or whose event log lost events. An optimisation claims equivalence only on identical digests from
 comparable receipts.
 

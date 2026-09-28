@@ -62,7 +62,6 @@ class RunConfig:
     label: str
     profile: bool = False
     profile_interval_s: float = 0.01
-    settle_timeout_s: float = 1800.0
     stall_timeout_s: float = 900.0
     poll_s: float = 2.0
     stable_polls: int = 2
@@ -369,6 +368,19 @@ def _meminfo_kib(key: str) -> int | None:
     return None
 
 
+def _cpu_model() -> str:
+    """The processor model name (``/proc/cpuinfo``), else the platform's own answer."""
+    try:
+        with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                key, _, value = line.partition(":")
+                if key.strip() in {"model name", "Hardware", "cpu model"} and value.strip():
+                    return value.strip()
+    except OSError:
+        pass
+    return platform.processor() or platform.machine()
+
+
 def environment(config: RunConfig) -> dict[str, Any]:
     probe = json.loads(
         subprocess.run(
@@ -387,6 +399,8 @@ def environment(config: RunConfig) -> dict[str, Any]:
     from polylogue.runtime import available_cpus
 
     return {
+        # Same-sized workers on different processors are not the same host.
+        "cpu_model": _cpu_model(),
         "host_cpu_count": os.cpu_count(),
         "host_mem_total_kib": _meminfo_kib("MemTotal"),
         # What the daemon (a child in this process's cgroup) sizes its worker
@@ -475,6 +489,9 @@ def _daemon_env(config: RunConfig, paths: dict[str, Path]) -> dict[str, str]:
         "TMPDIR": str(paths["tmp"]),
         "POLYLOGUE_ARCHIVE_ROOT": str(paths["archive"]),
         "POLYLOGUE_CONFIG": str(paths["config"]),
+        # An empty site layer: a host ``/etc/polylogue/polylogue.toml`` would
+        # otherwise add live sources or resource policy outside the receipt.
+        "POLYLOGUE_SITE_CONFIG": "",
         "POLYLOGUE_SINEX_MODE": "off",
         "POLYLOGUE_LOG_FORMAT": "json",
         "POLYLOGUE_LOG_FILE": str(paths["events"]),
@@ -649,9 +666,6 @@ def _measure_and_write_receipt(
                 break
             if observation.promoted_index is not None and promoted_at is None:
                 promoted_at = observation.t
-            if promoted_at is not None and observation.t - promoted_at > config.settle_timeout_s:
-                outcome = "settle_timeout"
-                break
             if observation.terminal:
                 stable += 1
                 if stable == 1:

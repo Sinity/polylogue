@@ -76,7 +76,6 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--python", default=sys.executable)
     run.add_argument("--profile", action="store_true", help="run the in-daemon stack sampler")
     run.add_argument("--profile-interval", type=_positive_seconds, default=0.01)
-    run.add_argument("--settle-timeout", type=float, default=1800.0)
     run.add_argument("--stall-timeout", type=float, default=900.0, help="stop when nothing observable moves")
     run.add_argument("--no-fingerprint", action="store_true")
     run.add_argument("--max-rss-mib", type=float, default=None, help="assert a whole-process-tree peak RSS budget")
@@ -115,10 +114,29 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _refuse_source_root_path(out: Path, home: Path) -> None:
+    """Refuse a corpus output inside a watched source root.
+
+    Sampling copies transcripts into ``--out``; beneath a live source root
+    those copies would be ingested by the production daemon as duplicate
+    sessions. Both the ``--home`` roots and the invoking user's own roots are
+    watched. Checked before anything is created.
+    """
+    from devtools.fresh_build_bench.corpus import default_sample_sources
+
+    resolved = out.expanduser().resolve()
+    for base in {home.expanduser().resolve(), Path.home().resolve()}:
+        for source in default_sample_sources(base):
+            root = source.root.resolve()
+            if resolved == root or root in resolved.parents:
+                raise SystemExit(f"--out must lie outside the watched source root {source.root}: {out}")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "corpus":
         _refuse_repo_path(args.out, "--out")
+        _refuse_source_root_path(args.out, args.home)
         if args.kind == "sample":
             from devtools.fresh_build_bench.corpus import default_sample_sources, sample_real
 
@@ -187,7 +205,6 @@ def main(argv: list[str] | None = None) -> int:
             label=args.label,
             profile=args.profile,
             profile_interval_s=args.profile_interval,
-            settle_timeout_s=args.settle_timeout,
             stall_timeout_s=args.stall_timeout,
             fingerprint=not args.no_fingerprint,
             extra_env=tuple(extra),

@@ -8,6 +8,8 @@ projection, budgets, the terminal predicate and the corpus seal.
 from __future__ import annotations
 
 import json
+import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -673,9 +675,10 @@ def test_a_progressing_build_runs_past_any_elapsed_time(tmp_path: Path, monkeypa
 
         def finish(self) -> None: ...
 
-    monkeypatch.setattr(run.time, "monotonic", monotonic)
-    monkeypatch.setattr(run.time, "sleep", lambda _seconds: None)
-    monkeypatch.setattr(run.subprocess, "Popen", lambda *_args, **_kwargs: Process())
+    # ``run`` reads these through the ``time`` and ``subprocess`` modules.
+    monkeypatch.setattr(time, "monotonic", monotonic)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: Process())
     monkeypatch.setattr(run, "TreeSampler", Sampler)
     monkeypatch.setattr(run, "observe", observe)
     monkeypatch.setattr(run, "_stop", lambda _process, _timeout: (0, 0.0))
@@ -689,7 +692,6 @@ def test_a_progressing_build_runs_past_any_elapsed_time(tmp_path: Path, monkeypa
         python="python",
         label="l",
         stall_timeout_s=7200.0,
-        settle_timeout_s=7200.0,
     )
     paths = {"daemon_log": tmp_path / "daemon.log", "archive": tmp_path, "receipt": tmp_path / "receipt.json"}
 
@@ -839,6 +841,82 @@ def test_refresh_recomputes_the_projection_without_the_corpus(tmp_path: Path) ->
     )
     assert refreshed["projection"] == expected
     assert "stale" not in refreshed["projection"]
+
+
+def test_a_refreshed_receipt_names_the_refreshing_implementation(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P1, #5678): keep the recorded implementation digest
+    on refresh and a receipt re-reduced by new code compares as IDENTICAL with
+    an unrefreshed receipt of the old code."""
+    from devtools.fresh_build_bench.report import benchmark_implementation_sha256, refresh
+
+    (tmp_path / "events.jsonl").write_text(_event("09.000", "daemon.cold_build.generation_promoted") + "\n")
+    old = _receipt(
+        qualified=True, benchmark_implementation_sha256="old", started_at_unix=_ts("2026-09-27T10:00:00.000000Z")
+    )
+    path = tmp_path / "receipt.json"
+    path.write_text(json.dumps(old), encoding="utf-8")
+
+    refreshed = refresh(path)
+
+    assert refreshed["benchmark_implementation_sha256"] == f"old+refresh:{benchmark_implementation_sha256()}"
+    ok, text = compare(old, refreshed)
+    assert not ok and "benchmark implementation" in text
+
+
+def test_the_implementation_digest_covers_the_fingerprint_rules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity (Codex P1, #5678): hash only the package and an edit to the
+    fingerprint's census or normalization leaves the digest unchanged."""
+    from devtools.fresh_build_bench import report
+    from tests.infra import reindex_differential
+
+    assert Path(reindex_differential.__file__).resolve() in report._FINGERPRINT_DEPENDENCIES
+    rules = tmp_path / "reindex_differential.py"
+    rules.write_text("VOLATILE = ()\n", encoding="utf-8")
+    monkeypatch.setattr(report, "_FINGERPRINT_DEPENDENCIES", (rules,))
+    before = report.benchmark_implementation_sha256()
+    rules.write_text("VOLATILE = ('ts',)\n", encoding="utf-8")
+    assert report.benchmark_implementation_sha256() != before
+
+
+def test_only_a_promoted_run_may_waive_qualification() -> None:
+    """Anti-vacuity (Codex P1, #5678): waive every "not qualified" problem and a
+    run that stalled before promotion compares as admissible."""
+    stalled = _receipt(qualified=False, outcome="stalled", checks={"promoted": False}, output_fingerprint=None)
+    ok, text = compare(_receipt(qualified=True), stalled, allow_unqualified=True)
+    assert not ok and "IDENTICAL" not in text
+
+
+def test_receipts_from_different_cpu_models_do_not_compare() -> None:
+    """Anti-vacuity (Codex P1, #5678): drop ``cpu_model`` from the host keys and
+    same-sized workers on different processors compare as controlled."""
+    intel = {"python": "3.14.4", "gil_enabled": False, "host_cpu_count": 8, "cpu_model": "Intel Xeon"}
+    amd = {**intel, "cpu_model": "AMD EPYC"}
+    ok, text = compare(_receipt(qualified=True, environment=intel), _receipt(qualified=True, environment=amd))
+    assert not ok and "cpu_model" in text
+
+
+def test_the_benchmark_daemon_ignores_the_host_site_configuration(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P1, #5678): leave ``POLYLOGUE_SITE_CONFIG`` unset and
+    the daemon layers ``/etc/polylogue/polylogue.toml`` under the receipt's config."""
+    config = RunConfig(corpus=tmp_path, work=tmp_path, candidate=tmp_path, python="python", label="site")
+    paths = {name: tmp_path / name for name in ("home", "xdg", "tmp", "archive", "config", "events", "stacks")}
+    env = _daemon_env(config, paths)
+    # An empty value is the config loader's "no site layer" (``_site_config_path``).
+    assert env["POLYLOGUE_SITE_CONFIG"] == ""
+
+
+def test_a_corpus_is_never_written_inside_a_watched_source_root(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P1, #5678): refuse only checkout paths and the corpus
+    is created beneath the live Codex root, whose daemon ingests the copies."""
+    from devtools.fresh_build_bench.cli import _refuse_source_root_path
+
+    home = tmp_path / "home"
+    (home / ".codex" / "sessions").mkdir(parents=True)
+    with pytest.raises(SystemExit, match="watched source root"):
+        _refuse_source_root_path(home / ".codex" / "sessions" / "bench", home)
+    _refuse_source_root_path(tmp_path / "elsewhere", home)
 
 
 def test_event_reduction_memory_does_not_grow_with_the_log(tmp_path: Path) -> None:
