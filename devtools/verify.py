@@ -966,7 +966,7 @@ def _verification_workload_receipt(
     exit_code: int,
 ) -> dict[str, Any]:
     """Adapt verifier step timing into the shared workload receipt contract."""
-    phases = tuple(str(result["name"]) for result in results)
+    phases = tuple(str(result["name"]) for result in results) or ("finalization",)
     spec = WorkloadEnvelopeSpec(
         workload_id=f"devtools:verify:{tier}",
         family_id="verification",
@@ -983,6 +983,14 @@ def _verification_workload_receipt(
         )
         for result in results
     )
+    if not observations:
+        observations = (
+            WorkloadPhaseObservation(
+                name="finalization",
+                wall_ms=0.0,
+                unavailable=_UNMEASURED_WORKLOAD_DIMENSIONS,
+            ),
+        )
     receipt = WorkloadReceipt.from_observations(
         spec=spec,
         status=WorkloadRunStatus.SUCCEEDED if exit_code == 0 else WorkloadRunStatus.FAILED,
@@ -1048,6 +1056,13 @@ def _finish_and_record_verification(
     workload_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Finish, durably append, and prune every terminal verification path."""
+    if workload_receipt is None:
+        workload_receipt = _verification_workload_receipt(
+            tier=str(run._payload["tier"]),
+            git_head=run._payload.get("git_head"),
+            results=(),
+            exit_code=exit_code,
+        )
     payload = run.finish(
         exit_code=exit_code,
         duration_s=duration_s,

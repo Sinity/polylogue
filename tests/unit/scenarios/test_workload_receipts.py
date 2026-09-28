@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from polylogue.scenarios.workload import (
@@ -83,7 +85,105 @@ def test_named_measurement_paths_have_receipt_or_explicit_adapter() -> None:
         "route-observation",
     }
     assert all(declaration.evidence for declaration in declarations)
-    assert {declaration.disposition for declaration in declarations} == {"shared-receipt", "explicit-adapter"}
+    assert {declaration.disposition for declaration in declarations} == {
+        "shared-receipt",
+        "explicit-adapter",
+        "no-receipt-contract",
+    }
+    scenario_execution = next(item for item in declarations if item.name == "scenario-execution")
+    assert scenario_execution.disposition == "no-receipt-contract"
+    assert "no execution receipt is produced" in scenario_execution.evidence
+
+
+@pytest.mark.asyncio
+async def test_scenario_dispatch_is_truthfully_exempt_from_receipt_contract() -> None:
+    """The declared exemption matches the actual runner dispatch result.
+
+    Anti-vacuity: changing the declaration back to shared-receipt or
+    explicit-adapter fails because this production route returns the runner's
+    value directly and does not wrap it in a workload receipt.
+    """
+    from polylogue.scenarios import dispatch_execution, runner_execution
+    from polylogue.scenarios.workload import workload_adapter_declarations
+
+    result = await dispatch_execution(
+        runner_execution("synthetic"),
+        runner_resolver=lambda _name: lambda: {"ok": True},
+    )
+
+    declaration = next(item for item in workload_adapter_declarations() if item.name == "scenario-execution")
+    assert result == {"ok": True}
+    assert "receipt_id" not in result
+    assert declaration.disposition == "no-receipt-contract"
+
+
+def test_default_pipeline_probe_route_emits_workload_receipt(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The ordinary unbudgeted CLI result still carries a workload receipt.
+
+    Anti-vacuity: returning early when both budget limits are absent removes
+    this top-level receipt and makes the JSON assertion fail.
+    """
+    import devtools.pipeline_probe as pipeline_probe
+
+    async def fake_run_probe(_request: object) -> dict[str, object]:
+        return {
+            "probe": {},
+            "run_payload": {"metrics": {}},
+            "result": {},
+            "paths": {},
+            "provenance": {"git_commit": None, "worktree_dirty": None},
+            "db_stats": {},
+            "raw_fanout": [],
+        }
+
+    monkeypatch.setattr(pipeline_probe, "run_probe", fake_run_probe)
+    assert pipeline_probe.main([]) == 0
+    output = json.loads(capsys.readouterr().out)
+    receipt = output["workload_receipt"]
+    assert isinstance(receipt, dict)
+    assert isinstance(receipt.get("receipt_id"), str)
+
+
+def test_default_slo_output_exposes_its_workload_receipt(capsys: pytest.CaptureFixture[str]) -> None:
+    """The documented human SLO route retains its receipt in stdout.
+
+    Anti-vacuity: removing the default-route receipt line leaves no marker,
+    while the JSON-only branch remains unaffected.
+    """
+    from devtools.verify_slos import main as verify_slos_main
+
+    verify_slos_main(["--skip-benchmarks"])
+    assert "workload_receipt={" in capsys.readouterr().out
+
+
+def test_verifier_common_finalizer_adds_receipt_on_early_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Failure exits that skip the normal success call still persist a receipt.
+
+    Anti-vacuity: removing the common fallback leaves ``workload_receipt``
+    absent when the admission refusal path finalizes without a supplied one.
+    """
+    import devtools.verify as verify
+
+    class Run:
+        _payload = {"tier": "focused-test", "git_head": "synthetic-head"}
+
+        def finish(self, **kwargs: object) -> dict[str, object]:
+            return dict(kwargs)
+
+    monkeypatch.setattr(verify, "append_verify_history", lambda _payload: None)
+    monkeypatch.setattr(verify, "append_verification_evidence", lambda _payload: None)
+    monkeypatch.setattr(verify, "prune_successful_verify_runs", lambda **_kwargs: None)
+    import polylogue.context.failure_seed as failure_seed
+
+    monkeypatch.setattr(failure_seed, "write_failure_seed", lambda **_kwargs: None)
+    payload = verify._finish_and_record_verification(run=Run(), exit_code=2, duration_s=0.0, workload_receipt=None)
+
+    receipt = payload["workload_receipt"]
+    assert isinstance(receipt, dict)
+    assert isinstance(receipt.get("receipt_id"), str)
+    assert payload["exit_code"] == 2
 
 
 def test_workload_receipt_distinguishes_zero_from_unavailable_and_is_stable() -> None:

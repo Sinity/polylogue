@@ -24,7 +24,7 @@ By default, the archive stays on your machine.
 Run the tour in a throwaway archive:
 
 ```bash
-uvx polylogue demo tour
+uvx --python 3.14t polylogue demo tour
 ```
 
 The command is complete when the terminal prints `Polylogue demo tour:
@@ -59,9 +59,9 @@ See the [published structured-failure finding](https://sinity.github.io/polylogu
 
 ```bash
 # Python package: CLI, daemon, and MCP server
-pipx install polylogue
+pipx install --python python3.14t polylogue
 # or
-uv tool install polylogue
+uv tool install --python 3.14t polylogue
 
 # Homebrew CLI
 brew tap sinity/polylogue
