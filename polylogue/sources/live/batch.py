@@ -2759,6 +2759,14 @@ class LiveBatchProcessor:
                 else _antigravity_source_root(antigravity_pb_paths[0])
             )
             source = Source(name="antigravity", path=source_root)
+            # Observe each .pb before conversion starts, so a conversion that
+            # raises or yields nothing still quarantines the revision it
+            # attempted instead of retrying it on every poll.
+            for path in antigravity_pb_paths:
+                try:
+                    captured_file_observations[path] = _file_observation(path.stat())
+                except OSError:
+                    continue
             try:
                 for raw_data, session in iter_antigravity_language_server_sessions(
                     source,
@@ -2780,13 +2788,10 @@ class LiveBatchProcessor:
                 if raw_data.blob_hash is None or raw_data.blob_size is None:
                     failed.append(path)
                     continue
-                try:
-                    stat = path.stat()
-                except OSError:
+                if path not in captured_file_observations:
                     failed.append(path)
                     continue
                 raw_id = raw_data.blob_hash
-                captured_file_observations[path] = _file_observation(stat)
                 parsed_sessions_by_raw_id[raw_id] = [session]
                 raw_byte_sizes[path] = raw_data.blob_size
                 raw_source_names[path] = Provider.ANTIGRAVITY.value
