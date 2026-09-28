@@ -57,7 +57,8 @@ _UNIT_RELATIONS: dict[str, frozenset[str]] = {
     "file": frozenset({"action_pairs"}),
     "run": frozenset(),
     "observed-event": frozenset(),
-    "context-snapshot": frozenset(),
+    # Compaction snapshots resolve their inherited prefix through lineage edges.
+    "context-snapshot": frozenset({"session_links"}),
     "assertion": frozenset({"assertions"}),
     "delegation": frozenset({"delegation_facts"}),
 }

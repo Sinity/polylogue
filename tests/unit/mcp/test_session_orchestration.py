@@ -434,7 +434,15 @@ async def test_orchestration_streams_own_records_without_hydrating_the_session(
     assert evidence is not None
     payload = evidence.model_dump(mode="json")
     assert payload["coverage"]["message_count"] == 2
-    assert payload["coverage"]["event_count"] == 6
+    assert payload["coverage"]["event_count"] == 3
+    assert payload["coverage"]["section_counts"] == {
+        "children": 0,
+        "launches": 2,
+        "model_segments": 2,
+        "bead_mentions": 1,
+        "rate_limits": 1,
+        "usage_observations": 3,
+    }
     assert payload["usage"]["tokens"] == {"input_tokens": 120, "output_tokens": 10}
     assert len(payload["usage"]["observations"]) == 3
     assert {row["bead_id"] for row in payload["bead_mentions"]} == {"example-a12.3"}
