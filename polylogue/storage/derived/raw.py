@@ -322,29 +322,6 @@ class RawObservationDerivation:
         ).fetchall()
         return any(row[0] == "deferred" or not classifier_superseded for row in unresolved)
 
-    def _terminal_parse_refusal(self, census: sqlite3.Row, membership: sqlite3.Row | None) -> bool:
-        """Whether the current parser durably refused these immutable bytes.
-
-        Retained preparation raises transient faults (OS, SQLite, memory) as
-        retryable before any census is written, so a current-fingerprint
-        membership census that failed with a non-retryable parser error is
-        the payload's own verdict. Re-deriving it would repeat the same work
-        after every restart; a new parser fingerprint re-admits it.
-        """
-        if membership is None or census["parser_fingerprint"] != self.recipe_version or census["status"] != "failed":
-            return False
-        if membership["parser_fingerprint"] != self.recipe_version or membership["status"] != "failed":
-            return False
-        if membership["revision_authority"] is not None:
-            return False
-        detail = membership["detail"]
-        return (
-            isinstance(detail, str)
-            and bool(detail)
-            and not detail.startswith(("OSError", "OperationalError", "MemoryError", "RetainedPreparationRetryable"))
-            and not raw_replay_error_is_retryable(detail)
-        )
-
     def _inspect(self, conn: sqlite3.Connection, key: str) -> str:
         from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 
@@ -401,8 +378,6 @@ class RawObservationDerivation:
         ).fetchall()
         if census is None:
             return "missing"
-        if self._terminal_parse_refusal(census, membership):
-            return "valid"
         if census["parser_fingerprint"] != self.recipe_version or census["status"] != "complete":
             return "stale"
         expected = durable_authority_logical_keys(
