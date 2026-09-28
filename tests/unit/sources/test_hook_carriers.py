@@ -598,6 +598,61 @@ def test_compact_blocks_a_producer_only_during_checkpoint_retirement(
     assert materialize_hook_carriers(archive_root) == 2
 
 
+def test_concurrent_compactions_fold_each_envelope_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A second drain waits for the first instead of re-scanning its envelopes.
+
+    Anti-vacuity (Codex P2, #5700): with only the checkpoint-scoped producer
+    lock, the second drain scans the envelope the paused first drain already
+    appended, folds it into a second carrier line, and its retirement raises
+    ``FileNotFoundError`` once the first drain has moved the envelope.
+    """
+
+    archive_root, spool_root = _scratch(tmp_path, monkeypatch)
+    pending = spool_root / "pending" / "2026-09-14"
+    pending.mkdir(parents=True)
+    (pending / f"{0:032x}.json").write_text(_envelope(0), encoding="utf-8")
+
+    from polylogue.sources.hook_producer import _CompactionSink
+
+    entered = threading.Event()
+    release = threading.Event()
+    original_append = _CompactionSink.append
+    appends: list[dict[str, object]] = []
+
+    def pause_first(self: _CompactionSink, record: dict[str, object]) -> Path:
+        appends.append(record)
+        if len(appends) == 1:
+            entered.set()
+            release.wait(timeout=5)
+        return original_append(self, record)
+
+    monkeypatch.setattr(_CompactionSink, "append", pause_first)
+    results: list[dict[str, object]] = []
+    errors: list[BaseException] = []
+
+    def drain() -> None:
+        try:
+            results.append(compact_legacy_spool(spool_root))
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=drain)
+    first.start()
+    assert entered.wait(timeout=5)
+    second = threading.Thread(target=drain)
+    second.start()
+    second.join(timeout=0.2)
+    assert second.is_alive()
+    release.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert errors == []
+    assert len(appends) == 1
+    assert sorted(result["folded"] for result in results) == [0, 1]
+    assert materialize_hook_carriers(archive_root) == 1
+
+
 def _envelope(index: int, *, session: str = "legacy-session") -> str:
     return json.dumps(
         {

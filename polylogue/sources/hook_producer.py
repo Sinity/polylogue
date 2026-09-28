@@ -342,16 +342,20 @@ MAX_COMPACTED_CARRIER_BYTES = 64 * 1024 * 1024
 
 ACKNOWLEDGED_DIRNAME = "acknowledged"
 _CARRIER_DRAIN_LOCK = ".carrier-drain.lock"
+#: Serializes legacy compactors against each other across the whole drain.
+#: Producers never take it, so it costs them nothing; without it two
+#: concurrent drains scan the same envelope, fold it twice and race to retire it.
+_LEGACY_COMPACTION_LOCK = ".legacy-compaction.lock"
 
 
-def _acquire_carrier_lock(root: Path, *, exclusive: bool) -> int:
+def _acquire_carrier_lock(root: Path, *, exclusive: bool, name: str = _CARRIER_DRAIN_LOCK) -> int:
     """Block producers while the legacy carrier drain owns the spool.
 
     Plain descriptor calls rather than a ``contextlib`` manager: this module is
     the hook hot path and imports only the cheap stdlib set.
     """
     root.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(root / _CARRIER_DRAIN_LOCK, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
+    descriptor = os.open(root / name, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
     except BaseException:
@@ -623,9 +627,13 @@ def compact_legacy_spool(
     the next acquisition pass, never an omitted in-flight item.
     """
 
-    before = _carrier_paths(root)
-    summary = _compact_legacy_spool_unlocked(root, max_bytes=max_bytes, checkpoint_events=checkpoint_events)
-    after = _carrier_paths(root)
+    compactor = _acquire_carrier_lock(root, exclusive=True, name=_LEGACY_COMPACTION_LOCK)
+    try:
+        before = _carrier_paths(root)
+        summary = _compact_legacy_spool_unlocked(root, max_bytes=max_bytes, checkpoint_events=checkpoint_events)
+        after = _carrier_paths(root)
+    finally:
+        _release_carrier_lock(compactor)
     summary.update(
         carrier_quiesced=True,
         carrier_arrivals_during_drain=0,
