@@ -118,6 +118,14 @@ class WriterModuleCensusEntry:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Enforce inter-package layering rules.")
     parser.add_argument("--json", action="store_true", help="Output machine-readable JSON.")
+    parser.add_argument(
+        "--prune-baselines",
+        action="store_true",
+        help=(
+            "Rewrite the layering and SQLite degradation baselines to drop entries that no longer "
+            "reproduce. Without it the gate is read-only and reports stale entries as violations."
+        ),
+    )
     return parser
 
 
@@ -1102,6 +1110,8 @@ def _format_violation(violation: dict[str, object]) -> str:
     if rule.startswith("package_docstring_"):
         detail = f" ({violation['detail']})" if "detail" in violation else ""
         return f"  {violation['file']}: {rule}{detail}"
+    if rule in {"layering_baseline_stale", "sqlite_degradation_baseline_stale"}:
+        return f"  {violation['file']}: {rule} ({violation.get('detail', '')})"
     if rule == "sqlite_degradation_site_added":
         return (
             f"  {violation['anchor']}: {rule}"
@@ -1406,16 +1416,46 @@ def main(argv: list[str] | None = None) -> int:
         stale_by_baseline[baseline_ref] = stale
         stale_baseline_count += len(stale)
 
-    # Ratchets shrink as part of the run. An exemption therefore cannot become
-    # live again after the violation it covered has been fixed.
-    for baseline_ref, stale in stale_by_baseline.items():
-        try:
-            _prune_layering_baseline(repo_root / baseline_ref, stale)
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            violations.append({"file": baseline_ref, "rule": "layering_baseline_prune_failed", "detail": str(exc)})
+    # A gate never rewrites the checkout it verifies: a run that edits a tracked
+    # file voids its own result (verify's moved-checkout check), and in CI it
+    # would pass on content nobody committed. A stale entry is instead a
+    # violation until the author commits the shrink, which keeps the ratchet's
+    # property -- a fixed violation's exemption cannot survive to cover a later
+    # reintroduction -- without the gate writing anything.
+    prune_command = "devtools gate layering --prune-baselines"
+    if args.prune_baselines:
+        for baseline_ref, stale in stale_by_baseline.items():
+            try:
+                _prune_layering_baseline(repo_root / baseline_ref, stale)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                violations.append({"file": baseline_ref, "rule": "layering_baseline_prune_failed", "detail": str(exc)})
+    else:
+        for baseline_ref, stale in sorted(stale_by_baseline.items()):
+            for target, file_rel, imp in sorted(stale):
+                violations.append(
+                    {
+                        "file": baseline_ref,
+                        "rule": "layering_baseline_stale",
+                        "detail": (
+                            f"{file_rel} no longer imports {imp} ({target}); remove the exemption with `{prune_command}`"
+                        ),
+                    }
+                )
 
     sqlite_policy = manifest.get("sqlite_degradation")
-    if isinstance(sqlite_policy, dict):
+    if isinstance(sqlite_policy, dict) and not args.prune_baselines:
+        for entry in sqlite_shrunk:
+            violations.append(
+                {
+                    "file": str(sqlite_policy.get("baseline")),
+                    "rule": "sqlite_degradation_baseline_stale",
+                    "detail": (
+                        f"{entry.get('anchor')} no longer reproduces ({entry.get('removed')} stale site(s) in "
+                        f"{entry.get('file')}); shrink the baseline with `{prune_command}`"
+                    ),
+                }
+            )
+    if isinstance(sqlite_policy, dict) and args.prune_baselines:
         sqlite_baseline_ref = sqlite_policy.get("baseline")
         sqlite_roots = sqlite_policy.get("roots")
         if isinstance(sqlite_baseline_ref, str) and isinstance(sqlite_roots, list) and sqlite_shrunk:
@@ -1470,13 +1510,14 @@ def main(argv: list[str] | None = None) -> int:
             print("  No layering violations found.")
         if baselined:
             print(f"  ({len(baselined)} pre-existing baselined violation(s) exempted -- see disallow.baseline)")
-        if stale_baseline_count:
+        if args.prune_baselines and stale_baseline_count:
             print(f"  pruned {stale_baseline_count} stale layering baseline entr(y/ies)")
-        for entry in sqlite_shrunk:
-            print(
-                f"  pruned {entry['anchor']}: sqlite_degradation_anchor_no_longer_reproduces "
-                f"({entry['removed']} stale site(s) in {entry['file']})"
-            )
+        if args.prune_baselines:
+            for entry in sqlite_shrunk:
+                print(
+                    f"  pruned {entry['anchor']}: sqlite_degradation_anchor_no_longer_reproduces "
+                    f"({entry['removed']} stale site(s) in {entry['file']})"
+                )
     return 1 if violations or not gate.ok else 0
 
 
