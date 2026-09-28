@@ -153,57 +153,36 @@ def _archive_file_set_raw_fanout(source_db: Path, index_db: Path) -> list[RawFan
     try:
         if not _table_exists(conn, "raw_sessions"):
             return []
-        if index_db.exists():
-            conn.execute("ATTACH DATABASE ? AS index_tier", (f"file:{index_db}?mode=ro",))
-            has_sessions = True
-        else:
-            has_sessions = False
-        session_join = (
-            "LEFT JOIN index_tier.sessions s ON s.raw_id = r.raw_id"
-            if has_sessions
-            else "LEFT JOIN (SELECT NULL AS raw_id, NULL AS session_id) s ON 0"
-        )
-        message_join = (
-            "LEFT JOIN index_tier.messages m ON m.session_id = s.session_id"
-            if has_sessions
-            else "LEFT JOIN (SELECT NULL AS session_id, NULL AS message_id) m ON 0"
-        )
-        rows = conn.execute(
-            f"""
-            SELECT
-                r.raw_id,
-                r.origin,
-                r.source_path,
-                r.blob_size,
-                r.parse_error,
-                COUNT(DISTINCT s.session_id) AS session_count,
-                COUNT(m.message_id) AS message_count
-            FROM raw_sessions r
-            {session_join}
-            {message_join}
-            GROUP BY
-                r.raw_id,
-                r.origin,
-                r.source_path,
-                r.blob_size,
-                r.parse_error
-            ORDER BY r.blob_size DESC, r.raw_id ASC
-            """
+        raw_rows = conn.execute(
+            "SELECT raw_id, origin, source_path, blob_size, parse_error FROM raw_sessions ORDER BY blob_size DESC, raw_id ASC"
         ).fetchall()
     finally:
         conn.close()
+    index_counts: dict[str, tuple[int, int]] = {}
+    if index_db.exists():
+        index_conn = open_readonly_connection(index_db)
+        try:
+            if _table_exists(index_conn, "sessions"):
+                counts = index_conn.execute(
+                    """SELECT s.raw_id, COUNT(DISTINCT s.session_id), COUNT(m.message_id)
+                       FROM sessions s LEFT JOIN messages m ON m.session_id = s.session_id
+                       GROUP BY s.raw_id"""
+                ).fetchall()
+                index_counts = {str(row[0]): (int(row[1]), int(row[2])) for row in counts}
+        finally:
+            index_conn.close()
     return [
         {
             "raw_id": str(row[0]),
             "payload_provider": row[1],
-            "source_name": row[1],
+            "source_name": row[2],
             "blob_size_bytes": int(row[3]),
-            "session_count": int(row[5]),
-            "message_count": int(row[6]),
+            "session_count": index_counts.get(str(row[0]), (0, 0))[0],
+            "message_count": index_counts.get(str(row[0]), (0, 0))[1],
             "parse_error": row[4],
             "storage_route": "archive_file_set",
         }
-        for row in rows
+        for row in raw_rows
     ]
 
 

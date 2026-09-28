@@ -122,6 +122,7 @@ Regenerate the declaration with :func:`render_declaration`.
 from __future__ import annotations
 
 import ast
+import json
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -456,7 +457,6 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
         reads_by_function: dict[str, set[tuple[str, str]]] = {}
         omissible_by_function: dict[str, set[tuple[str, int]]] = {}
         pending_rewrites: list[SweepSite] = []
-        module_reads_archive = False
         module_writes = False
 
         for node in walk_module(tree):
@@ -477,8 +477,6 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
             for sql in texts:
                 if _ANY_DML_RE.search(sql):
                     module_writes = True
-                if any(table in tiers for table in _SOURCE_TABLE_RE.findall(sql)):
-                    module_reads_archive = True
                 for table, kind, scope in _rewrites(sql, tiers):
                     rewrite_scopes.setdefault((table, kind), []).append(scope)
                 for table, scope in _derived_reads(sql, tiers):
@@ -546,18 +544,19 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
                     )
                 )
 
-        if module_reads_archive:
-            for function, field, line in _substitution_sites(tree, scopes):
-                record(
-                    SweepSite(
-                        file=relative,
-                        function=function,
-                        subject=field,
-                        kind="read_path_substitution",
-                        scope="writing_module" if module_writes else "read_only_module",
-                        line=line,
-                    )
+        # Substitution shape is independently meaningful even when the input
+        # profile was loaded by a caller and this module contains no SQL.
+        for function, field, line in _substitution_sites(tree, scopes):
+            record(
+                SweepSite(
+                    file=relative,
+                    function=function,
+                    subject=field,
+                    kind="read_path_substitution",
+                    scope="writing_module" if module_writes else "read_only_module",
+                    line=line,
                 )
+            )
 
     return CensusObservation(sites=tuple(sorted(sites.values(), key=lambda item: item.key)))
 
@@ -625,7 +624,10 @@ def collect_violations(*, repo_root: Path, declaration_path: Path | None = None)
     if not path.is_file():
         return [{"rule": "derived_sweep_census_declaration_missing", "key": path.as_posix()}]
     declaration = load_declaration(path)
-    observation = census_package(repo_root / declaration.package, repo_root=repo_root)
+    package_root = repo_root / declaration.package
+    if declaration.package != "polylogue" or not package_root.is_dir():
+        return [{"rule": "derived_sweep_census_package_invalid", "key": declaration.package}]
+    observation = census_package(package_root, repo_root=repo_root)
 
     violations: list[dict[str, object]] = []
     for name in declaration.malformed:
@@ -737,8 +739,8 @@ _DECLARATION_HEADER = """\
 # `unclassified` means the census SAW the site, not that the site is legitimate.
 # It is the ratchet's floor: a NEW archive-wide derived sweep, or a NEW read-path
 # substitution, cannot appear undeclared, and a new one arrives at that floor.
-# Every entry below has been adjudicated; a reason that says no permitted member
-# fits is a finding, not pending work.
+# Existing classifications record adjudication. New entries are pinned as
+# unclassified until a reviewer assigns a permitted classification.
 package: polylogue
 sites:
 """
@@ -751,7 +753,16 @@ def render_declaration(
 ) -> str:
     """Render the declaration, preserving any classification already recorded."""
     known = dict(existing or {})
-    lines = [_DECLARATION_HEADER]
+    pending = any(
+        site.key not in known or known[site.key].classification == "unclassified" for site in observation.sites
+    )
+    header = _DECLARATION_HEADER
+    if not pending:
+        header = header.replace(
+            "# Existing classifications record adjudication. New entries are pinned as\n# unclassified until a reviewer assigns a permitted classification.\n",
+            "# Every entry below has been adjudicated; a reason that says no permitted member\n# fits is a finding, not pending work.\n",
+        )
+    lines = [header]
     for site in observation.sites:
         entry = known.get(site.key)
         classification = entry.classification if entry else "unclassified"
@@ -759,12 +770,12 @@ def render_declaration(
             entry.reason if entry and entry.reason else "pinned by the initial census; adjudication is follow-up work"
         )
         lines.append(
-            f'  - file: "{site.file}"\n'
-            f'    function: "{site.function}"\n'
-            f'    subject: "{site.subject}"\n'
-            f'    kind: "{site.kind}"\n'
-            f'    scope: "{site.scope}"\n'
+            f"  - file: {json.dumps(site.file, ensure_ascii=False)}\n"
+            f"    function: {json.dumps(site.function, ensure_ascii=False)}\n"
+            f"    subject: {json.dumps(site.subject, ensure_ascii=False)}\n"
+            f"    kind: {json.dumps(site.kind, ensure_ascii=False)}\n"
+            f"    scope: {json.dumps(site.scope, ensure_ascii=False)}\n"
             f"    classification: {classification}\n"
-            f'    reason: "{reason}"\n'
+            f"    reason: {json.dumps(reason, ensure_ascii=False)}\n"
         )
     return "".join(lines)
