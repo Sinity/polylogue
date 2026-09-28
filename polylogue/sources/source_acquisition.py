@@ -16,6 +16,7 @@ from polylogue.storage.cursor_state import CursorStatePayload
 
 from . import cursor as _cursor
 from . import decoders as _decoders
+from .acquisition_boundary import release_captures_on_refusal
 from .cursor import _log_source_iteration_summary, _record_cursor_failure
 from .decoders import _ZipEntryValidator
 from .dispatch import ForeignOriginContentError, bound_location_provider
@@ -122,21 +123,32 @@ def iter_source_raw_data(
                             logger.debug("Skipping empty source entry: %s", entry_path)
                             _record_cursor_failure(cursor_state, entry_path, "empty file")
                             continue
+                        member_records: list[RawSessionData] = []
                         try:
-                            yield from iter_zip_entry_raw_data(
-                                zf,
-                                ZipEntryReadContext(
-                                    source=source,
-                                    zip_path=path,
-                                    entry=info,
-                                    file_mtime=file_mtime,
-                                    provider_hint=provider_hint,
-                                    blob_store=blob_store,
-                                    observation_callback=observation_callback,
-                                    status_callback=status_callback,
-                                    bound_provider=bound_location_provider(provider_hint),
-                                ),
-                            )
+                            # A member is one admission unit: nothing leaves it
+                            # until every record validated, and a refusal
+                            # releases the splits it had captured.
+                            with release_captures_on_refusal(blob_store) as captures:
+                                for member_record in iter_zip_entry_raw_data(
+                                    zf,
+                                    ZipEntryReadContext(
+                                        source=source,
+                                        zip_path=path,
+                                        entry=info,
+                                        file_mtime=file_mtime,
+                                        provider_hint=provider_hint,
+                                        blob_store=blob_store,
+                                        observation_callback=observation_callback,
+                                        status_callback=status_callback,
+                                        bound_provider=bound_location_provider(provider_hint),
+                                    ),
+                                ):
+                                    member_records.append(member_record)
+                                    if member_record.blob_hash is not None:
+                                        captures.append(
+                                            (member_record.blob_hash, member_record.blob_publication_receipt_id)
+                                        )
+                            yield from member_records
                         except ForeignOriginContentError as exc:
                             # One refused member must not discard its admissible
                             # siblings; the refusal is recorded per member.

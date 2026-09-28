@@ -94,7 +94,7 @@ def test_run_proof_uses_self_bound_free_ports_and_product_convergence(
     assert environment["POLYLOGUE_API_PORT"] == "48801"
     assert environment["POLYLOGUE_BROWSER_CAPTURE_PORT"] == "48865"
     assert environment["XDG_CONFIG_HOME"] == str(
-        tmp_path / "scratch" / "polylogue-dev-loop-proof" / "artifacts" / "xdg-config"
+        tmp_path / "scratch" / "polylogue-dev-loop-proof" / "artifacts" / "home" / ".config"
     )
 
 

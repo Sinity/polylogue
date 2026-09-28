@@ -450,10 +450,13 @@ def _archive_members(
                     None,  # type: ignore[arg-type]
                     bound_provider=location_binding,
                 )
+                # A member is one admission unit: its accepted decisions join the
+                # denominator only once every record validated.
+                member_decisions: list[SourceDecision] = []
                 for payload in replay_zip_entry_acquisition_payloads(archive, context):
                     _check_observation_cancelled(cancelled)
                     split = payload.source_index or 0
-                    members.append(
+                    member_decisions.append(
                         SourceDecision(
                             source_name,
                             f"{path}:{info.filename}",
@@ -466,6 +469,7 @@ def _archive_members(
                     )
                     if progress is not None:
                         progress("baseline_hash", revisions=1, hashed_bytes=len(payload.payload_bytes))
+                members.extend(member_decisions)
             except ForeignOriginContentError as exc:
                 # The live acquisition refuses this member; the baseline must
                 # not expect a raw row for it.

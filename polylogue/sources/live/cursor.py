@@ -2109,12 +2109,13 @@ class CursorStore:
         """
 
         def write() -> None:
-            escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             with self._connect_ops() as conn:
+                # ``substr`` compares exactly; ``LIKE`` folds ASCII case and
+                # would reach a sibling archive differing only in case.
                 rows = conn.execute(
                     "SELECT target_id FROM convergence_debt WHERE stage = ? AND target_type = ? "
-                    "AND target_id LIKE ? ESCAPE '\\'",
-                    (stage, subject_type, escaped + "%"),
+                    "AND substr(target_id, 1, ?) = ?",
+                    (stage, subject_type, len(prefix), prefix),
                 ).fetchall()
                 stale = [(stage, subject_type, row[0]) for row in rows if row[0] not in keep]
                 conn.executemany(
