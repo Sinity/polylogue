@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from contextlib import closing
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -80,9 +81,25 @@ def test_usage_report_reads_user_and_index_through_profiles(
 def test_delegation_freshness_probe_reads_index_through_profile(
     archive: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    opened = spy(monkeypatch, delegation, tmp_path)
+    """The probe reads through the pinned operation-read boundary (#5722).
+
+    Anti-vacuity: a probe that opens its own writable connection bypasses the
+    spy, so ``opened`` stays empty; a pinned archive connection without the
+    read authorizer accepts the mutation matrix.
+    """
+    real = delegation.open_operation_read
+    opened: list[Path] = []
+
+    @contextmanager
+    def audited(root: Path, **kwargs: Any) -> Iterator[Any]:
+        with real(root, **kwargs) as pinned:
+            assert_write_denied(pinned.archive._conn, tmp_path)
+            opened.append(Path(pinned.archive.index_db_path).resolve())
+            yield pinned
+
+    monkeypatch.setattr(delegation, "open_operation_read", audited)
     assert delegation.delegation_work_evidence_materialization_needed(archive) is True
-    assert opened == [(archive / "index.db").resolve()] * 2
+    assert opened == [(archive / "index.db").resolve()]
 
 
 def test_browser_receiver_lookups_read_through_profiles(
