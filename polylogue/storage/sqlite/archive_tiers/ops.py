@@ -302,6 +302,9 @@ CREATE TABLE IF NOT EXISTS daemon_stage_events (
 CREATE INDEX IF NOT EXISTS idx_daemon_stage_events_attempt_observed
 ON daemon_stage_events(attempt_id, observed_at_ms DESC);
 
+CREATE INDEX IF NOT EXISTS idx_daemon_stage_events_stage_observed
+ON daemon_stage_events(stage, observed_at_ms DESC);
+
 CREATE TABLE IF NOT EXISTS daemon_events (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     ts_ms          INTEGER NOT NULL,

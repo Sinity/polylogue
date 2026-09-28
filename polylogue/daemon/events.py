@@ -185,11 +185,9 @@ def prune_daemon_events(
     ``MIN(id)`` alone, so an interior deletion is invisible to it: a cursor
     below the hole still passes the minimum-id check and the next page is
     delivered as ``OK`` with the deleted row silently missing. ``ts_ms`` is not
-    monotonic in ``id`` -- ``observed_at_ms`` is caller-supplied and the wall
-    clock can step backwards -- so age retention keeps the first row the
-    horizon retains and everything after it, rather than every row whose
-    timestamp happens to be old. That over-retains an out-of-order old row
-    sitting behind a young one; ``max_rows`` still bounds the ledger's size.
+    monotonic in ``id``, so age retention deletes through the highest expired
+    ID. That may discard newer rows before it, but preserves a complete ID
+    suffix so cursor checks detect every retention gap.
     """
     resolved = daemon_event_retention() if retention is None else retention
     if not resolved.is_bounded:
@@ -197,12 +195,10 @@ def prune_daemon_events(
     removed = 0
     if resolved.max_age_ms is not None:
         horizon = (current_epoch_ms() if now_ms is None else now_ms) - resolved.max_age_ms
-        boundary_row = conn.execute("SELECT MIN(id) FROM daemon_events WHERE ts_ms >= ?", (horizon,)).fetchone()
+        boundary_row = conn.execute("SELECT MAX(id) FROM daemon_events WHERE ts_ms < ?", (horizon,)).fetchone()
         boundary = None if boundary_row is None else boundary_row[0]
-        if boundary is None:
-            removed += conn.execute("DELETE FROM daemon_events").rowcount
-        else:
-            removed += conn.execute("DELETE FROM daemon_events WHERE id < ?", (int(boundary),)).rowcount
+        if boundary is not None:
+            removed += conn.execute("DELETE FROM daemon_events WHERE id <= ?", (int(boundary),)).rowcount
     if resolved.max_rows is not None:
         row_count = int(conn.execute("SELECT COUNT(*) FROM daemon_events").fetchone()[0])
         excess = row_count - resolved.max_rows
@@ -535,10 +531,21 @@ def query_events_since(
     """
     conn = _open_events_reader()
     if conn is None:
-        # No ledger file, or an ops database predating the event schema: there
-        # is no retained range to compare a cursor against, so this stays the
-        # documented empty-ledger result rather than a fabricated refusal.
-        return DaemonEventPage(status=EventCursorStatus.OK, events=(), retained_min_id=None, latest_id=0)
+        if last_id <= 0:
+            return DaemonEventPage(status=EventCursorStatus.OK, events=(), retained_min_id=None, latest_id=0)
+        resync = build_snapshot_envelope(
+            event_id=0,
+            ts=_iso_from_ms(current_epoch_ms()),
+            event_count=0,
+            first_event_id=None,
+            last_event_id=None,
+            kind_counts={},
+            resync_reason="ledger_reset",
+            requested_since=last_id,
+        )
+        return DaemonEventPage(
+            status=EventCursorStatus.AGED_OUT, events=(), retained_min_id=None, latest_id=0, resync=resync
+        )
     try:
         conn.execute("BEGIN")
         retained_min, latest = _retained_range(conn)

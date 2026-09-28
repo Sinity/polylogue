@@ -513,6 +513,7 @@ class BoundedComputeAdapter:
             )
         handle = cancellation or CancellationHandle()
         future: Future[T] = Future()
+        future.add_done_callback(lambda done: handle.cancel() if done.cancelled() else None)
         task = _Task(
             function=function,
             # The scheduler queue is heterogeneous, while this public handle
@@ -532,7 +533,17 @@ class BoundedComputeAdapter:
                     admission_class=admission_class,
                     evidence={"capacity_units": self.capacity_units},
                 )
-            self._acquire_locked(self._classes[admission_class], units, estimated_bytes)
+            state = self._classes[admission_class]
+            if min(units, self.max_workers) > state.ceiling_slots:
+                raise DaemonBackpressureError(
+                    "operation exceeds its admission class slot ceiling",
+                    admission_class=admission_class,
+                    evidence={
+                        "class_ceiling_slots": state.ceiling_slots,
+                        "requested_slots": min(units, self.max_workers),
+                    },
+                )
+            self._acquire_locked(state, units, estimated_bytes)
             self._queues[admission_class].append(task)
             runnable = self._drain_locked()
 
@@ -568,6 +579,12 @@ class BoundedComputeAdapter:
             if self._active_slots + task.slots > self.max_workers - self._unmet_other_slot_reserves(name):
                 continue
             if self._group_active_slots(name) + task.slots > state.ceiling_slots:
+                # Do not backfill a background slot with a later turn while
+                # the selected class head is runnable except for its own
+                # multi-slot footprint. Its current occupants will release
+                # together, allowing this head to make progress.
+                if background_turn is not None:
+                    return None
                 continue
             queue.popleft()
             if background_turn is not None:
