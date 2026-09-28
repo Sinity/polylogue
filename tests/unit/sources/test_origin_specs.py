@@ -1443,6 +1443,57 @@ def test_skipped_suffix_utf8_and_long_numbers_match_the_decoder() -> None:
     assert envelope == {"atof_version": "0.1", UNDECLARED_FIELDS: True}
 
 
+def test_a_malformed_long_number_stays_malformed() -> None:
+    """A long token replaced by a placeholder must still be a valid JSON number.
+
+    Anti-vacuity: drop the grammar check in ``_end_number`` and ``1.1.1...``
+    beyond the exact-view bound becomes ``0.0``, so the envelope is admitted
+    while the decoder rejects the document.
+    """
+    import io
+
+    import ijson
+    import pytest
+
+    from polylogue.core.json_envelope import top_level_envelopes
+
+    fields = frozenset({"atof_version"})
+    malformed = b'{"atof_version": "0.1", "padding": ' + b"1.1" * 4000 + b"}"
+    with pytest.raises((ijson.JSONError, ValueError)):
+        list(top_level_envelopes(io.BytesIO(malformed), expand_arrays=False, fields=fields))
+    valid = b'{"atof_version": "0.1", "padding": -0.' + b"1" * 10_000 + b"e+12}"
+    (envelope,) = top_level_envelopes(io.BytesIO(valid), expand_arrays=False, fields=fields)
+    assert envelope["atof_version"] == "0.1"
+
+
+def test_array_document_recognition_reads_a_bounded_sample(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Recognizing a JSON array reads only the leading records, not the whole array.
+
+    Anti-vacuity: collect the expanded envelopes with a bare ``list(...)`` and
+    the generator is drained past the sample, tripping the guard below.
+    """
+    from polylogue.sources import origin_specs
+
+    record = '{"atof_version": "0.1", "kind": "mark", "uuid": "u", "timestamp": "t", "name": "n"}'
+    document = tmp_path / "spans.json"
+    document.write_text("[" + ",".join([record] * 200) + "]", encoding="utf-8")
+    real = origin_specs.top_level_envelopes
+    drawn: list[int] = []
+
+    def guarded(handle: object, *, expand_arrays: bool, fields: frozenset[str]):  # type: ignore[no-untyped-def]
+        for index, envelope in enumerate(real(handle, expand_arrays=expand_arrays, fields=fields)):  # type: ignore[arg-type]
+            if expand_arrays:
+                drawn.append(index)
+                assert index < origin_specs.SOURCE_CLASS_JSONL_LEADING_RECORDS, "array drained past the sample"
+            yield envelope
+
+    monkeypatch.setattr(origin_specs, "top_level_envelopes", guarded)
+    recognition = origin_specs.recognize_source_class(Provider.HERMES, document)
+
+    assert recognition is not None and recognition.source_class == "session"
+    assert len(drawn) == origin_specs.SOURCE_CLASS_JSONL_LEADING_RECORDS
+
+
 def test_hermes_jsonl_recognition_requires_every_record_to_be_atof(tmp_path: Path) -> None:
     """Anti-vacuity: go back to ``any`` and the mixed file is recognized as a session."""
     from polylogue.sources.origin_specs import recognize_source_class

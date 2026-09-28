@@ -56,6 +56,34 @@ _NUMBER_NON_INTEGER = re.compile(rb"[.eE]")
 #: integer conversion limit, so every integer the decoder accepts is exact.
 _NUMBER_VIEW_BYTES = 8192
 
+#: RFC 8259 number grammar as a byte-driven automaton, so a token too long to
+#: pass exactly is still checked in full before it is replaced by a
+#: placeholder. States: 0 start, 1 sign, 2 leading zero, 3 integer digits,
+#: 4 point, 5 fraction digits, 6 exponent mark, 7 exponent sign, 8 exponent
+#: digits; -1 is invalid.
+_NUMBER_ACCEPTING = frozenset({2, 3, 5, 8})
+_DIGITS = frozenset(b"0123456789")
+
+
+def _number_step(state: int, byte: int) -> int:
+    if state == 0:
+        return 1 if byte == 0x2D else 2 if byte == 0x30 else 3 if byte in _DIGITS else -1
+    if state == 1:
+        return 2 if byte == 0x30 else 3 if byte in _DIGITS else -1
+    if state in (2, 3):
+        if byte in _DIGITS:
+            return 3 if state == 3 else -1
+        return 4 if byte == 0x2E else 6 if byte in (0x65, 0x45) else -1
+    if state in (4, 5):
+        if byte in _DIGITS:
+            return 5
+        return 6 if state == 5 and byte in (0x65, 0x45) else -1
+    if state == 6:
+        return 7 if byte in (0x2B, 0x2D) else 8 if byte in _DIGITS else -1
+    if state in (7, 8):
+        return 8 if byte in _DIGITS else -1
+    return -1
+
 
 class EnvelopeValueTooLargeError(ValueError):
     """A declared identity field exceeds SQLite's maximum value length.
@@ -210,8 +238,16 @@ class _PrefixStringReader:
         self._number_is_integer = True
         self._number_in_integer_part = True
         self._number_digits = 0
+        self._number_state = 0
 
     def _extend_number(self, token: bytes) -> None:
+        state = self._number_state
+        if state != -1:
+            for byte in token:
+                state = _number_step(state, byte)
+                if state == -1:
+                    break
+            self._number_state = state
         if self._number_in_integer_part:
             mark = _NUMBER_NON_INTEGER.search(token)
             integer_part = token if mark is None else token[: mark.start()]
@@ -229,6 +265,10 @@ class _PrefixStringReader:
         self._number_open = False
         limit = sys.get_int_max_str_digits()
         if self._number_is_integer and limit and self._number_digits > limit:
+            out += _INVALID_NUMBER_END
+        elif self._number_long and self._number_state not in _NUMBER_ACCEPTING:
+            # A malformed long token stays malformed: the placeholder must not
+            # turn a document the decoder rejects into one it would accept.
             out += _INVALID_NUMBER_END
         elif self._number_long:
             out += b"0" if self._number_is_integer else b"0.0"

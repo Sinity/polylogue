@@ -794,9 +794,16 @@ def recognize_source_class(
                 else:
                     (payload,) = top_level_envelopes(handle, expand_arrays=False, fields=fields)
             if not is_jsonl and isinstance(payload, list):
-                # A JSON array document: its signature is read per element.
+                # A JSON array document: its signature is read per element,
+                # over the same bounded leading sample the JSONL route reads,
+                # so an array of millions of records costs bounded memory.
                 with path.open("rb") as handle:
-                    payload = list(top_level_envelopes(handle, expand_arrays=True, fields=fields))
+                    payload = list(
+                        islice(
+                            top_level_envelopes(handle, expand_arrays=True, fields=fields),
+                            SOURCE_CLASS_JSONL_LEADING_RECORDS,
+                        )
+                    )
         except (OSError, UnicodeDecodeError, ValueError, ArithmeticError, ijson.JSONError):
             return SourceClassRecognition("unsupported", f"{provider.value} candidate is not readable JSON")
 
