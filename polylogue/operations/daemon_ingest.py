@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -105,6 +106,10 @@ class IngestStoppedError(RuntimeError):
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(reason)
+
+
+class IngestProjectionUnrecoverableError(RuntimeError):
+    """A re-drive cannot tell which sessions its interrupted attempt changed."""
 
 
 class IngestReprepareRequiredError(RuntimeError):
@@ -280,6 +285,10 @@ class IngestExecution:
         self.inline_session_ids: list[str] = []
         self.changed_session_count = 0
         self.changed_message_count = 0
+        #: Cohorts that published a session this attempt did not change: the
+        #: content was already there, from before this request or from an
+        #: interrupted attempt of it.
+        self.unchanged_publications = 0
         self.refused_count = 0
         self.inline_refusals: list[IngestRefusedMembershipHistorical] = []
         self.refusal_pages_ref: str | None = None
@@ -307,7 +316,10 @@ class IngestExecution:
             )
 
     def stop_reason(self) -> str | None:
-        reason = self.runtime.stop_reason(self.request)
+        return self.durable_stop_reason(self.runtime.stop_reason(self.request))
+
+    def durable_stop_reason(self, reason: str | None) -> str | None:
+        """Fold the accepted request's durable stop, deadline and authority expiry into ``reason``."""
         if self.record is not None:
             deadline = self.record.get("accepted_deadline_unix_ms")
             if self.record.get("stop_reason"):
@@ -878,6 +890,8 @@ class IngestExecution:
                             pending.execute("INSERT OR IGNORE INTO pending VALUES (?)", (redo_key,))
                     if changed_message_count is not None and publication.session_id is not None:
                         self.record_changed_session(publication.session_id, changed_message_count)
+                    elif publication.published and publication.session_id is not None:
+                        self.unchanged_publications += 1
         finally:
             observed.close()
         # A published classification may still be ambiguous or incomplete.
@@ -1203,9 +1217,10 @@ class IngestRedrive(IngestExecution):
     It resumes the original operation run under a new attempt and drives the
     retained manifest through the same phases as a fresh request. It reads no
     request payload: the accepted plan binds the source name, and the input
-    path is not read again, so the original input need not exist. The
-    original request's deadline bounded only that request's wait; this
-    attempt stops only when its owner stops or the request is cancelled.
+    path is not read again, so the original input need not exist. It stops
+    when its owner stops, the request is cancelled, or the request's durable
+    accepted deadline or authorization expiry passes, exactly as the
+    original attempt would have.
     """
 
     def __init__(
@@ -1229,9 +1244,27 @@ class IngestRedrive(IngestExecution):
             str(record["operation_name"]),
         )
         self._stop_requested = stop_requested
+        self.prior_materialization = False
 
     def stop_reason(self) -> str | None:
-        return self._stop_requested()
+        return self._stop_requested() or self.durable_stop_reason(None)
+
+    async def finalize(
+        self,
+        generation: RetainedSourceGeneration,
+        receipt: SourceReceiptSpool,
+        profile_parts: tuple[SessionInsightPartReceipt, ...],
+    ) -> IngestHistoricalReceiptV2:
+        if self.prior_materialization or self.unchanged_publications:
+            # The interrupted attempt may have published some of these, and
+            # its changed-session projection died with it; an applied receipt
+            # would under-report what this request wrote.
+            await self.mark_unknown(
+                "the interrupted attempt's changed-session projection is not recoverable: "
+                "generation content was already materialized when the re-drive began"
+            )
+            raise IngestProjectionUnrecoverableError("re-drive finalized as indeterminate")
+        return await super().finalize(generation, receipt, profile_parts)
 
     def first_snapshot(self, snapshot: PinnedOperationRead) -> None:
         return None
@@ -1259,7 +1292,25 @@ class IngestRedrive(IngestExecution):
             return StartedBoundMutation(plan=plan, authorization=authorization, operation_id=self.operation_id)
 
         self.started_mutation = await self.runtime.compute_phase(load_started)
-        return await self.accepted_generation()
+        generation = await self.accepted_generation()
+
+        def already_materialized() -> bool:
+            from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+            with closing(open_readonly_connection(self.archive_root / "source.db", validate_schema=False)) as conn:
+                return (
+                    conn.execute(
+                        "SELECT 1 FROM source_item_raw_members AS m JOIN raw_sessions AS r ON r.raw_id = m.raw_id "
+                        "WHERE m.source_generation_id = ? AND r.parsed_at_ms IS NOT NULL LIMIT 1",
+                        (generation.source_generation_id,),
+                    ).fetchone()
+                    is not None
+                )
+
+        # A generation raw already materialized may be the interrupted
+        # attempt's work, whose changed-session projection died with it.
+        self.prior_materialization = await self.runtime.compute_phase(already_materialized)
+        return generation
 
     async def settle_failed(self, reason: str) -> None:
         """Terminalize this attempt as failed; a retry would meet the same refusal."""
@@ -1278,72 +1329,105 @@ async def redrive_accepted_ingests(
     *,
     stop_requested: Callable[[str], str | None],
     on_commit: Callable[[], None] | None = None,
+    on_claimed: Callable[[], None] | None = None,
 ) -> None:
     """Drive every accepted, unstopped ingest without a terminal checkpoint to its receipt.
 
     This is the daemon ingest owner's recovery of work a dead process
-    accepted. Each run is claimed under a new attempt, so only one owner
-    drives it, and one generation is driven at a time. A generation that
-    cannot be driven (its decoder is gone, its retained rows are damaged)
-    terminalizes as failed. An owner shutdown leaves the run interrupted for
-    the next owner. ``stop_requested`` receives the request id.
+    accepted. Every eligible run is claimed under a new attempt first, and
+    ``on_claimed`` fires once all are claimed, so a caller can hold its
+    listeners until a resent request reads ``running`` rather than
+    ``interrupted``. Runs are then driven one at a time. A transient refusal
+    (the index generation moved, control admission is full) retries the same
+    claimed run; a stop settles like a fresh request's stop (fenced and
+    indeterminate, since effects may be partial); a generation that cannot
+    be driven at all terminalizes as failed. An owner shutdown leaves the run
+    for the next owner. ``stop_requested`` receives the request id.
     """
+    from polylogue.daemon.execution import DaemonBackpressureError
     from polylogue.operations.audit import AuditRepository
 
-    if not (archive_root / "audit.db").is_file():
-        return
-    audit = AuditRepository(
-        archive_root / "audit.db",
-        attempt_owner_id=AuditRepository.current_process_attempt_owner(),
-        on_commit=on_commit,
-    )
-
-    def discover() -> tuple[tuple[str, dict[str, object]], ...]:
-        with audit.settled_machine_read():
-            return audit.interrupted_ingest_requests()
-
-    for operation_id, record in await runtime.compute_phase(discover):
-        request_id = str(record["request_id"])
-        if stop_requested(request_id) == "shutdown":
+    claimed: list[tuple[str, str, IngestRedrive]] = []
+    try:
+        if not (archive_root / "audit.db").is_file():
             return
-        execution = IngestRedrive(
-            runtime,
-            archive_root,
-            audit,
-            operation_id=operation_id,
-            record=record,
-            stop_requested=partial(stop_requested, request_id),
+        audit = AuditRepository(
+            archive_root / "audit.db",
+            attempt_owner_id=AuditRepository.current_process_attempt_owner(),
+            on_commit=on_commit,
         )
+
+        def discover() -> tuple[tuple[str, dict[str, object]], ...]:
+            with audit.settled_machine_read():
+                return audit.interrupted_ingest_requests()
+
+        for operation_id, record in await runtime.compute_phase(discover):
+            request_id = str(record["request_id"])
+            if stop_requested(request_id) == "shutdown":
+                return
+            execution = IngestRedrive(
+                runtime,
+                archive_root,
+                audit,
+                operation_id=operation_id,
+                record=record,
+                stop_requested=partial(stop_requested, request_id),
+            )
+            if await execution.claim():
+                claimed.append((operation_id, request_id, execution))
+            else:
+                execution.state_path.unlink(missing_ok=True)
+    finally:
+        if on_claimed is not None:
+            on_claimed()
+
+    for operation_id, request_id, execution in claimed:
         try:
-            if not await execution.claim():
-                continue
             emit("ingest.redrive.started", operation_id=operation_id, request_id=request_id, outcome="running")
-            generation = await execution.resume()
-            history = await drive_accepted_generation(execution, generation)
+            backoff_s = 0.5
+            while True:
+                try:
+                    generation = await execution.resume()
+                    history = await drive_accepted_generation(execution, generation)
+                except (IngestReprepareRequiredError, DaemonBackpressureError) as exc:
+                    # Transient: the claim stays with this owner and the same
+                    # run is driven again; every phase settles by content hash.
+                    emit(
+                        "ingest.redrive.retry",
+                        operation_id=operation_id,
+                        request_id=request_id,
+                        outcome="running",
+                        error_type=type(exc).__name__,
+                        error_detail=str(exc)[:512],
+                    )
+                    await runtime.compute_phase(execution.publisher.discard_pending)
+                    execution.check_stop()
+                    await asyncio.sleep(backoff_s)
+                    backoff_s = min(backoff_s * 2, 30.0)
+                    continue
+                emit(
+                    "ingest.redrive.finished",
+                    operation_id=operation_id,
+                    request_id=request_id,
+                    outcome=ingest_terminal_outcome(history),
+                )
+                break
+        except IngestStoppedError as exc:
+            if exc.reason == "shutdown":
+                # Runs claimed but not yet started keep an attempt owned by
+                # this exiting process, so the next owner reclaims them.
+                await execution.mark_unknown("the ingest owner stopped before the terminal checkpoint")
+                return
+            # As a fresh request's stop: fenced first, then indeterminate,
+            # because sessions published before the stop remain.
+            await execution.fence(exc.reason)
+            await execution.mark_unknown(exc.reason)
+        except IngestProjectionUnrecoverableError:
             emit(
                 "ingest.redrive.finished",
                 operation_id=operation_id,
                 request_id=request_id,
-                outcome=ingest_terminal_outcome(history),
-            )
-        except IngestStoppedError as exc:
-            if exc.reason == "shutdown":
-                await execution.mark_unknown("the ingest owner stopped before the terminal checkpoint")
-                return
-            await execution.settle_failed(f"the ingest request was stopped ({exc.reason}) during its re-drive")
-        except IngestReprepareRequiredError as exc:
-            # The pinned generation moved under this attempt; nothing here is
-            # a permanent refusal. Leave the accepted record un-terminalized
-            # (never settle_failed) so the next redrive sweep -- this daemon
-            # start's retry pass, or the next restart's discovery -- picks it
-            # up again against the current generation, instead of excluding
-            # it from re-drive forever.
-            emit(
-                "ingest.redrive.reprepare_required",
-                operation_id=operation_id,
-                request_id=request_id,
-                outcome="interrupted",
-                error_detail=str(exc)[:512],
+                outcome="indeterminate",
             )
         except Exception as exc:
             emit(

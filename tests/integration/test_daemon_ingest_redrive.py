@@ -241,42 +241,138 @@ async def test_undrivable_generation_fails_instead_of_waiting(tmp_path: Path, mo
     assert state["outcome"] == "failed"
 
 
-@pytest.mark.timeout(300)
-async def test_reprepare_required_stays_redrivable_instead_of_failing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A concurrent generation promotion under a re-drive must not terminalize it as failed.
+def _run_and_state(archive_root: Path) -> tuple[dict[str, object] | None, dict[str, object]]:
+    operation_id, record = _only_request(archive_root)
+    audit = AuditRepository.for_archive_root(archive_root)
+    with audit.settled_machine_read():
+        return audit.get_operation(operation_id), machine_request_state(audit, record)
 
-    Anti-vacuity (Codex P1, #5717): ``IngestExecution.archive_write`` raises
-    ``IngestReprepareRequiredError`` when the pinned snapshot's generation
-    moved underneath this attempt -- the work already done is still valid,
-    only the active generation changed. Catching it with the same broad
-    ``except Exception`` that ``settle_failed``s a genuine permanent refusal
-    (as in ``test_undrivable_generation_fails_instead_of_waiting`` above)
-    terminalizes an accepted, still-recoverable run: future daemon starts
-    would exclude it from re-drive discovery forever, so it stays
-    permanently unmaterialized even though its next redrive attempt would
-    succeed against the current generation.
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("transient", ["reprepare", "backpressure"])
+async def test_a_transient_refusal_retries_the_claimed_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transient: str
+) -> None:
+    """A moved generation or full admission retries the same claimed run to its receipt.
+
+    Anti-vacuity (Codex P1, #5717): leaving a reprepare-required run as it is
+    keeps it ``running`` under the live owner, which discovery never returns
+    again, and settling backpressure as failed terminalizes a run a retry
+    completes; either way no session materializes.
     """
+    from polylogue.daemon.execution import DaemonBackpressureError
     from polylogue.operations.daemon_ingest import IngestReprepareRequiredError
 
     archive_root, source = _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
+    original = IngestExecution.archive_write
+    refusals = {"left": 1}
 
-    async def reprepare_required(self: IngestExecution, work: object) -> object:
-        raise IngestReprepareRequiredError("ingest publication generation changed; reprepare required")
+    async def refuse_once(self: IngestExecution, work: Any) -> Any:
+        if refusals["left"]:
+            refusals["left"] -= 1
+            if transient == "reprepare":
+                raise IngestReprepareRequiredError("ingest publication generation changed; reprepare required")
+            raise DaemonBackpressureError("control admission is full")
+        return await original(self, work)
 
-    monkeypatch.setattr(IngestExecution, "archive_write", reprepare_required)
+    monkeypatch.setattr(IngestExecution, "archive_write", refuse_once)
+    await _restart_and_settle(archive_root)
+
+    assert refusals["left"] == 0
+    assert _session_titles(archive_root) == ["Retained Redrive"]
+    run, state = _run_and_state(archive_root)
+    assert run is not None and run["status"] == "completed", run
+    assert state["outcome"] in {"completed", "degraded"}
+
+
+@pytest.mark.timeout(300)
+async def test_a_redrive_honors_the_accepted_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A request whose accepted deadline passed while the process was down is not materialized.
+
+    Anti-vacuity (Codex P1, #5717): consult only the owner's stop and
+    cancellation and the expired request completes as a mutation.
+    """
+    archive_root, source = _archive(tmp_path)
+    await _die_after_acceptance(archive_root, source, monkeypatch)
+    with sqlite3.connect(archive_root / "audit.db") as audit:
+        audit.execute("UPDATE machine_requests SET accepted_deadline_unix_ms = 1")
 
     await _restart_and_settle(archive_root)
 
     assert _session_titles(archive_root) == []
-    operation_id, record = _only_request(archive_root)
-    audit = AuditRepository.for_archive_root(archive_root)
-    with audit.settled_machine_read():
-        state = machine_request_state(audit, record)
-        run = audit.get_operation(operation_id)
-    # Never terminalized as failed: the run stays eligible for the next
-    # re-drive discovery pass instead of being excluded from it forever.
-    assert run is not None and run["status"] != "failed", run
-    assert state["outcome"] != "failed", state
+    run, state = _run_and_state(archive_root)
+    assert run is not None and run["status"] != "completed", run
+    assert state["outcome"] not in {"completed", "degraded"}
+
+
+@pytest.mark.timeout(300)
+async def test_a_redrive_after_partial_publication_is_indeterminate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dead attempt that already published leaves a re-drive that cannot count it.
+
+    Anti-vacuity (Codex P1, #5717): finalize the re-drive as applied and its
+    receipt reports zero changed sessions although this request wrote one.
+    """
+    archive_root, source = _archive(tmp_path)
+
+    async def killed(self: IngestExecution, *_args: object, **_kwargs: object) -> None:
+        with sqlite3.connect(archive_root / "audit.db") as audit:
+            audit.execute("UPDATE operation_attempts SET worker_id = ? WHERE state = 'running'", (_DEAD_OWNER,))
+        raise RuntimeError("process killed before finalization")
+
+    async def nothing(self: IngestExecution, *_args: object) -> None:
+        return None
+
+    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    with monkeypatch.context() as patch:
+        patch.setattr(IngestExecution, "finalize", killed)
+        patch.setattr(IngestExecution, "mark_unknown", nothing)
+        patch.setattr(IngestExecution, "fence", nothing)
+        with _serving(archive_root) as (harness, _api_server):
+            try:
+                with pytest.raises(RuntimeError, match="did not complete"):
+                    await archive.parse_file(source, source_name="redrive")
+            finally:
+                try:
+                    await harness.close()
+                finally:
+                    await archive.close()
+    assert _session_titles(archive_root) == ["Retained Redrive"]
+
+    await _restart_and_settle(archive_root)
+
+    _run, state = _run_and_state(archive_root)
+    assert state["outcome"] == "indeterminate", state
+
+
+@pytest.mark.timeout(300)
+async def test_runs_are_claimed_before_the_listeners_serve(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The server exposes its listeners only after the owner claimed every interrupted run.
+
+    Anti-vacuity (Codex P1, #5717): schedule the re-drive fire-and-forget and
+    a slow claim leaves the run on its dead attempt when the listeners open,
+    so an immediate resend reads it as ``interrupted``.
+    """
+    from polylogue.operations.daemon_ingest import IngestRedrive
+
+    archive_root, source = _archive(tmp_path)
+    await _die_after_acceptance(archive_root, source, monkeypatch)
+    original_claim = IngestRedrive.claim
+
+    async def slow_claim(self: IngestRedrive) -> bool:
+        await asyncio.sleep(1.0)
+        return await original_claim(self)
+
+    monkeypatch.setattr(IngestRedrive, "claim", slow_claim)
+    with _serving(archive_root) as (harness, api_server):
+        try:
+            with sqlite3.connect(archive_root / "audit.db") as audit:
+                owners = [row[0] for row in audit.execute("SELECT worker_id FROM operation_attempts")]
+            assert any(owner != _DEAD_OWNER for owner in owners), owners
+            redrive = api_server.operation_runtime._redrive
+            assert redrive is not None
+            await asyncio.wrap_future(redrive)
+        finally:
+            await harness.close()

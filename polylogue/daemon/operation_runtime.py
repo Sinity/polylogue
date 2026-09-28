@@ -136,10 +136,16 @@ class DaemonOperationRuntime:
                         return "cancelled"
                     return "shutdown" if self._closing else None
 
+            claimed = threading.Event()
+
             async def redrive() -> None:
                 try:
                     await redrive_accepted_ingests(
-                        self, self.archive_root, stop_requested=stop_requested, on_commit=self._notify
+                        self,
+                        self.archive_root,
+                        stop_requested=stop_requested,
+                        on_commit=self._notify,
+                        on_claimed=claimed.set,
                     )
                 except Exception as exc:
                     emit(
@@ -151,6 +157,14 @@ class DaemonOperationRuntime:
                     )
 
             self._redrive = asyncio.run_coroutine_threadsafe(redrive(), self._owner_loop)
+            redrive_future = self._redrive
+        # Hold the caller -- the server, before it exposes its listeners --
+        # until every eligible run is claimed: a resent request then reads
+        # its run as ``running`` and follows it to the receipt, instead of
+        # reading the still-``interrupted`` run as indeterminate.
+        while not claimed.wait(0.05):
+            if redrive_future.done():
+                break
 
     async def shutdown(self) -> None:
         """Stop admission and settle actual operation workers before owner teardown."""
@@ -824,7 +838,6 @@ class DaemonOperationRuntime:
                 if exchange is not None:
                     if exchange.context.principal != principal:
                         raise PermissionError("operation reference belongs to another principal")
-                    cancelled_before_acceptance = not exchange.acceptance_started
                     exchange.cancellation.cancel()
                     self._condition.notify_all()
                     # A retry resend of the original request creates its own
@@ -837,12 +850,23 @@ class DaemonOperationRuntime:
                     # coroutine leaves that re-drive unfenced and unnotified,
                     # and it can still materialize and finalize the
                     # generation after the client believes it cancelled.
-                    apply_durable_fence = exchange.acceptance_started
+                    #
+                    # Acceptance is therefore read from the durable request,
+                    # never from this exchange's own flag: a resend of an
+                    # accepted request reads its record and never sets it.
+                    live_exchange = True
                 else:
-                    apply_durable_fence = True
-            if apply_durable_fence:
-                # A settled request has no live worker. Queue the durable fence
-                # through the same writer owner, never under the waiter lock.
+                    live_exchange = False
+            # A live exchange with no durable request was cancelled before
+            # acceptance: nothing is committed, so no writer fence is queued.
+            # Read without the writer, so a busy writer cannot turn that
+            # cancellation into an indeterminate answer.
+            cancelled_before_acceptance = live_exchange and (
+                audit.machine_request_for_principal(archive_identity, target, principal.actor_ref) is None
+            )
+            if not cancelled_before_acceptance:
+                # Queue the durable fence through the same writer owner, never
+                # under the waiter lock.
                 def fence() -> None:
                     record = audit.machine_request_for_principal(archive_identity, target, principal.actor_ref)
                     if record is None:

@@ -162,6 +162,29 @@ def test_cancel_fences_a_live_redrive_despite_a_resent_exchange(
         return original_run_sync(self, actor, timeout, function, *args, **kwargs)
 
     monkeypatch.setattr(DaemonWriteThreadBridge, "run_sync_with_timeout", recording_run_sync)
+    from polylogue.operations.audit import AuditRepository
+
+    original_lookup = AuditRepository.machine_request_for_principal
+
+    def durable_lookup(self: AuditRepository, identity: str, request_id: str, actor: str) -> dict[str, object] | None:
+        # Only the accepted request has a durable record; the resent exchange
+        # itself never crosses its own acceptance path.
+        if request_id == "accepted-resend":
+            return {"artifact_kind": "source-generation", "request_id": request_id}
+        if request_id == "pre-acceptance-resend":
+            return None
+        return original_lookup(self, identity, request_id, actor)
+
+    monkeypatch.setattr(AuditRepository, "machine_request_for_principal", durable_lookup)
+    from polylogue.daemon import operation_runtime
+    from polylogue.operations.machine_lifecycle import machine_request_state as original_state
+
+    def durable_state(audit: AuditRepository, record: dict[str, object]) -> dict[str, object]:
+        if record.get("request_id") == "accepted-resend":
+            return {"outcome": "cancelled", "sequence": 1, "effect": "indeterminate"}
+        return original_state(audit, record)
+
+    monkeypatch.setattr(operation_runtime, "machine_request_state", durable_state)
 
     def _cancel_with_resent_exchange(stack: DaemonOperationStack, *, acceptance_started: bool, request_id: str) -> None:
         principal = _principal()
@@ -202,7 +225,8 @@ def test_cancel_fences_a_live_redrive_despite_a_resent_exchange(
         _cancel_with_resent_exchange(stack, acceptance_started=False, request_id="pre-acceptance-resend")
         assert fenced_actors == []
 
-        # The defect's exact shape: an accepted, resent exchange.
-        _cancel_with_resent_exchange(stack, acceptance_started=True, request_id="accepted-resend")
+        # The defect's exact shape: a resend of an accepted request, whose
+        # own exchange never started acceptance (Codex P1, #5717).
+        _cancel_with_resent_exchange(stack, acceptance_started=False, request_id="accepted-resend")
 
     assert fenced_actors == ["operation.cancel"]
