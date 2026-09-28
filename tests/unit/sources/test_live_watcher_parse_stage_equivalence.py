@@ -1207,6 +1207,55 @@ def test_a_cancelled_warm_stops_verifying_a_claimed_read_ahead(tmp_path: Path) -
         stage.shutdown()
 
 
+def test_stage_shutdown_settles_an_active_warm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Daemon stop can shut the stage down while a warm is still running.
+
+    Anti-vacuity: tear the stage down without cancelling and awaiting the
+    active warm and the warm keeps waiting on its held worker (or mutates
+    bookkeeping shutdown is clearing), so it has not returned before release.
+    """
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    (path,) = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    released = threading.Event()
+    started = threading.Event()
+    original_worker = parse_prefetch.live_parse_path_worker
+
+    def held_worker(provider_value: str, source_path: str, *args: object, **kwargs: object) -> object:
+        started.set()
+        released.wait(timeout=30)
+        return original_worker(provider_value, source_path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", held_worker)
+    monkeypatch.setattr(parse_prefetch, "_PROGRESS_POLL_SECONDS", 0.05)
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    errors: list[BaseException] = []
+    outcome: list[frozenset[str]] = []
+
+    def run_warm() -> None:
+        try:
+            outcome.append(stage.warm_paths([(str(path), Provider.CODEX, True)]))
+        except BaseException as exc:
+            errors.append(exc)
+
+    warm = threading.Thread(target=run_warm)
+    stopper = threading.Thread(target=stage.shutdown)
+    try:
+        warm.start()
+        assert started.wait(timeout=10)
+        stopper.start()
+        warm.join(timeout=10)
+        assert not warm.is_alive(), "shutdown did not settle the active warm"
+        assert errors == [] and outcome == [frozenset()]
+    finally:
+        released.set()
+        warm.join(timeout=30)
+        stopper.join(timeout=30)
+    assert not stopper.is_alive()
+    attempts = tmp_path / "parse-shards" / ".live-parse-attempts"
+    assert not attempts.exists() or [entry for entry in attempts.iterdir() if entry.name.startswith("attempt-")] == []
+
+
 def test_a_stalled_read_ahead_cannot_wedge_required_work(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Unclaimed read-ahead holding the byte budget is preempted, then reaped.
 

@@ -510,6 +510,11 @@ class LiveParseStage:
         #: ends, and discarded unused.
         self._orphans: dict[Future[LivePathPreparation], Path | None] = {}
         self._stage_calls = 0
+        #: Held by a warm or a prefetch for its whole run. ``shutdown`` sets
+        #: the active warm's cancellation and takes this lock before it stops
+        #: the pool, so no stage call mutates bookkeeping shutdown is clearing.
+        self._stage_lock = threading.Lock()
+        self._active_cancel: threading.Event | None = None
         self._path_sizes: dict[str, int] = {}
         self._path_attempt_dirs: dict[str, Path] = {}
         self._path_inflight_bytes = 0
@@ -590,8 +595,35 @@ class LiveParseStage:
         canonical session with an earlier candidate, so it must be warmed
         again after that candidate publishes.
         """
-        if self._shard_directory is None:
+        if self._shard_directory is None or self._closing:
             return frozenset()
+        with self._stage_lock:
+            if self._closing:
+                return frozenset()
+            active = cancelled if cancelled is not None else threading.Event()
+            self._active_cancel = active
+            try:
+                return self._warm_paths_locked(
+                    candidates,
+                    archive_root=archive_root,
+                    read_snapshot=read_snapshot,
+                    capture_mode=capture_mode,
+                    source_index=source_index,
+                    cancelled=active,
+                )
+            finally:
+                self._active_cancel = None
+
+    def _warm_paths_locked(
+        self,
+        candidates: Sequence[tuple[str, Provider, bool]],
+        *,
+        archive_root: Path | None,
+        read_snapshot: ReadSnapshot | None,
+        capture_mode: Provider | None,
+        source_index: int,
+        cancelled: threading.Event,
+    ) -> frozenset[str]:
         self._stage_calls += 1
         self._collect_finished()
         # Read-ahead this warm now claims is required work from here on: it
@@ -615,13 +647,13 @@ class LiveParseStage:
                     )
             return frozenset()
         self._warm_until(list(candidates), cancelled=cancelled)
-        if cancelled is not None and cancelled.is_set():
+        if cancelled.is_set():
             self._drop_stale_speculation()
             return frozenset()
         retry = self._discard_retryable(claimed)
         if retry:
             self._warm_until([candidate for candidate in candidates if candidate[0] in retry], cancelled=cancelled)
-        if cancelled is not None and cancelled.is_set():
+        if cancelled.is_set():
             self._drop_stale_speculation()
             return frozenset()
         held: frozenset[str] = frozenset()
@@ -886,6 +918,12 @@ class LiveParseStage:
         """
         if self._shard_directory is None or self._cleanup_blocked or self._closing:
             return 0
+        with self._stage_lock:
+            if self._closing:
+                return 0
+            return self._prefetch_paths_locked(paths, fallback_provider=fallback_provider)
+
+    def _prefetch_paths_locked(self, paths: Sequence[str], *, fallback_provider: Provider) -> int:
         self._stage_calls += 1
         self._collect_finished()
         submitted: list[str] = []
@@ -1412,6 +1450,16 @@ class LiveParseStage:
         # join it before removing scratch, so daemon stop stays bounded and
         # no worker can seal a carrier after cleanup.
         self._closing = True
+        # A warm may still be running on another thread (daemon stop runs
+        # before intake is cancelled). Cancel it and let it settle before
+        # anything it owns is torn down.
+        active = self._active_cancel
+        if active is not None:
+            active.set()
+        with self._stage_lock:
+            self._shutdown_locked()
+
+    def _shutdown_locked(self) -> None:
         stopped = True
         if isinstance(self._executor, ProcessPoolExecutor):
             from polylogue.pipeline.services.process_pool import terminate_process_pool

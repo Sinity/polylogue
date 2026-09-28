@@ -37,7 +37,7 @@ from polylogue.core.raw_failure_evidence import (
 from polylogue.logging import WARNING, emit
 from polylogue.pipeline.services.process_pool import terminate_process_pool
 from polylogue.storage.archive_identity import ArchiveLocation
-from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.blob_store import BlobStore, BlobVerificationCancelledError
 from polylogue.storage.raw_authority import (
     SUPERSEDED_MEMBERSHIP_FINGERPRINTS,
     build_raw_replay_plan,
@@ -516,6 +516,7 @@ class RawObservationDerivation:
     def compute(self, frame: RawFrame, key: str) -> RawObservationReplacement:
         from polylogue.operations.operation_context import open_operation_read
         from polylogue.sources.dispatch import is_jsonl_source_path
+        from polylogue.sources.prepared_jsonl import VerificationCancelledError
         from polylogue.sources.revision_backfill import (
             PreparedRetainedInput,
             RetainedPreparationRetryableError,
@@ -633,7 +634,7 @@ class RawObservationDerivation:
                                 raise RetainedPreparationRetryableError(
                                     f"retained raw blob disappeared: {raw_id}"
                                 ) from exc
-                            if not blob_store.verify(blob_hash):
+                            if not blob_store.verify(blob_hash, stop=_compute_cancel_requested):
                                 raise RetainedPreparationRetryableError(f"retained raw blob changed: {raw_id}")
                             native_id = archive.raw_native_id(raw_id) if kind.value == "append" else None
                             fallback_timestamp = archive.raw_revision_file_mtime(raw_id)
@@ -670,7 +671,7 @@ class RawObservationDerivation:
                                     raise RetainedPreparationRetryableError(
                                         f"retained worker exited before preparing raw {raw_id}"
                                     ) from exc
-                            if not blob_store.verify(blob_hash):
+                            if not blob_store.verify(blob_hash, stop=_compute_cancel_requested):
                                 raise RetainedPreparationRetryableError(f"retained raw blob changed: {raw_id}")
                             try:
                                 after = self._blob_stat_identity(blob_path)
@@ -691,7 +692,9 @@ class RawObservationDerivation:
                                 )
                             if artifact.error is None:
                                 try:
-                                    artifact.verify_files(full=artifact_key not in prepared_artifacts)
+                                    artifact.verify_files(
+                                        full=artifact_key not in prepared_artifacts, stop=_compute_cancel_requested
+                                    )
                                 except (OSError, ValueError) as exc:
                                     raise RetainedPreparationRetryableError(
                                         f"retained preparation seal changed for raw {raw_id}"
@@ -727,6 +730,7 @@ class RawObservationDerivation:
                                 if retained_artifact is None or archive.index_connection is None:
                                     continue
                                 for parsed_session in retained_artifact.iter_sessions():
+                                    _raise_if_compute_cancelled(f"raw {raw_id}")
                                     session_id = (
                                         f"{origin_from_provider(parsed_session.source_name).value}:"
                                         f"{parsed_session.provider_session_id}"
@@ -772,7 +776,7 @@ class RawObservationDerivation:
                                     f"retained cohort source dependency changed for {logical_key}"
                                 )
                             try:
-                                aggregate.verify_files(full=True)
+                                aggregate.verify_files(full=True, stop=_compute_cancel_requested)
                             except (OSError, ValueError) as exc:
                                 raise RetainedPreparationRetryableError(
                                     f"retained cohort preparation seal changed for {logical_key}"
@@ -805,6 +809,7 @@ class RawObservationDerivation:
                                 continue
                             selected_session: ParsedSession | None = None
                             for candidate_session in selected_artifact.iter_sessions():
+                                _raise_if_compute_cancelled(f"cohort {logical_key}")
                                 if selected_session is not None:
                                     raise RetainedPreparationRetryableError(
                                         f"retained replay plan has no single prepared session for {logical_key}"
@@ -836,6 +841,7 @@ class RawObservationDerivation:
                                     membership_artifact,
                                 )
                         for (tip_raw_id, session_id), (session, artifact) in selected_writes.items():
+                            _raise_if_compute_cancelled(f"raw {tip_raw_id}")
                             existing = archive.index_connection.execute(
                                 "SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)
                             ).fetchone()
@@ -865,6 +871,13 @@ class RawObservationDerivation:
                                 force_replace=True,
                                 prepared_rows=prepared_session_rows_from_shard(artifact.shard_path, session_id),
                             )
+                except (BlobVerificationCancelledError, VerificationCancelledError) as exc:
+                    for prepared_write in prepared_writes.values():
+                        prepared_write.close()
+                    _cleanup_scratch(scratch_owner)
+                    raise RetainedPreparationRetryableError(
+                        "retained preparation cancelled during verification"
+                    ) from exc
                 except BaseException:
                     for prepared_write in prepared_writes.values():
                         prepared_write.close()
@@ -1022,6 +1035,20 @@ _RETAINED_PREPARATION_STALL_REPORT_SECONDS = 600.0
 
 
 _STILL_RUNNING = object()
+
+
+def _compute_cancel_requested() -> bool:
+    cancelled = compute_cancel.get()
+    return cancelled is not None and cancelled.is_set()
+
+
+def _raise_if_compute_cancelled(subject: str) -> None:
+    """A checkpoint between retained-preparation phases (hashing, reconciliation)."""
+    if _compute_cancel_requested():
+        from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
+
+        raise RetainedPreparationRetryableError(f"retained preparation cancelled for {subject}")
+
 
 #: How often a wait checks its caller's cancellation.
 _RETAINED_PREPARATION_CANCEL_POLL_SECONDS = 1.0

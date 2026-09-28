@@ -72,6 +72,10 @@ def _write_all(fd: int, data: bytes) -> None:
         offset += written
 
 
+class BlobVerificationCancelledError(Exception):
+    """A blob re-hash stopped at a chunk boundary because its caller was cancelled."""
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedBlob:
     """Hashed bytes staged outside the content-addressed namespace."""
@@ -519,14 +523,20 @@ class BlobStore:
     # Integrity
     # ------------------------------------------------------------------
 
-    def verify(self, hash_hex: str) -> bool:
-        """Re-hash the blob on disk and verify it matches the expected hash."""
+    def verify(self, hash_hex: str, *, stop: Callable[[], bool] | None = None) -> bool:
+        """Re-hash the blob on disk and verify it matches the expected hash.
+
+        ``stop`` is polled between chunks; when it returns true the scan
+        raises ``BlobVerificationCancelledError`` instead of answering.
+        """
         path = self.blob_path(hash_hex)
         if not path.exists():
             return False
         hasher = hashlib.sha256()
         with builtins_open(path, "rb") as f:
             while True:
+                if stop is not None and stop():
+                    raise BlobVerificationCancelledError(hash_hex)
                 chunk = f.read(_CHUNK_SIZE)
                 if not chunk:
                     break
