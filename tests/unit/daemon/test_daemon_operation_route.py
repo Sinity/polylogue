@@ -499,8 +499,11 @@ def test_authentication_refusal_is_not_an_indeterminate_mutation(tmp_path: Path)
     """Mutation: treat the ingress 401 as a lost receipt and the typed refusal disappears."""
     with running_daemon_operations(tmp_path / "archive") as stack:
         stack.server.auth_token = "synthetic-test-credential"
-        with pytest.raises(DaemonOperationRejectedError, match="unauthorized"):
+        with pytest.raises(DaemonOperationRejectedError) as rejected:
             stack.client.operation("mutation.session.delete.preview", {"session_ids": ["codex:absent"]})
+        # The relayed refusal keeps its code as the outcome; the message is
+        # the ingress's own detail (#5705).
+        assert rejected.value.outcome == "unauthorized"
         assert not stack.runtime._exchanges
 
 
@@ -662,8 +665,10 @@ def test_restart_recovers_indeterminate_mutation_without_replaying_it(
 
     assert apply_calls == 1
     with running_daemon_operations(root) as restarted:
-        # Startup recovery conservatively adjudicates this synthetic fixture
-        # from the already-deleted target. Re-introduce the persisted unknown
+        # Startup recovery resolves the dead operation from durable state by
+        # re-applying its plan convergently (#5688): the targets are already
+        # deleted, so that replay changes nothing. What must never replay is
+        # the client's resend below. Re-introduce the persisted unknown
         # outcome after startup so the route is tested against a durable
         # indeterminate record, exactly as a crashed domain writer leaves it.
         with sqlite3.connect(root / "audit.db") as connection:
@@ -679,6 +684,7 @@ def test_restart_recovers_indeterminate_mutation_without_replaying_it(
                 ("synthetic lost outcome", "indeterminate-execute"),
             )
             connection.commit()
+        applied_by_startup = apply_calls
         recovered = restarted.client.operation(
             "mutation.session.delete.execute",
             {"authorization_refs": authorization["result"]["authorization_refs"]},
@@ -690,7 +696,7 @@ def test_restart_recovers_indeterminate_mutation_without_replaying_it(
         assert recovered["accepted_reference"] == accepted_reference
         assert recovered["result"]["reference"] == accepted_reference
 
-    assert apply_calls == 1
+    assert apply_calls == applied_by_startup
     assert all(not restarted.session_exists(session_id) for session_id in session_ids)
 
 
