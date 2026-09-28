@@ -372,6 +372,20 @@ def test_an_undeclared_session_keyed_table_makes_excision_refuse(tmp_path: Path)
         apply_session_excision(tmp_path, session_id, reason="test", actor="user:local")
 
 
+def test_raw_existence_journal_is_declared_as_content_free_bookkeeping(tmp_path: Path) -> None:
+    """The deletion journal survives excision as a frontier watermark input.
+
+    Anti-vacuity: remove its declaration and the fresh source schema is
+    rejected as an undeclared session carrier before any excision is planned.
+    """
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    with _source_conn(tmp_path) as conn:
+        audit = audit_session_carriers(conn)
+    assert audit.ok
+    assert "raw_existence_changes" in audit.declared
+    assert SESSION_CARRIERS["raw_existence_changes"].reach is CarrierReach.RETIRED
+
+
 def test_a_raw_cascade_declaration_is_checked_against_the_live_foreign_key() -> None:
     """Declaring raw-cascade does not make it true.
 

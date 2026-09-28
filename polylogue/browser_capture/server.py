@@ -695,10 +695,17 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             from polylogue.operations.facade_writers import _archive_capture_assertion_candidate
 
             root = self.server.config.archive_root or default_archive_root()
+            provider_message_id = str(observation["provider_message_id"])
+            expected_message_ref = (
+                f"{observation.get('origin')}:{observation.get('provider_conversation_id')}:n:{provider_message_id}"
+            )
+            if payload["target_ref"] != expected_message_ref:
+                raise ValueError("selected message target does not match its native observation")
             envelope = _archive_capture_assertion_candidate(
                 Config(archive_root=root, render_root=root, sources=[]),
                 body_text=payload["body_text"],
                 kind=candidate_capture_kind(payload["kind"]),
+                refs=(f"message:{provider_message_id}",),
                 scope_refs=(evidence_refs[0],),
                 author_ref=str(payload.get("author_ref") or "user:browser-extension"),
                 author_kind=str(payload.get("author_kind") or "user"),

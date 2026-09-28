@@ -177,14 +177,26 @@ def _archive_capture_assertion_candidate(
                 session_ref = f"session:{summaries[0].session_id}"
                 resolved_refs.append(session_ref)
                 continue
-            parsed = ObjectRef.parse(ref)
-            if parsed.kind != "session":
-                raise ValueError("--ref must be a session:<id> ref or 'last'")
-            try:
-                session_id = archive.resolve_session_id(parsed.object_id)
-            except KeyError:
-                raise ValueError(f"session ref not found: {parsed.object_id}") from None
-            resolved_refs.append(f"session:{session_id}")
+            parsed = parse_public_ref(ref)
+            if isinstance(parsed, ObjectRef):
+                if parsed.kind == "message":
+                    resolved_refs.append(parsed.format())
+                    continue
+                if parsed.kind != "session":
+                    raise ValueError("--ref must be a session or message ref, or 'last'")
+                try:
+                    session_id = archive.resolve_session_id(parsed.object_id)
+                except KeyError:
+                    raise ValueError(f"session ref not found: {parsed.object_id}") from None
+                resolved_refs.append(f"session:{session_id}")
+            else:
+                if parsed.message_id is None or parsed.block_index is not None:
+                    raise ValueError("--ref must identify a session or message")
+                try:
+                    session_id = archive.resolve_session_id(parsed.session_id)
+                except KeyError:
+                    raise ValueError(f"session ref not found: {parsed.session_id}") from None
+                resolved_refs.append(f"{session_id}::{parsed.message_id}")
 
         normalized_scope_refs = [parse_public_ref(ref).format() for ref in scope_refs]
         target_ref = resolved_refs[0] if resolved_refs else f"assertion:{assertion_id}"
