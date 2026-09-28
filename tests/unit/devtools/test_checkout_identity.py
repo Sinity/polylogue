@@ -180,7 +180,7 @@ def test_verify_pytest_steps_ask_the_slot_to_recheck_the_branch(
 
     def managed(*_args: object, env: dict[str, str], **_kwargs: object) -> SimpleNamespace:
         captured.update(env)
-        return SimpleNamespace(returncode=0, slot="managed", receipt=None)
+        return SimpleNamespace(returncode=0, slot="managed", receipt=None, termination=None)
 
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     monkeypatch.chdir(tmp_path)
