@@ -170,3 +170,36 @@ def test_an_unattributable_rerun_is_not_run(tmp_path: Path, monkeypatch: pytest.
     assert record["rerun_exit"] == 125
     verdict = rerun_failed_once(report_path=report, step_dir=step, env={}, root=tmp_path)
     assert verdict is not None and verdict["still_failed"] == ["tests/test_x.py::test_real"]
+
+
+def test_a_grouped_node_that_passes_alone_is_patched_in_the_report(tmp_path: Path) -> None:
+    """``--dist=loadgroup`` reports ``node@group``; the rerun names the plain node.
+
+    Anti-vacuity: compare the raw report node id and the row stays failed while
+    the verdict says green, leaving a green receipt with a failed outcome.
+    """
+    step = tmp_path / "step"
+    step.mkdir()
+    report = step / "pytest-report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "tests": [{"nodeid": "tests/test_x.py::test_web@web-reader", "outcome": "failed"}],
+                "summary": {"failed": 1},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (step / "pytest-rerun.json").write_text(
+        json.dumps({"tests": [{"nodeid": "tests/test_x.py::test_web", "outcome": "passed"}]}), encoding="utf-8"
+    )
+    (step / RERUN_IN_SLOT_RESULT).write_text(
+        json.dumps({"attempted": ["tests/test_x.py::test_web"], "rerun_exit": 0}), encoding="utf-8"
+    )
+
+    verdict = rerun_failed_once(report_path=report, step_dir=step, env={}, root=tmp_path)
+
+    patched = json.loads(report.read_text(encoding="utf-8"))
+    assert verdict is not None and verdict["still_failed"] == []
+    assert patched["tests"][0]["outcome"] == "passed"
+    assert patched["summary"]["failed"] == 0

@@ -998,6 +998,7 @@ def _write_interrupted_result(
     signal_number: int,
     sizing: Mapping[str, Any] | None = None,
     memory: Mapping[str, Any] | None = None,
+    profile: ChargeProfile | None = None,
 ) -> dict[str, Any]:
     """Atomically preserve a typed timeout result before the worker dies."""
     receipt = _slot_receipt(
@@ -1005,6 +1006,7 @@ def _write_interrupted_result(
         elapsed_s=time.monotonic() - started,
         sizing=sizing,
         memory=memory,
+        profile=profile,
         extra={
             "diagnosis": "pytest_deadline",
             "signal": signal.Signals(signal_number).name,
@@ -1087,6 +1089,7 @@ def _run_held(
                 started=started,
                 signal_number=signal_number,
                 sizing=sizing,
+                profile=profile,
                 memory=sampler.persist(),
             )
 
@@ -1355,6 +1358,10 @@ def _run_launch(launch_path: Path) -> int:
     started = time.monotonic()
     terminating = False
 
+    # Chosen before the signal handler exists: an interrupted receipt must
+    # corroborate against the same profile the width was admitted under.
+    profile, max_workers = charge_profile_for(environment)
+
     def terminate_on_signal(signal_number: int, _frame: object) -> None:
         nonlocal terminating
         if terminating:
@@ -1377,6 +1384,7 @@ def _run_launch(launch_path: Path) -> int:
                 started=started,
                 signal_number=signal_number,
                 sizing=sizing,
+                profile=profile,
                 memory=sampler.persist() if sampler is not None else None,
             )
             _print_result(receipt)
@@ -1386,7 +1394,6 @@ def _run_launch(launch_path: Path) -> int:
     # The width is chosen here rather than where the command was built: a run
     # can sit in this queue for hours, and what matters is the memory this job
     # may take when its workers start.
-    profile, max_workers = charge_profile_for(environment)
     command, sizing = resize_worker_argument(list(launch["argv"]), profile=profile, max_workers=max_workers)
     _persist_telemetry_seed(telemetry_path, sizing=sizing, progress=progress)
     note = _sizing_note(sizing)

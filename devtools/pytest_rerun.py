@@ -167,7 +167,9 @@ def adjudicate_rerun(
         patched = dict(report)
         tests = []
         for test in report.get("tests", []):
-            if isinstance(test, Mapping) and test.get("nodeid") in flaky:
+            # xdist ``loadgroup`` reports ``node@group``; the rerun names the
+            # plain node, so the report row is matched on the same spelling.
+            if isinstance(test, Mapping) and report_nodeid_to_selector(str(test.get("nodeid"))) in flaky:
                 test = {**test, "first_outcome": test.get("outcome"), "outcome": "passed", "flaky": True}
             tests.append(test)
         patched["tests"] = tests
@@ -180,7 +182,9 @@ def adjudicate_rerun(
                     - sum(
                         1
                         for t in report.get("tests", [])
-                        if isinstance(t, Mapping) and t.get("nodeid") in flaky and t.get("outcome") == key
+                        if isinstance(t, Mapping)
+                        and report_nodeid_to_selector(str(t.get("nodeid"))) in flaky
+                        and t.get("outcome") == key
                     ),
                 )
         summary["passed"] = int(summary.get("passed", 0)) + len(flaky)
