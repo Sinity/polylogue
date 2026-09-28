@@ -94,6 +94,8 @@ async def _ingest_selected_paths(
             )
 
         if not succeeded:
+            if all(reason == "durably_excised" for reason in excluded.values()):
+                return tuple(receipts)
             raise RuntimeError(
                 f"canonical ingestion made no progress on selected source files: unattempted={len(excluded)}"
             )
