@@ -14,7 +14,19 @@ if sys.path[0] != _REPO_ROOT:
 
 # Before any third-party import: an inherited PYTHONPATH naming another
 # checkout is already in ``sys.path``, and click would load from it.
-from devtools.checkout_guard import normalize_checkout_environment  # noqa: E402
+from devtools.checkout_guard import (  # noqa: E402
+    ForeignInterpreterError,
+    assert_interpreter_belongs_to,
+    normalize_checkout_environment,
+)
+
+# Refused first: stripping a foreign venv from ``sys.path`` would otherwise
+# turn this refusal into a missing-dependency import error.
+try:
+    assert_interpreter_belongs_to(Path(_REPO_ROOT), context="devtools")
+except ForeignInterpreterError as _exc:
+    sys.stderr.write(f"{_exc}\n")
+    raise SystemExit(125) from None
 
 _CORRECTED = normalize_checkout_environment(Path(_REPO_ROOT))
 if _CORRECTED:

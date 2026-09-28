@@ -123,3 +123,41 @@ def test_foreign_entries_leave_the_running_import_path(tmp_path: Path, monkeypat
 
     assert sys.path == [str(worktree), "/nix/store/site-packages"]
     assert any("sys.path" in item for item in corrected)
+
+
+def test_a_checkout_nested_inside_this_one_is_foreign(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: treat every descendant of ``root`` as owned and the nested
+    clone's venv is kept on PATH and its interpreter accepted."""
+    outer = _checkout(tmp_path / "outer")
+    nested = _checkout(outer / "vendor" / "clone")
+    environ = {"PATH": os.pathsep.join([str(nested / ".venv" / "bin"), "/usr/bin"])}
+
+    normalize_checkout_environment(outer, environ)
+
+    assert str(nested / ".venv" / "bin") not in environ["PATH"].split(os.pathsep)
+    monkeypatch.setattr(sys, "prefix", str(nested / ".venv"))
+    with pytest.raises(ForeignInterpreterError):
+        assert_interpreter_belongs_to(outer, context="devtools")
+
+
+def test_a_foreign_interpreter_is_refused_before_the_import_path_is_cleaned(tmp_path: Path) -> None:
+    """``python -m devtools`` on another checkout's venv exits 125, not ModuleNotFoundError.
+
+    Anti-vacuity: normalize before refusing in ``devtools/__main__.py`` and the
+    foreign interpreter's click disappears first, so the exit is 1.
+    """
+    import subprocess
+
+    primary = _checkout(tmp_path / "primary")
+    fake_prefix = primary / ".venv"
+    repo_root = Path(__file__).resolve().parents[3]
+    script = (
+        "import sys, runpy\n"
+        f"sys.prefix = {str(fake_prefix)!r}\n"
+        f"sys.argv = ['devtools', '--help']\n"
+        f"runpy.run_path({str(repo_root / 'devtools' / '__main__.py')!r}, run_name='__main__')\n"
+    )
+    completed = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
+
+    assert completed.returncode == 125, completed.stderr
+    assert "another checkout's interpreter" in completed.stderr

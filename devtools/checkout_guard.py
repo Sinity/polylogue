@@ -113,9 +113,10 @@ def _foreign_checkout(path_text: str, root: Path) -> bool:
     path = Path(path_text)
     if not path.is_absolute():
         path = Path.cwd() / path
-    if _inside(path, root):
-        return False
-    return _polylogue_checkout_ancestor(path) is not None
+    # The nearest owning checkout decides, so a clone nested inside ``root``
+    # is as foreign as a sibling.
+    owner = _polylogue_checkout_ancestor(path)
+    return owner is not None and owner != root.resolve()
 
 
 def _polylogue_checkout_ancestor(path: Path) -> Path | None:
@@ -151,9 +152,8 @@ def assert_interpreter_belongs_to(root: Path, *, context: str) -> None:
     run this checkout's code on the other checkout's dependencies.
     """
     prefix = Path(sys.prefix)
-    if _inside(prefix, root.resolve()):
-        return
-    if _polylogue_checkout_ancestor(prefix) is None:
+    owner = _polylogue_checkout_ancestor(prefix)
+    if owner is None or owner == root.resolve():
         return
     raise ForeignInterpreterError(
         f"{context}: running on another checkout's interpreter.\n"
