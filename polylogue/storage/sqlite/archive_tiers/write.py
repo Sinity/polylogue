@@ -212,6 +212,7 @@ class ArchiveBlockRow:
     message_id: str
     block_type: str
     text: str | None
+    content_hash: str | None = None
     tool_name: str | None = None
     tool_id: str | None = None
     semantic_type: str | None = None

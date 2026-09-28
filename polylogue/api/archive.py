@@ -2921,6 +2921,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         include_assertions: bool = True,
         redact_paths: bool = True,
         seed_session_id: str | None = None,
+        segment_profile: Literal["default", "prose_with_refs"] = "default",
         run_ref: str | None = None,
         inheritance_mode: str = "explicit",
     ) -> ArchiveContextDeliveryEnvelope:
@@ -2942,6 +2943,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             include_assertions=include_assertions,
             redact_paths=redact_paths,
             seed_session_id=seed_session_id,
+            segment_profile=segment_profile,
         )
         return await self.record_context_delivery(
             image=image,
@@ -3475,6 +3477,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         include_assertions: bool = True,
         redact_paths: bool = True,
         seed_session_id: str | None = None,
+        segment_profile: Literal["default", "prose_with_refs"] = "default",
     ) -> ContextImage:
         """Compile a multi-session context image through ``compile_context``.
 
@@ -3509,6 +3512,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             max_chars_per_message=max_chars_per_message,
             include_assertions=include_assertions,
             redaction_policy=redaction,
+            segment_profile=segment_profile,
         )
         image = await self.compile_context(spec)
         projection_spec = projection_from_views(
