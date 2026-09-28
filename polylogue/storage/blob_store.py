@@ -27,6 +27,7 @@ import tempfile
 import threading
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import Future
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
@@ -123,6 +124,7 @@ class BlobStore:
         self.root = root
         self._read_verification_lock = threading.Lock()
         self._read_verified: OrderedDict[tuple[str, int, int, int, int, int], None] = OrderedDict()
+        self._read_verifying: dict[tuple[str, int, int, int, int, int], Future[bool]] = {}
 
     @property
     def staging_root(self) -> Path:
@@ -546,17 +548,33 @@ class BlobStore:
             if identity in self._read_verified:
                 self._read_verified.move_to_end(identity)
                 return True
+            # Single flight: concurrent cold reads of one identity wait for
+            # the first caller's hash instead of each streaming the blob.
+            inflight = self._read_verifying.get(identity)
+            owner = inflight is None
+            if inflight is None:
+                inflight = Future()
+                self._read_verifying[identity] = inflight
+        if not owner:
+            return inflight.result()
         try:
-            verified = self.verify(hash_hex)
-        except OSError:
-            return False
-        if not verified:
-            return False
-        with self._read_verification_lock:
-            self._read_verified[identity] = None
-            while len(self._read_verified) > _READ_VERIFICATION_MEMO_ENTRIES:
-                self._read_verified.popitem(last=False)
-        return True
+            try:
+                verified = self.verify(hash_hex)
+            except OSError:
+                verified = False
+            with self._read_verification_lock:
+                if verified:
+                    self._read_verified[identity] = None
+                    while len(self._read_verified) > _READ_VERIFICATION_MEMO_ENTRIES:
+                        self._read_verified.popitem(last=False)
+                self._read_verifying.pop(identity, None)
+            inflight.set_result(verified)
+            return verified
+        except BaseException as exc:
+            with self._read_verification_lock:
+                self._read_verifying.pop(identity, None)
+            inflight.set_exception(exc)
+            raise
 
     def iter_all(self) -> Iterator[str]:
         """Yield hashes for canonical regular blob files only."""

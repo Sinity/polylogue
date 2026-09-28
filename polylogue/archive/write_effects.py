@@ -25,7 +25,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -99,22 +99,35 @@ class WriteEffect:
 
 
 class DeferredEffectQueue:
-    """Bounded process-local delivery for effects that must not delay writes.
+    """Process-local delivery for effects that must not delay writes.
 
     Only outstanding work is retained: the pending set de-duplicates an effect
     already queued for the same staleness key, and a failed delivery is kept
     as a retry obligation until it succeeds. A successful delivery keeps no
     record (polylogue-yooge) -- nothing reads one, and a process-lifetime map
-    keyed by every distinct ingest batch grew without bound. Failed work is
-    retried at the next enqueue, and every failure is reported through
-    ``archive.write_effect.failed`` with the staleness key and sessions.
+    keyed by every distinct ingest batch grew without bound.
+
+    Failed deliveries coalesce per effect and target database: the obligation
+    is the union of their changed session IDs, applied by one retry. Retained
+    state during a sustained outage is therefore bounded by the distinct
+    sessions whose invalidation is owed, not by the number of writes, and each
+    enqueue resubmits one retry per effect rather than every failed batch.
+    A deferred effect must be idempotent over a session-ID union for this to
+    hold; every registered ``async-deferred`` effect is.
+
+    Failure recording and the pending release happen in one critical section,
+    and a retry moves from failed to pending in another, so an enqueue can
+    never drop an obligation between a worker's failure and its release.
+    Failed work is retried at the next enqueue, and every failure is reported
+    through ``archive.write_effect.failed`` with the staleness key and
+    sessions.
     """
 
     def __init__(self, *, max_workers: int = 1) -> None:
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="polylogue-write-effect")
         self._lock = threading.Lock()
         self._pending: set[str] = set()
-        self._failed: dict[str, tuple[WriteEffect, WriteEffectContext]] = {}
+        self._failed: dict[str, tuple[WriteEffect, WriteEffectContext, frozenset[str]]] = {}
 
     @property
     def pending_count(self) -> int:
@@ -126,12 +139,24 @@ class DeferredEffectQueue:
         with self._lock:
             return len(self._failed)
 
+    @staticmethod
+    def _obligation_key(effect: WriteEffect, ctx: WriteEffectContext) -> str:
+        return f"{effect.name}:retry:{ctx.payload.get('_db_path', '')}"
+
     def enqueue(self, effect: WriteEffect, ctx: WriteEffectContext) -> None:
+        retries: list[tuple[str, WriteEffect, WriteEffectContext]] = []
         with self._lock:
-            retries = list(self._failed.items())
-            self._failed.clear()
-        for failed_key, (failed_effect, failed_ctx) in retries:
-            self._submit(failed_key, failed_effect, failed_ctx)
+            for key, (failed_effect, failed_ctx, session_ids) in tuple(self._failed.items()):
+                if key in self._pending:
+                    # The retry is still running; it re-records any failure.
+                    continue
+                del self._failed[key]
+                self._pending.add(key)
+                retries.append(
+                    (key, failed_effect, replace(failed_ctx, changed_session_ids=tuple(sorted(session_ids))))
+                )
+        for key, failed_effect, failed_ctx in retries:
+            self._executor.submit(self._deliver, key, failed_effect, failed_ctx)
         self._submit(f"{effect.name}:{ctx.staleness_key}", effect, ctx)
 
     def _submit(self, key: str, effect: WriteEffect, ctx: WriteEffectContext) -> None:
@@ -142,9 +167,11 @@ class DeferredEffectQueue:
         self._executor.submit(self._deliver, key, effect, ctx)
 
     def _deliver(self, key: str, effect: WriteEffect, ctx: WriteEffectContext) -> None:
+        failed = False
         try:
             effect.run(ctx)
         except Exception as exc:
+            failed = True
             emit(
                 "archive.write_effect.failed",
                 level=ERROR,
@@ -157,11 +184,14 @@ class DeferredEffectQueue:
                 session_count=len(ctx.changed_session_ids),
                 retry="next_enqueue",
             )
-            with self._lock:
-                self._failed[key] = (effect, ctx)
         finally:
             with self._lock:
                 self._pending.discard(key)
+                if failed:
+                    obligation = self._obligation_key(effect, ctx)
+                    owed = self._failed.get(obligation)
+                    session_ids = frozenset(ctx.changed_session_ids) | (owed[2] if owed is not None else frozenset())
+                    self._failed[obligation] = (effect, ctx, session_ids)
 
 
 DEFERRED_EFFECT_QUEUE = DeferredEffectQueue()
@@ -204,13 +234,17 @@ def _invalidate_insights_effect(ctx: WriteEffectContext) -> None:
         raise RuntimeError("deferred insight invalidation requires _db_path")
     from polylogue.storage.sqlite.connection import open_connection
 
+    session_ids = ctx.changed_session_ids
     with open_connection(db_path) as conn:
-        placeholders = ", ".join("?" for _ in ctx.changed_session_ids)
-        conn.execute(
-            f"UPDATE session_profiles SET source_sort_key = NULL, source_updated_at = NULL "
-            f"WHERE session_id IN ({placeholders})",
-            ctx.changed_session_ids,
-        )
+        # A coalesced retry may carry more IDs than one statement may bind.
+        for start in range(0, len(session_ids), 500):
+            chunk = session_ids[start : start + 500]
+            placeholders = ", ".join("?" for _ in chunk)
+            conn.execute(
+                f"UPDATE session_profiles SET source_sort_key = NULL, source_updated_at = NULL "
+                f"WHERE session_id IN ({placeholders})",
+                chunk,
+            )
         conn.commit()
 
 

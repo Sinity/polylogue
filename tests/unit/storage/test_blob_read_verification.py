@@ -64,3 +64,38 @@ def test_a_permission_change_forces_reverification(tmp_path: Path) -> None:
         assert store.verify_for_read(digest) is False
     finally:
         path.chmod(0o600)
+
+
+def test_concurrent_cold_reads_hash_a_blob_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: drop the in-flight map and every waiting reader hashes the blob itself."""
+    import threading
+
+    store = BlobStore(tmp_path)
+    digest = _store_blob(store, b"attachment bytes")
+    real_verify = store.verify
+    started = threading.Event()
+    release = threading.Event()
+    hashes: list[str] = []
+
+    def slow_verify(hash_hex: str) -> bool:
+        hashes.append(hash_hex)
+        started.set()
+        assert release.wait(10)
+        return real_verify(hash_hex)
+
+    monkeypatch.setattr(store, "verify", slow_verify)
+    results: list[bool] = []
+    readers = [threading.Thread(target=lambda: results.append(store.verify_for_read(digest))) for _ in range(6)]
+    readers[0].start()
+    assert started.wait(10)
+    for reader in readers[1:]:
+        reader.start()
+    # Let the other readers reach the in-flight wait before the hash finishes.
+    deadline = threading.Event()
+    deadline.wait(0.2)
+    release.set()
+    for reader in readers:
+        reader.join(10)
+
+    assert results == [True] * 6
+    assert hashes == [digest]
