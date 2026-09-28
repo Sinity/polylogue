@@ -255,8 +255,17 @@ def _hold_selection_lock(selection: list[str]) -> None:
 
 
 def _parse_rerun(selection: list[str]) -> tuple[bool, list[str]]:
-    """Consume ``--rerun`` (always run) without forwarding it to pytest."""
-    return "--rerun" in selection, [argument for argument in selection if argument != "--rerun"]
+    """Consume ``--rerun`` (always run) without forwarding it to pytest.
+
+    Only before ``--``: after the separator every argument is pytest's path
+    operand, a file literally named ``--rerun`` included.
+    """
+    head, separator, tail = (
+        (selection[: selection.index("--")], ["--"], selection[selection.index("--") + 1 :])
+        if "--" in selection
+        else (selection, [], [])
+    )
+    return "--rerun" in head, [argument for argument in head if argument != "--rerun"] + separator + tail
 
 
 #: Caller environment that can change what a selection executes or how
@@ -306,6 +315,10 @@ def _reuse_eligible(selection: list[str], *, root: Path) -> bool:
     so a path outside it (``/tmp/test_x.py``) could change without changing
     the key; it is never reused.
     """
+    if _selection_targets_benchmarks(selection):
+        # Benchmarks measure current wall-clock timing, an input no receipt
+        # key carries: a stale pass must never answer for a new one.
+        return False
     resolved_root = root.resolve()
     index = 0
     while index < len(selection):

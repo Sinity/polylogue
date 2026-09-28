@@ -342,7 +342,7 @@ def test_the_suite_file_batch_is_dropped_with_its_value() -> None:
     assert pytest_rerun.semantic_rerun_options(command) == ["-W", "error"]
 
 
-@pytest.mark.parametrize(("option", "value"), [("--assert", "plain"), ("--show-capture", "no"), ("--cov", "polylogue")])
+@pytest.mark.parametrize(("option", "value"), [("--assert", "plain"), ("--show-capture", "no"), ("--durations", "5")])
 def test_an_option_pytest_reads_a_value_for_keeps_it_in_the_rerun(option: str, value: str) -> None:
     """Anti-vacuity: classify arity from a hand-kept list that omits ``option``
     and its value is dropped as an operand, so the rerun passes the failed node
@@ -402,3 +402,13 @@ def test_clustered_dropped_options_leave_the_rerun(cluster: str, kept: list[str]
     (``-l`` is kept on its own; ``-n`` and ``-x`` are dropped)."""
     command = ["python", "-m", "pytest", "tests/test_w.py", cluster, *(["error"] if cluster == "-lW" else [])]
     assert pytest_rerun.semantic_rerun_options(command) == kept
+
+
+def test_coverage_options_stay_with_the_first_attempt() -> None:
+    """Anti-vacuity (Codex P2, #5708): keep ``--cov-fail-under`` on the rerun
+    of the failed subset and it fails the threshold although every node passed."""
+    command = ["python", "-m", "pytest", "tests/test_w.py", "--cov=polylogue", "--cov-fail-under=90", "-l"]
+    assert pytest_rerun.semantic_rerun_options(command) == ["-l"]
+    # A separate value goes with its option, never read as a path operand.
+    command = ["python", "-m", "pytest", "--cov", "polylogue", "tests/test_w.py", "-l"]
+    assert pytest_rerun.semantic_rerun_options(command) == ["-l"]

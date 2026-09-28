@@ -1790,3 +1790,20 @@ def test_an_interrupted_example_write_still_moves_the_revision(tmp_path: Path, m
         database.save(b"k", b"v2")
 
     assert read_revision(examples) != before
+
+
+def test_rerun_after_the_separator_is_a_path() -> None:
+    """Anti-vacuity (Codex P1, #5708): strip ``--rerun`` everywhere and a file
+    literally named ``--rerun`` after ``--`` vanishes, running the corpus."""
+    assert run_tests._parse_rerun(["--rerun", "tests/unit"]) == (True, ["tests/unit"])
+    assert run_tests._parse_rerun(["--", "--rerun"]) == (False, ["--", "--rerun"])
+
+
+def test_benchmark_selections_are_never_reused(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P2, #5708): judge reuse by path alone and a green
+    wall-clock benchmark answers later runs without timing anything."""
+    benchmark = tmp_path / "tests" / "benchmarks" / "test_budget.py"
+    benchmark.parent.mkdir(parents=True)
+    benchmark.write_text("def test_x():\n    pass\n", encoding="utf-8")
+
+    assert run_tests._reuse_eligible(["tests/benchmarks/test_budget.py"], root=tmp_path) is False
