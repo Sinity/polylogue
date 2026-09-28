@@ -56,6 +56,9 @@ class _NoIntakeHints:
     def intake_revision(self, source: WatchSource) -> int:
         return 0
 
+    def prepare_watch_roots(self) -> list[Path]:
+        return [Path("/synthetic-watch-root")]
+
 
 def _resolved_config(**overrides: object) -> Any:
     """Return a ``load_polylogue_config`` stand-in answering every config key.
@@ -4413,7 +4416,13 @@ class _SpawnedTask:
         return f"{self.name} ({self.frame})"
 
 
-def _run_with_task_inventory(coro: Any, *, into: list[_SpawnedTask], orphans: list[str] | None = None) -> None:
+def _run_with_task_inventory(
+    coro: Any,
+    *,
+    into: list[_SpawnedTask],
+    orphans: list[str] | None = None,
+    thread_orphans: list[str] | None = None,
+) -> None:
     """Run *coro* under ``asyncio.run``, recording every task the loop creates.
 
     The denominator is taken from the event loop, not from the registry.
@@ -4427,9 +4436,15 @@ def _run_with_task_inventory(coro: Any, *, into: list[_SpawnedTask], orphans: li
     Not covered, and deliberately named rather than implied: a task created
     on a *different* loop inside a worker thread. The daemon's threaded work
     goes through the compute adapter and ``asyncio.to_thread``, neither of
-    which creates a task.
+    which creates a task. Those threads are counted separately:
+    ``thread_orphans`` receives every thread started during the run that is
+    still alive once ``asyncio.run`` has joined its default executor, because
+    cancelling the task that awaited a thread does not stop the thread.
     """
+    import threading as _threading
     import traceback as _tb
+
+    threads_before = set(_threading.enumerate())
 
     tasks: list[asyncio.Task[Any]] = []
 
@@ -4460,7 +4475,13 @@ def _run_with_task_inventory(coro: Any, *, into: list[_SpawnedTask], orphans: li
             if orphans is not None:
                 orphans.extend(task.get_name() for task in tasks if not task.done())
 
-    asyncio.run(_main())
+    try:
+        asyncio.run(_main())
+    finally:
+        if thread_orphans is not None:
+            thread_orphans.extend(
+                thread.name for thread in _threading.enumerate() if thread not in threads_before and thread.is_alive()
+            )
 
 
 def _capture_supervisor(stack: contextlib.ExitStack, daemon_cli: Any) -> list[Any]:
@@ -4531,6 +4552,7 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
         _daemon_startup_stubs(stack, daemon_cli, tmp_path)
         created: list[_SpawnedTask] = []
         orphans: list[str] = []
+        thread_orphans: list[str] = []
         supervisors = _capture_supervisor(stack, daemon_cli)
         stack.enter_context(patch.object(daemon_cli, "Polylogue", FakePolylogue))
         stack.enter_context(patch.object(daemon_cli, "LiveWatcher", FakeWatcher))
@@ -4567,9 +4589,11 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
             ),
             into=created,
             orphans=orphans,
+            thread_orphans=thread_orphans,
         )
     assert created, "the task factory recorded nothing; the inventory never observed the route"
     assert orphans == [], f"the composition route returned with live children: {orphans}"
+    assert thread_orphans == [], f"the composition route returned with live threads: {thread_orphans}"
 
     unowned = [
         entry
@@ -4610,6 +4634,99 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
     assert set(supervised_names) == resolved_with_a_task, (
         f"supervised tasks {sorted(set(supervised_names) ^ resolved_with_a_task)} do not match resolved services"
     )
+
+
+def test_a_watcher_with_no_roots_is_unavailable_on_the_production_route(tmp_path: Path) -> None:
+    """A watcher with nothing to watch settles ``unavailable``, never ``completed``.
+
+    ``watcher`` is declared ``FAIL_DAEMON``. A watcher that returned when no
+    root existed settled ``stopped: completed``: the policy never applied and
+    status read a watch that did its work. The composition route now resolves
+    it before a task exists, names the reason, releases the maintenance gate
+    that waits on watch registration, and keeps fair intake running.
+
+    Anti-vacuity: drop the ``prepare_watch_roots`` check in
+    ``run_daemon_services`` and the watcher is started, which this fake refuses.
+    """
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.services import ServiceState
+    from polylogue.daemon.supervisor import TASK_NAME_PREFIX
+
+    class FakePolylogue:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    class RootlessWatcher(_NoIntakeHints):
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.watcher_ready = asyncio.Event()
+
+        def prepare_watch_roots(self) -> list[Path]:
+            return []
+
+        async def run(self) -> None:
+            raise AssertionError("a watcher with no roots was started")
+
+        def stop(self) -> None:
+            return None
+
+    async def idle_loop(**_kwargs: object) -> None:
+        await asyncio.Event().wait()
+
+    async def intake_stops(_self: object) -> None:
+        await asyncio.sleep(0)
+        raise RuntimeError("intake stopped")
+
+    with contextlib.ExitStack() as stack:
+        _daemon_startup_stubs(stack, daemon_cli, tmp_path)
+        created: list[_SpawnedTask] = []
+        supervisors = _capture_supervisor(stack, daemon_cli)
+        stack.enter_context(patch.object(daemon_cli, "Polylogue", FakePolylogue))
+        stack.enter_context(patch.object(daemon_cli, "LiveWatcher", RootlessWatcher))
+        stack.enter_context(patch("polylogue.operations.intake_adapters.DaemonIntakeService.run", intake_stops))
+        for attribute in (
+            "_periodic_lifecycle_heartbeat",
+            "_periodic_health_check",
+            "_periodic_wal_checkpoint",
+            "_periodic_fts_merge",
+            "_periodic_heartbeat",
+            "_periodic_db_optimize",
+            "_periodic_status_snapshot_refresh",
+            "_periodic_raw_materialization_convergence",
+        ):
+            stack.enter_context(patch.object(daemon_cli, attribute, idle_loop))
+        stack.enter_context(patch.object(daemon_cli, "_periodic_convergence_check", lambda *_a, **_k: idle_loop()))
+        for target in (
+            "polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check",
+            "polylogue.daemon.embedding_backlog.periodic_embedding_orphan_reconcile_check",
+            "polylogue.daemon.judgment_automation.periodic_judgment_automation_sweep",
+            "polylogue.daemon.blob_gc_periodic.periodic_blob_gc_check",
+            "polylogue.daemon.blob_gc_periodic.periodic_blob_publication_reconciliation_check",
+            "polylogue.daemon.secret_scan_sweep.periodic_secret_scan_sweep",
+        ):
+            stack.enter_context(patch(target, idle_loop))
+        stack.enter_context(pytest.raises(RuntimeError, match="intake stopped"))
+        _run_with_task_inventory(
+            daemon_cli.run_daemon_services(
+                sources=(WatchSource(name="codex", root=tmp_path / "absent-codex"),),
+                enable_watch=True,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            ),
+            into=created,
+        )
+
+    supervisor = supervisors[0]
+    assert supervisor.state("watcher") is ServiceState.UNAVAILABLE
+    assert supervisor.state("watcher_registered_bridge") is ServiceState.UNAVAILABLE
+    reasons = {transition.service: transition.reason for transition in supervisor.transitions()}
+    assert reasons["watcher"] == "no configured source root exists"
+    assert f"{TASK_NAME_PREFIX}watcher" not in {entry.name for entry in created}
+    assert supervisor.state("fair_intake") is ServiceState.FAILED
 
 
 @pytest.mark.parametrize("embeddings_configured", [False, True])

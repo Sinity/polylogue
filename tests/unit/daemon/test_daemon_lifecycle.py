@@ -66,6 +66,27 @@ def test_lifecycle_row_records_start_heartbeat_signal_and_clean_stop(
     assert '"component":"test"' in row[5]
 
 
+def test_lifecycle_writes_under_an_archive_bound_daemon_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``polylogued`` starts its lifecycle row inside an archive-bound lease.
+
+    Anti-vacuity: drop ``archive_root`` from ``_write_lifecycle``'s ops-tier
+    open and the armed lease refuses it with ``UnleasedWriteError``.
+    """
+    from polylogue.core.write_lease import arm_write_lease_enforcement, write_lease
+
+    ops_db = _bind_ops_db(monkeypatch, tmp_path)
+    with arm_write_lease_enforcement(), write_lease("daemon.lifecycle.start", archive_root=tmp_path):
+        lifecycle = DaemonLifecycle.start(details={"component": "test"})
+        lifecycle.stop(exit_kind="clean")
+
+    with sqlite3.connect(ops_db) as conn:
+        row = conn.execute("SELECT exit_kind FROM daemon_lifecycle WHERE run_id = ?", (lifecycle.run_id,)).fetchone()
+    assert row == ("clean",)
+
+
 def test_lifecycle_status_rejects_stale_unstopped_heartbeat(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
