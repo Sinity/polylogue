@@ -234,7 +234,7 @@ async def test_promoted_generation_starts_a_bounded_profile_pass_from_new_demand
             and item.key.key == recovered.target_session_id
             and item.outcome is Outcome.DONE
             for item in report.outcomes
-        )
+        ), report.outcomes
         assert report.work.discovered <= 128
         assert report.work.published <= 64
         with sqlite3.connect(recovered.index_db) as conn:
