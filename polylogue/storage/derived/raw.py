@@ -1024,6 +1024,9 @@ def _await_reporting_stalls(future: Future[T], *, subject: str) -> T:
         try:
             return future.result(timeout=_RETAINED_PREPARATION_STALL_REPORT_SECONDS)
         except TimeoutError:
+            if future.done():
+                # The worker itself raised TimeoutError: a result, not a wait.
+                raise
             waited += _RETAINED_PREPARATION_STALL_REPORT_SECONDS
             emit(
                 "storage.raw_observation.preparation_stalled",

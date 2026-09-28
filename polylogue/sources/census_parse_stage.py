@@ -754,7 +754,13 @@ class CensusParseStage:
         if remaining:
             self._retain_cleanup_callbacks({future: futures[future] for future in remaining})
             pending = len(remaining)
-            logger.warning("parse-stage prefetch: stop requested; leaving %d unfinished raw(s) uncached", pending)
+            emit(
+                "daemon.parse_prefetch.stopped_with_pending",
+                level=WARNING,
+                outcome="degraded",
+                reason="stop_requested",
+                raws=pending,
+            )
         return warmed
 
     def shutdown(self) -> None:
