@@ -90,6 +90,16 @@ enrichment hook that polylogue-2qx.2/j2zz/ih67 extend).
 
 ## Current Code Invariants
 
+- Acquisition binds a source location to its origin. At a bound location,
+  shape detection validates and never re-identifies: a payload whose shape
+  belongs to another origin raises `ForeignOriginContentError` and is recorded
+  as a typed refusal (`live_ingest_admission` convergence debt in the daemon, a
+  cursor failure in one-shot ingest). Declared `raw-only` artifact paths are
+  classified by location without consulting shape. The Drive/AI Studio source
+  admits only the AI Studio prompt MIME type, so a transcript uploaded to a chat
+  is an attachment, not a session. Only the import inbox and browser-capture
+  envelopes (whose provider is declared in the envelope) run cross-origin
+  classification.
 - `Origin` is the public archive source-origin vocabulary. Query specs,
   terminal unit rows, daemon query parameters, and MCP query-unit filters use
   `origin`/`exclude_origin` tokens and should continue to prefer that spelling.

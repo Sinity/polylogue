@@ -12,7 +12,7 @@ from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 from polylogue.sources.assembly import SidecarData
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
@@ -22,7 +22,12 @@ from . import decoders as _decoders
 from .cursor import _log_source_iteration_summary, _ParseContext, _record_cursor_failure
 from .decoders import _process_zip
 from .dispatch import GROUP_PROVIDERS as _GROUP_PROVIDERS
-from .dispatch import is_jsonl_source_path
+from .dispatch import (
+    ForeignOriginContentError,
+    bound_location_provider,
+    is_jsonl_source_path,
+    refuse_foreign_material,
+)
 from .emitter import _SessionEmitter
 from .origin_specs import SourceClassRecognition, artifact_rule_for_path, recognize_source_class
 from .parsers import antigravity, hermes_identity, hermes_state, hermes_verification
@@ -313,6 +318,7 @@ def parse_one_source_path(
         and source_class.source_class != "session"
         and not _decoded_session_admits_path_rule(path, provider=provider_hint, recognition=source_class)
     ):
+        refuse_foreign_material(path, provider_hint)
         logger.info(
             "source_candidate_not_admitted",
             source_path=str(path),
@@ -421,6 +427,7 @@ def parse_one_source_path(
         file_mtime=file_mtime,
         capture_raw=capture_raw,
         sidecar_data=sidecar_data,
+        bound_provider=bound_location_provider(provider_hint),
     )
     emitter = _SessionEmitter(ctx)
 
@@ -430,7 +437,13 @@ def parse_one_source_path(
 
             blob_root = blob_store_root()
         resolved_store = blob_store or BlobStore(blob_root)
-        blob_hash, blob_size = resolved_store.write_from_path(path)
+        from polylogue.sources.bound_capture import capture_bound_source
+
+        # Grouped files are published whole before the emitter sees their
+        # records; validate the captured bytes before the flush reserves them.
+        blob_hash, blob_size = capture_bound_source(
+            resolved_store, path, provider_hint, lambda: resolved_store.write_from_path(path)
+        )
         from polylogue.storage.blob_publication import flush_blob_publications, publication_receipt_id
 
         receipt_id = publication_receipt_id(resolved_store, blob_hash)
@@ -445,8 +458,16 @@ def parse_one_source_path(
             blob_size=blob_size,
             blob_publication_receipt_id=receipt_id,
         )
-        with path.open("rb") as handle:
-            yield from emitter.emit(handle, path.name, precomputed_raw=raw_data)
+        # Parse the captured, validated blob -- never a reopened source path,
+        # which may have changed since capture.
+        from polylogue.sources.bound_capture import release_captures_on_refusal
+
+        # A refusal found while parsing (a discriminator beyond the validation
+        # prefix) releases the reservation the flush made.
+        with release_captures_on_refusal(resolved_store) as captures:
+            captures.append((blob_hash, receipt_id))
+            with resolved_store.open(blob_hash) as handle:
+                yield from emitter.emit(handle, path.name, precomputed_raw=raw_data)
     else:
         with path.open("rb") as handle:
             yield from emitter.emit(handle, path.name)
@@ -529,6 +550,16 @@ def iter_source_sessions_with_raw(
                 str(path),
                 f"File not found (may have been deleted): {exc}",
             )
+        except ForeignOriginContentError as exc:
+            failed_count += 1
+            emit(
+                "sources.acquisition.foreign_origin_refused",
+                level=WARNING,
+                outcome="refused",
+                source_path=str(path),
+                reason=f"{exc.code}: {exc}",
+            )
+            _record_cursor_failure(cursor_state, str(path), f"{exc.code}: {exc}")
         except (JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
             failed_count += 1
             logger.warning("Failed to parse %s: %s", path, exc)

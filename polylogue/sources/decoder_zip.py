@@ -263,9 +263,17 @@ def process_zip(
     from polylogue.paths import blob_store_root
     from polylogue.storage.blob_publication import flush_blob_publications, publication_receipt_id
 
+    from .bound_capture import release_captures_on_refusal
     from .cursor import _ParseContext
-    from .dispatch import GROUP_PROVIDERS
+    from .dispatch import (
+        GROUP_PROVIDERS,
+        LOCATION_VALIDATION_PREFIX_BYTES,
+        ForeignOriginContentError,
+        bound_location_provider,
+        refuse_foreign_material,
+    )
     from .emitter import _SessionEmitter
+    from .origin_specs import path_declaration_refuses_session
 
     resolved_sidecar_data: SidecarData = sidecar_data if sidecar_data is not None else {}
 
@@ -284,6 +292,9 @@ def process_zip(
             path_classification = classify_artifact_path(name, provider=entry_provider_hint)
             session_artifact: ArtifactClassification | None = None
             if path_classification is not None and not path_classification.parse_as_session:
+                if path_declaration_refuses_session(entry_provider_hint, name):
+                    # Declared raw-only evidence is never probed for sessions.
+                    continue
                 session_artifact = zip_entry_session_artifact(zf, info, provider=entry_provider_hint)
                 if session_artifact is None:
                     continue
@@ -296,10 +307,21 @@ def process_zip(
                 file_mtime=file_mtime,
                 capture_raw=capture_raw,
                 sidecar_data=resolved_sidecar_data,
+                # The archive's own location binds; an inbox export (UNKNOWN)
+                # classifies its members.
+                bound_provider=bound_location_provider(provider_hint),
             )
             emitter = _SessionEmitter(ctx)
             precomputed_raw: RawSessionData | None = None
             try:
+                if entry_should_group and ctx.bound_provider is not None:
+                    # A grouped member is published whole before the emitter
+                    # sees its records, so validate it against the archive's
+                    # location first; a refused member never reaches the blob
+                    # store.
+                    with open_bounded_zip_entry(zf, info) as handle:
+                        prefix = handle.read(LOCATION_VALIDATION_PREFIX_BYTES)
+                    refuse_foreign_material(name, ctx.bound_provider, prefix=prefix)
                 if capture_raw and entry_should_group:
                     # ``open_bounded_zip_entry`` enforces a hard real-byte
                     # ceiling during decompression, independent of the
@@ -335,13 +357,16 @@ def process_zip(
                         blob_size=blob_size,
                         blob_publication_receipt_id=receipt_id,
                     )
-                with open_bounded_zip_entry(zf, info) as handle:
-                    yield from emitter.emit(
-                        handle,
-                        name,
-                        precomputed_raw=precomputed_raw,
-                        session_artifact=session_artifact,
-                    )
+                with release_captures_on_refusal(store) as captures:
+                    if precomputed_raw is not None and precomputed_raw.blob_hash is not None:
+                        captures.append((precomputed_raw.blob_hash, precomputed_raw.blob_publication_receipt_id))
+                    with open_bounded_zip_entry(zf, info) as handle:
+                        yield from emitter.emit(
+                            handle,
+                            name,
+                            precomputed_raw=precomputed_raw,
+                            session_artifact=session_artifact,
+                        )
             except ZipBombError as exc:
                 logger.warning(
                     "Skipping ZIP entry %s in %s: %s",
@@ -354,6 +379,18 @@ def process_zip(
                     f"{zip_path}:{name}",
                     str(exc),
                 )
+                continue
+            except ForeignOriginContentError as exc:
+                # A refused member is recorded on its own; admissible siblings
+                # in the same archive are still parsed.
+                emit(
+                    "sources.acquisition.foreign_origin_refused",
+                    level=WARNING,
+                    outcome="refused",
+                    source_path=str(f"{zip_path}:{name}"),
+                    reason=f"{exc.code}: {exc}",
+                )
+                _record_cursor_failure(cursor_state, f"{zip_path}:{name}", f"{exc.code}: {exc}")
                 continue
 
 

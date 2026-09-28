@@ -29,6 +29,12 @@ from polylogue.sources.decoder_zip import (
     is_declared_artifact_path,
     provider_detection_path,
 )
+from polylogue.sources.dispatch import (
+    LOCATION_VALIDATION_PREFIX_BYTES,
+    ForeignOriginContentError,
+    bound_location_provider,
+    refuse_foreign_material,
+)
 from polylogue.sources.live.discovery import _source_path_steps
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.source_acquisition_components import (
@@ -363,7 +369,17 @@ BaselineProgress = Callable[..., None]
 """``progress(phase, *, inspected=0, revisions=0, hashed_bytes=0)``: cheap counters, no I/O."""
 
 
-def _revision(path: Path, *, cancelled: Callable[[], bool] | None = None) -> tuple[str, int]:
+def _revision(
+    path: Path,
+    *,
+    cancelled: Callable[[], bool] | None = None,
+    location: Provider | None = None,
+) -> tuple[str, int]:
+    """Hash one file; with ``location``, validate the same bytes it hashes.
+
+    Validating a separate read would let a file that changes in between be
+    baselined as accepted while live capture refuses its bytes.
+    """
     _check_observation_cancelled(cancelled)
     if is_sqlite_path(path):
         return sqlite_member_revision_and_size(path)
@@ -372,6 +388,8 @@ def _revision(path: Path, *, cancelled: Callable[[], bool] | None = None) -> tup
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             _check_observation_cancelled(cancelled)
+            if size == 0 and location is not None:
+                refuse_foreign_material(path, location, prefix=chunk[:LOCATION_VALIDATION_PREFIX_BYTES])
             digest.update(chunk)
             size += len(chunk)
     return digest.hexdigest(), size
@@ -396,6 +414,9 @@ def _archive_members(
             if provider_detection_path(info.filename)
         ]
         provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
+        # The location binds, not the sniffed dominant provider: an inbox
+        # archive stays unbound so each member classifies, as in live intake.
+        location_binding = bound_location_provider(provider)
         if provider is Provider.UNKNOWN:
             provider = sniff_zip_provider(archive, detection_entries) or provider
         allowed_path = is_declared_artifact_path if provider is Provider.UNKNOWN else None
@@ -428,6 +449,7 @@ def _archive_members(
                     None,
                     entry_provider,
                     None,  # type: ignore[arg-type]
+                    bound_provider=location_binding,
                 )
                 for payload in replay_zip_entry_acquisition_payloads(archive, context):
                     _check_observation_cancelled(cancelled)
@@ -445,6 +467,10 @@ def _archive_members(
                     )
                     if progress is not None:
                         progress("baseline_hash", revisions=1, hashed_bytes=len(payload.payload_bytes))
+            except ForeignOriginContentError as exc:
+                # The live acquisition refuses this member; the baseline must
+                # not expect a raw row for it.
+                excluded(info, f"{exc.code}:{exc.found.value}")
             except (OSError, UnicodeError, ValueError, ZipBombError, zipfile.BadZipFile) as exc:
                 reason = "revision_io_unavailable" if _retryable_read_fault(exc) else "archive_member_unreadable"
                 fault(info, f"{reason}:{exc}")
@@ -573,7 +599,20 @@ def capture_production_source_baseline(
                     decisions.append(SourceDecision(source_name, str(path), "excluded", "expanded_to_members"))
                     decisions.extend(members)
                     continue
-                revision, material_bytes = _revision(path, cancelled=cancelled)
+                # Live intake refuses a foreign file at a bound location, so
+                # the baseline must not expect a raw row for it.
+                location = bound_location_provider(
+                    Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
+                )
+                try:
+                    if is_sqlite_path(path):
+                        refuse_foreign_material(path, location)
+                    revision, material_bytes = _revision(path, cancelled=cancelled, location=location)
+                except ForeignOriginContentError as exc:
+                    decisions.append(
+                        SourceDecision(source_name, str(path), "excluded", f"{exc.code}:{exc.found.value}")
+                    )
+                    continue
                 if progress is not None:
                     progress("baseline_hash", revisions=1, hashed_bytes=material_bytes)
             except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as exc:

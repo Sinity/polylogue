@@ -979,16 +979,18 @@ def test_full_ingest_acquires_but_does_not_parse_when_derived_tier_degraded(
     root = tmp_path / "sessions"
     root.mkdir()
     path = root / "degraded-full.jsonl"
-    path.write_bytes(
-        b'{"type":"session_meta","payload":{"id":"degraded-full"}}\n'
-        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
-        b'"content":[{"type":"input_text","text":"zero"}]}}\n'
+    # Claude Code-shaped payloads: the watch source binds Claude Code, and a
+    # bound location refuses another origin's content even on this route.
+    claude_record = (
+        b'{"type":"user","uuid":"u0","sessionId":"degraded-full","timestamp":"2025-06-13T17:40:00.000Z",'
+        b'"cwd":"/w","message":{"role":"user","content":"zero"}}'
     )
+    path.write_bytes(claude_record + b"\n")
     json_path = root / "degraded-full.json"
-    json_path.write_bytes(b'{"mapping":{"root":{"message":{"author":{"role":"user"}}}}}')
+    json_path.write_bytes(b"[" + claude_record + b"]")
     classified_path = root / "subagents" / "worker" / "agent-degraded.meta.json"
     classified_path.parent.mkdir(parents=True)
-    classified_path.write_bytes(b'{"mapping":{"root":{"message":{"author":{"role":"user"}}}}}')
+    classified_path.write_bytes(b'{"agentType":"worker"}')
     # Source-only acquisition writes source.db and refuses outright when the
     # durable tier is absent ("source-only acquisition refused because the
     # durable source tier is missing"), so this case has to stand up a real

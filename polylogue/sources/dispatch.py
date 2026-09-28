@@ -221,6 +221,18 @@ def _browser_capture_provider(payload: object) -> Provider | None:
     return Provider.from_string(provider if isinstance(provider, str) else None)
 
 
+def _declared_capture_provider(record: PayloadRecord) -> Provider | None:
+    """The provider a browser-capture envelope declares; the envelope owns it.
+
+    Location binding for captures is enforced at acquisition, where the
+    location is known; here ``runtime_provider`` is only a parser hint (a
+    mixed capture sequence's first element), so each envelope keeps its own
+    declared provider.
+    """
+    provider = _browser_capture_provider(record)
+    return None if provider in (None, Provider.UNKNOWN) else provider
+
+
 def _looks_like_browser_capture_sequence(payload: object) -> bool:
     record = _first_sequence_record(payload)
     return record is not None and browser_capture.looks_like(record)
@@ -379,16 +391,153 @@ def _looks_like_gemini_mapping_sequence(payload: object) -> bool:
     return record is not None and _looks_like_gemini_mapping(record)
 
 
-def detect_provider_evidence(payload: object, path: object | None = None) -> tuple[Provider | None, str]:
+class ForeignOriginContentError(ValueError):
+    """Content at a location bound to one origin carries another origin's shape.
+
+    A source location admits only its own origin's material. A Codex rollout
+    in Claude Code's project directory, or a Gemini CLI prompt log that
+    happens to look like Claude Code records, is refused -- never reparsed as
+    the origin its shape suggests, and never silently skipped.
+    """
+
+    code = "foreign_origin_content"
+
+    def __init__(self, *, expected: Provider, found: Provider, evidence: str) -> None:
+        super().__init__(
+            f"content at a {expected.value} location has {found.value} shape ({evidence}); "
+            "refused: a location admits only its own origin"
+        )
+        self.expected = expected
+        self.found = found
+        self.evidence = evidence
+
+    def __reduce__(self) -> tuple[object, ...]:
+        # Parse workers run in subprocesses; the refusal must survive pickling.
+        return (_rebuild_foreign_origin_error, (self.expected.value, self.found.value, self.evidence))
+
+
+def _rebuild_foreign_origin_error(expected: str, found: str, evidence: str) -> ForeignOriginContentError:
+    return ForeignOriginContentError(expected=Provider(expected), found=Provider(found), evidence=evidence)
+
+
+def bound_location_provider(expected: Provider | str | None) -> Provider | None:
+    """The origin a location binds, or ``None`` for a classifying location.
+
+    Only locations without a single owning origin -- the operator's import
+    inbox and browser-capture envelopes, which declare their provider -- run
+    shape classification. Every other location binds its origin, and shape
+    detection there only validates.
+    """
+    if expected is None:
+        return None
+    provider = Provider.from_string(expected)
+    return None if provider is Provider.UNKNOWN else provider
+
+
+def detect_provider_evidence(
+    payload: object,
+    path: object | None = None,
+    *,
+    expected: Provider | str | None = None,
+) -> tuple[Provider | None, str]:
     """Infer provider from payload shape, plus the evidence that decided it.
 
-    ``detect_provider`` is a thin wrapper over this function that discards the
-    evidence label for existing call sites; use this variant wherever the
-    deciding rule needs to be surfaced (acquisition logging, ``import
-    explain``-style diagnostics).
+    With ``expected`` naming a bound location origin, the result is either
+    that origin or ``None``; a payload carrying another origin's shape raises
+    :class:`ForeignOriginContentError`. ``detect_provider`` is a thin wrapper
+    that discards the evidence label.
     """
     del path
+    provider, evidence = _classify_provider_evidence(payload)
+    bound = bound_location_provider(expected)
+    if bound is not None and provider is not None and not same_origin(provider, bound):
+        raise ForeignOriginContentError(expected=bound, found=provider, evidence=evidence)
+    return provider, evidence
 
+
+#: Bounded prefix every acquisition route validates a bound source file with.
+LOCATION_VALIDATION_PREFIX_BYTES = 8192
+
+
+def refuse_foreign_material(
+    path: Path | str,
+    location: Provider | str | None,
+    *,
+    prefix: bytes | None = None,
+) -> None:
+    """The one bind-then-validate check every acquisition route applies.
+
+    A source file at a bound location is validated against that location's
+    origin from a bounded prefix before any of its bytes are retained,
+    published, parsed or baselined; another origin's shape raises
+    :class:`ForeignOriginContentError`. Unbound locations (the import inbox),
+    declared ``raw-only`` paths (classified by location alone) and
+    non-JSON material pass untouched. ``prefix`` lets a caller that already
+    holds the leading bytes avoid a second read.
+    """
+    bound = bound_location_provider(location)
+    if bound is None:
+        return
+    source = Path(path)
+    name = source.name
+    from .origin_specs import database_member_for_filename, path_declaration_refuses_session
+
+    member = database_member_for_filename(name)
+    if member is not None and not same_origin(member.provider, bound):
+        # A declared database of another origin (Codex ``state_5.sqlite``
+        # under a Claude Code root) is foreign by declaration.
+        raise ForeignOriginContentError(expected=bound, found=member.provider, evidence="declared database member")
+    if not (name.lower().endswith(".json") or is_jsonl_source_path(name)):
+        return
+
+    if path_declaration_refuses_session(bound, source):
+        return
+    if prefix is None:
+        with source.open("rb") as handle:
+            prefix = handle.read(LOCATION_VALIDATION_PREFIX_BYTES)
+    detected, _evidence = detect_provider_from_raw_bytes_evidence(prefix, name, bound, truncated_tail_ok=True)
+    truncated_record = is_jsonl_source_path(name) and b"\n" not in prefix
+    truncated_document = not is_jsonl_source_path(name) and len(prefix) >= LOCATION_VALIDATION_PREFIX_BYTES
+    if truncated_record or (truncated_document and detected is bound):
+        # The prefix ends inside one oversized record or document, so the
+        # detector saw no complete value. The completed keys before the cut
+        # still carry its envelope; validate that partial structure.
+        partial = _completed_prefix_structure(prefix)
+        if truncated_record and isinstance(partial, dict):
+            detect_provider_evidence([partial], expected=bound)
+        elif truncated_document and isinstance(partial, (dict, list)) and partial:
+            detect_provider_evidence(partial, expected=bound)
+
+
+def _completed_prefix_structure(prefix: bytes) -> object:
+    """Values whose lexical tokens completed inside a truncated JSON prefix."""
+    import ijson
+    from ijson.common import ObjectBuilder
+
+    builder = ObjectBuilder()
+    try:
+        for event, value in ijson.basic_parse(BytesIO(prefix), use_float=True):
+            builder.event(event, value)
+    except ijson.JSONError:
+        pass
+    return getattr(builder, "value", None)
+
+
+def same_origin(left: Provider, right: Provider) -> bool:
+    """Whether two provider wires name the same archive origin.
+
+    Wires are not origins: ``drive`` and ``gemini`` both denote AI Studio on
+    Drive, so a Drive location validating a ``gemini``-shaped prompt is its
+    own origin, not foreign content.
+    """
+    if left is right:
+        return True
+    from polylogue.core.sources import origin_from_provider
+
+    return origin_from_provider(left) is origin_from_provider(right)
+
+
+def _classify_provider_evidence(payload: object) -> tuple[Provider | None, str]:
     if record := _payload_record(payload):
         provider, evidence = detector_registry().detect(DetectionMode.RECORD, record)
         return provider, evidence or "no detector matched (single record)"
@@ -404,9 +553,14 @@ def detect_provider_evidence(payload: object, path: object | None = None) -> tup
     return None, "payload is not a JSON document or sequence"
 
 
-def detect_provider(payload: object, path: object | None = None) -> Provider | None:
-    """Infer provider from payload shape. Path is accepted for surface compatibility."""
-    return detect_provider_evidence(payload, path)[0]
+def detect_provider(
+    payload: object,
+    path: object | None = None,
+    *,
+    expected: Provider | str | None = None,
+) -> Provider | None:
+    """Infer provider from payload shape, validated against a bound location origin."""
+    return detect_provider_evidence(payload, path, expected=expected)[0]
 
 
 def detect_provider_from_raw_bytes_evidence(
@@ -447,7 +601,7 @@ def detect_provider_from_raw_bytes_evidence(
         except json.JSONDecodeError:
             payload = None
         else:
-            detected, evidence = detect_provider_evidence(payload)
+            detected, evidence = detect_provider_evidence(payload, expected=fallback_provider)
             if detected is not None:
                 return detected, evidence
 
@@ -473,7 +627,7 @@ def detect_provider_from_raw_bytes_evidence(
         )
         return fallback_provider, f"stream decode error ({type(exc).__name__}: {exc}); used fallback_provider"
 
-    detected, evidence = detect_provider_evidence(payloads)
+    detected, evidence = detect_provider_evidence(payloads, expected=fallback_provider)
     if detected is None:
         return fallback_provider, f"{evidence}; used fallback_provider"
     return detected, evidence
@@ -1549,7 +1703,7 @@ def _lower_payload_specs(
             )
         ]
     if record is not None and browser_capture.looks_like(record):
-        provider = detect_provider(record) or runtime_provider
+        provider = _declared_capture_provider(record) or runtime_provider
         return [
             LoweredPayloadSpec(
                 provider=provider,
@@ -1577,7 +1731,7 @@ def _lower_payload_specs(
             if item_record is None or not browser_capture.looks_like(item_record):
                 browser_capture_specs = []
                 break
-            provider = detect_provider(item_record) or runtime_provider
+            provider = _declared_capture_provider(item_record) or runtime_provider
             browser_capture_specs.append(
                 LoweredPayloadSpec(
                     provider=provider,
@@ -2252,6 +2406,11 @@ __all__ = [
     "ChatGPTLoweredDocument",
     "_detect_provider_from_raw_bytes",
     "detect_provider",
+    "ForeignOriginContentError",
+    "bound_location_provider",
+    "same_origin",
+    "refuse_foreign_material",
+    "LOCATION_VALIDATION_PREFIX_BYTES",
     "detect_provider_evidence",
     "detect_provider_from_raw_bytes_evidence",
     "is_jsonl_source_path",

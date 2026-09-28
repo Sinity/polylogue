@@ -18,14 +18,17 @@ from pathlib import Path
 from polylogue.archive.zip_admission import ZIP_JSON_SUFFIXES, BoundedMemberReport, ZipAdmission
 from polylogue.config import Source
 from polylogue.core.enums import Provider
+from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_raw_id, zip_member_source_index
 from polylogue.logging import WARNING, emit
+from polylogue.sources.bound_capture import release_captures_on_refusal
 from polylogue.sources.decoder_zip import (
     ZipEntryValidator,
     declared_artifact_provider,
     is_declared_artifact_path,
     provider_detection_path,
 )
+from polylogue.sources.dispatch import ForeignOriginContentError, bound_location_provider, same_origin
 from polylogue.sources.live.admission import ArtifactIdentity
 from polylogue.sources.origin_specs import database_member_for_filename
 from polylogue.sources.parsers.base import RawSessionData
@@ -70,12 +73,19 @@ def iter_retained_source_records(
     logical_path = Path(source_path)
     source = Source(name=source_name or "machine-ingest", path=logical_path)
     binding = database_member_for_filename(logical_path.name)
-    try:
-        declared_provider = Provider(source.name)
-    except ValueError:
-        declared_provider = Provider.UNKNOWN
+    # Source aliases (``codex-state``, ``aistudio``) resolve to their origin.
+    declared_provider = Provider.from_string(canonical_acquisition_provider(source.name, source_name=source.name))
     provider = binding.provider if binding is not None else declared_provider
+    # The declared source location binds (not a sniffed dominant provider), so
+    # an operator-imported archive stays unbound and classifies its members.
+    location_binding = bound_location_provider(declared_provider)
     if logical_path.suffix.lower() != ".zip":
+        if location_binding is not None and binding is not None and not same_origin(binding.provider, location_binding):
+            # A declared database member of another origin is not this
+            # location's material.
+            raise ForeignOriginContentError(
+                expected=location_binding, found=binding.provider, evidence="declared database member"
+            )
         data = read_plain_source_file(
             SourceReadContext(
                 source=source,
@@ -145,8 +155,29 @@ def iter_retained_source_records(
             entry_provider = provider
             if provider is Provider.UNKNOWN:
                 entry_provider = declared_artifact_provider(entry.filename) or provider
-            context = ZipEntryReadContext(source, logical_path, entry, None, entry_provider, blob_store)
-            for data in iter_zip_entry_raw_data(archive, context):
+            context = ZipEntryReadContext(
+                source,
+                logical_path,
+                entry,
+                None,
+                entry_provider,
+                blob_store,
+                bound_provider=location_binding,
+            )
+            member_records: list[RawSessionData] = []
+            try:
+                # Splits captured before a refusal are released with it.
+                with release_captures_on_refusal(blob_store) as captures:
+                    for data in iter_zip_entry_raw_data(archive, context):
+                        member_records.append(data)
+                        if data.blob_hash is not None:
+                            captures.append((data.blob_hash, data.blob_publication_receipt_id))
+            except ForeignOriginContentError as exc:
+                # The declared source binds; a foreign member is a typed
+                # refusal in the member denominator, never a retained raw.
+                record_rejected(entry, f"{exc.code}: {exc}")
+                continue
+            for data in member_records:
                 split = data.source_index or 0
                 mode = data.addressing_mode
                 if mode not in {MemberAddressingMode.WHOLE_MEMBER, MemberAddressingMode.ELEMENT_OF_CONTAINER}:

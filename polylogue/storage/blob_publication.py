@@ -229,6 +229,41 @@ class ArchiveBlobPublisher(BlobStore):
         self._pending_by_hash.clear()
         return receipts
 
+    def discard_pending_receipt(self, publication_id: str) -> bool:
+        """Drop one queued publication by its receipt, before any flush.
+
+        Receipts, not hashes, identify a capture: two identical captures share
+        a hash, and dropping one must not strand or drop the other.
+        """
+        for index, (receipt, prepared) in enumerate(self._pending):
+            if receipt.publication_id != publication_id:
+                continue
+            del self._pending[index]
+            self._store.discard_prepared(prepared)
+            remaining = [(r, p) for r, p in self._pending if r.blob_hash == receipt.blob_hash]
+            if remaining:
+                self._pending_by_hash[receipt.blob_hash] = remaining[-1][1]
+                self._latest_receipt_by_hash[receipt.blob_hash] = remaining[-1][0].publication_id
+            else:
+                self._pending_by_hash.pop(receipt.blob_hash, None)
+                self._latest_receipt_by_hash.pop(receipt.blob_hash, None)
+            return True
+        return False
+
+    def discard_pending_hash(self, blob_hash: str) -> bool:
+        """Drop the queued publication of one refused blob before any flush.
+
+        Returns whether it was pending. Bytes already published are left to
+        ordinary GC through ``release_refused_publication_receipt``.
+        """
+        prepared = self._pending_by_hash.pop(blob_hash, None)
+        if prepared is None:
+            return False
+        self._pending = [(receipt, item) for receipt, item in self._pending if item is not prepared]
+        self._latest_receipt_by_hash.pop(blob_hash, None)
+        self._store.discard_prepared(prepared)
+        return True
+
     def discard_pending(self) -> None:
         for _receipt, prepared in self._pending:
             self._store.discard_prepared(prepared)
@@ -254,6 +289,12 @@ class ArchiveBlobPublisher(BlobStore):
 
     def read_all(self, hash_hex: str) -> bytes:
         return self.blob_path(hash_hex).read_bytes()
+
+
+def discard_pending_blob(blob_store: BlobStore, blob_hash: str) -> bool:
+    """Drop a refused blob's queued publication when the store batches them."""
+    discard = getattr(blob_store, "discard_pending_hash", None)
+    return bool(discard(blob_hash)) if callable(discard) else False
 
 
 def publication_receipt_id(blob_store: BlobStore, blob_hash: str) -> str | None:

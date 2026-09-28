@@ -1929,8 +1929,9 @@ def path_declaration_refuses_session(provider: Provider, source_path: str | Path
     tool-result sidecar can reproduce a genuine export byte-for-byte
     (polylogue-omsw) and a prompt-history log carries the same ``sessionId``
     keys a transcript does (polylogue-ximhz). For those families the path rule
-    is terminal. ``fact`` and ``session`` rules keep the ordinary behaviour
-    where positive decoded session evidence may outrank a location.
+    is terminal and shape is never consulted. For ``fact`` and ``session``
+    rules, shape only validates the location's own origin: content of another
+    origin is refused (``ForeignOriginContentError``), never reinterpreted.
     """
     rule = artifact_rule_for_path(provider, str(source_path))
     return rule is not None and rule.parse_policy == "raw-only"
@@ -2613,6 +2614,23 @@ def _gemini_cli_spec() -> OriginSpec:
                     "Tool output is provider payload, not a stable sidecar record contract; retain bytes and join "
                     "to the owning tool result without inferring a public schema."
                 ),
+            ),
+            OriginArtifactRule(
+                kind="prompt_history_log",
+                # ``~/.gemini/tmp/<project>/logs.json`` is Gemini CLI's prompt
+                # log. Its rows carry ``sessionId``/``type``/``message`` keys
+                # that another origin's detector also recognizes, so the path
+                # rule, not content shape, decides that it is never a session.
+                path_pattern=r"(?:^|/)logs\.json$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="prompt_history_log",
+                fidelity_note=(
+                    "Gemini CLI prompt-log rows are retained verbatim as evidence; they are the user's "
+                    "prompts only and duplicate what the chat checkpoints carry, so they are never a session."
+                ),
+                path_suffixes=(".json",),
+                watch_suffixes=(),
             ),
         ),
         fidelity_notes=(
