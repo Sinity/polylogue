@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from contextvars import ContextVar
@@ -426,6 +427,9 @@ def _clamp_limit(limit: int | object) -> int:
     return clamp_query_limit(limit, default=10)
 
 
+_REJECTION_CODE = re.compile(r"[a-z][a-z0-9_.-]{0,63}")
+
+
 def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
     """Translate an exception raised by an MCP tool body into a typed error JSON.
 
@@ -525,11 +529,15 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
     elif isinstance(exc, DaemonOperationRejectedError):
         # The resident daemon refused the request before durable acceptance
         # and returned a typed code with a caller-facing detail on its public
-        # wire; it is the caller's error, so relay both, as the CLI does.
+        # wire; it is the caller's error, so relay both, as the CLI does. A
+        # refusal that declared no code carries its prose in the code slot
+        # (daemon_execution keeps the message); clients key on ``code``, so
+        # that one is reported under the generic ``rejected`` token.
+        code = exc.outcome if _REJECTION_CODE.fullmatch(exc.outcome) else "rejected"
         payload = MCPErrorPayload(
             message=f"{fn_name}: {exc.detail}",
-            code=exc.outcome,
-            error=exc.outcome,
+            code=code,
+            error=code,
             detail=type(exc).__name__,
             tool=fn_name,
         )

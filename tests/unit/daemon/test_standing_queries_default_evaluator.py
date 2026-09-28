@@ -255,6 +255,7 @@ async def test_a_view_the_evaluator_cannot_execute_is_refused_instead_of_watched
             watch=True,
         )
     assert terms.get("is_error") is True, terms
+    assert terms.get("code") == "invalid_watch_definition", terms
     assert "sessions where" in str(terms.get("message", ""))
 
     assert extra.get("is_error") is True, extra
