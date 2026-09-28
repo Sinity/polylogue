@@ -1342,4 +1342,6 @@ def test_a_branch_switch_during_lookup_refuses_reuse(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(run_tests, "reusable_green_receipt", lookup)
 
-    assert run_tests.main(["tests/unit/devtools/test_run_tests.py"]) == run_tests.REFUSAL_EXIT
+    from devtools.checkout_identity import REFUSAL_EXIT
+
+    assert run_tests.main(["tests/unit/devtools/test_run_tests.py"]) == REFUSAL_EXIT
