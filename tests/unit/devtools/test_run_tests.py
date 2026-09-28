@@ -174,6 +174,24 @@ def test_build_pytest_cmd_preserves_explicit_xdist_distribution() -> None:
     assert "--dist=loadgroup" not in cmd
 
 
+@pytest.mark.parametrize("cluster", ["-vn2", "-xvn", "-qn2"])
+def test_a_worker_count_inside_a_short_option_cluster_is_the_callers(cluster: str) -> None:
+    """Anti-vacuity (Codex P2, #5708): detect ``-n`` only as a whole-argument
+    prefix and ``-vn2`` gets a managed ``-n`` appended after it, which argparse
+    lets override the caller's own worker request."""
+    cmd = run_tests.build_pytest_cmd(["tests/unit/devtools", cluster])
+
+    assert "-n" not in cmd
+    assert cmd.count(cluster) == 1
+
+
+def test_an_n_inside_an_attached_value_is_not_a_worker_count() -> None:
+    """``-kn`` is ``-k`` with the attached expression ``n``, not a worker request."""
+    cmd = run_tests.build_pytest_cmd(["tests/unit/devtools", "-kn"])
+
+    assert cmd[cmd.index("-n") + 1] == str(FOCUSED_MAX_WORKERS)
+
+
 def test_build_pytest_cmd_does_not_add_distribution_for_serial_run() -> None:
     cmd = run_tests.build_pytest_cmd(["tests/unit", "-n", "0"])
 

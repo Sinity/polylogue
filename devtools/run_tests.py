@@ -56,7 +56,7 @@ from devtools.pytest_invocation import (
     effective_hypothesis_profile,
     managed_plugin_args,
 )
-from devtools.pytest_options import operand_count
+from devtools.pytest_options import caller_plugins, operand_count, short_options_with_value
 from devtools.pytest_rerun import RERUN_IN_SLOT_ENV, rerun_failed_once, semantic_rerun_options
 from devtools.pytest_slot import (
     WORKTREE_PROVENANCE_ENV,
@@ -630,8 +630,29 @@ def _anchor_test_paths() -> None:
 
 
 def _has_worker_flag(selection: list[str]) -> bool:
-    """True when the caller already chose an xdist worker count."""
-    return any(arg.startswith(("-n", "--numprocesses")) for arg in selection)
+    """True when the caller already chose an xdist worker count.
+
+    A short-option cluster is walked as argparse walks it: ``-vn2`` is ``-v``
+    plus ``-n2``, while in ``-kn`` the ``n`` is ``-k``'s attached value.
+    """
+    value_short: frozenset[str] | None = None
+    for argument in selection:
+        if argument.startswith("--"):
+            if argument.split("=", 1)[0] == "--numprocesses":
+                return True
+            continue
+        if not argument.startswith("-") or len(argument) < 2:
+            continue
+        if argument.startswith("-n"):
+            return True
+        if value_short is None:
+            value_short = short_options_with_value(caller_plugins(selection))
+        for letter in argument[1:]:
+            if letter == "n":
+                return True
+            if f"-{letter}" in value_short:
+                break
+    return False
 
 
 #: A selection naming at least this many test modules runs under xdist.

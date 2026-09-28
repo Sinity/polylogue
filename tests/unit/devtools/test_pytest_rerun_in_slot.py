@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -377,3 +378,18 @@ def test_scratch_is_kept_when_the_rerun_ran_other_content(tmp_path: Path) -> Non
 
     assert pytest_slot._in_slot_rerun_cleared(env, first_provenance={"git_head": "old"}) is False
     assert pytest_slot._in_slot_rerun_cleared(env, first_provenance={"git_head": "new"}) is True
+
+
+def test_a_caller_plugins_value_option_keeps_its_value_in_the_rerun(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity (Codex P2, #5708): probe the option table without the
+    caller's ``-p`` plugin and its ``--mode`` has no known arity, so ``strict``
+    is dropped as a path operand and the rerun exits with a usage error."""
+    plugin = "polylogue_synthetic_mode_plugin"
+    (tmp_path / f"{plugin}.py").write_text(
+        "def pytest_addoption(parser):\n    parser.addoption('--mode', action='store')\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("PYTHONPATH", f"{tmp_path}:{os.environ.get('PYTHONPATH', '')}")
+    command = ["python", "-m", "pytest", "tests/test_w.py", "-p", plugin, "--mode", "strict"]
+    assert pytest_rerun.semantic_rerun_options(command) == ["-p", plugin, "--mode", "strict"]

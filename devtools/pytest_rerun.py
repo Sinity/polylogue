@@ -30,7 +30,7 @@ from devtools.pytest_invocation import (
     REPORT_PLUGIN_ARGS,
     SUITE_COST_PLUGIN_NAME,
 )
-from devtools.pytest_options import operand_count, short_options_with_value
+from devtools.pytest_options import caller_plugins, operand_count, short_options_with_value
 from devtools.pytest_slot import PytestSlotUnavailableError, run_pytest, run_pytest_isolated
 from devtools.pytest_stream_report import report_file_argument
 from devtools.toolchain import venv_python
@@ -153,7 +153,7 @@ def semantic_rerun_options(command: list[str]) -> list[str]:
     pytest's own decision (:mod:`devtools.pytest_options`).
     """
     arguments = command[command.index("pytest") + 1 :] if "pytest" in command else list(command)
-    short_with_value = short_options_with_value()
+    short_with_value = short_options_with_value(caller_plugins(arguments))
     kept: list[str] = []
     index = 0
     while index < len(arguments):

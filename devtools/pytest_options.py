@@ -27,10 +27,27 @@ _CHECKOUT = Path(__file__).resolve().parents[1]
 
 #: Runs in the checkout's interpreter; prints ``{option: nargs}`` as JSON.
 #: ``tests/benchmarks`` is named so its conftest registers its options too.
+#: A ``-p`` plugin that cannot be imported by module name is left out: pytest
+#: refuses such a run itself, and an entry-point name is autoloaded anyway.
 _PROBE = """
-import json, sys
+import importlib.util, json, sys
 from _pytest.config import _prepareconfig
-config = _prepareconfig(sys.argv[1:])
+def importable(name):
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+arguments, index = [], 0
+raw = sys.argv[1:]
+while index < len(raw):
+    if raw[index] == "-p" and index + 1 < len(raw):
+        if importable(raw[index + 1]):
+            arguments += raw[index : index + 2]
+        index += 2
+        continue
+    arguments.append(raw[index])
+    index += 1
+config = _prepareconfig(arguments)
 arity = {}
 for action in config._parser.optparser._actions:
     for option in action.option_strings:
@@ -43,13 +60,37 @@ class PytestOptionTableError(RuntimeError):
     """Pytest's option table could not be read, so arguments cannot be classified."""
 
 
+def caller_plugins(arguments: Sequence[str]) -> tuple[str, ...]:
+    """The plugins a caller's ``-p name`` (``-pname``, ``-p=name``) loads early.
+
+    ``-p no:name`` blocks a plugin rather than loading one, so it registers
+    no options and is left out.
+    """
+    plugins: list[str] = []
+    for index, argument in enumerate(arguments):
+        if argument == "-p":
+            name = arguments[index + 1] if index + 1 < len(arguments) else ""
+        elif argument.startswith("-p") and not argument.startswith("--"):
+            name = argument[2:].removeprefix("=")
+        else:
+            continue
+        if name and not name.startswith("no:") and name not in plugins:
+            plugins.append(name)
+    return tuple(plugins)
+
+
 @functools.cache
-def pytest_option_nargs() -> Mapping[str, object]:
+def pytest_option_nargs(plugins: tuple[str, ...] = ()) -> Mapping[str, object]:
     """``{option: argparse nargs}`` for every option pytest accepts in this checkout.
+
+    ``plugins`` are the caller's early-loaded ``-p`` plugins
+    (:func:`caller_plugins`): an option such a plugin registers is as real
+    to pytest as a built-in one, so its arity must be read too.
 
     Fails closed: a caller that cannot tell a value from a path must not guess.
     """
-    plugins = [argument for name in (*DEVTOOLS_PLUGIN_NAMES, SUITE_COST_PLUGIN_NAME) for argument in ("-p", name)]
+    names = dict.fromkeys((*DEVTOOLS_PLUGIN_NAMES, SUITE_COST_PLUGIN_NAME, *plugins))
+    plugins_args = [argument for name in names for argument in ("-p", name)]
     # Autoloaded plugins are read too: a managed run loads its plugins by name,
     # and the superset only makes more options known.
     env = {
@@ -58,7 +99,7 @@ def pytest_option_nargs() -> Mapping[str, object]:
         if key not in {"PYTEST_ADDOPTS", "PYTEST_DISABLE_PLUGIN_AUTOLOAD"}
     }
     result = subprocess.run(
-        [venv_python(root=_CHECKOUT), "-c", _PROBE, *plugins, "tests", "tests/benchmarks"],
+        [venv_python(root=_CHECKOUT), "-c", _PROBE, *plugins_args, "tests", "tests/benchmarks"],
         cwd=_CHECKOUT,
         env=env,
         capture_output=True,
@@ -78,9 +119,9 @@ def pytest_option_nargs() -> Mapping[str, object]:
     return table
 
 
-def takes_value(option: str) -> bool:
+def takes_value(option: str, plugins: tuple[str, ...] = ()) -> bool:
     """Whether ``option`` (without an attached value) accepts a value."""
-    return pytest_option_nargs().get(option, 0) != 0
+    return pytest_option_nargs(plugins).get(option, 0) != 0
 
 
 def operand_count(arguments: Sequence[str], index: int) -> int:
@@ -96,7 +137,7 @@ def operand_count(arguments: Sequence[str], index: int) -> int:
         return 0
     if argument.startswith("--") and "=" in argument:
         return 0
-    table = pytest_option_nargs()
+    table = pytest_option_nargs(caller_plugins(arguments))
     if not argument.startswith("--") and len(argument) > 2 and argument not in table:
         # A clustered short-option run (``-qW``): walk it character by
         # character, as argparse does. A no-value option in the cluster is
@@ -132,17 +173,18 @@ def operand_count(arguments: Sequence[str], index: int) -> int:
     return count
 
 
-def short_options_with_value() -> frozenset[str]:
+def short_options_with_value(plugins: tuple[str, ...] = ()) -> frozenset[str]:
     """Single-letter options that take a value, which may be attached (``-n8``)."""
     return frozenset(
         option
-        for option, nargs in pytest_option_nargs().items()
+        for option, nargs in pytest_option_nargs(plugins).items()
         if len(option) == 2 and option.startswith("-") and nargs != 0
     )
 
 
 __all__ = [
     "PytestOptionTableError",
+    "caller_plugins",
     "operand_count",
     "pytest_option_nargs",
     "short_options_with_value",
