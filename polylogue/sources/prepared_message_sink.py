@@ -101,7 +101,12 @@ def _advertised_output_length(text: str) -> int:
     match = _ADVERTISED_EXCERPT_RE.search(text)
     if match is None:
         return 1
-    return int(match.group(1).replace(",", "")) + int(match.group(2).replace(",", ""))
+    first, last = (group.replace(",", "") for group in match.groups())
+    # A comma-only or absurdly long count quantifies nothing; the envelope
+    # still marks the output as masked.
+    if not (first.isdigit() and last.isdigit()) or len(first) > 18 or len(last) > 18:
+        return 1
+    return int(first) + int(last)
 
 
 def is_masked_tool_output(text: str | None) -> bool:
@@ -224,9 +229,13 @@ class GeminiToolOutputIndex:
                 reason = value_bounds.VALUE_BOUND_REFUSED
             else:
                 try:
-                    full_text = entry.read_text()
+                    full_text = value_bounds.require_storable_string(entry.read_text(), kind="gemini tool sidecar")
                 except OSError as exc:
                     reason = f"read_error:{type(exc).__name__}"
+                except value_bounds.ValueBoundRefusedError:
+                    # Replacement characters for invalid UTF-8 can expand a
+                    # file under the byte limit past it once decoded.
+                    reason = value_bounds.VALUE_BOUND_REFUSED
                 else:
                     if bool(owner[1]) and len(full_text) < int(owner[2]):
                         # A file still being written can read as an empty or

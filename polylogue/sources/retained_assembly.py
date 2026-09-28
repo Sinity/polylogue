@@ -44,7 +44,6 @@ from __future__ import annotations
 import re
 import sqlite3
 import threading
-from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -161,8 +160,10 @@ _Parsed = TypeVar("_Parsed")
 #: reparsing the same retained history per file makes a fresh build pay
 #: O(files x history bytes). A retained blob is content-addressed and
 #: immutable, so its parsed form is keyed by hash, parser and anchor path.
-_PARSED_RETAINED_ENTRIES = 4
-_parsed_retained_cache: OrderedDict[tuple[str, str, str, str], object] = OrderedDict()
+#: One parsed artifact is kept per kind -- the one the last enrichment of
+#: that kind already had to hold -- so residency never exceeds what a
+#: single enrichment needs, whatever the parsed size.
+_parsed_retained_cache: dict[str, tuple[tuple[str, str, str], object]] = {}
 _parsed_retained_lock = threading.Lock()
 
 
@@ -172,20 +173,19 @@ def _read_parsed(
     kind: str,
     parse: Callable[[bytes], _Parsed],
 ) -> _Parsed | None:
-    key = (kind, str(blob_store.root), artifact.blob_hash, artifact.source_path)
+    key = (str(blob_store.root), artifact.blob_hash, artifact.source_path)
     with _parsed_retained_lock:
-        if key in _parsed_retained_cache:
-            _parsed_retained_cache.move_to_end(key)
-            return cast("_Parsed", _parsed_retained_cache[key])
+        cached = _parsed_retained_cache.get(kind)
+        if cached is not None and cached[0] == key:
+            return cast("_Parsed", cached[1])
+        # Release the previous artifact of this kind before parsing the next.
+        _parsed_retained_cache.pop(kind, None)
     payload = _read(blob_store, artifact)
     if payload is None:
         return None
     parsed = parse(payload)
     with _parsed_retained_lock:
-        _parsed_retained_cache[key] = parsed
-        _parsed_retained_cache.move_to_end(key)
-        while len(_parsed_retained_cache) > _PARSED_RETAINED_ENTRIES:
-            _parsed_retained_cache.popitem(last=False)
+        _parsed_retained_cache[kind] = (key, parsed)
     return parsed
 
 

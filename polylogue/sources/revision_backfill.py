@@ -974,7 +974,7 @@ def enrichment_dependency_digest(
     *,
     provider: Provider,
     source_path: str,
-    provider_session_ids: Sequence[str],
+    provider_session_ids: Iterable[str],
     index_conn: sqlite3.Connection | None,
     source_conn: sqlite3.Connection | None,
     blob_root: Path | None,
@@ -987,6 +987,8 @@ def enrichment_dependency_digest(
     publication and the prepared interpretation is stale. ``parser_sidecars``
     also binds retained tool-result siblings, which only a retained parse
     reads; a live parse reads them from the source tree.
+    ``provider_session_ids`` is consumed only by a provider whose evidence is
+    keyed by session (``_replay_enrichment_reads_index``).
     """
     from polylogue.sources.assembly import get_assembly_spec
 
@@ -1136,7 +1138,7 @@ def prepared_enrichment_dependency_state(
     current = enrichment_dependency_digest(
         provider=provider,
         source_path=source_path,
-        provider_session_ids=[session.provider_session_id for session in sessions if session.provider_session_id],
+        provider_session_ids=(session.provider_session_id for session in sessions if session.provider_session_id),
         index_conn=archive.index_connection,
         source_conn=archive._ensure_source_conn(),
         blob_root=Path(archive.archive_root) / "blob",
@@ -5274,6 +5276,7 @@ class RetainedSessionEnricher:
         "_bundle",
         "_cached",
         "_index_conn",
+        "_keeps_session_ids",
         "_provider",
         "_session_ids",
         "_source_conn",
@@ -5296,6 +5299,9 @@ class RetainedSessionEnricher:
         self._blob_root = blob_root
         self._bundle = provider in BUNDLE_PROVIDERS and Path(source_path).name.lower().endswith(".json")
         self._cached: SidecarData | None = None
+        # Only a provider whose evidence is keyed by session needs the ids;
+        # a bundle of any other provider keeps none of them.
+        self._keeps_session_ids = _replay_enrichment_reads_index(provider)
         self._session_ids: list[str] = []
 
     def dependency_digest(self) -> str:
@@ -5317,7 +5323,7 @@ class RetainedSessionEnricher:
     def __call__(self, session: ParsedSession) -> ParsedSession:
         from polylogue.sources.assembly import get_assembly_spec
 
-        if session.provider_session_id:
+        if self._keeps_session_ids and session.provider_session_id:
             self._session_ids.append(session.provider_session_id)
         spec = get_assembly_spec(self._provider)
         if spec is None:
@@ -5453,7 +5459,7 @@ def _retained_enrichment_sidecar_data(
     source_conn: sqlite3.Connection | None,
     blob_root: Path | None,
     source_path: str | None,
-    provider_session_ids: Sequence[str] | None = None,
+    provider_session_ids: Iterable[str] | None = None,
 ) -> SidecarData:
     """Read the exact retained assembly evidence used by enrichment.
 

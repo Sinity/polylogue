@@ -3282,3 +3282,65 @@ def test_chatgpt_refuses_values_that_only_combine_past_the_cell_limit(
     )
     assert artifact.error is not None and "value_bound_refused" in artifact.error
     assert artifact.deferred is False
+
+
+@pytest.mark.parametrize(
+    "envelope",
+    [
+        "Output too large. Showing first , and last , characters",
+        "Output too large. Showing first " + "9" * 5000 + " and last 1 characters",
+    ],
+)
+def test_gemini_malformed_excerpt_counts_are_an_unquantified_mask(tmp_path: Path, envelope: str) -> None:
+    """A mask line whose counts are not numbers still observes the tool call.
+
+    Anti-vacuity: convert the comma-only or 5000-digit count with ``int`` and
+    ``observe`` raises ``ValueError``, aborting the whole session.
+    """
+    from polylogue.sources.prepared_message_sink import GeminiToolOutputIndex
+
+    conn = sqlite3.connect(tmp_path / "scratch.db")
+    try:
+        index = GeminiToolOutputIndex(conn)
+        index.observe(
+            {"toolCalls": [{"id": "call-1", "result": [{"functionResponse": {"response": {"output": envelope}}}]}]}
+        )
+        assert conn.execute("SELECT masked, complete_len FROM gemini_tool_owner").fetchall() == [(1, 1)]
+    finally:
+        conn.close()
+
+
+def test_gemini_sidecar_decoded_past_the_cell_limit_is_typed_debt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sidecar under the byte limit that decodes past it is refused as debt.
+
+    Anti-vacuity: store the decoded text unchecked and the oversized
+    replacement reaches SQLite (an untyped ``DataError`` at the real limit)
+    instead of a ``value_bound_refused`` debt row.
+    """
+    from polylogue.sources import value_bounds
+    from polylogue.sources.prepared_message_sink import GeminiToolOutputIndex
+
+    monkeypatch.setattr(value_bounds, "MAX_STORABLE_VALUE_BYTES", 64)
+    conn = sqlite3.connect(tmp_path / "scratch.db")
+    try:
+        index = GeminiToolOutputIndex(conn)
+        index.observe({"toolCalls": [{"id": "call-1", "result": []}]})
+        # 30 invalid bytes decode to 30 U+FFFD characters: 90 UTF-8 bytes.
+        scope = RetainedSidecarScope(
+            scope_key="scope",
+            files=(
+                RetainedSidecarFile(
+                    filename="call-1.txt", byte_size=30, file_mtime_ms=None, read_text=lambda: "�" * 30
+                ),
+            ),
+            available=True,
+        )
+        results = list(index.join(scope))
+        assert not any(getattr(result, "full_text", None) for result in results)
+        assert conn.execute("SELECT filename, reason FROM gemini_tool_debt").fetchall() == [
+            ("call-1.txt", "value_bound_refused")
+        ]
+    finally:
+        conn.close()
