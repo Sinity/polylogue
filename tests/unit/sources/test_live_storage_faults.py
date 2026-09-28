@@ -572,3 +572,36 @@ async def test_degraded_daemon_admits_nothing_and_reads_no_authority(
     assert all("degraded" in (result.reason or "") for result in outcomes.values())
     # No admission work happened, so none is charged to the class deficit.
     assert {result.actual_cost for result in outcomes.values()} == {0}
+
+
+@pytest.mark.asyncio
+async def test_degraded_admission_keeps_a_due_retry_page_for_re_offer(
+    storage_env: tuple[Polylogue, LiveWatcher, Path],
+) -> None:
+    """Anti-vacuity: leave ``_retry_page_pending`` set on the degraded return and
+    the next discovery rotates ``_retry_skip_after`` past the whole page, so its
+    unplanned tail waits for the durable retry sweep to wrap."""
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    _archive, watcher, source_path = storage_env
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(
+            archive_root=Path(watcher._polylogue.archive_root),
+            watcher=watcher,
+            sources=watcher._sources,
+        ),
+        watcher._sources[0],
+    )
+    tail = source_path.with_name("tail.jsonl")
+    adapter._retry_page = True
+    adapter._retry_page_pending = True
+    adapter._retry_page_paths = (source_path, tail)
+    set_degraded(DegradedReason(code="schema_version_mismatch", message="v12 vs v9"))
+    try:
+        await adapter.admit_page(())
+    finally:
+        clear_degraded()
+
+    assert adapter._retry_page_pending is False
+    assert adapter._retry_page_paths == ()
+    assert adapter._retry_skip_after is None

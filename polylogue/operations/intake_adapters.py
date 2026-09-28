@@ -701,6 +701,12 @@ class FileIntakeAdapter(IntakeAdapter):
             # this covers a page discovered just before.
             degradation = degraded_reason()
             detail = f"archive ingest is degraded: {degradation.code if degradation is not None else 'unknown'}"
+            # Forget the offered durable-retry page without rotating past it:
+            # the retry position did not advance, so the next discovery after
+            # recovery re-offers the same due items, tail included.
+            self._retry_page_pending = False
+            self._retry_page_paths = ()
+            self._local_retry_page = False
             return {
                 item.item_id: AdmissionResult(AdmissionOutcome.RETRYABLE, reason=detail, actual_cost=0)
                 for item in items
