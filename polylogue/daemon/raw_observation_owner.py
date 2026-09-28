@@ -1,13 +1,15 @@
 """Daemon composition for one exact raw-observation derivation.
 
-Raw preparation is deliberately independent of the daemon writer.  The only
-writer admission is the adapter's one-observation publication, forwarded from
-the bounded compute worker through :class:`DaemonWriteThreadBridge`.
+Raw preparation is deliberately independent of the daemon writer.  Writer
+admissions go through :class:`DaemonWriteThreadBridge`: the adapter's
+one-observation publication, forwarded from the bounded compute worker, and
+the terminal receipt of a retained Codex state export admitted without one.
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
 from pathlib import Path
 
 from polylogue.daemon.convergence import DaemonConverger, DerivationConvergenceOwner
@@ -37,6 +39,7 @@ class RawObservationConvergenceOwner:
         write_bridge: DaemonWriteThreadBridge,
     ) -> None:
         self._archive_root = archive_root
+        self._write_bridge = write_bridge
         adapter = make_raw_observation_derivation(archive_root)
         self._converger = DaemonConverger((), derivations=(adapter,))
         self._owner = DerivationConvergenceOwner(
@@ -53,6 +56,7 @@ class RawObservationConvergenceOwner:
 
             if daemon_write_lease_active():
                 raise RuntimeError("raw observation convergence must start after the daemon writer lease is released")
+            await self._finalize_retained_codex_state(raw_id)
             self._require_source_frontier_authority(raw_id)
             frame = raw_observation_frame(
                 self._archive_root,
@@ -64,6 +68,28 @@ class RawObservationConvergenceOwner:
                 domains=(RAW_OBSERVATION_DOMAIN,),
                 resume=False,
             )
+
+    async def _finalize_retained_codex_state(self, raw_id: str) -> None:
+        """Write the terminal receipt of a retained Codex state export first.
+
+        Such a raw admitted without its receipt is an incomparable cursor row
+        to the source-selection gate, and every route that could finalize it
+        sits behind that gate. The receipt comes from the immutable retained
+        export, published through the daemon writer.
+        """
+        from polylogue.sources.codex_state_evidence import (
+            resolve_retained_codex_state_receipts,
+            unreceipted_codex_state_raw_ids,
+        )
+
+        if not unreceipted_codex_state_raw_ids(self._archive_root, (raw_id,)):
+            return
+        await asyncio.to_thread(
+            self._write_bridge.run_sync_with_timeout,
+            "raw_observation.codex_state_receipt",
+            None,
+            functools.partial(resolve_retained_codex_state_receipts, self._archive_root, raw_ids=(raw_id,)),
+        )
 
     def _require_source_frontier_authority(self, raw_id: str) -> None:
         """Refuse exactly the raw paths the durable frontier cannot authorize.

@@ -10,9 +10,7 @@ from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL, INDEX_SCHEMA
 from polylogue.storage.sqlite.archive_tiers.ops import OPS_DDL, OPS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.schema_disposition import (
     assert_complete_audit_disposition,
-    assert_complete_schema_dispositions,
     audit_column_dispositions,
-    schema_dispositions,
 )
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.archive_tiers.source_attachments import SourceAttachment
@@ -47,8 +45,9 @@ ARCHIVE_VERSION_BY_TIER: Mapping[ArchiveTier, int] = {
     ArchiveTier.AUDIT: AUDIT_TIER_VERSION,
 }
 
-SCHEMA_DISPOSITIONS = schema_dispositions()
-assert_complete_schema_dispositions(SCHEMA_DISPOSITIONS)
+# The six-tier disposition is not computed here: its canonical embeddings
+# tier needs sqlite-vec, which this package must not require to import.
+# ``schema_dispositions()`` computes it on demand.
 
 
 def archive_ddl_for_tier(tier: ArchiveTier) -> str:
@@ -63,7 +62,6 @@ __all__ = [
     "ARCHIVE_VERSION_BY_TIER",
     "AUDIT_TIER_VERSION",
     "archive_ddl_for_tier",
-    "SCHEMA_DISPOSITIONS",
     "SOURCE_TIER_VERSION",
     "USER_TIER_VERSION",
     "SourceAttachment",
