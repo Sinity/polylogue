@@ -26,7 +26,7 @@ from dataclasses import dataclass, replace
 from functools import cache, lru_cache
 from itertools import islice
 from pathlib import Path
-from typing import Literal, cast
+from typing import IO, Literal, cast
 
 from polylogue.core.enums import Origin, Provider, ToolResultUnknownReason
 from polylogue.core.json_envelope import jsonl_record_envelopes, top_level_envelopes
@@ -687,6 +687,15 @@ def _looks_like_extracted_transcript_corpus_path(
 SOURCE_CLASS_JSONL_LEADING_RECORDS = 32
 
 
+def _first_significant_byte(handle: IO[bytes]) -> bytes:
+    """The first byte of a document that is not JSON whitespace, or ``b""``."""
+    while chunk := handle.read(64 * 1024):
+        stripped = chunk.lstrip(b" \t\r\n")
+        if stripped:
+            return stripped[:1]
+    return b""
+
+
 def recognize_source_class(
     provider: Provider,
     source_path: str | Path,
@@ -791,19 +800,20 @@ def recognize_source_class(
                     payload = list(
                         islice(jsonl_record_envelopes(handle, fields=fields), SOURCE_CLASS_JSONL_LEADING_RECORDS)
                     )
-                else:
-                    (payload,) = top_level_envelopes(handle, expand_arrays=False, fields=fields)
-            if not is_jsonl and isinstance(payload, list):
-                # A JSON array document: its signature is read per element,
-                # over the same bounded leading sample the JSONL route reads,
-                # so an array of millions of records costs bounded memory.
-                with path.open("rb") as handle:
+                elif _first_significant_byte(handle) == b"[":
+                    # A JSON array document: its signature is read per element,
+                    # over the same bounded leading sample the JSONL route reads,
+                    # so an array of millions of records costs a bounded read.
+                    handle.seek(0)
                     payload = list(
                         islice(
                             top_level_envelopes(handle, expand_arrays=True, fields=fields),
                             SOURCE_CLASS_JSONL_LEADING_RECORDS,
                         )
                     )
+                else:
+                    handle.seek(0)
+                    (payload,) = top_level_envelopes(handle, expand_arrays=False, fields=fields)
         except (OSError, UnicodeDecodeError, ValueError, ArithmeticError, ijson.JSONError):
             return SourceClassRecognition("unsupported", f"{provider.value} candidate is not readable JSON")
 

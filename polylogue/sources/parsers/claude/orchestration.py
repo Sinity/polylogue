@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.core.enums import Provider
+from polylogue.core.json import decode_provider_utf8
 from polylogue.sources.origin_specs import artifact_rule_for_path
 
 _DOCUMENT_FIELDS = frozenset(
@@ -208,7 +209,7 @@ def parse_claude_orchestration_artifact(
 
 def _decode(payload: bytes | str | object, *, jsonl: bool) -> object:
     if isinstance(payload, bytes):
-        payload = payload.decode("utf-8")
+        payload = decode_provider_utf8(payload)
     if not isinstance(payload, str):
         return payload
     if jsonl:

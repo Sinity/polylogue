@@ -17,7 +17,14 @@ from polylogue.archive.artifact_taxonomy.support import is_subagent_path
 from polylogue.archive.raw_payload.streams import raw_line_stream
 from polylogue.core.binary_signatures import detect_binary_signature
 from polylogue.core.enums import Provider
-from polylogue.core.json import JSONDecodeError, JSONDocument, JSONValue, is_json_value, loads
+from polylogue.core.json import (
+    JSONDecodeError,
+    JSONDocument,
+    JSONValue,
+    decode_provider_utf8,
+    is_json_value,
+    loads,
+)
 from polylogue.sources.dispatch import detect_provider
 
 _BINARY_ARTIFACT_MARKER = "unrecognized_binary_artifact"
@@ -34,24 +41,6 @@ class EmptyJsonlStreamError(ValueError):
     bound. Distinct from a stream whose lines failed to decode, which is
     decode-loss evidence; this is an unresolved sample, not a detection crash.
     """
-
-
-def _decode_provider_utf8(raw: bytes) -> str:
-    """Decode provider bytes while preserving UTF-8-encoded surrogate code units.
-
-    Some historical exports contain a lone UTF-16 surrogate encoded directly
-    as its three-byte UTF-8 sequence. This is invalid Unicode scalar UTF-8,
-    so the active JSON backend correctly rejects it, but Python can preserve the original
-    code unit with ``surrogatepass``. Arbitrary malformed byte sequences still
-    raise and retain the ordinary malformed-JSONL behavior.
-    """
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError as error:
-        try:
-            return raw.decode("utf-8", errors="surrogatepass")
-        except UnicodeDecodeError:
-            raise error from None
 
 
 def _load_json_record(line: str) -> JSONValue:
@@ -73,7 +62,7 @@ def _load_raw_json(raw: bytes | str) -> JSONValue:
         if not isinstance(raw, bytes):
             raise
         try:
-            return _load_json_record(_decode_provider_utf8(raw))
+            return _load_json_record(decode_provider_utf8(raw))
         except (JSONDecodeError, ValueError, UnicodeDecodeError):
             raise error from None
 
@@ -163,7 +152,7 @@ def _decode_jsonl_payload(
         for raw_line in stream:
             line_number += 1
             try:
-                line = _decode_provider_utf8(raw_line) if isinstance(raw_line, bytes) else raw_line
+                line = decode_provider_utf8(raw_line) if isinstance(raw_line, bytes) else raw_line
             except UnicodeDecodeError as exc:
                 malformed_lines += 1
                 if malformed_detail is None:
@@ -225,7 +214,7 @@ def _sample_jsonl_payload_with_detail(
                 continue
             assert raw_line is not None
             try:
-                line = _decode_provider_utf8(raw_line) if isinstance(raw_line, bytes) else raw_line
+                line = decode_provider_utf8(raw_line) if isinstance(raw_line, bytes) else raw_line
             except UnicodeDecodeError as exc:
                 malformed_lines += 1
                 if malformed_detail is None:
@@ -288,7 +277,7 @@ def scan_jsonl_session_artifact(
                 continue
             assert raw_line is not None
             try:
-                line = _decode_provider_utf8(raw_line) if isinstance(raw_line, bytes) else raw_line
+                line = decode_provider_utf8(raw_line) if isinstance(raw_line, bytes) else raw_line
             except UnicodeDecodeError:
                 continue
             if first_line:

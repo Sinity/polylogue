@@ -1553,7 +1553,8 @@ def test_array_document_recognition_reads_a_bounded_sample(tmp_path: Path, monke
     """Recognizing a JSON array reads only the leading records, not the whole array.
 
     Anti-vacuity: collect the expanded envelopes with a bare ``list(...)`` and
-    the generator is drained past the sample, tripping the guard below.
+    the generator is drained past the sample; read the root unexpanded first
+    and the whole array is scanned before sampling. Either trips the guard.
     """
     from polylogue.core.json_envelope import top_level_envelopes as real
     from polylogue.sources import origin_specs
@@ -1564,6 +1565,7 @@ def test_array_document_recognition_reads_a_bounded_sample(tmp_path: Path, monke
     drawn: list[int] = []
 
     def guarded(handle: object, *, expand_arrays: bool, fields: frozenset[str]):  # type: ignore[no-untyped-def]
+        assert expand_arrays, "array root read unexpanded, scanning the whole document"
         for index, envelope in enumerate(real(handle, expand_arrays=expand_arrays, fields=fields)):  # type: ignore[arg-type]
             if expand_arrays:
                 drawn.append(index)
@@ -1634,6 +1636,37 @@ def test_declared_identity_field_is_read_whole_or_refused(monkeypatch: pytest.Mo
     assert envelope == {"toolUseId": tool_id, json_envelope.UNDECLARED_FIELDS: True}
 
     monkeypatch.setattr(json_envelope, "_sqlite_value_limit", lambda: 1024)
+    with pytest.raises(json_envelope.EnvelopeValueTooLargeError):
+        list(
+            json_envelope.top_level_envelopes(
+                io.BytesIO(document), expand_arrays=False, fields=fields, whole_fields=fields
+            )
+        )
+
+
+def test_identity_size_limit_applies_to_the_decoded_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The SQLite limit bounds the stored value, not its escaped wire form.
+
+    Anti-vacuity: compare the raw token length and the escaped identifier,
+    whose decoded value fits, is refused.
+    """
+    import io
+
+    import pytest
+
+    import polylogue.core.json_envelope as json_envelope
+
+    fields = frozenset({"toolUseId"})
+    escaped = "toolu_" + "\\u0061" * 20_000 + "\\ud83d\\ude00" + "\\u00e9\\n"
+    decoded = "toolu_" + "a" * 20_000 + "\U0001f600" + "\u00e9\n"
+    document = ('{"toolUseId": "' + escaped + '"}').encode()
+    size = len(decoded.encode())
+    monkeypatch.setattr(json_envelope, "_sqlite_value_limit", lambda: size)
+    (envelope,) = json_envelope.top_level_envelopes(
+        io.BytesIO(document), expand_arrays=False, fields=fields, whole_fields=fields
+    )
+    assert envelope == {"toolUseId": decoded}
+    monkeypatch.setattr(json_envelope, "_sqlite_value_limit", lambda: size - 1)
     with pytest.raises(json_envelope.EnvelopeValueTooLargeError):
         list(
             json_envelope.top_level_envelopes(

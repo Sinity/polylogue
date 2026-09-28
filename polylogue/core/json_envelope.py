@@ -129,12 +129,40 @@ class EnvelopeValueTooLargeError(ValueError):
 class _TruncatedText(str):
     """A string field kept as its leading prefix.
 
-    ``raw_bytes`` is the raw length of its token and ``ordinal`` its position
-    among the document's string tokens, so it can be re-read whole.
+    ``decoded_bytes`` is the UTF-8 length of the whole decoded value and
+    ``ordinal`` its position among the document's string tokens, so it can be
+    re-read whole.
     """
 
-    raw_bytes: int
+    decoded_bytes: int
     ordinal: int
+
+
+class _EscapeSavings:
+    """Raw bytes a string token's escapes save when decoded to UTF-8.
+
+    The raw length of a token minus this is the UTF-8 length of the decoded
+    value: ``\\n`` decodes to one byte, ``\\u00e9`` to two, and an adjacent
+    escaped surrogate pair to one four-byte character.
+    """
+
+    def __init__(self) -> None:
+        self.saved = 0
+        self._high_surrogate = False
+
+    def escape(self, token: bytes, *, adjacent: bool) -> None:
+        if token[1:2] != b"u":
+            self.saved += 1
+            self._high_surrogate = False
+            return
+        unit = int(token[2:6], 16)
+        if 0xDC00 <= unit <= 0xDFFF and adjacent and self._high_surrogate:
+            # The pair decodes to four bytes; its high half was counted as three.
+            self.saved += 6 - 1
+            self._high_surrogate = False
+            return
+        self.saved += 6 - (1 if unit < 0x80 else 2 if unit < 0x800 else 3)
+        self._high_surrogate = 0xD800 <= unit <= 0xDBFF
 
 
 @cache
@@ -197,8 +225,11 @@ class _PrefixStringReader:
         #: Ordinal of the current string token, counted from 1 in stream order;
         #: the tokenizer reports keys and string values in the same order.
         self._ordinal = 0
-        #: Raw byte length of each string token passed on as a prefix only.
+        #: Decoded UTF-8 length of each string token passed on as a prefix only.
         self.truncated: dict[int, int] = {}
+        self._skip_savings = _EscapeSavings()
+        #: Whether the last suffix bytes examined ended with a complete escape.
+        self._skip_escape_at_end = False
         #: Ordinals of string tokens whose passed content had a surrogate
         #: code unit replaced by a stand-in.
         self.substituted: set[int] = set()
@@ -343,6 +374,13 @@ class _PrefixStringReader:
                     cut = _prefix_cut(bytes(self._string[:_STRING_PREFIX_BYTES]))
                     self._emit_string(bytes(self._string[:cut]), out)
                     self._skipped_bytes = len(self._string)
+                    self._skip_savings = _EscapeSavings()
+                    last_end = -1
+                    for token in _ESCAPE_TOKEN.finditer(bytes(self._string[:cut])):
+                        self._skip_savings.escape(token.group(), adjacent=token.start() == last_end)
+                        last_end = token.end()
+                    # The cut never separates the halves of a surrogate pair.
+                    self._skip_escape_at_end = False
                     self._skip_carry = b""
                     self._skip_invalid = False
                     self._skip_decoder = codecs.getincrementaldecoder("utf-8")(errors="surrogatepass")
@@ -363,7 +401,7 @@ class _PrefixStringReader:
                         # A UTF-8 sequence left incomplete by the closing quote.
                         self._skip_invalid = True
                         out += _INVALID_ESCAPE
-                self.truncated[self._ordinal] = self._skipped_bytes
+                self.truncated[self._ordinal] = self._skipped_bytes - self._skip_savings.saved
             else:
                 self._emit_string(bytes(self._string), out)
             out += b'"'
@@ -382,9 +420,10 @@ class _PrefixStringReader:
 
         The tokenizer never sees the suffix, so an invalid UTF-8 sequence
         (a directly encoded surrogate code unit is valid, as the production
-        decoder's ``surrogatepass`` retry keeps it), invalid escape or raw control character there is injected as an
-        invalid escape: the document is then rejected exactly as the full
-        decoder rejects it.
+        decoder's ``surrogatepass`` retry keeps it), invalid escape or raw
+        control character there is injected as an invalid escape: the
+        document is then rejected exactly as the full decoder rejects it.
+        Valid escapes are counted toward the decoded length.
         """
         if self._skip_invalid:
             return
@@ -397,17 +436,22 @@ class _PrefixStringReader:
                 return
         buffer = self._skip_carry + piece
         self._skip_carry = b""
+        last_end = 0 if self._skip_escape_at_end else -1
         for match in _SKIPPED_TOKEN.finditer(buffer):
             token = match.group()
             if len(token) > 1:
+                self._skip_savings.escape(token, adjacent=match.start() == last_end)
+                last_end = match.end()
                 continue
             if token == b"\\" and len(buffer) - match.start() < 6:
                 # Possibly an escape the next chunk completes.
                 self._skip_carry = buffer[match.start() :]
+                self._skip_escape_at_end = match.start() == last_end
                 return
             self._skip_invalid = True
             out += _INVALID_ESCAPE
             return
+        self._skip_escape_at_end = last_end == len(buffer)
 
     def _string_end(self, data: bytes, start: int) -> int:
         """Index of the closing quote of the open string in ``data``, or -1."""
@@ -495,10 +539,10 @@ class _Line:
 UNDECLARED_FIELDS = "\x00undeclared"
 
 
-def _envelope_scalar(value: object, raw_bytes: int | None, ordinal: int) -> object:
-    if isinstance(value, str) and (raw_bytes is not None or len(value) > ENVELOPE_TEXT_PREFIX_CHARS):
+def _envelope_scalar(value: object, decoded_bytes: int | None, ordinal: int) -> object:
+    if isinstance(value, str) and (decoded_bytes is not None or len(value) > ENVELOPE_TEXT_PREFIX_CHARS):
         text = _TruncatedText(value[:ENVELOPE_TEXT_PREFIX_CHARS])
-        text.raw_bytes = raw_bytes if raw_bytes is not None else len(value.encode("utf-8", "surrogatepass"))
+        text.decoded_bytes = decoded_bytes if decoded_bytes is not None else len(value.encode("utf-8", "surrogatepass"))
         text.ordinal = ordinal
         return text
     return value
@@ -621,8 +665,8 @@ def top_level_envelopes(
                 if not isinstance(value, _TruncatedText):
                     continue
                 limit = _sqlite_value_limit()
-                if value.raw_bytes > limit:
-                    raise EnvelopeValueTooLargeError(field, value.raw_bytes, limit)
+                if value.decoded_bytes > limit:
+                    raise EnvelopeValueTooLargeError(field, value.decoded_bytes, limit)
                 envelope[field] = _whole_string(handle, value.ordinal, field)
     yield from envelopes
 
