@@ -23,6 +23,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from polylogue.archive.query.expression import (
+    QueryUnitLimitStage,
+    QueryUnitOffsetStage,
+    QueryUnitSortStage,
+)
 from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
     QueryExistsPredicate,
@@ -196,6 +201,13 @@ def _predicate_relations(predicate: QueryPredicate | None) -> frozenset[str] | N
     return None
 
 
+def _is_row_paging_stage(stage: object) -> bool:
+    """Whether a pipeline stage only orders or slices the terminal unit rows."""
+    if isinstance(stage, QueryUnitLimitStage | QueryUnitOffsetStage):
+        return True
+    return isinstance(stage, QueryUnitSortStage) and stage.sort.field == "time"
+
+
 def query_unit_frame_relations(source: object, session_filters: Mapping[str, object] | None) -> frozenset[str]:
     """Return the tracked relations one lowered query-unit page can read.
 
@@ -212,16 +224,20 @@ def query_unit_frame_relations(source: object, session_filters: Mapping[str, obj
     relations = set(_BASE_RELATIONS | unit_relations)
 
     # Result *shape* stages (group/aggregate/projection) are not modelled
-    # here; an aggregate page carries no offset continuation anyway, so
-    # widening costs nothing and keeps this declaration about relations only.
+    # here and widen to every relation. That over-invalidates their
+    # continuations but never lets one resume over a relation that moved.
     if (
         getattr(source, "group_by", None) is not None
         or getattr(source, "aggregate", None) is not None
         or getattr(source, "agg_metrics", None)
         or getattr(source, "selected_fields", None)
-        or getattr(source, "pipeline_stages", None)
     ):
         return FRAME_RELATIONS_ALL
+    # Row-ordering and paging stages reorder or slice the unit's own rows and
+    # read no further relation; any other stage is unknown here and widens.
+    for stage in getattr(source, "pipeline_stages", None) or ():
+        if not _is_row_paging_stage(stage):
+            return FRAME_RELATIONS_ALL
 
     for predicate in (getattr(source, "predicate", None), getattr(source, "session_predicate", None)):
         declared = _predicate_relations(predicate)

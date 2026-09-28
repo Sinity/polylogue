@@ -7,9 +7,10 @@ not inspect source files or infer identities from agent names or dialogue.
 
 from __future__ import annotations
 
+import itertools
 import re
 import shlex
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -17,7 +18,7 @@ from pydantic import BaseModel, ConfigDict
 
 if TYPE_CHECKING:
     from polylogue.analysis.topology import SessionTopology
-    from polylogue.archive.session.domain_models import Session
+    from polylogue.archive.message.models import Message
     from polylogue.archive.session.events import SessionEvent
     from polylogue.storage.sqlite.archive_tiers.archive_query_reads import ArchiveDelegationQueryRow
 
@@ -111,23 +112,58 @@ def _bead_ids(tool_name: str, arguments: Mapping[str, object]) -> list[str]:
     return sorted({value for value in values if _BEAD_ID.fullmatch(value)})
 
 
+class _Section:
+    """One evidence section: its full count and its first ``_LIMIT`` rows."""
+
+    def __init__(self) -> None:
+        self.rows: list[dict[str, object]] = []
+        self.count = 0
+
+    def append(self, row: dict[str, object]) -> None:
+        self.count += 1
+        if len(self.rows) < _LIMIT:
+            self.rows.append(row)
+
+
+class _TimeSpan:
+    def __init__(self) -> None:
+        self.start: datetime | None = None
+        self.end: datetime | None = None
+
+    def observe(self, stamp: datetime | None) -> None:
+        if stamp is None:
+            return
+        stamp = stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp.astimezone(UTC)
+        self.start = stamp if self.start is None or stamp < self.start else self.start
+        self.end = stamp if self.end is None or stamp > self.end else self.end
+
+
 def build_session_orchestration(
-    session: Session,
+    session_id: str,
     topology: SessionTopology | None,
     *,
+    messages: Iterable[Message] = (),
+    events: Iterable[SessionEvent] = (),
     acquisition: Mapping[str, object] | None = None,
     delegations: Sequence[ArchiveDelegationQueryRow] = (),
-    usage_rows: Sequence[Mapping[str, object]] = (),
+    usage_rows: Iterable[Mapping[str, object]] = (),
 ) -> SessionOrchestrationEvidence:
-    """Project this session's own records, excluding inherited dialogue."""
-    session_id = str(session.id)
-    messages = [message for message in session.messages if message.id.startswith(session_id + ":")]
-    events = sorted(session.session_events, key=lambda event: event.event_index)
-    launches: list[dict[str, object]] = []
-    segments: list[dict[str, object]] = []
-    mentions: list[dict[str, object]] = []
-    quotas: list[dict[str, object]] = []
-    usage_observations: list[dict[str, object]] = []
+    """Project this session's own records, excluding inherited dialogue.
+
+    ``messages`` (transcript order), ``events`` (``event_index`` order) and
+    ``usage_rows`` (``position`` order) are consumed once as streams: each
+    section keeps its full count but retains only its first ``_LIMIT`` rows,
+    so memory does not grow with the length of the session.
+    """
+    launches = _Section()
+    segments = _Section()
+    mentions = _Section()
+    quotas = _Section()
+    usage_observations = _Section()
+    last_segment: dict[str, object] | None = None
+    span = _TimeSpan()
+    message_count = 0
+    event_count = 0
     message_tokens: dict[str, int] = {}
     messages_with_tokens = 0
     messages_with_unmeasured_lanes = 0
@@ -140,73 +176,12 @@ def build_session_orchestration(
     if not watermark or not watermark.get("parsed_at"):
         gaps.append("ingestion_watermark_unavailable")
 
-    for message in messages:
-        timestamp = message.timestamp.isoformat() if message.timestamp else None
-        lanes = {key: getattr(message, key) for key in _MESSAGE_TOKEN_LANES}
-        positive_tokens = {key: value for key, value in lanes.items() if value is not None and value > 0}
-        unmeasured_lanes = [key for key, value in lanes.items() if value is None]
-        if positive_tokens:
-            messages_with_tokens += 1
-            for key, value in positive_tokens.items():
-                message_tokens[key] = message_tokens.get(key, 0) + value
-        if unmeasured_lanes:
-            messages_with_unmeasured_lanes += 1
-            for key in unmeasured_lanes:
-                unmeasured_lane_messages[key] = unmeasured_lane_messages.get(key, 0) + 1
-        if str(message.role) == "assistant" and message.model_name:
-            if segments and segments[-1]["model"] == message.model_name:
-                segments[-1]["end_message_id"] = message.id
-                segments[-1]["end_event_time"] = timestamp
-                segments[-1]["message_count"] = cast(int, segments[-1]["message_count"]) + 1
-            else:
-                segments.append(
-                    {
-                        "model": message.model_name,
-                        "basis": "recorded_message_model",
-                        "actual_model_verified": None,
-                        "start_message_id": message.id,
-                        "end_message_id": message.id,
-                        "start_event_time": timestamp,
-                        "end_event_time": timestamp,
-                        "message_count": 1,
-                    }
-                )
-        for block in message.blocks:
-            if block.get("type") != "tool_use":
-                continue
-            name = _text(block.get("tool_name"))
-            if name is None:
-                continue
-            arguments = _mapping(block.get("tool_input"))
-            evidence: dict[str, object] = {
-                "message_id": message.id,
-                "block_id": block.get("block_id", block.get("id")),
-                "tool_id": block.get("tool_id"),
-                "tool_name": name,
-                "event_time": timestamp,
-            }
-            if name.rsplit(".", 1)[-1] in _LAUNCH_TOOLS:
-                launches.append(
-                    {
-                        **evidence,
-                        "basis": "tool_request",
-                        "child_session_id": None,
-                        "requested_model": _text(arguments.get("model")),
-                        "requested_effort": _text(arguments.get("reasoning_effort")),
-                        "agent_type": _text(arguments.get("subagent_type", arguments.get("agent_type"))),
-                        "task_name": _text(arguments.get("task_name", arguments.get("name"))),
-                        "actual_model": None,
-                    }
-                )
-            for bead_id in _bead_ids(name, arguments):
-                mentions.append({**evidence, "bead_id": bead_id, "bead_revision": None, "attempt_id": None})
-
-    launches_by_block = {row["block_id"]: row for row in launches if row.get("block_id")}
+    delegations_by_block: dict[str | None, list[ArchiveDelegationQueryRow]] = {}
     for delegation in delegations:
-        row = launches_by_block.get(delegation.instruction_tool_use_block_id)
-        if row is None:
-            row = {"basis": "stored_delegation", "event_time": None}
-            launches.append(row)
+        delegations_by_block.setdefault(delegation.instruction_tool_use_block_id, []).append(delegation)
+    matched_blocks: set[str | None] = set()
+
+    def apply_delegation(row: dict[str, object], delegation: ArchiveDelegationQueryRow) -> None:
         row.update(
             {
                 "child_session_id": delegation.child_session_id,
@@ -223,10 +198,92 @@ def build_session_orchestration(
             }
         )
 
+    for message in messages:
+        if not message.id.startswith(session_id + ":"):
+            continue
+        message_count += 1
+        span.observe(message.timestamp)
+        timestamp = message.timestamp.isoformat() if message.timestamp else None
+        lanes = {key: getattr(message, key) for key in _MESSAGE_TOKEN_LANES}
+        positive_tokens = {key: value for key, value in lanes.items() if value is not None and value > 0}
+        unmeasured_lanes = [key for key, value in lanes.items() if value is None]
+        if positive_tokens:
+            messages_with_tokens += 1
+            for key, value in positive_tokens.items():
+                message_tokens[key] = message_tokens.get(key, 0) + value
+        if unmeasured_lanes:
+            messages_with_unmeasured_lanes += 1
+            for key in unmeasured_lanes:
+                unmeasured_lane_messages[key] = unmeasured_lane_messages.get(key, 0) + 1
+        if str(message.role) == "assistant" and message.model_name:
+            if last_segment is not None and last_segment["model"] == message.model_name:
+                last_segment["end_message_id"] = message.id
+                last_segment["end_event_time"] = timestamp
+                last_segment["message_count"] = cast(int, last_segment["message_count"]) + 1
+            else:
+                last_segment = {
+                    "model": message.model_name,
+                    "basis": "recorded_message_model",
+                    "actual_model_verified": None,
+                    "start_message_id": message.id,
+                    "end_message_id": message.id,
+                    "start_event_time": timestamp,
+                    "end_event_time": timestamp,
+                    "message_count": 1,
+                }
+                segments.append(last_segment)
+        for block in message.blocks:
+            if block.get("type") != "tool_use":
+                continue
+            name = _text(block.get("tool_name"))
+            if name is None:
+                continue
+            arguments = _mapping(block.get("tool_input"))
+            evidence: dict[str, object] = {
+                "message_id": message.id,
+                "block_id": block.get("block_id", block.get("id")),
+                "tool_id": block.get("tool_id"),
+                "tool_name": name,
+                "event_time": timestamp,
+            }
+            if name.rsplit(".", 1)[-1] in _LAUNCH_TOOLS:
+                launch: dict[str, object] = {
+                    **evidence,
+                    "basis": "tool_request",
+                    "child_session_id": None,
+                    "requested_model": _text(arguments.get("model")),
+                    "requested_effort": _text(arguments.get("reasoning_effort")),
+                    "agent_type": _text(arguments.get("subagent_type", arguments.get("agent_type"))),
+                    "task_name": _text(arguments.get("task_name", arguments.get("name"))),
+                    "actual_model": None,
+                }
+                block_id = cast("str | None", evidence["block_id"])
+                if block_id and block_id in delegations_by_block:
+                    matched_blocks.add(block_id)
+                    for delegation in delegations_by_block[block_id]:
+                        apply_delegation(launch, delegation)
+                launches.append(launch)
+            for bead_id in _bead_ids(name, arguments):
+                mentions.append({**evidence, "bead_id": bead_id, "bead_revision": None, "attempt_id": None})
+
+    for delegation in delegations:
+        if delegation.instruction_tool_use_block_id in matched_blocks:
+            continue
+        stored: dict[str, object] = {"basis": "stored_delegation", "event_time": None}
+        apply_delegation(stored, delegation)
+        launches.append(stored)
+
+    usage_iter = iter(usage_rows)
+    first_usage_row = next(usage_iter, None)
+    has_usage_rows = first_usage_row is not None
     latest_total: dict[str, int] | None = None
     previous_total: dict[str, int] | None = None
     counter_reset = False
+    capture_gap = False
     for event in events:
+        event_count += 1
+        span.observe(event.timestamp)
+        capture_gap = capture_gap or event.event_type == "capture_gap"
         payload = event.payload
         reference = _event_ref(event)
         if event.event_type == "collab_agent_spawn_end":
@@ -258,7 +315,7 @@ def build_session_orchestration(
         windows = _mapping(payload.get("rate_limits"))
         if windows:
             quotas.append({**reference, "windows": windows, "consumed_tokens": None})
-        if event.event_type != "token_count" or usage_rows:
+        if event.event_type != "token_count" or has_usage_rows:
             continue
         total = _numbers(payload.get("total_token_usage"))
         last = _numbers(payload.get("last_token_usage"))
@@ -269,9 +326,11 @@ def build_session_orchestration(
                 counter_reset = True
             previous_total = total
             latest_total = total
-    for usage_row in usage_rows:
+    for usage_row in itertools.chain(() if first_usage_row is None else (first_usage_row,), usage_iter):
         occurred = usage_row.get("occurred_at_ms")
-        timestamp = datetime.fromtimestamp(occurred / 1000, tz=UTC).isoformat() if isinstance(occurred, int) else None
+        stamp = datetime.fromtimestamp(occurred / 1000, tz=UTC) if isinstance(occurred, int) else None
+        span.observe(stamp)
+        timestamp = stamp.isoformat() if stamp else None
         total = {
             key: value
             for column, key in (
@@ -309,9 +368,9 @@ def build_session_orchestration(
                 counter_reset = True
             previous_total = total
             latest_total = total
-    if usage_rows:
+    if has_usage_rows:
         gaps.append("stored_usage_zero_and_missing_indistinguishable")
-        if not quotas:
+        if not quotas.count:
             gaps.append("rate_limit_windows_not_retained_in_usage_rows")
     if counter_reset:
         gaps.append("cumulative_usage_counter_reset")
@@ -321,14 +380,14 @@ def build_session_orchestration(
         gaps.append("message_usage_missing_and_zero_indistinguishable")
     if unmeasured_lane_messages:
         gaps.append("message_token_lanes_unmeasured")
-    if not segments:
+    if not segments.count:
         gaps.append("model_evidence_unavailable")
-    if not quotas:
+    if not quotas.count:
         gaps.append("rate_limit_observations_unavailable")
-    if any(event.event_type == "capture_gap" for event in events):
+    if capture_gap:
         gaps.append("native_capture_gap")
 
-    children: list[dict[str, object]] = []
+    children = _Section()
     if topology:
         nodes = {str(node.session_id): node for node in topology.nodes}
         for edge in topology.edges:
@@ -349,14 +408,6 @@ def build_session_orchestration(
     else:
         gaps.append("topology_unavailable")
 
-    times = [event.timestamp for event in events if event.timestamp]
-    times.extend(message.timestamp for message in messages if message.timestamp)
-    times.extend(
-        datetime.fromtimestamp(occurred / 1000, tz=UTC)
-        for row in usage_rows
-        if isinstance(occurred := row.get("occurred_at_ms"), int)
-    )
-    times = [stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp.astimezone(UTC) for stamp in times]
     sections = {
         "children": children,
         "launches": launches,
@@ -365,7 +416,7 @@ def build_session_orchestration(
         "rate_limits": quotas,
         "usage_observations": usage_observations,
     }
-    truncated = [key for key, value in sections.items() if len(value) > _LIMIT]
+    truncated = [key for key, section in sections.items() if section.count > _LIMIT]
     if truncated:
         gaps.append("observation_limit")
     topology_payload = topology.model_dump(mode="json") if topology else None
@@ -382,12 +433,12 @@ def build_session_orchestration(
     return SessionOrchestrationEvidence(
         outcome="degraded" if gaps else "ok",
         session_id=session_id,
-        children=children[:_LIMIT],
+        children=children.rows,
         topology=topology_payload,
-        launches=launches[:_LIMIT],
-        model_segments=segments[:_LIMIT],
-        bead_mentions=mentions[:_LIMIT],
-        rate_limits=quotas[:_LIMIT],
+        launches=launches.rows,
+        model_segments=segments.rows,
+        bead_mentions=mentions.rows,
+        rate_limits=quotas.rows,
         usage={
             "tokens": latest_total if not counter_reset else None,
             "basis": "latest_stored_cumulative_counter" if latest_total and not counter_reset else None,
@@ -402,8 +453,8 @@ def build_session_orchestration(
             # A measured ``0`` is excluded from both: it is a measurement.
             "messages_with_unmeasured_token_lanes": messages_with_unmeasured_lanes,
             "unmeasured_token_lane_messages": unmeasured_lane_messages or None,
-            "message_token_lane_scope": len(messages),
-            "observations": usage_observations[:_LIMIT],
+            "message_token_lane_scope": message_count,
+            "observations": usage_observations.rows,
             "quota_consumed_tokens": None,
             "includes_children": None,
             "includes_inherited_usage": None,
@@ -414,11 +465,11 @@ def build_session_orchestration(
             "atomic_snapshot": False,
             "observed_at": acquisition.get("acquired_at") if acquisition else None,
             "ingestion_watermark": watermark,
-            "event_time_start": min(times).isoformat() if times else None,
-            "event_time_end": max(times).isoformat() if times else None,
-            "message_count": len(messages),
-            "event_count": len(events),
-            "section_counts": {key: len(value) for key, value in sections.items()},
+            "event_time_start": span.start.isoformat() if span.start else None,
+            "event_time_end": span.end.isoformat() if span.end else None,
+            "message_count": message_count,
+            "event_count": event_count,
+            "section_counts": {key: section.count for key, section in sections.items()},
             "truncated_sections": truncated,
             "limit_per_section": _LIMIT,
             "complete": False,

@@ -413,3 +413,73 @@ async def test_run_projection_relations_expose_typed_columns_not_a_payload_bundl
     assert event.tool_id == "tool-1"
     assert event.status == "ok"
     assert event.handler_kind is not None
+
+
+async def _observed_event_read_steps(db_path: Path, session_id: str) -> tuple[int, list[str]]:
+    """SQLite VM steps (in units of 100) spent listing one session's events."""
+    steps = 0
+
+    def count() -> int:
+        nonlocal steps
+        steps += 1
+        return 0
+
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        await conn.set_progress_handler(count, 100)
+        events = await list_observed_events(
+            conn,
+            RunProjectionListQuery(session_id=session_id, kind="tool_finished", limit=None),
+        )
+        await conn.set_progress_handler(None, 0)
+    return steps, [str(record.event.tool_id) for record in events]
+
+
+async def test_single_session_observed_events_rank_only_that_session(tmp_path: Path) -> None:
+    """A one-session read must not rank every archived tool block.
+
+    ``ranked_tool_uses``/``ranked_tool_results`` project only ``block_id``,
+    so the outer ``session_id`` filter cannot be pushed into their windows.
+    The cost of reading one small session must therefore stay flat when an
+    unrelated session with many tool calls is added.
+
+    Anti-vacuity: drop ``session_scoped`` from ``list_observed_events`` (or
+    the per-window ``session_id = ?`` predicates) and the second read ranks
+    the bulk session's 400 pairs too, multiplying its VM step count.
+    """
+    from tests.infra.storage_records import SessionBuilder
+
+    db_path = tmp_path / "index.db"
+    (
+        SessionBuilder(db_path, "small")
+        .provider("codex")
+        .add_message(
+            "m-tool",
+            role="assistant",
+            text="One tool call.",
+            blocks=[
+                {"type": "tool_use", "id": "tool-small", "name": "Bash", "tool_input": {"command": "true"}},
+                {"type": "tool_result", "tool_id": "tool-small", "text": "ok", "tool_result_exit_code": 0},
+            ],
+        )
+        .save()
+    )
+    session_id = "codex-session:ext-small"
+    baseline_steps, baseline_events = await _observed_event_read_steps(db_path, session_id)
+
+    bulk = SessionBuilder(db_path, "bulk").provider("codex")
+    for index in range(400):
+        bulk = bulk.add_message(
+            f"m-bulk-{index}",
+            role="assistant",
+            text="Bulk tool call.",
+            blocks=[
+                {"type": "tool_use", "id": f"tool-{index}", "name": "Bash", "tool_input": {"command": "true"}},
+                {"type": "tool_result", "tool_id": f"tool-{index}", "text": "ok", "tool_result_exit_code": 0},
+            ],
+        )
+    bulk.save()
+    scoped_steps, scoped_events = await _observed_event_read_steps(db_path, session_id)
+
+    assert baseline_events == scoped_events == ["tool-small"]
+    assert scoped_steps <= baseline_steps * 2 + 10, (baseline_steps, scoped_steps)

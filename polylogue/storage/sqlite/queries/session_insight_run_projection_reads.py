@@ -82,7 +82,12 @@ async def list_observed_events(
 ) -> list[SessionObservedEventRecord]:
     params: list[object] = []
     where: list[str] = []
+    source_where = "1=1"
     if query.session_id:
+        # Scope the tool-pairing windows and source blocks as well as the
+        # outer relation, so one session's read ranks only its own blocks.
+        source_where = "u.session_id = ?"
+        params.extend([query.session_id, query.session_id, query.session_id])
         where.append("e.session_id = ?")
         params.append(query.session_id)
     if query.run_ref:
@@ -97,8 +102,7 @@ async def list_observed_events(
     if query.query:
         where.append("e.search_text LIKE ?")
         params.append(f"%{query.query}%")
-    source_where = "1=1"
-    relation_sql = observed_event_relation_sql(source_where=source_where)
+    relation_sql = observed_event_relation_sql(source_where=source_where, session_scoped=bool(query.session_id))
     sql = f"{relation_sql} SELECT e.* FROM observed_events e"
     if where:
         sql += " WHERE " + " AND ".join(where)
