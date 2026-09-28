@@ -23,6 +23,7 @@ import pytest
 
 from polylogue.analysis import delegation_work_evidence_materializer as delegation
 from polylogue.browser_capture import receiver
+from polylogue.operations.operation_context import open_operation_read
 from polylogue.sources.live import convergence_debt_retry, hook_tool_response, production_baseline
 from polylogue.storage import usage
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -87,12 +88,11 @@ def test_delegation_freshness_probe_reads_index_through_profile(
     spy, so ``opened`` stays empty; a pinned archive connection without the
     read authorizer accepts the mutation matrix.
     """
-    real = delegation.open_operation_read
     opened: list[Path] = []
 
     @contextmanager
     def audited(root: Path, **kwargs: Any) -> Iterator[Any]:
-        with real(root, **kwargs) as pinned:
+        with open_operation_read(root, **kwargs) as pinned:
             assert_write_denied(pinned.archive._conn, tmp_path)
             opened.append(Path(pinned.archive.index_db_path).resolve())
             yield pinned
