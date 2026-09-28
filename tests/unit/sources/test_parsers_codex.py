@@ -3485,6 +3485,8 @@ def test_candidate_digest_is_windowed_and_never_rereads_the_stored_text(monkeypa
     def refuse(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("the full candidate was materialized again")
 
-    monkeypatch.setattr(codex_module.pickle, "loads", refuse)
+    import pickle
+
+    monkeypatch.setattr(pickle, "loads", refuse)
     assert conservation._candidate(large) == key
     assert conservation.add(large) == (key, False)
