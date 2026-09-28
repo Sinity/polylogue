@@ -884,12 +884,18 @@ def test_gemini_cli_object_spills_and_matches_parser(tmp_path: Path, monkeypatch
     artifact.discard()
 
 
-def test_gemini_cli_object_corrupt_suffix_discards_scratch(tmp_path: Path) -> None:
-    source = tmp_path / "session.json"
+@pytest.mark.parametrize("with_sidecar_scope", [False, True])
+def test_gemini_cli_object_corrupt_suffix_discards_scratch(tmp_path: Path, with_sidecar_scope: bool) -> None:
+    source = tmp_path / "project" / "chats" / "session.json"
+    source.parent.mkdir(parents=True)
     source.write_text(
         '{"sessionId":"process-1","kind":"chat","messages":[{"id":"m1","type":"user","content":"Hi"}]} trailing',
         encoding="utf-8",
     )
+    if with_sidecar_scope:
+        outputs = tmp_path / "project" / "tool-outputs" / "session-process-1"
+        outputs.mkdir(parents=True)
+        (outputs / "run_1.txt").write_text("Full neutral output", encoding="utf-8")
     directory = tmp_path / "prepared"
     artifact = prepare_jsonl_blob(
         str(source),
@@ -898,6 +904,7 @@ def test_gemini_cli_object_corrupt_suffix_discards_scratch(tmp_path: Path) -> No
         "fallback",
         is_stream=False,
         shard_directory=str(directory),
+        sidecar_resolver=FilesystemSidecarResolver() if with_sidecar_scope else None,
     )
     assert artifact.error is not None
     assert artifact.sessions_path is None
