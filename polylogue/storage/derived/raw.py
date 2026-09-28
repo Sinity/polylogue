@@ -1034,5 +1034,5 @@ def _await_reporting_stalls(future: Future[T], *, subject: str) -> T:
                 outcome="degraded",
                 reason="no_result_in_window",
                 subject_kind=subject.split(" ", 1)[0],
-                stalled_s=waited,
+                wait_ms=round(waited * 1000),
             )

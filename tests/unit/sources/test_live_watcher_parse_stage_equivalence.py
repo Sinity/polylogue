@@ -39,6 +39,7 @@ from typing import Any, NoReturn
 import pytest
 
 from polylogue import Polylogue
+from polylogue import logging as plog
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.daemon.intake import FairIntakeDispatcher, IntakeClassSpec
@@ -1029,6 +1030,22 @@ def test_read_ahead_refuses_a_path_swapped_for_a_symlink(tmp_path: Path) -> None
     assert not shards.exists() or not any(shards.iterdir())
 
 
+def test_a_preparation_stall_report_carries_its_measurements() -> None:
+    """Anti-vacuity: emit a stall field the log allowlist does not register and
+    it is dropped from the event with a ``log.field_rejected`` record."""
+    from concurrent.futures import Future
+
+    from polylogue.sources.live.parse_prefetch import _completed_reporting_stalls
+
+    future: Future[None] = Future()
+    threading.Timer(0.2, future.set_result, args=(None,)).start()
+    with plog.capture() as records:
+        assert list(_completed_reporting_stalls([future], stall_window=0.02)) == [future]
+    stalls = [record for record in records if record["event"] == "live.parse_prefetch.preparation_stalled"]
+    assert stalls and stalls[0]["paths"] == 1 and stalls[0]["wait_ms"] == 20
+    assert not [record for record in records if record["event"] == "log.field_rejected"]
+
+
 def test_a_stalled_read_ahead_cannot_wedge_required_work(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Unclaimed read-ahead holding the byte budget is preempted, then reaped.
 
@@ -1059,9 +1076,14 @@ def test_a_stalled_read_ahead_cannot_wedge_required_work(tmp_path: Path, monkeyp
     warm = threading.Thread(target=stage.warm_paths, args=([(str(required_path), Provider.CODEX, True)],))
     try:
         assert stage.prefetch_paths([str(stalled_path)], fallback_provider=Provider.CODEX) == 1
-        warm.start()
-        warm.join(timeout=10)
+        with plog.capture() as records:
+            warm.start()
+            warm.join(timeout=10)
         assert not warm.is_alive()
+        events = {record["event"]: record for record in records}
+        assert events["live.parse_prefetch.speculation_preempted"]["budget_ms"] == 100
+        assert events["live.parse_prefetch.speculation_reaped"]["paths"] == 1
+        assert "log.field_rejected" not in events
         prepared = stage.pop_path(str(required_path), blob_hash=hashlib.sha256(required_path.read_bytes()).hexdigest())
         assert prepared is not None and prepared.error is None
         prepared.discard()

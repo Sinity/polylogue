@@ -749,7 +749,7 @@ class CensusParseStage:
                         outcome="degraded",
                         reason="no_completion_in_window",
                         raws=len(remaining),
-                        stalled_s=round(now - last_completion, 1),
+                        wait_ms=round((now - last_completion) * 1000),
                     )
                     last_completion = now
                 continue

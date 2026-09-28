@@ -172,7 +172,7 @@ def _completed_reporting_stalls(futures: Iterable[Future[Any]], *, stall_window:
                 outcome="degraded",
                 reason="no_completion_in_window",
                 paths=len(pending),
-                stalled_s=stall_window,
+                wait_ms=round(stall_window * 1000),
             )
         yield from done
 
@@ -715,7 +715,7 @@ class LiveParseStage:
                     outcome="degraded",
                     reason="no_forward_progress",
                     paths=len([path for path in wanted if path in self._path_futures]),
-                    stalled_s=round(now - last_progress, 1),
+                    wait_ms=round((now - last_progress) * 1000),
                     attempt_bytes=advanced,
                 )
         for source_path, _provider, _is_stream in candidates:
@@ -765,7 +765,7 @@ class LiveParseStage:
             outcome="degraded",
             reason="required_preparation_blocked",
             paths=len(fresh),
-            grace_s=self._preempt_grace_seconds,
+            budget_ms=round(self._preempt_grace_seconds * 1000),
         )
 
     def _next_wait_seconds(self) -> float:

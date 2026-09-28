@@ -846,7 +846,9 @@ class FileIntakeAdapter(IntakeAdapter):
             if not batch:
                 return outcomes
             paths = [Path(cast(Any, item.payload)) for item in batch]
-            page = set(paths)
+            # Skipped paths belong to this page too; they must not stand in
+            # for the next page in the lookahead slice.
+            page = set(paths) | {Path(cast(Any, item.payload)) for item in skipped}
             # The current page is warmed by its own ingest. What overlaps its
             # publication is the next page, sampled off the admission path.
             self._offer_parse_lookahead([path for path in self._fresh_pending if path not in page][: len(paths)])
