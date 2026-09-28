@@ -284,6 +284,10 @@ def require_write_lease(purpose: str, *, archive_root: str | Path | None = None)
                 raise UnleasedWriteError(f"{purpose} uses a write lease inherited by a child task")
         elif not lease.current_thread_is_authorized():
             raise UnleasedWriteError(f"{purpose} uses a write lease from an unauthorized thread")
+        if lease.archive_root is not None and archive_root is None:
+            raise UnleasedWriteError(
+                f"{purpose} omitted archive identity for writer {lease.actor} bound to {lease.archive_root}"
+            )
         if archive_root is not None and lease.archive_root is not None:
             expected = Path(archive_root).resolve()
             actual = lease.archive_root.resolve()

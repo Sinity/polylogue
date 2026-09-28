@@ -23,6 +23,7 @@ from polylogue.operations.mutation_actuators import (
 )
 from polylogue.operations.mutation_transaction import (
     MAX_MUTATION_PLAN_TARGETS,
+    ConfirmationRequiredError,
     MutationPreview,
     OperationExecutor,
     compute_parameter_digest,
@@ -42,6 +43,8 @@ def _execute_named_mutation(
     """Run one legacy domain actuator under the daemon's write authority."""
     assert context.runtime is not None
     binding = runtime_operation_binding(actuator)
+    if binding.required_confirmation != "role_only" and request.payload.get("confirm") is not True:
+        raise ConfirmationRequiredError(f"{actuator.operation} requires explicit confirmation")
     executor = OperationExecutor(audit=audit, archive_root=context.archive_root)
     preview = executor.prepare_bound_for_archive(binding, args, context.principal, archive_root=context.archive_root)
     authorization = executor.authorize_bound(binding, preview, context.principal, confirmation_strength="bound_token")
@@ -152,6 +155,14 @@ def _reset_targets(root: Path, payload: dict[str, object]) -> list[tuple[str, Pa
             raise ValueError("reset is unsafe for a managed active generation")
         names = [("index database", "index.db")] if flags["index"] else []
         if flags["database"]:
+            if bool(payload.get("include_source_db", False)):
+                from polylogue.operations.reset_safety import unresolvable_raw_source_count
+
+                at_risk = unresolvable_raw_source_count(root)
+                if at_risk:
+                    raise ValueError(
+                        f"refusing to delete source.db: {at_risk} raw row(s) reference source paths that no longer exist"
+                    )
             # ``embeddings.db`` is absent deliberately: bootstrap classifies it
             # ``expensive_rebuild`` because nothing replays its vectors from
             # source.db -- they are re-purchased from the embedding provider.
@@ -202,6 +213,14 @@ def _reset_targets(root: Path, payload: dict[str, object]) -> list[tuple[str, Pa
         path = state_home() / "last-source.json"
         if path.exists():
             targets.append(("last-source state", path))
+    expected = payload.get("expected_targets")
+    if expected is not None:
+        if not isinstance(expected, list) or any(not isinstance(path, str) for path in expected):
+            raise ValueError("reset expected_targets must be a list of absolute paths")
+        resolved_expected = tuple(sorted(str(Path(path).resolve()) for path in expected))
+        resolved_actual = tuple(sorted(str(path.resolve()) for _name, path in targets))
+        if resolved_expected != resolved_actual:
+            raise ValueError("reset targets changed since confirmation; preview the targets again")
     return targets
 
 

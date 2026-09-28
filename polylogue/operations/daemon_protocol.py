@@ -762,6 +762,7 @@ class SessionExcisionRequest(_OperationPayload):
     reason: str = Field(min_length=1, max_length=4096)
     actor: str = Field(min_length=1, max_length=512)
     cascade_lineage: bool = False
+    confirm: bool = False
 
 
 class SessionLifecycleRequest(_OperationPayload):
@@ -769,16 +770,19 @@ class SessionLifecycleRequest(_OperationPayload):
     mode: Literal["mirror", "primary"]
     reason: str = Field(min_length=1, max_length=4096)
     actor: str = Field(min_length=1, max_length=512)
+    confirm: bool = False
 
 
 class IdentityResetRequest(_OperationPayload):
     session_ids: list[str] = Field(min_length=1, max_length=10_000)
     reason: str = Field(min_length=1, max_length=4096)
+    confirm: bool = False
 
 
 class RawAuthorityBlockerResolveRequest(_OperationPayload):
     blocker_id: str = Field(min_length=1)
     resolution: str = Field(min_length=1, max_length=4096)
+    confirm: bool = False
 
 
 class ResetRequest(_OperationPayload):
@@ -791,10 +795,13 @@ class ResetRequest(_OperationPayload):
     cache: bool = False
     auth: bool = False
     reset_all: bool = False
+    confirm: bool = False
+    expected_targets: list[str] = Field(default_factory=list, max_length=10_000)
 
 
 class BlobPublicationsAbandonRequest(_OperationPayload):
     publication_ids: list[str] = Field(min_length=1, max_length=10_000)
+    confirm: bool = False
 
 
 class DemoAugmentRequest(_OperationPayload):

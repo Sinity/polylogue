@@ -133,6 +133,7 @@ def raw_authority_blocker_resolve_command(
         {
             "blocker_id": blocker_id,
             "resolution": reason,
+            "confirm": True,
         },
     )
     receipt_result = result.get("result")

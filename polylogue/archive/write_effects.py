@@ -178,20 +178,13 @@ def _invalidate_insights_should_run(ctx: WriteEffectContext) -> bool:
 
 
 def _invalidate_insights_effect(ctx: WriteEffectContext) -> None:
-    """Mark session insight inputs stale in a separate post-commit connection."""
-    db_path = ctx.payload.get("_db_path")
-    if not db_path:
-        raise RuntimeError("deferred insight invalidation requires _db_path")
-    from polylogue.storage.sqlite.connection import open_connection
-
-    with open_connection(db_path) as conn:
-        placeholders = ", ".join("?" for _ in ctx.changed_session_ids)
-        conn.execute(
-            f"UPDATE session_profiles SET source_sort_key = NULL, source_updated_at = NULL "
-            f"WHERE session_id IN ({placeholders})",
-            ctx.changed_session_ids,
-        )
-        conn.commit()
+    """Invalidate derived inputs on the same admitted archive transaction."""
+    placeholders = ", ".join("?" for _ in ctx.changed_session_ids)
+    ctx.conn.execute(
+        f"UPDATE session_profiles SET source_sort_key = NULL, source_updated_at = NULL "
+        f"WHERE session_id IN ({placeholders})",
+        ctx.changed_session_ids,
+    )
 
 
 def _announce_ingest_should_run(ctx: WriteEffectContext) -> bool:
@@ -245,7 +238,7 @@ WRITE_EFFECT_REGISTRY: tuple[WriteEffect, ...] = (
     ),
     WriteEffect(
         name="invalidate_session_insights",
-        phase="async-deferred",
+        phase="in-transaction",
         run=_invalidate_insights_effect,
         should_run=_invalidate_insights_should_run,
         failure_policy="log-and-continue",

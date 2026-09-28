@@ -569,6 +569,38 @@ class TestApplySessionExcision:
         finally:
             source_conn.close()
 
+    def test_reingested_revision_does_not_reuse_old_excision_receipt(self, tmp_path: Path) -> None:
+        """A completed receipt only skips cleanup for the source revision it names.
+
+        Anti-vacuity: key retry detection only by session id and the second
+        excision leaves the newly written user assertion readable.
+        """
+        session_id = _seed_session(tmp_path, native_id="revision-reingest", payload=b'{"revision":1}')
+        apply_session_excision(tmp_path, session_id, reason="first revision", actor="user:local", now_ms=10)
+        assert _seed_session(tmp_path, native_id="revision-reingest", payload=b'{"revision":2}') == session_id
+
+        user_db = tmp_path / "user.db"
+        with sqlite3.connect(user_db) as conn:
+            from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+
+            with conn:
+                upsert_assertion(
+                    conn,
+                    assertion_id="assertion-note:new-revision",
+                    target_ref=f"session:{session_id}",
+                    kind=AssertionKind.NOTE,
+                    body_text="new revision secret",
+                    author_ref="user:local",
+                    author_kind="user",
+                    now_ms=20,
+                )
+
+        apply_session_excision(tmp_path, session_id, reason="second revision", actor="user:local", now_ms=30)
+        with sqlite3.connect(user_db) as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM assertions WHERE assertion_id = 'assertion-note:new-revision'"
+            ).fetchone() == (0,)
+
     def test_reingest_batch_skips_excised_file_without_aborting(self, tmp_path: Path) -> None:
         """The batch orchestration layer must skip-not-abort on ContentExcisedError.
 

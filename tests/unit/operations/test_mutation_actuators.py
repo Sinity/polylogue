@@ -111,6 +111,33 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
 )
 
 
+def test_delete_batch_reports_non_value_error_after_a_committed_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A later storage failure preserves the known durable deletion count.
+
+    Anti-vacuity: catching only ``ValueError`` lets an SQLite failure escape
+    as an ordinary refusal after the first chunk has already committed.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.operations import delete_authorization
+    from polylogue.operations.delete_authorization import DeleteBatchPartialError
+
+    calls = 0
+
+    def consume(*_args: object) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return SimpleNamespace(affected_count=3)
+        raise sqlite3.OperationalError("later chunk failed")
+
+    monkeypatch.setattr(delete_authorization, "consume_cli_delete", consume)
+    with pytest.raises(DeleteBatchPartialError) as caught:
+        delete_authorization.consume_cli_delete_many(Path("/archive"), ("one", "two"), cast(Any, object()))
+    assert caught.value.completed_chunks == 1
+    assert caught.value.affected_count == 3
+
+
 def _seed_archive_session(archive_root: Path, *, native_id: str) -> str:
     source_db = archive_root / "source.db"
     index_db = archive_root / "index.db"
