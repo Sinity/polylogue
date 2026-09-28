@@ -642,6 +642,13 @@ class TestApplySessionExcision:
         session_id = str(row[0])
         receipt = apply_session_excision(archive_root, session_id, reason="test", actor="user:local")
         assert receipt.found is True
+        with sqlite3.connect(archive_root / "index.db") as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM raw_revision_heads WHERE session_id = ?", (session_id,)
+            ).fetchone() == (0,)
+            assert conn.execute(
+                "SELECT COUNT(*) FROM raw_revision_applications WHERE session_id = ?", (session_id,)
+            ).fetchone() == (0,)
 
         # Re-ingest the SAME unmodified file: must skip (not raise/abort).
         result_second = asyncio.run(parse_sources_archive(archive_root, sources))

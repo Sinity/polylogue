@@ -1485,6 +1485,15 @@ def _apply_single_session_excision(
         conn = _connect_rw(index_db, archive_root=archive_root)
         try:
             with conn:
+                if target.raw_targets and _table_exists(conn, "raw_revision_applications"):
+                    raw_ids = tuple(raw.raw_id for raw in target.raw_targets)
+                    marks = ",".join("?" for _ in raw_ids)
+                    conn.execute(
+                        f"DELETE FROM raw_revision_applications WHERE session_id = ? OR raw_id IN ({marks})",
+                        (session_id, *raw_ids),
+                    )
+                if _table_exists(conn, "raw_revision_heads"):
+                    conn.execute("DELETE FROM raw_revision_heads WHERE session_id = ?", (session_id,))
                 if target.marker_input_targets and _table_exists(conn, "ingest_marker_witnesses"):
                     placeholders = ",".join("?" for _ in target.marker_input_targets)
                     conn.execute(
