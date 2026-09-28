@@ -1011,7 +1011,7 @@ def test_archive_facet_buckets_count_unique_sessions_for_duplicate_hits() -> Non
         tags=("work",),
     )
     archive = SimpleNamespace(
-        list_summaries=lambda limit, offset=0: [summary, summary] if offset == 0 else [],
+        iter_summaries=lambda limit=None, offset=0: iter([summary, summary]),
         _conn=None,
     )
 
@@ -6782,7 +6782,7 @@ async def test_facets_denominator_ignores_page_limit_and_names_truncation(
         assert response.complete_families
         assert response.family_errors == {}
 
-        monkeypatch.setattr("polylogue.api.archive.FACET_SCOPE_PAGE", 1)
+        monkeypatch.setattr("polylogue.storage.sqlite.archive_tiers.archive.SUMMARY_FETCH_BATCH", 1)
         paged = await archive.facets(spec, include_idf=False, include_deferred=False)
 
         assert paged.total_sessions == 2, "a scope larger than one page must still be counted whole"
@@ -6912,12 +6912,12 @@ async def test_cost_insight_filters_refuse_or_precede_the_limit(tmp_path: Path) 
         # status filter pages through candidates instead of refusing.
         from polylogue.storage.sqlite.archive_tiers import archive as archive_module
 
-        original_page = archive_module.COST_STATUS_FILTER_PAGE
-        archive_module.COST_STATUS_FILTER_PAGE = 1
+        original_page = archive_module.COST_INSIGHT_FETCH_BATCH
+        archive_module.COST_INSIGHT_FETCH_BATCH = 1
         try:
             single_page = store.list_session_cost_insights(status=priced_status, limit=1)
         finally:
-            archive_module.COST_STATUS_FILTER_PAGE = original_page
+            archive_module.COST_INSIGHT_FETCH_BATCH = original_page
 
     assert [insight.session_id for insight in paged] == [priced_id]
     assert [insight.session_id for insight in single_page] == [priced_id]
@@ -6951,14 +6951,13 @@ def test_public_cost_insight_route_filters_enriched_status_before_the_page_cut(
     ]
 
     class _Archive:
-        def list_session_cost_insights(
+        def iter_session_cost_insights(
             self, *, limit: int | None, offset: int, **scope: object
-        ) -> list[SimpleNamespace]:
-            assert scope["status"] is None and scope["model"] is None
-            return rows[offset:] if limit is None else rows[offset : offset + limit]
+        ) -> Iterator[SimpleNamespace]:
+            page = rows[offset:] if limit is None else rows[offset : offset + limit]
+            yield from page
 
-    monkeypatch.setattr(insights_api, "enrich_session_cost_insights", lambda archive, insights: list(insights))
-    monkeypatch.setattr(insights_api, "SESSION_COST_FILTER_PAGE", 1)
+    monkeypatch.setattr(insights_api, "enrich_session_cost_insight", lambda archive, insight: insight)
 
     archive = cast("ArchiveStore", _Archive())
     by_status = insights_api._session_cost_insight_page(archive, SessionCostInsightQuery(status="priced", limit=1))
