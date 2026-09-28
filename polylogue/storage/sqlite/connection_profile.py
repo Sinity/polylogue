@@ -1127,6 +1127,34 @@ def _descriptor_database_uri(opened_main_fd: int, suffix: str) -> str | None:
     return None if alias is None else f"file:{alias}{suffix}"
 
 
+class LiveGenerationImmutableError(ValueError):
+    """An ``immutable=1`` open was asked of a file that still carries live state.
+
+    SQLite's immutable mode reads the main file alone. A non-empty ``-wal`` or
+    rollback journal beside it holds committed state that such a reader would
+    silently skip, and a writer may still be appending to it, so the file is
+    not a sealed generation. Freezing a snapshot means checkpointing that state
+    into the file first; this refusal is what makes skipping that step visible.
+    """
+
+    code = "immutable_over_live_state"
+
+
+def _refuse_immutable_over_live_state(path: str | Path) -> None:
+    database = Path(path)
+    for suffix in ("-wal", "-journal"):
+        sidecar = database.with_name(database.name + suffix)
+        try:
+            size = sidecar.stat().st_size
+        except FileNotFoundError:
+            continue
+        if size > 0:
+            raise LiveGenerationImmutableError(
+                f"cannot open {database} immutable: {sidecar.name} holds {size} bytes of state "
+                "the main file does not; checkpoint it into a sealed generation first"
+            )
+
+
 def open_readonly_connection(
     path: str | Path,
     *,
@@ -1181,6 +1209,8 @@ def open_readonly_connection(
             )
         profile = SEALED_READ_CONNECTION_PROFILE
     immutable = immutable or profile.immutable
+    if immutable and opened_main_fd is None:
+        _refuse_immutable_over_live_state(path)
     # ``None`` selects the profile's lock wait. An explicit value is the
     # caller's bound and replaces the profile's busy_timeout as well: the
     # PRAGMA runs after connect and would otherwise silently win.
@@ -1302,6 +1332,8 @@ def attach_readonly_database(
         raise ValueError("read-only attachment requires a query-only connection")
     if re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", alias) is None:
         raise ValueError(f"invalid SQLite attachment alias: {alias!r}")
+    if immutable:
+        _refuse_immutable_over_live_state(path)
     uri = f"file:{quote(str(path))}?mode=ro" + ("&immutable=1" if immutable else "")
     conn.set_authorizer(None)
     try:
@@ -1412,6 +1444,7 @@ def open_sealed_staging_connection(
     """
 
     profile = SEALED_STAGING_CONNECTION_PROFILE
+    _refuse_immutable_over_live_state(path)
     database_uri = f"file:{quote(str(path))}?mode=ro&immutable=1"
     conn = connect_measured(database_uri, uri=True, timeout=profile.timeout_seconds)
     try:
@@ -2012,6 +2045,7 @@ __all__ = [
     "WRITE_MMAP_SIZE_BYTES",
     "check_mapped_bytes_budget_against_cgroup_limit",
     "GenerationToken",
+    "LiveGenerationImmutableError",
     "ReadContinuation",
     "ReadFrame",
     "ReadFrameCancelledError",

@@ -95,6 +95,28 @@ def test_migration_runner_sqlite_user_version_closes_connection(
     _assert_all_closed(captured)
 
 
+def test_migration_runner_reads_a_live_tier_user_version_through_its_wal(versioned_db: Path) -> None:
+    """A retried restore can retain committed WAL state on the live tier.
+
+    Anti-vacuity: the sealed read skips the WAL and would report 7; the owner
+    refuses it, and the ``live`` read returns the committed 8.
+    """
+    from polylogue.storage.sqlite.connection_profile import LiveGenerationImmutableError
+    from polylogue.storage.sqlite.migration_runner import _sqlite_user_version
+
+    writer = sqlite3.connect(versioned_db)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint = 0")
+        writer.execute("PRAGMA user_version = 8")
+        writer.commit()
+        with pytest.raises(LiveGenerationImmutableError):
+            _sqlite_user_version(versioned_db)
+        assert _sqlite_user_version(versioned_db, live=True) == 8
+    finally:
+        writer.close()
+
+
 def test_cli_paths_read_user_version_closes_connection(monkeypatch: pytest.MonkeyPatch, versioned_db: Path) -> None:
     from polylogue.cli.commands.paths import _read_user_version
 

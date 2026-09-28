@@ -675,8 +675,17 @@ def _canonical_json_sha256(payload: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _sqlite_user_version(path: Path) -> int:
-    with closing(open_readonly_connection(path, immutable=True, validate_schema=False)) as conn:
+def _sqlite_user_version(path: Path, *, live: bool = False) -> int:
+    """Read ``user_version`` from a sealed artifact, or through a live tier's WAL.
+
+    ``live`` is for a tier that may still carry committed WAL state, which an
+    ``immutable=1`` reader would skip and the profile owner refuses.
+    """
+    if live:
+        conn = open_readonly_connection(path, validate_schema=False, timeout_class="offline-bulk")
+    else:
+        conn = open_readonly_connection(path, immutable=True, validate_schema=False)
+    with closing(conn):
         return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
 
 
@@ -1241,7 +1250,7 @@ def validate_full_evidence_backup_for_adopted_audit_restore(
         if tier == "source" and allow_source_continuity_rebind:
             if not source_continuity_rebind_mutation_id:
                 raise MigrationError("adopted-audit restore lacks an operation-owned source continuity rebind")
-            if _json_int(fingerprint.get("user_version")) != _sqlite_user_version(live_path):
+            if _json_int(fingerprint.get("user_version")) != _sqlite_user_version(live_path, live=True):
                 raise MigrationError("adopted-audit restore backup is stale for source.db")
             # A retry can retain this operation's committed source WAL after
             # a crash. Validate SQLite's logical WAL view, not only its file.
