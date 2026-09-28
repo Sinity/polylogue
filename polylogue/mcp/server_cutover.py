@@ -62,7 +62,7 @@ class _EmbeddingStatusEnv:
     config: Config
 
 
-def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dict[str, object]) -> str:
+async def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dict[str, object]) -> str:
     """Submit a privileged request to the resident daemon only."""
     from polylogue.daemon.api_auth import resolve_api_auth_token
     from polylogue.daemon.socket_path import daemon_socket_path
@@ -87,7 +87,9 @@ def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dict[str,
         ),
     )
     try:
-        response = client.operation(operation, payload, archive_root=str(config.archive_root))
+        import asyncio
+
+        response = await asyncio.to_thread(client.operation, operation, payload, archive_root=str(config.archive_root))
     except Exception:
         return hooks.error_json("daemon operation unavailable", code="daemon_required")
     if response is None:
@@ -97,8 +99,12 @@ def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dict[str,
         return hooks.error_json(f"start polylogued run to serve this operation: {operation}", code="daemon_required")
     if response.get("outcome") in {"rejected", "failed", "indeterminate"}:
         error = response.get("error")
-        detail = error.get("message") if isinstance(error, dict) else "daemon operation refused"
-        return hooks.error_json(str(detail), code="daemon_required")
+        detail = (error.get("detail") or error.get("message")) if isinstance(error, dict) else None
+        code = error.get("code") if isinstance(error, dict) else None
+        retryable = error.get("retryable") if isinstance(error, dict) else None
+        return hooks.error_json(
+            str(detail or "daemon operation refused"), code=str(code or "daemon_rejected"), retryable=retryable
+        )
     result = response.get("result")
     return json.dumps(result if isinstance(result, dict) else response, indent=2, ensure_ascii=False, default=str)
 
@@ -303,6 +309,7 @@ async def _query_sessions(
     ``_query_advanced_sessions`` below, which is a third implementation
     over ``archive_search_payload`` / ``archive_session_list_payload``.
     """
+    from polylogue.archive.query.spec import DEFAULT_SESSION_LIST_LIMIT
     from polylogue.operations.session_contracts import SessionList, SessionSearch
     from polylogue.operations.session_reads import execute_session_operation
 
@@ -314,7 +321,7 @@ async def _query_sessions(
     # out-of-range limit reached ``SessionList``'s ``Bound`` field (ge=1,
     # le=1000) and came back as an ``invalid_argument`` envelope with no
     # ``total`` -- while the CLI clamped the same input and answered.
-    bounded_limit = hooks.clamp_limit(limit) if limit is not None else None
+    bounded_limit = hooks.clamp_limit(limit if limit is not None else DEFAULT_SESSION_LIST_LIMIT)
 
     if continuation is None:
         from polylogue.mcp.query_contracts import build_session_query_request
@@ -980,6 +987,7 @@ async def _resume_preamble(
     recent_files: tuple[str, ...],
     related_limit: int,
     boundary: str = "session_start",
+    budget_tokens: int | None = None,
 ) -> str:
     """Build the SessionStart preamble: lineage, resume candidates, project git state, assertion guidance."""
     from polylogue.context.preamble import build_context_preamble_payload
@@ -995,6 +1003,7 @@ async def _resume_preamble(
         source_tool_calls={"context": "polylogue-mcp"},
         require_session=False,
         boundary=boundary,
+        token_budget=budget_tokens,
     )
     if preamble is None:
         preamble = ContextPreamble(preamble_version="1.0", source_tool_calls={"context": "polylogue-mcp"})
@@ -1667,6 +1676,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     recent_files=recent_files,
                     related_limit=hooks.clamp_limit(limit),
                     boundary="precompact" if intent == "precompact" else "session_start",
+                    budget_tokens=budget_tokens,
                 )
             if result_ref is not None:
                 if recipient_ref is None:
@@ -2643,7 +2653,7 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
         if confirm_error is not None:
             return confirm_error
         session_ids = kwargs.get("session_ids")
-        return _daemon_operation(
+        return await _daemon_operation(
             hooks,
             "maintenance.insights.rebuild",
             {"session_ids": list(session_ids) if session_ids else None},

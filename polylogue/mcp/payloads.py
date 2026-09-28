@@ -85,6 +85,7 @@ class MCPErrorPayload(SurfacePayloadModel):
     message: str
     code: int | str | None = None
     detail: str | None = None
+    retryable: bool | None = None
     field: str | None = None
     tool: str | None = None
     session_id: str | None = None
