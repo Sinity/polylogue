@@ -265,27 +265,47 @@ _OPAQUE_KEYS = frozenset(
 )
 
 
-def record_skeleton(value: object, depth: int = 0, *, allowed: frozenset[str] | None = None) -> object:
+#: Fields whose string value selects behaviour (a discriminator) rather than
+#: carrying content; a public-vocabulary value there is kept literally.
+_DISCRIMINATOR_KEYS = frozenset({"type", "subtype", "status", "role", "kind", "level", "operation", "mode"})
+
+
+def record_skeleton(
+    value: object,
+    depth: int = 0,
+    *,
+    allowed: frozenset[str] | None = None,
+    values: frozenset[str] | None = None,
+) -> object:
     """Key/type skeleton of a record: field names and JSON types, no values.
 
     Keys that are not identifier-like (paths, hashes, free text used as keys)
     are dropped: they are data, not structure. With ``allowed``, only field
     names already published in the origin's committed schema package are
     kept, so a skeleton never introduces a name the reviewed schema lacks.
+    With ``values``, a discriminator field whose value is in that public
+    vocabulary keeps the value (as ``"=<value>"``), so nested types such as a
+    Codex completion's ``item.type`` survive generation.
     """
     if isinstance(value, Mapping):
         if depth >= _SKELETON_DEPTH:
             return "obj"
         opaque = _OPAQUE_KEYS | ({"data"} if value.get("type") == "structured_output" else set())
-        return {
-            key: "obj" if key in opaque else record_skeleton(item, depth + 1, allowed=allowed)
-            for key, item in sorted(value.items())
-            if isinstance(key, str) and _IDENTIFIER.match(key) and (allowed is None or key in allowed)
-        }
+        out: dict[str, object] = {}
+        for key, item in sorted(value.items()):
+            if not (isinstance(key, str) and _IDENTIFIER.match(key) and (allowed is None or key in allowed)):
+                continue
+            if key in opaque:
+                out[key] = "obj"
+            elif values is not None and key in _DISCRIMINATOR_KEYS and isinstance(item, str) and item in values:
+                out[key] = f"={item}"
+            else:
+                out[key] = record_skeleton(item, depth + 1, allowed=allowed, values=values)
+        return out
     if isinstance(value, list):
         if depth >= _SKELETON_DEPTH or not value:
             return []
-        return [record_skeleton(value[0], depth + 1, allowed=allowed)]
+        return [record_skeleton(value[0], depth + 1, allowed=allowed, values=values)]
     if isinstance(value, bool):
         return "bool"
     if isinstance(value, int):
@@ -424,8 +444,8 @@ class StreamProfile:
             current = _weighted(rng, row) if row else (_weighted(rng, self.start) if self.start else current)
         return kinds
 
-    def length(self, rng: random.Random, kind: str) -> int:
-        histogram = self.lengths.get(kind)
+    def length(self, rng: random.Random, kind: str, *, fallback: str | None = None) -> int:
+        histogram = self.lengths.get(kind) or (self.lengths.get(fallback) if fallback else None)
         return histogram.sample(rng) if histogram is not None else rng.randint(8, 64)
 
 
@@ -546,6 +566,8 @@ def _instantiate(skeleton: object, rng: random.Random, fill: Mapping[str, object
         return out
     if isinstance(skeleton, list):
         return [_instantiate(skeleton[0], rng, fill, lengths) for _ in range(rng.randint(1, 3))] if skeleton else []
+    if isinstance(skeleton, str) and skeleton.startswith("="):
+        return skeleton[1:]
     if skeleton == "str":
         return synthetic_text(rng, lengths.sample(rng), non_ascii=False)
     if skeleton == "int":
@@ -609,17 +631,148 @@ def _text_pool(non_ascii_per_mille: int, seed: int = 0x5EED) -> str:
     return "".join(words)
 
 
-def synthetic_text(rng: random.Random, length: int, *, non_ascii: bool) -> str:
-    """Gibberish of exactly ``length`` characters (tails included, no cap)."""
+_B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+
+@cache
+def _b64_pool(seed: int = 0xB64) -> str:
+    rng = random.Random(seed)
+    return "".join(rng.choice(_B64) for _ in range(1 << 21))
+
+
+def _pool(kind: str) -> str:
+    if kind == "b64":
+        return _b64_pool()
+    return _text_pool(60 if kind == "non_ascii" else 0)
+
+
+#: Texts longer than this stay lazy: they are generated while being written or
+#: encoded, never held whole. A representation boundary, not a length limit.
+LAZY_TEXT_THRESHOLD = 1 << 20
+
+
+@dataclass(frozen=True)
+class LazyText:
+    """``length`` characters of pool text starting at ``offset``, cycling the pool."""
+
+    length: int
+    pool: str
+    offset: int
+
+    def __len__(self) -> int:
+        return self.length
+
+    def __getitem__(self, key: slice) -> Plain:
+        start, stop, step = key.indices(self.length)
+        if step != 1:
+            raise ValueError("LazyText supports contiguous slices only")
+        count = max(0, stop - start)
+        pool = _pool(self.pool)
+        offset = (self.offset + start) % len(pool)
+        if count <= LAZY_TEXT_THRESHOLD:
+            return "".join(_cycle(pool, offset, count))
+        return LazyText(count, self.pool, offset)
+
+    def pieces(self) -> Iterator[str]:
+        yield from _cycle(_pool(self.pool), self.offset, self.length)
+
+
+def _cycle(pool: str, offset: int, count: int) -> Iterator[str]:
+    """``count`` characters of ``pool`` read cyclically from ``offset``, in pool-sized pieces."""
+    position = offset
+    remaining = count
+    while remaining > 0:
+        piece = pool[position : position + remaining]
+        yield piece
+        remaining -= len(piece)
+        position = 0
+
+
+@dataclass(frozen=True)
+class Joined:
+    """Text made of parts; a part's depth is how many extra JSON-escape levels it carries.
+
+    Depth 1 embeds a part inside a JSON string that is itself a string value,
+    e.g. a command inside Codex function-call ``arguments``.
+    """
+
+    parts: tuple[tuple[Text, int], ...]
+
+    def __len__(self) -> int:
+        return sum(len(part) for part, _ in self.parts)
+
+
+Text = str | LazyText | Joined
+#: A single generated text (sliceable); ``Joined`` only arises from ``concat``.
+Plain = str | LazyText
+
+
+def concat(*parts: Text) -> Text:
+    """Concatenate texts, staying a plain ``str`` unless a part is lazy."""
+    if all(isinstance(part, str) for part in parts):
+        return "".join(part for part in parts if isinstance(part, str))
+    return Joined(tuple((part, 0) for part in parts))
+
+
+def embedded(text: Text) -> Text:
+    """``text`` as it appears inside a JSON string literal (one escape level)."""
+    if isinstance(text, str):
+        return _escape(text)
+    return Joined(((text, 1),))
+
+
+def _escape(text: str) -> str:
+    return json.dumps(text, ensure_ascii=False)[1:-1]
+
+
+def encoded_pieces(text: Text, depth: int) -> Iterator[str]:
+    """``text`` JSON-escaped ``depth`` times, in pieces."""
+    if isinstance(text, str):
+        for _ in range(depth):
+            text = _escape(text)
+        yield text
+    elif isinstance(text, LazyText):
+        for piece in text.pieces():
+            for _ in range(depth):
+                piece = _escape(piece)
+            yield piece
+    else:
+        for part, extra in text.parts:
+            yield from encoded_pieces(part, depth + extra)
+
+
+def encoded_size(text: Text, depth: int) -> int:
+    """UTF-8 size of ``encoded_pieces(text, depth)``, without building a lazy text."""
+    if isinstance(text, Joined):
+        return sum(encoded_size(part, depth + extra) for part, extra in text.parts)
+    if isinstance(text, str):
+        return len("".join(encoded_pieces(text, depth)).encode("utf-8"))
+    pool = _pool(text.pool)
+    head = min(text.length, len(pool) - text.offset)
+    whole, tail = divmod(text.length - head, len(pool))
+    size = encoded_size(pool[text.offset : text.offset + head], depth) + encoded_size(pool[:tail], depth)
+    return size + whole * _pool_encoded_size(text.pool, depth)
+
+
+@cache
+def _pool_encoded_size(pool: str, depth: int) -> int:
+    return encoded_size(_pool(pool), depth)
+
+
+def synthetic_text(rng: random.Random, length: int, *, non_ascii: bool, b64: bool = False) -> Plain:
+    """Gibberish of exactly ``length`` characters (tails included, no cap).
+
+    Texts above ``LAZY_TEXT_THRESHOLD`` come back as a ``LazyText``, which
+    serializes by streaming.
+    """
     if length <= 0:
         return ""
-    pool = _text_pool(60 if non_ascii else 0)
-    if length <= len(pool):
-        start = rng.randrange(0, len(pool) - length + 1)
-        text = pool[start : start + length]
-    else:
-        repeats, remainder = divmod(length, len(pool))
-        text = pool * repeats + pool[:remainder]
+    kind = "b64" if b64 else ("non_ascii" if non_ascii else "ascii")
+    pool = _pool(kind)
+    if length > LAZY_TEXT_THRESHOLD:
+        return LazyText(length, kind, rng.randrange(len(pool)))
+    start = rng.randrange(0, len(pool) - length + 1)
+    text = pool[start : start + length]
     if non_ascii and text.isascii():
         # A text sampled into the non-ASCII class must carry one.
         position = rng.randrange(length)
@@ -627,9 +780,19 @@ def synthetic_text(rng: random.Random, length: int, *, non_ascii: bool) -> str:
     return text
 
 
+def short_text(rng: random.Random, length: int, *, non_ascii: bool = False) -> str:
+    """A text known to stay below the lazy threshold (names, titles, labels)."""
+    text = synthetic_text(rng, min(length, LAZY_TEXT_THRESHOLD), non_ascii=non_ascii)
+    assert isinstance(text, str)
+    return text
+
+
 # ---------------------------------------------------------------------------
 # Generated artifacts
 # ---------------------------------------------------------------------------
+
+#: One piece of a generated file: literal bytes, or a text JSON-escaped ``depth`` times.
+Segment = bytes | tuple[Text, int]
 
 
 @dataclass(frozen=True)
@@ -637,11 +800,33 @@ class WorkloadFile:
     origin: str
     #: Path relative to the corpus root, e.g. ``claude-code/projects/p/<sid>.jsonl``.
     relpath: str
-    data: bytes
+    segments: tuple[Segment, ...]
     #: ``transcript`` for a session stream, ``subagent`` or ``sidecar`` otherwise.
     role: str
     session_id: str
     parent_session_id: str | None = None
+
+    def iter_chunks(self) -> Iterator[bytes]:
+        """The file's bytes in pieces, without materializing lazy texts."""
+        for segment in self.segments:
+            if isinstance(segment, bytes):
+                yield segment
+            else:
+                text, depth = segment
+                for piece in encoded_pieces(text, depth):
+                    yield piece.encode("utf-8")
+
+    @property
+    def data(self) -> bytes:
+        """The whole file in memory; prefer ``iter_chunks`` for large workloads."""
+        return b"".join(self.iter_chunks())
+
+    @property
+    def size(self) -> int:
+        return sum(
+            len(segment) if isinstance(segment, bytes) else encoded_size(segment[0], segment[1])
+            for segment in self.segments
+        )
 
 
 @dataclass
@@ -656,10 +841,11 @@ class WorkloadStats:
     per_origin_bytes: dict[str, int] = field(default_factory=dict)
 
     def add(self, item: WorkloadFile, records: int = 0) -> None:
+        size = item.size
         self.files += 1
-        self.bytes += len(item.data)
+        self.bytes += size
         self.records += records
-        self.per_origin_bytes[item.origin] = self.per_origin_bytes.get(item.origin, 0) + len(item.data)
+        self.per_origin_bytes[item.origin] = self.per_origin_bytes.get(item.origin, 0) + size
         if item.role == "transcript":
             self.sessions += 1
         elif item.role == "subagent":
@@ -681,8 +867,52 @@ def _iso(moment: datetime) -> str:
     return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def _dumps(record: object) -> bytes:
-    return json.dumps(record, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+def _placeholders(value: object, found: list[Text]) -> object:
+    if isinstance(value, LazyText | Joined):
+        found.append(value)
+        return f"\x00lazy{len(found) - 1}\x00"
+    if isinstance(value, dict):
+        return {key: _placeholders(item, found) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_placeholders(item, found) for item in value]
+    return value
+
+
+_PLACEHOLDER = re.compile(rb"\\u0000lazy(\d+)\\u0000")
+
+
+def _dumps(record: object) -> tuple[Segment, ...]:
+    """One JSON line as segments; lazy texts stay lazy inside their string."""
+    found: list[Text] = []
+    encoded = json.dumps(_placeholders(record, found), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if not found:
+        return (encoded,)
+    segments: list[Segment] = []
+    cursor = 0
+    for match in _PLACEHOLDER.finditer(encoded):
+        segments.append(encoded[cursor : match.start()])
+        segments.append((found[int(match.group(1))], 1))
+        cursor = match.end()
+    segments.append(encoded[cursor:])
+    return tuple(segments)
+
+
+def _lines(lines: Sequence[tuple[Segment, ...]]) -> tuple[Segment, ...]:
+    """JSONL: each line's segments followed by a newline, adjacent bytes merged."""
+    merged: list[Segment] = []
+    pending: list[bytes] = []
+    for line in lines:
+        for segment in (*line, b"\n"):
+            if isinstance(segment, bytes):
+                pending.append(segment)
+            else:
+                if pending:
+                    merged.append(b"".join(pending))
+                    pending = []
+                merged.append(segment)
+    if pending:
+        merged.append(b"".join(pending))
+    return tuple(merged)
 
 
 class _Clock:
@@ -690,10 +920,18 @@ class _Clock:
         self._rng = rng
         self.now = start
         self._gaps = gaps
+        #: The first stamped moment, once a record has been stamped.
+        self.first: datetime | None = None
 
     def tick(self) -> str:
         self.now += timedelta(milliseconds=self._gaps.sample(self._rng))
+        if self.first is None:
+            self.first = self.now
         return _iso(self.now)
+
+    def lifetime(self) -> tuple[datetime, datetime]:
+        """The span from the first stamped record to the last."""
+        return (self.first or self.now, self.now)
 
 
 # ---------------------------------------------------------------------------
@@ -705,40 +943,106 @@ class _Clock:
 CLAUDE_CODE_TOOLS = ("Bash", "Read", "Edit", "Grep", "Glob", "Write", "TodoWrite", "WebFetch", "Agent", "Task")
 _CC_OTHER_TOOLS = ("WebSearch", "NotebookEdit", "Skill")
 _TODO_STATUSES = ("pending", "in_progress", "completed")
+#: Codex function tools whose argument shape is modelled.
+CODEX_FUNCTION_TOOLS = ("exec_command", "shell", "write_stdin", "apply_patch", "update_plan")
 
 
-def _claude_code_tool_input(rng: random.Random, name: str, cwd: str, body: str) -> dict[str, object]:
-    """The input object a tool of this name takes, carrying ``body`` as its variable text."""
-    path = f"{cwd}/src/{synthetic_text(rng, rng.randint(4, 12), non_ascii=False).replace(' ', '_').strip('._') or 'mod'}.py"
+def tool_name_of(origin: str, kind: str, record: Mapping[str, object]) -> str | None:
+    """The modelled tool name of a call record (``other`` when unmodelled), or None."""
+    if origin == "claude-code":
+        if kind != "assistant_tool_use":
+            return None
+        message = record.get("message")
+        content = message.get("content") if isinstance(message, Mapping) else None
+        for block in content if isinstance(content, list) else []:
+            if isinstance(block, Mapping) and block.get("type") == "tool_use":
+                name = block.get("name")
+                return name if name in CLAUDE_CODE_TOOLS else "other"
+        return None
+    if kind not in {"function_call", "custom_tool_call"}:
+        return None
+    payload = record.get("payload")
+    name = payload.get("name") if isinstance(payload, Mapping) else None
+    if kind == "function_call":
+        return name if name in CODEX_FUNCTION_TOOLS else "other"
+    return name if name == "apply_patch" else "other"
+
+
+def _path_text(rng: random.Random, cwd: str, length: int) -> Text:
+    """A file path of about ``length`` characters under ``cwd``."""
+    stem = max(1, length - len(cwd) - len("/src/.py"))
+    return concat(f"{cwd}/src/", synthetic_text(rng, stem, non_ascii=False, b64=True), ".py")
+
+
+def _patch_text(path: Text, body: Text) -> Text:
+    """An apply_patch payload in the Codex patch format, touching ``path``."""
+    return concat("*** Begin Patch\n*** Update File: ", path, "\n@@\n+", body, "\n*** End Patch")
+
+
+def _claude_code_tool_input(rng: random.Random, name: str, cwd: str, body: Plain) -> dict[str, object]:
+    """The input object a tool of this name takes; ``body``'s length is the sampled input size."""
     if name == "Bash":
-        return {"command": body, "description": synthetic_text(rng, rng.randint(12, 40), non_ascii=False)}
+        return {"command": body, "description": short_text(rng, rng.randint(12, 40))}
     if name == "Read":
-        return {"file_path": path}
+        return {"file_path": _path_text(rng, cwd, len(body))}
     if name == "Edit":
         cut = len(body) // 2
-        return {"file_path": path, "old_string": body[:cut], "new_string": body[cut:]}
+        return {"file_path": _path_text(rng, cwd, 40), "old_string": body[:cut], "new_string": body[cut:]}
     if name == "Write":
-        return {"file_path": path, "content": body}
+        return {"file_path": _path_text(rng, cwd, 40), "content": body}
     if name == "Grep":
-        return {"pattern": body[:80] or "x", "path": cwd}
+        return {"pattern": body or "x", "path": cwd}
     if name == "Glob":
-        return {"pattern": "**/*.py", "path": cwd}
+        return {"pattern": body or "*", "path": cwd}
     if name == "TodoWrite":
-        todos = [
-            {"content": part, "status": rng.choice(_TODO_STATUSES), "activeForm": part}
-            for part in (body[i : i + 120] for i in range(0, max(1, len(body)), 120))
-            if part
-        ] or [{"content": "x", "status": "pending", "activeForm": "x"}]
+        count = rng.randint(1, 8)
+        step = max(1, len(body) // count)
+        todos = []
+        for index in range(count):
+            part = body[index * step : len(body) if index == count - 1 else (index + 1) * step] or "x"
+            todos.append({"content": part, "status": rng.choice(_TODO_STATUSES), "activeForm": "x"})
         return {"todos": todos}
     if name == "WebFetch":
         return {"url": f"https://example.invalid/{rng.getrandbits(32):08x}", "prompt": body}
     if name in {"Agent", "Task"}:
-        return {"description": body[:60] or "x", "prompt": body, "subagent_type": "general-purpose"}
+        return {"description": short_text(rng, rng.randint(10, 60)), "prompt": body, "subagent_type": "general-purpose"}
     return {"query": body}
 
 
 _CC_MODEL = "claude-synthetic-1"
 _CC_SIDECAR_THRESHOLD = 30_000
+
+
+def _draw_tool(rng: random.Random, profile: WorkloadProfile, prefix: str, fallback: Sequence[str]) -> str:
+    weights = {key.removeprefix(prefix): value for key, value in profile.tool_names.items() if key.startswith(prefix)}
+    return _weighted(rng, weights) if weights else rng.choice(tuple(fallback))
+
+
+@dataclass
+class _Stream:
+    """One generated transcript: its lines, record count, calls and last record uuid."""
+
+    lines: list[tuple[Segment, ...]] = field(default_factory=list)
+    tool_calls: int = 0
+    last_uuid: str | None = None
+    #: First and last moments a record in this stream actually carries.
+    first_stamp: datetime | None = None
+    last_stamp: datetime | None = None
+
+    def stamped(self, moment: datetime) -> None:
+        if self.first_stamp is None:
+            self.first_stamp = moment
+        self.last_stamp = moment
+
+    def lifetime(self, clock: _Clock) -> tuple[datetime, datetime]:
+        """The span of the stream's stamped records (not every record carries one)."""
+        if self.first_stamp is None or self.last_stamp is None:
+            return clock.lifetime()
+        return (self.first_stamp, self.last_stamp)
+
+    @property
+    def segments(self) -> tuple[Segment, ...]:
+        return _lines(self.lines)
 
 
 def _claude_code_stream(
@@ -750,8 +1054,9 @@ def _claude_code_stream(
     project_dir: str,
     agent_id: str | None,
     clock: _Clock,
-    sidecars: list[tuple[str, str, str]],
-) -> tuple[bytes, int, int]:
+    sidecars: list[tuple[str, str, Text]],
+    fork_parent: tuple[str, str],
+) -> _Stream:
     count = max(1, stream.records.sample(rng))
     kinds = stream.kind_sequence(rng, count)
     cwd = f"/workspace/{project_dir}"
@@ -765,15 +1070,15 @@ def _claude_code_stream(
     }
     if agent_id is not None:
         common["agentId"] = agent_id
-    lines: list[bytes] = []
+    out = _Stream()
     open_calls: list[tuple[str, str]] = []
     parent: str | None = None
-    tool_calls = 0
     error_share = profile.share("tool_error_share", 0.03)
     usage_share = profile.share("assistant_usage_share", 1.0)
 
-    def text(kind: str) -> str:
-        return synthetic_text(rng, stream.length(rng, kind), non_ascii=rng.random() < profile.non_ascii(kind))
+    def text(kind: str, length_key: str | None = None) -> Plain:
+        length = stream.length(rng, length_key or kind, fallback=kind)
+        return synthetic_text(rng, length, non_ascii=rng.random() < profile.non_ascii(kind))
 
     for kind in kinds:
         if kind == "user_tool_result" and not open_calls:
@@ -781,20 +1086,22 @@ def _claude_code_stream(
         record_uuid = _uuid(rng)
         timestamp = clock.tick()
         base = {"parentUuid": parent, **common, "uuid": record_uuid, "timestamp": timestamp}
+        record: dict[str, object]
         if kind.startswith("assistant_"):
             if kind == "assistant_tool_use":
                 call_id = _token(rng, "toolu_", 24)
-                name = _weighted(rng, profile.tool_names) if profile.tool_names else rng.choice(CLAUDE_CODE_TOOLS)
+                name = _draw_tool(rng, profile, "", CLAUDE_CODE_TOOLS)
+                modelled = name
                 if name == "other":
                     name = rng.choice(_CC_OTHER_TOOLS)
                 block: dict[str, object] = {
                     "type": "tool_use",
                     "id": call_id,
                     "name": name,
-                    "input": _claude_code_tool_input(rng, name, cwd, text(kind)),
+                    "input": _claude_code_tool_input(rng, name, cwd, text(kind, f"{kind}:{modelled}")),
                 }
                 open_calls.append((call_id, record_uuid))
-                tool_calls += 1
+                out.tool_calls += 1
             elif kind == "assistant_thinking":
                 block = {"type": "thinking", "thinking": text(kind), "signature": _token(rng, "", 180)}
             else:
@@ -820,13 +1127,17 @@ def _claude_code_stream(
         elif kind == "user_tool_result":
             call_id, call_uuid = open_calls.pop(0)
             body = text(kind)
+            content: Text = body
             if len(body) > _CC_SIDECAR_THRESHOLD and rng.random() < profile.share("sidecar_share_of_large", 0.5):
                 name = f"{call_id}.txt"
                 sidecar_path = f"{cwd_sidecar_root(project_dir, session_id)}/{name}"
                 sidecars.append((session_id, name, body))
-                body = (
-                    f"<persisted-output>\nOutput too large ({len(body) / 1024:.1f}KB). "
-                    f"Full output saved to: {sidecar_path}\n\nPreview (first 2KB):\n{body[:2048]}\n</persisted-output>"
+                preview = body[:2048]
+                content = concat(
+                    f"{PERSISTED_OUTPUT}\nOutput too large ({len(body) / 1024:.1f}KB). "
+                    f"Full output saved to: {sidecar_path}\n\nPreview (first 2KB):\n",
+                    preview,
+                    "\n</persisted-output>",
                 )
             is_error = rng.random() < error_share
             record = {
@@ -834,7 +1145,9 @@ def _claude_code_stream(
                 "type": "user",
                 "message": {
                     "role": "user",
-                    "content": [{"tool_use_id": call_id, "type": "tool_result", "content": body, "is_error": is_error}],
+                    "content": [
+                        {"tool_use_id": call_id, "type": "tool_result", "content": content, "is_error": is_error}
+                    ],
                 },
                 "toolUseResult": {"stdout": "", "stderr": "", "interrupted": False, "isImage": False},
                 "sourceToolAssistantUUID": call_uuid,
@@ -842,13 +1155,16 @@ def _claude_code_stream(
         elif kind == "user_text":
             record = {**base, "type": "user", "message": {"role": "user", "content": text(kind)}}
         else:
-            record = _claude_code_template(profile, rng, kind, base, open_calls, parent)
+            record = _claude_code_template(profile, rng, kind, base, open_calls, parent, fork_parent)
         if record.get("uuid") == record_uuid:
             parent = record_uuid
-        lines.append(_dumps(record))
+            out.last_uuid = record_uuid
+        if record.get("timestamp") == timestamp:
+            out.stamped(clock.now)
+        out.lines.append(_dumps(record))
     # Calls the stream ended without answering stay unanswered, as in real
     # interrupted sessions.
-    return b"\n".join(lines) + b"\n", len(lines), tool_calls
+    return out
 
 
 _CC_TYPE_OWNERS = ("data", "attachment")
@@ -861,6 +1177,7 @@ def _claude_code_template(
     base: Mapping[str, object],
     open_calls: Sequence[tuple[str, str]],
     parent: str | None,
+    fork_parent: tuple[str, str],
 ) -> dict[str, object]:
     """A non-relational record (progress, attachment, system, snapshot, ...)."""
     parts = kind.split(":")
@@ -877,6 +1194,10 @@ def _claude_code_template(
         "leafUuid": parent,
         "messageId": base["uuid"],
         "toolUseID": open_calls[-1][0] if open_calls else _token(rng, "toolu_", 24),
+        # Fork lineage names the session this transcript descends from and
+        # the parent record it branched at.
+        "parentSessionId": fork_parent[0],
+        "parentLastUuid": fork_parent[1],
     }
     if "agentId" in base:
         fill["agentId"] = base["agentId"]
@@ -904,42 +1225,50 @@ def _claude_code_session(
     start = _BASE_EPOCH + timedelta(seconds=rng.randint(0, 400 * 86400))
     main = profile.streams["main"]
     files: list[WorkloadFile] = []
-    sidecars: list[tuple[str, str, str]] = []
+    sidecars: list[tuple[str, str, Text]] = []
     clock = _Clock(rng, start, main.gap_ms)
-    data, records, calls = _claude_code_stream(
+    # A forked main session names a parent outside this workload.
+    generated = _claude_code_stream(
         rng, profile, main, session_id=session_id, project_dir=project_dir, agent_id=None,
-        clock=clock, sidecars=sidecars,
+        clock=clock, sidecars=sidecars, fork_parent=(_uuid(rng), _uuid(rng)),
     )  # fmt: skip
-    transcript = WorkloadFile("claude-code", f"claude-code/projects/{project_dir}/{session_id}.jsonl", data,
-                              "transcript", session_id)  # fmt: skip
+    first, end = generated.lifetime(clock)
+    transcript = WorkloadFile("claude-code", f"claude-code/projects/{project_dir}/{session_id}.jsonl",
+                              generated.segments, "transcript", session_id)  # fmt: skip
     files.append(transcript)
-    stats.add(transcript, records)
-    stats.tool_calls += calls
+    stats.add(transcript, len(generated.lines))
+    stats.tool_calls += generated.tool_calls
+    main_last = generated.last_uuid or _uuid(rng)
     sub_stream = profile.streams.get("subagent")
     subagents = profile.subagents_per_session.sample(rng) if sub_stream is not None else 0
     orphans = profile.orphan_subagents(rng) if sub_stream is not None else 0
     for number in range(subagents + orphans):
         assert sub_stream is not None
-        owner = session_id if number < subagents else _uuid(rng)
+        own = number < subagents
+        owner = session_id if own else _uuid(rng)
         agent_id = "a" + _token(rng, "", 16).lower()
-        sub_clock = _Clock(rng, clock.now - timedelta(seconds=rng.randint(0, 600)), sub_stream.gap_ms)
-        data, records, calls = _claude_code_stream(
+        # A subagent runs inside its owning session's lifetime.
+        # Anchored before the owner's first record would put the child's first
+        # tick ahead of it at the earliest; its clock starts at a moment
+        # inside the owner's recorded lifetime.
+        sub_clock = _Clock(rng, first + (end - first) * rng.random(), sub_stream.gap_ms)
+        generated = _claude_code_stream(
             rng, profile, sub_stream, session_id=owner, project_dir=project_dir, agent_id=agent_id,
-            clock=sub_clock, sidecars=sidecars,
+            clock=sub_clock, sidecars=sidecars, fork_parent=(owner, main_last if own else _uuid(rng)),
         )  # fmt: skip
         item = WorkloadFile("claude-code", f"claude-code/projects/{project_dir}/{owner}/subagents/agent-{agent_id}.jsonl",
-                            data, "subagent", f"{owner}:agent-{agent_id}", owner)  # fmt: skip
+                            generated.segments, "subagent", f"{owner}:agent-{agent_id}", owner)  # fmt: skip
         files.append(item)
-        stats.add(item, records)
-        stats.tool_calls += calls
+        stats.add(item, len(generated.lines))
+        stats.tool_calls += generated.tool_calls
         meta = WorkloadFile("claude-code", f"claude-code/projects/{project_dir}/{owner}/subagents/agent-{agent_id}.meta.json",
-                            _dumps({"agentType": "general-purpose", "description": synthetic_text(rng, 40, non_ascii=False)}),
+                            _dumps({"agentType": "general-purpose", "description": short_text(rng, 40)}),
                             "sidecar", owner, owner)  # fmt: skip
         files.append(meta)
         stats.add(meta)
     for owner, name, body in sidecars:
         item = WorkloadFile("claude-code", f"claude-code/projects/{project_dir}/{owner}/tool-results/{name}",
-                            body.encode("utf-8"), "sidecar", owner, owner)  # fmt: skip
+                            ((body, 0),), "sidecar", owner, owner)  # fmt: skip
         files.append(item)
         stats.add(item)
     return files, stats
@@ -949,7 +1278,18 @@ def _claude_code_session(
 # Codex
 # ---------------------------------------------------------------------------
 
-_CODEX_TOOLS = ("shell", "apply_patch", "exec_command", "write_stdin", "update_plan")
+
+def _codex_arguments(rng: random.Random, name: str, body: Text) -> Text:
+    """Function-call ``arguments`` for this tool; ``body`` carries the sampled size."""
+    if name == "apply_patch":
+        return _patch_text(_path_text(rng, "/workspace/synthetic", 40), body)
+    if name == "write_stdin":
+        return concat('{"session_id":', str(rng.randint(1, 9999)), ',"chars":"', embedded(body), '"}')
+    if name == "update_plan":
+        return concat('{"plan":[{"step":"', embedded(body), '","status":"in_progress"}]}')
+    if name == "shell":
+        return concat('{"command":["bash","-lc","', embedded(body), '"]}')
+    return concat('{"cmd":"', embedded(body), '"}')
 
 
 def _codex_stream(
@@ -960,17 +1300,18 @@ def _codex_stream(
     thread_id: str,
     parent_thread_id: str | None,
     clock: _Clock,
-) -> tuple[bytes, int, int]:
-    count = max(2, stream.records.sample(rng))
-    kinds = stream.kind_sequence(rng, count)
+) -> _Stream:
+    count = max(1, stream.records.sample(rng))
+    # The first draw stands for the session_meta record every rollout opens with.
+    kinds = stream.kind_sequence(rng, count)[1:]
     turn_id = _uuid(rng)
-    lines: list[bytes] = []
+    out = _Stream()
     open_calls: list[tuple[str, str]] = []
-    tool_calls = 0
     totals = {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0, "reasoning_output_tokens": 0}
 
-    def text(kind: str) -> str:
-        return synthetic_text(rng, stream.length(rng, kind), non_ascii=rng.random() < profile.non_ascii(kind))
+    def text(kind: str, length_key: str | None = None) -> Plain:
+        length = stream.length(rng, length_key or kind, fallback=kind)
+        return synthetic_text(rng, length, non_ascii=rng.random() < profile.non_ascii(kind))
 
     source: object = "cli"
     meta_payload: dict[str, object] = {
@@ -981,14 +1322,14 @@ def _codex_stream(
         "originator": "codex_cli_rs",
         "cli_version": "0.99.0",
         "model_provider": "openai",
-        "base_instructions": {"text": synthetic_text(rng, 400, non_ascii=False)},
+        "base_instructions": {"text": short_text(rng, 400)},
     }
     if parent_thread_id is not None:
         source = {"subagent": {"thread_spawn": {"parent_thread_id": parent_thread_id, "depth": 1,
                                                 "agent_nickname": "helper", "agent_role": "worker"}}}  # fmt: skip
         meta_payload["parent_thread_id"] = parent_thread_id
     meta_payload["source"] = source
-    lines.append(_dumps({"timestamp": meta_payload["timestamp"], "type": "session_meta", "payload": meta_payload}))
+    out.lines.append(_dumps({"timestamp": meta_payload["timestamp"], "type": "session_meta", "payload": meta_payload}))
     passthrough = {"turn_id": turn_id}
     for kind in kinds:
         if kind in {"session_meta", "legacy"}:
@@ -1012,17 +1353,22 @@ def _codex_stream(
                        "internal_chat_message_metadata_passthrough": passthrough}  # fmt: skip
         elif kind == "reasoning":
             payload = {"type": "reasoning", "id": _token(rng, "rs_", 48), "summary": [], "content": None,
-                       "encrypted_content": _token(rng, "", max(16, stream.length(rng, kind)))}  # fmt: skip
+                       "encrypted_content": synthetic_text(rng, max(16, stream.length(rng, kind)),
+                                                           non_ascii=False, b64=True)}  # fmt: skip
         elif kind in {"function_call", "custom_tool_call"}:
             call_id = _token(rng, "call_", 24)
             open_calls.append((call_id, kind))
-            tool_calls += 1
+            out.tool_calls += 1
             if kind == "function_call":
-                payload = {"type": "function_call", "name": rng.choice(_CODEX_TOOLS),
-                           "arguments": json.dumps({"cmd": text(kind)}, ensure_ascii=False), "call_id": call_id}  # fmt: skip
+                name = _draw_tool(rng, profile, "function_call:", CODEX_FUNCTION_TOOLS)
+                if name == "other":
+                    name = "exec_command"
+                arguments = _codex_arguments(rng, name, text(kind, f"{kind}:{name}"))
+                payload = {"type": "function_call", "name": name, "arguments": arguments, "call_id": call_id}
             else:
+                patch = _patch_text(_path_text(rng, "/workspace/synthetic", 40), text(kind, f"{kind}:apply_patch"))
                 payload = {"type": "custom_tool_call", "id": _token(rng, "ctc_", 48), "status": "completed",
-                           "call_id": call_id, "name": "apply_patch", "input": text(kind)}  # fmt: skip
+                           "call_id": call_id, "name": "apply_patch", "input": patch}  # fmt: skip
         elif kind in {"function_call_output", "custom_tool_call_output"}:
             wanted = "function_call" if kind == "function_call_output" else "custom_tool_call"
             position = next((i for i, (_, k) in enumerate(open_calls) if k == wanted), 0)
@@ -1044,13 +1390,13 @@ def _codex_stream(
                 "last_token_usage": {**last, "total_tokens": last["input_tokens"] + last["output_tokens"]},
                 "model_context_window": 272_000}}  # fmt: skip
         else:
-            lines.append(_dumps(_codex_template(profile, rng, kind, timestamp, turn_id)))
+            out.lines.append(_dumps(_codex_template(profile, rng, kind, timestamp, turn_id)))
             continue
-        lines.append(_dumps({"timestamp": timestamp, "type": record_type, "payload": payload}))
-    return b"\n".join(lines) + b"\n", len(lines), tool_calls
+        out.lines.append(_dumps({"timestamp": timestamp, "type": record_type, "payload": payload}))
+    return out
 
 
-def _codex_output(rng: random.Random, profile: WorkloadProfile, output_kind: str, body: str) -> str:
+def _codex_output(rng: random.Random, profile: WorkloadProfile, output_kind: str, body: Text) -> Text:
     """A tool output in the producer's structural form, with its exit code.
 
     Exec-style calls answer with the unified-exec envelope and custom tools
@@ -1062,15 +1408,16 @@ def _codex_output(rng: random.Random, profile: WorkloadProfile, output_kind: str
         if rng.random() >= profile.share("codex_exec_envelope_share", 0.0):
             return body
         code = 1 if rng.random() < profile.share("codex_exec_error_share", 0.0) else 0
-        return (
+        header = (
             f"Chunk ID: {rng.getrandbits(24):06x}\nWall time: {rng.random() * 30:.4f} seconds\n"
-            f"Process exited with code {code}\nOriginal token count: {max(1, len(body) // 4)}\nOutput:\n{body}"
+            f"Process exited with code {code}\nOriginal token count: {max(1, len(body) // 4)}\nOutput:\n"
         )
+        return concat(header, body)
     if rng.random() >= profile.share("codex_custom_json_share", 0.0):
         return body
     code = 1 if rng.random() < profile.share("codex_custom_error_share", 0.0) else 0
-    metadata = {"exit_code": code, "duration_seconds": round(rng.random() * 5, 1)}
-    return json.dumps({"output": body, "metadata": metadata}, ensure_ascii=False, separators=(",", ":"))
+    metadata = json.dumps({"exit_code": code, "duration_seconds": round(rng.random() * 5, 1)})
+    return concat('{"output":"', embedded(body), f'","metadata":{metadata}}}')
 
 
 def _codex_template(
@@ -1099,34 +1446,37 @@ def _codex_session(
     stats = WorkloadStats()
     files: list[WorkloadFile] = []
 
-    def rollout(stream: StreamProfile, parent: str | None, start: datetime) -> tuple[WorkloadFile, datetime]:
+    def rollout(
+        stream: StreamProfile, parent: str | None, start: datetime
+    ) -> tuple[WorkloadFile, tuple[datetime, datetime]]:
         thread_id = _uuid(rng)
         clock = _Clock(rng, start, stream.gap_ms)
-        data, records, calls = _codex_stream(rng, profile, stream, thread_id=thread_id, parent_thread_id=parent,
-                                             clock=clock)  # fmt: skip
+        generated = _codex_stream(rng, profile, stream, thread_id=thread_id, parent_thread_id=parent, clock=clock)
         stamp = start.strftime("%Y-%m-%dT%H-%M-%S")
         relpath = f"codex/sessions/{start:%Y/%m/%d}/rollout-{stamp}-{thread_id}.jsonl"
-        item = WorkloadFile("codex", relpath, data, "subagent" if parent else "transcript", thread_id, parent)
-        stats.add(item, records)
-        stats.tool_calls += calls
-        return item, clock.now
+        item = WorkloadFile(
+            "codex", relpath, generated.segments, "subagent" if parent else "transcript", thread_id, parent
+        )
+        stats.add(item, len(generated.lines))
+        stats.tool_calls += generated.tool_calls
+        return item, clock.lifetime()
 
     start = _BASE_EPOCH + timedelta(seconds=rng.randint(0, 400 * 86400))
-    main, end = rollout(profile.streams["main"], None, start)
+    main, (first, end) = rollout(profile.streams["main"], None, start)
     files.append(main)
     sub_stream = profile.streams.get("subagent")
     if sub_stream is not None:
         # Spawn edges: main → subagents, subagent → nested subagents (at the
         # measured rate), and orphans whose parent was never retained. A child
         # starts inside its direct parent's lifetime, never before it.
-        pending = [(main.session_id, start, end)] * profile.subagents_per_session.sample(rng)
-        pending += [(_uuid(rng), start, end) for _ in range(profile.orphan_subagents(rng))]
+        pending = [(main.session_id, first, end)] * profile.subagents_per_session.sample(rng)
+        pending += [(_uuid(rng), first, end) for _ in range(profile.orphan_subagents(rng))]
         while pending:
             parent, parent_start, parent_end = pending.pop()
             child_start = parent_start + (parent_end - parent_start) * rng.random()
-            item, child_end = rollout(sub_stream, parent, child_start)
+            item, (child_first, child_end) = rollout(sub_stream, parent, child_start)
             files.append(item)
-            pending += [(item.session_id, child_start, child_end)] * profile.nested_subagents(rng)
+            pending += [(item.session_id, child_first, child_end)] * profile.nested_subagents(rng)
     return files, stats
 
 
@@ -1194,12 +1544,16 @@ class WorkloadCorpus:
                 item = _resolve_sidecar_refs(item, projects_root)
                 path = root / item.relpath
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(item.data)
+                written = 0
+                with path.open("wb") as handle:
+                    for chunk in item.iter_chunks():
+                        handle.write(chunk)
+                        written += len(chunk)
                 # Sizes are counted on the written bytes: resolving a sidecar
                 # reference changes a transcript's length with the root.
                 total.files += 1
-                total.bytes += len(item.data)
-                total.per_origin_bytes[item.origin] = total.per_origin_bytes.get(item.origin, 0) + len(item.data)
+                total.bytes += written
+                total.per_origin_bytes[item.origin] = total.per_origin_bytes.get(item.origin, 0) + written
             total.sessions += stats.sessions
             total.subagent_sessions += stats.subagent_sessions
             total.records += stats.records
@@ -1212,16 +1566,13 @@ def _resolve_sidecar_refs(item: WorkloadFile, projects_root: str) -> WorkloadFil
     if item.origin != "claude-code" or item.role not in {"transcript", "subagent"}:
         return item
     marker = b"{projects_root}"
-    if marker not in item.data:
+    replacement = json.dumps(projects_root)[1:-1].encode("utf-8")
+    if not any(isinstance(segment, bytes) and marker in segment for segment in item.segments):
         return item
-    return WorkloadFile(
-        item.origin,
-        item.relpath,
-        item.data.replace(marker, json.dumps(projects_root)[1:-1].encode("utf-8")),
-        item.role,
-        item.session_id,
-        item.parent_session_id,
+    segments = tuple(
+        segment.replace(marker, replacement) if isinstance(segment, bytes) else segment for segment in item.segments
     )
+    return WorkloadFile(item.origin, item.relpath, segments, item.role, item.session_id, item.parent_session_id)
 
 
 def default_origin_weights(origins: Sequence[str] = WORKLOAD_ORIGINS) -> tuple[tuple[str, float], ...]:

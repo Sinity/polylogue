@@ -29,7 +29,6 @@ from pathlib import Path
 
 from polylogue.core.sources import source_for_family
 from polylogue.schemas.synthetic.workload import (
-    CLAUDE_CODE_TOOLS,
     PERSISTED_OUTPUT,
     WORKLOAD_PROFILE_KIND,
     WORKLOAD_PROFILE_VERSION,
@@ -38,9 +37,11 @@ from polylogue.schemas.synthetic.workload import (
     log2_bucket,
     measured_text,
     published_field_names,
+    published_kind_tokens,
     record_skeleton,
     string_lengths,
     text_measure,
+    tool_name_of,
     workload_profile_path,
 )
 
@@ -68,13 +69,16 @@ class _Templates:
     package, so every kind observed gets a template.
     """
 
-    def __init__(self, allowed: frozenset[str]) -> None:
+    def __init__(self, allowed: frozenset[str], values: frozenset[str]) -> None:
         self.allowed = allowed
+        self.values = values
         self.skeletons: defaultdict[str, Weights] = defaultdict(_weights)
         self.strings: defaultdict[str, defaultdict[int, float]] = defaultdict(_buckets)
 
     def add(self, kind: str, record: Mapping[str, object], weight: float) -> None:
-        key = json.dumps(record_skeleton(record, allowed=self.allowed), sort_keys=True, separators=(",", ":"))
+        key = json.dumps(
+            record_skeleton(record, allowed=self.allowed, values=self.values), sort_keys=True, separators=(",", ":")
+        )
         self.skeletons[kind][key] += weight
         for length in string_lengths(record):
             self.strings[kind][log2_bucket(length)] += weight
@@ -158,6 +162,11 @@ class _Stream:
             length = text_measure(origin, kind, record)
             if length is not None:
                 self.lengths[kind][log2_bucket(length)] += weight
+                tool = tool_name_of(origin, kind, record)
+                if tool is not None:
+                    # Per-tool lengths: a Read path and a Write body differ by
+                    # orders of magnitude within one record kind.
+                    self.lengths[f"{kind}:{tool}"][log2_bucket(length)] += weight
             if kind.startswith("record:"):
                 templates.add(kind, record, weight)
             moment = _parse_ms(record.get("timestamp"))
@@ -196,14 +205,11 @@ def _count_shares(origin: str, kind: str, record: Mapping[str, object], shares: 
         if not text[:2000].isascii():
             shares["non_ascii_texts"] += weight
             shares[f"non_ascii_texts:{kind}"] += weight
+    tool = tool_name_of(origin, kind, record)
+    if tool is not None:
+        shares[f"tool:{tool}" if origin == "claude-code" else f"tool:{kind}:{tool}"] += weight
     if origin == "claude-code":
         message = record.get("message")
-        if kind == "assistant_tool_use" and isinstance(message, Mapping):
-            content = message.get("content")
-            for block in content if isinstance(content, list) else []:
-                if isinstance(block, Mapping) and block.get("type") == "tool_use":
-                    name = block.get("name")
-                    shares[f"tool:{name if name in CLAUDE_CODE_TOOLS else 'other'}"] += weight
         if kind.startswith("assistant_") and isinstance(message, Mapping):
             shares["assistant"] += weight
             if isinstance(message.get("usage"), Mapping):
@@ -331,7 +337,7 @@ def _fanout(
 def measure(origin: str, root: Path, *, sample: int, tail: int, seed: int) -> dict[str, object]:
     families = _stream_families(origin, root)
     shares = _weights()
-    templates = _Templates(published_field_names(origin))
+    templates = _Templates(published_field_names(origin), published_kind_tokens())
     streams: dict[str, object] = {}
     source_bytes = 0
     rng = random.Random(seed)
@@ -395,20 +401,35 @@ def measure(origin: str, root: Path, *, sample: int, tail: int, seed: int) -> di
     }
 
 
+def _positive(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return number
+
+
+def _non_negative(value: str) -> int:
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError("must not be negative")
+    return number
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Measure an aggregate-only synthetic workload profile.")
     parser.add_argument("--origin", required=True, choices=sorted(_SOURCE_FAMILIES))
     parser.add_argument("--source", type=Path, help="Source root (defaults to the origin's usual location).")
-    parser.add_argument("--sample", type=int, default=1500, help="Uniformly sampled files per stream family.")
-    parser.add_argument("--tail", type=int, default=5, help="Largest files per family always measured.")
+    parser.add_argument("--sample", type=_positive, default=1500, help="Uniformly sampled files per stream family.")
+    parser.add_argument("--tail", type=_non_negative, default=5, help="Largest files per family always measured.")
     parser.add_argument("--seed", type=int, default=20260927)
     parser.add_argument("--write", action="store_true", help="Write the committed profile instead of printing it.")
     args = parser.parse_args(argv)
     root = (args.source or default_source_root(args.origin)).resolve()
     profile = measure(args.origin, root, sample=args.sample, tail=args.tail, seed=args.seed)
     streams = profile.get("streams")
-    if not isinstance(streams, dict) or "main" not in streams:
-        print(f"no {args.origin} session streams found under {root}; nothing measured", file=sys.stderr)
+    main_stream = streams.get("main") if isinstance(streams, dict) else None
+    if not isinstance(main_stream, dict) or not main_stream.get("records"):
+        print(f"no {args.origin} session records measured under {root}; refusing to write", file=sys.stderr)
         return 1
     text = json.dumps(profile, indent=1, sort_keys=True) + "\n"
     if args.write:

@@ -12,11 +12,16 @@ import pytest
 
 from polylogue.schemas.synthetic.build_records import _declared_numeric
 from polylogue.schemas.synthetic.workload import (
+    LAZY_TEXT_THRESHOLD,
     Histogram,
+    WorkloadFile,
     _codex_session,
+    _dumps,
     classify_claude_code_record,
     classify_codex_record,
+    concat,
     default_origin_weights,
+    embedded,
     generate_workload_corpus,
     load_workload_profile,
     measured_text,
@@ -244,7 +249,7 @@ def test_short_texts_sampled_non_ascii_always_carry_one() -> None:
     """Anti-vacuity: slicing the mixed pool alone leaves most short slices pure ASCII."""
     rng = random.Random(3)
     texts = [synthetic_text(rng, 12, non_ascii=True) for _ in range(500)]
-    assert all(not text.isascii() and len(text) == 12 for text in texts)
+    assert all(isinstance(text, str) and not text.isascii() and len(text) == 12 for text in texts)
 
 
 def test_default_origin_mix_follows_session_populations() -> None:
@@ -365,3 +370,98 @@ def test_claude_subagent_ids_match_the_parsed_session_id(tmp_path: Path) -> None
         assert item.session_id in {session.provider_session_id for session in parsed}
         checked += 1
     assert checked
+
+
+def test_multi_gigabyte_texts_stream_without_materializing(tmp_path: Path) -> None:
+    """Anti-vacuity: building the text as one string allocates ~1.5 GiB here instead of streaming it."""
+    import tracemalloc
+
+    rng = random.Random(4)
+    huge = synthetic_text(rng, 1_500_000_000, non_ascii=False)
+    item = WorkloadFile("claude-code", "x/big.txt", ((huge, 0),), "sidecar", "s")
+    tracemalloc.start()
+    size = item.size
+    head = next(item.iter_chunks())
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    assert size == 1_500_000_000
+    assert head
+    assert peak < 64 * 1024 * 1024
+
+
+def test_lazy_text_encodes_like_json_at_every_escape_level() -> None:
+    """Anti-vacuity: escaping lazy pieces differently from ``json.dumps`` corrupts records around large texts."""
+    rng = random.Random(5)
+    big = synthetic_text(rng, LAZY_TEXT_THRESHOLD + 12_345, non_ascii=True)
+    arguments = concat('{"cmd":"', embedded(big), '"}')
+    segments = _dumps({"type": "response_item", "payload": {"arguments": arguments, "text": big}})
+    line = b"".join(WorkloadFile("codex", "x", segments, "transcript", "s").iter_chunks())
+    record = json.loads(line)
+    assert json.loads(record["payload"]["arguments"])["cmd"] == record["payload"]["text"]
+    assert len(record["payload"]["text"]) == len(big)
+
+
+def test_codex_apply_patch_calls_carry_their_touched_path() -> None:
+    """Anti-vacuity: ``{"cmd": ...}`` arguments for apply_patch leave the parser no path to recover."""
+    paths = 0
+    for item in generate_workload_corpus(seed=4, target_sessions=20, origins={"codex": 1.0}).iter_files():
+        for session in parse_payload("codex", _records(item.data), item.relpath, source_path=item.relpath):
+            for message in session.messages:
+                for block in message.blocks:
+                    if block.tool_name == "apply_patch" and block.tool_input:
+                        assert block.tool_input.get("path")
+                        paths += 1
+    assert paths > 0
+
+
+def test_one_record_codex_sessions_stay_one_record() -> None:
+    """Anti-vacuity: a lower bound of two records turns every metadata-only session conversational."""
+    measured = load_workload_profile("codex")
+    profile = dataclasses.replace(
+        measured,
+        streams={
+            **measured.streams,
+            "main": dataclasses.replace(measured.streams["main"], records=Histogram((1,), (1.0,))),
+        },
+        subagents_per_session=Histogram((0,), (1.0,)),
+        shares={**measured.shares, "orphan_subagents_per_session": 0.0},
+    )
+    files, _ = _codex_session(random.Random(2), profile, index=0)
+    assert [len(_records(item.data)) for item in files] == [1]
+
+
+def test_claude_subagents_start_inside_their_owner_and_bind_fork_context(tmp_path: Path) -> None:
+    """Anti-vacuity: offsets before the owner's start, or random fork parents, break lineage and timelines."""
+    corpus = generate_workload_corpus(seed=12, target_sessions=60, origins={"claude-code": 1.0})
+    files = list(corpus.iter_files())
+    starts: dict[str, str] = {}
+    for item in files:
+        if item.role == "transcript":
+            stamps = [str(r["timestamp"]) for r in _records(item.data) if "timestamp" in r]
+            if stamps:
+                starts[item.session_id] = min(stamps)
+    checked = 0
+    for item in files:
+        if item.role != "subagent" or item.parent_session_id not in starts:
+            continue
+        records = _records(item.data)
+        stamps = [str(r["timestamp"]) for r in records if "timestamp" in r]
+        if stamps and item.parent_session_id is not None:
+            assert min(stamps) >= starts[item.parent_session_id]
+            checked += 1
+        for record in records:
+            if record.get("type") == "fork-context-ref":
+                assert record.get("parentSessionId") == item.parent_session_id
+    assert checked > 0
+
+
+def test_codex_completion_items_keep_their_public_type() -> None:
+    """Anti-vacuity: a type-free skeleton fills ``item.type`` with gibberish that no call can claim."""
+    profile = load_workload_profile("codex")
+    skeletons = [skeleton for skeleton, _ in profile.templates["record:event_msg:item_completed"]]
+    assert any(
+        isinstance(s, dict) and s["payload"]["item"].get("type") in {"=CommandExecution", "=FileChange"}
+        for s in skeletons
+    )
+    record = profile.template_record(random.Random(1), "record:event_msg:item_completed", {})
+    assert not str(record.get("type", "")).startswith("=")

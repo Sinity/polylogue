@@ -35,7 +35,8 @@ def test_measured_profile_holds_only_aggregates(tmp_path: Path) -> None:
 def test_workflow_journals_are_not_measured_as_subagent_sessions(tmp_path: Path) -> None:
     """Anti-vacuity: counting every ``subagents/**`` stream folds orchestration journals into subagents."""
     projects = tmp_path / "projects"
-    corpus = generate_workload_corpus(seed=3, target_sessions=6, origins={"claude-code": 1.0})
+    # Enough sessions that some carry subagent transcripts (most real ones have none).
+    corpus = generate_workload_corpus(seed=3, target_sessions=60, origins={"claude-code": 1.0})
     corpus.write(tmp_path)
     (tmp_path / "claude-code" / "projects").rename(projects)
     session_dir = next(path for path in projects.rglob("subagents"))
@@ -62,3 +63,15 @@ def test_default_roots_come_from_the_source_registry() -> None:
     """Anti-vacuity: a hard-coded root that disagrees with Polylogue's own source registry measures nothing."""
     assert default_source_root("claude-code") == Path("~/.claude/projects").expanduser()
     assert default_source_root("codex") == Path("~/.codex/sessions").expanduser()
+
+
+def test_write_refuses_zero_sampling_bounds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: ``--sample 0`` measures an empty main stream that would overwrite the committed profile."""
+    target = tmp_path / "workload-corpus.json"
+    target.write_text("committed", encoding="utf-8")
+    monkeypatch.setattr("devtools.schema_workload_profile.workload_profile_path", lambda origin: target)
+    generate_workload_corpus(seed=1, target_sessions=3, origins={"claude-code": 1.0}).write(tmp_path / "src")
+    source = tmp_path / "src" / "claude-code" / "projects"
+    with pytest.raises(SystemExit):
+        main(["--origin", "claude-code", "--source", str(source), "--sample", "0", "--write"])
+    assert target.read_text(encoding="utf-8") == "committed"
