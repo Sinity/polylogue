@@ -21,8 +21,8 @@ from polylogue.core.enums import Provider
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.daemon.convergence import DaemonConverger
 from polylogue.maintenance.archive_verification import verify_archive
+from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
 from polylogue.operations.fts_derivation import make_fts_derivation, make_fts_frame
-from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus
@@ -251,7 +251,7 @@ def test_persisted_catalog_manifest_reaches_real_ingest_and_convergence(
     archive_root = tmp_path / "archive"
     source_path = written.files[0].relative_to(source_root)
     monkeypatch.chdir(source_root)
-    ingest_result = asyncio.run(parse_sources_archive(archive_root, [Source(name=spec.provider, path=source_path)]))
+    ingest_result = asyncio.run(ingest_one_shot_archive(archive_root, [Source(name=spec.provider, path=source_path)]))
     assert ingest_result.counts["sessions"] > 0
     assert ingest_result.counts["messages"] > 0
 
@@ -374,7 +374,7 @@ def test_every_supported_inferred_element_reaches_convergence_and_red_twin(
 
     archive_root = tmp_path / "archive"
     monkeypatch.chdir(source_root)
-    ingest_result = asyncio.run(parse_sources_archive(archive_root, sources))
+    ingest_result = asyncio.run(ingest_one_shot_archive(archive_root, sources))
     assert ingest_result.parse_failures == 0
     assert ingest_result.counts["sessions"] == expected_session_count
     assert ingest_result.counts["sessions"] > 0
