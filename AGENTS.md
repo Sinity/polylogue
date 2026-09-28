@@ -147,12 +147,13 @@ command needs its `CommandSpec` and `devtools render devtools-reference`).
 
 - `devtools test <selection>` runs focused tests through the managed host
   pool; never run bare `pytest`. The pool is shared: run one selection per PR
-  head covering every affected file, re-run only the failing ids after a fix,
-  and batch review-thread fixes into one push. Reuse a receipt across related
+  head covering every affected file, and batch review-thread fixes into one
+  push. Re-running only the failing ids is diagnosis on an unchanged tree;
+  after a source change, re-run the complete affected selection. Reuse a receipt across related
   tasks. The hosted quick gate covers static checks, so a local
   `verify --quick` before pushing is optional.
-- `devtools verify --quick` runs the fast static gates; slower invariant gates
-  run on their own tiers (`devtools gate --list` enumerates the gates).
+- `devtools verify --quick` runs the static gates (`devtools gate --list`
+  enumerates them; `devtools gate <name>` runs one).
   `devtools verify` selects affected tests from a usable testmon graph and
   refuses when it cannot; it never silently becomes a corpus run. Broad or complete-corpus runs need an
   explicit request.
@@ -160,8 +161,9 @@ command needs its `CommandSpec` and `devtools render devtools-reference`).
   green does not prove behavior. `.agentctl/project.toml` on the candidate
   declares the hosted checks.
 - Tests exercise the production route and name the change that would turn
-  them red. They assert typed outcomes, stable event tokens, and declared
-  fields, never natural-language wording. Timestamp-sensitive tests use
+  them red. Behaviour tests assert typed outcomes, stable event tokens, and
+  declared fields, not natural-language wording; rendered text is asserted
+  only where that text is itself the declared output contract. Timestamp-sensitive tests use
   `frozen_clock`; fixtures come from `tests/infra/`.
 - Cross-check by change type: parser or detection → origin specs, real
   fixtures, replay parity; storage or schema → fresh DDL, the migration or
