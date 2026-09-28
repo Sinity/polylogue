@@ -967,11 +967,13 @@ async def test_fresh_discovery_keeps_a_page_of_lookahead_for_prefetch(tmp_path: 
 
 @pytest.mark.asyncio
 async def test_lookahead_sampling_never_blocks_the_batch_in_flight(tmp_path: Path) -> None:
-    """A lookahead whose source read is stuck is skipped, not waited on.
+    """A lookahead whose source read is stuck is skipped, not waited on or stacked.
 
     Anti-vacuity: await the lookahead sample inside ``_submit_ready_lookahead``
     (or sample on the admission path) and the first submission blocks on the
-    held selection instead of returning with nothing submitted.
+    held selection instead of returning with nothing submitted; start a
+    sampler per offer and the second offer runs the selection again while the
+    first is still stuck.
     """
     (path,) = _write_fixture_corpus(tmp_path / "sessions", count=1)
     archive_root = tmp_path / "archive"
@@ -992,20 +994,29 @@ async def test_lookahead_sampling_never_blocks_the_batch_in_flight(tmp_path: Pat
         read_snapshot=open_operation_read,
     )
     released = threading.Event()
+    selections: list[int] = []
 
     def held_selection() -> list[Path]:
+        selections.append(1)
         released.wait(timeout=30)
         return [path]
 
     processor.offer_parse_lookahead(held_selection, source_name="codex")
+    stuck = processor._parse_lookahead
     try:
         await processor._submit_ready_lookahead()
         assert submitted == []
+        processor.offer_parse_lookahead(held_selection, source_name="codex")
+        assert processor._parse_lookahead is None
     finally:
         released.set()
+    assert stuck is not None
+    stuck.result(timeout=30)
+    assert len(selections) == 1
+    processor.offer_parse_lookahead(lambda: [path], source_name="codex")
     lookahead = processor._parse_lookahead
     assert lookahead is not None
-    await lookahead
+    lookahead.result(timeout=30)
     await processor._submit_ready_lookahead()
     assert [[candidate[0] for candidate in batch] for batch in submitted] == [[str(path)]]
     assert processor._parse_lookahead is None

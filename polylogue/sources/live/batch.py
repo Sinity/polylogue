@@ -833,7 +833,8 @@ class LiveBatchProcessor:
         # The watcher supplies a parse stage for JSON/JSONL preparation before
         # the writer hold. Direct callers may pass None for baseline parity.
         self._parse_stage = parse_stage
-        self._parse_lookahead: asyncio.Future[list[tuple[str, Provider, bool]]] | None = None
+        self._parse_lookahead: Future[list[tuple[str, Provider, bool]]] | None = None
+        self._lookahead_sampler: Future[list[tuple[str, Provider, bool]]] | None = None
         self._read_snapshot = read_snapshot
 
     def cursor_authority_block_reason(self) -> str | None:
@@ -2826,27 +2827,41 @@ class LiveBatchProcessor:
     def offer_parse_lookahead(self, select: Callable[[], Sequence[Path]], *, source_name: str) -> None:
         """Sample the paths a later batch will ingest in full, off the event loop.
 
-        ``select`` and the provider sampling read the source, so they run on a
-        worker thread and never delay the batch in flight. The stage is not
-        touched here: ``_submit_ready_lookahead`` submits the candidates from
-        inside a full ingest, which owns the stage.
+        ``select`` and the provider sampling read the source, so they run on
+        one processor-owned daemon thread and never delay the batch in
+        flight. A source read cannot be cancelled, so at most one sample is
+        ever in flight: while a slow or stuck one runs, no further sampler is
+        started, and as a daemon thread it never holds up process exit. The
+        stage is not touched here: ``_submit_ready_lookahead`` submits the
+        candidates from inside a full ingest, which owns the stage.
         """
         self.drop_parse_lookahead()
         if self._parse_stage is None or _source_tier_acquisition_required():
             return
+        running = self._lookahead_sampler
+        if running is not None and not running.done():
+            return
         fallback_provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
+        future: Future[list[tuple[str, Provider, bool]]] = Future()
 
-        def sample() -> list[tuple[str, Provider, bool]]:
-            paths = list(select())
-            return _live_parse_stage_path_candidates(paths, fallback_provider=fallback_provider) if paths else []
+        def sample() -> None:
+            if not future.set_running_or_notify_cancel():
+                return
+            try:
+                paths = list(select())
+                future.set_result(
+                    _live_parse_stage_path_candidates(paths, fallback_provider=fallback_provider) if paths else []
+                )
+            except BaseException as exc:
+                future.set_exception(exc)
 
-        self._parse_lookahead = asyncio.ensure_future(asyncio.to_thread(sample))
+        threading.Thread(target=sample, name="live-parse-lookahead", daemon=True).start()
+        self._lookahead_sampler = future
+        self._parse_lookahead = future
 
     def drop_parse_lookahead(self) -> None:
-        """Forget an unconsumed lookahead; a still-running sample is left to finish unused."""
-        lookahead, self._parse_lookahead = self._parse_lookahead, None
-        if lookahead is not None and not lookahead.done():
-            lookahead.cancel()
+        """Forget an unconsumed lookahead; a still-running sample finishes unused."""
+        self._parse_lookahead = None
 
     async def _submit_ready_lookahead(self) -> None:
         """Submit an already-sampled lookahead to the parse stage, never waiting on it.
