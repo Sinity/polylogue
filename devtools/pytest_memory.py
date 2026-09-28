@@ -165,6 +165,9 @@ class ProcessGroupMemorySampler:
         """
         with self._lock:
             self._pgid = pgid
+        # Observed at once: a rerun that ends within one interval would
+        # otherwise never be sampled.
+        self.sample()
 
     def stop(self) -> dict[str, Any]:
         """End sampling and return the run's attribution."""

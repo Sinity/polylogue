@@ -554,6 +554,14 @@ def _selected_test_modules(selection: list[str]) -> int:
     return count
 
 
+def _xdist_disabled(selection: list[str]) -> bool:
+    """Whether the caller disabled xdist (``-p no:xdist``) explicitly."""
+    return any(
+        argument in {"-pno:xdist", "-p=no:xdist"} or (argument == "no:xdist" and index and selection[index - 1] == "-p")
+        for index, argument in enumerate(selection)
+    )
+
+
 def _worker_args(selection: list[str]) -> list[str]:
     """Run a large selection under xdist; keep a small one in one process.
 
@@ -563,7 +571,7 @@ def _worker_args(selection: list[str]) -> list[str]:
     profile, so a busy pool runs a large selection narrower, never over its
     ceiling.
     """
-    if _has_worker_flag(selection) or _selection_targets_benchmarks(selection):
+    if _has_worker_flag(selection) or _selection_targets_benchmarks(selection) or _xdist_disabled(selection):
         # Benchmarks run in one process by contract (``-p no:xdist``).
         return []
     if _selected_test_modules(selection) >= LARGE_SELECTION_MODULES:
@@ -872,7 +880,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 4
 
-    if not force_rerun and os.environ.get(REUSE_ENV, "1") != "0":
+    # An isolated run exists to execute outside the managed slot; a managed
+    # receipt cannot stand in for it.
+    if not force_rerun and runner == "managed" and os.environ.get(REUSE_ENV, "1") != "0":
         # Two callers in one checkout asking for the same selection share one
         # run: the second waits here, then finds the first's receipt below.
         _hold_selection_lock(selection)
@@ -884,13 +894,16 @@ def main(argv: list[str] | None = None) -> int:
             sys.stderr.write(refusal + "\n")
             return REFUSAL_EXIT
         digest = git_worktree_content_sha256(ROOT)
+        environment_key = _reuse_environment_key()
         reused = reusable_green_receipt(
             selection,
             root=ROOT,
             content_sha256=digest,
-            environment_key=_reuse_environment_key(),
+            environment_key=environment_key,
         )
-        if reused is not None and git_worktree_content_sha256(ROOT) != digest:
+        if reused is not None and (
+            git_worktree_content_sha256(ROOT) != digest or _reuse_environment_key() != environment_key
+        ):
             # A save landed during the lookup: the receipt no longer describes
             # this tree, so the selection runs.
             reused = None

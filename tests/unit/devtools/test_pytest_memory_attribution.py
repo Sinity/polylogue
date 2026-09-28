@@ -248,8 +248,9 @@ def test_a_followed_rerun_group_is_part_of_the_run_peak(tmp_path: Path) -> None:
     sampler.sample()
 
     _process(proc, 300, pgid=300, pss_kib=900 * KIB)
+    # No explicit sample: ``follow`` observes the new group at once, so a
+    # rerun that ends within one interval is still measured.
     sampler.follow(300)
-    sampler.sample()
 
     document = sampler.stop()
     assert document["peak"]["pss_kib"] == 900 * KIB

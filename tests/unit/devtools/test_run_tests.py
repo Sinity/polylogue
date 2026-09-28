@@ -1358,3 +1358,49 @@ def test_benchmark_selections_never_get_automatic_workers() -> None:
     """Anti-vacuity: drop the benchmark exclusion and ``-n`` is appended beside ``-p no:xdist``."""
     cmd = run_tests.build_pytest_cmd(["tests/benchmarks", "--benchmark-enable", "-p", "no:xdist"])
     assert "-n" not in cmd
+
+
+def test_explicit_xdist_disablement_is_honored_for_any_selection() -> None:
+    """Anti-vacuity: guard only benchmarks and ``-p no:xdist`` gets ``-n 4`` beside it."""
+    cmd = run_tests.build_pytest_cmd(["tests/unit/devtools", "-p", "no:xdist"])
+    assert "-n" not in cmd
+
+
+def test_an_isolated_run_is_never_answered_from_a_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: allow reuse for ``--runner isolated`` and the managed receipt returns without running."""
+    monkeypatch.setenv(run_tests.REUSE_ENV, "1")
+    monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
+    monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: tmp_path / "run.json")
+    ran: list[bool] = []
+
+    def isolated(*_args: Any, **_kwargs: Any) -> Any:
+        ran.append(True)
+        raise RuntimeError("stop after admission")
+
+    monkeypatch.setattr("devtools.run_tests.run_pytest_isolated", isolated)
+
+    run_tests.main(["tests/unit/devtools/test_run_tests.py", "--runner", "isolated"])
+    assert ran == [True]
+
+
+def test_reuse_is_refused_when_the_example_database_moves_during_lookup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Anti-vacuity: recheck only the tree digest and a counterexample saved by
+    a concurrent selection mid-lookup is never replayed."""
+    monkeypatch.setenv(run_tests.REUSE_ENV, "1")
+    monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
+    monkeypatch.setattr(run_tests, "git_worktree_content_sha256", lambda _root: "same")
+    keys = iter(["d0", "d1"])
+    monkeypatch.setattr(run_tests, "_reuse_environment_key", lambda: next(keys, "d1"))
+    monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: tmp_path / "run.json")
+    queued: list[bool] = []
+
+    def reached_the_slot(*_args: Any, **_kwargs: Any) -> Any:
+        queued.append(True)
+        raise RuntimeError("stop after admission")
+
+    monkeypatch.setattr("devtools.run_tests.run_pytest", reached_the_slot)
+
+    run_tests.main(["tests/unit/devtools/test_run_tests.py"])
+    assert queued == [True]
