@@ -4779,7 +4779,11 @@ class LiveBatchProcessor:
                     # caller's cursor bookkeeping treats it the same as any
                     # other unavailable content.
                     result.excised_skips += 1
-                    result.excised_paths.add(Path(record.source_path))
+                    # A ZIP member record is offered by its container path;
+                    # normalize the durable ``container:member`` coordinate
+                    # back to that offered path for caller-side accounting.
+                    offered_path, separator, _member = record.source_path.partition(":")
+                    result.excised_paths.add(Path(offered_path if separator else record.source_path))
                     # The bytes were published (staged and reserved) before the
                     # write refused them. Nothing will ever reference them, so
                     # the success path's receipt consumption never runs and the

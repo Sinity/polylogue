@@ -174,6 +174,12 @@ class CaptureJobRegistry:
             )
         if "retention_declared" not in job_columns:
             connection.execute("ALTER TABLE capture_jobs ADD COLUMN retention_declared INTEGER NOT NULL DEFAULT 0")
+            # Rows predating the bit may already hold a deliberate retention
+            # choice. Keep it from being replaced by retry-derived retention.
+            connection.execute(
+                "UPDATE capture_jobs SET retention_declared=1 "
+                'WHERE retention_json != \'{"state":"active","hold_reason":null,"timeline_authoritative":true}\''
+            )
         return connection
 
     @contextmanager

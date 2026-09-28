@@ -525,7 +525,10 @@ def compose_embedding_convergence(
                     # Cancellation/deadline can also arrive after the last
                     # derivation observation, so consult the request stop
                     # signal before declaring a clean completion.
-                    stopped = scope_limited or bool(quiet and quiet())
+                    # The receipt describes this invocation. A per-call stop
+                    # callback overrides the composition default and must be
+                    # consulted after derivation as well as during compute.
+                    stopped = scope_limited or bool(active_quiet and active_quiet())
                     receipt_status = _catchup_receipt_status(
                         failures=failures,
                         pending=report.pending,
