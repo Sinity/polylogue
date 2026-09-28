@@ -126,6 +126,19 @@ def test_missing_ast_grep_is_typed_and_actionable(monkeypatch: pytest.MonkeyPatc
     assert "uv sync --extra dev --group audit --frozen" in gate["details"][0]
 
 
+def test_malformed_registry_rule_fails_closed(tmp_path: Path) -> None:
+    """Anti-vacuity: skipping a scalar list item drops a required rule silently."""
+    registry = tmp_path / "devtools/patterns/registry.yaml"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(
+        "rules:\n  - id: valid\n    rule: a.yml\n    baseline: a.txt\n    owner: bead\n    status: enforcing\n  - broken\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="must be a mapping"):
+        verify_patterns._rules(tmp_path)
+
+
 def test_scan_converts_ast_grep_zero_based_lines_to_one_based(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     rule = _rule(tmp_path)
     matched_file = tmp_path / "polylogue/example.py"

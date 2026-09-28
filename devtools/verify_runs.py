@@ -511,9 +511,13 @@ class VerifyRun:
         # so a change meant to reduce it is compared without a second tool. The
         # per-worker detail stays in each step's suite-cost directory.
         suite_cost = summarize_step_receipts(
-            self.root / str(step["artifact_dir"]) / "suite-cost" / SUITE_COST_RUN_RECEIPT_NAME
+            path
             for step in self._payload["steps"]
             if step.get("artifact_dir")
+            for path in (
+                self.root / str(step["artifact_dir"]) / "suite-cost" / SUITE_COST_RUN_RECEIPT_NAME,
+                self.root / str(step["artifact_dir"]) / "suite-cost-rerun" / SUITE_COST_RUN_RECEIPT_NAME,
+            )
         )
         if suite_cost is not None:
             self._payload["suite_cost"] = suite_cost
@@ -930,6 +934,7 @@ def canonical_verification_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
                 "terminal_union_count",
                 "terminal_green",
                 "complete_corpus_covered",
+                "flaky",
                 "outcomes",
             )
             if key in aggregate
