@@ -693,6 +693,20 @@ def _whole_string(handle: IO[bytes], ordinal: int, field: str) -> str:
     raise ValueError(f"string token {ordinal} vanished between two reads of the same document")
 
 
+def _first_significant(handle: IO[bytes]) -> bytes:
+    """The first byte after a UTF-8 byte-order mark and JSON whitespace, or ``b""``."""
+    start = True
+    while chunk := handle.read(4096):
+        if start:
+            start = False
+            if chunk.startswith(codecs.BOM_UTF8):
+                chunk = chunk[len(codecs.BOM_UTF8) :]
+        stripped = chunk.lstrip(b" \t\r\n")
+        if stripped:
+            return stripped[:1]
+    return b""
+
+
 def top_level_envelopes(
     handle: IO[bytes],
     *,
@@ -714,6 +728,15 @@ def top_level_envelopes(
     """
     import ijson
 
+    if whole_fields and not expand_arrays:
+        # Exact identity fields live only on an object root. Any other root is
+        # answered from its first significant byte, never scanned: a scalar or
+        # array root of any size costs one read.
+        first = _first_significant(handle)
+        handle.seek(0)
+        if first != b"{":
+            yield None if first != b"[" else []
+            return
     reader = _PrefixStringReader(handle)
     events = ijson.basic_parse(reader, use_float=False)
     if not whole_fields or expand_arrays:
