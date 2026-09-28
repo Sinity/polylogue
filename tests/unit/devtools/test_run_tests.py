@@ -1404,3 +1404,29 @@ def test_reuse_is_refused_when_the_example_database_moves_during_lookup(
 
     run_tests.main(["tests/unit/devtools/test_run_tests.py"])
     assert queued == [True]
+
+
+def test_home_is_part_of_the_reuse_key() -> None:
+    """Anti-vacuity: drop HOME from the key and these two environments compare equal."""
+    assert run_tests.execution_environment_key({"HOME": "/tmp/home-a"}) != run_tests.execution_environment_key(
+        {"HOME": "/tmp/home-b"}
+    )
+
+
+def test_a_receipt_pruned_during_lookup_sends_the_selection_to_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Anti-vacuity: suppress the read error and ``--json`` exits 0 with empty stdout."""
+    monkeypatch.setenv(run_tests.REUSE_ENV, "1")
+    monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
+    monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: tmp_path / "pruned" / "run.json")
+    queued: list[bool] = []
+
+    def reached_the_slot(*_args: Any, **_kwargs: Any) -> Any:
+        queued.append(True)
+        raise RuntimeError("stop after admission")
+
+    monkeypatch.setattr("devtools.run_tests.run_pytest", reached_the_slot)
+
+    run_tests.main(["tests/unit/devtools/test_run_tests.py", "--json"])
+    assert queued == [True]

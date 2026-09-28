@@ -256,8 +256,10 @@ _EXECUTION_ENV_PREFIXES = ("HYPOTHESIS_", "PYTEST_", "POLYLOGUE_")
 #: regeneration, fuzz depth, colour, time zone and the XDG roots.
 _EXECUTION_ENV_NAMES = frozenset(
     {
-        # Tests reach tools (git, bash, compilers) through the search path.
+        # Tests reach tools (git, bash, compilers) through the search path,
+        # and HOME is inherited into every job (.agentctl/project.toml).
         "PATH",
+        "HOME",
         "UPDATE_GOLDEN",
         "FUZZ_ITERATIONS",
         "NO_COLOR",
@@ -915,10 +917,17 @@ def main(argv: list[str] | None = None) -> int:
             if refusal is not None:
                 sys.stderr.write(refusal + "\n")
                 return REFUSAL_EXIT
+        reused_payload: object = None
+        if reused is not None:
+            # Read now: retention pruning may remove the run directory at any
+            # moment, and a receipt that cannot be read answers nothing.
+            try:
+                reused_payload = json.loads(reused.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                reused = None
         if reused is not None:
             if use_json:
-                with contextlib.suppress(OSError, ValueError):
-                    print(json.dumps(json.loads(reused.read_text(encoding="utf-8")), indent=2, ensure_ascii=False))
+                print(json.dumps(reused_payload, indent=2, ensure_ascii=False))
             sys.stderr.write(
                 "devtools test: this selection already passed on this exact tree; not queueing again "
                 "(--rerun to force).\n"

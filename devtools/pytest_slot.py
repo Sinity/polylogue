@@ -34,6 +34,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -1311,11 +1312,19 @@ def _rerun_failures_in_slot(
         return
     log.write(f"\n  rerun {len(failed)} failed test(s) alone, in this slot ...\n".encode())
     log.flush()
+    # Fresh scratch for the second attempt, as a separately queued rerun had:
+    # a test that leaves a sentinel in the temp dir must not see its own.
+    rerun_env = rerun_environment(environment)
+    first_scratch = environment.get("TMPDIR")
+    if first_scratch:
+        with contextlib.suppress(OSError):
+            fresh = tempfile.mkdtemp(prefix="in-slot-rerun-", dir=first_scratch)
+            rerun_env.update({"TMPDIR": fresh, "TMP": fresh, "TEMP": fresh})
     try:
         process = subprocess.Popen(
             command,
             cwd=cwd,
-            env=rerun_environment(environment),
+            env=rerun_env,
             stdout=log,
             stderr=log,
             start_new_session=True,

@@ -203,3 +203,38 @@ def test_a_grouped_node_that_passes_alone_is_patched_in_the_report(tmp_path: Pat
     assert verdict is not None and verdict["still_failed"] == []
     assert patched["tests"][0]["outcome"] == "passed"
     assert patched["summary"]["failed"] == 0
+
+
+def test_the_in_slot_rerun_gets_fresh_temporary_scratch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: reuse the first attempt's TMPDIR and a test's own sentinel
+    from that attempt makes it pass on rerun."""
+    step = tmp_path / "step"
+    step.mkdir()
+    report = step / "pytest-report.json"
+    _failed_report(report, "tests/test_x.py::test_sentinel")
+    first_scratch = tmp_path / "scratch"
+    first_scratch.mkdir()
+    seen = tmp_path / "seen-tmpdir"
+    script = f"import os, pathlib\npathlib.Path({str(seen)!r}).write_text(os.environ['TMPDIR'])\n"
+    monkeypatch.setattr(
+        pytest_rerun,
+        "build_rerun",
+        lambda **_kwargs: (
+            ["tests/test_x.py::test_sentinel"],
+            [sys.executable, "-c", script],
+            step / "pytest-rerun.json",
+        ),
+    )
+    monkeypatch.setattr(pytest_slot, "_focused_worktree_provenance", lambda *_a, **_k: None)
+    environment = {
+        RERUN_IN_SLOT_ENV: json.dumps({"report_path": str(report), "step_dir": str(step), "root": str(tmp_path)}),
+        "TMPDIR": str(first_scratch),
+        "PATH": "/usr/bin:/bin",
+    }
+    with (tmp_path / "slot.log").open("wb") as log:
+        pytest_slot._rerun_failures_in_slot(environment, cwd=str(tmp_path), log=log, on_start=lambda _p: None)
+
+    rerun_tmp = Path(seen.read_text(encoding="utf-8"))
+    assert rerun_tmp != first_scratch
+    assert rerun_tmp.parent == first_scratch
+    assert list(rerun_tmp.iterdir()) == []
