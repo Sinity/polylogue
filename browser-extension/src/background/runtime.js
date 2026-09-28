@@ -1841,6 +1841,14 @@ function providerTab(provider, { allowCreate = false } = {}) {
   return tracked;
 }
 
+// A provider-controlled Retry-After can parse to Infinity or NaN. Only a
+// finite positive number of seconds is a usable delay; anything else falls
+// back to the default rate-limit delay rather than an unbounded deadline.
+function finiteRetryAfterSeconds(value) {
+  const seconds = Number(value);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+}
+
 function withProviderTransportOperation(provider, operation, { checkThrottle = true } = {}) {
   const prior = providerTransportOperations.get(provider) || Promise.resolve();
   const result = prior.catch(() => undefined).then(async () => {
@@ -1855,13 +1863,13 @@ function withProviderTransportOperation(provider, operation, { checkThrottle = t
       if (value && value.ok === false) {
         const refusal = new Error(value.detail || "browser_action_failed");
         if (value.outcome) refusal.outcome = value.outcome;
-        refusal.retryAfterSeconds = Number(value.retry_after_seconds) || null;
+        refusal.retryAfterSeconds = finiteRetryAfterSeconds(value.retry_after_seconds);
         const classified = classifyBrowserActionFailure(refusal, refusal.retryAfterSeconds);
         if (classified.outcome === "rate_limited") await recordProviderThrottle(provider, refusal, classified);
       }
       return value;
     } catch (error) {
-      const classified = classifyBrowserActionFailure(error, error?.retryAfterSeconds || null);
+      const classified = classifyBrowserActionFailure(error, finiteRetryAfterSeconds(error?.retryAfterSeconds));
       if (classified.outcome === "rate_limited" && !error?.providerThrottleApplied) {
         await recordProviderThrottle(provider, error, classified);
       }
