@@ -589,3 +589,27 @@ def test_post_filter_window_clamps_negative_offset_and_limit(monkeypatch: pytest
         offset=0,
     )
     assert empty == []
+
+
+def test_facet_search_scope_hydrates_each_session_once() -> None:
+    """Anti-vacuity: hydrate one summary per search hit and a session with three
+    matching blocks is read three times."""
+    from types import SimpleNamespace
+
+    from polylogue.api import archive as archive_api
+    from polylogue.archive.query.spec import SessionQuerySpec
+
+    reads: list[str] = []
+
+    class _SearchArchive:
+        def iter_search_summaries(self, query: str, **kwargs: object) -> Iterator[SimpleNamespace]:
+            for session_id in ("s1", "s1", "s2", "s1"):
+                yield SimpleNamespace(session_id=session_id)
+
+        def read_summary(self, session_id: str) -> SimpleNamespace:
+            reads.append(session_id)
+            return SimpleNamespace(session_id=session_id)
+
+    scope = list(archive_api._iter_facet_scope(_SearchArchive(), SessionQuerySpec(query_terms=("foo",))))
+    assert [summary.session_id for summary in scope] == ["s1", "s2"]
+    assert reads == ["s1", "s2"]

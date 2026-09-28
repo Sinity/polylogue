@@ -879,8 +879,11 @@ def _iter_facet_scope(archive: Any, spec: SessionQuerySpec | None) -> Iterator[A
     query_kwargs.pop("offset", None)
     if query_text is not None:
         query_kwargs.pop("sample", None)
-        for hit in cast(Iterator[Any], archive.iter_search_summaries(query_text, **query_kwargs)):
-            yield archive.read_summary(hit.session_id)
+        # One hit per matching block: each session is hydrated once.
+        with _DistinctSessions() as seen:
+            for hit in cast(Iterator[Any], archive.iter_search_summaries(query_text, **query_kwargs)):
+                if seen.add(str(hit.session_id)):
+                    yield archive.read_summary(hit.session_id)
         return
     yield from cast(Iterator[ArchiveSessionSummary], archive.iter_summaries(**query_kwargs))
 
@@ -910,22 +913,19 @@ def _archive_facet_buckets(
     # sessions at a time; the global one needs no session list at all.
     chunk: list[str] = []
     scoped = include_deferred and spec is not None
-    with _DistinctSessions() as distinct:
-        for summary in _iter_facet_scope(archive, spec):
-            if not distinct.add(summary.session_id):
-                continue
-            total_sessions += 1
-            total_messages += summary.message_count
-            origins[summary.origin] = origins.get(summary.origin, 0) + 1
-            for tag in set(summary.tags):
-                tags[tag] = tags.get(tag, 0) + 1
-            if scoped:
-                chunk.append(summary.session_id)
-                if len(chunk) >= _FACET_FAMILY_CHUNK:
-                    _merge_facet_families(
-                        sql_buckets, _archive_aggregate_facet_families(archive._conn, session_ids=chunk)
-                    )
-                    chunk = []
+    # The scope yields each session once (search hits are deduplicated
+    # before hydration), so the counts need no set of their own.
+    for summary in _iter_facet_scope(archive, spec):
+        total_sessions += 1
+        total_messages += summary.message_count
+        origins[summary.origin] = origins.get(summary.origin, 0) + 1
+        for tag in set(summary.tags):
+            tags[tag] = tags.get(tag, 0) + 1
+        if scoped:
+            chunk.append(summary.session_id)
+            if len(chunk) >= _FACET_FAMILY_CHUNK:
+                _merge_facet_families(sql_buckets, _archive_aggregate_facet_families(archive._conn, session_ids=chunk))
+                chunk = []
     if scoped and chunk:
         _merge_facet_families(sql_buckets, _archive_aggregate_facet_families(archive._conn, session_ids=chunk))
     elif include_deferred and spec is None:
