@@ -39,6 +39,64 @@ async def test_requested_sort_is_not_overridden_by_recency(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
+async def test_count_sorted_sessions_order_by_the_composed_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lineage child's stored counters cover only its tail; the page must rank
+    the recomposed Session the caller receives.
+
+    Recomposition is simulated by padding one hydrated session, the shape a
+    prefix-sharing child takes once its inherited prefix is composed.
+
+    Anti-vacuity: order count-sorted sessions by the tail-only SQL key again
+    (drop ``composed_order``) and the one-message ``child`` never enters the
+    one-row window, so ``standalone`` is returned.
+    """
+    import polylogue.archive.query.archive_execution as execution
+
+    _seed(tmp_path, "child", updated_at="2026-01-01T00:00:00Z", messages=1)
+    _seed(tmp_path, "standalone", updated_at="2026-01-02T00:00:00Z", messages=2)
+    original = execution.archive_envelope_to_session
+
+    def composing(*args: object, **kwargs: object) -> object:
+        session = original(*args, **kwargs)  # type: ignore[arg-type]
+        if session.title == "child":
+            return session.model_copy(update={"messages": list(session.messages) * 11})
+        return session
+
+    monkeypatch.setattr(execution, "archive_envelope_to_session", composing)
+
+    sessions = await list_archive(SessionQueryPlan(sort="messages", limit=1), archive_root=tmp_path, config=None)
+
+    assert [session.title for session in sessions] == ["child"]
+
+
+@pytest.mark.asyncio
+async def test_early_filter_sees_the_fully_hydrated_session(tmp_path: Path) -> None:
+    """A predicate evaluated during the early-stop fetch sees the session the
+    caller gets, display label included.
+
+    Anti-vacuity: hydrate without the summary's ``display_label`` in the early
+    filter and the predicate rejects every row, returning nothing.
+    """
+    _seed(tmp_path, "labelled", updated_at="2026-01-01T00:00:00Z", messages=1)
+    labels = [
+        session.display_title
+        for session in await list_archive(SessionQueryPlan(limit=1), archive_root=tmp_path, config=None)
+    ]
+    assert labels
+    expected = labels[0]
+
+    sessions = await list_archive(
+        SessionQueryPlan(predicates=(lambda session: session.display_title == expected,), limit=1),
+        archive_root=tmp_path,
+        config=None,
+    )
+
+    assert [session.display_title for session in sessions] == [expected]
+
+
+@pytest.mark.asyncio
 async def test_post_filtered_page_stops_once_the_page_is_full(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A finite post-filtered page reads only until ``offset + limit`` rows matched.
 

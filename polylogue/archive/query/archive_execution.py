@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import builtins
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING, TypeVar
 
 from polylogue.archive.hydration import archive_envelope_to_session, archive_summary_to_domain
@@ -147,6 +148,11 @@ def _semantic_hits(
         offset=0,
         **plan_filter_kwargs(plan),
     )
+
+
+#: Sorts over per-session counters, which the index stores for a lineage
+#: child's own tail only.
+_COMPOSED_COUNT_SORTS = frozenset({"messages", "words", "longest", "tokens"})
 
 
 def _ranked_window(plan: SessionQueryPlan) -> bool:
@@ -418,38 +424,48 @@ async def list_archive(
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
     with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
 ) -> builtins.list[Session]:
-    def keep_matching(archive: ArchiveStore) -> Callable[[list[ArchiveSessionSummary]], list[ArchiveSessionSummary]]:
-        def keep(rows: list[ArchiveSessionSummary]) -> list[ArchiveSessionSummary]:
-            by_id = {row.session_id: row for row in rows}
-            sessions = [archive_envelope_to_session(archive.read_session(row.session_id)) for row in rows]
-            return [by_id[str(session.id)] for session in plan._apply_full_filters(sessions, sql_pushed=True)]
+    # Stored counters describe a lineage child's own divergent tail, while the
+    # returned Session recomposes its inherited prefix. A count-ordered page of
+    # full sessions is therefore ordered over the composed sessions, from the
+    # unwindowed candidate set, instead of trusting the tail-only SQL keys.
+    composed_order = plan.sort in _COMPOSED_COUNT_SORTS
+    fetch_plan = replace(plan, limit=None, offset=0) if composed_order else plan
 
-        return keep
-
-    def read(archive: ArchiveStore) -> list[Session]:
-        archive_rows = _archive_summaries(
-            plan,
-            archive,
-            config=config,
-            archive_root=archive_root,
-            default_limit=default_limit,
-            keep=keep_matching(archive) if plan.has_post_filters() else None,
-        )
-        sessions = _attach_units_to_domain(
+    def hydrate(archive: ArchiveStore, rows: list[ArchiveSessionSummary]) -> list[Session]:
+        return _attach_units_to_domain(
             [
                 archive_envelope_to_session(
                     archive.read_session(summary.session_id),
                     display_label=summary.display_label,
                     display_label_source=summary.display_label_source,
                 )
-                for summary in archive_rows
+                for summary in rows
             ],
             archive,
             with_units,
             with_unit_fields,
             with_unit_windows,
         )
-        return sessions
+
+    def keep_matching(archive: ArchiveStore) -> Callable[[list[ArchiveSessionSummary]], list[ArchiveSessionSummary]]:
+        def keep(rows: list[ArchiveSessionSummary]) -> list[ArchiveSessionSummary]:
+            # Predicates see the same fully hydrated Session the caller gets:
+            # display label and requested units included.
+            kept = {str(session.id) for session in plan._apply_full_filters(hydrate(archive, rows), sql_pushed=True)}
+            return [row for row in rows if row.session_id in kept]
+
+        return keep
+
+    def read(archive: ArchiveStore) -> list[Session]:
+        archive_rows = _archive_summaries(
+            fetch_plan,
+            archive,
+            config=config,
+            archive_root=archive_root,
+            default_limit=default_limit,
+            keep=keep_matching(archive) if plan.has_post_filters() else None,
+        )
+        return hydrate(archive, archive_rows)
 
     sessions = await run_archive_read(
         archive_root,
@@ -463,8 +479,8 @@ async def list_archive(
     )
     filtered = plan._apply_full_filters(sessions, sql_pushed=True)
     ranked_window = _ranked_window(plan)
-    ordered = order_query_sessions(plan, filtered)
-    if (plan.has_post_filters() or ranked_window) and plan.offset:
+    ordered = plan._sort_sessions(filtered) if composed_order else order_query_sessions(plan, filtered)
+    if (composed_order or plan.has_post_filters() or ranked_window) and plan.offset:
         ordered = ordered[plan.offset :]
     return plan._finalize(ordered)
 
