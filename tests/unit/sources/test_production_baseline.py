@@ -248,7 +248,7 @@ def test_baseline_records_intake_exclusions_instead_of_requiring_retention(tmp_p
     assert decisions[str(meta_only)] == ("excluded", "intake_excluded:declared artifact rule: not parsed as a session")
     assert decisions[str(unverified_state)] == (
         "excluded",
-        "intake_excluded:declared out-of-scope or structurally unverified state database",
+        "intake_excluded:unsupported source class",
     )
     assert decisions[str(logs)] == ("excluded", "intake_excluded:path rule classifies this as non-session evidence")
     assert [row.path for row in baseline.accepted] == [str(rollout)]
@@ -477,7 +477,14 @@ def test_hash_phase_starts_before_each_accepted_revision_is_read(
 
     root = tmp_path / "source"
     root.mkdir()
-    (root / "one.jsonl").write_bytes(b"{}\n")
+    # A real session record: intake excludes a Codex JSONL with none, and an
+    # excluded file is never hashed.
+    session = (
+        b'{"type":"session_meta","payload":{"id":"s","timestamp":"2026-06-02T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"m","role":"user",'
+        b'"content":[{"type":"input_text","text":"hi"}]}}\n'
+    )
+    (root / "one.jsonl").write_bytes(session)
     calls: list[tuple[str, dict[str, int]]] = []
     real_revision = module._revision
 
@@ -491,4 +498,4 @@ def test_hash_phase_starts_before_each_accepted_revision_is_read(
         operation_id="phase",
         progress=lambda phase, **counts: calls.append((phase, counts)),
     )
-    assert calls[-1] == ("baseline_hash", {"revisions": 1, "hashed_bytes": 3})
+    assert calls[-1] == ("baseline_hash", {"revisions": 1, "hashed_bytes": len(session)})
