@@ -230,11 +230,12 @@ def _preflight_sqlite(path: Path, acc: _PreflightAccumulator, *, label: str) -> 
                     "the remainder was not inspected"
                 )
             # A verified trajectory schema is this origin's material even when
-            # its steps produce no message: an empty trajectory or one of only
-            # unsupported step formats yields attributable typed evidence
-            # (``antigravity_trajectory_empty``/``antigravity_unsupported_step``)
-            # that acquisition must retain. Only a schema with no trajectory
-            # rows at all has nothing to admit.
+            # its steps produce no message: an empty trajectory, one of only
+            # unsupported step formats, or a schema with zero ``trajectory_meta``
+            # rows yields attributable typed evidence that acquisition must
+            # retain. The import routes pass the same path-derived
+            # ``fallback_id``, so a zero-row schema imports as one attributable
+            # empty session there too; preflight reports what import will do.
             if sessions:
                 acc.supported(label, Provider.ANTIGRAVITY)
                 if any(session.ingest_flags for session in sessions):

@@ -524,6 +524,7 @@ class TestSessionLevelMetadata:
         """Grounding URIs from the export envelope remain session evidence."""
         payload = _load_catalog("current_export.json")
         citations = payload["citations"]
+        assert isinstance(citations, list)
 
         session = _parse(payload, "current_export")
 

@@ -144,3 +144,50 @@ def test_non_object_record_is_refused_not_materialized() -> None:
     assert accounting is not None
     refusals = [outcome for outcome in accounting.outcomes if outcome.disposition is AdmissionDisposition.TYPED_REFUSAL]
     assert [outcome.ordinal for outcome in refusals] == [1]
+
+
+def test_disk_backed_event_sink_is_kept_not_copied() -> None:
+    """Admission appends to a mutable event sink in place and keeps its identity.
+
+    Anti-vacuity: copy ``session.session_events`` into a fresh list and the
+    returned session no longer carries the caller's sink object, which in
+    production is the ``SqliteSessionEventSink`` holding a stream's events
+    on disk.
+    """
+    from collections.abc import MutableSequence
+
+    from polylogue.sources.parsers.base import ParsedSession, ParsedSessionEvent
+
+    class Sink(MutableSequence[ParsedSessionEvent]):
+        def __init__(self) -> None:
+            self.items: list[ParsedSessionEvent] = []
+
+        def __len__(self) -> int:
+            return len(self.items)
+
+        def __getitem__(self, index):  # type: ignore[no-untyped-def]
+            return self.items[index]
+
+        def __setitem__(self, index, value):  # type: ignore[no-untyped-def]
+            self.items[index] = value
+
+        def __delitem__(self, index):  # type: ignore[no-untyped-def]
+            del self.items[index]
+
+        def insert(self, index: int, value: ParsedSessionEvent) -> None:
+            self.items.insert(index, value)
+
+    sink = Sink()
+    sink.append(ParsedSessionEvent(event_type="compaction", payload={}))
+    observer = base_support.AdmissionObserver()
+    observer.observe({"type": "message"})
+    observer.observe({"type": "future_record_kind"})
+    session = ParsedSession.model_construct(
+        source_name=Provider.CODEX, provider_session_id="s", messages=[], session_events=sink, unit_accounting=None
+    )
+
+    admitted = observer.apply(session, "codex")
+
+    kept: object = admitted.session_events
+    assert kept is sink
+    assert [event.event_type for event in sink.items] == ["compaction", "codex_unknown_input"]

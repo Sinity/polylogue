@@ -405,3 +405,105 @@ def test_usage_survives_for_non_chat_generation_operations() -> None:
 
     usage = [event.payload for event in session.session_events if event.event_type == "message_usage"]
     assert usage == [{"last_token_usage": {"input_tokens": 11, "output_tokens": 7}, "model": "m"}]
+
+
+def test_ordinary_ancestor_joins_its_genai_child_conversation() -> None:
+    """An HTTP root span over a GenAI child stays in the child's conversation.
+
+    Anti-vacuity: group spans only by their own or an ancestor's
+    conversation id and the root becomes a second, zero-message
+    ``trace:<id>`` session.
+    """
+    trace = "7" * 32
+    root = _span(trace, "2" * 16, 500, [_attr("http.method", "POST")])
+    child = {**_chat(trace, "3" * 16, 1_000, ["Q"], "A"), "parentSpanId": "2" * 16}
+    payload = _document(([_attr("service.name", "agent")], [root, child]))
+
+    (session,) = otel_genai.parse(payload, "ignored")
+
+    assert session.provider_session_id == "agent:conversation:chat-1"
+    span_ids = [
+        event.payload["span_id"] for event in session.session_events if event.event_type == "otel_span_evidence"
+    ]
+    assert span_ids == ["2" * 16, "3" * 16]
+
+
+def test_tool_exchange_replayed_in_next_request_is_emitted_once() -> None:
+    """A tool span's call and result count as history for the next chat span.
+
+    Anti-vacuity: leave tool spans out of the transcript and the second chat
+    span re-emits the replayed tool call and result as input messages.
+    """
+    trace = "8" * 32
+    call = {"role": "assistant", "parts": [{"type": "tool_call", "id": "call-1", "name": "search", "arguments": {}}]}
+    result = {"role": "tool", "parts": [{"type": "tool_call_response", "id": "call-1", "response": "found"}]}
+    first = _span(
+        trace,
+        "4" * 16,
+        1_000,
+        [
+            _attr("gen_ai.operation.name", "chat"),
+            _attr("gen_ai.conversation.id", "chat-1"),
+            _attr("gen_ai.input.messages", [{"role": "user", "content": "Q"}]),
+            _attr("gen_ai.output.messages", [call]),
+        ],
+    )
+    tool = _span(
+        trace,
+        "5" * 16,
+        2_000,
+        [
+            _attr("gen_ai.operation.name", "execute_tool"),
+            _attr("gen_ai.conversation.id", "chat-1"),
+            _attr("gen_ai.tool.name", "search"),
+            _attr("gen_ai.tool.call.id", "call-1"),
+            _attr("gen_ai.tool.call.result", "found"),
+        ],
+    )
+    second = _span(
+        trace,
+        "6" * 16,
+        3_000,
+        [
+            _attr("gen_ai.operation.name", "chat"),
+            _attr("gen_ai.conversation.id", "chat-1"),
+            _attr("gen_ai.input.messages", [{"role": "user", "content": "Q"}, call, result]),
+            _attr("gen_ai.output.messages", [{"role": "assistant", "content": "A"}]),
+        ],
+    )
+    payload = _document(([_attr("service.name", "agent")], [first, tool, second]))
+
+    (session,) = otel_genai.parse(payload, "ignored")
+
+    second_span_inputs = [
+        message.provider_message_id
+        for message in session.messages
+        if message.provider_message_id.startswith(f"{trace}:{'6' * 16}:input")
+    ]
+    assert second_span_inputs == []
+    assert [message.text for message in session.messages if message.text] == ["Q", "A"]
+
+
+def test_usage_only_span_attributes_usage_to_response_model() -> None:
+    """A usage-only span without a request model uses its response model.
+
+    Anti-vacuity: read only ``gen_ai.request.model`` and the usage event
+    carries ``model=None`` with ``models_used`` empty.
+    """
+    span = _span(
+        "9" * 32,
+        "7" * 16,
+        1_000,
+        [
+            _attr("gen_ai.operation.name", "generate_content"),
+            _attr("gen_ai.response.model", "served-model"),
+            _attr("gen_ai.usage.input_tokens", 3),
+        ],
+    )
+    payload = _document(([_attr("service.name", "agent")], [span]))
+
+    (session,) = otel_genai.parse(payload, "ignored")
+
+    usage = [event.payload for event in session.session_events if event.event_type == "message_usage"]
+    assert usage == [{"last_token_usage": {"input_tokens": 3}, "model": "served-model"}]
+    assert session.models_used == ["served-model"]

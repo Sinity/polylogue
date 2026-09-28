@@ -241,7 +241,24 @@ def looks_like(payload: object) -> bool:
     return False
 
 
-_TranscriptEntry = tuple[str, str | None]
+_TranscriptEntry = tuple[str, str | None, tuple[str, ...]]
+
+
+def _transcript_entry(raw_message: dict[str, object], default_role: Role) -> _TranscriptEntry:
+    """Identify one GenAI message by role, text and the tool calls it carries.
+
+    Tool-call and tool-response parts carry no text, so their call ids are
+    what distinguishes one tool exchange from another in replayed history.
+    """
+    parts = raw_message.get("parts")
+    tool_ids = tuple(
+        str(part.get("id"))
+        for part in (parts if isinstance(parts, list) else ())
+        if isinstance(part, dict)
+        and part.get("type") in {"tool_call", "tool_call_response"}
+        and part.get("id") is not None
+    )
+    return (_role(raw_message.get("role"), default_role).value, _message_text(raw_message), tool_ids)
 
 
 def _history_overlap(inputs: list[_TranscriptEntry], transcript: list[_TranscriptEntry]) -> int:
@@ -283,10 +300,7 @@ def _messages_for_span(
         ("gen_ai.output.messages", "output", Role.ASSISTANT),
     ):
         raw_messages = _messages(attrs.get(field))[0]
-        entries = [
-            (_role(raw_message.get("role"), default_role).value, _message_text(raw_message))
-            for raw_message in raw_messages
-        ]
+        entries = [_transcript_entry(raw_message, default_role) for raw_message in raw_messages]
         already_seen = _history_overlap(entries, transcript) if direction == "input" else 0
         for index, raw_message in enumerate(raw_messages):
             if index < already_seen:
@@ -324,6 +338,14 @@ def _messages_for_span(
     tool_input = arguments if isinstance(arguments, dict) else {"raw": arguments} if arguments is not None else {}
     outcome, is_error, unknown_reason = _tool_outcome(span)
     tool_result = attrs.get("gen_ai.tool.call.result")
+    # The tool exchange is conversation history too: the next request's
+    # ``gen_ai.input.messages`` replays the call and its result, and the
+    # overlap check must recognise them. A chat span whose output already
+    # carried this call recorded the call entry; only the result is new then.
+    call_entry: _TranscriptEntry = (Role.ASSISTANT.value, None, (tool_id,))
+    if call_entry not in transcript:
+        transcript.append(call_entry)
+    transcript.append((Role.TOOL.value, None, (tool_id,)))
     messages.extend(
         (
             ParsedMessage(
@@ -424,13 +446,55 @@ def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
             span_id = parent_id
         return None
 
+    resolved: dict[tuple[str, str, str], str | None] = {key: conversation_for(*key) for key in span_details}
+    # A span with no conversation of its own or above it (the HTTP/root span
+    # over a GenAI child) is topology evidence of the conversation below it,
+    # not a separate trace session: it joins the conversation of its
+    # descendants, the lowest id when several share the ancestor, and spans
+    # beneath it follow. A trace with exactly one conversation keeps every
+    # remaining span there too.
+    adopted: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+    for (resource_id, trace_id, span_id), conversation_id in resolved.items():
+        if conversation_id is None:
+            continue
+        seen_ids = {span_id}
+        parent_id = span_details[(resource_id, trace_id, span_id)][1]
+        while parent_id is not None and parent_id not in seen_ids:
+            seen_ids.add(parent_id)
+            parent_key = (resource_id, trace_id, parent_id)
+            if parent_key not in span_details:
+                break
+            if resolved.get(parent_key) is None:
+                adopted[parent_key].add(conversation_id)
+            parent_id = span_details[parent_key][1]
+    trace_conversations: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for (resource_id, trace_id, _span_id), conversation_id in resolved.items():
+        if conversation_id is not None:
+            trace_conversations[(resource_id, trace_id)].add(conversation_id)
+
+    def group_conversation(resource_id: str, trace_id: str, span_id: str) -> str | None:
+        key = (resource_id, trace_id, span_id)
+        if resolved.get(key) is not None:
+            return resolved[key]
+        seen_ids: set[str] = set()
+        current: str | None = span_id
+        while current is not None and current not in seen_ids:
+            seen_ids.add(current)
+            current_key = (resource_id, trace_id, current)
+            if adopted.get(current_key):
+                return min(adopted[current_key])
+            details = span_details.get(current_key)
+            current = details[1] if details is not None else None
+        only = trace_conversations.get((resource_id, trace_id), set())
+        return next(iter(only)) if len(only) == 1 else None
+
     groups: dict[tuple[str, str, str], list[tuple[dict[str, object], str | None]]] = defaultdict(list)
     for resource_id, span, schema_url in spans:
         trace_id = optional_string(span.get("traceId")) or optional_string(span.get("trace_id"))
         span_id = optional_string(span.get("spanId")) or optional_string(span.get("span_id"))
         if trace_id is None or span_id is None:
             continue
-        conversation_id = conversation_for(resource_id, trace_id, span_id)
+        conversation_id = group_conversation(resource_id, trace_id, span_id)
         kind, group_identity = ("conversation", conversation_id) if conversation_id else ("trace", trace_id)
         groups[(resource_id, kind, group_identity)].append((span, schema_url))
 
@@ -493,7 +557,9 @@ def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
                 continue
             span_messages = _messages_for_span(span, attrs, trace_id, transcript)
             messages.extend(span_messages)
-            model = optional_string(attrs.get("gen_ai.request.model"))
+            model = optional_string(attrs.get("gen_ai.response.model")) or optional_string(
+                attrs.get("gen_ai.request.model")
+            )
             if model:
                 models.add(model)
             usage = _usage_counts(attrs)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import inspect
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableSequence, Sequence
 from functools import wraps
 from typing import Any, TypeVar
 
@@ -181,17 +181,30 @@ class AdmissionObserver:
             yield item
 
     def apply(self, session: ParsedSession, provider: str) -> ParsedSession:
-        """Attach the typed unknown events and, absent a parser ledger, the proof."""
-        existing_types = (
-            {
-                str(event.payload.get("wire_type"))
-                for event in session.session_events
-                if event.payload.get("wire_type") is not None
+        """Attach the typed unknown events and, absent a parser ledger, the proof.
+
+        A disk-backed event sink (the prepared-JSONL route's
+        ``SqliteSessionEventSink``) is appended to in place and never copied
+        into a list: an event-heavy stream keeps its events on disk.
+        """
+        events = session.session_events
+        if self._unknowns:
+            existing_types = {
+                str(event.payload.get("wire_type")) for event in events if event.payload.get("wire_type") is not None
             }
-            if self._unknowns
-            else set()
-        )
-        events = list(session.session_events)
+            if isinstance(events, list):
+                events = list(events)
+            self._append_unknown_events(events, existing_types, provider)
+        accounting = session.unit_accounting
+        if accounting is None:
+            self._ledger.expect(AdmissionUnit.OUTER_RECORD, self._count)
+            accounting = self._ledger.close()
+        accounting.assert_conserved()
+        return session.model_copy(update={"session_events": events, "unit_accounting": accounting})
+
+    def _append_unknown_events(
+        self, events: MutableSequence[ParsedSessionEvent], existing_types: set[str], provider: str
+    ) -> None:
         for index, wire_type in self._unknowns:
             if wire_type in existing_types:
                 continue
@@ -202,12 +215,6 @@ class AdmissionObserver:
                 )
             )
             existing_types.add(wire_type)
-        accounting = session.unit_accounting
-        if accounting is None:
-            self._ledger.expect(AdmissionUnit.OUTER_RECORD, self._count)
-            accounting = self._ledger.close()
-        accounting.assert_conserved()
-        return session.model_copy(update={"session_events": events, "unit_accounting": accounting})
 
 
 def admit_parsed_sessions(provider: str, payload: object, sessions: list[ParsedSession]) -> list[ParsedSession]:
