@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeVar, cast
 from urllib.parse import parse_qs, parse_qsl, unquote, urlparse, urlsplit
 
 from polylogue.archive.query.transaction import (
+    QueryArchiveEpochUnreadableError,
     QueryContinuationInvalidError,
     QueryContinuationStaleError,
     archive_read_context,
@@ -1166,6 +1167,14 @@ def _write_route_exception_answer(handler: DaemonAPIHandler, exc: Exception, *, 
             HTTPStatus.SERVICE_UNAVAILABLE,
             QueryErrorPayload(error=exc.code, detail=str(exc)).model_dump(mode="json"),
             extra_headers={"Retry-After": "5"},
+        )
+        return
+    if isinstance(exc, QueryArchiveEpochUnreadableError):
+        # A missing or unreadable archive tier is retryable unavailability with
+        # its own code and guidance, as the query-unit route answers it.
+        handler._send_json(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            QueryErrorPayload(error=exc.code, detail=str(exc)).model_dump(mode="json"),
         )
         return
     if isinstance(exc, DaemonOperationCancelled):

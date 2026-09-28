@@ -55,6 +55,7 @@ from polylogue.surfaces.payloads import (
     RANKING_POLICY_VERSION,
     AssertionClaimListPayload,
     QueryErrorPayload,
+    QueryFailurePayload,
     QueryUnitAggregateEnvelope,
     QueryUnitEnvelope,
     SearchEnvelope,
@@ -82,6 +83,7 @@ _PUBLISHED_MODELS: tuple[type[BaseModel], ...] = (
     WebCredentialRevocationPayload,
     WebCredentialFailurePayload,
     QueryErrorPayload,
+    QueryFailurePayload,
     QueryExpressionExplanationAst,
 )
 
@@ -316,6 +318,13 @@ def _query_error_response(description: str) -> dict[str, Any]:
     return {
         "description": description,
         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QueryErrorPayload"}}},
+    }
+
+
+def _query_failure_response() -> dict[str, Any]:
+    return {
+        "description": "Unexpected failure answered at the request boundary, with an error outcome.",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QueryFailurePayload"}}},
     }
 
 
@@ -892,6 +901,11 @@ def _build_openapi_document() -> dict[str, Any]:
             operation["x-polylogue-declaration"]["domain_operation"] = declaration.domain_operation
         if declaration.migration_reason:
             operation["x-polylogue-declaration"]["migration_reason"] = declaration.migration_reason
+    # The daemon request boundary answers any unexpected route failure with
+    # this one payload, so every operation declares it.
+    for path_item in document["paths"].values():
+        for operation in path_item.values():
+            operation["responses"].setdefault("500", _query_failure_response())
     return document
 
 

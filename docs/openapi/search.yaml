@@ -62,6 +62,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebCredentialFailurePayload'
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-recoverable-states: *id001
       x-polylogue-declaration:
         declaration_id: daemon.http.post.api.web-auth.session
@@ -121,6 +127,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebCredentialFailurePayload'
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-recoverable-states: *id001
       x-polylogue-declaration:
         declaration_id: daemon.http.delete.api.web-auth.session
@@ -176,6 +188,12 @@ paths:
                 anyOf:
                 - $ref: '#/components/schemas/QueryErrorPayload'
                 - $ref: '#/components/schemas/WebCredentialFailurePayload'
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-declaration:
         declaration_id: daemon.status
         method: GET
@@ -307,6 +325,12 @@ paths:
                 anyOf:
                 - $ref: '#/components/schemas/QueryErrorPayload'
                 - $ref: '#/components/schemas/WebCredentialFailurePayload'
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-page:
         iterator: search
         initial_required_parameters:
@@ -599,6 +623,12 @@ paths:
                 anyOf:
                 - $ref: '#/components/schemas/QueryErrorPayload'
                 - $ref: '#/components/schemas/WebCredentialFailurePayload'
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-page:
         iterator: query
         initial_required_parameters:
@@ -824,6 +854,12 @@ paths:
                 anyOf:
                 - $ref: '#/components/schemas/QueryErrorPayload'
                 - $ref: '#/components/schemas/WebCredentialFailurePayload'
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-declaration:
         declaration_id: daemon.read.session
         method: GET
@@ -923,6 +959,12 @@ paths:
                 anyOf:
                 - $ref: '#/components/schemas/QueryErrorPayload'
                 - $ref: '#/components/schemas/WebCredentialFailurePayload'
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-declaration:
         declaration_id: daemon.user.user_assertions_list
         method: GET
@@ -943,6 +985,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeReadDetailSources
       security:
@@ -968,6 +1016,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       parameters:
       - name: session_id
@@ -999,6 +1053,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       parameters:
       - name: session_id
@@ -1030,6 +1090,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       parameters:
       - name: session_id
@@ -1061,6 +1127,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       parameters:
       - name: session_id
@@ -1092,6 +1164,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       parameters:
       - name: session_id
@@ -1123,6 +1201,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       parameters:
       - name: session_id
@@ -1154,6 +1238,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       parameters:
       - name: session_id
@@ -1185,6 +1275,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       parameters:
       - name: session_id
@@ -1216,6 +1312,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       parameters:
       - name: session_id
@@ -1247,6 +1349,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       parameters:
       - name: session_id
@@ -1278,6 +1386,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       parameters:
       - name: session_id
@@ -1309,6 +1423,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       parameters:
       - name: session_id
@@ -1340,6 +1460,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeReadDetailThreadContinueTemplates
       security:
@@ -1365,6 +1491,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeReadQueryOverview
       security:
@@ -1390,6 +1522,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeReadQueryFacets
       security:
@@ -1415,6 +1553,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeReadQueryRefsResolve
       security:
@@ -1440,6 +1584,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeReadQueryQueryCompletions
       security:
@@ -1465,6 +1615,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeReadQueryActionAffordances
       security:
@@ -1490,6 +1646,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeReadQueryReadViewProfiles
       security:
@@ -1515,6 +1677,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeReadQueryPasteBrowser
       security:
@@ -1540,6 +1708,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeReadQueryAttachments
       security:
@@ -1565,6 +1739,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeStack
       security:
@@ -1591,6 +1771,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeCompare
       security:
@@ -1617,6 +1803,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeReset
       security:
@@ -1642,6 +1834,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeIngest
       security:
@@ -1666,6 +1864,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeDemoAugment
       security:
@@ -1690,6 +1894,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeGetApiHealthCheck
       security:
@@ -1716,6 +1926,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeGetApiHealth
       security:
@@ -1745,6 +1961,12 @@ paths:
             text/event-stream:
               schema:
                 type: string
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeGetApiEvents
       security:
@@ -1770,6 +1992,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeGetApiAgentsCoordination
       security:
@@ -1796,6 +2024,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeGetApiProviderUsage
       security:
@@ -1822,6 +2056,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeGetApiArchiveDebt
       security:
@@ -1848,6 +2088,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeGetApiImportExplain
       security:
@@ -1874,6 +2120,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routePostApiOperation
       security:
@@ -1899,6 +2151,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routePostApiCliQuery
       security:
@@ -1924,6 +2182,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routePostApiTelemetryMcpCalls
       security:
@@ -1948,6 +2212,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: true
       operationId: getWebuiObservability
       security:
@@ -1974,6 +2244,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: true
       parameters:
       - name: source
@@ -2006,6 +2282,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       parameters:
       - name: name
@@ -2038,6 +2320,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeGetApiUserMarks
       security:
@@ -2062,6 +2350,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routePostApiUserMarks
       security:
@@ -2086,6 +2380,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeDeleteApiUserMarks
       security:
@@ -2111,6 +2411,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeGetApiUserAnnotations
       security:
@@ -2135,6 +2441,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routePostApiUserAnnotations
       security:
@@ -2160,6 +2472,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       parameters:
       - name: session_id
@@ -2190,6 +2508,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       parameters:
       - name: session_id
@@ -2221,6 +2545,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeGetApiUserSavedViews
       security:
@@ -2245,6 +2575,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routePostApiUserSavedViews
       security:
@@ -2270,6 +2606,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       parameters:
       - name: session_id
@@ -2300,6 +2642,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       parameters:
       - name: session_id
@@ -2331,6 +2679,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeGetApiUserRecallPacks
       security:
@@ -2355,6 +2709,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routePostApiUserRecallPacks
       security:
@@ -2380,6 +2740,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       parameters:
       - name: session_id
@@ -2410,6 +2776,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       parameters:
       - name: session_id
@@ -2441,6 +2813,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routeGetApiUserWorkspaces
       security:
@@ -2465,6 +2843,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       operationId: routePostApiUserWorkspaces
       security:
@@ -2490,6 +2874,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       parameters:
       - name: session_id
@@ -2520,6 +2910,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '500':
+          description: Unexpected failure answered at the request boundary, with an error outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryFailurePayload'
       x-polylogue-client-generation: false
       parameters:
       - name: session_id
@@ -5196,6 +5592,42 @@ components:
       required:
       - error
       title: QueryErrorPayload
+      type: object
+    QueryFailurePayload:
+      additionalProperties: false
+      description: 'An unexpected failure answered at a request boundary, with its terminal outcome.
+
+
+        Only the daemon HTTP boundary''s 500 answer carries ``outcome``; every other
+
+        error keeps the four-field :class:`QueryErrorPayload` envelope.'
+      properties:
+        ok:
+          const: false
+          default: false
+          title: Ok
+          type: boolean
+        error:
+          title: Error
+          type: string
+        detail:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Detail
+        field:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Field
+        outcome:
+          $ref: '#/components/schemas/OutcomeEnvelope'
+      required:
+      - error
+      - outcome
+      title: QueryFailurePayload
       type: object
     QueryBoolPredicateAst:
       additionalProperties: false

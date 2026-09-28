@@ -45,7 +45,7 @@ def test_escaped_read_error_is_answered_with_a_500_error_envelope(monkeypatch: p
     """
 
     def _raising_route(self: DaemonAPIHandler, params: dict[str, list[str]]) -> None:
-        raise QueryArchiveEpochUnreadableError("user.db is absent")
+        raise RuntimeError("unexpected read failure")
 
     monkeypatch.setattr(DaemonAPIHandler, "_serve_webui_pastes", _raising_route)
     with _running_server() as port:
@@ -130,3 +130,29 @@ def test_disconnect_while_answering_an_escaped_error_is_logged_not_escaped(monke
     disconnects = [record for record in records if record.get("event") == "daemon.http.client_disconnected"]
     assert len(disconnects) == 1
     assert disconnects[0]["error_type"] == "BrokenPipeError"
+
+
+def test_an_unreadable_archive_tier_answers_its_typed_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing user tier on an undecorated read is the typed unavailability, not a 500.
+
+    Anti-vacuity: without the ``QueryArchiveEpochUnreadableError`` branch the
+    boundary falls through to ``internal_error`` with status 500.
+    """
+
+    def _raising_route(self: DaemonAPIHandler, params: dict[str, list[str]]) -> None:
+        raise QueryArchiveEpochUnreadableError("user.db is absent")
+
+    monkeypatch.setattr(DaemonAPIHandler, "_serve_webui_pastes", _raising_route)
+    with _running_server() as port:
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        try:
+            connection.request("GET", "/p")
+            response = connection.getresponse()
+            body = response.read()
+        finally:
+            connection.close()
+
+    payload = json.loads(body)
+    assert response.status == HTTPStatus.SERVICE_UNAVAILABLE
+    assert payload["error"] == QueryArchiveEpochUnreadableError.code
+    assert payload["detail"] == "user.db is absent"
