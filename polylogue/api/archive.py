@@ -5401,7 +5401,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         return await run_archive_read(
             _active_archive_root(self.config),
             operation="archive.session_summary.get_many",
-            arguments={"session_count": len(requested)},
+            arguments={"session_ids": list(requested)},
             work=read,
             projection="session-summary",
         )
