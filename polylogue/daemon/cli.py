@@ -2634,6 +2634,8 @@ async def _run_daemon_services_under_active_writer_lease(
                 compute_adapter=daemon_compute,
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
             )
+            if api_server is not None and api_server.operation_runtime.embedding_convergence is None:
+                api_server.operation_runtime.embedding_convergence = embedding_convergence
 
             async def converge_ingest_embeddings(index_db: Path, paths: Sequence[Path]) -> bool:
                 ids = embedding_session_ids_for_paths(index_db, archive_root=archive_root_path, paths=paths)

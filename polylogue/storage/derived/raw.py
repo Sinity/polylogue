@@ -938,6 +938,7 @@ class RawObservationDerivation:
                     prepared_replay_plans=replacement.planned_accepted_raw_ids,
                     pipeline_decode=False,
                     use_session_shards=replacement.prepared_inputs is not None,
+                    bulk_fts=True,
                 )
             except RetainedPreparationRetryableError:
                 return False

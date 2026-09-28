@@ -406,25 +406,35 @@ class BlobStore:
         hash prefix paid one directory fsync per blob for one directory's worth
         of durability (polylogue-rk0it AC5). Nothing observable is weakened: no
         caller may advance a cursor or certify retention on a partial return,
-        and a batch that raises leaves the same on-disk state the per-blob loop
-        left -- bytes in place, the directory entry not yet persisted, and the
-        retained source still the recovery authority.
+        and a batch that raises persists every directory touched before
+        propagating the failure, leaving the retained source as recovery
+        authority without relying on a future deduplicating retry.
         """
         results: list[tuple[str, int]] = []
         # Insertion-ordered distinct shards: one fsync per directory, in the
         # order the batch first touched them.
         shard_directories: dict[Path, None] = {}
         root_needs_fsync = False
-        for item in prepared:
-            outcome, shard_directory, shard_created = self._place_prepared(item)
-            results.append(outcome)
-            if shard_directory is not None:
-                shard_directories[shard_directory] = None
-            root_needs_fsync = root_needs_fsync or shard_created
-        for shard_directory in shard_directories:
-            self._fsync_directory(shard_directory)
-        if root_needs_fsync:
-            self._fsync_directory(self.root)
+        try:
+            for item in prepared:
+                outcome, shard_directory, shard_created = self._place_prepared(item)
+                results.append(outcome)
+                if shard_directory is not None:
+                    shard_directories[shard_directory] = None
+                root_needs_fsync = root_needs_fsync or shard_created
+            for shard_directory in shard_directories:
+                self._fsync_directory(shard_directory)
+            if root_needs_fsync:
+                self._fsync_directory(self.root)
+        except BaseException:
+            # Earlier renames are already visible. Persist their names before
+            # returning the error, or a retry could deduplicate them and lose
+            # the only opportunity to make those names durable.
+            for shard_directory in shard_directories:
+                self._fsync_directory(shard_directory)
+            if root_needs_fsync:
+                self._fsync_directory(self.root)
+            raise
         return tuple(results)
 
     def discard_prepared(self, prepared: PreparedBlob) -> None:
