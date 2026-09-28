@@ -21,7 +21,7 @@ from polylogue.daemon.execution import (
     DaemonOperationCancelled,
 )
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
-from polylogue.logging import propagate
+from polylogue.logging import WARNING, emit, propagate
 from polylogue.operations.audit import (
     AuditContinuityError,
     AuditRepository,
@@ -109,6 +109,48 @@ class DaemonOperationRuntime:
         self._condition = threading.Condition(threading.RLock())
         self._exchanges: dict[str, _Exchange] = {}
         self._closing = False
+        # The ingest owner's re-drive of accepted generations a dead process
+        # left without a terminal checkpoint, and the request ids a cancel
+        # has fenced while it runs.
+        self._redrive: Future[None] | None = None
+        self._redrive_cancelled: set[str] = set()
+
+    def start_accepted_ingest_redrive(self) -> None:
+        """Re-drive accepted ingests left without a terminal checkpoint, once per owner start.
+
+        Startup recovery leaves such runs to this owner
+        (``IngestRecovery``); it must run after that recovery. The re-drive
+        runs on the owner loop beside request exchanges and uses the same
+        writer and compute phases as a fresh ingest request.
+        """
+        if self._owner_loop is None or self._session_maintenance is None:
+            return
+        with self._condition:
+            if self._redrive is not None or self._closing:
+                return
+            from polylogue.operations.daemon_ingest import redrive_accepted_ingests
+
+            def stop_requested(request_id: str) -> str | None:
+                with self._condition:
+                    if request_id in self._redrive_cancelled:
+                        return "cancelled"
+                    return "shutdown" if self._closing else None
+
+            async def redrive() -> None:
+                try:
+                    await redrive_accepted_ingests(
+                        self, self.archive_root, stop_requested=stop_requested, on_commit=self._notify
+                    )
+                except Exception as exc:
+                    emit(
+                        "ingest.redrive.unavailable",
+                        level=WARNING,
+                        outcome="refused",
+                        error_type=type(exc).__name__,
+                        error_detail=str(exc)[:512],
+                    )
+
+            self._redrive = asyncio.run_coroutine_threadsafe(redrive(), self._owner_loop)
 
     async def shutdown(self) -> None:
         """Stop admission and settle actual operation workers before owner teardown."""
@@ -117,9 +159,11 @@ class DaemonOperationRuntime:
             exchanges = tuple(self._exchanges.values())
             for exchange in exchanges:
                 exchange.cancellation.cancel()
+            redrive = self._redrive
             self._condition.notify_all()
         pending = asyncio.gather(
             *(asyncio.wrap_future(exchange.future) for exchange in exchanges if exchange.future is not None),
+            *(() if redrive is None else (asyncio.wrap_future(redrive),)),
             return_exceptions=True,
         )
         try:
@@ -135,7 +179,7 @@ class DaemonOperationRuntime:
     @property
     def shutdown_settled(self) -> bool:
         with self._condition:
-            return self._closing and not self._exchanges
+            return self._closing and not self._exchanges and (self._redrive is None or self._redrive.done())
 
     def publication_guard(self) -> AbstractContextManager[object]:
         return self._bridge.hold("operation.pin-read")
@@ -185,18 +229,18 @@ class DaemonOperationRuntime:
 
     async def converge_ingest_sessions(
         self,
-        request: DaemonOperationRequest,
         session_ids: tuple[str, ...],
         *,
         expected_recipe: str,
         stop_requested: Callable[[], str | None],
     ) -> SessionInsightPartReceipt:
+        """Derive one page of ingested sessions; ``stop_requested`` is the ingest attempt's own stop."""
         self.require_session_maintenance()
         assert self._session_maintenance is not None
         return await self._session_maintenance.converge_ingest_sessions(
             session_ids,
             expected_recipe=expected_recipe,
-            stop_requested=lambda: self.stop_reason(request) or stop_requested(),
+            stop_requested=stop_requested,
         )
 
     async def converge_insight_part(
@@ -813,6 +857,11 @@ class DaemonOperationRuntime:
 
                 try:
                     self._bridge.run_sync_with_timeout("operation.cancel", 2.0, fence)
+                    with self._condition:
+                        # A running re-drive of this request observes the
+                        # fence at its next stop check.
+                        if self._redrive is not None and not self._redrive.done():
+                            self._redrive_cancelled.add(target)
                 except TimeoutError:
                     return OperationControlResult(
                         {"outcome": "indeterminate", "sequence": 0, "cancellation_requested": True},

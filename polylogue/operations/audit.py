@@ -1414,6 +1414,13 @@ class AuditRepository:
             }
         if kind == "recover_abandoned_attempts":
             return {"now_ms": int(time.time() * 1000)}
+        if kind == "resume_interrupted_ingest":
+            return {
+                "operation_id": cast(str, args[0]),
+                "attempt_id": f"attempt:{secrets.token_urlsafe(18)}",
+                "attempt_owner_id": self._attempt_owner_id,
+                "now_ms": int(time.time() * 1000),
+            }
         if kind == "record_recovery_resolution":
             resolution = cast(RecoveryResolution, args[1])
             return {
@@ -1547,6 +1554,8 @@ class AuditRepository:
                 )
             if mutation.kind == "recover_abandoned_attempts":
                 return cast(Any, self._recover_abandoned_attempts).__wrapped__(self)
+            if mutation.kind == "resume_interrupted_ingest":
+                return cast(Any, self.resume_interrupted_ingest).__wrapped__(self, cast(str, payload["operation_id"]))
             if mutation.kind == "record_recovery_resolution":
                 raw_receipt = payload.get("receipt")
                 return cast(Any, self.record_recovery_resolution).__wrapped__(
@@ -2765,6 +2774,179 @@ class AuditRepository:
                     "affected_count": 0 if receipt is None else receipt.affected_count,
                 },
             )
+
+    def accepted_ingest_stop_reason(self, source_generation_id: str) -> tuple[bool, str | None]:
+        """Return whether a machine request accepted this generation, and its stop reason."""
+
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT stop_reason FROM machine_requests WHERE artifact_kind = 'source-generation' "
+                "AND artifact_ref = ? ORDER BY accepted_at_ms LIMIT 1",
+                (source_generation_id,),
+            ).fetchone()
+        if row is None:
+            return False, None
+        return True, None if row[0] is None else str(row[0])
+
+    def interrupted_ingest_requests(self) -> tuple[tuple[str, dict[str, object]], ...]:
+        """Accepted, unstopped ingests whose run has no terminal checkpoint and no live owner.
+
+        Each item is the operation id and its accepted machine request record.
+        A running attempt whose owner is live or unverifiable still owns its
+        effect and is not returned.
+        """
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT r.operation_id, m.*
+                FROM operation_runs AS r
+                JOIN machine_request_parts AS p ON p.operation_id = r.operation_id
+                JOIN machine_requests AS m
+                  ON m.archive_identity = p.archive_identity AND m.request_id = p.request_id
+                WHERE r.operation_name = ? AND r.status IN ('running', 'interrupted')
+                  AND m.artifact_kind = 'source-generation' AND m.stop_reason IS NULL
+                ORDER BY m.accepted_at_ms, r.operation_id
+                """,
+                (INGEST_OPERATION,),
+            ).fetchall()
+            candidates: list[tuple[str, dict[str, object]]] = []
+            for row in rows:
+                record = dict(row)
+                operation_id = str(record.pop("operation_id"))
+                owners = conn.execute(
+                    "SELECT worker_id FROM operation_attempts WHERE operation_id = ? AND state = 'running'",
+                    (operation_id,),
+                ).fetchall()
+                if all(_attempt_owner_liveness(cast(str | None, owner[0])) == "dead" for owner in owners):
+                    candidates.append((operation_id, record))
+        return tuple(candidates)
+
+    def ingest_operation_authority(self, operation_id: str) -> tuple[MutationPlan, MutationAuthorization]:
+        """Return the exact plan and consumed authorization an accepted ingest started with."""
+
+        with self._connection() as conn:
+            run = conn.execute(
+                "SELECT operation_name, initial_authorization_id FROM operation_runs WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+            if run is None or str(run[0]) != INGEST_OPERATION:
+                raise ValueError(f"operation {operation_id!r} is not an accepted ingest")
+            authorization_ref = str(run[1])
+            row = conn.execute(
+                "SELECT * FROM operation_authorizations WHERE authorization_id = ?", (authorization_ref,)
+            ).fetchone()
+            if row is None:
+                raise ValueError("accepted ingest authorization is missing")
+            record = dict(row)
+            capabilities = tuple(
+                str(item[0])
+                for item in conn.execute(
+                    "SELECT capability FROM operation_authorization_capabilities WHERE authorization_id = ? "
+                    "ORDER BY capability",
+                    (authorization_ref,),
+                )
+            )
+        plan = self.operation_plan(operation_id)
+        authorization = MutationAuthorization(
+            plan_hash=plan.plan_hash,
+            actor=str(record["actor_ref"]),
+            role=str(record["role_label"] or ""),
+            capability=capabilities[0] if capabilities else "",
+            confirmation_strength=cast(Any, record["confirmation_strength"]),
+            authorized_at=str(record["issued_at_ms"]),
+            preview_ref=str(record["preview_id"]),
+            authorization_id=authorization_ref,
+            token=None,
+            expires_at_ms=int(cast(int, record["expires_at_ms"])),
+            capabilities=capabilities,
+            surface=cast(Any, record["surface"]),
+        )
+        return plan, authorization
+
+    @_continuity_mutation("resume_interrupted_ingest")
+    def resume_interrupted_ingest(self, operation_id: str) -> bool:
+        """Start a new attempt on an interrupted accepted ingest owned by this process.
+
+        Succeeds only for an ingest run without a terminal checkpoint whose
+        accepted request was never stopped and whose earlier attempts have no
+        live or unverifiable owner. The run returns to ``running`` under the
+        new attempt, so exactly one owner re-drives it and its request reads
+        ``running`` until that owner finalizes it. Returns whether the claim
+        was taken.
+        """
+
+        now_ms = cast(int, self._command_value("now_ms", int(time.time() * 1000)))
+        attempt_id = cast(str, self._command_value("attempt_id", f"attempt:{secrets.token_urlsafe(18)}"))
+        owner_id = cast(str | None, self._command_value("attempt_owner_id", self._attempt_owner_id))
+        with self._connection() as conn:
+            self._begin(conn)
+            run = conn.execute(
+                "SELECT operation_name, status, actor_ref, initial_authorization_id FROM operation_runs "
+                "WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+            if run is None or str(run[0]) != INGEST_OPERATION or str(run[1]) not in {"running", "interrupted"}:
+                return False
+            request = conn.execute(
+                """SELECT m.stop_reason FROM machine_request_parts AS p
+                JOIN machine_requests AS m ON m.archive_identity = p.archive_identity AND m.request_id = p.request_id
+                WHERE p.operation_id = ? AND m.artifact_kind = 'source-generation'""",
+                (operation_id,),
+            ).fetchone()
+            if request is None or request[0] is not None:
+                return False
+            owners = conn.execute(
+                "SELECT worker_id FROM operation_attempts WHERE operation_id = ? AND state = 'running'",
+                (operation_id,),
+            ).fetchall()
+            if any(_attempt_owner_liveness(cast(str | None, owner[0])) != "dead" for owner in owners):
+                return False
+            conn.execute(
+                "UPDATE operation_attempts SET state = 'unknown', finished_at_ms = ?, unknown_reason = ? "
+                "WHERE operation_id = ? AND state = 'running'",
+                (now_ms, "process ended before audit finalization", operation_id),
+            )
+            conn.execute(
+                """
+                UPDATE operation_targets
+                SET state = 'running', attempt_count = attempt_count + 1, current_attempt_id = ?,
+                    completed_at_ms = NULL, error_summary = NULL, unknown_reason = NULL
+                WHERE operation_id = ? AND state IN ('pending', 'running', 'unknown')
+                """,
+                (attempt_id, operation_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO operation_attempts(
+                    attempt_id, operation_id, target_ordinal, authorization_id, worker_id, state, started_at_ms
+                ) VALUES (?, ?, 0, ?, ?, 'running', ?)
+                """,
+                (attempt_id, operation_id, str(run[3]), owner_id, now_ms),
+            )
+            conn.execute(
+                """
+                UPDATE operation_runs
+                SET status = 'running', terminal_reason = NULL, updated_at_ms = ?, completed_at_ms = NULL,
+                    unknown_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'unknown'),
+                    unknown_reason = NULL, error_summary = NULL
+                WHERE operation_id = ?
+                """,
+                (now_ms, operation_id, operation_id),
+            )
+            self._append_event(
+                conn,
+                operation_id=operation_id,
+                target_ordinal=0,
+                attempt_id=attempt_id,
+                event_type="attempt_resumed",
+                from_state=str(run[1]),
+                to_state="running",
+                actor_ref=str(run[2]),
+                occurred_at_ms=now_ms,
+                detail={"attempt_id": attempt_id, "reason": "accepted generation re-driven by its ingest owner"},
+            )
+        return True
 
     @_continuity_mutation("recover_abandoned_attempts")
     def _recover_abandoned_attempts(self) -> tuple[str, ...]:

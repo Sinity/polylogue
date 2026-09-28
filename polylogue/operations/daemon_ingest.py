@@ -15,10 +15,15 @@ from time import monotonic, time
 from typing import TypeVar
 from uuid import uuid4
 
-from polylogue.logging import emit
-from polylogue.operations.audit import MachineRequestBinding
+from polylogue.logging import WARNING, emit
+from polylogue.operations.audit import AuditRepository, MachineRequestBinding
 from polylogue.operations.bindings import runtime_operation_binding
-from polylogue.operations.daemon_execution import _validate_identity, operation_envelope, validate_execution_request
+from polylogue.operations.daemon_execution import (
+    OperationRuntime,
+    _validate_identity,
+    operation_envelope,
+    validate_execution_request,
+)
 from polylogue.operations.daemon_protocol import DaemonOperationEnvelope, DaemonOperationRequest
 from polylogue.operations.ingest_acceptance import IngestActuator, ingest_plan
 from polylogue.operations.ingest_inputs import (
@@ -229,9 +234,13 @@ class IngestExecution:
             raise PermissionError("daemon_required")
         self.request = request
         self.context = context
-        self.runtime = context.runtime
-        self.audit = self.runtime.audit_for_request(request, context)
-        self.executor = OperationExecutor(audit=self.audit, archive_root=context.archive_root)
+        self._setup(context.runtime, context.archive_root, context.runtime.audit_for_request(request, context))
+
+    def _setup(self, runtime: OperationRuntime, archive_root: Path, audit: AuditRepository) -> None:
+        self.runtime = runtime
+        self.archive_root = archive_root
+        self.audit = audit
+        self.executor = OperationExecutor(audit=self.audit, archive_root=archive_root)
         self.snapshot: PinnedOperationRead | None = None
         self.binding: MachineRequestBinding | None = None
         # polylogue-cois9: the live archive identity digest observed when this
@@ -267,7 +276,7 @@ class IngestExecution:
         self.insight_page_count = 0
         self.insight_pages_digest: str | None = None
         self.profile_convergence_complete = False
-        self.publisher = ArchiveBlobPublisher(context.archive_root / "source.db", context.archive_root / "blob")
+        self.publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
 
     def record_refusal(self, refusal: CohortMembershipRefusalError) -> None:
         with sqlite3.connect(self.state_path) as state:
@@ -326,27 +335,32 @@ class IngestExecution:
                 self.binding = replace(self.binding, archive_identity=stored)
         return record
 
+    def first_snapshot(self, snapshot: PinnedOperationRead) -> None:
+        """Validate the request's archive preconditions and bind its durable key."""
+        _validate_identity(self.request, self.context, snapshot)
+        self.binding = MachineRequestBinding(
+            snapshot.identity.authority_identity_digest,
+            str(self.request.request_id),
+            self.context.principal.actor_ref,
+            self.request.fingerprint,
+            self.request.operation,
+        )
+
+    def observe_snapshot(self, snapshot: PinnedOperationRead) -> None:
+        self.runtime.observe_snapshot(self.request, snapshot)
+
     async def read(self, work: Callable[[PinnedOperationRead], _T]) -> _T:
         def observed() -> _T:
             self.check_stop()
-            with open_operation_read(
-                self.context.archive_root, publication_guard=self.runtime.publication_guard
-            ) as snapshot:
+            with open_operation_read(self.archive_root, publication_guard=self.runtime.publication_guard) as snapshot:
                 identity = snapshot.identity.authority_identity_digest
-                if self.binding is None:
-                    _validate_identity(self.request, self.context, snapshot)
+                if self.observed_identity is None:
+                    self.first_snapshot(snapshot)
                     self.observed_identity = identity
-                    self.binding = MachineRequestBinding(
-                        identity,
-                        str(self.request.request_id),
-                        self.context.principal.actor_ref,
-                        self.request.fingerprint,
-                        self.request.operation,
-                    )
                 elif identity != self.observed_identity:
                     raise ValueError("archive_identity_stale")
                 self.snapshot = snapshot
-                self.runtime.observe_snapshot(self.request, snapshot)
+                self.observe_snapshot(snapshot)
                 return work(snapshot)
 
         return await self.runtime.compute_phase(observed)
@@ -360,9 +374,9 @@ class IngestExecution:
             with (
                 closing(
                     open_isolated_write_connection(
-                        self.context.archive_root / "source.db",
+                        self.archive_root / "source.db",
                         purpose="accepted ingest source publication",
-                        archive_root=self.context.archive_root,
+                        archive_root=self.archive_root,
                     )
                 ) as connection,
                 connection,
@@ -380,9 +394,9 @@ class IngestExecution:
             with (
                 closing(
                     open_isolated_write_connection(
-                        self.context.archive_root / "source.db",
+                        self.archive_root / "source.db",
                         purpose="abandoned ingest source preparation",
-                        archive_root=self.context.archive_root,
+                        archive_root=self.archive_root,
                     )
                 ) as connection,
                 connection,
@@ -400,14 +414,14 @@ class IngestExecution:
 
         def publish() -> _T:
             self.check_stop()
-            location = ArchiveLocation.resolve(self.context.archive_root)
+            location = ArchiveLocation.resolve(self.archive_root)
             current = ArchiveIdentity.resolve_location(location)
             if (current.authority_identity_digest, current.active_generation) != (
                 expected.authority_identity_digest,
                 expected.active_generation,
             ):
                 raise ValueError("ingest publication generation changed; reprepare required")
-            with ArchiveStore.open_existing(self.context.archive_root, read_only=False) as archive:
+            with ArchiveStore.open_existing(self.archive_root, read_only=False) as archive:
                 if archive.index_db_path.resolve() != location.active_index_path.resolve():
                     raise ValueError("ingest writer opened another index generation")
                 result = work(archive)
@@ -530,12 +544,10 @@ class IngestExecution:
         else:
             self.resumed = True
         if self.resumed:
-            # Historical recovery starts from audit state only.  Do not even
-            # open retained source membership before deciding whether a prior
-            # attempt reached its terminal audit checkpoint.
+            # A resent request reads its durable state only. The daemon's
+            # ingest owner re-drives an interrupted accepted generation
+            # (``redrive_accepted_ingests``); a second driver here would race it.
             return None
-        if self.record["artifact_kind"] != "source-generation":
-            raise ValueError("accepted ingest does not reference a source generation")
 
         def load_started() -> StartedBoundMutation:
             assert self.binding is not None
@@ -551,6 +563,13 @@ class IngestExecution:
                 )
 
         self.started_mutation = await self.runtime.compute_phase(load_started)
+        return await self.accepted_generation()
+
+    async def accepted_generation(self) -> RetainedSourceGeneration:
+        """Open the accepted retained generation this execution drives."""
+        assert self.record is not None
+        if self.record["artifact_kind"] != "source-generation":
+            raise ValueError("accepted ingest does not reference a source generation")
         generation_id = str(self.record["artifact_ref"])
         generation = await self.read(
             lambda pinned: retained_source_generation_header(pinned.archive.source_connection, generation_id)
@@ -584,6 +603,16 @@ class IngestExecution:
 
         return await self.runtime.compute_phase(read)
 
+    def accepted_source_name(self) -> str | None:
+        """The source name bound at acceptance, which the request must still carry."""
+        source_name = self.request.payload.get("source_name")
+        if source_name is not None and not isinstance(source_name, str):
+            raise ValueError("accepted ingest source name is not a string")
+        assert self.started_mutation is not None
+        if source_name != self.started_mutation.plan.context.get("source_name"):
+            raise ValueError("accepted ingest source name changed after manifest binding")
+        return source_name
+
     async def enumerate_item(
         self, generation: RetainedSourceGeneration, item: RetainedSourceInput
     ) -> tuple[tuple[int, ...], int] | None:
@@ -591,12 +620,7 @@ class IngestExecution:
             return None
         assert self.record is not None
         acquired_at_ms = _record_int(self.record["accepted_at_ms"], field="accepted timestamp")
-        source_name = self.request.payload.get("source_name")
-        if source_name is not None and not isinstance(source_name, str):
-            raise ValueError("accepted ingest source name is not a string")
-        assert self.started_mutation is not None
-        if source_name != self.started_mutation.plan.context.get("source_name"):
-            raise ValueError("accepted ingest source name changed after manifest binding")
+        source_name = self.accepted_source_name()
         iterator = enumerate_ingest_input(
             item,
             source_generation_id=generation.source_generation_id,
@@ -864,7 +888,6 @@ class IngestExecution:
         while session_ids := receipt.session_page(cursor):
             self.check_stop()
             part = await self.runtime.converge_ingest_sessions(
-                self.request,
                 session_ids,
                 expected_recipe=expected_recipe,
                 stop_requested=self.stop_reason,
@@ -1161,6 +1184,210 @@ class IngestExecution:
             await self.runtime.write_phase("ingest.stop", stop)
 
 
+class IngestRedrive(IngestExecution):
+    """The ingest owner's attempt on an accepted generation left without a terminal checkpoint.
+
+    It resumes the original operation run under a new attempt and drives the
+    retained manifest through the same phases as a fresh request. It reads no
+    request payload: the accepted plan binds the source name, and the input
+    path is not read again, so the original input need not exist. The
+    original request's deadline bounded only that request's wait; this
+    attempt stops only when its owner stops or the request is cancelled.
+    """
+
+    def __init__(
+        self,
+        runtime: OperationRuntime,
+        archive_root: Path,
+        audit: AuditRepository,
+        *,
+        operation_id: str,
+        record: dict[str, object],
+        stop_requested: Callable[[], str | None],
+    ) -> None:
+        self._setup(runtime, archive_root, audit)
+        self.operation_id = operation_id
+        self.record = record
+        self.binding = MachineRequestBinding(
+            str(record["archive_identity"]),
+            str(record["request_id"]),
+            str(record["principal_ref"]),
+            str(record["fingerprint"]),
+            str(record["operation_name"]),
+        )
+        self._stop_requested = stop_requested
+
+    def stop_reason(self) -> str | None:
+        return self._stop_requested()
+
+    def first_snapshot(self, snapshot: PinnedOperationRead) -> None:
+        return None
+
+    def observe_snapshot(self, snapshot: PinnedOperationRead) -> None:
+        return None
+
+    def accepted_source_name(self) -> str | None:
+        assert self.started_mutation is not None
+        source_name = self.started_mutation.plan.context.get("source_name")
+        if source_name is not None and not isinstance(source_name, str):
+            raise ValueError("accepted ingest source name is not a string")
+        return source_name
+
+    async def claim(self) -> bool:
+        """Take the run under a new attempt owned by this process, if still unowned."""
+        return await self.runtime.write_phase(
+            "ingest.redrive", lambda: self.audit.resume_interrupted_ingest(self.operation_id)
+        )
+
+    async def resume(self) -> RetainedSourceGeneration:
+        def load_started() -> StartedBoundMutation:
+            with self.audit.settled_machine_read():
+                plan, authorization = self.audit.ingest_operation_authority(self.operation_id)
+            return StartedBoundMutation(plan=plan, authorization=authorization, operation_id=self.operation_id)
+
+        self.started_mutation = await self.runtime.compute_phase(load_started)
+        return await self.accepted_generation()
+
+    async def settle_failed(self, reason: str) -> None:
+        """Terminalize this attempt as failed; a retry would meet the same refusal."""
+        if self.terminalized:
+            return
+        await self.runtime.write_phase(
+            "ingest.redrive-failed",
+            lambda: self.audit.finalize_attempt(self.operation_id, status="failed", error_summary=reason[:512]),
+        )
+        self.terminalized = True
+
+
+async def redrive_accepted_ingests(
+    runtime: OperationRuntime,
+    archive_root: Path,
+    *,
+    stop_requested: Callable[[str], str | None],
+    on_commit: Callable[[], None] | None = None,
+) -> None:
+    """Drive every accepted, unstopped ingest without a terminal checkpoint to its receipt.
+
+    This is the daemon ingest owner's recovery of work a dead process
+    accepted. Each run is claimed under a new attempt, so only one owner
+    drives it, and one generation is driven at a time. A generation that
+    cannot be driven (its decoder is gone, its retained rows are damaged)
+    terminalizes as failed. An owner shutdown leaves the run interrupted for
+    the next owner. ``stop_requested`` receives the request id.
+    """
+    from polylogue.operations.audit import AuditRepository
+
+    audit = AuditRepository(
+        archive_root / "audit.db",
+        attempt_owner_id=AuditRepository.current_process_attempt_owner(),
+        on_commit=on_commit,
+    )
+
+    def discover() -> tuple[tuple[str, dict[str, object]], ...]:
+        with audit.settled_machine_read():
+            return audit.interrupted_ingest_requests()
+
+    for operation_id, record in await runtime.compute_phase(discover):
+        request_id = str(record["request_id"])
+        if stop_requested(request_id) == "shutdown":
+            return
+        execution = IngestRedrive(
+            runtime,
+            archive_root,
+            audit,
+            operation_id=operation_id,
+            record=record,
+            stop_requested=lambda request_id=request_id: stop_requested(request_id),
+        )
+        try:
+            if not await execution.claim():
+                continue
+            emit("ingest.redrive.started", operation_id=operation_id, request_id=request_id, outcome="running")
+            generation = await execution.resume()
+            history = await drive_accepted_generation(execution, generation)
+            emit(
+                "ingest.redrive.finished",
+                operation_id=operation_id,
+                request_id=request_id,
+                outcome=ingest_terminal_outcome(history),
+            )
+        except IngestStoppedError as exc:
+            if exc.reason == "shutdown":
+                await execution.mark_unknown("the ingest owner stopped before the terminal checkpoint")
+                return
+            await execution.settle_failed(f"the ingest request was stopped ({exc.reason}) during its re-drive")
+        except Exception as exc:
+            emit(
+                "ingest.redrive.failed",
+                level=WARNING,
+                operation_id=operation_id,
+                request_id=request_id,
+                outcome="failed",
+                error_type=type(exc).__name__,
+                error_detail=str(exc)[:512],
+            )
+            await execution.settle_failed(f"{type(exc).__name__}: {exc}")
+        finally:
+            await runtime.compute_phase(execution.publisher.discard_pending)
+            execution.state_path.unlink(missing_ok=True)
+
+
+async def drive_accepted_generation(
+    execution: IngestExecution, generation: RetainedSourceGeneration
+) -> IngestHistoricalReceiptV2:
+    """Enumerate, materialize, converge and finalize one accepted generation.
+
+    Every phase reads the retained manifest and settles by content hash, so a
+    fresh request and a re-drive of an interrupted one take the same route
+    from whatever state an earlier attempt left.
+    """
+    cursor: tuple[str, str] | None = None
+    seen = 0
+    while page := await execution.input_page(generation, cursor):
+        empty: list[tuple[RetainedSourceInput, tuple[int, ...], int]] = []
+        for item in page:
+            execution.check_stop()
+            completion = await execution.enumerate_item(generation, item)
+            if completion is not None:
+                empty.append((item, *completion))
+        if empty:
+            assert execution.record is not None
+            accepted_at_ms = _record_int(execution.record["accepted_at_ms"], field="accepted timestamp")
+
+            def complete_empty_page(
+                conn: sqlite3.Connection,
+                *,
+                batch: tuple[tuple[RetainedSourceInput, tuple[int, ...], int], ...] = tuple(empty),
+                observed_at_ms: int = accepted_at_ms,
+            ) -> None:
+                for item, ordinals, member_count in batch:
+                    complete_source_item_enumeration(
+                        conn,
+                        source_generation_id=generation.source_generation_id,
+                        source_item_id=item.source_item_id,
+                        enumeration_fingerprint=generation.enumeration_fingerprint,
+                        record_coordinates=(),
+                        enumerated_at_ms=observed_at_ms,
+                        member_ordinals=ordinals,
+                        member_count=member_count,
+                    )
+
+            await execution.source_write(complete_empty_page)
+        seen += len(page)
+        if seen > generation.item_count:
+            raise ValueError("accepted source generation exceeds its bound count")
+        cursor = (page[-1].coordinate, page[-1].source_item_id)
+    if seen != generation.item_count:
+        raise ValueError("accepted source generation has an incomplete manifest")
+    receipt = await execution.materialize(generation.source_generation_id)
+    try:
+        profile_parts = await execution.converge_profiles(receipt)
+        execution.check_stop()
+        return await execution.finalize(generation, receipt, profile_parts)
+    finally:
+        receipt.close()
+
+
 async def execute_ingest_operation(
     request: DaemonOperationRequest, context: OperationContext
 ) -> DaemonOperationEnvelope:
@@ -1196,9 +1423,9 @@ async def execute_ingest_operation(
                         "historical_receipt": history.model_dump(mode="json"),
                     },
                 )
-            # A prior process passed durable acceptance without a terminal
-            # checkpoint.  It is indeterminate, never a reason to replay from
-            # current source or index evidence.
+            # A prior attempt passed durable acceptance without a terminal
+            # checkpoint. Its ingest owner re-drives it from the retained
+            # manifest; this request reports the durable state it observes.
             return operation_envelope(
                 request,
                 context,
@@ -1209,51 +1436,7 @@ async def execute_ingest_operation(
                 result=state,
             )
         assert generation is not None
-        cursor: tuple[str, str] | None = None
-        seen = 0
-        while page := await execution.input_page(generation, cursor):
-            empty: list[tuple[RetainedSourceInput, tuple[int, ...], int]] = []
-            for item in page:
-                execution.check_stop()
-                completion = await execution.enumerate_item(generation, item)
-                if completion is not None:
-                    empty.append((item, *completion))
-            if empty:
-                assert execution.record is not None
-                accepted_at_ms = _record_int(execution.record["accepted_at_ms"], field="accepted timestamp")
-
-                def complete_empty_page(
-                    conn: sqlite3.Connection,
-                    *,
-                    batch: tuple[tuple[RetainedSourceInput, tuple[int, ...], int], ...] = tuple(empty),
-                    observed_at_ms: int = accepted_at_ms,
-                ) -> None:
-                    for item, ordinals, member_count in batch:
-                        complete_source_item_enumeration(
-                            conn,
-                            source_generation_id=generation.source_generation_id,
-                            source_item_id=item.source_item_id,
-                            enumeration_fingerprint=generation.enumeration_fingerprint,
-                            record_coordinates=(),
-                            enumerated_at_ms=observed_at_ms,
-                            member_ordinals=ordinals,
-                            member_count=member_count,
-                        )
-
-                await execution.source_write(complete_empty_page)
-            seen += len(page)
-            if seen > generation.item_count:
-                raise ValueError("accepted source generation exceeds its bound count")
-            cursor = (page[-1].coordinate, page[-1].source_item_id)
-        if seen != generation.item_count:
-            raise ValueError("accepted source generation has an incomplete manifest")
-        receipt = await execution.materialize(generation.source_generation_id)
-        try:
-            profile_parts = await execution.converge_profiles(receipt)
-            execution.check_stop()
-            history = await execution.finalize(generation, receipt, profile_parts)
-        finally:
-            receipt.close()
+        history = await drive_accepted_generation(execution, generation)
         outcome = ingest_terminal_outcome(history)
         return operation_envelope(
             request,
@@ -1271,8 +1454,10 @@ async def execute_ingest_operation(
             },
         )
     except IngestStoppedError as exc:
-        await execution.mark_unknown(exc.reason)
+        # Fence first: once the request carries its stop reason, a process
+        # death before the attempt settles cannot hand it to the re-driver.
         await execution.fence(exc.reason)
+        await execution.mark_unknown(exc.reason)
         return operation_envelope(
             request,
             context,
@@ -1282,8 +1467,8 @@ async def execute_ingest_operation(
             reference=execution.record,
         )
     except Exception:
-        await execution.mark_unknown("accepted ingest lacks a terminal checkpoint")
         await execution.fence("refused")
+        await execution.mark_unknown("accepted ingest lacks a terminal checkpoint")
         raise
     finally:
         await execution.runtime.compute_phase(execution.publisher.discard_pending)

@@ -11,6 +11,7 @@ from polylogue.operations.mutation_transaction import (
     MutationPlan,
     MutationReceipt,
     MutationTarget,
+    RecoveryRedrivenByOwnerError,
     RecoveryResolution,
     ReplayHandles,
     build_typed_plan,
@@ -75,20 +76,33 @@ def ingest_plan(
 
 @dataclass(frozen=True, slots=True)
 class IngestRecovery:
-    """Recovery route for an interrupted ingest, which is not re-driven here.
+    """Recovery route for an interrupted ingest.
 
-    Startup recovery cannot run the daemon's phased ingest driver, and a
-    resumed request for an accepted generation without a terminal checkpoint
-    reports its indeterminate state rather than replaying it. The run is
-    terminalized so it is not a barrier; the accepted generation itself stays
-    in ``source.db`` for an owner that re-drives it (polylogue-x7u3x).
+    An accepted generation whose request was never stopped belongs to the
+    daemon's ingest owner, which re-drives it from the retained manifest to
+    the original request's terminal receipt
+    (``polylogue.operations.daemon_ingest.redrive_accepted_ingests``). Generic
+    recovery leaves that run to the owner. A request that was stopped
+    (cancelled, past its deadline, or refused) has its outcome already
+    decided, so its run is terminalized as not replayable.
     """
 
     operation: str = INGEST_OPERATION
 
-    def recover(self, _handles: ReplayHandles, _plan: MutationPlan) -> RecoveryResolution:
+    def recover(self, handles: ReplayHandles, plan: MutationPlan) -> RecoveryResolution:
+        from polylogue.operations.audit import AuditRepository
+
+        generation_id = plan.context.get("source_generation_id")
+        if not isinstance(generation_id, str):
+            return RecoveryResolution("not-replayable", "the ingest plan names no accepted source generation")
+        audit = AuditRepository.for_archive_root(handles.archive_root)
+        accepted, stop_reason = audit.accepted_ingest_stop_reason(generation_id)
+        if not accepted:
+            return RecoveryResolution("not-replayable", "no accepted ingest request binds this source generation")
+        if stop_reason is None:
+            raise RecoveryRedrivenByOwnerError(f"source generation {generation_id} awaits its ingest owner")
         return RecoveryResolution(
-            "not-replayable", "the accepted source generation is retained but not re-driven by startup recovery"
+            "not-replayable", f"the ingest request was stopped ({stop_reason}) before its terminal checkpoint"
         )
 
 

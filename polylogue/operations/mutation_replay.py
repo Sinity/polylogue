@@ -43,14 +43,17 @@ def recover_interrupted_operations(archive_root: Path) -> None:
     classifying an interrupted effect safe.
 
     The work is bounded and one-pass: abandoned attempts are terminalized
-    first, then every remaining orphan is classified exactly once and leaves
-    ``operation_runs`` terminal, so a restart over an already-recovered
-    archive appends no further durable events.
+    first, then every remaining orphan is classified exactly once, so a
+    restart over an already-recovered archive appends no further durable
+    events.
 
     Every orphan is resolved from durable state by its actuator: re-applied
     convergently, or found committed or absent for an atomic apply.  No
     outcome is ``unknown`` and none leaves a barrier over its targets
-    (:class:`RecoveryResolution`).
+    (:class:`RecoveryResolution`).  The exception is an accepted ingest whose
+    request was never stopped: it stays nonterminal for the daemon's ingest
+    owner, which re-drives it once this recovery has run
+    (``DaemonOperationRuntime.start_accepted_ingest_redrive``).
     """
 
     if not (archive_root / "audit.db").is_file():

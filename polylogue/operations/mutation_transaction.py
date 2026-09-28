@@ -632,6 +632,16 @@ class RecoveryDeferredError(MutationTransactionError):
     """A recovery needs archive state that has not converged yet; retry later."""
 
 
+class RecoveryRedrivenByOwnerError(MutationTransactionError):
+    """A resident owner re-drives this interrupted operation to its own terminal receipt.
+
+    Generic recovery leaves the run nonterminal and does not treat it as a
+    barrier: its targets are private to the interrupted operation, and only
+    the owner can finish it. Startup recovery and a later request's executor
+    both skip it.
+    """
+
+
 class ReplayHandles:
     """Writable handles recovery gives an actuator to resolve one plan.
 
@@ -1424,7 +1434,7 @@ def resolve_interrupted_operation(
     plan = audit.operation_plan(operation.operation_id)
     try:
         return actuator.recover(handles, plan)
-    except (SchemaRefusalError, RecoveryDeferredError):
+    except (SchemaRefusalError, RecoveryDeferredError, RecoveryRedrivenByOwnerError):
         raise
     except Exception as exc:
         return RecoveryResolution("replay-failed", f"{type(exc).__name__}: {exc}"[:512])
@@ -1438,6 +1448,8 @@ def resolve_interrupted_operations(
     An operation whose recovery needs a tier this runtime cannot serve yet
     (a derived tier awaiting convergence) is left nonterminal and retried at
     the next startup or overlapping request, never terminalized as failed.
+    An operation its resident owner re-drives is left to that owner and is
+    neither recorded nor returned as pending.
     """
 
     deferred: list[str] = []
@@ -1449,6 +1461,8 @@ def resolve_interrupted_operations(
             resolution = resolve_interrupted_operation(audit, handles, operation)
         except (SchemaRefusalError, RecoveryDeferredError):
             deferred.append(operation.operation_id)
+            continue
+        except RecoveryRedrivenByOwnerError:
             continue
         finally:
             handles.close()
@@ -1483,6 +1497,7 @@ __all__ = [
     "PlanStaleError",
     "RecoveryBlockedError",
     "RecoveryDeferredError",
+    "RecoveryRedrivenByOwnerError",
     "ConvergentReplay",
     "RecoveryOutcome",
     "RecoveryResolution",
