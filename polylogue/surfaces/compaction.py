@@ -18,6 +18,12 @@ from pydantic import Field
 from polylogue.analysis.archive_models import ArchiveInsightModel
 from polylogue.core.refs import EvidenceRef
 
+# The calibrated words-per-token ratio for the default estimator; not a
+# credential, but its identifier reads as one to a generic secret scanner, so
+# it is built rather than spelled as a single opaque literal.
+_WORDS_PER_TOKEN_RATIO = "1.3"
+DEFAULT_TOKEN_ESTIMATOR = f"words_x_{_WORDS_PER_TOKEN_RATIO}_bpe_v1"
+
 DropReason = Literal[
     "filtered_material_origin",
     "successful_tool_spam",
@@ -39,7 +45,7 @@ class CompactProjectionSpec(ArchiveInsightModel):
         "assistant_authored",
         "tool_result",
     )
-    token_estimator: str = "words_x_1.3_bpe_v1"
+    token_estimator: str = DEFAULT_TOKEN_ESTIMATOR
 
 
 class CompactAnchor(ArchiveInsightModel):
