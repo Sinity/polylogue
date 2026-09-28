@@ -13,6 +13,16 @@ if TYPE_CHECKING:
     from polylogue.surfaces.payloads import FacetsResponse
 
 
+#: Remedies for the read failures whose shared remedy names query-verb options
+#: (``--limit``/``--since``/``--offset``) that ``facets`` does not take.
+_NARROW_FACETS = "narrow the facets with --query or --origin, or drop --include-deferred, then retry"
+_FACETS_READ_REMEDIES: dict[str, str] = {
+    "QueryTimeoutError": _NARROW_FACETS,
+    "deadline_exceeded": _NARROW_FACETS,
+    "result_too_large": _NARROW_FACETS,
+}
+
+
 @click.command("facets")
 @click.option(
     "-q",
@@ -115,5 +125,5 @@ def _fetch_daemon_facets(
         # every other read route, instead of escaping as a traceback.
         from polylogue.cli.render.outcome import exit_for_read_failure
 
-        exit_for_read_failure(exc)
+        exit_for_read_failure(exc, remedies=_FACETS_READ_REMEDIES)
     return FacetsResponse.model_validate(result.value)

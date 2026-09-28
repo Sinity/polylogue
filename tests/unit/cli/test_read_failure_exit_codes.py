@@ -365,3 +365,33 @@ def test_the_facets_route_leaves_through_the_read_failure_terminal(
     assert result.exit_code == expected, result.output
     assert isinstance(result.exception, SystemExit), result.exception
     assert read_failure_message(exc).splitlines()[0] in result.output
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        OperationFailedError("QueryTimeoutError", "query exceeded its deadline", {"deadline_ms": 5000}),
+        OperationFailedError("result_too_large", "facet page exceeds the transport bound"),
+    ],
+    ids=["deadline", "too-large"],
+)
+def test_the_facets_remedy_names_options_facets_takes(
+    exc: Exception, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A facets refusal never points at ``--limit``/``--since``/``--offset``.
+
+    Anti-vacuity: drop ``remedies=`` from the facets terminal call and the
+    shared query-verb remedy is printed, so both assertions go red.
+    """
+
+    from polylogue.cli.click_app import cli
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    (tmp_path / "index.db").write_bytes(b"")
+
+    with patch("polylogue.cli.operation_kernel.dispatch", side_effect=exc):
+        result = CliRunner().invoke(cli, ["facets"])
+
+    assert "--query or --origin" in result.output
+    assert "--limit" not in result.output
