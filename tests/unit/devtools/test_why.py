@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from devtools.why import _EXPLANATIONS, _history_projection, _latest_run, _render
+from tests.infra.frozen_clock import FrozenClock
 
 
 def _write_run(root: Path, run_id: str, payload: dict[str, object]) -> Path:
@@ -112,18 +113,24 @@ def test_import_mismatch_remedy_names_the_retained_contract() -> None:
     assert "imports polylogue" in remedy
 
 
-@pytest.mark.uses_real_clock("builds relative history timestamps for the why report")
-def test_history_mode_reports_where_the_time_went(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.frozen_clock_modules("devtools.why")
+def test_history_mode_reports_where_the_time_went(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: FrozenClock
+) -> None:
     """The question "where did the last N hours go" kept requiring an ad hoc
     DuckDB query against a substrate that materialises on its own cadence and
     was 17 hours stale when it mattered. The history file is that data at its
-    source, current by construction, and covers every checkout and worktree."""
-    from datetime import UTC, datetime, timedelta
+    source, current by construction, and covers every checkout and worktree.
+
+    Anti-vacuity: the entries are dated from the frozen instant, years before
+    the host clock, so a window cutoff that stopped reading ``devtools.why``'s
+    clock would exclude both recent runs and fail the run count."""
+    from datetime import timedelta
 
     from devtools import why
 
-    recent = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
-    stale = (datetime.now(UTC) - timedelta(hours=100)).isoformat()
+    recent = (frozen_clock.now() - timedelta(hours=1)).isoformat()
+    stale = (frozen_clock.now() - timedelta(hours=100)).isoformat()
     history = tmp_path / "verify-history.jsonl"
     history.write_text(
         "\n".join(

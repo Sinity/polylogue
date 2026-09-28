@@ -2055,7 +2055,13 @@ def test_audit_adoption_binds_only_the_source_user_authority(workspace_env: dict
 def test_audit_adoption_continuity_survives_index_generation_promotion(
     workspace_env: dict[str, Path],
 ) -> None:
-    """Promotion of a new physical index root does not invalidate audit adoption."""
+    """Promotion of a new physical index root does not invalidate audit adoption.
+
+    Anti-vacuity: binding the adoption receipt or ``ArchiveIdentity.durable_id``
+    to the active index generation, or letting promotion replace the source or
+    user tier, changes the durable identity or refuses the receipt after
+    ``promote`` and fails this test.
+    """
     from polylogue.storage.archive_identity import ArchiveIdentity
     from polylogue.storage.index_generation import IndexGenerationStore
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root

@@ -18,6 +18,7 @@ from polylogue.storage.derived.session.derivation import SessionProfileDerivatio
 from polylogue.storage.fts.derivation import FtsDerivationAdapter
 from polylogue.storage.sqlite.archive_tiers import write as archive_write
 from polylogue.storage.sqlite.connection_profile import open_connection
+from tests.infra.archive_canonical_snapshot import capture_canonical_snapshot, diff_canonical_snapshots
 from tests.infra.convergence_harness import (
     assert_archive_verification_green,
     build_converged_archive,
@@ -111,9 +112,19 @@ def test_convergence_harness_binds_raw_receipt_before_equal_attachment(
 
 
 def test_convergence_property_materialized_content_mutation_red_twin(tmp_path: Path) -> None:
-    """The mutation changes the owned materialized semantic field."""
+    """A corrupted materialized profile is rejected by an independent baseline.
+
+    The baseline archive is converged from the same corpus without the
+    mutation, and the canonical snapshot compares their derived views.
+    Anti-vacuity: the two archives must agree before the mutation, so the
+    reported difference is the corrupted ``session_profiles`` row; a snapshot
+    that stopped comparing derived views would report nothing after it.
+    """
     composed = rich_convergence_sources()
+    baseline = build_converged_archive(tmp_path / "baseline", composed)
     mutated = build_converged_archive(tmp_path / "mutated", composed)
+    expected = capture_canonical_snapshot(baseline.root)
+    assert diff_canonical_snapshots(expected, capture_canonical_snapshot(mutated.root)) == ()
 
     with sqlite3.connect(mutated.root / "index.db") as conn:
         cursor = conn.execute(
@@ -127,9 +138,10 @@ def test_convergence_property_materialized_content_mutation_red_twin(tmp_path: P
             raise AssertionError("materialized-content mutation did not change one profile row")
         conn.commit()
 
-    with sqlite3.connect(mutated.root / "index.db") as conn:
-        observed = conn.execute("SELECT title FROM session_profiles ORDER BY session_id LIMIT 1").fetchone()
-    assert observed is not None and "materialized-content-mutation" in str(observed[0])
+    differences = diff_canonical_snapshots(expected, capture_canonical_snapshot(mutated.root))
+    assert any(difference.startswith(f"derived_views/{('index', 'session_profiles')}") for difference in differences), (
+        differences
+    )
 
 
 @pytest.mark.parametrize("mutated", [False, True], ids=["green", "mutant"])
