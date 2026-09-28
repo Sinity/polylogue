@@ -334,13 +334,21 @@ def _sql_key(value: object) -> bytes:
     return pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
 
 
-def _text_digest(text: str) -> bytes:
-    """Fixed-size scratch key of a candidate text.
+_DIGEST_WINDOW_CHARS = 1 << 20
 
-    A candidate can be arbitrarily large, so it is keyed by digest and its
-    text held in one scratch column; every lookup confirms the stored text.
+
+def _text_digest(text: str) -> bytes:
+    """Fixed-size scratch key of a candidate text, hashed in bounded windows.
+
+    A candidate can be arbitrarily large, so it is keyed by the SHA-256 of its
+    exact code points (UTF-8, surrogates passed through) and its text is held
+    once in a scratch column. The windows keep the transient encoding to one
+    window, never a second full-size copy.
     """
-    return hashlib.sha256(_sql_key(text)).digest()
+    digest = hashlib.sha256()
+    for start in range(0, len(text), _DIGEST_WINDOW_CHARS):
+        digest.update(text[start : start + _DIGEST_WINDOW_CHARS].encode("utf-8", "surrogatepass"))
+    return digest.digest()
 
 
 def _reduced_code_mode_item(item: dict[str, object]) -> dict[str, object]:
@@ -1487,8 +1495,12 @@ class _CodexTextConservation:
         self._task_unresolved = 0
         self._contexts = 0
 
-    def _lookup(self, keys_table: str, texts_table: str, text: str, *, normalize: bool) -> bytes | None:
-        """The candidate key registered for ``text`` (or its NFC form), confirmed by content."""
+    def _lookup(self, keys_table: str, text: str, *, normalize: bool) -> bytes | None:
+        """The candidate key registered for ``text`` (or its NFC form).
+
+        The key is the SHA-256 of the exact code points, so a match is the
+        text itself; the stored text is never read back to confirm it.
+        """
         probes = [text]
         if normalize and not text.isascii():
             probes.append(unicodedata.normalize("NFC", text))
@@ -1497,19 +1509,15 @@ class _CodexTextConservation:
             row = connection.execute(
                 f"SELECT candidate_key FROM {keys_table} WHERE value = ?", (_text_digest(probe),)
             ).fetchone()
-            if row is None:
-                continue
-            stored_row = connection.execute(f"SELECT text FROM {texts_table} WHERE key = ?", (row[0],)).fetchone()
-            stored = pickle.loads(stored_row[0]) if stored_row is not None else None
-            if isinstance(stored, str) and probe in (stored, unicodedata.normalize("NFC", stored)):
+            if row is not None:
                 return bytes(row[0])
         return None
 
     def _candidate(self, text: str, *, normalize: bool = True) -> bytes | None:
-        return self._lookup("codex_replacement_keys", "codex_replacement_texts", text, normalize=normalize)
+        return self._lookup("codex_replacement_keys", text, normalize=normalize)
 
     def _task_lookup(self, text: str, *, normalize: bool) -> bytes | None:
-        return self._lookup("codex_task_keys", "codex_task_texts", text, normalize=normalize)
+        return self._lookup("codex_task_keys", text, normalize=normalize)
 
     def add_task_completion(self, text: str, event_index: int) -> None:
         key = self._task_lookup(text, normalize=False)

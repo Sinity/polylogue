@@ -11,6 +11,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
@@ -3465,3 +3467,24 @@ def test_replacement_context_annotations_keep_a_lone_surrogate() -> None:
 
     (context,) = [event for event in events if event.event_type == "codex_replacement_context"]
     assert (context.payload["entry_type"], context.payload["role"]) == ("t\ud800", "r\ud800")
+
+
+def test_candidate_digest_is_windowed_and_never_rereads_the_stored_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: pickle the whole text to hash it, or unpickle the stored
+    text on every lookup, and the guarded ``pickle`` calls fail."""
+    import sqlite3
+
+    from polylogue.sources.parsers import codex as codex_module
+
+    monkeypatch.setattr(codex_module, "_DIGEST_WINDOW_CHARS", 7)
+    conservation = codex_module._CodexTextConservation(codex_module._CodexLookaheadIndex(sqlite3.connect(":memory:")))
+    large = "x\ud800" * 50
+    key, _new = conservation.add(large)
+    assert key == codex_module._text_digest(large) and len(key) == 32
+
+    def refuse(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("the full candidate was materialized again")
+
+    monkeypatch.setattr(codex_module.pickle, "loads", refuse)
+    assert conservation._candidate(large) == key
+    assert conservation.add(large) == (key, False)
