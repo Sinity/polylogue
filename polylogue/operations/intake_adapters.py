@@ -248,14 +248,8 @@ class FileIntakeAdapter(IntakeAdapter):
 
     @property
     def discovery_pending(self) -> bool:
-        from polylogue.core.degraded import is_fully_degraded
-
-        # A parked (degraded) adapter discovers nothing, so retained page state
-        # must not keep the intake service on its pending-work cadence.
-        return (
-            not is_fully_degraded()
-            and not self._root_refused_pending
-            and (self._fresh_walk is not None or bool(self._fresh_pending) or self._rescan_after_walk)
+        return not self._root_refused_pending and (
+            self._fresh_walk is not None or bool(self._fresh_pending) or self._rescan_after_walk
         )
 
     @property
@@ -1515,8 +1509,22 @@ class DaemonIntakeService:
         self._progress_since_blocked = False
 
     async def run(self) -> None:
+        from polylogue.core.degraded import is_fully_degraded
+
         while True:
             self._wakeup.clear()
+            if is_fully_degraded():
+                # Parked, not drained: a structurally degraded daemon runs no
+                # pass (every adapter's discovery reads its own tier), so no
+                # retry deadline or retained page can spin the loop, and an
+                # empty pass can never read as a drained backlog that settles
+                # a cold build. Resume at the idle cadence or on a wakeup.
+                try:
+                    async with asyncio.timeout(self.idle_delay_s):
+                        await self._wakeup.wait()
+                except TimeoutError:
+                    pass
+                continue
             result = await self.dispatcher.run_once(budget=self.budget)
             schedulable = self.dispatcher.schedulable_classes()
             discovery_pending = any(bool(getattr(spec.adapter, "discovery_pending", False)) for spec in schedulable)

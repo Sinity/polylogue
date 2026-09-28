@@ -3473,3 +3473,44 @@ async def test_an_unhalted_source_is_still_planned(tmp_path: Path) -> None:
 
     assert live.acknowledged == ["x0"]
     assert halts.record_for(unit_id(UnitKind.SOURCE, "codex")) is None
+
+
+@pytest.mark.asyncio
+async def test_degraded_intake_service_parks_without_passes_or_settlement() -> None:
+    """A fully degraded daemon runs no intake pass and never settles a cold build.
+
+    Anti-vacuity: drop the degraded park from ``DaemonIntakeService.run`` and
+    the loop calls ``run_once`` on every tick; with a quiescent pass after
+    earlier progress it then invokes ``on_backlog_drained`` for a backlog that
+    is parked, not drained.
+    """
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    class _Dispatcher:
+        calls = 0
+
+        async def run_once(self, *, budget: object) -> object:
+            self.calls += 1
+            raise AssertionError("a degraded intake service must not run a pass")
+
+        def schedulable_classes(self) -> tuple[object, ...]:
+            return ()
+
+    drained: list[bool] = []
+    dispatcher = _Dispatcher()
+    service = DaemonIntakeService(
+        cast(Any, dispatcher), idle_delay_s=0.05, on_backlog_drained=lambda: drained.append(True)
+    )
+    service._progressed_once = True
+    set_degraded(DegradedReason(code="schema_version_mismatch", message="v12 vs v9"))
+    task = asyncio.create_task(service.run())
+    try:
+        await asyncio.sleep(0.3)
+        assert not task.done()
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        clear_degraded()
+    assert dispatcher.calls == 0
+    assert drained == []

@@ -560,10 +560,8 @@ async def test_degraded_daemon_admits_nothing_and_reads_no_authority(
     assert page
     set_degraded(DegradedReason(code="schema_version_mismatch", message="v12 vs v9"))
     try:
-        # Discovery reads the cursor tier; degraded, it returns no page at all,
-        # and reports no pending discovery that would keep the service hot.
+        # Discovery reads the cursor tier; degraded, it returns no page at all.
         assert list(await adapter.discover(limit=8)) == []
-        assert adapter.discovery_pending is False
         outcomes = dict(await adapter.admit_page(page))
         # The page stays unattempted: no failed-attempt cooldown after recovery.
         assert not adapter._fresh_attempted_paths
