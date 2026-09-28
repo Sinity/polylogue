@@ -133,12 +133,15 @@ DESCRIPTOR_CONTRACT_TESTS = (
     "tests/unit/devtools/test_seeded_archive_cache_gc.py::test_declared_agentctl_operation_is_bounded_and_previewable",
     "tests/unit/devtools/test_agent_env.py::test_every_declared_pytest_pool_operation_classifies_its_own_worker",
     "tests/unit/devtools/test_verify.py::test_verify_quick_descriptor_accepts_the_declared_json_projection",
-    # A tracked-text ratchet reads AGENTS.md; an AGENTS-only change must still
-    # run it, or a retired name reintroduced there passes the hosted gate.
+)
+#: Tests that read a tracked document through ``git grep`` rather than a traced
+#: Python import, so testmon never selects them for a change to that document.
+#: A retired name reintroduced in AGENTS.md would otherwise pass the verifier.
+CONTRACT_DOCUMENT_TESTS = (
     "tests/unit/architecture/test_retired_analysis_modules.py::test_no_tracked_reference_to_a_retired_analysis_name",
 )
 #: Documentation that a contract test reads. A change touching one of these
-#: earns the contract slice rather than no pytest step at all.
+#: runs ``CONTRACT_DOCUMENT_TESTS`` whatever else the change selects.
 _CONTRACT_READ_DOCUMENTS = frozenset({"AGENTS.md"})
 _UNMEASURED_WORKLOAD_DIMENSIONS = (
     "cpu_ms",
@@ -214,7 +217,11 @@ def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
 
 
 def _pytest_steps(
-    *, selection: str, worker_args: Sequence[str], hypothesis_profile: str | None = None
+    *,
+    selection: str,
+    worker_args: Sequence[str],
+    hypothesis_profile: str | None = None,
+    contract_documents_changed: bool = False,
 ) -> list[tuple[str, list[str]]]:
     """Build one complete collection, or an affected collection, both tracing.
 
@@ -223,7 +230,47 @@ def _pytest_steps(
     and records what it traced, which is what makes the next affected run
     selectable. Only ``descriptor`` opts out: it collects a contract slice, not
     a corpus, so its fingerprints would describe a collection no later run has.
+
+    An affected run whose change touches a contract document adds a second,
+    untraced step for ``CONTRACT_DOCUMENT_TESTS``: testmon cannot select them,
+    and a positional test id under ``--testmon-forceselect`` would only
+    intersect the affected selection.
     """
+    steps = [
+        (
+            f"pytest ({selection})",
+            _pytest_command(
+                selection=selection,
+                worker_args=worker_args,
+                hypothesis_profile=hypothesis_profile,
+                explicit_tests=(
+                    (*DESCRIPTOR_CONTRACT_TESTS, *CONTRACT_DOCUMENT_TESTS) if selection == "descriptor" else ()
+                ),
+            ),
+        )
+    ]
+    if selection == "affected" and contract_documents_changed:
+        steps.append(
+            (
+                "pytest (contract documents)",
+                _pytest_command(
+                    selection="descriptor",
+                    worker_args=worker_args,
+                    hypothesis_profile=hypothesis_profile,
+                    explicit_tests=CONTRACT_DOCUMENT_TESTS,
+                ),
+            )
+        )
+    return steps
+
+
+def _pytest_command(
+    *,
+    selection: str,
+    worker_args: Sequence[str],
+    hypothesis_profile: str | None,
+    explicit_tests: Sequence[str],
+) -> list[str]:
     testmon = selection != "descriptor"
     select_flag = "--testmon-noselect" if selection == "all" else "--testmon-forceselect"
     collection_args = CLOSED_WORLD_COLLECTION_ARGS[:-1] if selection == "descriptor" else CLOSED_WORLD_COLLECTION_ARGS
@@ -247,11 +294,11 @@ def _pytest_steps(
         "no:randomly",
         *([f"--hypothesis-profile={hypothesis_profile}"] if hypothesis_profile else []),
         *worker_args,
-        *(DESCRIPTOR_CONTRACT_TESTS if selection == "descriptor" else []),
+        *explicit_tests,
         # Never under pytest-cov: testmon owns the tracer, and refuses to share
         # it with branch coverage.
     ]
-    return [(f"pytest ({selection})", command)]
+    return command
 
 
 #: Labels whose verdict is recorded but does not decide the verifier's exit.
@@ -261,7 +308,11 @@ GATE_PARALLELISM = max(1, min(8, os.cpu_count() or 1))
 
 
 def build_verify_steps(
-    *, quick: bool, selection: str = "all", hypothesis_profile: str | None = None
+    *,
+    quick: bool,
+    selection: str = "all",
+    hypothesis_profile: str | None = None,
+    changed_paths: frozenset[str] | None = None,
 ) -> list[tuple[str, list[str]]]:
     steps: list[tuple[str, list[str]]] = [(gate.label, gate.command(root=ROOT)) for gate in quick_gates()]
     if not quick and selection != "none":
@@ -272,6 +323,7 @@ def build_verify_steps(
                 maximum=AFFECTED_MAX_WORKERS if selection == "affected" else CORPUS_MAX_WORKERS
             ),
             hypothesis_profile=hypothesis_profile,
+            contract_documents_changed=bool(changed_paths and changed_paths & _CONTRACT_READ_DOCUMENTS),
         )
     return steps
 
@@ -1173,8 +1225,10 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     validate_authority_matrix()
     started = time.monotonic()
     selection = "all" if args.all_tests else "affected"
+    changed_paths: frozenset[str] | None = None
     if not args.quick and not args.all_tests:
-        selection = _selection_for_changes(_git_changed_paths(ROOT))
+        changed_paths = _git_changed_paths(ROOT)
+        selection = _selection_for_changes(changed_paths)
     seeded_from_primary = sync_testmon_graph(ROOT)
     graph = inspect_testmon_graph(ROOT)
     scope = _scope(quick=args.quick, selection=selection)
@@ -1247,7 +1301,12 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             _emit_affected_admission_refusal(graph=graph, decision=admission)
             _emit(payload, use_json=args.json, operation=agentctl_operation)
             return 2
-    steps = build_verify_steps(quick=args.quick, selection=selection, hypothesis_profile=args.hypothesis_profile)
+    steps = build_verify_steps(
+        quick=args.quick,
+        selection=selection,
+        hypothesis_profile=args.hypothesis_profile,
+        changed_paths=changed_paths,
+    )
     try:
         results: list[dict[str, Any]] = []
         exit_code = 0

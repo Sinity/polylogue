@@ -102,10 +102,12 @@ invariant at the write boundary where the producer remains. Compatibility,
 legacy, deprecated, and transitional shapes are removal targets: enumerate
 their readers and writers and give each a replacement path.
 
-A size or count cap that refuses, truncates, or drops valid input is a defect:
-bound memory by streaming or paging instead. Only a real physical limit (such
-as SQLite's maximum value length) justifies refusal, and that refusal is typed
-and visible, never silent.
+An arbitrary limit that changes an outcome is a defect: a size or count cap
+that refuses, truncates, or drops valid input, and a timeout that turns slow
+but valid work into a failure, a skip, or a partial result. Bound memory by
+streaming or paging, and bound waiting by progress or cancellation, instead.
+Only a real physical limit (such as SQLite's maximum value length) justifies
+refusal, and that refusal is typed and visible, never silent.
 
 ## Provider, Origin, Source
 
@@ -166,7 +168,9 @@ command needs its `CommandSpec` and `devtools render devtools-reference`).
   only where that text is itself the declared output contract. Timestamp-sensitive tests use
   `frozen_clock`, except where the reference time comes from outside the process
   (a Git commit, an OS wait, a benchmark), which opt out with `uses_real_clock`
-  as `TESTING.md` describes; fixtures come from `tests/infra/`.
+  as `TESTING.md` describes. Static fixture payloads live in
+  `tests/fixtures/`; fixture builders and shared harness code live in
+  `tests/infra/` and `conftest.py`.
 - Cross-check by change type: parser or detection → origin specs, real
   fixtures, replay parity; storage or schema → fresh DDL, the migration or
   moved identity, readers and writers, restart; query or read → equivalence of

@@ -656,7 +656,8 @@ def test_descriptor_only_changes_use_contract_tests_and_python_changes_use_testm
     descriptor_command = verify._pytest_steps(selection="descriptor", worker_args=[])[0][1]
     assert "--testmon" not in descriptor_command
     assert "tests" not in descriptor_command
-    assert descriptor_command[-len(verify.DESCRIPTOR_CONTRACT_TESTS) :] == list(verify.DESCRIPTOR_CONTRACT_TESTS)
+    contract_slice = [*verify.DESCRIPTOR_CONTRACT_TESTS, *verify.CONTRACT_DOCUMENT_TESTS]
+    assert descriptor_command[-len(contract_slice) :] == contract_slice
 
     affected_command = verify._pytest_steps(selection="affected", worker_args=[])[0][1]
     assert "--testmon" in affected_command
@@ -710,6 +711,35 @@ def test_an_agents_only_change_runs_the_tracked_reference_ratchet() -> None:
         "tests/unit/architecture/test_retired_analysis_modules.py::test_no_tracked_reference_to_a_retired_analysis_name"
     )
     assert any(ratchet in command for command in commands)
+
+
+def test_a_mixed_change_touching_agents_still_runs_the_ratchet() -> None:
+    """AGENTS.md plus a source edit keeps the affected selection and adds the ratchet.
+
+    Anti-vacuity: without the contract-document step, the affected step is the
+    only pytest step, and testmon never selects a test that reads AGENTS.md
+    through ``git grep``, so a retired name added there passes the verifier.
+    """
+    changed = frozenset({"AGENTS.md", "polylogue/example.py"})
+    assert verify._selection_for_changes(changed) == "affected"
+    steps = [
+        (label, command)
+        for label, command in verify.build_verify_steps(quick=False, selection="affected", changed_paths=changed)
+        if label.startswith("pytest")
+    ]
+    assert [label for label, _command in steps] == ["pytest (affected)", "pytest (contract documents)"]
+    affected_command, contract_command = (command for _label, command in steps)
+    assert "--testmon-forceselect" in affected_command
+    assert not any(nodeid in affected_command for nodeid in verify.CONTRACT_DOCUMENT_TESTS)
+    assert "--testmon" not in contract_command
+    assert contract_command[-len(verify.CONTRACT_DOCUMENT_TESTS) :] == list(verify.CONTRACT_DOCUMENT_TESTS)
+
+    source_only = frozenset({"polylogue/example.py"})
+    labels = [
+        label
+        for label, _command in verify.build_verify_steps(quick=False, selection="affected", changed_paths=source_only)
+    ]
+    assert "pytest (contract documents)" not in labels
 
 
 class _StubTestmonData:
