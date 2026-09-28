@@ -311,7 +311,6 @@ class DaemonWriteCoordinator:
         self._over_budget_holds = 0
         self._accepting = True
         self._executions: set[asyncio.Task[object]] = set()
-        self._managed: set[asyncio.Task[object]] = set()
         self._idle = asyncio.Event()
         self._idle.set()
         self._detached_writer_failures = 0
@@ -354,10 +353,7 @@ class DaemonWriteCoordinator:
             raise RuntimeError(
                 "daemon write lease was inherited by a child task; nested writes must run in the owning task"
             )
-        if not self._accepting and current_task not in self._managed:
-            # Shutdown drains managed post-write tasks, so their writes stay
-            # admissible: refusing them would strand the terminal receipt the
-            # drain exists to deliver. New external callers are still refused.
+        if not self._accepting:
             raise RuntimeError("daemon write coordinator is shutting down")
 
         self._sequence += 1
@@ -422,6 +418,10 @@ class DaemonWriteCoordinator:
                 # publish the matching terminal event so observers never see
                 # an acquired request with no settlement evidence.
                 hold_seconds = time.perf_counter() - acquired_at
+                budget_s = write_hold_budget_s(request.actor)
+                over_budget = hold_seconds > budget_s
+                if over_budget:
+                    self._over_budget_holds += 1
                 self._active_actor = None
                 self._lock.release()
                 self._emit(
@@ -433,20 +433,20 @@ class DaemonWriteCoordinator:
                         wait_seconds=wait_seconds,
                         hold_seconds=hold_seconds,
                         outcome="error",
-                        hold_budget_s=write_hold_budget_s(request.actor),
-                        hold_over_budget=False,
+                        hold_budget_s=budget_s,
+                        hold_over_budget=over_budget,
                     )
                 )
                 emit(
                     "daemon.writer.released",
-                    level=INFO,
-                    outcome="error",
-                    reason="admission_hook_failed",
+                    level=WARNING if over_budget else INFO,
+                    outcome="degraded" if over_budget else "error",
+                    reason="hold_over_budget" if over_budget else "admission_hook_failed",
                     actor=request.actor,
                     status="error",
                     wait_ms=round(wait_seconds * 1000, 3),
                     hold_ms=round(hold_seconds * 1000, 3),
-                    budget_ms=round(write_hold_budget_s(request.actor) * 1000, 3),
+                    budget_ms=round(budget_s * 1000, 3),
                     queued=len(self._queued),
                 )
                 raise
@@ -970,7 +970,7 @@ class DaemonWriteThreadBridge:
         receipt here and an unbounded wait strands the caller forever
         (polylogue-8r4zq AC5).
         """
-        if self._loop.is_closed():
+        if self._loop.is_closed() or not self._loop.is_running():
             raise DaemonWriterOwnerLoopStopped(
                 f"daemon writer owner loop closed before {actor} was admitted; the write did not start"
             )

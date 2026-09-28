@@ -178,7 +178,7 @@ def detect_paste_spans(text: str) -> list[dict[str, object]]:
     """Return conservative unified-diff spans embedded in message text."""
     import re
 
-    if not text or not re.search(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@", text, re.MULTILINE):
+    if not text:
         return []
     lines = text.split("\n")
     offsets: list[int] = []
@@ -187,15 +187,30 @@ def detect_paste_spans(text: str) -> list[dict[str, object]]:
         offsets.append(cursor)
         cursor += len(line) + 1
     spans: list[dict[str, object]] = []
-    for index, line in enumerate(lines):
-        if not re.match(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@", line):
+    index = 0
+    while index < len(lines):
+        header_pair = lines[index].startswith("--- ") and index + 1 < len(lines) and lines[index + 1].startswith("+++ ")
+        if not header_pair and not re.match(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@", lines[index]):
+            index += 1
             continue
+        start = index
+        if header_pair:
+            index += 2
+            while index < len(lines) and not re.match(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@", lines[index]):
+                index += 1
+            if index == len(lines):
+                end = start + 1
+                spans.append(
+                    {"kind": "diff", "start": offsets[start], "end": offsets[end] + len(lines[end]), "confidence": 0.95}
+                )
+                break
         end = index
         while end + 1 < len(lines) and (not lines[end + 1] or lines[end + 1].startswith(("+", "-", " ", "\\", "@@"))):
             end += 1
         spans.append(
-            {"kind": "diff", "start": offsets[index], "end": offsets[end] + len(lines[end]), "confidence": 0.95}
+            {"kind": "diff", "start": offsets[start], "end": offsets[end] + len(lines[end]), "confidence": 0.95}
         )
+        index = end + 1
     return spans
 
 
