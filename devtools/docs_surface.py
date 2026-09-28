@@ -292,6 +292,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     _entry(
         "Release Checklist", "release.md", "Cut-time packaging, installed-artifact, and publish checks.", "operations"
     ),
+    _entry(
+        "Codex Review Guide",
+        "review/codex-review-guide.md",
+        "Hosted-reviewer finding format, severity scale, cross-cutting checks, and noise list.",
+        "operations",
+    ),
     # Evidence and product
     _entry(
         "Demos and Proofs",

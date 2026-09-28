@@ -6,8 +6,9 @@
   when a complete one exists, reads only one of the top-level and nested
   placements the provider emits, or emits the same content from two fields. A
   dropped field needs a declared reason in the hash partition or origin spec.
-- Flag a new detector in `dispatch.py` placed looser than its shape; an
-  earlier parser then claims its records.
+- Flag a detector declaration whose `detector_tightness` or `mode_rank` in
+  `origin_specs.py` is looser than its shape, wherever its predicate lives;
+  an earlier parser then claims its records.
 - Flag any reverse lookup from Origin to Provider that picks one of several
   matches. Safe path: refuse when more than one provider matches.
 - Pre-acquisition exclusion has one owner, `classify_pre_acquisition` in

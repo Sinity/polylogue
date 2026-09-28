@@ -41,8 +41,8 @@ P1 (merge blocker):
   receipts committed in any diff, including a docs-only or test-only one;
 - a build, promotion, or convergence loop that can never finish (livelock,
   permanent exclusion of a transient fault, a restart that cannot resume);
-- a change that leaves a consumer in the repository broken (see
-  "Compatibility and complete changes");
+- a change that breaks a caller in the repository (see "Compatibility and
+  complete changes"); a missed docs or generated reference alone is P2;
 - a compatibility path that keeps two authorities alive;
 - a surface that decides `ok` without the rows or measurements that justify
   it.
