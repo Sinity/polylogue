@@ -121,7 +121,7 @@ _EXPLANATIONS: dict[str, Explanation] = {
     "oom_killed": Explanation(
         "systemd-oomd killed the queued pytest unit because its pool stayed under memory pressure. "
         "oomd chooses by pressure, not size, so the killed run need not be the one that used the memory; "
-        "the step's termination_unit names the unit.",
+        "the step's 'ended:' line names the unit.",
         "Check the pool's other runs at that time, then rerun. If this run grows, narrow the selection or its -n.",
     ),
     "checkout_import_mismatch": Explanation(
@@ -223,17 +223,9 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
     # How the process ended, when something outside it decided that. Without
     # this line an oom-kill, a cancel and an operation timeout all render as
     # one undifferentiated abandonment (polylogue-yk0zz).
-    reason = payload.get("termination_reason")
-    killer = payload.get("termination_killer")
-    if isinstance(reason, str) and reason or isinstance(killer, str) and killer:
-        parts = [str(reason)] if isinstance(reason, str) and reason else []
-        if isinstance(killer, str) and killer and killer != reason:
-            parts.append(f"systemd recorded {killer}")
-        line = f"  ended: {'; '.join(parts)}"
-        unit = payload.get("termination_unit")
-        if isinstance(unit, str) and unit:
-            line += f" (unit {unit})"
-        print(line, file=stream)
+    ending = _ending(payload)
+    if ending is not None:
+        print(f"  ended: {ending}", file=stream)
 
     diagnosis = payload.get("diagnosis") or payload.get("checkout_diagnosis")
     if diagnosis:
@@ -293,6 +285,11 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
             print(
                 f"  - {step.get('step_id')} exit={step.get('exit')} {step.get('diagnosis') or ''}".rstrip(), file=stream
             )
+            # A queued pytest step records what ended its unit on the step:
+            # the run itself survived to write the receipt.
+            step_ending = _ending(step)
+            if step_ending is not None:
+                print(f"      ended: {step_ending}", file=stream)
             output_path = step.get("output_path")
             if isinstance(output_path, str) and Path(output_path).is_file():
                 tail = Path(output_path).read_text(encoding="utf-8", errors="replace").strip().splitlines()[-8:]
@@ -302,6 +299,22 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
     artifact_dir = payload.get("artifact_dir")
     if artifact_dir:
         print(f"\nartifacts: {artifact_dir}", file=stream)
+
+
+def _ending(record: Mapping[str, Any]) -> str | None:
+    """How something outside the run ended it, or ``None`` when nothing did."""
+    reason = record.get("termination_reason")
+    killer = record.get("termination_killer")
+    if not (isinstance(reason, str) and reason or isinstance(killer, str) and killer):
+        return None
+    parts = [str(reason)] if isinstance(reason, str) and reason else []
+    if isinstance(killer, str) and killer and killer != reason:
+        parts.append(f"systemd recorded {killer}")
+    ending = "; ".join(parts)
+    unit = record.get("termination_unit")
+    if isinstance(unit, str) and unit:
+        ending += f" (unit {unit})"
+    return ending
 
 
 def _aggregate(entry: Mapping[str, Any]) -> Mapping[str, Any]:
