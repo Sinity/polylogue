@@ -71,3 +71,15 @@ def test_source_and_tree_come_from_the_same_read(tmp_path: Path) -> None:
     names = [node.id for node in ast_cache.walk_module(tree) if isinstance(node, ast.Name)]
     assert source == "b = 2\n"
     assert names == ["b"]
+
+
+def test_a_released_path_holds_no_tree(tmp_path: Path) -> None:
+    """Anti-vacuity: make ``release`` a no-op and the second parse returns the
+    held tree, so a package pass would keep every module it visited."""
+    source = tmp_path / "module.py"
+    source.write_text("x = 1\n", encoding="utf-8")
+    first = ast_cache.parse_path(source)
+
+    ast_cache.release(source)
+
+    assert ast_cache.parse_path(source) is not first
