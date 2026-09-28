@@ -341,8 +341,17 @@ def merge_pending_production_baseline(
     current_by_coordinate = {(row.source, row.path): row for row in current.decisions}
     rows = list(current.decisions)
     keys = {(row.source, row.path, row.disposition, row.source_index, row.revision) for row in rows}
+    intake_excluded = {
+        (row.source, row.path)
+        for row in current.decisions
+        if row.disposition == "excluded" and row.reason.startswith("intake_excluded:")
+    }
     for row in previous.decisions:
         if row.disposition == "accepted":
+            if (row.source, row.path) in intake_excluded:
+                # Intake never retains this file, so an earlier observation
+                # that accepted it is not a revision promotion can demand.
+                continue
             key = (row.source, row.path, row.disposition, row.source_index, row.revision)
             if key not in keys:
                 rows.append(row)

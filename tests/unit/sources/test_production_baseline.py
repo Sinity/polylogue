@@ -19,6 +19,7 @@ from polylogue.sources.live.production_baseline import (
     ProductionBaselineReadUnavailableError,
     SourceDecision,
     _revision,
+    _seal,
     capture_production_source_baseline,
     merge_pending_production_baseline,
 )
@@ -499,3 +500,32 @@ def test_hash_phase_starts_before_each_accepted_revision_is_read(
         progress=lambda phase, **counts: calls.append((phase, counts)),
     )
     assert calls[-1] == ("baseline_hash", {"revisions": 1, "hashed_bytes": len(session)})
+
+
+def test_intake_exclusion_retires_an_earlier_accepted_observation(tmp_path: Path) -> None:
+    """A resumed build does not carry forward a demand intake will never meet.
+
+    Anti-vacuity: removing the ``intake_excluded`` skip in
+    ``merge_pending_production_baseline`` keeps the earlier accepted row, and
+    ``verify`` raises ``unretained revision(s)``.
+    """
+    root = tmp_path / "codex"
+    root.mkdir()
+    sidecar = root / "rollout-2026-06-02T00-00-00-meta.jsonl"
+    sidecar.write_bytes(
+        b'{"timestamp":"2026-06-02T00:00:00Z","type":"session_meta","payload":{"id":"meta",'
+        b'"timestamp":"2026-06-02T00:00:00Z","cwd":"/tmp","originator":"codex_cli_rs"}}\n'
+    )
+    current = capture_production_source_baseline((WatchSource("codex", root, suffixes=(".jsonl",)),), operation_id="op")
+    [row] = [row for row in current.decisions if row.path == str(sidecar)]
+    assert row.disposition == "excluded" and row.reason.startswith("intake_excluded:")
+
+    revision, size = _revision(sidecar)
+    earlier = _seal(
+        "op",
+        current.source_signature,
+        (SourceDecision("codex", str(sidecar), "accepted", "file", revision, material_bytes=size),),
+    )
+    merged = merge_pending_production_baseline(current, earlier)
+    assert merged.accepted == ()
+    merged.verify(_source_db(tmp_path / "source.db", ()))
