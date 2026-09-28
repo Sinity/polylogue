@@ -29,6 +29,7 @@ from polylogue.sources.decoder_zip import (
     is_declared_artifact_path,
     provider_detection_path,
 )
+from polylogue.sources.live.batch_support import classify_pre_acquisition
 from polylogue.sources.live.discovery import _source_path_steps
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.source_acquisition_components import (
@@ -572,6 +573,26 @@ def capture_production_source_baseline(
                     members = _archive_members(path, source_name, cancelled=cancelled, progress=progress)
                     decisions.append(SourceDecision(source_name, str(path), "excluded", "expanded_to_members"))
                     decisions.extend(members)
+                    continue
+                # Intake's own pre-acquisition decision: a file it excludes
+                # with a typed reason is never retained, so the baseline
+                # records that exclusion instead of requiring a raw row. A
+                # cold build writes derived tiers, so the ordinary route (not
+                # the source-only acquisition route) is the one it runs.
+                admission = classify_pre_acquisition(
+                    path,
+                    fallback_provider=Provider.from_string(
+                        canonical_acquisition_provider(source_name, source_name=source_name)
+                    ),
+                    source_only=False,
+                    size_bytes=path.stat().st_size,
+                )
+                if admission.excluded_reason is not None:
+                    decisions.append(
+                        SourceDecision(
+                            source_name, str(path), "excluded", f"intake_excluded:{admission.excluded_reason}"
+                        )
+                    )
                     continue
                 revision, material_bytes = _revision(path, cancelled=cancelled)
                 if progress is not None:

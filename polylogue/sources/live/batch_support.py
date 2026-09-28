@@ -34,7 +34,7 @@ from polylogue.sources.dispatch import (
     detect_provider_from_raw_bytes_evidence,
     is_jsonl_source_path,
 )
-from polylogue.sources.parsers import antigravity, hermes_state, hermes_verification
+from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
 from polylogue.storage.runtime import RawSessionRecord
 
 _FULL_PARSE_PROGRESS_MAX_BYTES = 64 * 1024 * 1024
@@ -1031,6 +1031,118 @@ def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
     except JSONDecodeError:
         return False
     return classify_artifact(document, provider=provider, source_path=path).parse_as_session
+
+
+@dataclass(frozen=True, slots=True)
+class PreAcquisitionDecision:
+    """Whether full intake retains a discovered file, and the sniff it used.
+
+    ``excluded_reason`` is the typed cursor-exclusion reason, or ``None`` when
+    intake retains the file's bytes. ``detected_provider`` and
+    ``detection_crash`` carry the content sniff this decision already paid
+    for, so the retaining branch does not sniff again.
+    """
+
+    excluded_reason: str | None
+    detected_provider: Provider | None = None
+    detection_crash: str | None = None
+
+
+def classify_pre_acquisition(
+    path: Path,
+    *,
+    fallback_provider: Provider,
+    source_only: bool,
+    size_bytes: int,
+) -> PreAcquisitionDecision:
+    """Decide whether full intake excludes ``path`` before retaining any bytes.
+
+    This is the one authority for pre-acquisition exclusion. The full-ingest
+    batch applies it to every file it acquires, and the cold-build production
+    baseline applies it to every file discovery accepts, so a revision the
+    baseline requires is always one intake retains. The branch order mirrors
+    the batch's acquisition branches: an earlier retaining branch wins over a
+    later exclusion rule.
+    """
+    from polylogue.sources.origin_specs import (
+        artifact_rule_for_path,
+        database_capability_for_provider,
+        recognize_source_class,
+    )
+
+    if path.suffix.lower() == ".zip":
+        # ZIP members are admitted or excluded one by one by the member walk.
+        return PreAcquisitionDecision(None)
+    if (
+        fallback_provider is Provider.ANTIGRAVITY
+        and path.suffix.lower() == ".pb"
+        and antigravity.classify_source_path(path).role is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
+    ):
+        # Converted as one cohort through the vendor language server.
+        return PreAcquisitionDecision(None)
+    hermes_capability = database_capability_for_provider(Provider.HERMES)
+    hermes_member = hermes_capability.member(path.name) if hermes_capability is not None else None
+    hermes_owned_sqlite_name = (
+        source_only
+        and fallback_provider is Provider.HERMES
+        and hermes_member is not None
+        and hermes_member.disposition != "out-of-scope"
+    )
+    source_class = recognize_source_class(
+        fallback_provider, path, source_only=source_only, source_size_bytes=size_bytes
+    )
+    if source_class is not None and source_class.source_class == "unsupported" and not hermes_owned_sqlite_name:
+        return PreAcquisitionDecision("unsupported source class")
+    if fallback_provider in {Provider.ANTIGRAVITY, Provider.UNKNOWN} and antigravity.looks_like_trajectory_db_path(
+        path
+    ):
+        return PreAcquisitionDecision(None)
+    if hermes_owned_sqlite_name or (
+        not source_only
+        and (
+            hermes_state.looks_like_state_db_path(path)
+            or hermes_verification.looks_like_verification_evidence_db_path(path)
+        )
+    ):
+        return PreAcquisitionDecision(None)
+    codex_capability = database_capability_for_provider(Provider.CODEX)
+    codex_member = codex_capability.member(path.name) if codex_capability is not None else None
+    if (
+        codex_member is not None
+        and codex_member.disposition != "out-of-scope"
+        and ((source_only and fallback_provider is Provider.CODEX) or codex_state.is_in_scope_codex_sqlite_path(path))
+    ):
+        return PreAcquisitionDecision(None)
+    if codex_member is not None:
+        return PreAcquisitionDecision("declared out-of-scope or structurally unverified state database")
+    if source_only:
+        return PreAcquisitionDecision(None)
+    origin_artifact_rule = artifact_rule_for_path(fallback_provider, str(path))
+    jsonl = is_jsonl_source_path(str(path))
+    if origin_artifact_rule is None and not jsonl:
+        strong = strong_path_classification(path, provider=fallback_provider)
+        if strong is not None and not strong.parse_as_session:
+            # Only definitive sidecar paths are excluded before retained
+            # acquisition. Weak locations reach the same parser at every
+            # size, where decoded evidence determines their disposition.
+            return PreAcquisitionDecision("path rule classifies this as non-session evidence")
+    if origin_artifact_rule is not None and origin_artifact_rule.parse_policy != "session":
+        return PreAcquisitionDecision(None, fallback_provider)
+    if jsonl:
+        provider, parse_as_session, crash = _jsonl_provider_and_session_artifact(path, fallback_provider)
+        # An unknown JSONL cannot be safely excluded from acquire: the strict
+        # parse route persists typed terminal evidence for empty and
+        # malformed exports. Known-provider sidecars are excluded here
+        # because their classification is already authoritative.
+        if not parse_as_session and provider is not Provider.UNKNOWN:
+            return PreAcquisitionDecision("declared artifact rule: not parsed as a session", provider, crash)
+        return PreAcquisitionDecision(None, provider, crash)
+    if path.suffix.lower() == ".json":
+        return PreAcquisitionDecision(None, fallback_provider)
+    provider, crash = detect_provider_from_path_sample_evidence(path, fallback_provider)
+    if not _parse_path_as_session_artifact(path, provider=provider):
+        return PreAcquisitionDecision("path rule refuses session parsing", provider, crash)
+    return PreAcquisitionDecision(None, provider, crash)
 
 
 def _parse_payload_as_session_artifact(path: Path, *, provider: Provider, payload: bytes) -> bool:

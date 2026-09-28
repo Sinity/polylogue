@@ -213,6 +213,50 @@ def test_baseline_uses_typed_acceptance_before_cursor_and_requires_retained_revi
     baseline.verify(source_db)
 
 
+def test_baseline_records_intake_exclusions_instead_of_requiring_retention(tmp_path: Path) -> None:
+    """Each pre-acquisition exclusion intake applies is the baseline's disposition too.
+
+    Anti-vacuity: without the shared ``classify_pre_acquisition`` decision
+    every one of these files is ``accepted`` and ``verify`` raises for three
+    unretained revisions that intake never writes.
+    """
+    codex = tmp_path / "codex"
+    codex.mkdir()
+    rollout = codex / "rollout.jsonl"
+    rollout.write_bytes(
+        b'{"type":"session_meta","payload":{"id":"s","timestamp":"2026-06-02T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"m","role":"user",'
+        b'"content":[{"type":"input_text","text":"hi"}]}}\n'
+    )
+    meta_only = codex / "meta-only.jsonl"
+    meta_only.write_bytes(b'{"type":"session_meta","payload":{"id":"x","timestamp":"2026-06-02T00:00:00Z"}}\n')
+    unverified_state = codex / "state_5.sqlite"
+    with sqlite3.connect(unverified_state) as conn:
+        conn.execute("CREATE TABLE threads(id TEXT)")
+    gemini = tmp_path / "gemini"
+    logs = gemini / "tmp" / "project" / "logs.json"
+    logs.parent.mkdir(parents=True)
+    logs.write_text('[{"sessionId":"a","messageId":0,"type":"user","message":"hi","timestamp":"2026"}]')
+    baseline = capture_production_source_baseline(
+        (
+            WatchSource("codex", codex, suffixes=(".jsonl", ".sqlite")),
+            WatchSource("gemini-cli", gemini, suffixes=(".json",)),
+        ),
+        operation_id="intake-exclusions",
+    )
+    decisions = {row.path: (row.disposition, row.reason) for row in baseline.decisions}
+    assert decisions[str(meta_only)] == ("excluded", "intake_excluded:declared artifact rule: not parsed as a session")
+    assert decisions[str(unverified_state)] == (
+        "excluded",
+        "intake_excluded:declared out-of-scope or structurally unverified state database",
+    )
+    assert decisions[str(logs)] == ("excluded", "intake_excluded:path rule classifies this as non-session evidence")
+    assert [row.path for row in baseline.accepted] == [str(rollout)]
+    baseline.verify(
+        _source_db(tmp_path / "source.db", ((str(rollout), hashlib.sha256(rollout.read_bytes()).hexdigest()),))
+    )
+
+
 def test_external_link_is_alias_only_with_independent_source(tmp_path: Path) -> None:
     account = tmp_path / "account"
     account.mkdir()
@@ -265,7 +309,10 @@ def test_history_rule_and_codex_sqlite_use_their_typed_revisions(tmp_path: Path)
     state = codex / "state_5.sqlite"
     conn = sqlite3.connect(state)
     try:
+        # The thread-state shape intake acquires; a bare ``threads`` table is
+        # structurally unverified and intake excludes it.
         conn.execute("CREATE TABLE threads(id TEXT)")
+        conn.execute("CREATE TABLE thread_spawn_edges(parent TEXT, child TEXT)")
         conn.execute("INSERT INTO threads VALUES ('one')")
         conn.commit()
     finally:
@@ -297,6 +344,7 @@ def test_temporarily_unopenable_sqlite_source_remains_a_retryable_baseline_fault
     state = codex / "state_5.sqlite"
     with sqlite3.connect(state) as conn:
         conn.execute("CREATE TABLE threads(id TEXT)")
+        conn.execute("CREATE TABLE thread_spawn_edges(parent TEXT, child TEXT)")
     with pytest.raises(sqlite3.OperationalError) as unavailable:
         sqlite3.connect(f"file:{tmp_path / 'temporarily-unavailable.db'}?mode=ro", uri=True)
     assert unavailable.value.sqlite_errorcode & 0xFF == sqlite3.SQLITE_CANTOPEN
