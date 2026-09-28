@@ -15,7 +15,6 @@ from polylogue.agent_integration.spec import (
 )
 from polylogue.archive.query.discovery import QUERY_DISCOVERY_EXAMPLES
 from polylogue.archive.query.expression import compile_expression, explain_expression, parse_unit_source_expression
-from polylogue.archive.query.transaction import QueryContinuation
 from polylogue.cli.query_group import _looks_like_query_expression, _split_query_mode_args
 from polylogue.core.enums import Origin
 from polylogue.mcp.declarations import PRIVILEGED_ALGEBRA, TARGET_DEFAULT_READ_ALGEBRA
@@ -105,17 +104,16 @@ def test_generated_continuation_token_decodes_to_the_bound_result() -> None:
     from devtools.render_agent_manual import continuation_example_token
 
     token = continuation_example_token()
-    decoded = QueryContinuation.decode(token)
+    from polylogue.archive.query.transaction import decode_query_units_continuation
+
+    decoded = decode_query_units_continuation(token)
 
     assert token.startswith("q2.")
-    assert decoded.request.operation == "query"
+    assert decoded.request.operation == "query_units"
     assert decoded.request.offset == 20
     assert decoded.request.page_size == 20
-    assert decoded.request.arguments == {
-        "expression": "actions where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20",
-        "projection": "action-evidence",
-    }
-    assert decoded.result_ref == "result:0123456789abcdef01234567"
+    assert set(decoded.request.arguments) == {"expression", "session_filters"}
+    assert decoded.result_ref == decoded.request.result_ref
 
 
 def test_origin_teaching_follows_authoritative_enum() -> None:

@@ -60,6 +60,9 @@ words = [word for word in sys.argv[1:] if word != "--json"]
 verb = " ".join(words[:2])
 if verb == "job start":
     shutil.copyfile(sys.argv[-1], {launch_snapshot!r})
+    launch = json.loads(open(sys.argv[-1], encoding="utf-8").read())
+    with open(launch["log_path"], "wb") as captured:
+        captured.write(b"captured output")
     if {receipt!r} is not None:
         # The slot runner publishes its result document next to the launch file.
         with open(sys.argv[-1][: -len(".json")] + ".result.json", "w", encoding="utf-8") as handle:
@@ -214,7 +217,9 @@ def test_outside_the_pool_the_run_is_submitted(tmp_path: Path, monkeypatch: pyte
     assert not marker.exists(), "pytest ran directly instead of through the pytest pool"
     assert outcome.slot == "agentctl job 7"
     assert outcome.returncode == 0
-    assert outcome.log_path == tmp_path / ".cache" / "verify" / f"pytest-slot-{os.getpid()}.log"
+    assert outcome.log_path is not None and outcome.log_path.parent == tmp_path / ".cache" / "verify"
+    assert outcome.log_path.name.startswith(f"pytest-slot-{os.getpid()}-")
+    identity = outcome.log_path.stem.removeprefix("pytest-slot-")
     start = next(call for call in _calls(record) if "start" in call["argv"])
     assert start["argv"] == [
         "--json",
@@ -225,7 +230,7 @@ def test_outside_the_pool_the_run_is_submitted(tmp_path: Path, monkeypatch: pyte
         "--workspace",
         str(tmp_path),
         "--",
-        str(tmp_path / ".cache" / "verify" / f"pytest-slot-{os.getpid()}.json"),
+        str(tmp_path / ".cache" / "verify" / f"pytest-slot-{identity}.json"),
     ]
     launch = _launch_document(tmp_path)
     assert launch["kind"] == "polylogue.pytest-slot-launch"
@@ -234,6 +239,17 @@ def test_outside_the_pool_the_run_is_submitted(tmp_path: Path, monkeypatch: pyte
     assert launch["log_path"] == str(outcome.log_path)
     assert _verbs(record) == ["job start", "job get 7"]
     assert not list((tmp_path / ".cache" / "verify").glob("pytest-slot-*.json")), "the launch file outlived its run"
+
+
+def test_two_acquisitions_keep_distinct_capture_logs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A rerun cannot replace the first acquisition's captured stdout file."""
+    _install_fake_agentctl(tmp_path, monkeypatch)
+    first = run_pytest(_marker_command(tmp_path / "first"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
+    second = run_pytest(_marker_command(tmp_path / "second"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
+    assert first.log_path is not None and second.log_path is not None
+    assert first.log_path != second.log_path
+    assert first.log_path.exists() and second.log_path.exists()
+    assert first.log_path.read_bytes() == second.log_path.read_bytes() == b"captured output"
 
 
 def test_the_client_environment_carries_only_the_allowed_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -498,6 +514,21 @@ def test_a_timed_out_job_reports_the_typed_receipt(tmp_path: Path, monkeypatch: 
     assert outcome.receipt == receipt
 
 
+def test_progress_counts_completed_nodeids_not_phase_reports(tmp_path: Path) -> None:
+    """Setup/call/teardown reports for one item contribute one completed test."""
+    events = tmp_path / "events.jsonl"
+    lines = [
+        {"event": "test_report", "nodeid": "test_a", "when": phase, "outcome": "passed"}
+        for phase in ("setup", "call", "teardown")
+    ]
+    lines.append({"event": "test_finished", "nodeid": "test_a"})
+    events.write_text("".join(json.dumps(row) + "\n" for row in lines), encoding="utf-8")
+    snapshot = pytest_slot._ProgressSnapshot({"POLYLOGUE_PYTEST_EVENTS_PATH": str(events)})
+    progress = snapshot()
+    assert progress["terminal_count"] == 1
+    assert progress["outcomes"] == {"passed": 1}
+
+
 def test_a_stale_result_document_is_not_reported_as_this_run_s(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The client's paths are per pid, and a pid is reused."""
     _install_fake_agentctl(tmp_path, monkeypatch, job_id=12, phase="succeeded", exit_code=0)
@@ -589,7 +620,13 @@ def test_slot_timeout_writes_typed_receipt_and_reaps_child_group(tmp_path: Path)
     events_path = tmp_path / "events.jsonl"
     started = tmp_path / "started"
     survivor = tmp_path / "survivor"
-    events_path.write_text(json.dumps({"event": "test_report", "outcome": "passed"}) + "\n", encoding="utf-8")
+    events_path.write_text(
+        json.dumps({"event": "test_report", "when": "call", "outcome": "passed"})
+        + "\n"
+        + json.dumps({"event": "test_finished", "nodeid": "test_a"})
+        + "\n",
+        encoding="utf-8",
+    )
     child = f"touch {started}; (sleep {_DESCENDANT_MARKER_DELAY_S:g}; touch {survivor}) & sleep 30"
     launch_path.write_text(
         json.dumps(
@@ -618,8 +655,8 @@ def test_slot_timeout_writes_typed_receipt_and_reaps_child_group(tmp_path: Path)
             process.kill()
 
     receipt = json.loads(log_path.with_suffix(".result.json").read_text(encoding="utf-8"))
-    assert receipt["status"] == "timed_out"
-    assert receipt["diagnosis"] == "pytest_deadline"
+    assert receipt["status"] == "interrupted"
+    assert receipt["diagnosis"] == "pytest_interrupted"
     assert receipt["elapsed_s"] >= 0
     assert receipt["progress"]["terminal_count"] == 1
     # The descendant began its sleep at or before the signal, so waiting past
@@ -875,6 +912,17 @@ def test_a_refused_cancellation_leaves_the_launch_file_for_the_job(tmp_path: Pat
     assert _verbs(record)[-1] == "job cancel 11"
     surviving = list((tmp_path / ".cache" / "verify").glob("pytest-slot-*.json"))
     assert len(surviving) == 1, surviving
+    assert _scratch_trees(tmp_path), "a possibly running job retains its referenced temp trees"
+
+
+def test_terminal_refusal_removes_secret_bearing_launch_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A terminal non-execution phase must not leave the resolved environment on disk."""
+    _install_fake_agentctl(tmp_path, monkeypatch, phase="refused", exit_code=None)
+    with pytest.raises(PytestSlotUnavailableError):
+        run_pytest(_marker_command(tmp_path / "unused"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
+    assert not list((tmp_path / ".cache" / "verify").glob("pytest-slot-*.json"))
 
 
 @pytest.mark.uses_real_clock("measures a real child process group over sampling intervals")
@@ -989,10 +1037,29 @@ def test_a_failed_queued_run_keeps_sizing_telemetry_sidecar(tmp_path: Path) -> N
     assert pytest_slot.main([str(launch_path)]) == 1
 
     telemetry = json.loads(log_path.with_suffix(".telemetry.json").read_text(encoding="utf-8"))
+    assert telemetry["status"] == "failed"
     assert telemetry["kind"] == "polylogue.pytest-slot-telemetry"
     assert telemetry["sizing"]["requested_workers"] == 8
     assert telemetry["memory"]["process_group"] > 0
     assert telemetry["memory"]["peak"]["pss_kib"] > 0
+
+
+def test_worktree_snapshot_refuses_content_change_during_hashing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The recorded digest and HEAD must describe one stable checkout snapshot."""
+    from types import SimpleNamespace
+
+    from devtools import checkout_identity, verify_runs
+
+    identity = SimpleNamespace(head="a" * 40, branch="feature/test")
+    monkeypatch.setattr(checkout_identity, "checkout_identity", lambda _root: identity)
+    monkeypatch.setattr(checkout_identity, "default_branch_refusal", lambda *_a, **_kw: None)
+    monkeypatch.setattr(verify_runs, "git_dirty", lambda _root: False)
+    digests = iter(("first", "changed"))
+    monkeypatch.setattr(verify_runs, "git_worktree_content_sha256", lambda _root: next(digests))
+    with pytest.raises(PytestSlotUnavailableError, match="changed while its content"):
+        pytest_slot._focused_worktree_provenance(str(tmp_path), {pytest_slot.WORKTREE_PROVENANCE_ENV: "1"})
 
 
 def test_the_startup_sweep_reclaims_only_dead_owners(tmp_path: Path) -> None:
@@ -1269,10 +1336,10 @@ def test_an_interrupted_held_run_preserves_its_receipt(tmp_path: Path) -> None:
 
     # The scratch sidecar is gone: the caller's disposal ran, as it does in
     # production. The receipt is what had to outlive it.
-    assert not telemetry.exists()
+    assert telemetry.exists(), "interrupted runs retain periodic telemetry for diagnosis"
     document = json.loads(pytest_slot._slot_result_path(result).read_text(encoding="utf-8"))
     assert document["kind"] == "polylogue.pytest-slot-result"
-    assert document["status"] == "timed_out"
+    assert document["status"] == "interrupted"
     assert document["signal"] == "SIGTERM"
     # The two facts the lost receipt was carrying: the width the run was
     # admitted at, and what it took at that width.

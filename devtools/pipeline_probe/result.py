@@ -320,8 +320,8 @@ def _pipeline_workload_receipt(
     build_id = f"git:{build_id_value}" if isinstance(build_id_value, str) and build_id_value else None
     result = _json_object_or_empty(summary.get("result"))
     logical_failure = bool(result.get("index_error"))
-    peak_rss_self_bytes = round(observed_self_mb * 1024 * 1024) if observed_self_mb is not None else None
-    peak_rss_children_bytes = round(observed_children_mb * 1024 * 1024) if observed_children_mb is not None else None
+    peak_rss_self_bytes = round(observed_self_mb * 1024 * 1024) if components_available else None
+    peak_rss_children_bytes = round(observed_children_mb * 1024 * 1024) if components_available else None
     peak_rss_bytes = (
         peak_rss_self_bytes + peak_rss_children_bytes
         if peak_rss_self_bytes is not None and peak_rss_children_bytes is not None

@@ -383,3 +383,39 @@ def test_the_heap_census_is_off_unless_asked_for(tmp_path: Path) -> None:
     point = recorder.payload()["rss_trajectory"][-1]
     assert "heap_top" not in point
     assert "rss_after_gc_kib" not in point
+
+
+def test_heap_sampling_initializes_rss_baseline_from_effective_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Heap sampling implicitly enables RSS and must baseline its growth."""
+    monkeypatch.setattr(suite_cost, "_read_rss_kib", lambda: 321)
+    recorder = suite_cost.SuiteCostRecorder(tmp_path, "gw0", None, sample_heap=True)
+    assert recorder.payload()["rss_start_kib"] == 321
+    assert recorder.payload()["rss_growth_kib"] == 0
+
+
+def test_setup_error_counts_one_test(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A fixture setup error is one terminal item even though no call report exists."""
+    from types import SimpleNamespace
+
+    recorder = suite_cost.SuiteCostRecorder(tmp_path, "gw0", None)
+    monkeypatch.setattr(suite_cost, "_RECORDER", recorder)
+    suite_cost.pytest_runtest_logreport(SimpleNamespace(when="setup", failed=True, nodeid="test_fixture"))
+    assert recorder.payload()["tests"] == 1
+
+
+def test_controller_clears_stale_worker_receipts_before_aggregation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A smaller rerun cannot aggregate worker receipts left by its predecessor."""
+    from types import SimpleNamespace
+
+    (tmp_path / "gw2.json").write_text(json.dumps({"worker_id": "gw2", "tests": 99}))
+    (tmp_path / "run.json").write_text("{}")
+    monkeypatch.setenv(suite_cost.SUITE_COST_DIR_ENV, str(tmp_path))
+    monkeypatch.setattr(suite_cost, "_RECORDER", None)
+    suite_cost.pytest_configure(SimpleNamespace(workerinput={}, option=SimpleNamespace(numprocesses=0)))
+    assert not (tmp_path / "gw2.json").exists()
+    assert (tmp_path / "run.json").exists()
+    monkeypatch.setattr(suite_cost, "_RECORDER", None)
