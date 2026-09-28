@@ -45,6 +45,7 @@ from .acquisition_boundary import (
     drain_bound,
     open_bound_member,
     refuse_declared_foreign,
+    release_captures_on_refusal,
 )
 from .decoders import _zip_entry_provider_hint
 from .dispatch import GROUP_PROVIDERS, detect_provider, detect_provider_from_raw_bytes_evidence
@@ -817,14 +818,23 @@ def iter_zip_entry_raw_data(
         return
 
     state = _ZipEntrySplitState()
-    for split_payload in _iter_zip_entry_split_payloads(zf, context, state):
-        state.did_split = True
-        yield make_split_entry_raw_data(
-            blob_store=context.blob_store,
-            split_payload=split_payload,
-            source_path=context.source_path,
-            file_mtime=context.file_mtime,
-        )
+    # A member is one admission unit: the boundary refuses a foreign record
+    # only when its bytes are read, so no split leaves the member before the
+    # whole member validated, and a refusal releases the splits it captured.
+    splits: list[RawSessionData] = []
+    with release_captures_on_refusal(context.blob_store) as captures:
+        for split_payload in _iter_zip_entry_split_payloads(zf, context, state):
+            state.did_split = True
+            split = make_split_entry_raw_data(
+                blob_store=context.blob_store,
+                split_payload=split_payload,
+                source_path=context.source_path,
+                file_mtime=context.file_mtime,
+            )
+            splits.append(split)
+            if split.blob_hash is not None:
+                captures.append((split.blob_hash, split.blob_publication_receipt_id))
+    yield from splits
 
     if state.did_split:
         return

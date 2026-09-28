@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.sources.live.discovery import _bounded_source_paths
-from polylogue.sources.live.watcher import WatchSource, default_sources
+from polylogue.sources.live.watcher import WatchSource, daemon_watch_sources
 from polylogue.sources.walk_faults import WalkRefusedError
 
 #: Directories Polylogue creates itself; their existence proves nothing.
@@ -21,8 +21,10 @@ class WatchedSourcePresence:
     tool_roots: tuple[Path, ...]
 
 
-def watched_source_presence(*, hermes_root: Path | None) -> WatchedSourcePresence:
-    """Probe the daemon's own watch set (``default_sources``).
+def watched_source_presence(
+    *, hermes_root: Path | None, browser_capture_spool_path: Path | None = None
+) -> WatchedSourcePresence:
+    """Probe the daemon's own watch set (``daemon_watch_sources``), as ``polylogued run`` builds it.
 
     That set includes secondary canonical roots, such as Codex's state
     database beside its sessions directory. A tool's location counts once it
@@ -32,7 +34,13 @@ def watched_source_presence(*, hermes_root: Path | None) -> WatchedSourcePresenc
     (the sources with a topology identity) are evidence about sessions, not
     a chat source.
     """
-    sources = tuple(source for source in default_sources(hermes_root=hermes_root) if source.source_id is None)
+    sources = tuple(
+        source
+        for source in daemon_watch_sources(
+            browser_capture_spool_path=browser_capture_spool_path, hermes_root=hermes_root
+        )
+        if source.source_id is None
+    )
     return WatchedSourcePresence(
         present=any(_would_acquire(source, sources) for source in sources),
         tool_roots=tuple(source.root for source in sources if source.name not in _POLYLOGUE_OWNED_SOURCES),

@@ -86,7 +86,7 @@ from polylogue.operations.embedding_lifecycle import (
 )
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
-from polylogue.sources.live.watcher import default_sources
+from polylogue.sources.live.watcher import daemon_watch_sources, default_sources
 
 # The daemon ring's seam onto the storage checkpoint and one-tier writer
 # factories: daemon modules take them from here rather than each reaching
@@ -395,20 +395,8 @@ def _watch_sources(
     browser_capture_spool_path: Path | None = None,
     hermes_root: Path | None = None,
 ) -> tuple[WatchSource, ...]:
-    """The daemon's watch set: every origin at its canonical location.
-
-    There are no custom source roots. Each origin is acquired from the place
-    its tool writes it, account exports arrive through ``polylogue import``
-    into the archive inbox, and a relocated tool directory is followed by a
-    symlink at the canonical path rather than by configuration. The one
-    substitution is the browser-capture spool, which Polylogue itself owns.
-    """
-    sources = list(default_sources(hermes_root=hermes_root))
-    if browser_capture_spool_path is not None:
-        spool = browser_capture_spool_path.expanduser()
-        sources = [source for source in sources if source.name != "browser-capture"]
-        sources.append(WatchSource(name="browser-capture", root=spool, suffixes=(".json",)))
-    return tuple(sources)
+    """The daemon's watch set (see :func:`daemon_watch_sources`)."""
+    return daemon_watch_sources(browser_capture_spool_path=browser_capture_spool_path, hermes_root=hermes_root)
 
 
 #: Watch sources whose directory Polylogue itself creates and writes.

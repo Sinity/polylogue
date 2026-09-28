@@ -15,7 +15,7 @@ from polylogue.archive.zip_admission import ZIP_JSON_SUFFIXES, ZipAdmission, Zip
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.provider_identity import canonical_acquisition_provider
-from polylogue.core.raw_coordinates import zip_member_source_index
+from polylogue.core.raw_coordinates import zip_member_source_coordinate, zip_member_source_index
 from polylogue.maintenance.receipt_fs import (
     atomic_replace_receipt,
     existing_maintenance_receipt_directory,
@@ -359,12 +359,48 @@ def _unchanged_revision(row: SourceDecision) -> bool:
     A database's logical revision is not re-derived here: an earlier accepted
     database revision stays demanded.
     """
+    if row.reason == "archive_member":
+        return _unchanged_member_revision(row)
     path = Path(row.path)
     if is_sqlite_path(path):
         return False
     try:
         return _revision(path)[0] == row.revision
     except OSError:
+        return False
+
+
+def _unchanged_member_revision(row: SourceDecision) -> bool:
+    """Whether an accepted ZIP member revision is still what the member holds.
+
+    The member is replayed unbound, exactly as acquisition splits it, and the
+    earlier revision is unchanged when one of the current payloads hashes to
+    it. Any read fault keeps the earlier revision demanded.
+    """
+    cut = row.path.lower().find(".zip:")
+    if cut == -1 or row.source_index is None:
+        return False
+    archive_file, member = Path(row.path[: cut + 4]), row.path[cut + 5 :]
+    try:
+        entry_ordinal, _split = zip_member_source_coordinate(row.source_index)
+        with zipfile.ZipFile(archive_file) as archive:
+            entries = archive.infolist()
+            if entry_ordinal >= len(entries) or entries[entry_ordinal].filename != member:
+                return False
+            context = ZipEntryReadContext(
+                Source(name=row.source, path=archive_file.parent),
+                archive_file,
+                entries[entry_ordinal],
+                None,
+                Provider.from_string(canonical_acquisition_provider(row.source, source_name=row.source)),
+                None,  # type: ignore[arg-type]
+                bound_provider=None,
+            )
+            return any(
+                hashlib.sha256(payload.payload_bytes).hexdigest() == row.revision
+                for payload in replay_zip_entry_acquisition_payloads(archive, context)
+            )
+    except (OSError, UnicodeError, ValueError, ZipBombError, zipfile.BadZipFile):
         return False
 
 
@@ -472,9 +508,10 @@ def _archive_members(
                         progress("baseline_hash", revisions=1, hashed_bytes=len(payload.payload_bytes))
                 members.extend(member_decisions)
             except ForeignOriginContentError as exc:
-                # The live acquisition refuses this member; the baseline must
-                # not expect a raw row for it.
-                excluded(info, f"{exc.code}:{exc.found.value}")
+                # The live acquisition refuses this member with this reason;
+                # the baseline must not expect a raw row for it, and a resumed
+                # build retires an earlier acceptance of the same bytes.
+                excluded(info, f"intake_excluded:{foreign_origin_exclusion(exc)}")
             except (OSError, UnicodeError, ValueError, ZipBombError, zipfile.BadZipFile) as exc:
                 reason = "revision_io_unavailable" if retryable_read_fault(exc) else "archive_member_unreadable"
                 fault(info, f"{reason}:{exc}")

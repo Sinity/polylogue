@@ -95,6 +95,17 @@ def _validate(name: str, data: bytes) -> None:
         ("codex-array.json", lambda: json.dumps([{"pad": "x" * 64 * 1024, **_CODEX[0]}, _CODEX[1]]).encode()),
         # An object document whose discriminator sits past any window.
         ("object.json", lambda: json.dumps({"pad": "x" * _PAST_ANY_WINDOW, **_CODEX[0]}).encode()),
+        # A record whose origin declares only a record detector (Antigravity's
+        # language-server export envelope), inside a JSONL stream.
+        (
+            "envelope.jsonl",
+            lambda: _jsonl(
+                [
+                    _CLAUDE[0],
+                    {"source": "antigravity_language_server", "cascadeId": "c1", "markdown": "# Chat"},
+                ]
+            ),
+        ),
     ],
 )
 def test_validator_refuses_a_foreign_record_wherever_it_sits(name: str, document: Callable[[], bytes]) -> None:

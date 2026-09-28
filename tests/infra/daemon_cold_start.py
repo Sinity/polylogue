@@ -550,6 +550,10 @@ def qualify(
     home = artifacts / "home"
     (home / ".claude").mkdir(parents=True, exist_ok=True)
     projects = home / ".claude" / "projects"
+    # A reused artifacts directory may hold a link to an earlier (or since
+    # moved) fixture; the daemon must watch exactly this qualification's.
+    if projects.is_symlink() and projects.resolve() != source.resolve():
+        projects.unlink()
     if not projects.is_symlink():
         projects.symlink_to(source, target_is_directory=True)
     # Every discovery root (HOME, the XDG roots, Polylogue path overrides) is

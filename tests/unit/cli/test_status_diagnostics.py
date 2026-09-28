@@ -271,6 +271,24 @@ class TestDiagnoseNoSources:
         diag = diagnose_first_run(daemon_alive=False)
         assert diag.kind == "no_daemon"
 
+    def test_a_configured_capture_spool_is_a_source(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """``polylogued run`` watches a configured spool in place of the default one.
+
+        Anti-vacuity: probe only the default spool and a pending capture in
+        the configured spool reports ``no_sources``.
+        """
+        data_home, config_home = _set_xdg(monkeypatch, tmp_path)
+        _create_index_db(data_home)
+        spool = tmp_path / "custom-spool"
+        spool.mkdir()
+        (spool / "capture.json").write_text("{}", encoding="utf-8")
+        config_home.mkdir(parents=True, exist_ok=True)
+        (config_home / "polylogue.toml").write_text(
+            f'[daemon.browser_capture]\nspool_path = "{spool}"\n', encoding="utf-8"
+        )
+        diag = diagnose_first_run(daemon_alive=False)
+        assert diag.kind == "no_daemon"
+
     def test_a_present_chat_tool_is_a_source(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         data_home, _ = _set_xdg(monkeypatch, tmp_path)
         _create_index_db(data_home)

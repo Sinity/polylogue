@@ -24,7 +24,6 @@ outside this module without a declared reason.
 from __future__ import annotations
 
 import io
-import json
 import zipfile
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -68,18 +67,26 @@ def refuse_declared_foreign(name: str, location: Provider | str | None) -> None:
 class BoundRecordValidator:
     """Incremental origin validation of a bound JSON/JSONL byte stream.
 
-    - A JSONL stream is validated record by record: each line is buffered
-      whole (the parser materializes the same line) and decoded.
-    - A ``.json`` document is pushed through an incremental parser. A
-      top-level array is validated element by element, each as one record,
-      so memory holds one element; a top-level object is validated as the
-      document it is.
+    Every record is push-parsed as its bytes arrive, so no record is held as
+    bytes or as a second decoded copy:
 
-    No window truncates a record: a discriminator anywhere in a record is
-    seen. A malformed or truncated record is validated from the structure
-    that completed before the fault; malformed JSON itself is the parser's
-    typed concern, not a foreign-origin claim. Inactive for unbound
-    locations, declared ``raw-only`` paths and non-JSON material.
+    - A JSONL stream is validated record by record, each line through its
+      own incremental parser.
+    - A ``.json`` document goes through one incremental parser. A top-level
+      array is validated element by element, and a top-level object is
+      validated as the document it is.
+
+    A record (a JSONL line or an array element) is classified both as a
+    single record and as a one-record sequence, because some origins declare
+    only record detectors and others only sequence detectors. A string value
+    longer than :data:`_STRING_KEEP_CHARS` is kept as its prefix: origin
+    discriminators are short keys and values, and a multi-gigabyte embedded
+    tool result must not be copied to decide an origin. No window truncates
+    a record, so a discriminator anywhere in it is seen. A malformed or
+    truncated record is validated from the structure that completed before
+    the fault; malformed JSON itself is the parser's typed concern, not a
+    foreign-origin claim. Inactive for unbound locations, declared
+    ``raw-only`` paths and non-JSON material.
     """
 
     def __init__(self, name: str, location: Provider | str | None) -> None:
@@ -91,8 +98,8 @@ class BoundRecordValidator:
 
             active = not path_declaration_refuses_session(self._bound, Path(name))
         self.active = active
-        self._line = bytearray()
-        self._document = _DocumentValidator(self._bound) if active and not self._is_jsonl else None
+        self._document = _DocumentValidator(self._bound, records=False) if active and not self._is_jsonl else None
+        self._line: _DocumentValidator | None = None
         self._finished = False
 
     def feed(self, chunk: bytes) -> None:
@@ -104,11 +111,14 @@ class BoundRecordValidator:
         start = 0
         while start < len(chunk):
             newline = chunk.find(b"\n", start)
+            end = len(chunk) if newline == -1 else newline
+            if end > start:
+                if self._line is None:
+                    self._line = _DocumentValidator(self._bound, records=True)
+                self._line.feed(chunk[start:end])
             if newline == -1:
-                self._line += chunk[start:]
                 return
-            self._line += chunk[start:newline]
-            self._validate_line()
+            self._end_line()
             start = newline + 1
 
     def finish(self) -> None:
@@ -117,38 +127,49 @@ class BoundRecordValidator:
         self._finished = True
         if self._document is not None:
             self._document.finish()
-        elif self._line:
-            self._validate_line()
+        else:
+            self._end_line()
 
-    def _validate_line(self) -> None:
-        line = bytes(self._line)
-        self._line.clear()
-        if not line.strip():
-            return
-        try:
-            record = json.loads(line)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            record = _completed_structure(line)
-            if not isinstance(record, dict):
-                return
-        detect_provider_evidence([record], expected=self._bound)
+    def _end_line(self) -> None:
+        line, self._line = self._line, None
+        if line is not None:
+            line.finish()
+
+
+#: Characters of a string value kept for origin classification.
+_STRING_KEEP_CHARS = 4096
+
+
+class _PrefixObjectBuilder(ObjectBuilder):
+    """Build a JSON value keeping only a prefix of each long string."""
+
+    def event(self, event: str, value: object) -> None:
+        if event == "string" and isinstance(value, str) and len(value) > _STRING_KEEP_CHARS:
+            value = value[:_STRING_KEEP_CHARS]
+        super().event(event, value)
 
 
 class _DocumentValidator:
-    """Push-parse one JSON document, validating array elements as they complete."""
+    """Push-parse one JSON value, validating array elements as they complete.
 
-    def __init__(self, bound: Provider | None) -> None:
+    ``records`` marks a JSONL line, whose top-level object is a record.
+    """
+
+    def __init__(self, bound: Provider | None, *, records: bool) -> None:
         self._bound = bound
+        self._records = records
         self._events = ijson.sendable_list()
         self._parser = ijson.basic_parse_coro(self._events, use_float=True)
         self._depth = 0
         self._top: str | None = None
         self._builder: ObjectBuilder | None = None
         self._failed = False
+        self._seen = False
 
     def feed(self, chunk: bytes) -> None:
         if self._failed:
             return
+        self._seen = self._seen or bool(chunk.strip())
         try:
             self._parser.send(chunk)
         except ijson.JSONError:
@@ -158,7 +179,7 @@ class _DocumentValidator:
             self._validate_partial()
 
     def finish(self) -> None:
-        if self._failed:
+        if self._failed or not self._seen:
             return
         try:
             self._parser.close()
@@ -180,7 +201,7 @@ class _DocumentValidator:
             if opening:
                 self._top = event
                 if event == "start_map":
-                    self._builder = ObjectBuilder()
+                    self._builder = _PrefixObjectBuilder()
                     self._builder.event(event, value)
                 self._depth = 1
             return
@@ -190,7 +211,7 @@ class _DocumentValidator:
                 return
             if not opening:
                 return  # a scalar array element carries no record shape
-            self._builder = ObjectBuilder()
+            self._builder = _PrefixObjectBuilder()
         assert self._builder is not None
         self._builder.event(event, value)
         if opening:
@@ -198,10 +219,10 @@ class _DocumentValidator:
         elif closing:
             self._depth -= 1
             if self._depth == 1 and self._top == "start_array":
-                self._validate(self._builder.value, element=True)
+                self._validate(self._builder.value, record=True)
                 self._builder = None
             elif self._depth == 0:
-                self._validate(self._builder.value, element=False)
+                self._validate(self._builder.value, record=self._records)
                 self._builder = None
 
     def _validate_partial(self) -> None:
@@ -210,21 +231,14 @@ class _DocumentValidator:
         partial = getattr(self._builder, "value", None)
         self._builder = None
         if isinstance(partial, (dict, list)) and partial:
-            self._validate(partial, element=self._top == "start_array")
+            self._validate(partial, record=self._records or self._top == "start_array")
 
-    def _validate(self, value: object, *, element: bool) -> None:
-        detect_provider_evidence([value] if element else value, expected=self._bound)
-
-
-def _completed_structure(data: bytes) -> object:
-    """The values whose lexical tokens completed inside malformed JSON bytes."""
-    builder = ObjectBuilder()
-    try:
-        for event, value in ijson.basic_parse(io.BytesIO(data), use_float=True):
-            builder.event(event, value)
-    except ijson.JSONError:
-        pass
-    return getattr(builder, "value", None)
+    def _validate(self, value: object, *, record: bool) -> None:
+        detect_provider_evidence(value, expected=self._bound)
+        if record:
+            # Origins declare record detectors or sequence detectors; a
+            # record is checked against both.
+            detect_provider_evidence([value], expected=self._bound)
 
 
 class BoundStream(io.RawIOBase):

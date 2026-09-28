@@ -21,7 +21,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_raw_id, zip_member_source_index
 from polylogue.logging import WARNING, emit
-from polylogue.sources.acquisition_boundary import refuse_declared_foreign, release_captures_on_refusal
+from polylogue.sources.acquisition_boundary import refuse_declared_foreign
 from polylogue.sources.decoder_zip import (
     ZipEntryValidator,
     declared_artifact_provider,
@@ -161,14 +161,9 @@ def iter_retained_source_records(
                 blob_store,
                 bound_provider=location_binding,
             )
-            member_records: list[RawSessionData] = []
             try:
-                # Splits captured before a refusal are released with it.
-                with release_captures_on_refusal(blob_store) as captures:
-                    for data in iter_zip_entry_raw_data(archive, context):
-                        member_records.append(data)
-                        if data.blob_hash is not None:
-                            captures.append((data.blob_hash, data.blob_publication_receipt_id))
+                # The member is released whole: a refusal releases its splits.
+                member_records = list(iter_zip_entry_raw_data(archive, context))
             except ForeignOriginContentError as exc:
                 # The declared source binds; a foreign member is a typed
                 # refusal in the member denominator, never a retained raw.
