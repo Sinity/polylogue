@@ -1295,7 +1295,7 @@ class CaptureAssertionCandidateActuator(_FailClosedRecovery):
         assertion_id = str(context["assertion_id"])
         user_db = args.archive.user_db_path
         try:
-            conn = open_connection(user_db)
+            conn = open_connection(user_db, archive_root=args.archive._write_lease_archive_root)
             conn.row_factory = sqlite3.Row
             try:
                 conn.execute("BEGIN IMMEDIATE")
@@ -1429,7 +1429,7 @@ class SetUserSettingActuator(_FailClosedRecovery):
         if not user_db.exists():
             raise ValueError("user settings tier is not initialized")
         try:
-            conn = open_connection(user_db)
+            conn = open_connection(user_db, archive_root=args.archive._write_lease_archive_root)
             conn.row_factory = sqlite3.Row
             try:
                 conn.execute("BEGIN IMMEDIATE")
