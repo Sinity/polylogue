@@ -271,3 +271,56 @@ def test_no_rerun_without_fresh_scratch(tmp_path: Path, monkeypatch: pytest.Monk
 
     assert started == []
     assert json.loads((step / RERUN_IN_SLOT_RESULT).read_text(encoding="utf-8"))["rerun_exit"] == 125
+
+
+def test_a_rerun_keeps_the_first_runs_execution_options() -> None:
+    """Anti-vacuity: drop the kept options and ``-W error`` is lost, so a warning
+    failure passes on rerun under the default policy."""
+    command = [
+        "python",
+        "-m",
+        "pytest",
+        "-p",
+        "devtools.pytest_progress_plugin",
+        "--override-ini=addopts=",
+        "--polylogue-report-file=r.json",
+        "tests/test_w.py",
+        "-W",
+        "error",
+        "-k",
+        "slow",
+        "-n",
+        "4",
+        "--dist=loadgroup",
+        "-p",
+        "no:randomly",
+        "-o",
+        "xfail_strict=true",
+        "-x",
+    ]
+    assert pytest_rerun.semantic_rerun_options(command) == [
+        "-W",
+        "error",
+        "-p",
+        "no:randomly",
+        "-o",
+        "xfail_strict=true",
+    ]
+
+
+def test_scratch_is_kept_when_the_rerun_ran_other_content(tmp_path: Path) -> None:
+    """Anti-vacuity: ignore provenance in the cleanup decision and a rejected
+    rerun deletes the red run's diagnostic scratch."""
+    step = tmp_path / "step"
+    step.mkdir()
+    (step / RERUN_IN_SLOT_RESULT).write_text(
+        json.dumps({"attempted": ["t"], "rerun_exit": 0, "worktree_provenance": {"git_head": "new"}}),
+        encoding="utf-8",
+    )
+    (step / "pytest-rerun.json").write_text(
+        json.dumps({"tests": [{"nodeid": "t", "outcome": "passed"}]}), encoding="utf-8"
+    )
+    env = {RERUN_IN_SLOT_ENV: json.dumps({"report_path": "r", "step_dir": str(step), "root": str(tmp_path)})}
+
+    assert pytest_slot._in_slot_rerun_cleared(env, first_provenance={"git_head": "old"}) is False
+    assert pytest_slot._in_slot_rerun_cleared(env, first_provenance={"git_head": "new"}) is True

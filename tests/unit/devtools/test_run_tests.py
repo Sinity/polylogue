@@ -1539,3 +1539,12 @@ def test_an_ignored_root_pytest_config_disables_reuse(tmp_path: Path) -> None:
     (tmp_path / ".git" / "info" / "exclude").write_text("pytest.ini\n", encoding="utf-8")
     (tmp_path / "pytest.ini").write_text("[pytest]\npython_functions = nope_*\n", encoding="utf-8")
     assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
+
+
+def test_a_newer_red_run_outranks_an_older_green(tmp_path: Path) -> None:
+    """Anti-vacuity: skip non-green receipts while scanning and the older green is returned."""
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py"]
+    _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
+    _green_receipt(runs, "20260102T000000Z-focused-test-2-b", argv=selection, digest="d1", status="failed", exit_code=1)
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None

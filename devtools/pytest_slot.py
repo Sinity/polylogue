@@ -1126,8 +1126,8 @@ def _run_held(
     )
 
 
-def _in_slot_rerun_cleared(env: Mapping[str, str]) -> bool:
-    """Whether this launch's in-slot rerun passed every failure it reran."""
+def _in_slot_rerun_cleared(env: Mapping[str, str], *, first_provenance: object = None) -> bool:
+    """Whether this launch's in-slot rerun passed every failure it reran, on the same content."""
     from devtools.pytest_rerun import RERUN_IN_SLOT_ENV, RERUN_IN_SLOT_RESULT
 
     raw = env.get(RERUN_IN_SLOT_ENV)
@@ -1148,6 +1148,10 @@ def _in_slot_rerun_cleared(env: Mapping[str, str]) -> bool:
         str(test.get("nodeid")): test.get("outcome") for test in rerun.get("tests", []) if isinstance(test, dict)
     }
     attempted = record.get("attempted")
+    # A rerun over different content is rejected by the client, which leaves
+    # the run red; its scratch is diagnostic evidence then.
+    if record.get("worktree_provenance") != first_provenance:
+        return False
     return isinstance(attempted, list) and all(outcomes.get(str(nodeid)) == "passed" for nodeid in attempted)
 
 
@@ -1204,7 +1208,10 @@ def run_pytest(
         # A queued job keeps its first attempt's exit code even when its
         # in-slot rerun cleared every failure; that run is green, so its
         # scratch goes like any green run's.
-        keep = outcome.returncode != 0 and not _in_slot_rerun_cleared(env)
+        keep = outcome.returncode != 0 and not _in_slot_rerun_cleared(
+            env,
+            first_provenance=outcome.receipt.get("worktree_provenance") if isinstance(outcome.receipt, dict) else None,
+        )
         return outcome
     finally:
         dispose()
@@ -1290,9 +1297,10 @@ def _rerun_failures_in_slot(
     try:
         spec = json.loads(raw)
         report_path, step_dir, root = Path(spec["report_path"]), Path(spec["step_dir"]), Path(spec["root"])
+        options = [str(option) for option in spec.get("options") or []]
     except (ValueError, KeyError, TypeError):
         return
-    plan = build_rerun(report_path=report_path, step_dir=step_dir, root=root)
+    plan = build_rerun(report_path=report_path, step_dir=step_dir, root=root, options=options)
     if plan is None:
         return
     failed, command, _rerun_report = plan

@@ -53,7 +53,7 @@ from devtools.pytest_invocation import (
     effective_hypothesis_profile,
     managed_plugin_args,
 )
-from devtools.pytest_rerun import RERUN_IN_SLOT_ENV, rerun_failed_once
+from devtools.pytest_rerun import RERUN_IN_SLOT_ENV, rerun_failed_once, semantic_rerun_options
 from devtools.pytest_slot import (
     WORKTREE_PROVENANCE_ENV,
     PytestSlotObservationUnavailableError,
@@ -429,17 +429,23 @@ def reusable_green_receipt(
         except (OSError, ValueError):
             continue
         fingerprint = payload.get("environment_fingerprint") or {}
-        if (
-            payload.get("status") == "success"
-            and payload.get("exit_code") == 0
-            and payload.get("argv") == selection
+        same_inputs = (
+            payload.get("argv") == selection
             and payload.get("execution_environment_key") == environment_key
             and payload.get("git_worktree_content_sha256") == content_sha256
-            and (payload.get("pytest_aggregate") or {}).get("terminal_green") is True
             and (str(Path(fingerprint.get("python_executable", "")).resolve()), fingerprint.get("python_version"))
             == (str(Path(interpreter[0]).resolve()), interpreter[1])
-        ):
-            return receipt
+        )
+        if not same_inputs:
+            continue
+        # The newest run of these exact inputs decides: an older green never
+        # outranks a later red of the same selection on the same tree.
+        green = (
+            payload.get("status") == "success"
+            and payload.get("exit_code") == 0
+            and (payload.get("pytest_aggregate") or {}).get("terminal_green") is True
+        )
+        return receipt if green else None
     return None
 
 
@@ -762,7 +768,12 @@ def _run(
         # A queued job reruns its own failures before releasing the slot, so a
         # red run is adjudicated without a second queue wait.
         env[RERUN_IN_SLOT_ENV] = json.dumps(
-            {"report_path": str(report_path), "step_dir": str(artifacts.step_dir), "root": str(ROOT)}
+            {
+                "report_path": str(report_path),
+                "step_dir": str(artifacts.step_dir),
+                "root": str(ROOT),
+                "options": semantic_rerun_options(command),
+            }
         )
         outcome = executor(command, cwd=cwd, env=env, root=ROOT)
     except PytestSlotUnavailableError as exc:
@@ -815,6 +826,7 @@ def _run(
             first_provenance=(
                 outcome.receipt.get("worktree_provenance") if isinstance(outcome.receipt, dict) else None
             ),
+            options=semantic_rerun_options(command),
         )
         if returncode == 1
         else None
