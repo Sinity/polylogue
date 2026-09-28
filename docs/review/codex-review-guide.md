@@ -31,6 +31,8 @@ P1 (merge blocker):
 
 - durable-tier data loss or corruption, or a durable reference that can
   re-point (message and block identity, the `pipeline/ids.py` hash partition);
+- deleting or reinitializing a populated `embeddings.db` outside a declared,
+  backup-gated route (its vectors are purchased again);
 - input silently dropped, truncated, or duplicated while the run reports
   success or complete enumeration;
 - a writable open or mutation of a live archive that bypasses the daemon
