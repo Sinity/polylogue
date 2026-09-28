@@ -28,6 +28,7 @@ from devtools.verify_runs import (
     git_worktree_content_sha256,
     pytest_command_worker_request,
 )
+from devtools.worker_memory import CHARGE_PROFILE_ENV, FOCUSED_MAX_WORKERS
 
 
 @pytest.fixture(autouse=True)
@@ -130,7 +131,7 @@ def test_build_pytest_cmd_ignores_workers_env_for_focused_default(monkeypatch: p
     cmd = run_tests.build_pytest_cmd(["tests/unit/devtools/test_run_tests.py"])
     assert "-n" not in cmd
     large = run_tests.build_pytest_cmd(["tests/unit"])
-    assert large[large.index("-n") + 1] == str(run_tests.FOCUSED_MAX_WORKERS)
+    assert large[large.index("-n") + 1] == str(FOCUSED_MAX_WORKERS)
 
 
 def test_a_large_selection_runs_under_xdist_and_a_small_one_does_not() -> None:
@@ -145,7 +146,7 @@ def test_a_large_selection_runs_under_xdist_and_a_small_one_does_not() -> None:
     assert "xdist" not in small
 
     large = run_tests.build_pytest_cmd(["tests/unit/devtools"])
-    assert large[large.index("-n") + 1] == str(run_tests.FOCUSED_MAX_WORKERS)
+    assert large[large.index("-n") + 1] == str(FOCUSED_MAX_WORKERS)
     assert "xdist" in large
     assert "--dist=loadgroup" in large
 
@@ -156,7 +157,7 @@ def test_focused_environment_declares_the_focused_charge_profile(tmp_path: Path)
 
     environment = run_tests.focused_pytest_env(run=run, artifacts=artifacts)
 
-    assert environment[run_tests.CHARGE_PROFILE_ENV] == "focused"
+    assert environment[CHARGE_PROFILE_ENV] == "focused"
 
 
 def test_build_pytest_cmd_preserves_explicit_xdist_distribution() -> None:
@@ -1350,7 +1351,7 @@ def test_a_branch_switch_during_lookup_refuses_reuse(monkeypatch: pytest.MonkeyP
 def test_a_standalone_flag_before_a_large_directory_keeps_xdist() -> None:
     """Anti-vacuity: treat ``-x`` as taking an operand and ``tests/unit/devtools`` counts nothing."""
     cmd = run_tests.build_pytest_cmd(["-x", "tests/unit/devtools"])
-    assert cmd[cmd.index("-n") + 1] == str(run_tests.FOCUSED_MAX_WORKERS)
+    assert cmd[cmd.index("-n") + 1] == str(FOCUSED_MAX_WORKERS)
 
 
 def test_benchmark_selections_never_get_automatic_workers() -> None:
