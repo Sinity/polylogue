@@ -30,16 +30,12 @@ def execute_lineage_read(payload: Mapping[str, object], *, archive: ArchiveStore
     if graph is None:
         raise KeyError(f"Session not found: {payload['session_id']}")
     result = graph.model_dump(mode="json")
-    truncated = graph.node_page.has_more or graph.edge_page.has_more
-    reason = (
-        "nodes"
-        if graph.node_page.has_more
-        else "edges"
-        if graph.edge_page.has_more
-        else "cycle"
-        if graph.cycle_detected
-        else None
-    )
+    # A page past offset 0 omits earlier rows just as a page with more after it
+    # omits later ones; either way this answer is not the whole graph.
+    nodes_partial = graph.node_page.has_more or (_int_field(payload, "node_offset", 0) or 0) > 0
+    edges_partial = graph.edge_page.has_more or (_int_field(payload, "edge_offset", 0) or 0) > 0
+    truncated = nodes_partial or edges_partial
+    reason = "nodes" if nodes_partial else "edges" if edges_partial else "cycle" if graph.cycle_detected else None
     outcome = lineage_page_outcome(
         matched=len(graph.nodes), complete=not truncated and not graph.cycle_detected, truncation_reason=reason
     )

@@ -573,14 +573,14 @@ def audit_source_conservation(
 
     typed_rows = conn.execute(
         f"{heads_cte} SELECT raw_id, origin, source_path, artifact_kind, bytes_retained, blocker_reason, "
-        f"{term_case} AS term FROM heads"
+        f"blob_hash, {term_case} AS term FROM heads"
     ).fetchall()
 
     counts: dict[str, int] = {}
     samples: dict[str, list[str]] = {}
     breakdowns: dict[str, dict[str, int]] = {}
     missing_paths: dict[str, bool] = {}
-    for raw_id, origin, source_path, artifact_kind, bytes_retained, blocker_reason, term in typed_rows:
+    for raw_id, origin, source_path, artifact_kind, bytes_retained, blocker_reason, blob_hash, term in typed_rows:
         if probe_filesystem:
             present = missing_paths.get(source_path)
             if present is None:
@@ -588,10 +588,7 @@ def audit_source_conservation(
                 missing_paths[source_path] = present
             if not present:
                 retained = bool(bytes_retained)
-                blob_hash_row = conn.execute(
-                    "SELECT blob_hash FROM raw_sessions WHERE raw_id = ?", (raw_id,)
-                ).fetchone()
-                blob_hash = blob_hash_row[0] if blob_hash_row else None
+                # blob_hash comes from the census query itself: no per-row read.
                 if blob_hash is not None:
                     digest = bytes(blob_hash).hex() if isinstance(blob_hash, (bytes, memoryview)) else str(blob_hash)
                     retained = retained and blob_store.exists(digest)

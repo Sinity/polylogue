@@ -27,7 +27,6 @@ from polylogue.operations.read_contracts import (
     SessionReferenceRequest,
     SessionReferenceResult,
 )
-from polylogue.operations.topology_envelope import MAX_NODE_LIMIT
 
 DAEMON_OPERATION_PROTOCOL = "polylogue.daemon-operation/v1"
 MAX_OPERATION_BODY_BYTES = 64 * 1024
@@ -111,7 +110,7 @@ class LineageReadRequest(_OperationPayload):
 class TopologyReadRequest(_OperationPayload):
     session_id: str = Field(min_length=1)
     node_offset: int = Field(default=0, ge=0)
-    node_limit: int = Field(default=200, ge=1, le=MAX_NODE_LIMIT)
+    node_limit: int = Field(default=200, ge=1)
     edge_limit: int = Field(default=500, ge=1)
 
 

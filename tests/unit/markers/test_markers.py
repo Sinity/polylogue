@@ -82,6 +82,18 @@ def test_trailing_unterminated_inline_marker_survives_after_valid_marker() -> No
     ]
 
 
+def test_nested_inline_opener_inside_accepted_span_is_not_also_malformed() -> None:
+    """Anti-vacuity: flagging the outer opener as unterminated emits overlapping valid and malformed markers."""
+    found = parse_markers("[[note: first [[note: second]]")
+    spans = [(item.start, item.end) for item in found]
+    assert all(
+        not (a_start < b_end and b_start < a_end)
+        for index, (a_start, a_end) in enumerate(spans)
+        for b_start, b_end in spans[index + 1 :]
+    )
+    assert [item.malformed for item in found] == [False]
+
+
 def test_stream_offsets_include_previously_consumed_chunks() -> None:
     """Anti-vacuity: resetting offsets for each feed points at the wrong source text."""
     stream = MarkerStreamParser()

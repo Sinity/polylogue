@@ -86,8 +86,10 @@ def parse_markers(text: str, *, registry: MarkerRegistry = MARKER_REGISTRY) -> t
                         malformed=True,
                     )
                 )
+            accepted_spans: list[tuple[int, int]] = []
             for inline in _INLINE.finditer(line):
                 kind = inline.group("kind")
+                accepted_spans.append((inline.start(), inline.end()))
                 matches.append(
                     MarkerMatch(
                         kind if kind in registry else "malformed",
@@ -102,6 +104,10 @@ def parse_markers(text: str, *, registry: MarkerRegistry = MARKER_REGISTRY) -> t
                 )
             raw_line = line.rstrip("\r\n")
             for inline in _INLINE_OPEN.finditer(raw_line):
+                if any(start <= inline.start() < end for start, end in accepted_spans):
+                    # Already covered by an accepted inline span; a second,
+                    # overlapping malformed marker would contradict it.
+                    continue
                 body_start = inline.end()
                 next_open = raw_line.find("[[", body_start)
                 close = raw_line.find("]]", body_start)
