@@ -466,7 +466,7 @@ def _iter_tree(root: Path, *, label: str) -> Iterator[os.stat_result]:
             or not stat.S_ISDIR(current.st_mode)
             or (current.st_dev, current.st_ino) != expected_identity
         ):
-            continue
+            raise ArchiveCapacityError(f"directory changed during capacity measurement: {directory}")
         try:
             with os.scandir(directory) as scan:
                 entries = list(scan)
@@ -576,7 +576,7 @@ def _generation_roots(configured: Path, location: ArchiveLocation) -> tuple[Path
 
     target = canonical_active_index_path(location).parent / GENERATIONS_DIRNAME
     target = _checked_generations_root(target, label="active pointer generation root")
-    if target.absolute() == configured.absolute():
+    if target.resolve(strict=False) == configured.resolve(strict=False):
         return (configured,)
     return (configured, target)
 
@@ -788,12 +788,11 @@ def measure_archive_capacity(archive_root: Path) -> ArchiveCapacityInventory:
 
 
 def _active_generation_id(location: ArchiveLocation) -> str | None:
-    parts = location.active_index_path.resolve(strict=False).parts
-    try:
-        depth = parts.index(GENERATIONS_DIRNAME)
-    except ValueError:
+    active = location.active_index_path.resolve(strict=False)
+    generations_root = active.parent.parent
+    if generations_root.name != GENERATIONS_DIRNAME:
         return None
-    return parts[depth + 1] if len(parts) > depth + 1 else None
+    return active.parent.name
 
 
 def _measure_generations(

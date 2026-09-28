@@ -341,7 +341,7 @@ _ARCHIVE_MEMBER_SEPARATOR = "!"
 
 # Keyed by (container, mtime_ns, size) so a rewritten archive is never answered
 # from a stale namelist.
-_MEMBER_NAMELIST_CACHE: dict[tuple[str, int, int], frozenset[str] | None] = {}
+_MEMBER_NAMELIST_CACHE: dict[tuple[str, int, int, int, int], frozenset[str] | None] = {}
 
 
 def _member_names(container: Path) -> frozenset[str] | None:
@@ -350,7 +350,7 @@ def _member_names(container: Path) -> frozenset[str] | None:
         stat = container.stat()
     except OSError:
         return None
-    key = (str(container), stat.st_mtime_ns, stat.st_size)
+    key = (str(container), stat.st_dev, stat.st_ino, stat.st_ctime_ns, stat.st_mtime_ns)
     if key not in _MEMBER_NAMELIST_CACHE:
         try:
             with zipfile.ZipFile(container) as archive:
@@ -565,6 +565,9 @@ def audit_source_conservation(
     source tier with the index tier attached as ``idx_tier`` (read-only)."""
     if frontier is not None:
         frontier.verify_integrity()
+    from polylogue.storage.blob_store import BlobStore
+
+    blob_store = BlobStore(archive_root / "blob")
     heads_cte, term_case = raw_term_case(conn)
     forward_total = int(conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0])
 
@@ -584,7 +587,15 @@ def audit_source_conservation(
                 present = _source_exists(archive_root, str(source_path))
                 missing_paths[source_path] = present
             if not present:
-                term = _TERM_SOURCE_MISSING if bytes_retained else _TERM_SOURCE_LOST
+                retained = bool(bytes_retained)
+                blob_hash_row = conn.execute(
+                    "SELECT blob_hash FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+                ).fetchone()
+                blob_hash = blob_hash_row[0] if blob_hash_row else None
+                if blob_hash is not None:
+                    digest = bytes(blob_hash).hex() if isinstance(blob_hash, (bytes, memoryview)) else str(blob_hash)
+                    retained = retained and blob_store.exists(digest)
+                term = _TERM_SOURCE_MISSING if retained else _TERM_SOURCE_LOST
         counts[term] = counts.get(term, 0) + 1
         bucket = samples.setdefault(term, [])
         if len(bucket) < sample_limit:
@@ -662,18 +673,30 @@ def audit_source_conservation(
     phantom_lineage_breakdown: dict[str, int] = {}
     phantom_identity: list[str] = []
     phantom_identity_breakdown: dict[str, int] = {}
-    for session_id, native_id, origin, source_path, parse_as_session, artifact_kind in conn.execute(
+    for session_id, native_id, source_path, parse_as_session, artifact_kind, acquisition_origin in conn.execute(
         f"""
-        SELECT s.session_id, s.native_id, s.origin, r.source_path, {parse_as_session_expr}, {kind_expr}
+        SELECT s.session_id, s.native_id, r.source_path, {parse_as_session_expr}, {kind_expr}, r.origin
         FROM idx_tier.sessions s
         JOIN raw_sessions r ON r.raw_id = s.raw_id
         """
     ):
         lineage_class: str | None = None
-        if parse_as_session == 0 and artifact_kind is not None and artifact_kind != "unknown":
+        if (
+            parse_as_session == 0
+            and artifact_kind is not None
+            and artifact_kind != "unknown"
+            and artifact_kind != "terminal_superseded_deferred_cas_frontier"
+        ):
             lineage_class = f"artifact:{artifact_kind}"
         else:
-            rule = _declared_non_session_rule(rules_by_origin, str(origin), source_path)
+            if artifact_kind in {
+                "terminal_superseded_deferred_cas_frontier",
+                "raw_failure_carrier",
+                "resolution_carrier",
+            }:
+                rule = None
+            else:
+                rule = _declared_non_session_rule(rules_by_origin, str(acquisition_origin), source_path)
             if rule is not None:
                 lineage_class = f"rule:{rule.kind}"
         if lineage_class is not None:
@@ -730,14 +753,14 @@ def audit_source_conservation(
             conn.execute(
                 """
                 SELECT COUNT(*) FROM idx_tier.attachment_refs ar
-                WHERE NOT EXISTS (SELECT 1 FROM idx_tier.messages m WHERE m.message_id = ar.message_id)
+                WHERE NOT EXISTS (SELECT 1 FROM idx_tier.messages m WHERE m.message_id = ar.message_id AND m.session_id = ar.session_id)
                 """
             ).fetchone()[0]
         )
         attachment_ref_orphans = conn.execute(
             """
             SELECT ar.ref_id FROM idx_tier.attachment_refs ar
-            WHERE NOT EXISTS (SELECT 1 FROM idx_tier.messages m WHERE m.message_id = ar.message_id)
+            WHERE NOT EXISTS (SELECT 1 FROM idx_tier.messages m WHERE m.message_id = ar.message_id AND m.session_id = ar.session_id)
             LIMIT ?
             """,
             (sample_limit,),
@@ -866,13 +889,16 @@ def audit_source_conservation(
             label = f"{member.source_id}:{member.coordinate}"
             if not owners:
                 frontier_counts[_TERM_FRONTIER_UNACQUIRED] = frontier_counts.get(_TERM_FRONTIER_UNACQUIRED, 0) + 1
-                frontier_samples.setdefault(_TERM_FRONTIER_UNACQUIRED, []).append(label)
+                if len(frontier_samples.setdefault(_TERM_FRONTIER_UNACQUIRED, [])) < sample_limit:
+                    frontier_samples[_TERM_FRONTIER_UNACQUIRED].append(label)
             elif len(owners) > 1:
                 frontier_counts[_TERM_FRONTIER_DUPLICATE] = frontier_counts.get(_TERM_FRONTIER_DUPLICATE, 0) + 1
-                frontier_samples.setdefault(_TERM_FRONTIER_DUPLICATE, []).append(label)
+                if len(frontier_samples.setdefault(_TERM_FRONTIER_DUPLICATE, [])) < sample_limit:
+                    frontier_samples[_TERM_FRONTIER_DUPLICATE].append(label)
         for blocker in frontier.blockers:
             frontier_counts[_TERM_FRONTIER_UNAVAILABLE] = frontier_counts.get(_TERM_FRONTIER_UNAVAILABLE, 0) + 1
-            frontier_samples.setdefault(_TERM_FRONTIER_UNAVAILABLE, []).append(blocker)
+            if len(frontier_samples.setdefault(_TERM_FRONTIER_UNAVAILABLE, [])) < sample_limit:
+                frontier_samples[_TERM_FRONTIER_UNAVAILABLE].append(blocker)
         # A raw whose source coordinate is not represented by any configured
         # member is an unowned acquisition, even when aggregate row counts
         # happen to match the frontier denominator.
@@ -888,7 +914,8 @@ def audit_source_conservation(
             if str(raw_id) in raw_bound or str(source_path) in configured_paths:
                 continue
             frontier_counts[_TERM_FRONTIER_ORPHAN] = frontier_counts.get(_TERM_FRONTIER_ORPHAN, 0) + 1
-            frontier_samples.setdefault(_TERM_FRONTIER_ORPHAN, []).append(str(raw_id))
+            if len(frontier_samples.setdefault(_TERM_FRONTIER_ORPHAN, [])) < sample_limit:
+                frontier_samples[_TERM_FRONTIER_ORPHAN].append(str(raw_id))
         # Membership content is an independent semantic witness.  A row that
         # keeps its identity but changes its normalized content must not pass
         # merely because the raw was acquired and a session row exists.

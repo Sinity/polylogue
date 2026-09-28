@@ -334,6 +334,8 @@ def audit_revision_fidelity(
                         state = "prefix_composed"
                 except (KeyError, sqlite3.Error) as exc:
                     reasons.append("lineage_read_failed:" + type(exc).__name__)
+        elif have_messages is None and session_id in indexed_sessions:
+            have_messages = 0
         elif have_messages is None:
             reasons.append("indexed_messages_missing")
         elif have_messages == best_count:
@@ -362,9 +364,17 @@ def audit_revision_fidelity(
             "inheritance": inheritance,
             "best_recorded_messages": best_count,
         }
-        states.append(record)
+        if len(states) < sample_limit:
+            states.append(record)
         if state == "unresolved_shortfall":
             worst.append(record)
+            worst.sort(
+                key=lambda item: (
+                    item["indexed_messages"] is not None,
+                    (item["indexed_messages"] or 0) - item["best_recorded_messages"],
+                )
+            )
+            del worst[sample_limit:]
     worst.sort(
         key=lambda item: (
             item["indexed_messages"] is not None,
@@ -508,9 +518,15 @@ def audit_chatgpt_content_conservation(
         artifact_classes["raw_session"] += 1
         try:
             blob = read_blob(bytes(blob_hash).hex())
-            payload = json.loads(blob)
-        except (OSError, ValueError, TypeError):
+        except OSError:
             blobs_missing += 1
+            if len(unreadable_raws) < sample_limit:
+                unreadable_raws.append(str(raw_id))
+            continue
+        try:
+            payload = json.loads(blob)
+        except (ValueError, TypeError):
+            unsupported_envelope_classes["malformed_json"] += 1
             if len(unreadable_raws) < sample_limit:
                 unreadable_raws.append(str(raw_id))
             continue
