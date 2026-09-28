@@ -690,6 +690,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
         MCPUserMarkListPayload,
         MCPUserMarkPayload,
     )
+    from polylogue.surfaces.outcome import decide_outcome
 
     poly = hooks.get_polylogue()
     clamped_limit = hooks.clamp_limit(limit)
@@ -718,6 +719,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                     limit=clamped_limit,
                     offset=mark_offset,
                     next_offset=mark_next_offset,
+                    outcome=decide_outcome(matched=mark_total),
                 )
             )
 
@@ -746,6 +748,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                     limit=clamped_limit,
                     offset=annotation_offset,
                     next_offset=annotation_next_offset,
+                    outcome=decide_outcome(matched=annotation_total),
                 )
             )
 
@@ -762,6 +765,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                     limit=clamped_limit,
                     offset=view_offset,
                     next_offset=view_next_offset,
+                    outcome=decide_outcome(matched=view_total),
                 )
             )
 
@@ -778,6 +782,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                     limit=clamped_limit,
                     offset=pack_offset,
                     next_offset=pack_next_offset,
+                    outcome=decide_outcome(matched=pack_total),
                 )
             )
 
@@ -794,6 +799,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                     limit=clamped_limit,
                     offset=workspace_offset,
                     next_offset=workspace_next_offset,
+                    outcome=decide_outcome(matched=workspace_total),
                 )
             )
 
@@ -820,6 +826,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                         "limit": clamped_limit,
                         "offset": correction_offset,
                         "next_offset": correction_next_offset,
+                        "outcome": decide_outcome(matched=correction_total).to_dict(),
                     }
                 )
             )
@@ -831,7 +838,12 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
         )
         return hooks.json_payload(
             MCPBlackboardNoteListPayload(
-                items=note_page, total=note_total, limit=clamped_limit, offset=note_offset, next_offset=note_next_offset
+                items=note_page,
+                total=note_total,
+                limit=clamped_limit,
+                offset=note_offset,
+                next_offset=note_next_offset,
+                outcome=decide_outcome(matched=note_total),
             )
         )
 

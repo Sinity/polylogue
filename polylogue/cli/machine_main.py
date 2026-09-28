@@ -97,7 +97,7 @@ def run_machine_entry(
 
     if not wants_json(argv):
         try:
-            cli(standalone_mode=False)
+            result = cli(standalone_mode=False)
         except click.UsageError as exc:
             _show_usage_with_hint(exc)
             raise SystemExit(getattr(exc, "exit_code", 2)) from exc
@@ -127,11 +127,13 @@ def run_machine_entry(
         except Exception as exc:
             click.ClickException(f"unexpected error: {type(exc).__name__}: {exc}").show()
             raise SystemExit(1) from exc
+        if isinstance(result, int) and not isinstance(result, bool) and result:
+            raise SystemExit(result)
         return
 
     command = extract_command(argv)
     try:
-        cli(standalone_mode=False)
+        result = cli(standalone_mode=False)
     except click.UsageError as exc:
         option = getattr(exc, "option_name", None) or extract_option(str(exc))
         error_invalid_arguments(
@@ -211,6 +213,8 @@ def run_machine_entry(
             command=command,
             exception_type=type(exc).__qualname__,
         ).emit(exit_code=1)
+    if isinstance(result, int) and not isinstance(result, bool) and result:
+        raise SystemExit(result)
 
 
 __all__ = ["extract_option", "run_machine_entry"]

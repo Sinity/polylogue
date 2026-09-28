@@ -50,6 +50,20 @@ from tests.infra.builders import make_msg as build_msg
 from tests.infra.local_timezone import pinned_local_timezone
 
 
+def test_identity_fallback_is_not_ellipsized_as_a_title() -> None:
+    """Untitled rows preserve the identity carried in their title column.
+
+    Anti-vacuity: applying title ellipsizing to the fallback collapses two
+    sibling IDs that share a long origin prefix at narrow terminal widths.
+    """
+    from polylogue.cli.query_output import _display_title
+
+    first = "claude-code-session::agent-00009f"
+    second = "claude-code-session::agent-00099f"
+    assert _display_title(None, first, max_width=18) == first
+    assert _display_title(None, second, max_width=18) == second
+
+
 @dataclass(frozen=True)
 class FilterCase:
     name: str
