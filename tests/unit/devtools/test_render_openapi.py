@@ -48,6 +48,8 @@ def test_openapi_read_view_route_uses_shared_http_capability_contract() -> None:
     assert "context-image" in read_route["description"]
     assert "max_tokens" in parameters
     assert "message_role" not in parameters
+    declaration = read_route["x-polylogue-declaration"]
+    assert declaration["path"] == "/api/sessions/:id/read"
 
 
 def test_openapi_preserves_explicit_read_session_operation_id() -> None:

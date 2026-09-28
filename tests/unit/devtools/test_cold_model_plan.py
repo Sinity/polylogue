@@ -29,17 +29,28 @@ from devtools.continuity_cold_model import (
     reconcile_registry_coverage,
 )
 from devtools.continuity_scenarios import CONTINUITY_SCENARIOS, continuity_scenario
+from polylogue.core.json import JSONDocument
 
 _MODULE = Path(__file__).resolve().parents[3] / "devtools" / "continuity_cold_model.py"
 _AUTHOR_PLANS = Path(__file__).resolve().parents[2] / "data" / "continuity" / "author-recorded-plans.json"
 
 
 def _capture(tools: tuple[str, ...] = ("query", "status", "explain", "read", "get", "context")) -> WireDiscoveryCapture:
+    schemas: JSONDocument = {}
+    for name in tools:
+        required = {
+            argument
+            for scenario in CONTINUITY_SCENARIOS
+            for requirement in scenario.discovery_requirements
+            if requirement.tool == name
+            for argument in requirement.required_arguments
+        }
+        schemas[name] = {"input_schema": {"properties": {argument: {} for argument in required}}}
     return WireDiscoveryCapture(
         transport_name="mcp-stdio-json-rpc",
         protocol_version="2025-11-25",
         tools=tools,
-        tool_schemas={name: {"input_schema": {}} for name in tools},
+        tool_schemas=schemas,
         examples=({"key": "example-a"},),
         hops=2,
         schema_digest="schema",
@@ -145,7 +156,7 @@ class TestGrading:
         scenario = continuity_scenario("resume")
         plan = ColdModelPlan(
             steps=tuple(ColdModelPlanStep(step.tool, dict(step.argument_dict())) for step in scenario.route_steps),
-            stop_conditions=("no continuation",),
+            stop_conditions=continuity_scenario("resume").stop_conditions,
             citation_fields=("message_id",),
             uncertainty="medium",
         )
@@ -193,6 +204,47 @@ class TestGrading:
         )
         grades = {grade.axis: grade.status for grade in grade_formulation(scenario, plan, _capture(("status",)))}
         assert grades["discovery"] == "fail"
+
+    def test_missing_wire_argument_fails_discovery(self) -> None:
+        """Advertised tools with incomplete schemas do not pass discovery.
+
+        Anti-vacuity: checking names only accepts a query schema that dropped
+        the required expression field.
+        """
+        scenario = continuity_scenario("resume")
+        captured = _capture()
+        schemas = dict(captured.tool_schemas)
+        schemas["query"] = {"input_schema": {"properties": {"limit": {}}}}
+        partial = WireDiscoveryCapture(
+            captured.transport_name,
+            captured.protocol_version,
+            captured.tools,
+            schemas,
+            captured.examples,
+            captured.hops,
+            captured.schema_digest,
+            captured.catalog_digest,
+        )
+        plan = ColdModelPlan((), (), (), "low")
+        grades = {grade.axis: grade.status for grade in grade_formulation(scenario, plan, partial)}
+        assert grades["discovery"] == "fail"
+
+    def test_every_scenario_evidence_field_and_stop_condition_is_required(self) -> None:
+        """Partial citations or arbitrary nonempty stop prose cannot pass.
+
+        Anti-vacuity: accepting any intersection or any nonempty list lets the
+        forensic scenario omit required evidence and continuation conditions.
+        """
+        scenario = continuity_scenario("forensic-debug")
+        plan = ColdModelPlan(
+            tuple(ColdModelPlanStep(step.tool, dict(step.argument_dict())) for step in scenario.route_steps),
+            ("stop immediately",),
+            ("message_id",),
+            "low",
+        )
+        grades = {grade.axis: grade.status for grade in grade_formulation(scenario, plan, _capture())}
+        assert grades["citations"] == "fail"
+        assert grades["stop_conditions"] == "fail"
 
     def test_execution_axes_from_route(self) -> None:
         passing = grade_execution({"status": "pass", "diagnostics": []})

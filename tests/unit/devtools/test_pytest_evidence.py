@@ -119,6 +119,18 @@ def test_maxfail_is_an_ordinary_pytest_failure_not_incomplete_evidence() -> None
     assert result["diagnosis"] == "pytest_failed"
 
 
+def test_collection_error_with_zero_selected_items_is_failure() -> None:
+    """A nonzero collection exit must not be misdiagnosed as a selector miss."""
+    result = evaluate_pytest_evidence(
+        report={"tests": []},
+        selection={"selected_count": 0},
+        summary={"exitstatus": 2},
+        events=[],
+        exit_code=2,
+    )
+    assert result["diagnosis"] == "pytest_failed"
+
+
 def test_unpublished_terminal_summary_is_refused() -> None:
     """Exit zero plus every earlier artifact is not a terminal verdict.
 
