@@ -743,6 +743,11 @@ def test_schema_open_seeds_legacy_jobs_with_created_event(tmp_path: Path) -> Non
                 "2026-01-01T00:00:00Z",
             ),
         )
+    # A legacy database is first opened by a new receiver process: forget this
+    # process's completed schema upgrade so the next open runs it again.
+    from polylogue.browser_capture import capture_jobs
+
+    capture_jobs._SCHEMA_READY.clear()
     with registry._connection() as connection:
         events, _ = read_capture_job_events(connection, "legacy-job", 10)
     assert len(events) == 1

@@ -2944,6 +2944,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         page_truncated = getattr(envelope, "next_offset", None) is not None
         matched_so_far = offset + len(rows)
         entries: list[PasteBrowserEntry] = []
+        # One archive read for the page's sessions, not one per session.
+        summaries = await poly.get_session_summaries([str(row.session_id) for row in rows])
         display_titles: dict[str, str] = {}
         for row in rows:
             text = str(getattr(row, "text", "") or "")
@@ -2952,7 +2954,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             occurred_at_ms = getattr(row, "occurred_at_ms", None)
             session_id = str(row.session_id)
             if session_id not in display_titles:
-                summary = await poly.get_session_summary(session_id)
+                summary = summaries.get(session_id)
                 display_titles[session_id] = str(
                     getattr(summary, "display_title", None) or getattr(row, "title", None) or session_id
                 )

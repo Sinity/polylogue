@@ -226,8 +226,16 @@ def evaluate_evidence(
             add("definition_drift", (*path, ref), "definition hash differs from evaluation")
         if frame_hash and node.frame_hash and node.frame_hash != frame_hash:
             add("frame_drift", (*path, ref), "frame hash differs from evaluation")
-        if as_of and node.as_of and _parse_as_of(node.as_of) > _parse_as_of(as_of):
-            add("stale", (*path, ref), "node is newer than the evaluation as-of frame")
+        if as_of and node.as_of:
+            # An adapter-supplied as_of is untrusted protocol input: a value
+            # that does not parse is an unresolved witness, not a crash.
+            try:
+                node_instant = _parse_as_of(node.as_of)
+            except ValueError:
+                add("unparseable_as_of", (*path, ref), "node as_of is not a timezone-aware instant")
+            else:
+                if node_instant > _parse_as_of(as_of):
+                    add("stale", (*path, ref), "node is newer than the evaluation as-of frame")
         # The claim node is not grounding evidence; only descendants decide
         # whether an assertion-only ancestry can launder itself into support.
         if ref != root_ref:
@@ -261,7 +269,12 @@ def evaluate_evidence(
         status = EvidenceIntegrityStatus.NOT_SUPPORTED
     elif "closed_loop" in codes or (bool(authorities) and authorities <= {"agent", "assertion"}):
         status = EvidenceIntegrityStatus.CLOSED_LOOP
-    elif "missing_ref" in codes or "unknown_authority" in codes or codes & _UNRESOLVED_REF_STATES:
+    elif (
+        "missing_ref" in codes
+        or "unknown_authority" in codes
+        or "unparseable_as_of" in codes
+        or codes & _UNRESOLVED_REF_STATES
+    ):
         status = EvidenceIntegrityStatus.UNRESOLVED
     elif codes & _STALE_REF_STATES or "definition_drift" in codes or "content_drift" in codes:
         status = EvidenceIntegrityStatus.STALE

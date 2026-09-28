@@ -1410,7 +1410,9 @@ def test_daemon_status_reports_live_ingest_attempts(tmp_path: Path) -> None:
     # with every file it declined. The current page's 0/1 is shown above;
     # cumulative progress has no claimed whole-run file denominator.
     assert catchup["planned_file_count"] is None
-    assert "Catch-up: catching_up 0 files accepted, read amp 0.0x, 0.0 MB/s ingested" in lines
+    # The heartbeat event carries no ingested-byte measurement, so the running
+    # rate is unmeasured rather than a fabricated zero.
+    assert "Catch-up: catching_up 0 files accepted, read amp 0.0x, unavailable MB/s ingested" in lines
 
 
 def test_daemon_status_reads_ops_tier_from_archive_tiers(tmp_path: Path) -> None:

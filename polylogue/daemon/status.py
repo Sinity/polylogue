@@ -271,7 +271,7 @@ def _active_status_db_path() -> Path:
     return resolve_active_index_path(archive_root())
 
 
-def _daemon_status_fingerprint(active_db: Path) -> str:
+def _daemon_status_fingerprint(active_db: Path, *, include_user_tier: bool = False) -> str:
     """Cheap proxy for "has the archive/ops source changed" (polylogue-20d.17 AC #5).
 
     Mirrors ``polylogue.coordination.envelope._coordination_fingerprint``: a
@@ -284,15 +284,21 @@ def _daemon_status_fingerprint(active_db: Path) -> str:
     root = archive_root()
     source_db = root / "source.db"
     ops_db = root / "ops.db"
-    parts: list[str] = []
-    for candidate in (
+    candidates = [
         active_db,
         active_db.with_suffix(".db-wal"),
         source_db,
         source_db.with_suffix(".db-wal"),
         ops_db,
         ops_db.with_suffix(".db-wal"),
-    ):
+    ]
+    if include_user_tier:
+        # User-tier-derived components (the assertion candidate queue) must
+        # observe a user.db commit rather than wait out a TTL.
+        user_db = root / "user.db"
+        candidates.extend((user_db, user_db.with_suffix(".db-wal")))
+    parts: list[str] = []
+    for candidate in candidates:
         try:
             parts.append(f"{candidate.name}:{candidate.stat().st_mtime_ns}")
         except OSError:
@@ -2904,6 +2910,7 @@ def periodic_status_component_registry() -> StatusComponentRegistry:
                     collector=assertion_candidate_queue_status_summary,
                     deadline_s=3.0,
                     cost_class="moderate",
+                    fingerprint=lambda: _daemon_status_fingerprint(_active_status_db_path(), include_user_tier=True),
                 )
             )
             _PERIODIC_STATUS_REGISTRY = StatusComponentRegistry(specs)

@@ -92,7 +92,7 @@ class CatchupStatus(BaseModel):
     #: became of it. Throughput is ``ingested_mb_per_second`` -- a rate over
     #: offered bytes counts every declined file as work done.
     input_bytes: int = 0
-    ingested_bytes: int = 0
+    ingested_bytes: int | None = 0
     failed_bytes: int = 0
     refused_bytes: int = 0
     refused_bytes_by_reason: dict[str, int] = Field(default_factory=dict)

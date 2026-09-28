@@ -372,7 +372,12 @@ def project_search_hits(
                 if rank_value is not None
             }
             fused_score = None
-        primary_rank, primary_contribution = primary_lane_evidence(components)
+        if resolved_lane == "hybrid":
+            primary_rank, primary_contribution = primary_lane_evidence(components)
+        else:
+            # A single-lane hit has no RRF contribution; its native rank is the lane rank.
+            primary_rank = min((int(value) for value in components.values()), default=None)
+            primary_contribution = None
         hits.append(
             session_search_hit_from_summary(
                 _archive_summary_to_domain(summary),

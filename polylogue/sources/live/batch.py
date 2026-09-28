@@ -91,7 +91,7 @@ from polylogue.pipeline.ingest_outcomes import (
 )
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
 from polylogue.sources.artifact_observations import record_session_artifact_observation
-from polylogue.sources.assembly import get_assembly_spec
+from polylogue.sources.assembly import enrich_live_session
 from polylogue.sources.codex_state_evidence import record_codex_state_snapshot_terminal
 from polylogue.sources.decoder_json import PartialJsonStreamError
 from polylogue.sources.decoder_zip import (
@@ -4489,12 +4489,10 @@ class LiveBatchProcessor:
                             fallback_id,
                             source_path=record.source_path,
                         )
-                    # Full live ingest parses records directly rather than
-                    # through the emitter, so apply provider assembly before
-                    # publishing the parsed sessions.
-                    assembly = get_assembly_spec(provider)
-                    if assembly is not None:
-                        sessions = [assembly.enrich_session(session, {}) for session in sessions]
+                    # The prefetch worker and off-writer path preparation
+                    # apply the same assembly, so prepared writes hash the
+                    # sessions this branch produces.
+                    sessions = [enrich_live_session(provider, session) for session in sessions]
 
                     # polylogue-9ykn: a session requires positive
                     # conversational evidence -- a parse that produced only
@@ -4504,7 +4502,7 @@ class LiveBatchProcessor:
                     # written phantom session.
                     if path_preparation is None:
                         sessions = require_positive_conversational_evidence(
-                            cast(list[ParsedSession], sessions),
+                            sessions,
                             provider=provider,
                             source_path=record.source_path,
                         )

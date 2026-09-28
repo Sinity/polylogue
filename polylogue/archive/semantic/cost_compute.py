@@ -272,11 +272,14 @@ def compute_session_cost(
                 remaining = round(remaining - amount, 6)
                 reconciled.append(item.model_copy(update={"api_cost_usd": amount}))
             breakdowns = reconciled
+        elif len(breakdowns) == 1:
+            # One model: the session total is that model's exact cost.
+            breakdowns = [breakdowns[0].model_copy(update={"api_cost_usd": round(total_api, 6)})]
         elif breakdowns:
-            breakdowns = [
-                breakdowns[0].model_copy(update={"api_cost_usd": round(total_api, 6)}),
-                *[item.model_copy(update={"api_cost_usd": 0.0}) for item in breakdowns[1:]],
-            ]
+            # Several unpriced models and only a session total: there is no
+            # basis for attribution. The total stays on the session; the
+            # per-model rows carry no fabricated share and say so.
+            breakdowns = [item.model_copy(update={"api_cost_usd": 0.0, "confidence": "unknown"}) for item in breakdowns]
         cost_provenance = "provider_reported"
         agg_confidence = "reported"
 

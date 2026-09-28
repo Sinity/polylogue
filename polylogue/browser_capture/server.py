@@ -151,15 +151,21 @@ def mission_control_archive_facts(
                 "total_usd": None if estimate.total_usd is None else float(estimate.total_usd),
                 "provenance": list(estimate.provenance),
             }
-        session = run_coroutine_sync(poly.get_session(indexed_session_id))
-        targets = [f"session:{indexed_session_id}"]
-        if session is not None:
-            targets.extend(f"message:{indexed_session_id}:{message.id}" for message in session.messages)
-        claims = []
-        for target in targets:
-            claims.extend(
-                run_coroutine_sync(poly.list_assertion_claim_payloads(target_ref=target, statuses=("active",), limit=5))
+        # Two bounded reads (session target, then any message of the session
+        # by target prefix): the extension aborts this request after seven
+        # seconds, so a per-message scan over a long transcript cannot run here.
+        claims = run_coroutine_sync(
+            poly.list_assertion_claim_payloads(
+                target_ref=f"session:{indexed_session_id}", statuses=("active",), limit=5
             )
+        )
+        claims.extend(
+            run_coroutine_sync(
+                poly.list_assertion_claim_payloads(
+                    target_ref_prefix=f"message:{indexed_session_id}:", statuses=("active",), limit=5
+                )
+            )
+        )
         assertions: _MissionControlAssertionsPayload = {
             "status": "available",
             "items": [claim.model_dump(mode="json") for claim in claims],

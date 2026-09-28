@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import sqlite3
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -100,6 +101,19 @@ def _stamp(value: datetime | None = None) -> str:
     return (value or _now()).isoformat().replace("+00:00", "Z")
 
 
+_SCHEMA_LOCK = threading.Lock()
+_SCHEMA_READY: set[tuple[str, int, int]] = set()
+
+
+def _database_identity(path: Path) -> tuple[str, int, int] | None:
+    """The file a completed schema upgrade applies to: its path and inode."""
+    try:
+        status = path.stat()
+    except FileNotFoundError:
+        return None
+    return (str(path), status.st_dev, status.st_ino)
+
+
 @dataclass(slots=True)
 class CaptureJobRegistry:
     spool_path: Path | None
@@ -124,9 +138,27 @@ class CaptureJobRegistry:
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA synchronous=FULL")
         connection.execute("PRAGMA foreign_keys=ON")
-        # Serialize schema inspection and upgrades across ThreadingHTTPServer
-        # requests. The lock is held through the version-independent upgrades.
-        connection.execute("BEGIN IMMEDIATE")
+        identity = _database_identity(path)
+        if identity is not None and identity in _SCHEMA_READY:
+            return connection
+        with _SCHEMA_LOCK:
+            # Serialize schema inspection and upgrades once per database file.
+            # Ordinary reads never take a write transaction.
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._ensure_schema(connection)
+            except BaseException:
+                connection.rollback()
+                connection.close()
+                raise
+            connection.commit()
+            identity = _database_identity(path)
+            if identity is not None:
+                _SCHEMA_READY.add(identity)
+        return connection
+
+    @staticmethod
+    def _ensure_schema(connection: sqlite3.Connection) -> None:
         connection.execute(
             """CREATE TABLE IF NOT EXISTS capture_jobs (
                 job_id TEXT PRIMARY KEY, provider TEXT NOT NULL, account_scope TEXT NOT NULL,
@@ -196,8 +228,6 @@ class CaptureJobRegistry:
                     row["created_at"],
                 ),
             )
-        connection.commit()
-        return connection
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:

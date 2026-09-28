@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from polylogue.core.enums import Provider
 from polylogue.logging import WARNING, emit, get_logger
+from polylogue.sources.assembly import enrich_live_session
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload, parse_stream_payload
 from polylogue.sources.parsers.base import ParsedSession
@@ -167,6 +168,7 @@ def live_parse_worker(
                 )
             )
             sessions = parse_payload(provider, payloads, fallback_id, source_path=source_path)
+        sessions = [enrich_live_session(provider, session) for session in sessions]
         return cache_key, sessions, None
     except Exception as exc:
         return cache_key, None, exc
@@ -217,7 +219,7 @@ def live_parse_path_worker(
         shard_directory=shard_directory,
         attempt_directory=None if attempt_directory is None else Path(attempt_directory),
         parse_prefix_size=parse_prefix_size,
-        prepare_session=lambda session: session,
+        prepare_session=lambda session: enrich_live_session(provider, session),
     )
 
 

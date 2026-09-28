@@ -234,7 +234,7 @@ def _start_daemon(
 
 
 def _run_shared_chrome_control(*, repo_root: Path, timeout_s: float = _SHARED_CHROME_TIMEOUT_S) -> None:
-    with shared_chrome_extension_lock():
+    with shared_chrome_extension_lock(timeout_s=timeout_s):
         _run_shared_chrome_control_locked(repo_root=repo_root, timeout_s=timeout_s)
 
 

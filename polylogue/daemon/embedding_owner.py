@@ -26,7 +26,7 @@ import json
 import secrets
 import threading
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -56,7 +56,7 @@ from polylogue.operations.operation_context import OperationContext, PinnedOpera
 if TYPE_CHECKING:
     from typing import SupportsFloat, SupportsInt
 
-    from polylogue.daemon.derivation import DerivationReport
+    from polylogue.daemon.derivation import DerivationReport, KeyOutcome
 
 T = TypeVar("T")
 
@@ -329,6 +329,31 @@ class _EmbeddingBackfillExecution:
         return await self.runtime.compute_phase(read)
 
 
+def _message_ids(outcomes: Iterable[KeyOutcome], domain: str) -> tuple[str, ...]:
+    """Message ids of the embedding keys a pass reached."""
+    return tuple(
+        item.key.key.removeprefix("message:")
+        for item in outcomes
+        if item.key.domain == domain and item.key.key.startswith("message:")
+    )
+
+
+def _distinct_message_sessions(index_db_path: Path, message_ids: Sequence[str]) -> int:
+    """How many sessions own ``message_ids``; zero when the pass reached none."""
+    if not message_ids:
+        return 0
+    from polylogue.daemon.status import open_readonly_connection
+
+    placeholders = ", ".join("?" for _ in message_ids)
+    with open_readonly_connection(index_db_path, validate_schema=False) as conn:
+        return int(
+            conn.execute(
+                f"SELECT COUNT(DISTINCT session_id) FROM messages WHERE message_id IN ({placeholders})",
+                tuple(message_ids),
+            ).fetchone()[0]
+        )
+
+
 def compose_embedding_convergence(
     index_db_path: Path,
     *,
@@ -475,17 +500,12 @@ def compose_embedding_convergence(
                 compute_budget = min(compute_budget, max(0, int(remaining / estimated_cost_per_message)))
                 if compute_budget <= 0:
                     return EmbeddingConvergenceResult(None, "monthly_cost_cap")
-            if scope is None:
-                from polylogue.daemon.status import open_readonly_connection
-
-                with open_readonly_connection(index_db_path, validate_schema=False) as conn:
-                    scanned_sessions = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
-            else:
-                scanned_sessions = len(scope)
             receipt: _PassReceipt = {
                 "run_id": None,
                 "started_at_ms": int(time.time() * 1000),
-                "scanned_sessions": scanned_sessions,
+                # Replaced by the sessions the pass actually reached once it
+                # returns; an interrupted pass has reached none it can prove.
+                "scanned_sessions": 0,
                 # An interrupted pass keeps this conservative reserve, so a
                 # restart cannot spend beyond the configured monthly cap.
                 "reserved_cost_usd": compute_budget * estimated_cost_per_message,
@@ -517,23 +537,14 @@ def compose_embedding_convergence(
                 # bound only on the receipt path raised NameError whenever a
                 # pass ran without a receipt run id.
                 failures = report.count(Outcome.FAILED)
-                completed_message_ids = tuple(
-                    item.key.key.removeprefix("message:")
-                    for item in report.by_outcome(Outcome.DONE)
-                    if item.key.domain == adapter.domain and item.key.key.startswith("message:")
+                embedded_sessions = _distinct_message_sessions(
+                    index_db_path,
+                    _message_ids(report.by_outcome(Outcome.DONE), adapter.domain),
                 )
-                embedded_sessions = 0
-                if completed_message_ids:
-                    from polylogue.daemon.status import open_readonly_connection
-
-                    placeholders = ", ".join("?" for _ in completed_message_ids)
-                    with open_readonly_connection(index_db_path, validate_schema=False) as conn:
-                        embedded_sessions = int(
-                            conn.execute(
-                                f"SELECT COUNT(DISTINCT session_id) FROM messages WHERE message_id IN ({placeholders})",
-                                completed_message_ids,
-                            ).fetchone()[0]
-                        )
+                receipt["scanned_sessions"] = _distinct_message_sessions(
+                    index_db_path,
+                    _message_ids(report.outcomes, adapter.domain),
+                )
                 if run_id is not None:
                     # Attempt rows are telemetry only.  This final estimate is
                     # deliberately conservative: a failed provider call can

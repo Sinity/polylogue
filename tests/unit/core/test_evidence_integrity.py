@@ -218,6 +218,17 @@ def test_as_of_comparison_uses_instants_not_lexical_order() -> None:
     assert "stale" not in verdict.reason_codes
 
 
+def test_malformed_node_as_of_is_an_unresolved_verdict_not_a_crash() -> None:
+    """Anti-vacuity: parsing the adapter's as_of unguarded raises ValueError out of evaluate_evidence."""
+    nodes = [
+        EvidenceGraphNode("root", "claim", frame_hash="frame"),
+        EvidenceGraphNode("leaf", "raw", authority="raw", frame_hash="frame", as_of="not-a-date"),
+    ]
+    verdict = evaluate_evidence("root", nodes, [EvidenceGraphEdge("root", "leaf")], as_of="2025-12-31T23:00:00Z")
+    assert verdict.status is EvidenceIntegrityStatus.UNRESOLVED
+    assert "unparseable_as_of" in verdict.reason_codes
+
+
 def test_missing_root_is_unresolved_not_empty_authority_loop() -> None:
     verdict = evaluate_evidence("absent", [], [])
     assert verdict.status is EvidenceIntegrityStatus.UNRESOLVED

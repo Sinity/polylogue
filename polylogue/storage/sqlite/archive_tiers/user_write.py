@@ -2620,6 +2620,7 @@ def list_assertion_claims(
     *,
     kinds: Sequence[str | AssertionKind] = ASSERTION_CLAIM_KINDS,
     target_ref: str | None = None,
+    target_ref_prefix: str | None = None,
     scope_ref: str | None = None,
     statuses: Sequence[str | AssertionStatus] | None = (AssertionStatus.ACTIVE, AssertionStatus.CANDIDATE),
     context_inject: bool | None = None,
@@ -2666,6 +2667,9 @@ def list_assertion_claims(
     if target_ref is not None:
         where.append("target_ref = ?")
         params.append(target_ref)
+    if target_ref_prefix is not None:
+        where.append("substr(target_ref, 1, length(?)) = ?")
+        params.extend([target_ref_prefix, target_ref_prefix])
     if scope_ref is not None:
         where.append("scope_ref = ?")
         params.append(scope_ref)

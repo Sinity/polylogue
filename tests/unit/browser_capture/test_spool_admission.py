@@ -218,3 +218,42 @@ def test_self_declared_wrong_identity_is_not_acknowledged_as_native(tmp_path: Pa
     result = _write(payload, tmp_path)
 
     assert result.accepted_identities[0].fidelity == "unknown"
+
+
+def test_empty_carrier_is_present_evidence_not_absence(tmp_path: Path) -> None:
+    """Anti-vacuity: treating ``content_base64=""`` as absent lets different bytes replace a zero-byte carrier."""
+    resident: dict[str, Any] = _payload(
+        turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+    )
+    resident["session"]["turns"][0]["attachments"] = [{"provider_attachment_id": "A", "content_base64": ""}]
+    incoming: dict[str, Any] = _payload(
+        turn_ids=["t1", "t2"], captured_at="2026-04-24T00:01:00Z", updated_at="2026-04-24T00:01:00Z"
+    )
+    incoming["session"]["turns"][0]["attachments"] = [{"provider_attachment_id": "A", "content_base64": "YQ=="}]
+
+    _write(resident, tmp_path)
+    result = _write(incoming, tmp_path)
+
+    assert result.convergence is CaptureConvergence.SUPERSEDED
+
+
+def test_duplicate_attachment_ids_in_one_scope_are_all_retained(tmp_path: Path) -> None:
+    """Anti-vacuity: a dict keyed by scoped id keeps only the last duplicate, so dropping one passes."""
+    resident: dict[str, Any] = _payload(
+        turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+    )
+    resident["session"]["turns"][0]["attachments"] = [
+        {"provider_attachment_id": "A", "inline_base64": "Yg=="},
+        {"provider_attachment_id": "A", "inline_base64": "YQ=="},
+    ]
+    incoming: dict[str, Any] = _payload(
+        turn_ids=["t1", "t2"], captured_at="2026-04-24T00:01:00Z", updated_at="2026-04-24T00:01:00Z"
+    )
+    incoming["session"]["turns"][0]["attachments"] = [
+        {"provider_attachment_id": "A", "inline_base64": "YQ==", "content_base64": "YQ=="}
+    ]
+
+    _write(resident, tmp_path)
+    result = _write(incoming, tmp_path)
+
+    assert result.convergence is CaptureConvergence.SUPERSEDED

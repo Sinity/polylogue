@@ -32,7 +32,7 @@ _MAX_ERROR_MESSAGE = 512
 
 def run_proof(*, repo_root: Path | None = None) -> dict[str, object]:
     """Run the shared-Chrome workflow against a self-bound loopback receiver."""
-    with shared_chrome_extension_lock():
+    with shared_chrome_extension_lock(timeout_s=_NODE_PROOF_TIMEOUT_S):
         return _run_proof_locked(repo_root=repo_root)
 
 

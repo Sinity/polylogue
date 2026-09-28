@@ -243,6 +243,27 @@ describe("background backfill coordinator", () => {
     expect(await h.store.getJob(healthy.id)).toMatchObject({ status: "running" });
   });
 
+  it("keeps a rate-limited checkpoint failure running until its retry deadline", async () => {
+    // Anti-vacuity: pausing here leaves the job non-runnable, so the alarm at
+    // the deadline could never resume it without operator action.
+    const h = harness();
+    const job = await startJob(h);
+    const retryUntil = h.now() + 60_000;
+    h.coordinator.checkpoint = vi.fn(async () => ({
+      failures: [{ job_id: job.id, error: "provider_throttled", outcome: "rate_limited", retry_until_ms: retryUntil }],
+    }));
+    h.alarms.create.mockClear();
+
+    await h.coordinator.status(job.id);
+
+    expect(await h.store.getJob(job.id)).toMatchObject({
+      status: "running",
+      cooldown_reason: "provider_rate_limited",
+      cooldown_until_ms: retryUntil,
+    });
+    expect(h.alarms.create).toHaveBeenCalledWith(expect.any(String), { when: retryUntil });
+  });
+
   it("coalesces concurrent receiver-authority checkpoints across status readers", async () => {
     let releaseCheckpoint;
     const checkpoint = vi.fn(async () => new Promise((resolve) => { releaseCheckpoint = resolve; }));

@@ -1217,6 +1217,7 @@ def _archive_list_assertion_claims(
     *,
     kinds: Sequence[str | AssertionKind] | None = None,
     target_ref: str | None = None,
+    target_ref_prefix: str | None = None,
     scope_ref: str | None = None,
     statuses: Sequence[str | AssertionStatus] | None = ("active", "candidate"),
     context_inject: bool | None = None,
@@ -1236,6 +1237,7 @@ def _archive_list_assertion_claims(
                     return list_assertion_claims(
                         conn,
                         target_ref=target_ref,
+                        target_ref_prefix=target_ref_prefix,
                         scope_ref=scope_ref,
                         statuses=statuses,
                         context_inject=context_inject,
@@ -1245,6 +1247,7 @@ def _archive_list_assertion_claims(
                     conn,
                     kinds=kinds,
                     target_ref=target_ref,
+                    target_ref_prefix=target_ref_prefix,
                     scope_ref=scope_ref,
                     statuses=statuses,
                     context_inject=context_inject,
@@ -2808,6 +2811,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         *,
         kinds: Sequence[str | AssertionKind] | None = None,
         target_ref: str | None = None,
+        target_ref_prefix: str | None = None,
         scope_ref: str | None = None,
         statuses: Sequence[str | AssertionStatus] | None = ("active", "candidate"),
         context_inject: bool | None = None,
@@ -2821,6 +2825,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 self.config,
                 kinds=kinds,
                 target_ref=target_ref,
+                target_ref_prefix=target_ref_prefix,
                 scope_ref=scope_ref,
                 statuses=statuses,
                 context_inject=context_inject,
@@ -3064,6 +3069,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         *,
         kinds: Sequence[str | AssertionKind] | None = None,
         target_ref: str | None = None,
+        target_ref_prefix: str | None = None,
         scope_ref: str | None = None,
         statuses: Sequence[str | AssertionStatus] | None = ("active", "candidate"),
         context_inject: bool | None = None,
@@ -3082,6 +3088,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         claims = await self.list_assertion_claims(
             kinds=kinds,
             target_ref=target_ref,
+            target_ref_prefix=target_ref_prefix,
             scope_ref=scope_ref,
             statuses=statuses,
             context_inject=context_inject,
@@ -5376,6 +5383,33 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             _active_archive_root(self.config),
             operation="archive.session_summary.get",
             arguments={"session_id": session_id},
+            work=read,
+            projection="session-summary",
+        )
+
+    async def get_session_summaries(self, session_ids: Sequence[str]) -> dict[str, SessionSummary]:
+        """Return summaries for a bounded set of sessions in one archive read.
+
+        Keys are the requested ids; ids that do not resolve are omitted.
+        """
+        requested = tuple(dict.fromkeys(session_ids))
+
+        def read(archive: ArchiveStore) -> dict[str, SessionSummary]:
+            summaries: dict[str, SessionSummary] = {}
+            for session_id in requested:
+                try:
+                    resolved_id = archive.resolve_session_id(session_id)
+                    summaries[session_id] = archive_summary_to_domain(archive.read_summary(resolved_id))
+                except KeyError:
+                    continue
+            return summaries
+
+        if not requested:
+            return {}
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.session_summary.get_many",
+            arguments={"session_count": len(requested)},
             work=read,
             projection="session-summary",
         )

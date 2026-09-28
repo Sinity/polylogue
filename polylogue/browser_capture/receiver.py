@@ -410,13 +410,29 @@ def _capture_attachments(envelope: BrowserCaptureEnvelope) -> list[BrowserCaptur
     ]
 
 
-def _scoped_attachments(envelope: BrowserCaptureEnvelope) -> dict[tuple[str, str], BrowserCaptureAttachment]:
-    """Index attachments by their session/turn scope and provider identity."""
-    result = {("session", attachment.provider_attachment_id): attachment for attachment in envelope.session.attachments}
+def _scoped_attachments(envelope: BrowserCaptureEnvelope) -> dict[tuple[str, str], list[BrowserCaptureAttachment]]:
+    """Index attachments by session/turn scope and provider identity.
+
+    Attachment IDs need not be unique within a scope, so each scoped identity
+    keeps every attachment in its observed order.
+    """
+    result: dict[tuple[str, str], list[BrowserCaptureAttachment]] = {}
+    for attachment in envelope.session.attachments:
+        result.setdefault(("session", attachment.provider_attachment_id), []).append(attachment)
     for turn in envelope.session.turns:
         for attachment in turn.attachments:
-            result[(f"turn:{turn.provider_turn_id}", attachment.provider_attachment_id)] = attachment
+            result.setdefault((f"turn:{turn.provider_turn_id}", attachment.provider_attachment_id), []).append(
+                attachment
+            )
     return result
+
+
+def _attachment_carrier(attachment: BrowserCaptureAttachment) -> str | None:
+    """The first present carrier; an empty string is a valid zero-byte carrier."""
+    for carrier in (attachment.content_base64, attachment.inline_base64, attachment.data):
+        if carrier is not None:
+            return carrier
+    return None
 
 
 def _capture_has_content_carrier(envelope: BrowserCaptureEnvelope) -> bool:
@@ -452,22 +468,25 @@ def _capture_carrier_conflicts(incoming: BrowserCaptureEnvelope, existing: Brows
     """Reject carrier bytes that contradict an existing attachment identity."""
     incoming_attachments = _scoped_attachments(incoming)
     existing_attachments = _scoped_attachments(existing)
-    for identity, previous in existing_attachments.items():
-        current = incoming_attachments.get(identity)
-        if current is None or _attachment_identity(current) != _attachment_identity(previous):
+    for identity, previous_group in existing_attachments.items():
+        current_group = incoming_attachments.get(identity, [])
+        if len(current_group) < len(previous_group):
             return True
-        current_carrier = current.content_base64 or current.inline_base64 or current.data
-        previous_carrier = previous.content_base64 or previous.inline_base64 or previous.data
-        if current_carrier is None or previous_carrier is None:
-            continue
-        current_bytes = _decode_capture_content_base64(current_carrier)
-        previous_bytes = _decode_capture_content_base64(previous_carrier)
-        if (
-            current_bytes is _INVALID_ATTACHMENT_CARRIER
-            or previous_bytes is _INVALID_ATTACHMENT_CARRIER
-            or current_bytes != previous_bytes
-        ):
-            return True
+        for current, previous in zip(current_group, previous_group, strict=False):
+            if _attachment_identity(current) != _attachment_identity(previous):
+                return True
+            current_carrier = _attachment_carrier(current)
+            previous_carrier = _attachment_carrier(previous)
+            if current_carrier is None or previous_carrier is None:
+                continue
+            current_bytes = _decode_capture_content_base64(current_carrier)
+            previous_bytes = _decode_capture_content_base64(previous_carrier)
+            if (
+                current_bytes is _INVALID_ATTACHMENT_CARRIER
+                or previous_bytes is _INVALID_ATTACHMENT_CARRIER
+                or current_bytes != previous_bytes
+            ):
+                return True
     return False
 
 
@@ -502,7 +521,7 @@ def _attachment_content_enrichment(
         incoming_bytes = _decode_capture_content_base64(incoming_value)
         if incoming_bytes is _INVALID_ATTACHMENT_CARRIER:
             return False
-        existing_carrier = existing_value or existing_attachment.inline_base64 or existing_attachment.data
+        existing_carrier = _attachment_carrier(existing_attachment)
         if existing_carrier is None:
             added_carrier = True
             continue

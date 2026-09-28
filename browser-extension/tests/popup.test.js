@@ -575,10 +575,10 @@ describe("popup capture", () => {
     await loadPopup({ polylogueCaptureQueue: { entries: [{ next_attempt_at: "2030-01-01T00:00:00.000Z" }] } }, [CHATGPT_TAB], async (message) => {
       requests.push(message);
       if (message.type === "polylogue.browserActions.status") return { ok: true, actions: [
-        { action_id: "active", operation: "conversation.reply", status: "completed", target: { conversation_id: "test-conversation" } },
+        { action_id: "active", operation: "conversation.reply", status: "submitted", target: { conversation_id: "test-conversation" } },
         { action_id: "other-1", operation: "conversation.reply", status: "failed", target: { conversation_id: "other" } },
         ...Array.from({ length: 9 }, (_, index) => ({ action_id: `other-${index + 2}`, operation: "conversation.reply", status: "failed", target: { conversation_id: "other" } })),
-        { action_id: "new-chatgpt", operation: "conversation.create", status: "completed", provider: "chatgpt", target: { conversation_id: "new" } },
+        { action_id: "new-chatgpt", operation: "conversation.create", status: "submitted", provider: "chatgpt", target: { conversation_id: "new" } },
       ] };
       if (message.type === "polylogue.missionControl.status") return {
         ok: true,
@@ -591,7 +591,7 @@ describe("popup capture", () => {
     });
     expect(document.getElementById("cooldown").textContent).toBe("2030-01-01T00:00:00.000Z");
     const timeline = document.getElementById("timeline").textContent;
-    expect(timeline).toContain("Browser action completed");
+    expect(timeline).toContain("Browser action submitted");
     expect(timeline.match(/Browser action failed/g)).toBeNull();
     expect(requests.some((message) => message.type === "polylogue.browserActions.status")).toBe(true);
   });

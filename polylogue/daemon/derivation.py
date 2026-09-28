@@ -597,7 +597,9 @@ class _Pass:
         self.discovered = 0
         self.inspected = 0
         self.prerequisites_inspected = 0
-        self.visited_cursors: dict[str, set[object]] = {}
+        #: Cursors seen per (domain, phase): the required and excess pagers are
+        #: independent keysets and may legitimately reuse a cursor value.
+        self.visited_cursors: dict[tuple[str, DiscoveryPhase], set[object]] = {}
         self.computed = 0
         self.published = 0
         #: Every key this pass reached a verdict on, so a dependant can be gated
@@ -614,7 +616,6 @@ class _Pass:
     def record(self, outcome: KeyOutcome) -> None:
         self.counts[outcome.outcome] += 1
         self.verdicts[outcome.key] = outcome.outcome
-        self._trim_internal_detail(self.verdicts)
         if outcome.outcome is not Outcome.DONE:
             self.unconverged_domains.add(outcome.key.domain)
         cap = self.budget.retained_outcomes
@@ -622,14 +623,6 @@ class _Pass:
             self.truncated = True
             return
         self.retained.append(outcome)
-
-    def _trim_internal_detail(self, values: dict[Any, Any]) -> None:
-        """Bound pass-local verdict/cache detail; evicted verdicts are reinspected."""
-        cap = self.budget.retained_outcomes
-        if cap is None:
-            return
-        while len(values) > cap:
-            del values[next(iter(values))]
 
     def counters(self) -> WorkCounters:
         return WorkCounters(
@@ -684,7 +677,7 @@ class _Pass:
         self.discovered += max(1, len(page.keys))
         if len(page.keys) > limit:
             raise ValueError(f"derivation {adapter.domain} returned {len(page.keys)} keys for a limit of {limit}")
-        visited = self.visited_cursors.setdefault(adapter.domain, set())
+        visited = self.visited_cursors.setdefault((adapter.domain, position.phase), set())
         if page.next_cursor is not None and (page.next_cursor == position.page_cursor or page.next_cursor in visited):
             raise ValueError(f"derivation {adapter.domain} returned a cursor that does not advance")
         if position.page_cursor is not None:
@@ -806,7 +799,6 @@ class _Pass:
             return self.prerequisite_cache[binding]
         reason = self.inspect_binding(binding)
         self.prerequisite_cache[binding] = reason
-        self._trim_internal_detail(self.prerequisite_cache)
         return reason
 
     def inspect_binding(self, binding: DerivationKey) -> str | None:

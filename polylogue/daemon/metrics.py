@@ -1680,11 +1680,12 @@ def _format_archive_metrics(lines: list[str], db: Path, configured_root: Path) -
 
 def _format_ops_only_metrics(lines: list[str], ops_db: Path) -> bool | None:
     if ops_db.exists():
+        # Bounded openability probe: reading the schema cookie touches only the
+        # header page and raises DatabaseError for a file that is not a
+        # database. Full integrity checks belong to diagnostics, not scrapes.
         probe = sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True)
         try:
-            result = probe.execute("PRAGMA quick_check").fetchone()
-            if result is None or result[0] != "ok":
-                raise sqlite3.DatabaseError("ops database quick_check failed")
+            probe.execute("PRAGMA schema_version").fetchone()
         finally:
             probe.close()
     attempts = _ops_attempt_counts(ops_db)

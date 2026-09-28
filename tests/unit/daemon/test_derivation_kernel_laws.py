@@ -1111,3 +1111,38 @@ def test_a_revision_staged_during_compute_is_refused_at_publication() -> None:
     assert adapter.computed == ["s"]
     assert adapter.published == []
     assert [(item.outcome, item.reason) for item in report.outcomes] == [(Outcome.PENDING, PendingReason.BLOCKED)]
+
+
+def test_required_and_excess_pagers_may_reuse_a_cursor_value() -> None:
+    """The two discovery phases are independent keysets.
+
+    Anti-vacuity: track visited cursors per domain only and the excess pager's
+    first ``next_cursor`` ("2") collides with the required pager's, raising
+    "does not advance" for a valid pass.
+    """
+    domain = RecordingDerivation("demo", required=("a0", "a1", "a2", "a3"))
+    domain.output.update(dict.fromkeys(("e0", "e1", "e2", "e3"), ""))
+    registry = DerivationRegistry([domain])
+
+    report = converge(registry, FRAME, budget=Budget(page=2))
+
+    assert report.failed == 0
+    assert {"a0", "a1", "a2", "a3"} <= set(domain.output)
+
+
+def test_report_retention_does_not_change_prerequisite_verdicts() -> None:
+    """A report-detail cap bounds the report, not the pass's own verdicts.
+
+    Anti-vacuity: evict pass-local verdicts at ``retained_outcomes`` and the
+    dependant re-inspects its upstream key, spending prerequisite inspection
+    work the uncapped pass does not.
+    """
+    upstream = RecordingDerivation("up", required=("u",))
+    dependant = RecordingDerivation("down", required=("d",), prerequisites=("up",), bindings={"d": (("up", "u"),)})
+    registry = DerivationRegistry([upstream, dependant])
+
+    report = converge(registry, FRAME, budget=Budget(page=10, inspection=4, retained_outcomes=0))
+
+    assert report.done == 2
+    assert report.work.prerequisites_inspected == 0
+    assert dependant.output == {"d": "b0"}

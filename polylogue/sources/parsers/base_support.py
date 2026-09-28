@@ -311,7 +311,7 @@ def human_authored_override(
     Callers pass the *already-classified* origin so this stays a pure
     positive-evidence bump, never a replacement for ``classify_material_origin``.
     """
-    if role is Role.USER and message_type is MessageType.MESSAGE:
+    if material_origin is MaterialOrigin.UNKNOWN and role is Role.USER and message_type is MessageType.MESSAGE:
         return MaterialOrigin.HUMAN_AUTHORED
     return material_origin
 

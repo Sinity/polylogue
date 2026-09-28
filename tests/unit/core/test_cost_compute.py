@@ -107,6 +107,23 @@ def test_exact_provider_money_does_not_replace_canonical_model_usage_tokens() ->
     assert sum(item.api_cost_usd for item in summary.per_model) == summary.total_api_cost_usd
 
 
+def test_exact_session_total_is_not_attributed_to_an_arbitrary_unpriced_model() -> None:
+    """Anti-vacuity: assigning the whole total to the first sorted model fabricates a per-model exact cost."""
+    session = make_conv(id="exact-provider-two-unpriced", provider="chatgpt", messages=[])
+    summary = compute_session_cost(
+        session,
+        session_estimate=CostEstimatePayload(origin="chatgpt", status="exact", total_usd=1.0, usage=CostUsagePayload()),
+        model_usage=[
+            ModelUsageTotals(model_name="unpriced-model-a", input_tokens=100, output_tokens=20),
+            ModelUsageTotals(model_name="unpriced-model-b", input_tokens=50, output_tokens=10),
+        ],
+    )
+
+    assert summary.total_api_cost_usd == 1.0
+    assert [item.api_cost_usd for item in summary.per_model] == [0.0, 0.0]
+    assert {item.confidence for item in summary.per_model} == {"unknown"}
+
+
 def test_compute_session_cost_falls_back_to_word_count_estimate_for_zero_token_usage() -> None:
     """polylogue-9kjtc AC2: when session_model_usage carries only zero-token
     rows (the chatgpt-export/claude-ai-export shape) but the session's
