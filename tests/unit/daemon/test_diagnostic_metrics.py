@@ -96,7 +96,7 @@ def test_late_archive_failure_retains_process_and_completed_storage_group(
     assert "polylogue_daemon_uptime_seconds " in body
     assert 'polylogue_diagnostic_delivery_total{outcome="dropped"} 7' in body
     assert 'polylogue_archive_tier_present{tier="index"} 1' in body
-    assert 'polylogue_daemon_metrics_collection_available{group="archive_index",reason="collector_failed"} 0' in body
+    assert 'polylogue_daemon_metrics_collection_available{group="archive_index"} 0' in body
     assert "polylogue_archive_sessions_total" not in body
     assert "/synthetic/private-input" not in body
     assert "SELECT secret" not in body
@@ -145,19 +145,36 @@ def test_exception_messages_cannot_create_metric_labels(monkeypatch: pytest.Monk
     assert all(marker not in first + second for marker in ("private-A", "SELECT private", "private FROM B"))
 
 
+def test_collection_availability_series_survives_recovery(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: failure and recovery must publish the same group series."""
+    db = tmp_path / "index.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+    fail = True
+
+    def fail_once(*_args: object, **_kwargs: object) -> None:
+        if fail:
+            raise RuntimeError("synthetic collection failure")
+
+    monkeypatch.setattr(metrics, "_emit_archive_source_index_link_metrics", fail_once)
+    failed = _scrape(db)
+    fail = False
+    recovered = _scrape(db)
+    available_prefix = 'polylogue_daemon_metrics_collection_available{group="archive_index"}'
+    assert f"{available_prefix} 0" in failed
+    assert f"{available_prefix} 1" in recovered
+    assert 'polylogue_daemon_metrics_collection_available{group="archive_index",reason=' not in recovered
+    assert 'polylogue_daemon_metrics_collection_reason{group="archive_index",reason="collector_failed"} 1' in failed
+
+
 def test_missing_and_malformed_index_are_unavailable_not_measured_zero(tmp_path: Path) -> None:
     missing = _scrape(tmp_path / "index.db")
-    assert (
-        'polylogue_daemon_metrics_collection_available{group="archive_index",reason="schema_unavailable"} 0' in missing
-    )
+    assert 'polylogue_daemon_metrics_collection_available{group="archive_index"} 0' in missing
     assert "polylogue_archive_sessions_total " not in missing
     assert "polylogue_fts_triggers_all_present 0" not in missing
     (tmp_path / "index.db").write_bytes(b"not a sqlite database")
     malformed = _scrape(tmp_path / "index.db")
-    assert (
-        'polylogue_daemon_metrics_collection_available{group="archive_index",reason="archive_unreadable"} 0'
-        in malformed
-    )
+    assert 'polylogue_daemon_metrics_collection_available{group="archive_index"} 0' in malformed
     assert "polylogue_archive_sessions_total " not in malformed
 
 
@@ -178,7 +195,7 @@ def test_readable_empty_index_retains_measured_zero(tmp_path: Path) -> None:
     with sqlite3.connect(db) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
     body = _scrape(db)
-    assert 'polylogue_daemon_metrics_collection_available{group="archive_index",reason="none"} 1' in body
+    assert 'polylogue_daemon_metrics_collection_available{group="archive_index"} 1' in body
     assert "polylogue_archive_sessions_total 0" in body
 
 
@@ -192,11 +209,20 @@ def test_ops_debt_without_attempt_ledger_does_not_invent_attempt_zeros(tmp_path:
         )
     body = _scrape(tmp_path / "index.db")
     assert 'polylogue_convergence_debt_count{stage="materialize",status="failed"} 1' in body
-    assert 'polylogue_daemon_metrics_collection_available{group="ops_attempts",reason="schema_unavailable"} 0' in body
+    assert 'polylogue_daemon_metrics_collection_available{group="ops_attempts"} 0' in body
     assert "polylogue_live_ingest_attempts_total{status=" not in body
     assert "polylogue_live_ingest_attempts_in_flight 0" not in body
     assert "polylogue_stale_cursor_writes_total 0" not in body
     assert "polylogue_live_ingest_storage_route_total 0" not in body
+
+
+def test_unreadable_ops_tier_is_not_reported_as_missing_schema(tmp_path: Path) -> None:
+    """Anti-vacuity: corrupt ops bytes make both ops probes unavailable as unreadable."""
+    (tmp_path / "ops.db").write_bytes(b"not a sqlite database")
+    body = _scrape(tmp_path / "index.db")
+    assert 'polylogue_daemon_metrics_collection_available{group="ops_or_discovery"} 0' in body
+    assert 'polylogue_daemon_metrics_collection_reason{group="ops_or_discovery",reason="archive_unreadable"} 1' in body
+    assert 'polylogue_daemon_metrics_collection_reason{group="ops_attempts",reason="archive_unreadable"} 1' in body
 
 
 def test_readable_empty_ops_attempt_ledger_keeps_measured_zero(tmp_path: Path) -> None:
@@ -205,7 +231,7 @@ def test_readable_empty_ops_attempt_ledger_keeps_measured_zero(tmp_path: Path) -
             "CREATE TABLE ingest_attempts (status TEXT NOT NULL, started_at_ms INTEGER, finished_at_ms INTEGER)"
         )
     body = _scrape(tmp_path / "index.db")
-    assert 'polylogue_daemon_metrics_collection_available{group="ops_attempts",reason="none"} 1' in body
+    assert 'polylogue_daemon_metrics_collection_available{group="ops_attempts"} 1' in body
     assert 'polylogue_live_ingest_attempts_total{status="completed"} 0' in body
     assert 'polylogue_live_ingest_attempts_total{status="failed"} 0' in body
     assert "polylogue_live_ingest_attempts_in_flight 0" in body
@@ -218,9 +244,7 @@ def test_malformed_source_tier_does_not_publish_version_zero(tmp_path: Path) -> 
     (tmp_path / "source.db").write_bytes(b"not a sqlite database")
     body = _scrape(db)
     assert "polylogue_daemon_uptime_seconds " in body
-    assert (
-        'polylogue_daemon_metrics_collection_available{group="archive_storage",reason="archive_unreadable"} 0' in body
-    )
+    assert 'polylogue_daemon_metrics_collection_available{group="archive_storage"} 0' in body
     assert 'polylogue_archive_tier_user_version{tier="source"} 0' not in body
     assert "polylogue_archive_ready 0" not in body
 
@@ -231,4 +255,4 @@ def test_process_collection_failure_isolated(monkeypatch: pytest.MonkeyPatch, tm
     assert "polylogue_daemon_uptime_seconds " in body
     assert "polylogue_diagnostic_delivery_total" in body
     assert "polylogue_storage_io_phase_observable" not in body
-    assert 'polylogue_daemon_metrics_collection_available{group="process_io",reason="collector_failed"} 0' in body
+    assert 'polylogue_daemon_metrics_collection_available{group="process_io"} 0' in body

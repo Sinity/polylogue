@@ -1916,15 +1916,14 @@ def render_typed_data_page(
                             or item.get("message_id")
                             or ""
                         )
-                        item_id = item.get("attachment_id") or item.get("message_id")
-                        anchor = item.get("message_anchor")
+                        message_id = item.get("message_id")
                         href = ""
-                        if isinstance(anchor, str) and anchor.startswith("#") and item_id:
+                        if isinstance(message_id, str) and message_id:
                             session_id = item.get("session_id")
                             if session_id:
                                 href = (
                                     f' href="/sessions/{quote(str(session_id), safe="")}'
-                                    f'{html.escape(anchor, quote=True)}"'
+                                    f'#msg-{quote(message_id, safe="")}"'
                                 )
                         label_html = html.escape(str(label))
                         if href:

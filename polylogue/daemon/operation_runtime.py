@@ -846,7 +846,15 @@ class DaemonOperationRuntime:
                     still_executing = (
                         exchange is not None and exchange.future is not None and not exchange.future.done()
                     )
-                    state = {"outcome": "running" if still_executing else "indeterminate", "sequence": 0}
+                    if cancelled_before_acceptance and exchange is None:
+                        state = {
+                            "outcome": "cancelled",
+                            "effect": "no-effect",
+                            "cancellation_requested": True,
+                            "sequence": 0,
+                        }
+                    else:
+                        state = {"outcome": "running" if still_executing else "indeterminate", "sequence": 0}
                 if state is None:
                     if exchange is None:
                         if cancelled_before_acceptance:
