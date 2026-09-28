@@ -102,7 +102,20 @@
     if (!signature || signature === lastTurnSignature) { lastTurnSignature = signature; return; }
     lastTurnSignature = signature;
     if (recaptureTimer !== null) clearTimeout(recaptureTimer);
-    recaptureTimer = setTimeout(() => { recaptureTimer = null; void capture("gemini_dom_changed"); }, 500);
+    // Hint only: the background freshness scheduler owns the capture decision
+    // and honours the automatic-capture opt-out; capturing here would not.
+    recaptureTimer = setTimeout(() => {
+      recaptureTimer = null;
+      const providerSessionId = conversationIdFromUrl();
+      if (!providerSessionId) return;
+      chrome.runtime.sendMessage({
+        type: "polylogue.captureFreshnessHint",
+        provider: "gemini",
+        provider_session_id: providerSessionId,
+        reason: "gemini_dom_changed",
+        delay_ms: 0,
+      }).catch(() => undefined);
+    }, 500);
   });
   freshnessObserver.observe(document.documentElement, { childList: true, characterData: true, subtree: true });
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

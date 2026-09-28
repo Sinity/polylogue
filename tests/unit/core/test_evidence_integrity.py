@@ -240,6 +240,17 @@ def test_out_of_range_epoch_as_of_is_an_unresolved_verdict() -> None:
     assert "unparseable_as_of" in verdict.reason_codes
 
 
+def test_malformed_evaluation_as_of_is_an_unresolved_verdict() -> None:
+    """Anti-vacuity: parsing the evaluation frame's as_of unguarded raises ValueError."""
+    nodes = [
+        EvidenceGraphNode("root", "claim", frame_hash="frame"),
+        EvidenceGraphNode("leaf", "raw", authority="raw", frame_hash="frame", as_of="2025-01-01T00:00:00Z"),
+    ]
+    verdict = evaluate_evidence("root", nodes, [EvidenceGraphEdge("root", "leaf")], as_of="not-a-date")
+    assert verdict.status is EvidenceIntegrityStatus.UNRESOLVED
+    assert "unparseable_as_of" in verdict.reason_codes
+
+
 def test_missing_root_is_unresolved_not_empty_authority_loop() -> None:
     verdict = evaluate_evidence("absent", [], [])
     assert verdict.status is EvidenceIntegrityStatus.UNRESOLVED

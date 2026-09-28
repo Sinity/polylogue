@@ -195,6 +195,15 @@ def evaluate_evidence(
         if item not in witnesses:
             witnesses.append(item)
 
+    # The evaluation frame's as_of is caller input of the same shape as a
+    # node's; an unparseable one is an unresolved witness, not a crash.
+    evaluation_instant = None
+    if as_of:
+        try:
+            evaluation_instant = _parse_as_of(as_of)
+        except (ValueError, OverflowError, OSError):
+            add("unparseable_as_of", (root_ref,), "evaluation as_of is not a timezone-aware instant")
+
     def visit(ref: str, path: tuple[str, ...]) -> None:
         nonlocal count
         if cancelled and cancelled():
@@ -226,7 +235,7 @@ def evaluate_evidence(
             add("definition_drift", (*path, ref), "definition hash differs from evaluation")
         if frame_hash and node.frame_hash and node.frame_hash != frame_hash:
             add("frame_drift", (*path, ref), "frame hash differs from evaluation")
-        if as_of and node.as_of:
+        if evaluation_instant is not None and node.as_of:
             # An adapter-supplied as_of is untrusted protocol input: a value
             # that does not parse is an unresolved witness, not a crash.
             try:
@@ -236,7 +245,7 @@ def evaluate_evidence(
                 # platform's representable range.
                 add("unparseable_as_of", (*path, ref), "node as_of is not a timezone-aware instant")
             else:
-                if node_instant > _parse_as_of(as_of):
+                if node_instant > evaluation_instant:
                     add("stale", (*path, ref), "node is newer than the evaluation as-of frame")
         # The claim node is not grounding evidence; only descendants decide
         # whether an assertion-only ancestry can launder itself into support.

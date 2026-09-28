@@ -83,15 +83,17 @@ describe("Gemini DOM capture contract", () => {
     dom.window.close();
   });
 
-  it("anti-vacuity: schedules recapture after an already captured turn changes", async () => {
+  it("anti-vacuity: a changed turn sends a policy-routed freshness hint, not a direct capture", async () => {
     const { dom, messages } = harness();
     await dom.window.polylogueCapture.capturePage("initial");
     const response = dom.window.document.querySelector("model-response message-content");
     response.textContent = "Updated answer";
     await new Promise((resolve) => setTimeout(resolve, 600));
-    const captures = messages.filter((message) => message.type === "polylogue.capture");
-    expect(captures).toHaveLength(2);
-    expect(captures[1].envelope.session.turns[1].text).toBe("Updated answer");
+    // Capturing directly here would bypass the automatic-capture opt-out.
+    expect(messages.filter((message) => message.type === "polylogue.capture")).toHaveLength(1);
+    const hints = messages.filter((message) => message.type === "polylogue.captureFreshnessHint");
+    expect(hints).toHaveLength(1);
+    expect(hints[0]).toMatchObject({ provider: "gemini", reason: "gemini_dom_changed" });
     dom.window.close();
   });
 });

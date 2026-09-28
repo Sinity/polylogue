@@ -2481,13 +2481,20 @@ def handle_metrics(responder: MetricsResponder, db: Path) -> None:
             error_detail=str(exc),
         )
         lines, states = _process_metric_lines()
-        states.append(({"group": "archive_index", "reason": "collector_failed"}, 0))
+        # Same projection as format_metrics: the availability gauge carries
+        # only the group label and 0/1 values; reason sentinels (-1) stay out.
+        stable_states = [
+            ({"group": labels["group"]} if "group" in labels else labels, value)
+            for labels, value in states
+            if value != -1
+        ]
+        stable_states.append(({"group": "archive_index"}, 0))
         _emit_metric(
             lines,
             name="polylogue_daemon_metrics_collection_available",
             help_text="1 when a metrics collection group completed for this scrape.",
             metric_type="gauge",
-            samples=states,
+            samples=stable_states,
         )
         _emit_metric(
             lines,
