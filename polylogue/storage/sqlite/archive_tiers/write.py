@@ -10476,20 +10476,28 @@ def _reanchored_ids(
 ) -> dict[str, str]:
     """Map each pre-write inherited id onto the row now composed in its place.
 
-    Rows are matched in order by content signature, so a message inserted or
-    removed elsewhere in the prefix does not break the mapping of unchanged
-    rows around it. An in-place edit keeps its id and needs no entry.
+    A row that is still composed under its own id keeps it (an in-place edit
+    needs no entry), so a surviving message is never claimed by another one's
+    content. Only the ids that left the composition are then matched, in
+    order, by content signature against the rows no surviving id holds, so a
+    message inserted or removed elsewhere in the prefix does not break the
+    mapping of unchanged rows around it, and a removed duplicate never takes
+    the row of an identical message that survived.
     """
     before = guard.inherited_ids[child]
     signatures = guard.signatures[child][: len(before)]
+    before_ids = set(before)
+    now_ids = {new for new, _ in inherited_now}
+    candidates = [(new, current) for new, current in inherited_now if new not in before_ids]
     mapping: dict[str, str] = {}
     cursor = 0
     for old, signature in zip(before, signatures, strict=True):
-        for index in range(cursor, len(inherited_now)):
-            new, current = inherited_now[index]
+        if old in now_ids:
+            continue
+        for index in range(cursor, len(candidates)):
+            new, current = candidates[index]
             if current == signature:
-                if new != old:
-                    mapping[old] = new
+                mapping[old] = new
                 cursor = index + 1
                 break
     return mapping
@@ -10705,23 +10713,18 @@ def _materialize_inherited_prefix(
     tail_start = conn.execute("SELECT MIN(position) FROM messages WHERE session_id = ?", (child,)).fetchone()[0]
     shifted = _make_room_below(conn, "messages", child, slots)
     if shifted:
-        # A compaction boundary over the child's own tail moves with it; one
-        # over the inherited prefix keeps addressing the copied rows. A range
-        # that starts in the inherited prefix but ends in the shifted tail
-        # has each endpoint shifted independently, so the tail-side endpoint
-        # still lands on the row it originally addressed.
+        # Each compaction boundary endpoint that addresses the child's own
+        # tail moves with it; one addressing the inherited prefix keeps
+        # addressing the copied rows. A range crossing from the prefix into
+        # the tail therefore moves only its end.
         conn.execute(
             """UPDATE session_events
-               SET boundary_end_position = boundary_end_position + ?
-               WHERE session_id = ? AND boundary_end_position >= ? AND boundary_start_position < ?""",
-            (shifted, child, tail_start, tail_start),
-        )
-        conn.execute(
-            """UPDATE session_events
-               SET boundary_start_position = boundary_start_position + ?,
-                   boundary_end_position = boundary_end_position + ?
-               WHERE session_id = ? AND boundary_start_position >= ?""",
-            (shifted, shifted, child, tail_start),
+               SET boundary_start_position = CASE WHEN boundary_start_position >= :tail
+                       THEN boundary_start_position + :shift ELSE boundary_start_position END,
+                   boundary_end_position = CASE WHEN boundary_end_position >= :tail
+                       THEN boundary_end_position + :shift ELSE boundary_end_position END
+               WHERE session_id = :child AND (boundary_start_position >= :tail OR boundary_end_position >= :tail)""",
+            {"shift": shifted, "child": child, "tail": tail_start},
         )
 
     overrides = {
@@ -10773,8 +10776,11 @@ def _materialize_inherited_prefix(
         )
     # Descendants that branched inside this child's inherited prefix follow
     # the rows to their new owner -- at any depth, since a grandchild's
-    # composition reaches the copies through its own parent.
-    for descendant in _composing_descendants(conn, child):
+    # composition reaches the copies through its own parent. Their own
+    # references into those rows follow too: the old rows are no longer in
+    # their composed transcript.
+    descendants = _composing_descendants(conn, child)
+    for descendant in descendants:
         conn.execute(
             f"""UPDATE session_links
                 SET branch_point_message_id = (
@@ -10785,11 +10791,51 @@ def _materialize_inherited_prefix(
                   AND branch_point_message_id IN (SELECT old_id FROM temp.{_GUARD_PREFIX}plan)""",
             (descendant,),
         )
+        for table in _SOURCE_MESSAGE_REF_TABLES:
+            conn.execute(
+                f"""UPDATE {table}
+                    SET source_message_id = (
+                        SELECT p.new_id FROM temp.{_GUARD_PREFIX}plan AS p
+                        WHERE p.old_id = {table}.source_message_id
+                    )
+                    WHERE session_id = ?
+                      AND source_message_id IN (SELECT old_id FROM temp.{_GUARD_PREFIX}plan)""",
+                (descendant,),
+            )
+    # A dispatch pointer into a copied block that is still live (an ancestor
+    # outside the rewritten session owns it) follows the copy for every
+    # dispatcher that now composes through this child. Pointers into the
+    # rewritten session's deleted blocks are the guard's captured edges.
+    dispatchers = [child, *descendants]
+    placeholders = ",".join("?" for _ in dispatchers)
+    moved_blocks = f"""SELECT b.block_id, p.new_id || substr(b.block_id, length(p.old_id) + 1) AS new_block_id
+                       FROM main.blocks AS b JOIN temp.{_GUARD_PREFIX}plan AS p ON p.old_id = b.message_id
+                       WHERE b.session_id <> :parent"""
+    redispatched = conn.execute(
+        f"""SELECT DISTINCT resolved_dst_session_id FROM session_links
+            WHERE resolved_dst_session_id IN ({placeholders})
+              AND parent_tool_use_block_id IN (SELECT block_id FROM ({moved_blocks.replace(":parent", "?")}))""",
+        (*dispatchers, rewritten_session_id),
+    ).fetchall()
+    if redispatched:
+        conn.execute(
+            f"""UPDATE session_links
+                SET parent_tool_use_block_id = (
+                    SELECT m.new_block_id FROM ({moved_blocks.replace(":parent", "?")}) AS m
+                    WHERE m.block_id = session_links.parent_tool_use_block_id
+                )
+                WHERE resolved_dst_session_id IN ({placeholders})
+                  AND parent_tool_use_block_id IN (SELECT block_id FROM ({moved_blocks.replace(":parent", "?")}))""",
+            (rewritten_session_id, *dispatchers, rewritten_session_id),
+        )
+        if not bulk_build:
+            for dispatcher in sorted(str(row[0]) for row in redispatched):
+                refresh_delegation_facts_for_session(conn, dispatcher)
     conn.execute(
         """UPDATE session_links
            SET inheritance = 'spawned-fresh', branch_point_message_id = NULL, branch_point_content_address = NULL,
                evidence_json = json_set(
-                   CASE WHEN json_valid(evidence_json) THEN evidence_json ELSE '{}' END,
+                   CASE WHEN json_type(evidence_json) = 'object' THEN evidence_json ELSE '{}' END,
                    '$.inherited_prefix', 'materialized-after-parent-rewrite')
            WHERE src_session_id = ? AND resolved_dst_session_id = ? AND inheritance = 'prefix-sharing'""",
         (child, parent_session_id),

@@ -3475,6 +3475,34 @@ def test_materialized_empty_tail_child_gets_an_active_leaf(tmp_path: Path) -> No
     conn.close()
 
 
+def test_materialization_evidence_survives_a_default_array_evidence(tmp_path: Path) -> None:
+    """An edge still holding the schema-default ``[]`` evidence records why it
+    stopped inheriting.
+
+    Anti-vacuity: guard the ``json_set`` with ``json_valid`` alone and the
+    array passes unchanged, so the materialized edge is indistinguishable from
+    an originally fresh spawn.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1"]))
+    child_id = write_parsed_session_to_archive(conn, _codex_session("child", ["m0", "m1", "c"], parent="parent"))
+    conn.execute("UPDATE session_links SET evidence_json = '[]' WHERE src_session_id = ?", (child_id,))
+    conn.commit()
+
+    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0"]))
+    conn.commit()
+
+    link = conn.execute(
+        "SELECT inheritance, json_extract(evidence_json, '$.inherited_prefix') FROM session_links "
+        "WHERE src_session_id = ?",
+        (child_id,),
+    ).fetchone()
+    assert tuple(link) == ("spawned-fresh", "materialized-after-parent-rewrite")
+    assert _composed_texts(conn, child_id) == ["m0", "m1", "c"]
+    conn.close()
+
+
 def test_relocated_branch_point_repairs_in_write(tmp_path: Path) -> None:
     """The repairable half of polylogue-gy2yu, closed by the producer itself.
 
@@ -3842,10 +3870,12 @@ def test_descendant_through_a_materialized_ancestor_follows_the_copy(tmp_path: P
 
 def test_prefix_compaction_boundary_stays_on_the_copied_rows(tmp_path: Path) -> None:
     """When only the tail shifts, a boundary over the inherited prefix keeps
-    addressing the copied rows while a boundary over the tail moves.
+    addressing the copied rows while a boundary over the tail moves, and a
+    range crossing from the prefix into the tail moves only its end.
 
     Anti-vacuity: shift every boundary and the prefix boundary lands on a
-    different copied message.
+    different copied message; shift by the start endpoint alone and the
+    crossing range stays ``(0, 1)``, leaving the moved tail outside it.
     """
     db = tmp_path / "index.db"
     conn = _connect(db)
@@ -3872,6 +3902,7 @@ def test_prefix_compaction_boundary_stays_on_the_copied_rows(tmp_path: Path) -> 
             session_events=[
                 ParsedSessionEvent(event_type="compaction", boundary_start_position=0, boundary_end_position=0),
                 ParsedSessionEvent(event_type="compaction", boundary_start_position=1, boundary_end_position=1),
+                ParsedSessionEvent(event_type="compaction", boundary_start_position=0, boundary_end_position=1),
             ],
         ),
     )
@@ -3885,10 +3916,10 @@ def test_prefix_compaction_boundary_stays_on_the_copied_rows(tmp_path: Path) -> 
     assert [tuple(row) for row in conn.execute(tail, (child_id,))] == [(2,)]
     boundaries = conn.execute(
         """SELECT boundary_start_position, boundary_end_position FROM session_events
-           WHERE session_id = ? ORDER BY boundary_start_position""",
+           WHERE session_id = ? ORDER BY boundary_start_position, boundary_end_position""",
         (child_id,),
     )
-    assert [tuple(row) for row in boundaries] == [(0, 0), (2, 2)]
+    assert [tuple(row) for row in boundaries] == [(0, 0), (0, 2), (2, 2)]
     conn.close()
 
 
@@ -3983,6 +4014,235 @@ def test_reanchor_across_an_inserted_prefix_row_keeps_refs_and_dispatch(tmp_path
         "SELECT parent_tool_use_block_id FROM session_links WHERE src_session_id = ?", (worker_id,)
     ).fetchone()
     assert tuple(pointer) == (f"{gp_id}:n:b:0",)
+    conn.close()
+
+
+def test_reanchor_never_hands_a_removed_duplicate_the_surviving_row(tmp_path: Path) -> None:
+    """The prefix holds two identical messages with different native ids;
+    the rewrite removes the first and keeps the second, so the child keeps
+    inheriting. The child's reference to the surviving message stays on it,
+    and its reference to the removed one is not redirected onto the survivor.
+
+    Anti-vacuity: match by content signature before stable identity in
+    ``_reanchored_ids`` and the ``a1`` event is rewritten to ``a2``.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+
+    def parent(messages: list[ParsedMessage]) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CODEX, provider_session_id="parent", title="parent", messages=messages
+        )
+
+    # Child first: its events then resolve onto the parent rows at extraction.
+    child_id = write_parsed_session_to_archive(
+        conn,
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="child",
+            title="child",
+            parent_session_provider_id="parent",
+            branch_type=BranchType.FORK,
+            messages=[
+                _msg("u0", Role.USER, "go", 0),
+                _msg("a1", Role.ASSISTANT, "same", 1),
+                _msg("a2", Role.ASSISTANT, "same", 2),
+                _msg("x3", Role.USER, "tail", 3),
+            ],
+            session_events=[
+                ParsedSessionEvent(event_type="capture_gap", source_message_provider_id=pid, payload={"summary": pid})
+                for pid in ("a1", "a2")
+            ],
+        ),
+    )
+    parent_id = write_parsed_session_to_archive(
+        conn,
+        parent(
+            [
+                _msg("u0", Role.USER, "go", 0),
+                _msg("a1", Role.ASSISTANT, "same", 1),
+                _msg("a2", Role.ASSISTANT, "same", 2),
+                _msg("u3", Role.USER, "next", 3),
+            ]
+        ),
+    )
+    conn.commit()
+    # The parent's rewrite leaves the child's event rows in place: a1's first, a2's second.
+    events = "SELECT source_message_id FROM session_events WHERE session_id = ? ORDER BY rowid"
+    assert [tuple(row) for row in conn.execute(events, (child_id,))] == [
+        (f"{parent_id}:n:a1",),
+        (f"{parent_id}:n:a2",),
+    ]
+
+    write_parsed_session_to_archive(
+        conn,
+        parent(
+            [_msg("u0", Role.USER, "go", 0), _msg("a2", Role.ASSISTANT, "same", 1), _msg("u3", Role.USER, "next", 2)]
+        ),
+    )
+    conn.commit()
+
+    assert _edge_state(conn, child_id) == (parent_id, "prefix-sharing", f"{parent_id}:n:a2")
+    assert [tuple(row) for row in conn.execute(events, (child_id,))] == [(None,), (f"{parent_id}:n:a2",)]
+    conn.close()
+
+
+def _dispatch_session(name: str, parent: str | None, tail: list[str]) -> ParsedSession:
+    """``m0`` then a ``Task`` tool call ``m1``, then text messages named by ``tail``."""
+    call = ParsedMessage(
+        provider_message_id="m1",
+        role=Role.ASSISTANT,
+        text="",
+        position=1,
+        blocks=[ParsedContentBlock(type=BlockType.TOOL_USE, tool_name="Task", tool_id="task-1", tool_input={})],
+    )
+    return ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id=name,
+        title=name,
+        parent_session_provider_id=parent,
+        branch_type=BranchType.FORK if parent else None,
+        messages=[
+            _msg("m0", Role.USER, "go", 0),
+            call,
+            *(_msg(text, Role.USER, text, index + 2) for index, text in enumerate(tail)),
+        ],
+    )
+
+
+def test_dispatch_pointer_into_a_live_ancestor_block_follows_the_copy(tmp_path: Path) -> None:
+    """``gp -> parent -> child`` with the dispatched tool call owned by ``gp``,
+    which the rewrite leaves alive. Materializing the child copies that call;
+    a subagent dispatched from the child now points at the child's copy.
+
+    Anti-vacuity: capture dispatch pointers only into the rewritten parent's
+    blocks and the edge keeps naming ``gp``'s block, outside the child's
+    now self-contained transcript.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    child_id = write_parsed_session_to_archive(conn, _dispatch_session("child", "parent", ["p2", "x3"]))
+    gp_id = write_parsed_session_to_archive(conn, _dispatch_session("gp", None, []))
+    write_parsed_session_to_archive(conn, _dispatch_session("parent", "gp", ["p2", "p3"]))
+    worker_id = write_parsed_session_to_archive(conn, _codex_session("worker", ["w0"]))
+    conn.execute(
+        """
+        INSERT INTO session_links(
+            src_session_id, dst_origin, dst_native_id, link_type, resolved_dst_session_id,
+            inheritance, status, parent_tool_use_block_id, confidence, evidence_json, observed_at_ms
+        ) VALUES (?, 'codex-session', 'child', 'subagent', ?, 'spawned-fresh', NULL, ?, 1.0, '[]', 0)
+        """,
+        (worker_id, child_id, f"{gp_id}:n:m1:0"),
+    )
+    conn.commit()
+
+    write_parsed_session_to_archive(conn, _dispatch_session("parent", "gp", ["p3"]))
+    conn.commit()
+
+    assert _edge_state(conn, child_id)[1:] == ("spawned-fresh", None)
+    pointer = conn.execute(
+        "SELECT parent_tool_use_block_id FROM session_links WHERE src_session_id = ?", (worker_id,)
+    ).fetchone()
+    assert tuple(pointer) == (f"{child_id}:n:m1:0",)
+    conn.close()
+
+
+def test_uncaptured_descendant_references_follow_the_materialized_copy(tmp_path: Path) -> None:
+    """``G -> P -> B -> C -> D``: D branches at a G-owned row and its event
+    names that row. Neither D's parent nor its branch point is P's, so the
+    guard never captured D; once B materializes, D composes through B's copy
+    and its event must follow the copy too.
+
+    Anti-vacuity: remap only the descendants' branch points and D's event
+    keeps naming ``g``'s row, outside its composed transcript.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    base = ["m0", "m1", "m2", "m3", "m4"]
+    g_id = write_parsed_session_to_archive(conn, _codex_session("g", base))
+    write_parsed_session_to_archive(conn, _codex_session("p", [*base, "p5"], parent="g"))
+    b_id = write_parsed_session_to_archive(conn, _codex_session("b", [*base, "p5", "b6"], parent="p"))
+    # D before C: D's event then resolves onto the composed row when C arrives.
+    d_id = write_parsed_session_to_archive(
+        conn,
+        _codex_session("d", ["m0", "m1", "d2"], parent="c").model_copy(
+            update={
+                "session_events": [
+                    ParsedSessionEvent(
+                        event_type="capture_gap", source_message_provider_id="m0", payload={"summary": "d event"}
+                    )
+                ]
+            }
+        ),
+    )
+    write_parsed_session_to_archive(conn, _codex_session("c", [*base, "p5", "b6", "c7"], parent="b"))
+    conn.commit()
+    events = "SELECT source_message_id FROM session_events WHERE session_id = ?"
+    assert [tuple(row) for row in conn.execute(events, (d_id,))] == [(f"{g_id}:n:m0",)]
+
+    write_parsed_session_to_archive(conn, _codex_session("p", [*base, "q5"], parent="g"))
+    conn.commit()
+
+    assert _edge_state(conn, b_id)[1:] == ("spawned-fresh", None)
+    assert _edge_state(conn, d_id)[2] == f"{b_id}:n:m1"
+    assert [tuple(row) for row in conn.execute(events, (d_id,))] == [(f"{b_id}:n:m0",)]
+    conn.close()
+
+
+def test_materialized_generated_producer_ref_names_the_copy(tmp_path: Path) -> None:
+    """An id-less assistant message owns a model-output attachment, so the
+    writer names its producer ``message:<stored id>``. Materializing that
+    message into the child re-roots the generated producer onto the copy.
+
+    Anti-vacuity: copy ``producer_ref`` verbatim and the child's attachment
+    names the deleted parent message as its producer.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    made = ParsedMessage(
+        provider_message_id="",
+        role=Role.ASSISTANT,
+        text="made a file",
+        position=1,
+        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="made a file")],
+    )
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        title="parent",
+        messages=[_msg("m0", Role.USER, "go", 0), made],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id="generated", message_position=1, message_variant_index=0, name="out.txt"
+            )
+        ],
+    )
+    parent_id = write_parsed_session_to_archive(conn, parent)
+    refs = "SELECT message_id, producer_ref FROM attachment_refs WHERE session_id = ?"
+    [(parent_message, parent_producer)] = [tuple(row) for row in conn.execute(refs, (parent_id,))]
+    assert parent_producer == f"message:{parent_message}"
+    child_id = write_parsed_session_to_archive(
+        conn,
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="child",
+            title="child",
+            parent_session_provider_id="parent",
+            branch_type=BranchType.FORK,
+            messages=[_msg("m0", Role.USER, "go", 0), made, _msg("x2", Role.USER, "tail", 2)],
+        ),
+    )
+    conn.commit()
+
+    write_parsed_session_to_archive(
+        conn, parent.model_copy(update={"messages": [_msg("m0", Role.USER, "go", 0)], "attachments": []})
+    )
+    conn.commit()
+
+    assert _edge_state(conn, child_id)[1:] == ("spawned-fresh", None)
+    [(child_message, child_producer)] = [tuple(row) for row in conn.execute(refs, (child_id,))]
+    assert child_message.startswith(f"{child_id}:")
+    assert child_producer == f"message:{child_message}"
     conn.close()
 
 
