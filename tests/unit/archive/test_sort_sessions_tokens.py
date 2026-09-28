@@ -10,13 +10,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from polylogue.archive.filter.types import SortField
 from polylogue.archive.query.sorting import sort_sessions
 from tests.infra.builders import make_conv, make_msg
 
 
 @dataclass(frozen=True)
 class _Plan:
-    sort: str | None
+    sort: SortField | None
     reverse: bool
     limit: int | None = None
     sample: int | None = None
