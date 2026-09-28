@@ -1146,9 +1146,24 @@ def prepare_retained_jsonl_artifact(
                 classify_claude_design_object=classify_claude_design_object,
                 classify_chatgpt_object=classify_chatgpt_object,
                 classify_gemini_object=classify_gemini_object,
+                # The publisher recomputes this digest from the retained
+                # evidence for every artifact, so a pass that enriched nothing
+                # (no assembly spec, or no admitted session) must bind the
+                # same evidence value rather than an absent one.
                 preparation_dependency=lambda: (
                     _retained_dependency_digest(
-                        evidence_digest,
+                        evidence_digest
+                        if evidence_digest is not None
+                        else _enrichment_evidence_digest(
+                            _retained_enrichment_sidecar_data(
+                                provider=provider,
+                                sessions=(),
+                                index_conn=index_conn,
+                                source_conn=source_conn,
+                                blob_root=Path(blob_root),
+                                source_path=source_path,
+                            )
+                        ),
                         _retained_parser_sidecar_digest(source_conn, provider=provider, source_path=source_path),
                     ),
                     str(Path(index_db_path).resolve()),

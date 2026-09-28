@@ -144,6 +144,8 @@ def test_component_snapshot_metadata_keeps_collection_state_out_of_business_read
             "fingerprint": None,
             "error": "collector exceeded deadline_s=0.1",
             "last_good_at": None,
+            "completed_at": None,
+            "collection_duration_s": None,
         }
     ]
 

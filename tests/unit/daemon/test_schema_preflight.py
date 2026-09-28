@@ -463,7 +463,11 @@ async def test_live_batch_marks_structural_database_error_degraded(
     f = tmp_path / "event.jsonl"
     f.write_bytes(b'{"ok": true}\n')
 
-    db_path = tmp_path / "index.db"
+    # The stub cursor's file lives outside the archive root: an archive with an
+    # index tier but no source tier is blocked by the source-selection gate
+    # (#5657) before the full parse this test drives.
+    db_path = tmp_path / "cursor-state" / "index.db"
+    db_path.parent.mkdir()
     db_path.touch()
     cursor = _StubCursor(db_path)
 

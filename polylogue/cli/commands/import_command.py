@@ -27,8 +27,11 @@ The three observable outcomes are:
 from __future__ import annotations
 
 import json
+import os
 import shutil
-from collections.abc import Mapping
+import stat
+from collections.abc import Callable, Mapping
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -52,8 +55,50 @@ def _default_daemon_url() -> str:
     return load_polylogue_config().daemon_url or "http://127.0.0.1:8766"
 
 
+def _clone_file(
+    source: str | Path, destination: str | Path, *, before_publish: Callable[[], None] | None = None
+) -> Path:
+    """Stage one regular file by reflink where supported, else by copy.
+
+    Account exports run to tens of gigabytes; on a copy-on-write filesystem a
+    reflink stages them without duplicating the bytes. The staged entry is
+    replaced only once the new copy is complete, so a failed restage keeps
+    the earlier import.
+    """
+    from polylogue.core.durable_fs import clone_or_copy_replace
+
+    destination_path = Path(destination)
+    clone_or_copy_replace(Path(source), destination_path, before_publish=before_publish)
+    return destination_path
+
+
+def _make_directories_owner_writable(root: Path) -> list[tuple[str, int]]:
+    """Let a restage create its temporaries inside an earlier staged tree.
+
+    ``copytree`` copies each source directory's mode after its contents, so a
+    ``0555`` export directory is read-only once staged and a later restage
+    could not create a replacement inside it. The same ``copytree`` restores
+    every mode once the directory's contents are published; the modes changed
+    here are returned so a failed restage can put them back.
+    """
+    changed: list[tuple[str, int]] = []
+    for directory, _subdirectories, _files in os.walk(root):
+        mode = stat.S_IMODE(os.stat(directory).st_mode)
+        if not mode & stat.S_IWUSR:
+            os.chmod(directory, mode | stat.S_IWUSR)
+            changed.append((directory, mode))
+    return changed
+
+
+def _restore_directory_modes(changed: list[tuple[str, int]]) -> None:
+    # Deepest first, so a parent is never made read-only before its child.
+    for directory, mode in reversed(changed):
+        with suppress(FileNotFoundError):
+            os.chmod(directory, mode)
+
+
 def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:
-    """Copy a local import target into the archive inbox for daemon pickup."""
+    """Stage a local import target into the archive inbox for daemon pickup."""
     from polylogue.sources.parsers import antigravity, hermes_state
     from polylogue.sources.sqlite_snapshot import sqlite_staging_metadata_path, stage_sqlite_snapshot
 
@@ -77,11 +122,35 @@ def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:
         if hermes_state.looks_like_state_db_path(resolved) or antigravity.looks_like_trajectory_db_path(resolved):
             stage_sqlite_snapshot(resolved, dest)
             return dest
-        sqlite_staging_metadata_path(dest).unlink(missing_ok=True)
+        # A restaged non-snapshot has no SQLite provenance. An earlier staged
+        # snapshot keeps its sidecar for the whole copy: the sidecar is
+        # retired only once the replacement is complete, directly before the
+        # rename that publishes it, and restored if that publication fails.
+        metadata_path = sqlite_staging_metadata_path(dest)
         if resolved.is_dir():
-            shutil.copytree(resolved, dest, dirs_exist_ok=True)
+            changed_modes = _make_directories_owner_writable(dest) if dest.is_dir() else []
+            try:
+                shutil.copytree(resolved, dest, dirs_exist_ok=True, copy_function=_clone_file)
+            except OSError:
+                _restore_directory_modes(changed_modes)
+                raise
+            metadata_path.unlink(missing_ok=True)
         else:
-            shutil.copy2(resolved, dest)
+            retired: list[bytes] = []
+
+            def retire_provenance() -> None:
+                with suppress(FileNotFoundError):
+                    retired.append(metadata_path.read_bytes())
+                    metadata_path.unlink()
+
+            try:
+                _clone_file(resolved, dest, before_publish=retire_provenance)
+            except OSError:
+                if retired:
+                    from polylogue.core.durable_fs import atomic_replace
+
+                    atomic_replace(metadata_path, retired[0], mode=0o600)
+                raise
     except OSError as exc:
         fail("import", f"Could not stage {resolved} in daemon inbox: {exc}")
 

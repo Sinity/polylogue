@@ -311,7 +311,9 @@ def test_queued_focused_receipt_identifies_execution_content(monkeypatch: pytest
     """A mutation after submission changes the content named by run.json."""
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     ignored = tmp_path / ".gitignore"
-    ignored.write_text(".cache/\n", encoding="utf-8")
+    # The autouse fixture puts the XDG homes, and with them the durable
+    # verification evidence lane, inside tmp_path; they are not worktree content.
+    ignored.write_text(".cache/\nxdg-*/\n", encoding="utf-8")
     source = tmp_path / "test_input.py"
     source.write_text("value = 1\n", encoding="utf-8")
     subprocess.run(["git", "add", ".gitignore", "test_input.py"], cwd=tmp_path, check=True)
