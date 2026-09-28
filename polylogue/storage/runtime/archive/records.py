@@ -139,6 +139,7 @@ class BlockRecord(BaseModel):
     # thoughtSignatures are the same construct). NULL when the wire carried
     # none, or this read path did not select the column.
     signature: str | None = None
+    content_hash: str | None = None
 
     @field_validator("type", mode="before")
     @classmethod

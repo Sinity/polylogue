@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -67,7 +68,12 @@ class TopicPackResult:
     def to_dict(self) -> dict[str, object]:
         def dump(item: Any) -> Any:
             model_dump = getattr(item, "model_dump", None)
-            return model_dump() if callable(model_dump) else item
+            if not callable(model_dump):
+                return item
+            try:
+                return model_dump(mode="json")
+            except TypeError:
+                return model_dump()
 
         return {
             "status": self.status,
@@ -106,17 +112,32 @@ def _session_id(value: Any) -> str:
     return str(getattr(value, "id", getattr(value, "session_id", value)))
 
 
+async def _iter_limited(messages: Iterable[Any], limit: int) -> AsyncIterator[Any]:
+    for index, message in enumerate(messages):
+        if index >= limit:
+            return
+        yield message
+
+
 def _signals(context_pack: list[dict[str, object]]) -> dict[str, list[str]]:
     """Extract bounded, non-semantic hints for later workflow stages."""
-    text = "\n".join(str(item["text"]) for item in context_pack)
     patterns = {
         "files": r"(?<![\w/])(?:[\w.-]+/)+[\w.-]+|\b[\w.-]+\.(?:py|ts|tsx|js|json|md|nix)\b",
         "branches": r"\b(?:feature|bugfix|hotfix|release)/[\w./-]+\b",
-        "issues": r"(?<!\w)#\d+\b|\b(?:issue|bead)[ -]?[\w.-]+\b",
+        "issues": r"(?<!\w)#\d+\b|\b(?:issue|bead)[ -]?(?:[\w]+-[\w]+(?:\.[\w]+)?|\d+)\b",
     }
-    return {
-        name: sorted(set(re.findall(pattern, text, flags=re.IGNORECASE)))[:16] for name, pattern in patterns.items()
-    }
+    result: dict[str, list[str]] = {}
+    for name, pattern in patterns.items():
+        found: set[str] = set()
+        for item in context_pack:
+            for match in re.finditer(pattern, str(item["text"]), flags=re.IGNORECASE):
+                found.add(match.group(0))
+                if len(found) >= 16:
+                    break
+            if len(found) >= 16:
+                break
+        result[name] = sorted(found)
+    return result
 
 
 async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> TopicPackResult:
@@ -134,12 +155,14 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
         evidence[sid] = TopicPackEvidence(sid, "fts", {"rank": getattr(hit, "rank", None), "lane": "text"})
 
     vector_status = "disabled" if request.vector_provider is None else "ready"
+    vector_attempted = False
     retrieval_lanes = {"fts": len(seeds), "embedding": 0, "time": 0, "topology": 0, "content": 0}
     if request.vector_provider is not None and len(sessions) < request.max_sessions:
+        vector_attempted = True
         try:
             vector_hits = await store.search_similar(
                 query,
-                limit=min(request.expansion_limit, request.max_sessions - len(sessions)),
+                limit=min(request.expansion_limit, request.max_sessions),
                 vector_provider=request.vector_provider,
             )
         except Exception as exc:
@@ -150,12 +173,21 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
                 sid = _session_id(item)
                 if sid not in sessions and len(sessions) >= request.max_sessions:
                     break
-                sessions[sid] = item
-                evidence[sid] = TopicPackEvidence(sid, "embedding", {"lane": "vector"})
-                retrieval_lanes["embedding"] += 1
+                if sid in sessions:
+                    current = evidence[sid]
+                    reasons = {current.reason, "embedding"}
+                    evidence[sid] = TopicPackEvidence(
+                        sid, "/".join(sorted(reasons)), {**current.evidence, "vector_lane": True}, current.citations
+                    )
+                    retrieval_lanes["embedding"] += 1
+                else:
+                    sessions[sid] = item
+                    evidence[sid] = TopicPackEvidence(sid, "embedding", {"lane": "vector"})
+                    retrieval_lanes["embedding"] += 1
     elif request.vector_provider is None:
         gaps.append("vector expansion disabled; FTS, time, and topology lanes still ran")
 
+    neighbor_attempted = bool(sessions)
     for sid in tuple(sessions)[: request.max_sessions]:
         try:
             neighbors = await discover_neighbor_candidates(
@@ -184,30 +216,6 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
                 if lane is not None:
                     retrieval_lanes[lane] += 1
 
-    # A seed-free query still gets an independent recovery pass. This keeps an
-    # empty FTS result from being treated as proof that the topic is absent.
-    if not sessions:
-        try:
-            recovery = await discover_neighbor_candidates(
-                store,
-                NeighborDiscoveryRequest(query=query, limit=min(request.neighbor_limit, request.max_sessions)),
-            )
-        except Exception as exc:
-            gaps.append(f"precursor recovery failed: {type(exc).__name__}")
-        else:
-            for candidate in recovery:
-                if len(sessions) >= request.max_sessions:
-                    break
-                sessions[candidate.session_id] = candidate.summary
-                evidence[candidate.session_id] = TopicPackEvidence(
-                    candidate.session_id,
-                    "precursor-recovery",
-                    {"lane": "query-neighbor", "reasons": [reason.detail for reason in candidate.reasons]},
-                )
-                for reason in candidate.reasons:
-                    if reason.kind == "content_similarity":
-                        retrieval_lanes["content"] += 1
-
     ordered = tuple(sessions.values())[: request.max_sessions]
     timeline = tuple(
         {"session_id": _session_id(item), "title": getattr(item, "title", None), "position": index}
@@ -216,26 +224,35 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
     context_pack: list[dict[str, object]] = []
     message_count = 0
     for summary in ordered:
-        session = await store.get(_session_id(summary))
-        if session is None:
-            gaps.append(f"session disappeared during read: {_session_id(summary)}")
-            continue
-        for message in getattr(session, "messages", ()):
-            if message_count >= request.max_messages:
-                break
+        sid = _session_id(summary)
+        remaining = request.max_messages - message_count
+        pager = getattr(store, "get_messages_paginated", None)
+        iterator = getattr(store, "iter_messages", None)
+        if callable(pager):
+            page = await pager(sid, limit=remaining, offset=0)
+            messages = _iter_limited(page[0], remaining)
+        elif callable(iterator):
+            messages = iterator(sid, limit=remaining)
+        else:
+            session = await store.get(sid)
+            if session is None:
+                gaps.append(f"session disappeared during read: {_session_id(summary)}")
+                continue
+            messages = _iter_limited(getattr(session, "messages", ()), remaining)
+        async for message in messages:
             if not getattr(message, "text", None):
                 continue
-            citation = _citation(message, _session_id(session))
+            citation = _citation(message, sid)
             context_item: dict[str, object] = {
-                "session_id": _session_id(session),
+                "session_id": sid,
                 "message_id": str(message.id),
                 "text": message.text,
             }
             if citation:
                 context_item["citation"] = citation
-                current = evidence.get(_session_id(session))
+                current = evidence.get(sid)
                 if current is not None and citation not in current.citations:
-                    evidence[_session_id(session)] = TopicPackEvidence(
+                    evidence[sid] = TopicPackEvidence(
                         current.session_id, current.reason, current.evidence, (*current.citations, citation)
                     )
             context_pack.append(context_item)
@@ -243,8 +260,14 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
         if message_count >= request.max_messages:
             break
 
+    attempted = ["fts"]
+    if vector_attempted:
+        attempted.append("embedding")
+    if neighbor_attempted:
+        attempted.extend(("time", "content"))
     topology_reader = getattr(store, "get_session_topology", None)
-    if callable(topology_reader):
+    if ordered and callable(topology_reader):
+        attempted.append("topology")
         for summary in ordered:
             try:
                 topology = await topology_reader(_session_id(summary))
@@ -282,7 +305,7 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
             "bounds": {"max_sessions": request.max_sessions, "max_messages": request.max_messages},
             "content_hash_citations": sum(len(item.citations) for item in evidence.values()),
             "retrieval_lanes": retrieval_lanes,
-            "retrieval_channels_attempted": ["fts", "embedding", "time", "topology", "content"],
+            "retrieval_channels_attempted": attempted,
             "signals": _signals(context_pack),
             "quality_baseline": {
                 "kind": "no-vector-fts",
