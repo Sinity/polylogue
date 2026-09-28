@@ -7,13 +7,14 @@ import contextvars
 import os
 import re
 import sqlite3
+import threading
 import time
 import uuid
 import zipfile
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import Future
-from contextlib import ExitStack, closing, contextmanager
-from dataclasses import dataclass, field
+from contextlib import ExitStack, closing, contextmanager, suppress
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from io import BytesIO
@@ -833,6 +834,7 @@ class LiveBatchProcessor:
         # The watcher supplies a parse stage for JSON/JSONL preparation before
         # the writer hold. Direct callers may pass None for baseline parity.
         self._parse_stage = parse_stage
+        self._parse_lookahead: tuple[tuple[Path, ...], str] | None = None
         self._read_snapshot = read_snapshot
 
     def cursor_authority_block_reason(self) -> str | None:
@@ -1473,7 +1475,10 @@ class LiveBatchProcessor:
                 # Remaining sources stay ordinary backlog for the next tick;
                 # nothing here was attempted, so nothing to mark failed.
                 break
-            for source_paths in _full_parse_progress_groups(grouped_paths):
+            progress_groups = list(_full_parse_progress_groups(grouped_paths))
+            held_pending: list[Path] = []
+            while progress_groups:
+                source_paths = progress_groups.pop(0)
                 if self._stop_requested():
                     break
                 if is_fully_degraded():
@@ -1485,6 +1490,9 @@ class LiveBatchProcessor:
                 ):
                     full_ingest_time_budget_exceeded = True
                     break
+                if held_pending and source_paths is held_pending:
+                    # The held group is starting; its own result accounts for it.
+                    held_pending = []
                 t0 = time.perf_counter()
                 try:
                     await self._record_attempt_progress_admitted(
@@ -1518,6 +1526,11 @@ class LiveBatchProcessor:
                         ),
                     )
                     processed_any_full_group = True
+                    if full_result.ordering_held:
+                        # Later revisions of a session this group published
+                        # go next, warmed against that publication.
+                        held_pending = list(full_result.ordering_held)
+                        progress_groups.insert(0, held_pending)
                     if full_result.time_budget_exceeded:
                         full_ingest_time_budget_exceeded = True
                     ingest_worker_count_max = max(ingest_worker_count_max, full_result.worker_count)
@@ -1730,6 +1743,20 @@ class LiveBatchProcessor:
                         reason="writer hold spent after the archive commit; the batch ends with its cursors recorded",
                     )
                     break
+            # A held revision the loop ended before reaching was never
+            # attempted: it stays retryable instead of reading as settled.
+            failed_now = set(failed_paths)
+            for path in held_pending:
+                if str(path) in failed_now:
+                    continue
+                deferred_paths.append(path)
+                preparation_deferred_paths.add(path)
+                await self._run_ops_write(
+                    "cursor_deferred_preparation",
+                    self._defer_full_cursor_retry,
+                    path,
+                    source_name=source_name,
+                )
 
         summary_stage_payload = _single_route_stage_payload(
             append_file_count=append_file_count,
@@ -2841,6 +2868,60 @@ class LiveBatchProcessor:
         backend = getattr(self._polylogue, "backend", None)
         return isinstance(getattr(backend, "db_path", None), Path)
 
+    def offer_parse_lookahead(self, paths: Sequence[Path], *, source_name: str) -> None:
+        """Record the paths a later batch will ingest in full, touching nothing.
+
+        No source is read here or on any parent thread: the next full ingest
+        filters the offer by cursor and hands it to the parse stage, whose
+        workers do every source read where a stuck one can be reaped.
+        """
+        self._parse_lookahead = (tuple(paths), source_name) if paths else None
+
+    def drop_parse_lookahead(self) -> None:
+        """Forget an unconsumed lookahead offer."""
+        self._parse_lookahead = None
+
+    async def _submit_ready_lookahead(self) -> None:
+        """Submit the offered lookahead to the parse stage, never waiting on its parsing.
+
+        Called between a full ingest's warm and its publication, so the next
+        batch's parsing overlaps this one's writer-held publication. Only
+        the cursor lookup and a stat per path run here; the submission
+        mutates the stage's bookkeeping, so if the caller is cancelled it
+        settles before the ingest lock is released.
+        """
+        offer = self._parse_lookahead
+        self._parse_lookahead = None
+        if offer is None or self._parse_stage is None:
+            return
+        paths, source_name = offer
+        stage = self._parse_stage
+        fallback_provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
+
+        def submit() -> int:
+            # Only a file with no cursor row is certain to be ingested in full.
+            records = self._cursor.get_records(paths)
+            cursorless = [str(path) for path in paths if records.get(path) is None]
+            return stage.prefetch_paths(cursorless, fallback_provider=fallback_provider) if cursorless else 0
+
+        submission = asyncio.ensure_future(asyncio.to_thread(submit))
+        try:
+            await asyncio.shield(submission)
+        except asyncio.CancelledError:
+            with suppress(Exception):
+                await submission
+            raise
+        except Exception as exc:
+            # Read-ahead costs only the overlap when it fails; the batch that
+            # needs these paths warms them itself.
+            emit(
+                "live.parse_prefetch.lookahead_failed",
+                level=WARNING,
+                outcome="degraded",
+                reason="lookahead_submission_failed",
+                error_type=type(exc).__name__,
+            )
+
     async def _ingest_full_paths(
         self,
         paths: list[Path],
@@ -2852,6 +2933,7 @@ class LiveBatchProcessor:
         pass_started: float | None = None,
     ) -> _FullIngestResult:
         prepared_json_paths: frozenset[str] = frozenset()
+        held_paths: frozenset[str] = frozenset()
         if self._parse_stage is not None and not _source_tier_acquisition_required():
             # Prepare JSON/JSONL before asking the coordinator for a writer
             # hold. A failed prewarm leaves the regular recorded parse outcome.
@@ -2869,24 +2951,47 @@ class LiveBatchProcessor:
                         if Path(source_path).suffix.lower() == ".json"
                     )
                     archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
-                    await asyncio.to_thread(
-                        self._parse_stage.warm_paths,
-                        path_candidates,
-                        archive_root=archive_root,
-                        read_snapshot=self._read_snapshot,
-                        capture_mode=fallback_provider,
-                        source_index=0,
+                    # The warm has no deadline and mutates the stage's
+                    # bookkeeping. If the caller is cancelled, stop it at its
+                    # next poll and settle the thread before the ingest lock
+                    # is released, so no retry, warm or shutdown runs beside it.
+                    cancelled = threading.Event()
+                    warm = asyncio.ensure_future(
+                        asyncio.to_thread(
+                            self._parse_stage.warm_paths,
+                            path_candidates,
+                            archive_root=archive_root,
+                            read_snapshot=self._read_snapshot,
+                            capture_mode=fallback_provider,
+                            source_index=0,
+                            cancelled=cancelled,
+                        )
                     )
+                    try:
+                        held_paths = await asyncio.shield(warm)
+                    except asyncio.CancelledError:
+                        cancelled.set()
+                        with suppress(Exception):
+                            await warm
+                        raise
             except Exception:
                 prepared_json_paths = frozenset()
+                held_paths = frozenset()
                 logger.warning(
                     "live.watcher: parse-stage prefetch failed; falling back to in-hold parse",
                     exc_info=True,
                 )
-        return await self._run_sync(
+            # This page's warm is settled; the next batch's parsing can now
+            # overlap this page's publication.
+            await self._submit_ready_lookahead()
+        # A held path shares a canonical session with an earlier path of this
+        # group. It publishes in the next group, after a warm that reconciles
+        # it against this group's publication.
+        held = [path for path in paths if str(path) in held_paths]
+        result = await self._run_sync(
             "watcher.live_ingest.full",
             self._ingest_full_paths_sync_in_ops_scope,
-            paths,
+            [path for path in paths if str(path) not in held_paths] if held else paths,
             source_name=source_name,
             heartbeat=heartbeat,
             attempt_id=attempt_id,
@@ -2894,6 +2999,7 @@ class LiveBatchProcessor:
             pass_started=pass_started,
             prepared_json_paths=prepared_json_paths,
         )
+        return replace(result, ordering_held=held) if held else result
 
     async def _run_sync(
         self,

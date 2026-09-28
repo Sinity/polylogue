@@ -4,22 +4,40 @@ Path workers leave sealed SQLite carriers and row shards on disk. Admission
 caps concurrent task count and captured source bytes; a lone oversized file
 may run, while additional files remain retryable. The publisher checks the
 captured blob hash before consuming a carrier.
+
+Read-ahead (``prefetch_paths``) is speculative work with a bounded lifecycle.
+The parent only stats a path; every source content read, including candidate
+sampling, runs inside the executor. Speculation is charged to the slot and
+byte budget from submission until it finishes or is reaped, and never takes
+the last worker. It is preemptible: a warm whose required path does not fit
+gives running unclaimed read-ahead a short grace, then reaps it (a process
+pool is terminated and restarted; the warm resubmits its own collateral
+work). Unclaimed read-ahead that outlives its lifetime is reaped the same way.
+A finished read-ahead releases its charge at once but pays its full artifact
+digest only when a warm claims it.
+
+Publication order is enforced once, in reconciliation: a warm reconciles its
+paths in intake order against a snapshot taken after every earlier
+publication, admits at most one path per canonical session, and returns the
+later same-session paths as held for the next warm. A reconciliation is valid
+only for the warm that made it; any older one is discarded and redone.
 """
 
 from __future__ import annotations
 
+import os
 import shutil
+import stat
 import threading
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import (
     FIRST_COMPLETED,
     Executor,
     Future,
     ProcessPoolExecutor,
     ThreadPoolExecutor,
-    as_completed,
     wait,
 )
 from concurrent.futures.process import BrokenProcessPool
@@ -27,7 +45,7 @@ from contextlib import AbstractContextManager, suppress
 from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from polylogue.core.enums import Provider
 from polylogue.logging import WARNING, carry_context, emit, get_logger
@@ -35,7 +53,7 @@ from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload, parse_stream_payload
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.prepared_jsonl import PreparedJsonl as LivePathPreparation
-from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
+from polylogue.sources.prepared_jsonl import VerificationCancelledError, prepare_jsonl_blob
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
 from polylogue.storage.sqlite.archive_tiers.write_shard import discard_session_shard
 
@@ -54,7 +72,20 @@ class PreparedReadSnapshot(Protocol):
 ReadSnapshot = Callable[[Path], AbstractContextManager[PreparedReadSnapshot]]
 
 _DEFAULT_WORKER_COUNT_FLOOR = 1
-_DEFAULT_WARM_TIMEOUT_SECONDS = 60.0
+_DEFAULT_PROCESS_WORKER_CAP = 8
+#: Stage calls (warms and prefetches) a prefetched result may wait to be
+#: claimed before it is dropped. Prefetch looks ahead about two pages and each
+#: page costs one prefetch and one warm, so a claimed guess is warmed within
+#: four or six; anything older is a path selection skipped. Counting
+#: prefetches too keeps a walk that only prefetches (every file skipped after
+#: cursor reconciliation) from accumulating results.
+_SPECULATIVE_LIFETIME_CALLS = 8
+_DEFAULT_STALL_REPORT_SECONDS = 60.0
+#: How long a warm blocked on capacity lets running unclaimed read-ahead
+#: finish before reaping it.
+_PREEMPT_GRACE_SECONDS = 10.0
+#: How often a waiting warm re-reads its preparations' progress.
+_PROGRESS_POLL_SECONDS = 5.0
 
 # The dispatcher's per-pass byte budget already caps one admitted page at
 # 64 MiB, so the adaptive budget below only needs to cover one page's worth
@@ -81,6 +112,13 @@ def live_watcher_parse_stage_worker_count() -> int:
     return max(_DEFAULT_WORKER_COUNT_FLOOR, (available_cpus() or 2) - 1)
 
 
+def _parse_stage_workers_configured() -> bool:
+    from polylogue.config import load_polylogue_config
+
+    configured = load_polylogue_config().live_watcher_parse_stage_workers
+    return configured is not None and configured > 0
+
+
 def live_watcher_parse_stage_max_inflight_bytes() -> int:
     """Whale-memory budget for the watcher's pre-parse payload cache.
 
@@ -100,17 +138,43 @@ def live_watcher_parse_stage_max_inflight_bytes() -> int:
     return max(_MIN_MAX_INFLIGHT_BYTES, min(_MAX_MAX_INFLIGHT_BYTES, physical // 32))
 
 
-def live_watcher_parse_stage_warm_timeout_seconds() -> float:
-    """Bound on how long a watcher prefetch warm() pass waits for its workers.
+def live_watcher_parse_stage_stall_report_seconds() -> float:
+    """Seconds without forward progress before a preparation is reported stalled.
 
-    Override with ``POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WARM_TIMEOUT_SECONDS``.
+    Not a deadline: a warm waits for its preparations to finish, however long
+    a large file takes, and this window only decides when a worker that has
+    stopped advancing is reported (``live.parse_prefetch.preparation_stalled``).
+
+    Override with ``POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_STALL_REPORT_SECONDS``.
     """
     from polylogue.config import load_polylogue_config
 
-    configured = load_polylogue_config().live_watcher_parse_stage_warm_timeout_seconds
+    configured = load_polylogue_config().live_watcher_parse_stage_stall_report_seconds
     if configured is not None and configured > 0:
         return configured
-    return _DEFAULT_WARM_TIMEOUT_SECONDS
+    return _DEFAULT_STALL_REPORT_SECONDS
+
+
+def _completed_reporting_stalls(futures: Iterable[Future[Any]], *, stall_window: float) -> Iterator[Future[Any]]:
+    """Yield futures as they complete, never giving up on the rest.
+
+    A window with no completion is reported as a stall and waiting continues:
+    abandoning finished-in-a-moment work and reparsing it under the writer
+    lease is the livelock this replaces.
+    """
+    pending = set(futures)
+    while pending:
+        done, pending = wait(pending, timeout=stall_window, return_when=FIRST_COMPLETED)
+        if not done:
+            emit(
+                "live.parse_prefetch.preparation_stalled",
+                level=WARNING,
+                outcome="degraded",
+                reason="no_completion_in_window",
+                paths=len(pending),
+                wait_ms=round(stall_window * 1000),
+            )
+        yield from done
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,24 +285,46 @@ def live_parse_path_worker(
     )
 
 
-def _discard_orphaned_shard(
-    future: Future[tuple[str, list[ParsedSession] | None, BaseException | None, str | None]],
-) -> None:
-    """Discard the shard sealed by a worker nobody is waiting on any more.
+def live_lookahead_path_worker(
+    fallback_provider_value: str,
+    source_path: str,
+    fallback_id: str,
+    *,
+    shard_directory: str,
+    attempt_directory: str | None = None,
+) -> LivePathPreparation:
+    """Select and prepare one read-ahead path inside the executor.
 
-    Runs on the worker's own thread once it finishes. A worker abandoned by a
-    ``warm()`` timeout still seals a shard, and its ``shard_name`` is never
-    returned to a consumer, so without this the file survives until the stage
-    shuts down. Failure to parse, or to remove, is not the caller's problem:
-    the shard is already unreferenced either way.
+    Candidate sampling reads the source, so it runs here, where a stuck read
+    can be reaped with its worker, rather than on a parent thread nothing can
+    stop. A path that is not a regular file (discovery saw one, but it may
+    since have become a symlink out of the source) is refused before any
+    read. A refused path, or one that is not a preparation candidate, yields
+    a retryable result, which a claiming warm discards and prepares itself.
     """
-    if future.cancelled():
-        return
-    if future.exception() is not None:
-        return
-    shard_name = future.result()[3]
-    if shard_name is not None:
-        discard_session_shard(Path(shard_name))
+    from polylogue.sources.live.batch import _live_parse_stage_path_candidates
+
+    try:
+        regular = stat.S_ISREG(os.lstat(source_path).st_mode)
+    except OSError:
+        regular = False
+    if not regular:
+        return LivePathPreparation(None, None, None, "read-ahead path is not a regular file", deferred=True)
+
+    selected = _live_parse_stage_path_candidates(
+        [Path(source_path)], fallback_provider=Provider.from_string(fallback_provider_value)
+    )
+    if not selected:
+        return LivePathPreparation(None, None, None, "read-ahead path is not a preparation candidate", deferred=True)
+    _selected_path, provider, is_stream = selected[0]
+    return live_parse_path_worker(
+        provider.value,
+        source_path,
+        fallback_id,
+        is_stream=is_stream,
+        shard_directory=shard_directory,
+        attempt_directory=attempt_directory,
+    )
 
 
 def live_parse_and_shard_worker(
@@ -388,9 +474,10 @@ class LiveParseStage:
         *,
         max_workers: int | None = None,
         max_inflight_bytes: int | None = None,
-        warm_timeout_seconds: float | None = None,
+        stall_report_seconds: float | None = None,
         shard_directory: Path | None = None,
         use_processes: bool = False,
+        preempt_grace_seconds: float = _PREEMPT_GRACE_SECONDS,
     ) -> None:
         # polylogue-bp12n.6. Where a worker's sealed shard goes, or ``None``
         # to keep row binding on the writer thread. Path workers receive a
@@ -404,6 +491,35 @@ class LiveParseStage:
         self.shard_build_failure_count = 0
         self._path_results: dict[str, LivePathPreparation] = {}
         self._path_futures: dict[str, Future[LivePathPreparation]] = {}
+        #: Paths submitted by ``prefetch_paths`` that no warm has claimed yet,
+        #: with the warm count at submission. A prefetch is a guess about what
+        #: a later batch will ingest; selection may skip the path (an
+        #: unchanged file whose cursor is restored from the archive), so an
+        #: unclaimed guess is dropped after ``_SPECULATIVE_LIFETIME_CALLS``
+        #: stage calls rather than held, with its scratch, until shutdown.
+        self._speculative: dict[str, int] = {}
+        #: Running unclaimed read-ahead a blocked warm has preempted, with the
+        #: monotonic time after which it is reaped.
+        self._preempt_at: dict[str, float] = {}
+        self._preempt_grace_seconds = preempt_grace_seconds
+        #: Finished unclaimed read-ahead whose full artifact digest is still
+        #: owed; the claiming warm pays it.
+        self._unverified: set[str] = set()
+        #: Reaped read-ahead on a thread executor, which cannot stop a
+        #: thread: still running, counted against read-ahead slots until it
+        #: ends, and discarded unused.
+        self._orphans: dict[Future[LivePathPreparation], Path | None] = {}
+        self._stage_calls = 0
+        #: Held by a warm or a prefetch for its whole run. ``shutdown`` sets
+        #: the active warm's cancellation and takes this lock before it stops
+        #: the pool, so no stage call mutates bookkeeping shutdown is clearing.
+        self._stage_lock = threading.Lock()
+        #: Guards ``_closing`` against ``_active_cancel``: a warm publishes its
+        #: event only while the stage is open, and shutdown closes the stage
+        #: and reads the event in one step, so it can never miss an entering
+        #: warm.
+        self._publish_lock = threading.Lock()
+        self._active_cancel: threading.Event | None = None
         self._path_sizes: dict[str, int] = {}
         self._path_attempt_dirs: dict[str, Path] = {}
         self._path_inflight_bytes = 0
@@ -422,8 +538,19 @@ class LiveParseStage:
         else:
             self._attempt_root = None
         worker_count = max_workers if max_workers is not None else live_watcher_parse_stage_worker_count()
+        if use_processes and max_workers is None and not _parse_stage_workers_configured():
+            # Each worker process is its own interpreter: about 120-150 MiB
+            # resident once the parsers are imported. The default pool is
+            # sized to what keeps the single writer fed, not to every core --
+            # an unconfigured 24-core host otherwise spent ~3 GiB on idle
+            # parser processes.
+            worker_count = min(worker_count, _DEFAULT_PROCESS_WORKER_CAP)
         self._worker_count = worker_count
-        self._max_path_pending = max(1, min(worker_count, 2))
+        # Every worker may hold a path. Memory is bounded by the in-flight
+        # source-byte budget below (a whale still runs alone once it fills
+        # it); a fixed two-path cap left the rest of the pool idle and put
+        # parsing on the fresh build's critical path.
+        self._max_path_pending = max(1, worker_count)
         if use_processes:
             # The ordinary watcher route runs on the supported GIL build too.
             # A process pool is the only way for its CPU-bound parser to make
@@ -443,10 +570,10 @@ class LiveParseStage:
             )
         )
         self._max_path_bytes = max_inflight_bytes or live_watcher_parse_stage_max_inflight_bytes()
-        self._warm_timeout_seconds = (
-            warm_timeout_seconds
-            if warm_timeout_seconds is not None
-            else live_watcher_parse_stage_warm_timeout_seconds()
+        self._stall_report_seconds = (
+            stall_report_seconds
+            if stall_report_seconds is not None
+            else live_watcher_parse_stage_stall_report_seconds()
         )
 
     def warm_paths(
@@ -457,47 +584,420 @@ class LiveParseStage:
         read_snapshot: ReadSnapshot | None = None,
         capture_mode: Provider | None = None,
         source_index: int = 0,
-    ) -> int:
+        cancelled: threading.Event | None = None,
+    ) -> frozenset[str]:
         """Prepare path-backed JSON/JSONL outside the writer lease.
 
-        Every selected path gets a result, including worker death and timeout.
+        Every selected path gets a result, including worker death. Setting
+        ``cancelled`` ends the wait at the next progress poll: running
+        preparations stay owned by the stage for a later warm to collect, no
+        result is recorded for unsubmitted paths, and no prepared write is
+        installed from this warm's snapshot.
         The publisher can therefore retain raw bytes and retry without an
         accidental inline parse when preparation failed.
+
+        Returns the paths held back for publication order: each shares a
+        canonical session with an earlier candidate, so it must be warmed
+        again after that candidate publishes.
         """
-        if self._shard_directory is None:
-            return 0
+        if self._shard_directory is None or self._closing:
+            return frozenset()
+        with self._stage_lock:
+            active = cancelled if cancelled is not None else threading.Event()
+            with self._publish_lock:
+                if self._closing:
+                    return frozenset()
+                self._active_cancel = active
+            try:
+                return self._warm_paths_locked(
+                    candidates,
+                    archive_root=archive_root,
+                    read_snapshot=read_snapshot,
+                    capture_mode=capture_mode,
+                    source_index=source_index,
+                    cancelled=active,
+                )
+            finally:
+                with self._publish_lock:
+                    self._active_cancel = None
+
+    def _warm_paths_locked(
+        self,
+        candidates: Sequence[tuple[str, Provider, bool]],
+        *,
+        archive_root: Path | None,
+        read_snapshot: ReadSnapshot | None,
+        capture_mode: Provider | None,
+        source_index: int,
+        cancelled: threading.Event,
+    ) -> frozenset[str]:
+        self._stage_calls += 1
+        self._collect_finished()
+        # Read-ahead this warm now claims is required work from here on: it
+        # is no longer preemptible, and it pays the full digest it deferred.
+        # A retryable failure it produced (the source moved while it was
+        # read ahead) is not this warm's answer: it is prepared again,
+        # whether it finished before the warm or while the warm waited.
+        claimed = {source_path for source_path, _p, _s in candidates if source_path in self._speculative}
+        for source_path in claimed:
+            self._speculative.pop(source_path, None)
+            self._preempt_at.pop(source_path, None)
+            if source_path in self._unverified:
+                self._unverified.discard(source_path)
+                self._verify_claimed(source_path, cancelled=cancelled)
+        self._discard_retryable(claimed)
         if self._cleanup_blocked:
             for source_path, _provider, _is_stream in candidates:
                 if source_path not in self._path_results and source_path not in self._path_futures:
                     self._path_results[source_path] = LivePathPreparation(
                         None, None, None, "worker stop could not be verified; scratch cleanup is blocked", deferred=True
                     )
-            return len(candidates)
-        deadline = time.monotonic() + self._warm_timeout_seconds
-        remaining = list(candidates)
-        while remaining:
-            for source_path, future in tuple(self._path_futures.items()):
-                if future.done():
-                    self._collect_path_future(source_path, future)
-            next_wave: list[tuple[str, Provider, bool]] = []
-            for source_path, provider, is_stream in remaining:
-                if source_path in self._path_results or source_path in self._path_futures:
-                    continue
-                try:
-                    source_bytes = Path(source_path).stat().st_size
-                except OSError as exc:
+            return frozenset()
+        self._warm_until(list(candidates), cancelled=cancelled)
+        if cancelled.is_set():
+            self._drop_stale_speculation()
+            return frozenset()
+        retry = self._discard_retryable(claimed)
+        if retry:
+            self._warm_until([candidate for candidate in candidates if candidate[0] in retry], cancelled=cancelled)
+        if cancelled.is_set():
+            self._drop_stale_speculation()
+            return frozenset()
+        held: frozenset[str] = frozenset()
+        if archive_root is not None:
+            held = self._prepare_existing_session_writes(
+                archive_root,
+                read_snapshot=read_snapshot,
+                capture_mode=capture_mode,
+                source_index=source_index,
+                paths=[source_path for source_path, _provider, _is_stream in candidates],
+                cancelled=cancelled,
+            )
+        self._drop_stale_speculation()
+        return held
+
+    def _cancel_predicate(self) -> Callable[[], bool] | None:
+        active = self._active_cancel
+        return None if active is None else active.is_set
+
+    def _verify_claimed(self, source_path: str, *, cancelled: threading.Event | None = None) -> None:
+        result = self._path_results.get(source_path)
+        if result is None or result.error is not None:
+            return
+        try:
+            result.verify_files(full=True, stop=None if cancelled is None else cancelled.is_set)
+        except VerificationCancelledError:
+            # A cancelled warm records nothing; the next claim prepares again.
+            self._path_results.pop(source_path).discard()
+        except (OSError, ValueError) as exc:
+            result.discard()
+            self._path_results[source_path] = LivePathPreparation(
+                None, None, None, f"worker artifact changed: {type(exc).__name__}"[:500], deferred=True
+            )
+
+    def _discard_retryable(self, paths: set[str]) -> set[str]:
+        """Drop retryable failures recorded for ``paths``; return which."""
+        dropped: set[str] = set()
+        for source_path in paths:
+            result = self._path_results.get(source_path)
+            if result is not None and result.error is not None and result.deferred:
+                self._path_results.pop(source_path).discard()
+                dropped.add(source_path)
+        return dropped
+
+    def _warm_until(
+        self, candidates: list[tuple[str, Provider, bool]], *, cancelled: threading.Event | None = None
+    ) -> None:
+        """Submit ``candidates`` as capacity allows and wait until each is prepared.
+
+        There is no deadline on required work. A large file's preparation is
+        real progress toward the only ingest that file will get; giving up on
+        it at a fixed wall time deferred the file, re-acquired it on the next
+        pass and never finished it. What a clock may decide is only whether to
+        *report* a worker that has stopped advancing: preparation writes its
+        sealed carrier as it goes, so the attempt directory's size is the
+        forward progress signal. Worker death still ends a wait
+        (``BrokenProcessPool`` at collection), shutdown terminates stragglers,
+        and a set ``cancelled`` ends the wait at the next poll with nothing
+        recorded for what remains.
+
+        Capacity held by unclaimed read-ahead is the one thing a warm does
+        not wait out: when a required path does not fit, that read-ahead is
+        preempted and, after a short grace, reaped.
+        """
+        wanted = {source_path for source_path, _provider, _is_stream in candidates}
+        progress = -1
+        last_progress = time.monotonic()
+        reported_at = last_progress
+        while not self._cleanup_blocked:
+            if cancelled is not None and cancelled.is_set():
+                return
+            # Resubmit everything without a result or a future: a reap may
+            # have cancelled this warm's own work as collateral.
+            remaining = self._submit_path_candidates(list(candidates))
+            selected = [future for path, future in self._path_futures.items() if path in wanted]
+            if not remaining and not selected:
+                break
+            if remaining:
+                self._preempt_speculation()
+            # Capacity may be held by other work; wait on it too, since its
+            # completion is what frees a slot for what remains.
+            waiting = tuple(self._path_futures.values()) if remaining else tuple(selected)
+            if not waiting:
+                break
+            done, _pending = wait(waiting, timeout=self._next_wait_seconds(), return_when=FIRST_COMPLETED)
+            self._collect_finished()
+            self._reap_due_preemptions()
+            now = time.monotonic()
+            advanced = self._attempt_bytes(wanted)
+            if done or advanced > progress:
+                progress = advanced
+                last_progress = reported_at = now
+            elif now - reported_at >= self._stall_report_seconds:
+                reported_at = now
+                emit(
+                    "live.parse_prefetch.preparation_stalled",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="no_forward_progress",
+                    paths=len([path for path in wanted if path in self._path_futures]),
+                    wait_ms=round((now - last_progress) * 1000),
+                    attempt_bytes=advanced,
+                )
+        for source_path, _provider, _is_stream in candidates:
+            if source_path in self._path_results or source_path in self._path_futures:
+                continue
+            self._path_results[source_path] = LivePathPreparation(
+                None, None, None, "worker preparation capacity is unavailable", deferred=True
+            )
+        self._collect_finished()
+
+    def _collect_finished(self) -> None:
+        """Collect every finished preparation and settle finished orphans.
+
+        Collection releases a future's slot and bytes. Unclaimed read-ahead
+        is collected without its full digest, so this is cheap for paths the
+        caller did not ask for.
+        """
+        for source_path, future in tuple(self._path_futures.items()):
+            if future.done():
+                self._collect_path_future(source_path, future)
+        for future, attempt_directory in tuple(self._orphans.items()):
+            if not future.done():
+                continue
+            del self._orphans[future]
+            with suppress(Exception):
+                future.result().discard()
+            if attempt_directory is not None:
+                self._remove_attempt_directory(attempt_directory)
+
+    def _running_speculation(self) -> list[str]:
+        return [
+            source_path
+            for source_path in self._speculative
+            if (future := self._path_futures.get(source_path)) is not None and not future.done()
+        ]
+
+    def _preempt_speculation(self) -> None:
+        """Give running unclaimed read-ahead a grace period before reaping it."""
+        fresh = [source_path for source_path in self._running_speculation() if source_path not in self._preempt_at]
+        if not fresh:
+            return
+        deadline = time.monotonic() + self._preempt_grace_seconds
+        for source_path in fresh:
+            self._preempt_at[source_path] = deadline
+        emit(
+            "live.parse_prefetch.speculation_preempted",
+            outcome="degraded",
+            reason="required_preparation_blocked",
+            paths=len(fresh),
+            budget_ms=round(self._preempt_grace_seconds * 1000),
+        )
+
+    def _next_wait_seconds(self) -> float:
+        running = set(self._running_speculation())
+        deadlines = [deadline for path, deadline in self._preempt_at.items() if path in running]
+        if not deadlines:
+            return _PROGRESS_POLL_SECONDS
+        return max(0.0, min(_PROGRESS_POLL_SECONDS, min(deadlines) - time.monotonic()))
+
+    def _reap_due_preemptions(self) -> None:
+        now = time.monotonic()
+        running = set(self._running_speculation())
+        due = [path for path, deadline in self._preempt_at.items() if path in running and now >= deadline]
+        if due:
+            self._reap_speculation(due, reason="preempted_by_required_preparation")
+
+    def _reap_speculation(self, paths: Sequence[str], *, reason: str) -> None:
+        """Stop running unclaimed read-ahead and release its charge.
+
+        A process pool is terminated and restarted: that is the only way to
+        stop a worker stuck in a source read. Other unclaimed read-ahead it
+        cancels is dropped; a warm's own collateral work loses only its
+        restart deferral and is resubmitted by that warm. A thread cannot be
+        stopped, so on a thread executor the read-ahead is orphaned: it keeps
+        a read-ahead slot until it ends and its result is discarded.
+        """
+        emit(
+            "live.parse_prefetch.speculation_reaped",
+            level=WARNING,
+            outcome="degraded",
+            reason=reason,
+            paths=len(paths),
+        )
+        reaped = set(paths)
+        if isinstance(self._executor, ProcessPoolExecutor):
+            affected = tuple(self._path_futures)
+            self._restart_broken_process_pool(
+                reason="worker pool restarted to reap read-ahead", discard=frozenset(reaped)
+            )
+            if self._cleanup_blocked:
+                return
+            for source_path in affected:
+                self._preempt_at.pop(source_path, None)
+                result = self._path_results.get(source_path)
+                if source_path in reaped or (
+                    source_path in self._speculative and (result is None or result.error is not None)
+                ):
+                    self._speculative.pop(source_path, None)
+                    self._unverified.discard(source_path)
+                    if result is not None:
+                        self._path_results.pop(source_path).discard()
+                elif result is not None and result.error is not None and result.deferred:
+                    self._path_results.pop(source_path).discard()
+            return
+        for source_path in reaped:
+            future = self._path_futures.pop(source_path, None)
+            if future is None:
+                continue
+            self._path_inflight_bytes -= self._path_sizes.pop(source_path, 0)
+            self._orphans[future] = self._path_attempt_dirs.pop(source_path, None)
+            self._speculative.pop(source_path, None)
+            self._preempt_at.pop(source_path, None)
+
+    def _attempt_bytes(self, paths: set[str]) -> int:
+        """Bytes the running preparations of ``paths`` have written so far."""
+        total = 0
+        for source_path in paths:
+            directory = self._path_attempt_dirs.get(source_path)
+            if directory is None:
+                continue
+            try:
+                for entry in os.scandir(directory):
+                    with suppress(OSError):
+                        total += entry.stat(follow_symlinks=False).st_size
+            except OSError:
+                continue
+        return total
+
+    def _drop_stale_speculation(self) -> None:
+        """Discard read-ahead no warm claimed within its lifetime, reaping it if running."""
+        expired = [
+            source_path
+            for source_path, submitted_at in self._speculative.items()
+            if self._stage_calls - submitted_at >= _SPECULATIVE_LIFETIME_CALLS
+        ]
+        if not expired:
+            return
+        running_now = set(self._running_speculation())
+        running = [path for path in expired if path in running_now]
+        if running:
+            self._reap_speculation(running, reason="read_ahead_expired_unclaimed")
+        for source_path in expired:
+            future = self._path_futures.get(source_path)
+            if future is not None and future.done():
+                # Finished but unclaimed: dropped without the full digest.
+                self._collect_path_future(source_path, future)
+            self._speculative.pop(source_path, None)
+            self._unverified.discard(source_path)
+            self._preempt_at.pop(source_path, None)
+            result = self._path_results.pop(source_path, None)
+            if result is not None:
+                result.discard()
+
+    def prefetch_paths(self, paths: Sequence[str], *, fallback_provider: Provider) -> int:
+        """Start preparing paths a later ``warm_paths`` will ask for, without waiting.
+
+        The writer publishes one source group (and one page) while the next
+        is still unparsed; submitting the upcoming paths now lets their
+        parsing overlap that publication instead of following it. Only a
+        stat happens here: candidate selection reads the source, so it runs
+        in the worker (``live_lookahead_path_worker``). Read-ahead needs an
+        executor slot beyond the one kept for required work and fits the
+        same byte budget, which charges it from submission; a path that does
+        not fit is left for the warm that needs it. Results are claimed and
+        verified by the ordinary ``warm_paths`` and ``pop_path`` route.
+        Returns the number of paths newly submitted.
+        """
+        if self._shard_directory is None or self._cleanup_blocked or self._closing:
+            return 0
+        with self._stage_lock:
+            if self._closing:
+                return 0
+            return self._prefetch_paths_locked(paths, fallback_provider=fallback_provider)
+
+    def _prefetch_paths_locked(self, paths: Sequence[str], *, fallback_provider: Provider) -> int:
+        self._stage_calls += 1
+        self._collect_finished()
+        submitted: list[str] = []
+        self._submit_path_candidates(
+            [(source_path, fallback_provider, False) for source_path in paths],
+            speculative=True,
+            submitted=submitted,
+        )
+        for source_path in submitted:
+            self._speculative[source_path] = self._stage_calls
+        self._drop_stale_speculation()
+        return len(submitted)
+
+    def _submit_path_candidates(
+        self,
+        candidates: list[tuple[str, Provider, bool]],
+        *,
+        speculative: bool = False,
+        submitted: list[str] | None = None,
+    ) -> list[tuple[str, Provider, bool]]:
+        """Submit every candidate that fits the worker and byte budget; return the rest.
+
+        Every running preparation, speculative or required, is charged. A
+        speculative (prefetch) submission records no result when the path
+        cannot be stat'ed or submitted: the warm that needs the path retries
+        it then, instead of inheriting a transient failure.
+        """
+        next_wave: list[tuple[str, Provider, bool]] = []
+        for source_path, provider, is_stream in candidates:
+            if source_path in self._path_results or source_path in self._path_futures:
+                continue
+            try:
+                source_bytes = Path(source_path).stat().st_size
+            except OSError as exc:
+                if not speculative:
                     self._path_results[source_path] = LivePathPreparation(
                         None, None, None, f"source stat failed: {type(exc).__name__}"[:500], deferred=True
                     )
-                    continue
-                if len(self._path_futures) >= self._max_path_pending or (
-                    self._path_futures and self._path_inflight_bytes + source_bytes > self._max_path_bytes
-                ):
-                    next_wave.append((source_path, provider, is_stream))
-                    continue
-                attempt_directory: Path | None = None
-                try:
-                    attempt_directory = self._new_attempt_directory()
+                continue
+            pending_count = len(self._path_futures)
+            # Read-ahead never takes the last worker: required work always has
+            # an executor slot, even beside an orphaned thread. With a single
+            # worker there is no spare slot, so no read-ahead.
+            limit = self._max_path_pending - 1 if speculative else self._max_path_pending
+            occupied = pending_count + len(self._orphans) if speculative else pending_count
+            if occupied >= limit or (pending_count and self._path_inflight_bytes + source_bytes > self._max_path_bytes):
+                next_wave.append((source_path, provider, is_stream))
+                continue
+            attempt_directory: Path | None = None
+            try:
+                attempt_directory = self._new_attempt_directory()
+                if speculative:
+                    future = self._executor.submit(
+                        live_lookahead_path_worker,
+                        provider.value,
+                        source_path,
+                        Path(source_path).stem,
+                        shard_directory=str(self._attempt_root),
+                        attempt_directory=str(attempt_directory),
+                    )
+                else:
                     future = self._executor.submit(
                         carry_context(live_parse_path_worker),
                         provider.value,
@@ -507,61 +1007,22 @@ class LiveParseStage:
                         shard_directory=str(self._attempt_root),
                         attempt_directory=str(attempt_directory),
                     )
-                except Exception as exc:
-                    if attempt_directory is not None:
-                        self._remove_attempt_directory(attempt_directory)
+            except Exception as exc:
+                if attempt_directory is not None:
+                    self._remove_attempt_directory(attempt_directory)
+                if not speculative:
                     self._path_results[source_path] = LivePathPreparation(
                         None, None, None, f"worker submission failed: {type(exc).__name__}"[:500], deferred=True
                     )
-                    continue
-                self._path_futures[source_path] = future
-                self._path_attempt_dirs[source_path] = attempt_directory
-                self._path_sizes[source_path] = source_bytes
-                self._path_inflight_bytes += source_bytes
-            remaining = next_wave
-            if not remaining:
-                break
-            available = max(0.0, deadline - time.monotonic())
-            if not self._path_futures or available == 0:
-                break
-            done, _pending = wait(tuple(self._path_futures.values()), timeout=available, return_when=FIRST_COMPLETED)
-            if not done:
-                break
-        for source_path, _provider, _is_stream in remaining:
-            if source_path in self._path_results or source_path in self._path_futures:
                 continue
-            reason = (
-                "worker preparation capacity is busy"
-                if len(self._path_futures) >= self._max_path_pending
-                else "worker preparation byte capacity is busy"
-            )
-            self._path_results[source_path] = LivePathPreparation(None, None, None, reason, deferred=True)
-        selected_futures = {
-            self._path_futures[source_path]
-            for source_path, _provider, _is_stream in candidates
-            if source_path in self._path_futures
-        }
-        if selected_futures:
-            _done, _pending = wait(selected_futures, timeout=max(0.0, deadline - time.monotonic()))
-            for source_path, future in tuple(self._path_futures.items()):
-                if future.done():
-                    self._collect_path_future(source_path, future)
-            # A slow worker is still the owner of its captured source. Keep
-            # its future so a later pass can consume the sealed artifact;
-            # restarting the pool here killed every whale at the same warm
-            # deadline on each retry. BrokenProcessPool is handled when the
-            # finished future is collected, and shutdown terminates stragglers.
-        for source_path, future in tuple(self._path_futures.items()):
-            if future.done():
-                self._collect_path_future(source_path, future)
-        if archive_root is not None:
-            self._prepare_existing_session_writes(
-                archive_root,
-                read_snapshot=read_snapshot,
-                capture_mode=capture_mode,
-                source_index=source_index,
-            )
-        return len(candidates)
+            self._path_futures[source_path] = future
+            self._preempt_at.pop(source_path, None)
+            if submitted is not None:
+                submitted.append(source_path)
+            self._path_attempt_dirs[source_path] = attempt_directory
+            self._path_sizes[source_path] = source_bytes
+            self._path_inflight_bytes += source_bytes
+        return next_wave
 
     def _prepare_existing_session_writes(
         self,
@@ -570,8 +1031,23 @@ class LiveParseStage:
         read_snapshot: ReadSnapshot | None,
         capture_mode: Provider | None,
         source_index: int,
-    ) -> None:
-        """Reconcile prior acquisitions on a read-only index before admission."""
+        paths: Sequence[str],
+        cancelled: threading.Event | None = None,
+    ) -> frozenset[str]:
+        """Reconcile prior acquisitions on a read-only index before admission.
+
+        This is the one place publication order is enforced. ``paths`` is
+        this warm's intake order and the snapshot is taken after every
+        earlier publication, so a reconciliation is valid only for the
+        publication that follows this warm: an older one (a cancelled warm's,
+        or a held path's) is closed and redone. Within the warm, the first
+        path of each canonical session is installed and every later path of
+        that session is held, unreconciled, and returned: its prepared write
+        would pin predecessor state the earlier path is about to replace.
+
+        A reconciliation finished after ``cancelled`` is set is closed rather
+        than installed.
+        """
         from polylogue.core.identity_law import session_id as archive_session_id
         from polylogue.core.sources import origin_from_provider
         from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_raw_session_id
@@ -580,25 +1056,34 @@ class LiveParseStage:
             prepared_session_rows_from_shard,
         )
 
-        pending = {
-            path: result
-            for path, result in self._path_results.items()
-            if result.error is None and not result.prepared_writes
-        }
+        pending: dict[str, LivePathPreparation] = {}
+        for path in dict.fromkeys(paths):
+            result = self._path_results.get(path)
+            if result is None or result.error is not None:
+                continue
+            if result.prepared_writes:
+                for stale in result.prepared_writes:
+                    stale.close()
+                result = replace(result, prepared_writes=())
+                self._path_results[path] = result
+            pending[path] = result
         if not pending:
-            return
+            return frozenset()
         if read_snapshot is None:
             for path, result in pending.items():
                 result.discard()
                 self._path_results[path] = LivePathPreparation(
                     None, None, None, "read-only preparation snapshot unavailable: RuntimeError", deferred=True
                 )
-            return
+            return frozenset()
 
-        def prepare_one(path: str, result: LivePathPreparation) -> LivePathPreparation:
+        def prepare_one(path: str, result: LivePathPreparation) -> tuple[LivePathPreparation, frozenset[str]]:
             # Each task owns its read transaction. Sharing one SQLite
             # connection across threads would also share its snapshot state.
             writes: list[PreparedSessionWrite] = []
+            session_ids: set[str] = set()
+            if cancelled is not None and cancelled.is_set():
+                return result, frozenset()
             opened_snapshot = False
             try:
                 with read_snapshot(archive_root) as pinned:
@@ -623,10 +1108,17 @@ class LiveParseStage:
                         bytes.fromhex(result.blob_hash),
                     )
                     for session in result.iter_sessions():
+                        if cancelled is not None and cancelled.is_set():
+                            # Cancelled mid-carrier: nothing from this
+                            # snapshot is installed, so stop here.
+                            for partial in writes:
+                                partial.close()
+                            return result, frozenset()
                         session_id = archive_session_id(
                             origin_from_provider(session.source_name).value,
                             session.provider_session_id,
                         )
+                        session_ids.add(session_id)
                         row = index_conn.execute(
                             "SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)
                         ).fetchone()
@@ -644,36 +1136,57 @@ class LiveParseStage:
                                 else None,
                             )
                         )
-                return replace(result, prepared_writes=tuple(writes))
+                return replace(result, prepared_writes=tuple(writes)), frozenset(session_ids)
             except Exception as exc:
                 for prepared in writes:
                     prepared.close()
                 result.discard()
-                return LivePathPreparation(
-                    None,
-                    None,
-                    None,
-                    (
-                        f"existing-session preparation failed: {type(exc).__name__}"
-                        if opened_snapshot
-                        else f"read-only preparation snapshot unavailable: {type(exc).__name__}"
-                    )[:500],
-                    deferred=True,
+                return (
+                    LivePathPreparation(
+                        None,
+                        None,
+                        None,
+                        (
+                            f"existing-session preparation failed: {type(exc).__name__}"
+                            if opened_snapshot
+                            else f"read-only preparation snapshot unavailable: {type(exc).__name__}"
+                        )[:500],
+                        deferred=True,
+                    ),
+                    frozenset(),
                 )
 
         # Bound reconciliation to the same path admission width as parsing.
-        # Results are installed on the caller thread, so publication order is
-        # still the intake order even when read tasks finish out of order.
+        # Results are installed on the caller thread in intake order, so
+        # read tasks finishing out of order cannot reorder publication.
+        held: set[str] = set()
+        claimed_sessions: set[str] = set()
         with ThreadPoolExecutor(max_workers=min(self._max_path_pending, len(pending))) as executor:
             futures = {
                 path: executor.submit(carry_context(prepare_one), path, result) for path, result in pending.items()
             }
             for path, future in futures.items():
-                self._path_results[path] = future.result()
+                prepared, session_ids = future.result()
+                overlaps = bool(session_ids & claimed_sessions)
+                # A held path still claims its sessions: a later path sharing
+                # any of them waits behind it, so overlap closes transitively.
+                claimed_sessions |= session_ids
+                if prepared.error is None and ((cancelled is not None and cancelled.is_set()) or overlaps):
+                    for write in prepared.prepared_writes:
+                        write.close()
+                    if overlaps:
+                        held.add(path)
+                    continue
+                self._path_results[path] = prepared
+        return frozenset(held)
 
     def _collect_path_future(self, source_path: str, future: Future[LivePathPreparation]) -> None:
         if self._path_futures.get(source_path) is not future:
             return
+        expired = (
+            source_path in self._speculative
+            and self._stage_calls - self._speculative[source_path] >= _SPECULATIVE_LIFETIME_CALLS
+        )
         self._path_futures.pop(source_path, None)
         self._path_inflight_bytes -= self._path_sizes.pop(source_path, 0)
         attempt_directory = self._path_attempt_dirs.pop(source_path, None)
@@ -708,12 +1221,35 @@ class LiveParseStage:
                 # shutdown may reclaim it later after a verified reap.
                 if not self._cleanup_blocked:
                     self._remove_attempt_directory(attempt_directory)
-        if result.error is None:
+        self._preempt_at.pop(source_path, None)
+        if expired:
+            # No warm claimed this read-ahead within its lifetime, so nothing
+            # will publish it: drop it without paying the full byte scan.
+            self._speculative.pop(source_path, None)
+            self._unverified.discard(source_path)
+            old = self._path_results.pop(source_path, None)
+            if old is not None:
+                old.discard()
+            result.discard()
+            return
+        if source_path in self._speculative and result.error is None:
+            # Unclaimed read-ahead: its charge is released now, and the full
+            # byte scan is paid by the warm that claims it, never by a warm
+            # collecting it on the way to unrelated work.
+            self._unverified.add(source_path)
+        elif result.error is None:
             try:
                 # A full byte scan belongs at the prefetch boundary, before
                 # the caller enters the writer runner. Publication only needs
                 # the cheap exact-inode check in pop_path/iter_sessions.
-                result.verify_files(full=True)
+                result.verify_files(full=True, stop=self._cancel_predicate())
+            except VerificationCancelledError:
+                # The warm was cancelled mid-scan: record nothing.
+                result.discard()
+                old = self._path_results.pop(source_path, None)
+                if old is not None:
+                    old.discard()
+                return
             except (OSError, ValueError) as exc:
                 result.discard()
                 result = LivePathPreparation(
@@ -774,6 +1310,7 @@ class LiveParseStage:
         *,
         failed_attempt: Path | None = None,
         reason: str = "worker process died during preparation",
+        discard: frozenset[str] = frozenset(),
     ) -> None:
         if not isinstance(self._executor, ProcessPoolExecutor):
             return
@@ -800,14 +1337,26 @@ class LiveParseStage:
                     result = future.result()
                 except Exception:
                     result = None
+                if pending_path in discard:
+                    # Reaped read-ahead: dropped without a digest.
+                    if result is not None:
+                        result.discard()
+                    if attempt_directory is not None:
+                        self._remove_attempt_directory(attempt_directory)
+                    continue
                 if result is not None and result.error is None and attempt_directory is not None:
                     try:
                         self._validate_attempt_result(result, attempt_directory)
-                        result.verify_files(full=True)
+                        if pending_path in self._speculative:
+                            # Unclaimed read-ahead keeps its digest owed to
+                            # the warm that claims it.
+                            self._unverified.add(pending_path)
+                        else:
+                            result.verify_files(full=True, stop=self._cancel_predicate())
                         result = replace(result, attempt_directory=attempt_directory)
                         self._path_results[pending_path] = result
                         continue
-                    except (OSError, ValueError):
+                    except (OSError, ValueError, VerificationCancelledError):
                         pass
             self._path_results[pending_path] = LivePathPreparation(None, None, None, reason, deferred=True)
             if attempt_directory is not None:
@@ -818,7 +1367,7 @@ class LiveParseStage:
 
     def pop_path(self, source_path: str, *, blob_hash: str) -> LivePathPreparation | None:
         future = self._path_futures.get(source_path)
-        if future is not None:
+        if future is not None or source_path in self._unverified:
             # pop_path runs under writer admission. Even a finished future
             # needs a full artifact digest and prior-session reconciliation,
             # both of which belong to the next off-lease warm_paths pass.
@@ -892,69 +1441,32 @@ class LiveParseStage:
         completed = 0
         shard_build_failures = 0
         consumed: set[Future[tuple[str, list[ParsedSession] | None, BaseException | None, str | None]]] = set()
-        try:
-            for future in as_completed(futures, timeout=self._warm_timeout_seconds):
-                completed += 1
-                consumed.add(future)
-                candidate = futures[future]
-                try:
-                    result = future.result()
-                except Exception:
-                    logger.warning(
-                        "live watcher parse-stage prefetch: worker failed for %s",
-                        candidate.source_path,
-                        exc_info=True,
-                    )
-                    continue
-                cache_key, sessions, error, shard_name = result
-                shard_path = None if shard_name is None else Path(shard_name)
-                if error is not None or sessions is None:
-                    # Parse failures are intentionally NOT cached: the
-                    # writer-held pass reparses (and correctly records) this
-                    # file exactly as it would with no prewarm at all.
-                    if shard_path is not None:
-                        discard_session_shard(shard_path)
-                    continue
-                if shard_directory is not None and sessions and shard_path is None:
-                    shard_build_failures += 1
-                if self.cache.try_admit(cache_key, sessions, payload=candidate.payload, shard_path=shard_path):
-                    warmed += 1
-        except TimeoutError:
-            pending_count = len(futures) - completed
-            # Leaving the futures alone kept unstarted work queued behind the
-            # next warm() and let a late worker's shard sit unreferenced on
-            # disk (polylogue-3r36h). Cancel what has not started, discard the
-            # shards of what finished unread, and attach the discard to what
-            # is still running so the worker cleans up after itself as soon
-            # as it finishes (polylogue-nfr2u): a thread cannot be preempted,
-            # and nobody consumes its ``shard_name`` after the timeout.
-            cancelled = 0
-            drained = 0
-            for future in futures:
-                if future in consumed:
-                    continue
-                if future.cancel():
-                    cancelled += 1
-                    continue
-                if not future.done():
-                    future.add_done_callback(_discard_orphaned_shard)
-                    continue
-                if future.exception() is not None:
-                    continue
-                _cache_key, _sessions, _error, shard_name = future.result()
-                if shard_name is not None:
-                    discard_session_shard(Path(shard_name))
-                    drained += 1
-            logger.warning(
-                "live watcher parse-stage prefetch: warm() timed out after %.0fs waiting on %d of %d file(s); "
-                "cancelled %d unstarted worker(s), discarded %d unread shard(s); "
-                "leaving unfinished file(s) uncached for the writer-held pass to reparse normally",
-                self._warm_timeout_seconds,
-                pending_count,
-                len(futures),
-                cancelled,
-                drained,
-            )
+        for future in _completed_reporting_stalls(futures, stall_window=self._stall_report_seconds):
+            completed += 1
+            consumed.add(future)
+            candidate = futures[future]
+            try:
+                result = future.result()
+            except Exception:
+                logger.warning(
+                    "live watcher parse-stage prefetch: worker failed for %s",
+                    candidate.source_path,
+                    exc_info=True,
+                )
+                continue
+            cache_key, sessions, error, shard_name = result
+            shard_path = None if shard_name is None else Path(shard_name)
+            if error is not None or sessions is None:
+                # Parse failures are intentionally NOT cached: the
+                # writer-held pass reparses (and correctly records) this
+                # file exactly as it would with no prewarm at all.
+                if shard_path is not None:
+                    discard_session_shard(shard_path)
+                continue
+            if shard_directory is not None and sessions and shard_path is None:
+                shard_build_failures += 1
+            if self.cache.try_admit(cache_key, sessions, payload=candidate.payload, shard_path=shard_path):
+                warmed += 1
         if shard_build_failures:
             self.shard_build_failure_count += shard_build_failures
             emit(
@@ -972,7 +1484,18 @@ class LiveParseStage:
         # A process worker may outlive a warm window indefinitely. Stop and
         # join it before removing scratch, so daemon stop stays bounded and
         # no worker can seal a carrier after cleanup.
-        self._closing = True
+        # A warm may still be running on another thread (daemon stop runs
+        # before intake is cancelled). Cancel it and let it settle before
+        # anything it owns is torn down.
+        with self._publish_lock:
+            self._closing = True
+            active = self._active_cancel
+        if active is not None:
+            active.set()
+        with self._stage_lock:
+            self._shutdown_locked()
+
+    def _shutdown_locked(self) -> None:
         stopped = True
         if isinstance(self._executor, ProcessPoolExecutor):
             from polylogue.pipeline.services.process_pool import terminate_process_pool
@@ -986,6 +1509,7 @@ class LiveParseStage:
             return
         for source_path, future in tuple(self._path_futures.items()):
             self._collect_path_future(source_path, future)
+        self._collect_finished()
         self.cache.discard_all()
         for result in self._path_results.values():
             result.discard()
@@ -1008,9 +1532,10 @@ __all__ = [
     "LiveParsePrefetchCache",
     "LiveParseStage",
     "LiveParsedEntry",
+    "live_lookahead_path_worker",
     "live_parse_and_shard_worker",
     "live_parse_worker",
     "live_watcher_parse_stage_max_inflight_bytes",
-    "live_watcher_parse_stage_warm_timeout_seconds",
+    "live_watcher_parse_stage_stall_report_seconds",
     "live_watcher_parse_stage_worker_count",
 ]
