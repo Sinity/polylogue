@@ -3134,8 +3134,8 @@ def query_session_messages(
     ``text_prefix_chars`` returns each message's text cut to that many
     characters inside SQLite, with its full length in ``text_chars`` and no
     ``blocks``, so a bounded projection never holds a whole message in
-    Python. Only blocks whose preceding joined text is shorter than the bound
-    are concatenated, so the prefix costs the bound, not the message.
+    Python. Only blocks whose preceding joined text is no longer than the
+    bound are concatenated, so the prefix costs the bound, not the message.
     """
 
     normalized_session_ids = tuple(
@@ -3221,7 +3221,10 @@ def query_session_messages(
             )"""
         # ``preceding`` is the length of the joined text before this block
         # (every earlier block plus its newline separator); a block starting
-        # at or past the bound contributes nothing to the prefix.
+        # past the bound contributes nothing to the prefix. A block starting
+        # exactly at the bound stays in so ``group_concat`` still emits the
+        # separator that is the prefix's last character; ``substr`` then drops
+        # the block's own text.
         text_sql = f"""CASE WHEN {has_nul_block} THEN {whole_text} ELSE COALESCE((
                 SELECT substr(group_concat(ordered.head, char(10)), 1, {bound})
                 FROM (
@@ -3236,7 +3239,7 @@ def query_session_messages(
                       AND b.search_text IS NOT NULL
                     ORDER BY b.position, b.block_id
                 ) AS ordered
-                WHERE ordered.preceding < {bound}
+                WHERE ordered.preceding <= {bound}
             ), '') END AS text,
             CASE WHEN {has_nul_block} THEN NULL ELSE COALESCE((
                 SELECT SUM(length(b.search_text)) + COUNT(*) - 1

@@ -310,6 +310,38 @@ class TestAttachBehaviour:
         assert with_nul["output_text"] == ("p\x00q" * 1000)[:2000]
         assert with_nul["output_text_truncated_chars"] == 1000
 
+    def test_attached_text_keeps_the_separator_that_lands_on_the_bound(self, tmp_path: Path) -> None:
+        """A block starting exactly at the bound still contributes its leading separator.
+
+        Fails if the SQL cut drops the block that starts at character 2000: the
+        separator before it is the prefix's last character, so the attached text
+        would be one character short and the truncated count one too high.
+        """
+        from tests.infra.storage_records import SessionBuilder
+
+        (
+            SessionBuilder(tmp_path / "index.db", "edge")
+            .provider("claude-code")
+            .title("Edge text")
+            .add_message(
+                "m-edge",
+                role="assistant",
+                text="",
+                blocks=[{"type": "text", "text": "e" * 1999}, {"type": "text", "text": "f" * 10}],
+            )
+            .save()
+        )
+        session_id = "claude-code-session:ext-edge"
+
+        with ArchiveStore.open_existing(tmp_path) as archive:
+            (whole,) = archive.query_session_messages([session_id])
+            attached = fetch_attached_units(archive, [session_id], ["message"])
+
+        assert whole.text == "e" * 1999 + "\n" + "f" * 10
+        (row,) = attached.rows["message"][session_id]
+        assert row["text"] == whole.text[:2000]
+        assert row["text_truncated_chars"] == len(whole.text) - 2000
+
     def test_fetch_attached_units_applies_payload_field_selection(self, tmp_path: Path) -> None:
         from tests.infra.storage_records import SessionBuilder
 
