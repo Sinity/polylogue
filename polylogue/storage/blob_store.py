@@ -25,6 +25,7 @@ import re
 import stat
 import tempfile
 import threading
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import suppress
 from dataclasses import dataclass
@@ -35,6 +36,8 @@ from typing import IO, BinaryIO
 from polylogue.storage.io_phase_metrics import timed_io_phase
 
 _CHUNK_SIZE = 1024 * 1024  # 1 MiB
+#: Remembered read verifications; a pacing bound (eviction only re-hashes).
+_READ_VERIFICATION_MEMO_ENTRIES = 65_536
 
 # Valid blob hash: exactly 64 lowercase hex chars (a SHA-256 digest). Matched
 # with fullmatch (not the former match() + trailing-`$`, which also accepts a
@@ -118,6 +121,8 @@ class BlobStore:
 
     def __init__(self, root: Path) -> None:
         self.root = root
+        self._read_verification_lock = threading.Lock()
+        self._read_verified: OrderedDict[tuple[str, int, int, int, int], None] = OrderedDict()
 
     @property
     def staging_root(self) -> Path:
@@ -515,6 +520,37 @@ class BlobStore:
                     break
                 hasher.update(chunk)
         return hasher.hexdigest() == hash_hex
+
+    def verify_for_read(self, hash_hex: str) -> bool:
+        """Hash-verify a blob for a read path, re-hashing only when its file changed.
+
+        Session reads resolve attachment availability per read; re-hashing
+        every blob on every read made a session with many or large
+        attachments cost their full size each time (polylogue-1gxyu). A blob
+        is content-addressed and published atomically, so a successful
+        verification stays valid while the file keeps the same device, inode,
+        size and nanosecond mtime; any of those changing forces a full
+        re-hash. The memo is a recomputation cache only -- evicting an entry
+        re-hashes, it never changes an answer -- so its size is a pacing
+        bound. ``verify`` and ``verify_all`` stay uncached integrity checks.
+        """
+        path = self.blob_path(hash_hex)
+        try:
+            info = path.stat()
+        except OSError:
+            return False
+        identity = (hash_hex, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+        with self._read_verification_lock:
+            if identity in self._read_verified:
+                self._read_verified.move_to_end(identity)
+                return True
+        if not self.verify(hash_hex):
+            return False
+        with self._read_verification_lock:
+            self._read_verified[identity] = None
+            while len(self._read_verified) > _READ_VERIFICATION_MEMO_ENTRIES:
+                self._read_verified.popitem(last=False)
+        return True
 
     def iter_all(self) -> Iterator[str]:
         """Yield hashes for canonical regular blob files only."""

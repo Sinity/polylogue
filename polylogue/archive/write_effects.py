@@ -99,13 +99,24 @@ class WriteEffect:
 
 
 class DeferredEffectQueue:
-    """Bounded process-local delivery for effects that must not delay writes."""
+    """Bounded process-local delivery for effects that must not delay writes.
+
+    Only in-flight work is retained: the pending set de-duplicates an effect
+    already queued for the same staleness key. A settled delivery keeps no
+    record (polylogue-yooge) -- nothing reads one, and a process-lifetime map
+    keyed by every distinct ingest batch grew without bound. A failed
+    delivery is reported through ``archive.write_effect.failed``.
+    """
 
     def __init__(self, *, max_workers: int = 1) -> None:
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="polylogue-write-effect")
         self._lock = threading.Lock()
         self._pending: set[str] = set()
-        self._receipts: dict[str, WriteEffectReceipt] = {}
+
+    @property
+    def pending_count(self) -> int:
+        with self._lock:
+            return len(self._pending)
 
     def enqueue(self, effect: WriteEffect, ctx: WriteEffectContext) -> None:
         key = f"{effect.name}:{ctx.staleness_key}"
@@ -113,7 +124,6 @@ class DeferredEffectQueue:
             if key in self._pending:
                 return
             self._pending.add(key)
-            self._receipts[key] = WriteEffectReceipt(effect.name, effect.phase, "enqueued", retryable=True)
         self._executor.submit(self._deliver, key, effect, ctx)
 
     def _deliver(self, key: str, effect: WriteEffect, ctx: WriteEffectContext) -> None:
@@ -129,19 +139,9 @@ class DeferredEffectQueue:
                 error_type=type(exc).__name__,
                 error_detail=str(exc),
             )
+        finally:
             with self._lock:
                 self._pending.discard(key)
-                self._receipts[key] = WriteEffectReceipt(
-                    effect.name, effect.phase, "failed", retryable=True, error=str(exc)
-                )
-            return
-        with self._lock:
-            self._pending.discard(key)
-            self._receipts[key] = WriteEffectReceipt(effect.name, effect.phase, "applied")
-
-    def receipt(self, effect_name: str, staleness_key: str) -> WriteEffectReceipt | None:
-        with self._lock:
-            return self._receipts.get(f"{effect_name}:{staleness_key}")
 
 
 DEFERRED_EFFECT_QUEUE = DeferredEffectQueue()
