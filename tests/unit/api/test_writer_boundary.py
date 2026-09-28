@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -106,17 +105,51 @@ async def test_public_facade_mutations_roundtrip_through_daemon_writer(
             saved_view = await archive.get_view("opaque-view")
             assert saved_view is not None
             assert saved_view["view_id"] == "opaque-view"
+
+            await archive.record_context_ledger(_assembly(), observed_at_ms=123)
+            with sqlite3.connect(root / "ops.db") as conn:
+                assert conn.execute(
+                    "SELECT COUNT(*) FROM context_injection_ledger WHERE observed_at_ms = 123"
+                ).fetchone()[0] == len(_assembly().ledger)
         finally:
             await archive.close()
 
 
-def test_context_preamble_ledger_remains_an_internal_owner(tmp_path: Path) -> None:
-    """The internal preamble writer still has its explicit offline owner."""
-    root = tmp_path / "archive"
-    root.mkdir()
-    config = Config(archive_root=root, render_root=tmp_path / "render", sources=[])
-    _record_preamble_ledger(SimpleNamespace(config=config), _assembly())
-    assert (root / "ops.db").exists()
+@pytest.mark.asyncio
+async def test_context_preamble_ledger_submits_daemon_mutation_for_active_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A split-root archive submits through the daemon operation with no local OPS file."""
+    configured = tmp_path / "configured"
+    active = tmp_path / "active"
+    configured.mkdir()
+    active.mkdir()
+    config = Config(archive_root=configured, db_path=active / "index.db", render_root=tmp_path / "render", sources=[])
+    calls: list[tuple[Config, str, dict[str, object]]] = []
+
+    async def submit(captured_config: Config, product: str, payload: dict[str, object]) -> None:
+        calls.append((captured_config, product, payload))
+
+    monkeypatch.setattr("polylogue.api.facade_client.submit_facade_writer", submit)
+
+    class Owner:
+        def __init__(self) -> None:
+            self.config = config
+
+        async def record_context_ledger(self, assembly: ContextAssembly, *, observed_at_ms: int) -> None:
+            from polylogue.api.archive import Polylogue
+
+            await Polylogue.record_context_ledger(self, assembly, observed_at_ms=observed_at_ms)
+
+    await _record_preamble_ledger(Owner(), _assembly())
+    assert calls and calls[0][0] is config
+    assert calls[0][1] == "context_ledger"
+    assert calls[0][2]["build_ref"] == _assembly().build_ref
+    from polylogue.config import active_archive_root
+
+    assert active_archive_root(calls[0][0]) == active
+    assert not (configured / "ops.db").exists()
+    assert not (active / "ops.db").exists()
 
 
 @pytest.mark.asyncio

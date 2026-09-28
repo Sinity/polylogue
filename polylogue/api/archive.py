@@ -3451,6 +3451,20 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             )
         return image
 
+    async def record_context_ledger(self, assembly: Any, *, observed_at_ms: int) -> None:
+        """Submit preamble scheduling receipts through the archive writer."""
+        from polylogue.api.facade_client import submit_facade_writer
+
+        await submit_facade_writer(
+            self.config,
+            "context_ledger",
+            {
+                "build_ref": assembly.build_ref,
+                "ledger_rows": [row.as_dict() for row in assembly.ledger],
+                "observed_at_ms": observed_at_ms,
+            },
+        )
+
     def _context_temporal_window(self, summary: SessionSummary) -> TemporalEvidenceWindow:
         return _archive_context_temporal_window(self.config, summary)
 
