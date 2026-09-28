@@ -13,8 +13,10 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.hydration import archive_envelope_to_session
 from polylogue.archive.query.archive_execution import list_archive, list_summaries_archive
 from polylogue.archive.query.plan import SessionQueryPlan
+from polylogue.archive.session.domain_models import Session
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.storage_records import SessionBuilder
 
@@ -52,23 +54,94 @@ async def test_count_sorted_sessions_order_by_the_composed_session(
     (drop ``composed_order``) and the one-message ``child`` never enters the
     one-row window, so ``standalone`` is returned.
     """
-    import polylogue.archive.query.archive_execution as execution
-
     _seed(tmp_path, "child", updated_at="2026-01-01T00:00:00Z", messages=1)
     _seed(tmp_path, "standalone", updated_at="2026-01-02T00:00:00Z", messages=2)
-    original = execution.archive_envelope_to_session
+    _compose_child(monkeypatch)
+
+    sessions = await list_archive(SessionQueryPlan(sort="messages", limit=1), archive_root=tmp_path, config=None)
+
+    assert [session.title for session in sessions] == ["child"]
+
+
+def _compose_child(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pad the hydrated ``child`` the way prefix recomposition grows it."""
+    import polylogue.archive.query.archive_execution as execution
 
     def composing(*args: object, **kwargs: object) -> object:
-        session = original(*args, **kwargs)  # type: ignore[arg-type]
+        session = archive_envelope_to_session(*args, **kwargs)  # type: ignore[arg-type]
         if session.title == "child":
             return session.model_copy(update={"messages": list(session.messages) * 11})
         return session
 
     monkeypatch.setattr(execution, "archive_envelope_to_session", composing)
 
-    sessions = await list_archive(SessionQueryPlan(sort="messages", limit=1), archive_root=tmp_path, config=None)
+
+@pytest.mark.asyncio
+async def test_composed_count_sort_ranks_every_candidate_batch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The composed sort pages through the whole candidate set, not one batch.
+
+    Anti-vacuity: fetch a single ``default_limit`` batch again and the
+    tail-sorted ``child`` (fewest stored messages) never reaches Python, so a
+    standalone session is returned.
+    """
+    _seed(tmp_path, "child", updated_at="2026-01-01T00:00:00Z", messages=1)
+    for index in range(3):
+        _seed(tmp_path, f"standalone-{index}", updated_at=f"2026-01-0{index + 2}T00:00:00Z", messages=2)
+    _compose_child(monkeypatch)
+
+    sessions = await list_archive(
+        SessionQueryPlan(sort="messages", limit=1), archive_root=tmp_path, config=None, default_limit=2
+    )
 
     assert [session.title for session in sessions] == ["child"]
+
+
+@pytest.mark.asyncio
+async def test_custom_predicate_runs_once_per_candidate(tmp_path: Path) -> None:
+    """A finite post-filtered page evaluates each predicate once per session.
+
+    Anti-vacuity: filter the batched survivors a second time and a predicate
+    that accepts a session only on first sight drops every result.
+    """
+    _seed(tmp_path, "only", updated_at="2026-01-01T00:00:00Z", messages=1)
+    seen: list[str] = []
+
+    def first_sight(session: Session) -> bool:
+        session_id = str(session.id)
+        accepted = session_id not in seen
+        seen.append(session_id)
+        return accepted
+
+    sessions = await list_archive(
+        SessionQueryPlan(predicates=(first_sight,), limit=1), archive_root=tmp_path, config=None
+    )
+
+    assert [session.title for session in sessions] == ["only"]
+    assert len(seen) == 1
+
+
+@pytest.mark.asyncio
+async def test_attached_units_are_projected_one_result_page_at_a_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A post-filter candidate batch wider than the unit budget still serves its page.
+
+    Anti-vacuity: project the whole ten-page candidate batch at once and
+    ``fetch_attached_units`` refuses it with ``AttachedUnitPageTooWideError``.
+    """
+    for index in range(4):
+        _seed(tmp_path, f"s{index}", updated_at=f"2026-01-0{index + 1}T00:00:00Z", messages=1)
+    monkeypatch.setattr("polylogue.archive.query.attached_units._MAX_ROWS_PER_PAGE", 3)
+    monkeypatch.setattr("polylogue.archive.query.archive_execution._fetch_limit", lambda plan, *, default: 4)
+
+    sessions = await list_archive(
+        SessionQueryPlan(negative_terms=("absent-term",), limit=1),
+        archive_root=tmp_path,
+        config=None,
+        with_units=("message",),
+    )
+
+    assert [session.title for session in sessions] == ["s3"]
 
 
 @pytest.mark.asyncio

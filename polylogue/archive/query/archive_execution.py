@@ -193,6 +193,7 @@ def _archive_summaries(
     archive_root: Path,
     default_limit: int,
     keep: Callable[[list[ArchiveSessionSummary]], list[ArchiveSessionSummary]] | None = None,
+    complete: bool = False,
 ) -> list[ArchiveSessionSummary]:
     """Fetch the candidate rows for ``plan`` in the archive's SQL order.
 
@@ -202,17 +203,21 @@ def _archive_summaries(
     residual filters to each fetched batch, and fetching stops as soon as
     ``offset + limit`` rows have passed them, since no later row can precede
     one already kept (polylogue-6xrab, polylogue-ztm1t).
+
+    Every returned row has passed ``keep`` exactly once, on every route, so a
+    caller that supplies it does not filter again. ``complete`` pages through
+    the whole candidate set for a caller that orders it itself.
     """
     filter_kwargs = plan_filter_kwargs(plan)
     limit = _fetch_limit(plan, default=default_limit)
-    post_filter_fetch = plan.has_post_filters() and plan.limit is not None
+    post_filter_fetch = (plan.has_post_filters() and plan.limit is not None) or complete
     wanted = None if plan.limit is None or plan.sample is not None else plan.offset + plan.limit
     sort = plan.sort
     reverse = plan.reverse
 
     if plan.similar_session_id is not None:
         search_hits = _session_seed_hits(plan, archive, config=config, archive_root=archive_root)
-        return _summaries_from_hits(archive, search_hits)
+        return _kept(keep, _summaries_from_hits(archive, search_hits))
 
     if plan.similar_text is not None or plan.retrieval_lane in {"semantic", "hybrid"}:
         try:
@@ -235,15 +240,18 @@ def _archive_summaries(
                 reverse=reverse,
                 **filter_kwargs,
             )
-        return _summaries_from_hits(archive, search_hits)
+        return _kept(keep, _summaries_from_hits(archive, search_hits))
 
     query_text = _plan_text_query(plan)
     if query_text is not None:
         if not post_filter_fetch:
-            return _summaries_from_hits(
-                archive,
-                archive.search_summaries(
-                    query_text, limit=limit, offset=plan.offset, sort=sort, reverse=reverse, **filter_kwargs
+            return _kept(
+                keep,
+                _summaries_from_hits(
+                    archive,
+                    archive.search_summaries(
+                        query_text, limit=limit, offset=plan.offset, sort=sort, reverse=reverse, **filter_kwargs
+                    ),
                 ),
             )
         kept_hits: list[ArchiveSessionSummary] = []
@@ -268,13 +276,16 @@ def _archive_summaries(
         return kept_hits
 
     if not post_filter_fetch:
-        return archive.list_summaries(
-            limit=limit,
-            offset=plan.offset,
-            sort=sort,
-            reverse=reverse,
-            sample=plan.sample is not None,
-            **filter_kwargs,
+        return _kept(
+            keep,
+            archive.list_summaries(
+                limit=limit,
+                offset=plan.offset,
+                sort=sort,
+                reverse=reverse,
+                sample=plan.sample is not None,
+                **filter_kwargs,
+            ),
         )
     summaries: list[ArchiveSessionSummary] = []
     fetch_offset = 0
@@ -292,6 +303,13 @@ def _archive_summaries(
             break
         fetch_offset += len(summary_batch)
     return summaries
+
+
+def _kept(
+    keep: Callable[[list[ArchiveSessionSummary]], list[ArchiveSessionSummary]] | None,
+    rows: list[ArchiveSessionSummary],
+) -> list[ArchiveSessionSummary]:
+    return keep(rows) if keep is not None else rows
 
 
 def _summaries_from_hits(archive: ArchiveStore, hits: list[ArchiveSessionSearchHit]) -> list[ArchiveSessionSummary]:
@@ -401,7 +419,9 @@ async def list_summaries_archive(
         projection="session-summaries",
         workload_class="scan" if plan.limit is None or plan.limit > 1000 else "interactive",
     )
-    filtered = plan._apply_common_filters(summaries, sql_pushed=True)
+    # ``keep_matching`` already filtered every row once; a predicate is never
+    # evaluated twice for one candidate.
+    filtered = summaries if plan.has_post_filters() else plan._apply_common_filters(summaries, sql_pushed=True)
     # SQL orders every lexical and structured result. Only a vector-ranked
     # route with an explicit sort is ordered here. Ranked routes fetch an
     # unwindowed candidate prefix, so filters and rank-preserving
@@ -431,40 +451,55 @@ async def list_archive(
     composed_order = plan.sort in _COMPOSED_COUNT_SORTS
     fetch_plan = replace(plan, limit=None, offset=0) if composed_order else plan
 
-    def hydrate(archive: ArchiveStore, rows: list[ArchiveSessionSummary]) -> list[Session]:
-        return _attach_units_to_domain(
-            [
-                archive_envelope_to_session(
-                    archive.read_session(summary.session_id),
-                    display_label=summary.display_label,
-                    display_label_source=summary.display_label_source,
-                )
-                for summary in rows
-            ],
-            archive,
-            with_units,
-            with_unit_fields,
-            with_unit_windows,
-        )
+    # Attached units are projected at most one result page at a time: a
+    # candidate batch (ten pages wide under post-filters, or the complete set
+    # under a composed sort) exceeds the projector's per-page row budget, and
+    # each session's allowance should be the one the served page gives it.
+    unit_page = plan.limit if plan.limit is not None and plan.limit > 0 else None
 
-    def keep_matching(archive: ArchiveStore) -> Callable[[list[ArchiveSessionSummary]], list[ArchiveSessionSummary]]:
+    def hydrate(archive: ArchiveStore, rows: list[ArchiveSessionSummary]) -> list[Session]:
+        sessions = [
+            archive_envelope_to_session(
+                archive.read_session(summary.session_id),
+                display_label=summary.display_label,
+                display_label_source=summary.display_label_source,
+            )
+            for summary in rows
+        ]
+        width = unit_page or max(len(sessions), 1)
+        attached: list[Session] = []
+        for start in range(0, len(sessions), width):
+            attached.extend(
+                _attach_units_to_domain(
+                    sessions[start : start + width], archive, with_units, with_unit_fields, with_unit_windows
+                )
+            )
+        return attached
+
+    def read(archive: ArchiveStore) -> list[Session]:
+        # Each candidate is hydrated and filtered once; the survivors are
+        # returned as hydrated, so no predicate runs twice for one session.
+        kept_sessions: dict[str, Session] = {}
+
         def keep(rows: list[ArchiveSessionSummary]) -> list[ArchiveSessionSummary]:
             # Predicates see the same fully hydrated Session the caller gets:
             # display label and requested units included.
-            kept = {str(session.id) for session in plan._apply_full_filters(hydrate(archive, rows), sql_pushed=True)}
-            return [row for row in rows if row.session_id in kept]
+            for session in plan._apply_full_filters(hydrate(archive, rows), sql_pushed=True):
+                kept_sessions[str(session.id)] = session
+            return [row for row in rows if row.session_id in kept_sessions]
 
-        return keep
-
-    def read(archive: ArchiveStore) -> list[Session]:
+        filtering = plan.has_post_filters()
         archive_rows = _archive_summaries(
             fetch_plan,
             archive,
             config=config,
             archive_root=archive_root,
             default_limit=default_limit,
-            keep=keep_matching(archive) if plan.has_post_filters() else None,
+            keep=keep if filtering else None,
+            complete=composed_order,
         )
+        if filtering:
+            return [kept_sessions[row.session_id] for row in archive_rows]
         return hydrate(archive, archive_rows)
 
     sessions = await run_archive_read(
@@ -477,7 +512,7 @@ async def list_archive(
         projection="sessions",
         workload_class="scan" if plan.limit is None or plan.limit > 1000 else "interactive",
     )
-    filtered = plan._apply_full_filters(sessions, sql_pushed=True)
+    filtered = sessions if plan.has_post_filters() else plan._apply_full_filters(sessions, sql_pushed=True)
     ranked_window = _ranked_window(plan)
     ordered = plan._sort_sessions(filtered) if composed_order else order_query_sessions(plan, filtered)
     if (composed_order or plan.has_post_filters() or ranked_window) and plan.offset:
