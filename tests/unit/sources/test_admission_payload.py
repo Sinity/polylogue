@@ -90,3 +90,57 @@ def test_payload_parameter_refuses_no_args() -> None:
 
     resolved = base_support._payload_parameter(inspect.unwrap(parse_chunked_prompt))
     assert resolved == (1, "payload")
+
+
+def _claude_code_records() -> list[object]:
+    return [
+        {
+            "type": "user",
+            "sessionId": "cc-admission",
+            "uuid": "u-1",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {"role": "user", "content": "hello"},
+        },
+        {"type": "future_record_kind", "sessionId": "cc-admission", "uuid": "u-2"},
+        7,
+    ]
+
+
+def test_claude_code_production_stream_route_is_admitted() -> None:
+    """The multi-session stream route carries the same admission proof as the leaf parser.
+
+    Anti-vacuity: remove the per-group observer from
+    ``_claude_code_multiway_parse_inner`` and the session reaches the writer
+    with ``unit_accounting=None`` and no ``claude_code_unknown_input`` event,
+    while the scalar record is silently dropped.
+    """
+    from polylogue.sources.dispatch import parse_stream_payload
+
+    (session,) = parse_stream_payload(Provider.CLAUDE_CODE, iter(_claude_code_records()), "cc-admission")
+
+    assert "claude_code_unknown_input" in [event.event_type for event in session.session_events]
+    accounting = session.unit_accounting
+    assert accounting is not None
+    assert accounting.expected[AdmissionUnit.OUTER_RECORD] == 3
+    dispositions = {outcome.disposition for outcome in accounting.outcomes}
+    assert AdmissionDisposition.TYPED_UNKNOWN in dispositions
+    assert AdmissionDisposition.TYPED_REFUSAL in dispositions
+
+
+def test_non_object_record_is_refused_not_materialized() -> None:
+    """A skipped scalar record is a typed refusal, never counted as material.
+
+    Anti-vacuity: treat every record without an unknown-type sentinel as
+    materialized and the scalar balances the ledger as ``MATERIALIZED``.
+    """
+    observer = base_support.AdmissionObserver()
+    observer.observe({"type": "message"})
+    observer.observe(7)
+    from polylogue.sources.parsers.base import ParsedSession
+
+    session = observer.apply(ParsedSession(source_name=Provider.CODEX, provider_session_id="s", messages=[]), "codex")
+
+    accounting = session.unit_accounting
+    assert accounting is not None
+    refusals = [outcome for outcome in accounting.outcomes if outcome.disposition is AdmissionDisposition.TYPED_REFUSAL]
+    assert [outcome.ordinal for outcome in refusals] == [1]

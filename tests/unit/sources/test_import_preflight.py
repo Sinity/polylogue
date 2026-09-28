@@ -68,6 +68,39 @@ def test_preflight_accepts_antigravity_trajectory_sqlite(tmp_path: Path) -> None
     assert result.supported_count == 1
 
 
+@pytest.mark.parametrize(
+    "steps_sql",
+    [
+        "",
+        'INSERT INTO steps VALUES (0, \'message\', \'future-format\', \'{"role":"user","text":"hi"}\');',
+    ],
+    ids=["empty-trajectory", "only-unsupported-steps"],
+)
+def test_preflight_admits_verified_trajectory_without_messages(tmp_path: Path, steps_sql: str) -> None:
+    """A verified trajectory schema whose steps yield no message stays admissible.
+
+    Anti-vacuity: require a materialized message again and both inputs are
+    refused as unsupported, so the typed ``antigravity_trajectory_empty`` /
+    ``antigravity_unsupported_step`` evidence can never reach acquisition.
+    """
+    source = tmp_path / "quiet-trajectory.sqlite"
+    with sqlite3.connect(source) as connection:
+        connection.executescript(
+            f"""
+            CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+            CREATE TABLE steps (idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT);
+            INSERT INTO trajectory_meta VALUES ('trajectory-quiet', 'cascade-quiet');
+            {steps_sql}
+            """
+        )
+
+    result = preflight_import_source(source)
+
+    assert result.admissible is True
+    assert result.providers == (Provider.ANTIGRAVITY,)
+    assert any("no messages" in caveat for caveat in result.caveats)
+
+
 def test_preflight_rejects_unknown_json_shape(tmp_path: Path) -> None:
     source = tmp_path / "unknown.json"
     source.write_text(json.dumps({"not": "an export"}))

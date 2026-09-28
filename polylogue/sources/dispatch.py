@@ -52,7 +52,7 @@ from .parsers.base import (
     mark_last_occurrence_as_active_leaf,
 )
 from .parsers.base_models import upgrade_chat_export_user_authorship
-from .parsers.base_support import iter_messages_from_list
+from .parsers.base_support import AdmissionObserver, admit_parsed_sessions, iter_messages_from_list
 from .parsers.claude import code_parser as claude_code_parser
 from .parsers.claude.code_parser import apply_tool_result_sidecars
 from .parsers.claude.stream_scratch import ClaudeStreamScratch, SqliteStringSet
@@ -1058,6 +1058,10 @@ def _claude_code_multiway_parse_inner(
     sidecar_accumulators: dict[str, ToolResultIndexAccumulator] | None = {} if sidecar_scope is not None else None
 
     accumulators: dict[str, claude_code_parser._SessionAccumulator] = {}
+    # One admission observer per session group: an outer record belongs to
+    # exactly the session it folds into, so each session's ledger proves its
+    # own records rather than the whole multi-session stream.
+    observers: dict[str, AdmissionObserver] = {}
     group_order: list[str] = []
     provisional_groups: set[str] = set()
     pending_prefix: list[tuple[object, PayloadRecord | None]] = []
@@ -1088,6 +1092,7 @@ def _claude_code_multiway_parse_inner(
         # ``record`` is the caller's already-coerced view of ``item``. Coercing
         # walks the whole decoded record, so it happens once per record here,
         # not once per read of a field.
+        observers.setdefault(group_id, AdmissionObserver()).observe(item)
         if sidecar_accumulators is not None:
             sidecar_accumulators[group_id].observe(item)
         if record is not None and not is_agent_fallback and group_id == fallback_id:
@@ -1184,6 +1189,7 @@ def _claude_code_multiway_parse_inner(
 
     for group_id in group_order:
         session = claude_code_parser._finalize_code_session(accumulators[group_id])
+        session = observers.setdefault(group_id, AdmissionObserver()).apply(session, "claude_code")
         if sidecar_accumulators is not None:
             # sidecar_accumulators is only set when the scope resolved, which
             # itself only happens when source_path is not None.
@@ -1770,6 +1776,18 @@ def parse_generic_messages_stream(
 
 
 def _parse_lowered_spec(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> list[ParsedSession]:
+    """Parse one lowered spec through the shared admission boundary.
+
+    Every production route passes here, including the ones that reach an
+    undecorated entry point (Hermes state/ATIF/verification, Antigravity
+    markdown, Codex streams); their single-session results get the same
+    outer-record ledger the decorated leaf parsers attach.
+    """
+    sessions = _parse_lowered_spec_unadmitted(spec, resolver)
+    return admit_parsed_sessions(spec.provider.value.replace("-", "_"), spec.payload, sessions)
+
+
+def _parse_lowered_spec_unadmitted(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> list[ParsedSession]:
     if spec.mode == "browser_capture":
         record = _payload_record(spec.payload)
         return [browser_capture.parse(record, spec.fallback_id)] if record is not None else []
@@ -2228,14 +2246,14 @@ def parse_stream_payload(
             )
         )
     if runtime_provider is Provider.CODEX:
-        return [
-            codex.parse_stream(
-                payloads,
-                fallback_id,
-                message_sink=message_sink_factory() if message_sink_factory is not None else None,
-                event_sink=event_sink_factory() if event_sink_factory is not None else None,
-            )
-        ]
+        observer = AdmissionObserver()
+        session = codex.parse_stream(
+            observer.observing(payloads),
+            fallback_id,
+            message_sink=message_sink_factory() if message_sink_factory is not None else None,
+            event_sink=event_sink_factory() if event_sink_factory is not None else None,
+        )
+        return [observer.apply(session, "codex")]
     if runtime_provider is Provider.HERMES:
         return hermes_spans.parse_atof_stream(
             payloads,

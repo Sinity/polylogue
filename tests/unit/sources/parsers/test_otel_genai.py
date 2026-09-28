@@ -280,3 +280,128 @@ def test_evidence_only_genai_span_remains_an_admitted_session() -> None:
     assert (
         require_positive_conversational_evidence(sessions, provider=Provider.OTEL_GENAI, source_path=None) == sessions
     )
+
+
+def _attr(key: str, value: object) -> dict[str, object]:
+    if isinstance(value, int):
+        return {"key": key, "value": {"intValue": value}}
+    return {"key": key, "value": {"stringValue": value if isinstance(value, str) else json.dumps(value)}}
+
+
+def _span(trace_id: str, span_id: str, start_ns: int, attributes: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "traceId": trace_id,
+        "spanId": span_id,
+        "name": "span",
+        "startTimeUnixNano": str(start_ns),
+        "endTimeUnixNano": str(start_ns + 1),
+        "attributes": attributes,
+    }
+
+
+def _document(*resources: tuple[list[dict[str, object]], list[dict[str, object]]]) -> dict[str, Any]:
+    return {
+        "resourceSpans": [
+            {
+                "resource": {"attributes": resource_attributes},
+                "scopeSpans": [{"schemaUrl": otel_genai.SEMCONV_SCHEMA_URL, "spans": spans}],
+            }
+            for resource_attributes, spans in resources
+        ]
+    }
+
+
+def _chat(trace_id: str, span_id: str, start_ns: int, inputs: list[str], output: str) -> dict[str, object]:
+    history = [
+        {"role": "user" if index % 2 == 0 else "assistant", "content": text} for index, text in enumerate(inputs)
+    ]
+    return _span(
+        trace_id,
+        span_id,
+        start_ns,
+        [
+            _attr("gen_ai.operation.name", "chat"),
+            _attr("gen_ai.conversation.id", "chat-1"),
+            _attr("gen_ai.input.messages", history),
+            _attr("gen_ai.output.messages", [{"role": "assistant", "content": output}]),
+        ],
+    )
+
+
+def test_repeated_input_history_is_emitted_once() -> None:
+    """Each request's full history adds only its unseen suffix to the transcript.
+
+    Anti-vacuity: emit every input entry per span again and the transcript
+    reads ``Q1, A1, Q1, A1, Q2, A2``.
+    """
+    trace = "1" * 32
+    payload = _document(
+        (
+            [_attr("service.name", "agent")],
+            [
+                _chat(trace, "a" * 16, 1_000, ["Q1"], "A1"),
+                _chat(trace, "b" * 16, 2_000, ["Q1", "A1", "Q2"], "A2"),
+            ],
+        )
+    )
+
+    (session,) = otel_genai.parse(payload, "ignored")
+
+    assert [message.text for message in session.messages] == ["Q1", "A1", "Q2", "A2"]
+
+
+def test_unnamed_resources_with_different_attributes_stay_distinct() -> None:
+    """Resources without ``service.name`` are not merged into one session.
+
+    Anti-vacuity: fall back to one shared resource id and both conversations
+    ``chat-1`` group into a single session.
+    """
+    payload = _document(
+        ([_attr("deployment.environment", "staging")], [_chat("2" * 32, "c" * 16, 1_000, ["Q-staging"], "A")]),
+        ([_attr("deployment.environment", "prod")], [_chat("3" * 32, "d" * 16, 1_000, ["Q-prod"], "A")]),
+    )
+
+    sessions = otel_genai.parse(payload, "ignored")
+
+    assert len(sessions) == 2
+    assert len({session.provider_session_id for session in sessions}) == 2
+
+
+def test_non_genai_trace_does_not_become_a_session() -> None:
+    """An ordinary trace beside a GenAI trace in one export is not admitted.
+
+    Anti-vacuity: keep every span and the HTTP trace becomes its own
+    zero-message session.
+    """
+    http_span = _span("5" * 32, "f" * 16, 1_000, [_attr("http.method", "GET")])
+    payload = _document(([_attr("service.name", "agent")], [_chat("4" * 32, "e" * 16, 1_000, ["Q"], "A"), http_span]))
+
+    sessions = otel_genai.parse(payload, "ignored")
+
+    assert len(sessions) == 1
+    assert [message.text for message in sessions[0].messages] == ["Q", "A"]
+
+
+def test_usage_survives_for_non_chat_generation_operations() -> None:
+    """A usage-only ``text_completion`` span keeps its counters.
+
+    Anti-vacuity: restore the ``== "chat"`` guard and no ``message_usage``
+    event is emitted.
+    """
+    span = _span(
+        "6" * 32,
+        "1" * 16,
+        1_000,
+        [
+            _attr("gen_ai.operation.name", "text_completion"),
+            _attr("gen_ai.request.model", "m"),
+            _attr("gen_ai.usage.input_tokens", 11),
+            _attr("gen_ai.usage.output_tokens", 7),
+        ],
+    )
+    payload = _document(([_attr("service.name", "agent")], [span]))
+
+    (session,) = otel_genai.parse(payload, "ignored")
+
+    usage = [event.payload for event in session.session_events if event.event_type == "message_usage"]
+    assert usage == [{"last_token_usage": {"input_tokens": 11, "output_tokens": 7}, "model": "m"}]

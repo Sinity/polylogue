@@ -7,6 +7,7 @@ fields remain in a span-evidence session event rather than being discarded.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import defaultdict
 from collections.abc import Iterable
@@ -189,6 +190,22 @@ def _span_variant_key(item: tuple[dict[str, object], str | None]) -> tuple[int, 
     )
 
 
+def _resource_id(resource_attrs: dict[str, object]) -> str:
+    """Name one OTLP resource by its service, or by its whole attribute set.
+
+    Two ``resourceSpans`` entries without ``service.name`` are still distinct
+    resources when their other attributes differ; collapsing both onto one
+    shared fallback grouped their spans into a single provider session.
+    """
+    service_name = optional_string(resource_attrs.get("service.name"))
+    if service_name:
+        return service_name
+    canonical = json.dumps(
+        {key: _json_value(value) for key, value in resource_attrs.items()}, sort_keys=True, separators=(",", ":")
+    )
+    return f"resource-{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:16]}"
+
+
 def _iter_spans(payload: dict[str, object]) -> Iterable[tuple[str, dict[str, object], str | None]]:
     resource_spans = payload.get("resourceSpans", payload.get("resource_spans"))
     if not isinstance(resource_spans, list):
@@ -196,7 +213,7 @@ def _iter_spans(payload: dict[str, object]) -> Iterable[tuple[str, dict[str, obj
     for resource_span in resource_spans:
         resource = _mapping(resource_span)
         resource_attrs = _attributes(_mapping(resource.get("resource")).get("attributes"))
-        resource_id = optional_string(resource_attrs.get("service.name")) or "resource"
+        resource_id = _resource_id(resource_attrs)
         scopes = resource.get("scopeSpans", resource.get("instrumentationLibrarySpans", ()))
         if not isinstance(scopes, list):
             continue
@@ -224,7 +241,30 @@ def looks_like(payload: object) -> bool:
     return False
 
 
-def _messages_for_span(span: dict[str, object], attrs: dict[str, object], trace_id: str) -> list[ParsedMessage]:
+_TranscriptEntry = tuple[str, str | None]
+
+
+def _history_overlap(inputs: list[_TranscriptEntry], transcript: list[_TranscriptEntry]) -> int:
+    """Count leading ``inputs`` the conversation transcript already ends with.
+
+    A GenAI request's ``gen_ai.input.messages`` is the history sent with that
+    request, so the second turn of a chat carries ``[Q1, A1, Q2]`` after the
+    first carried ``[Q1]`` and produced ``A1``. Only the unseen suffix is new
+    material; re-emitting the prefix duplicated every earlier message once
+    per later span.
+    """
+    for size in range(min(len(inputs), len(transcript)), 0, -1):
+        if inputs[:size] == transcript[-size:]:
+            return size
+    return 0
+
+
+def _messages_for_span(
+    span: dict[str, object],
+    attrs: dict[str, object],
+    trace_id: str,
+    transcript: list[_TranscriptEntry],
+) -> list[ParsedMessage]:
     span_id = optional_string(span.get("spanId")) or optional_string(span.get("span_id")) or "span"
     timestamp, occurred_at_ms = _timestamp(span)
     parent_span_id = optional_string(span.get("parentSpanId")) or optional_string(span.get("parent_span_id"))
@@ -242,7 +282,16 @@ def _messages_for_span(span: dict[str, object], attrs: dict[str, object], trace_
         ("gen_ai.input.messages", "input", Role.USER),
         ("gen_ai.output.messages", "output", Role.ASSISTANT),
     ):
-        for index, raw_message in enumerate(_messages(attrs.get(field))[0]):
+        raw_messages = _messages(attrs.get(field))[0]
+        entries = [
+            (_role(raw_message.get("role"), default_role).value, _message_text(raw_message))
+            for raw_message in raw_messages
+        ]
+        already_seen = _history_overlap(entries, transcript) if direction == "input" else 0
+        for index, raw_message in enumerate(raw_messages):
+            if index < already_seen:
+                continue
+            transcript.append(entries[index])
             role = _role(raw_message.get("role"), default_role)
             carries_usage = direction == "output" and role is Role.ASSISTANT and not usage_attached
             messages.append(
@@ -335,6 +384,20 @@ def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
                 seen.add(identity)
         if alternatives:
             conflicts[coordinate] = alternatives
+    # A GenAI export may carry ordinary HTTP/database traces beside the GenAI
+    # one. Only traces that contain a GenAI span become sessions; their
+    # non-GenAI spans stay as topology evidence inside that session. A trace
+    # with no GenAI span at all is not this origin's material.
+    genai_traces = {
+        (resource_id, optional_string(span.get("traceId")) or optional_string(span.get("trace_id")))
+        for resource_id, span, _schema_url in spans
+        if any(key.startswith("gen_ai.") for key in _attributes(span.get("attributes")))
+    }
+    spans = [
+        (resource_id, span, schema_url)
+        for resource_id, span, schema_url in spans
+        if (resource_id, optional_string(span.get("traceId")) or optional_string(span.get("trace_id"))) in genai_traces
+    ]
     span_details: dict[tuple[str, str, str], tuple[str | None, str | None]] = {}
     for resource_id, span, _schema_url in spans:
         trace_id = optional_string(span.get("traceId")) or optional_string(span.get("trace_id"))
@@ -376,6 +439,7 @@ def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
         messages: list[ParsedMessage] = []
         events: list[ParsedSessionEvent] = []
         models: set[str] = set()
+        transcript: list[_TranscriptEntry] = []
         for span, schema_url in sorted(
             scoped_spans,
             key=lambda item: (_span_key(item[0]), _span_coordinate(resource_id, item[0])[1]),
@@ -427,21 +491,20 @@ def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
                 )
             if schema_url not in (None, SEMCONV_SCHEMA_URL):
                 continue
-            span_messages = _messages_for_span(span, attrs, trace_id)
+            span_messages = _messages_for_span(span, attrs, trace_id, transcript)
             messages.extend(span_messages)
             model = optional_string(attrs.get("gen_ai.request.model"))
             if model:
                 models.add(model)
             usage = _usage_counts(attrs)
-            if (
-                optional_string(attrs.get("gen_ai.operation.name")) == "chat"
-                and any(count is not None for count in usage)
-                and not any(
-                    message.input_tokens is not None
-                    or message.output_tokens is not None
-                    or message.cache_read_tokens is not None
-                    for message in span_messages
-                )
+            # Any GenAI operation that reports usage counters keeps them:
+            # ``text_completion`` and ``generate_content`` spans whose message
+            # bodies were not exported still carry billable tokens.
+            if any(count is not None for count in usage) and not any(
+                message.input_tokens is not None
+                or message.output_tokens is not None
+                or message.cache_read_tokens is not None
+                for message in span_messages
             ):
                 events.append(
                     ParsedSessionEvent(

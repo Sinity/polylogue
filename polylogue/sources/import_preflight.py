@@ -229,12 +229,20 @@ def _preflight_sqlite(path: Path, acc: _PreflightAccumulator, *, label: str) -> 
                     f"{label}: classified from the first {_MAX_SQLITE_PROBE_SESSIONS} trajectories; "
                     "the remainder was not inspected"
                 )
-            if sessions and any(session.messages for session in sessions):
+            # A verified trajectory schema is this origin's material even when
+            # its steps produce no message: an empty trajectory or one of only
+            # unsupported step formats yields attributable typed evidence
+            # (``antigravity_trajectory_empty``/``antigravity_unsupported_step``)
+            # that acquisition must retain. Only a schema with no trajectory
+            # rows at all has nothing to admit.
+            if sessions:
                 acc.supported(label, Provider.ANTIGRAVITY)
                 if any(session.ingest_flags for session in sessions):
                     acc._caveat(f"{label}: trajectory contains unsupported or degraded steps")
+                if not any(session.messages for session in sessions):
+                    acc._caveat(f"{label}: trajectory produces typed evidence but no messages")
             else:
-                acc.unsupported(label, "Antigravity trajectory schema contains no materialized messages")
+                acc.unsupported(label, "Antigravity trajectory schema contains no trajectories")
             return
     except Exception as exc:
         # The parser adapter classifies SQLite read failures at its storage

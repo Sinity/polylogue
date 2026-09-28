@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import inspect
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from functools import wraps
 from typing import Any, TypeVar
 
@@ -142,11 +142,89 @@ def _unknown_wire_type(value: object) -> str | None:
     return None
 
 
-def _observe_wire_types(payload: Iterator[Any], observed: list[str | None]) -> Iterator[Any]:
-    """Yield a one-pass payload through, recording each record's wire type."""
-    for item in payload:
-        observed.append(_unknown_wire_type(item))
-        yield item
+class AdmissionObserver:
+    """Classify each outer record of one session's input exactly once.
+
+    The single conservation boundary every production parse route shares:
+    the decorated leaf parsers (:func:`parser_admission`), the Claude Code
+    multi-session stream (one observer per session group) and the dispatch
+    routes that call undecorated entry points. Each record gets one terminal
+    disposition. A record that is not a JSON object is a typed refusal, never
+    counted as materialized: every origin's outer records are objects, and a
+    parser that skips a scalar produced no material from it (fail closed).
+    """
+
+    def __init__(self) -> None:
+        self._ledger = AdmissionLedger()
+        self._count = 0
+        self._unknowns: list[tuple[int, str]] = []
+
+    def observe(self, item: object) -> None:
+        ordinal = self._count
+        self._count += 1
+        if not isinstance(item, Mapping):
+            self._ledger.refusal(
+                AdmissionUnit.OUTER_RECORD, ordinal, type(item).__name__, AdmissionRefusalReason.MALFORMED
+            )
+            return
+        wire_type = _unknown_wire_type(item)
+        if wire_type is None:
+            self._ledger.materialized(AdmissionUnit.OUTER_RECORD, ordinal, "parsed")
+        else:
+            self._ledger.unknown(AdmissionUnit.OUTER_RECORD, ordinal, wire_type)
+            self._unknowns.append((ordinal + 1, wire_type))
+
+    def observing(self, payload: Iterable[Any]) -> Iterator[Any]:
+        """Yield a one-pass payload through, observing each record as it is pulled."""
+        for item in payload:
+            self.observe(item)
+            yield item
+
+    def apply(self, session: ParsedSession, provider: str) -> ParsedSession:
+        """Attach the typed unknown events and, absent a parser ledger, the proof."""
+        existing_types = (
+            {
+                str(event.payload.get("wire_type"))
+                for event in session.session_events
+                if event.payload.get("wire_type") is not None
+            }
+            if self._unknowns
+            else set()
+        )
+        events = list(session.session_events)
+        for index, wire_type in self._unknowns:
+            if wire_type in existing_types:
+                continue
+            events.append(
+                ParsedSessionEvent(
+                    event_type=f"{provider}_unknown_input",
+                    payload={"source_index": index, "wire_type": wire_type},
+                )
+            )
+            existing_types.add(wire_type)
+        accounting = session.unit_accounting
+        if accounting is None:
+            self._ledger.expect(AdmissionUnit.OUTER_RECORD, self._count)
+            accounting = self._ledger.close()
+        accounting.assert_conserved()
+        return session.model_copy(update={"session_events": events, "unit_accounting": accounting})
+
+
+def admit_parsed_sessions(provider: str, payload: object, sessions: list[ParsedSession]) -> list[ParsedSession]:
+    """Apply the admission boundary to a dispatch route's single-session result.
+
+    For routes that reach an undecorated entry point. A session that already
+    carries its parser's own ledger keeps it; a multi-session result must be
+    admitted per session by its own route (see the Claude Code stream), since
+    one outer record belongs to exactly one session there.
+    """
+    if len(sessions) != 1 or sessions[0].unit_accounting is not None:
+        return sessions
+    observer = AdmissionObserver()
+    items = payload if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes)) else [payload]
+    for item in items:
+        observer.observe(item)
+    return [observer.apply(sessions[0], provider)]
 
 
 def _payload_parameter(parser: Callable[..., ParsedSession]) -> tuple[int, str]:
@@ -189,12 +267,12 @@ def parser_admission(provider: str) -> Callable[[_SessionParser], _SessionParser
         @wraps(parser)
         def wrapped(*args: Any, **kwargs: Any) -> ParsedSession:
             payload = args[payload_index] if len(args) > payload_index else kwargs.get(payload_name)
-            observed: list[str | None] = []
+            observer = AdmissionObserver()
             if isinstance(payload, Iterator):
                 # A one-pass payload can only be classified while the parser
                 # pulls it; re-reading it afterwards would see an exhausted
                 # iterator and undercount every record.
-                instrumented = _observe_wire_types(payload, observed)
+                instrumented = observer.observing(payload)
                 if len(args) > payload_index:
                     args = (*args[:payload_index], instrumented, *args[payload_index + 1 :])
                 else:
@@ -202,45 +280,12 @@ def parser_admission(provider: str) -> Callable[[_SessionParser], _SessionParser
                 session = parser(*args, **kwargs)
             else:
                 raw_items = (
-                    list(payload)
-                    if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes))
-                    else [payload]
+                    payload if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes)) else [payload]
                 )
-                observed = [_unknown_wire_type(item) for item in raw_items]
+                for item in raw_items:
+                    observer.observe(item)
                 session = parser(*args, **kwargs)
-            unknowns = [
-                (index, wire_type) for index, wire_type in enumerate(observed, start=1) if wire_type is not None
-            ]
-
-            existing_types = {
-                str(event.payload.get("wire_type"))
-                for event in session.session_events
-                if event.payload.get("wire_type") is not None
-            }
-            events = list(session.session_events)
-            for index, wire_type in unknowns:
-                if wire_type in existing_types:
-                    continue
-                events.append(
-                    ParsedSessionEvent(
-                        event_type=f"{provider}_unknown_input",
-                        payload={"source_index": index, "wire_type": wire_type},
-                    )
-                )
-                existing_types.add(wire_type)
-
-            accounting = session.unit_accounting
-            if accounting is None:
-                ledger = AdmissionLedger()
-                ledger.expect(AdmissionUnit.OUTER_RECORD, len(observed))
-                for index, observed_type in enumerate(observed):
-                    if observed_type is None:
-                        ledger.materialized(AdmissionUnit.OUTER_RECORD, index, "parsed")
-                    else:
-                        ledger.unknown(AdmissionUnit.OUTER_RECORD, index, observed_type)
-                accounting = ledger.close()
-            accounting.assert_conserved()
-            return session.model_copy(update={"session_events": events, "unit_accounting": accounting})
+            return observer.apply(session, provider)
 
         return wrapped  # type: ignore[return-value]
 
