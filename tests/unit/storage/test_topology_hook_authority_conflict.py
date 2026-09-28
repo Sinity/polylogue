@@ -533,3 +533,102 @@ def test_revised_state_export_moves_an_already_archived_child(tmp_path: Path) ->
     assert links[_HOOK_PARENT]["status"] == TopologyEdgeStatus.AUTHORITY_CONTRADICTED.value
     assert links[_HOOK_PARENT]["resolved_dst_session_id"] is None
     assert _composed_parent(index, child_id)[0] == f"{Origin.CODEX_SESSION.value}:revised-hook-parent"
+
+
+def test_export_returning_to_an_earlier_parent_moves_the_child_back(tmp_path: Path) -> None:
+    """A -> B -> A across three exports leaves the child under A.
+
+    Red twin: decide which children to re-derive from the difference of the
+    scope's edge-key sets. The graph retains B's superseded edge and A's edge
+    already exists, so the third export adds no key and the child keeps B.
+    """
+    index = _index_conn(tmp_path / "index.db")
+    source = _source_conn(tmp_path / "source.db")
+    for parent in (_HOOK_PARENT, "second-hook-parent"):
+        write_parsed_session_to_archive(index, _session(parent), source_conn=source)
+    child_id = write_parsed_session_to_archive(index, _session(_CHILD), source_conn=source)
+
+    _project_state_export(index, parent=_HOOK_PARENT, child=_CHILD, raw_id="state-a", observed_at_ms=1_000)
+    _project_state_export(index, parent="second-hook-parent", child=_CHILD, raw_id="state-b", observed_at_ms=2_000)
+    assert _composed_parent(index, child_id)[0] == f"{Origin.CODEX_SESSION.value}:second-hook-parent"
+    _project_state_export(index, parent=_HOOK_PARENT, child=_CHILD, raw_id="state-a2", observed_at_ms=3_000)
+
+    links = _links(index, child_id)
+    assert links[_HOOK_PARENT]["method"] == HOOK_AUTHORITATIVE_LINK_METHOD
+    assert links["second-hook-parent"]["method"] == HOOK_SUPERSEDED_LINK_METHOD
+    assert _composed_parent(index, child_id)[0] == f"{Origin.CODEX_SESSION.value}:{_HOOK_PARENT}"
+
+
+def test_rederivation_uses_the_current_parser_parent_not_a_retired_one(tmp_path: Path) -> None:
+    """A parser revision A -> B under hook H, then a hook move H -> C, keeps B as the parser claim.
+
+    Red twin: drop ``_retire_stale_parser_assertions`` from
+    ``_write_session_link``. The full replace keeps A's contradicted row, it
+    sorts before B's, and the re-derivation recovers A as the parser parent.
+    """
+    revised_parser_parent = "revised-parser-parent"
+    index = _index_conn(tmp_path / "index.db")
+    source = _source_conn(tmp_path / "source.db")
+    _project_state_export(index, parent=_HOOK_PARENT, child=_CHILD, raw_id="state-h", observed_at_ms=1_000)
+    for parent in (_HOOK_PARENT, _PARSER_PARENT, revised_parser_parent, "moved-hook-parent"):
+        write_parsed_session_to_archive(index, _session(parent), source_conn=source)
+    write_parsed_session_to_archive(index, _session(_CHILD, parent=_PARSER_PARENT), source_conn=source)
+    child_id = write_parsed_session_to_archive(
+        index, _session(_CHILD, parent=revised_parser_parent), source_conn=source
+    )
+    links = _links(index, child_id)
+    assert links[revised_parser_parent]["method"] == HOOK_CONTRADICTED_LINK_METHOD
+    assert _PARSER_PARENT not in links
+
+    _project_state_export(index, parent="moved-hook-parent", child=_CHILD, raw_id="state-c", observed_at_ms=2_000)
+
+    links = _links(index, child_id)
+    assert _PARSER_PARENT not in links
+    assert links[revised_parser_parent]["method"] == HOOK_CONTRADICTED_LINK_METHOD
+    moved = links["moved-hook-parent"]
+    assert moved["method"] == HOOK_AUTHORITATIVE_LINK_METHOD
+    assert json.loads(moved["evidence_json"])["superseded_parser_parent"] == revised_parser_parent
+    assert _composed_parent(index, child_id)[0] == f"{Origin.CODEX_SESSION.value}:moved-hook-parent"
+
+
+def test_rederiving_a_deep_chain_projects_each_session_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One export that parents a whole chain refreshes the closure in one traversal.
+
+    Red twin: refresh each rewritten child with its own ``seen`` set. Every
+    child then climbs its whole ancestor chain again, so the refresh count
+    grows with the square of the chain depth instead of linearly.
+    """
+    from polylogue.storage.sqlite.archive_tiers import write as write_module
+
+    depth = 20
+    index = _index_conn(tmp_path / "index.db")
+    source = _source_conn(tmp_path / "source.db")
+    chain = ["chain-root", *(f"chain-{position:02d}" for position in range(1, depth + 1))]
+    for native_id in chain:
+        write_parsed_session_to_archive(index, _session(native_id), source_conn=source)
+
+    calls: list[str] = []
+    original = write_module._refresh_session_projection
+
+    def counting(conn: sqlite3.Connection, session_id: str, *, seen: set[str]) -> None:
+        calls.append(session_id)
+        original(conn, session_id, seen=seen)
+
+    monkeypatch.setattr(write_module, "_refresh_session_projection", counting)
+    snapshot = codex_state.CodexStateSnapshot(
+        threads=(),
+        spawn_edges=tuple(
+            codex_state.CodexSpawnEdge(parent_thread_id=parent, child_thread_id=child, status="closed")
+            for parent, child in zip(chain, chain[1:], strict=False)
+        ),
+    )
+    write_thread_state_projection(index, snapshot, raw_id="chain", blob_hash="blob-chain", observed_at_ms=1_000)
+    index.commit()
+
+    assert len(calls) <= 2 * depth
+    root_id = f"{Origin.CODEX_SESSION.value}:chain-root"
+    rows = index.execute(
+        "SELECT session_id, parent_session_id, root_session_id FROM sessions WHERE session_id != ?", (root_id,)
+    ).fetchall()
+    assert len(rows) == depth
+    assert all(row["root_session_id"] == root_id and row["parent_session_id"] is not None for row in rows)

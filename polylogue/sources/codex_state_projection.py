@@ -181,7 +181,11 @@ def write_thread_state_projection(
     """
     from polylogue.storage.sqlite.archive_tiers.write import rederive_codex_spawn_parent_links
 
-    before = agent_thread_state.read_spawn_edges(index_conn, source_scope=source_scope)
+    # Only children this scope names, now or in a retained revision, can have
+    # their projected parent moved by rewriting this scope's graph.
+    children = {child for _parent, child in agent_thread_state.read_spawn_edges(index_conn, source_scope=source_scope)}
+    children.update(edge.child_thread_id for edge in snapshot.spawn_edges if edge.child_thread_id)
+    before = agent_thread_state.read_spawn_parents(index_conn, children)
     written = agent_thread_state.write_thread_state_graph(
         index_conn,
         source_scope=source_scope,
@@ -207,8 +211,10 @@ def write_thread_state_projection(
         observation_order=observation_order,
     )
     if written:
-        after = agent_thread_state.read_spawn_edges(index_conn, source_scope=source_scope)
-        rederive_codex_spawn_parent_links(index_conn, {child for _parent, child in before.keys() ^ after.keys()})
+        after = agent_thread_state.read_spawn_parents(index_conn, children)
+        rederive_codex_spawn_parent_links(
+            index_conn, {child for child in children if before.get(child) != after.get(child)}
+        )
     return written
 
 

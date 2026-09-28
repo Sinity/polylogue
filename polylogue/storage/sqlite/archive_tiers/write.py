@@ -6901,6 +6901,7 @@ def _write_session_link(
         session = session.model_copy(update={"parent_session_provider_id": parent_native_id})
         if parent_native_id is None:
             return
+    _retire_stale_parser_assertions(conn, session_id, parent_native_id)
     hook_claim = _authoritative_parent_claim(
         conn,
         source_conn,
@@ -7057,6 +7058,33 @@ def _write_session_link(
         )
 
 
+def _retire_stale_parser_assertions(conn: sqlite3.Connection, session_id: str, parser_parent: str | None) -> None:
+    """Drop parser claims of a parent the child's current parse no longer asserts.
+
+    A full replace keeps hook-derived edges, and a contradicted edge is one of
+    them, so without this a parser revision A -> B under a contradicting hook
+    leaves the retired A claim beside the current B claim.
+    ``rederive_codex_spawn_parent_links`` recovers the parser's parent from
+    these rows, so a surviving A would come back, with its link type,
+    inheritance and branch point, the next time the hook parent moves. A
+    contradicted edge carries nothing but the parser's claim, so it goes; an
+    authoritative edge stays as hook evidence and loses only the claim.
+    """
+    conn.execute(
+        "DELETE FROM session_links WHERE src_session_id = ? AND method = ? AND dst_native_id IS NOT ?",
+        (session_id, HOOK_CONTRADICTED_LINK_METHOD, parser_parent),
+    )
+    conn.execute(
+        """
+        UPDATE session_links
+           SET evidence_json = json_remove(evidence_json, '$.parent_session_provider_id')
+         WHERE src_session_id = ? AND method = ? AND dst_native_id IS NOT ?
+           AND json_extract(evidence_json, '$.parent_session_provider_id') IS NOT NULL
+        """,
+        (session_id, HOOK_AUTHORITATIVE_LINK_METHOD, parser_parent),
+    )
+
+
 def _link_evidence(raw: object) -> dict[str, object]:
     try:
         evidence = json.loads(str(raw)) if raw is not None else {}
@@ -7086,6 +7114,11 @@ def rederive_codex_spawn_parent_links(conn: sqlite3.Connection, child_native_ids
     same one ``_write_session_link`` makes. A child the projection is silent
     about is left as its save wrote it, exactly as a save would. Returns the
     session ids whose edges were rewritten.
+
+    Each rewritten child's parent pointer is set as soon as its edges resolve,
+    because the next child's cycle check reads it; roots and branch types are
+    then refreshed once over the closure of every rewritten child and its
+    descendants.
     """
     origin = Origin.CODEX_SESSION.value
     rewritten: list[str] = []
@@ -7213,25 +7246,34 @@ def rederive_codex_spawn_parent_links(conn: sqlite3.Connection, child_native_ids
                     observed_at_ms=observed_at_ms,
                 )
         _resolve_outbound_session_links(conn, child_session_id, origin)
-        # The child's own descendants inherit its root, so refresh them too.
-        descendants = [
-            str(row[0])
-            for row in conn.execute(
-                """
-                WITH RECURSIVE below(session_id) AS (
-                    SELECT session_id FROM sessions WHERE parent_session_id = ?
-                    UNION
-                    SELECT s.session_id FROM sessions AS s JOIN below ON s.parent_session_id = below.session_id
-                )
-                SELECT session_id FROM below
-                """,
-                (child_session_id,),
-            )
-        ]
-        seen: set[str] = set()
-        for session_id in (child_session_id, *descendants):
-            _refresh_session_projection(conn, session_id, seen=seen)
+        parent_link = _composing_parent_link(conn, child_session_id)
+        conn.execute(
+            "UPDATE sessions SET parent_session_id = ? WHERE session_id = ?",
+            (str(parent_link[0]) if parent_link is not None else None, child_session_id),
+        )
         rewritten.append(child_session_id)
+    if not rewritten:
+        return rewritten
+    # A rewritten child's descendants inherit its root, so the closure is
+    # refreshed in one pass: one seen set means each session, and each
+    # ancestor the refresh climbs to, is projected once.
+    impacted = [
+        str(row[0])
+        for row in conn.execute(
+            """
+            WITH RECURSIVE below(session_id) AS (
+                SELECT session_id FROM sessions WHERE session_id IN (SELECT value FROM json_each(?))
+                UNION
+                SELECT s.session_id FROM sessions AS s JOIN below ON s.parent_session_id = below.session_id
+            )
+            SELECT session_id FROM below
+            """,
+            (json.dumps(rewritten),),
+        )
+    ]
+    seen: set[str] = set()
+    for session_id in impacted:
+        _refresh_session_projection(conn, session_id, seen=seen)
     return rewritten
 
 
@@ -7819,11 +7861,9 @@ def _projected_session_kind(conn: sqlite3.Connection, session_id: str, branch_ty
     return admitted_session_kind(row[0], branch_type=cast("str | None", branch_type)).value
 
 
-def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, seen: set[str]) -> None:
-    if session_id in seen:
-        return
-    seen.add(session_id)
-    parent_link = conn.execute(
+def _composing_parent_link(conn: sqlite3.Connection, session_id: str) -> tuple[object, object] | None:
+    """Return ``(resolved parent session id, link type)`` of the edge the projection composes."""
+    row = conn.execute(
         f"""
         SELECT resolved_dst_session_id, link_type
         FROM session_links
@@ -7834,6 +7874,14 @@ def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, se
         """,
         (session_id,),
     ).fetchone()
+    return (row[0], row[1]) if row is not None else None
+
+
+def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, seen: set[str]) -> None:
+    if session_id in seen:
+        return
+    seen.add(session_id)
+    parent_link = _composing_parent_link(conn, session_id)
     if parent_link is None:
         unresolved_link = conn.execute(
             """
