@@ -27,6 +27,7 @@ from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import (
     _json_subtree,
     _skip_json_subtree,
+    claude_ai_object_envelope,
     claude_design_object_envelope,
     generic_message_object_envelope,
     grok_export_item_count,
@@ -56,9 +57,11 @@ from polylogue.sources.parsers import (
 )
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.base_support import _unknown_wire_type
-from polylogue.sources.parsers.claude.ai_parser import parse_design_stream
+from polylogue.sources.parsers.claude.ai_parser import parse_ai_stream, parse_design_stream
 from polylogue.sources.prepared_message_sink import (
     ChatGPTNodeMapping,
+    ClaudeAttachmentScratch,
+    ClaudeChatEvidence,
     GeminiToolOutputIndex,
     SqliteAttachmentSink,
     SqliteMessageSink,
@@ -610,6 +613,7 @@ def prepare_jsonl_blob(
     classify_hermes_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
     classify_chatgpt_object: Callable[[dict[str, object]], bool] | None = None,
     classify_claude_design_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
+    classify_claude_ai_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
     classify_gemini_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
     attempt_directory: Path | None = None,
 ) -> PreparedJsonl:
@@ -636,6 +640,7 @@ def prepare_jsonl_blob(
         generic_envelope: dict[str, JSONValue] | None = None
         hermes_envelope: dict[str, JSONValue] | None = None
         design_envelope: dict[str, JSONValue] | None = None
+        claude_ai_envelope: dict[str, JSONValue] | None = None
         chatgpt_envelope: dict[str, object] | None = None
         chatgpt_mapping: ChatGPTNodeMapping | None = None
         gemini_envelope: dict[str, JSONValue] | None = None
@@ -756,6 +761,16 @@ def prepare_jsonl_blob(
         ):
             with source.open("rb") as handle:
                 design_envelope = claude_design_object_envelope(handle)
+        if (
+            not is_stream
+            and provider is Provider.CLAUDE_AI
+            and (prepare_sessions is None or classify_claude_ai_object is not None)
+            and (prepare_records is None or classify_claude_ai_object is not None)
+            and Path(source_path).name.lower().endswith(".json")
+            and stream_prefix is None
+        ):
+            with source.open("rb") as handle:
+                claude_ai_envelope = claude_ai_object_envelope(handle)
         if gemini_envelope is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
@@ -1083,6 +1098,77 @@ def prepare_jsonl_blob(
             store.conn.commit()
             shard_path = shard_builder.seal().path
             shard_builder = None
+        elif claude_ai_envelope is not None:
+            _create_artifact_tables(store.conn)
+            shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
+            claude_ai_admitted = True
+            if classify_claude_ai_object is not None:
+                with source.open("rb") as handle:
+                    sample = tuple(
+                        islice(
+                            (
+                                cast(JSONValue, normalize_ijson_stdlib_numbers(item))
+                                for item in ijson.items(handle, "chat_messages.item")
+                            ),
+                            64,
+                        )
+                    )
+                claude_ai_admitted = classify_claude_ai_object(claude_ai_envelope, sample)
+            session = None
+            if claude_ai_admitted:
+                evidence_store = ClaudeChatEvidence(store.conn)
+                attachment_rows = ClaudeAttachmentScratch(store.conn)
+                with source.open("rb") as handle:
+                    # The collecting route parses this document as a one-item
+                    # bundle, so its fallback identity carries that suffix.
+                    session = parse_ai_stream(
+                        claude_ai_envelope,
+                        (normalize_ijson_stdlib_numbers(item) for item in ijson.items(handle, "chat_messages.item")),
+                        f"{fallback_id}-0",
+                        evidence_store=evidence_store,
+                        messages=store.new_sink(),
+                        session_events=store.new_event_sink(),
+                        attachment_rows=attachment_rows,
+                        attachments=store.new_attachment_sink(),
+                    )
+                evidence_store.close()
+                attachment_rows.close()
+            session_count = 0
+            if session is not None and require_positive_conversational_evidence(
+                [session], provider=provider, source_path=source_path
+            ):
+                if prepare_sessions is not None:
+                    selected = prepare_sessions([session])
+                    if len(selected) > 1:
+                        raise ValueError("Claude AI object finalizer expanded one session")
+                    session = selected[0] if selected else None
+                elif prepare_session is not None:
+                    session = prepare_session(session)
+            else:
+                session = None
+            if session is not None:
+                session.content_hash = session_content_hash(session)
+                append_session_to_shard(shard_builder, session)
+                _append_artifact_session(store, session_count, session)
+                session_count += 1
+            for table, column in (
+                ("prepared_message", "message_ordinal"),
+                ("prepared_event", "event_ordinal"),
+                ("prepared_attachment", "attachment_ordinal"),
+            ):
+                store.conn.execute(
+                    f"DELETE FROM {table} WHERE session_ordinal NOT IN (SELECT {column} FROM prepared_session)"
+                )
+            after_hash = _source_digest(source)
+            if before_hash != after_hash:
+                raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
+            enrichment_digest, enrichment_index_path = (
+                preparation_dependency() if preparation_dependency is not None else (None, None)
+            )
+            _seal_artifact(store.conn, after_hash, session_count, enrichment_digest, enrichment_index_path)
+            store.conn.commit()
+            shard_path = shard_builder.seal().path
+            shard_builder = None
         elif grok_count is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
@@ -1279,6 +1365,7 @@ def prepare_jsonl_blob(
             or generic_envelope is not None
             or hermes_envelope is not None
             or design_envelope is not None
+            or claude_ai_envelope is not None
             or (grok_count is not None and classify_grok_export is not None)
             or (prepare_sessions is None and prepare_session is not None),
             attempt_directory=attempt_directory,

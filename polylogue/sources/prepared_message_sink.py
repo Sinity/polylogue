@@ -8,7 +8,7 @@ import os
 import re
 import sqlite3
 import uuid
-from collections.abc import Iterable, Iterator, Mapping, MutableSequence, Set
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableSequence, Set
 from contextlib import closing, contextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -28,6 +28,7 @@ from polylogue.sources.live.tool_result_sidecars import (
     SidecarMatch,
 )
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
+from polylogue.sources.parsers.claude.common import _ClaudeMessageEvidence
 from polylogue.sources.sidecar_evidence import RetainedSidecarScope
 
 _ACTIVE_PARENT_LOOKUP_SQL = (
@@ -65,12 +66,16 @@ def _attachment_json(value: ParsedAttachment) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _decode_attachment(encoded: str, path: Path, session_ordinal: int, attachment_ordinal: int) -> ParsedAttachment:
+def _attachment_from_json(encoded: str) -> ParsedAttachment:
     payload = json.loads(encoded)
     inline = payload.pop("_prepared_inline_bytes", None)
     if inline is not None:
         payload["inline_bytes"] = base64.b64decode(inline, validate=True)
-    return ParsedAttachment.model_validate(payload).model_copy(
+    return ParsedAttachment.model_validate(payload)
+
+
+def _decode_attachment(encoded: str, path: Path, session_ordinal: int, attachment_ordinal: int) -> ParsedAttachment:
+    return _attachment_from_json(encoded).model_copy(
         update={"prepared_carrier_key": (str(path), session_ordinal, attachment_ordinal)}
     )
 
@@ -411,15 +416,18 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
                     message = self[ordinal]
                     self[ordinal] = message.model_copy(update={"is_active_leaf": expected})
             return self
-        leaf = self._writer.execute(
-            "SELECT provider_id FROM prepared_message WHERE session_ordinal = ? AND active_leaf = 1",
+        leaf, leaf_parent = self._writer.execute(
+            "SELECT provider_id, parent_id FROM prepared_message WHERE session_ordinal = ? AND active_leaf = 1",
             (self.session_ordinal,),
-        ).fetchone()[0]
+        ).fetchone()
         if not leaf:
             return self
         self._writer.execute("DROP TABLE IF EXISTS temp.prepared_active_path")
         self._writer.execute("CREATE TEMP TABLE prepared_active_path (provider_id TEXT PRIMARY KEY)")
-        cursor: str | None = leaf
+        # The walk starts at the leaf row itself: a later message repeating
+        # the leaf's provider id may name a different parent.
+        self._writer.execute("INSERT INTO prepared_active_path VALUES (?)", (leaf,))
+        cursor: str | None = leaf_parent
         while cursor:
             result = self._writer.execute("INSERT OR IGNORE INTO prepared_active_path VALUES (?)", (cursor,))
             if result.rowcount == 0:
@@ -831,6 +839,91 @@ class SqliteMessageStore:
 
     def close(self) -> None:
         self.conn.close()
+
+
+class ClaudeChatEvidence:
+    """Claude chat records in scratch, rebuilt into evidence when emitted.
+
+    Only the raw record is stored: its evidence is a pure function of the
+    record, its array index and its evidence key.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        conn.execute("CREATE TABLE claude_evidence (original_index INTEGER PRIMARY KEY, raw_json TEXT NOT NULL)")
+
+    def put(self, evidence: _ClaudeMessageEvidence) -> None:
+        self._conn.execute(
+            "INSERT INTO claude_evidence VALUES (?, ?)", (evidence.original_index, json.dumps(dict(evidence.raw)))
+        )
+
+    def raw(self, original_index: int) -> dict[str, object]:
+        row = self._conn.execute(
+            "SELECT raw_json FROM claude_evidence WHERE original_index = ?", (original_index,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(original_index)
+        raw = json.loads(row[0])
+        assert isinstance(raw, dict)
+        return raw
+
+    def get(
+        self,
+        original_index: int,
+        rebuild: Callable[[dict[str, object]], _ClaudeMessageEvidence],
+    ) -> _ClaudeMessageEvidence:
+        return rebuild(self.raw(original_index))
+
+    def close(self) -> None:
+        self._conn.execute("DROP TABLE claude_evidence")
+
+
+class ClaudeAttachmentScratch:
+    """Merged Claude attachment rows in scratch, in first-seen order."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        conn.execute(
+            "CREATE TABLE claude_attachment (ordinal INTEGER PRIMARY KEY, attachment_id TEXT NOT NULL UNIQUE, "
+            "name TEXT, mime_type TEXT, attachment_json TEXT NOT NULL)"
+        )
+        conn.execute("CREATE INDEX claude_attachment_descriptor ON claude_attachment(name, mime_type)")
+
+    def get(self, provider_attachment_id: str) -> ParsedAttachment | None:
+        row = self._conn.execute(
+            "SELECT attachment_json FROM claude_attachment WHERE attachment_id = ?", (provider_attachment_id,)
+        ).fetchone()
+        return _attachment_from_json(row[0]) if row is not None else None
+
+    def put(self, attachment: ParsedAttachment) -> None:
+        self._conn.execute(
+            "INSERT INTO claude_attachment (attachment_id, name, mime_type, attachment_json) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(attachment_id) DO UPDATE SET name = excluded.name, mime_type = excluded.mime_type, "
+            "attachment_json = excluded.attachment_json",
+            (attachment.provider_attachment_id, attachment.name, attachment.mime_type, _attachment_json(attachment)),
+        )
+
+    def unique_by_descriptor(self, name: str, mime_type: str | None) -> ParsedAttachment | None:
+        rows = self._conn.execute(
+            "SELECT attachment_json FROM claude_attachment WHERE name = ? AND mime_type IS ? LIMIT 2",
+            (name, mime_type),
+        ).fetchall()
+        return _attachment_from_json(rows[0][0]) if len(rows) == 1 else None
+
+    def __iter__(self) -> Iterator[ParsedAttachment]:
+        last = -1
+        while True:
+            row = self._conn.execute(
+                "SELECT ordinal, attachment_json FROM claude_attachment WHERE ordinal > ? ORDER BY ordinal LIMIT 1",
+                (last,),
+            ).fetchone()
+            if row is None:
+                return
+            last = row[0]
+            yield _attachment_from_json(row[1])
+
+    def close(self) -> None:
+        self._conn.execute("DROP TABLE claude_attachment")
 
 
 class ChatGPTNodeMapping(Mapping[str, object]):

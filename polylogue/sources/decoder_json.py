@@ -568,6 +568,102 @@ def _future_wire_type(value: object) -> str | None:
     return None
 
 
+class _FirstFutureType:
+    """Select a document's future wire type in ``_unknown_wire_type`` order.
+
+    Parser admission records the first such type of one outer record. This
+    follows the same traversal over parse events, after the root map opens.
+    """
+
+    _TYPE_KEYS = frozenset({"type", "content_type", "kind", "record_type"})
+
+    def __init__(self) -> None:
+        self._frames = [_FutureTypeFrame("map")]
+        self.value: str | None = None
+
+    def observe(self, event: str, value: object) -> None:
+        frame = self._frames[-1] if self._frames else None
+        if frame is None:
+            return
+        if event == "map_key":
+            frame.key = str(value)
+        elif event in {"start_map", "start_array"}:
+            if frame.kind == "map" and frame.key in self._TYPE_KEYS:
+                frame.own_types[frame.key or ""] = None
+            self._frames.append(_FutureTypeFrame("map" if event == "start_map" else "array"))
+        elif event in {"end_map", "end_array"}:
+            selected = self._frames.pop().selected()
+            if self._frames:
+                if selected is not None and self._frames[-1].first_child is None:
+                    self._frames[-1].first_child = selected
+            else:
+                self.value = selected
+        elif frame.kind == "map" and frame.key in self._TYPE_KEYS:
+            frame.own_types[frame.key or ""] = _future_wire_type(value) if event == "string" else None
+
+
+def claude_ai_object_envelope(handle: JsonReadable) -> dict[str, JsonValue] | None:
+    """Prove one claude.ai conversation and keep every root field but its messages.
+
+    Shapes the object parser routes elsewhere (account memories, projects,
+    browser captures, ``sessions`` wrappers) and future wire types anywhere
+    in the document stay on that route, so its admission accounting remains
+    authoritative. The event pass also validates the complete JSON.
+    """
+    rerouted_root_keys = {"sessions", "account_uuid", "docs", "polylogue_capture_kind"}
+    envelope: dict[str, JsonValue] = {}
+    chat_messages_arrays = 0
+    pending_key: str | None = None
+    builder: ijson.common.ObjectBuilder | None = None
+    builder_key = ""
+    depth = 0
+    future_type = _FirstFutureType()
+    try:
+        events = ijson.parse(handle)
+        if next(events, None) != ("", "start_map", None):
+            return None
+        for prefix, event, value in events:
+            future_type.observe(event, value)
+            if builder is not None:
+                builder.event(event, value)
+                if event in {"start_map", "start_array"}:
+                    depth += 1
+                elif event in {"end_map", "end_array"}:
+                    depth -= 1
+                if depth == 0:
+                    envelope[builder_key] = cast(JsonValue, normalize_ijson_stdlib_numbers(builder.value))
+                    builder = None
+                continue
+            if pending_key is not None:
+                key, pending_key = pending_key, None
+                if key == "chat_messages":
+                    if event != "start_array":
+                        return None
+                elif event in {"start_map", "start_array"}:
+                    builder = ijson.common.ObjectBuilder()
+                    builder.event(event, value)
+                    builder_key = key
+                    depth = 1
+                else:
+                    envelope[key] = cast(JsonValue, normalize_ijson_stdlib_numbers(value))
+                continue
+            if prefix == "" and event == "map_key":
+                pending_key = str(value)
+                if pending_key in rerouted_root_keys:
+                    return None
+                if pending_key == "chat_messages":
+                    chat_messages_arrays += 1
+    except ijson.common.JSONError:
+        return None
+    finally:
+        handle.seek(0)
+    if chat_messages_arrays != 1:
+        return None
+    if future_type.value is not None:
+        envelope["__admission_future_type"] = future_type.value
+    return envelope
+
+
 def hermes_snapshot_envelope(handle: JsonReadable) -> dict[str, JsonValue] | None:
     """Validate a Hermes snapshot while leaving its messages outside the envelope.
 
