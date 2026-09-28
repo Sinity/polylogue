@@ -130,6 +130,30 @@ def _blob_store(tmp_path: Path) -> BlobStore:
     return BlobStore(tmp_path / "blob")
 
 
+def test_the_logical_export_is_staged_once_on_the_blob_filesystem(tmp_path: Path) -> None:
+    """Anti-vacuity: exporting to a work file and publishing it through
+    ``write_from_path`` stages a second full-size copy beside the first, so
+    two staged files exist when the blob is published.
+    """
+    source = tmp_path / "state_5.sqlite"
+    _write_thread_state_db(source, threads=3)
+    store = _blob_store(tmp_path)
+    staged_at_publication: list[list[str]] = []
+    publish = store.publish_prepared
+
+    def observed_publish(prepared: Any) -> tuple[str, int]:
+        staged_at_publication.append(sorted(entry.name for entry in store.staging_root.iterdir()))
+        return publish(prepared)
+
+    store.publish_prepared = observed_publish  # type: ignore[method-assign]
+    snapshot = snapshot_sqlite_to_blob(source, store)
+
+    assert len(staged_at_publication) == 1
+    assert len(staged_at_publication[0]) == 1
+    assert store.exists(snapshot.blob_hash)
+    assert list(store.staging_root.iterdir()) == []
+
+
 # ---------------------------------------------------------------------------
 # Identity: logical content, never page bytes
 # ---------------------------------------------------------------------------
