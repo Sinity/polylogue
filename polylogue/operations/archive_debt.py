@@ -280,7 +280,9 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
         for row in candidate_rows:
             category: str
             can_reconcile_alias = not row["parse_error"] or _retryable_decode_missing_blob_error(row["parse_error"])
-            if can_reconcile_alias and (
+            if row["revision_quarantined"]:
+                category = "revision-authority-quarantined"
+            elif can_reconcile_alias and (
                 _raw_materialized_by_native_id(conn, row) or _raw_materialized_by_source_path_native(conn, row)
             ):
                 # An alias only reconciles the row when this artifact's own
@@ -785,12 +787,12 @@ def _raw_materialization_debt_row(
         actions = (
             ArchiveDebtActionPayload(
                 label="Inspect the raw-authority frontier",
-                command=("polylogue", "maintenance", "raw-authority-frontier"),
+                command=("polylogue", "ops", "maintenance", "raw-authority-frontier"),
                 description="Read the durable authority census for these raws; refinement is what unblocks replay.",
             ),
             ArchiveDebtActionPayload(
                 label="List unresolved raw-authority blockers",
-                command=("polylogue", "maintenance", "raw-authority-blockers"),
+                command=("polylogue", "ops", "maintenance", "raw-authority-blockers"),
             ),
         )
     elif category == "materialized-alias":

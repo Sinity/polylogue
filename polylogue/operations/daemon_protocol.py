@@ -27,6 +27,7 @@ from polylogue.operations.read_contracts import (
     SessionReferenceRequest,
     SessionReferenceResult,
 )
+from polylogue.operations.topology_envelope import MAX_NODE_LIMIT
 
 DAEMON_OPERATION_PROTOCOL = "polylogue.daemon-operation/v1"
 MAX_OPERATION_BODY_BYTES = 64 * 1024
@@ -110,7 +111,7 @@ class LineageReadRequest(_OperationPayload):
 class TopologyReadRequest(_OperationPayload):
     session_id: str = Field(min_length=1)
     node_offset: int = Field(default=0, ge=0)
-    node_limit: int = Field(default=200, ge=1)
+    node_limit: int = Field(default=200, ge=1, le=MAX_NODE_LIMIT)
     edge_limit: int = Field(default=500, ge=1)
 
 
@@ -794,7 +795,7 @@ class ResetRequest(_OperationPayload):
 
 
 class BlobPublicationsAbandonRequest(_OperationPayload):
-    publication_ids: list[str] = Field(min_length=1, max_length=10_000)
+    publication_ids: list[str] = Field(min_length=1, max_length=256)
 
 
 class DemoAugmentRequest(_OperationPayload):
@@ -2254,7 +2255,9 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonFallback.NEVER,
         capability="archive.capture_assertion_candidate",
         deadline_s=120.0,
-        max_body_bytes=1024 * 1024,
+        # 256 KiB of stdin can expand to six JSON bytes per control character
+        # when ensure_ascii escaping is applied by the daemon client.
+        max_body_bytes=2 * 1024 * 1024,
         request_contract="mutation.assertion.candidate.capture.request/v1",
         result_contract="mutation.result/v1",
         request_type="AssertionCandidateCaptureRequest",
@@ -2285,13 +2288,14 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonFallback.NEVER,
         capability="archive.import_annotation_batch",
         deadline_s=120.0,
-        max_body_bytes=MAX_ANNOTATION_IMPORT_BYTES + 64 * 1024,
+        max_body_bytes=MAX_ANNOTATION_IMPORT_BYTES * 6 + 64 * 1024,
         request_contract="mutation.annotation.import_batch.request/v1",
         result_contract="mutation.result/v1",
         request_type="AnnotationBatchImportOperationRequest",
         result_type="MutationResult",
         request_model=AnnotationBatchImportOperationRequest,
         result_model=MutationResult,
+        idempotent=True,
         handler="mutation_annotation_import_batch",
     ),
     DaemonOperationSpec(
