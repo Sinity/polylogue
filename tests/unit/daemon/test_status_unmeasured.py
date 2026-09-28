@@ -52,7 +52,15 @@ def _patch_healthy_collectors(
         available=True,
         raw_authority_parser_census={"available": True},
     )
-    frontier = status_module.RawFrontierIntegrity(available=True, overall_status="healthy")
+    # Every check proven healthy: an ``overall_status`` alone over unknown
+    # sub-checks is not a proof and refutes the ``ok`` verdict.
+    frontier = status_module.RawFrontierIntegrity(
+        available=True,
+        overall_status="healthy",
+        broken_head_status="healthy",
+        missing_source_raw_status="healthy",
+        cursor_ahead_status="healthy",
+    )
 
     monkeypatch.setattr(status_module, "_db_size_info", lambda: {})
     monkeypatch.setattr(status_module, "_blob_size_info", lambda: 0)
