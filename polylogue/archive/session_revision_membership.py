@@ -658,10 +658,37 @@ def classify_membership_revisions(
     dom_authority = _dom_authority_when_native_is_unordered(representatives)
     if dom_authority is not None:
         accepted, ambiguous = dom_authority
+        ambiguous_ids = {item.raw_id for item in ambiguous}
+        if existing_accepted_raw_id == accepted.raw_id:
+            ambiguous_ids.add(accepted.raw_id)
+            accepted_ids: tuple[str, ...] = ()
+        else:
+            accepted_ids = (accepted.raw_id,)
+        equivalent_by_owner: dict[str, list[str]] = {}
+        revision_by_id = {item.raw_id: item for item in revisions}
+        for equivalent_id in equivalents:
+            equivalent = revision_by_id[equivalent_id]
+            owner = next(
+                (
+                    item.raw_id
+                    for item in representatives
+                    if _relation(item.projection, equivalent.projection) == "equal"
+                ),
+                None,
+            )
+            if owner is not None:
+                equivalent_by_owner.setdefault(owner, []).append(equivalent_id)
+        for owner in tuple(ambiguous_ids):
+            ambiguous_ids.update(equivalent_by_owner.get(owner, ()))
+        accepted_equivalents = equivalent_by_owner.get(accepted.raw_id, []) if accepted_ids else []
+        accounted_equivalents = set(accepted_equivalents) | (ambiguous_ids & set(equivalents))
+        unassigned_equivalents = set(equivalents) - accounted_equivalents
+        if existing_accepted_raw_id == accepted.raw_id:
+            return MembershipClassification((), (), tuple(sorted(ambiguous_ids | unassigned_equivalents)))
         return MembershipClassification(
-            (accepted.raw_id,),
-            tuple(sorted(equivalents)),
-            tuple(sorted(item.raw_id for item in ambiguous)),
+            accepted_ids,
+            tuple(sorted((*accepted_equivalents, *unassigned_equivalents))),
+            tuple(sorted(ambiguous_ids)),
         )
     direct_export = _direct_export_precedence(representatives)
     if direct_export is not None:

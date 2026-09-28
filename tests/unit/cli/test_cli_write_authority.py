@@ -322,3 +322,49 @@ def test_revalidation_leaves_an_unowned_archive_writable(
         connection.close()
 
     assert (root / "index.db").exists()
+
+
+def test_offline_writer_holds_daemon_exclusion_after_first_writable_open(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A daemon cannot acquire ownership while this offline writer is active.
+
+    Anti-vacuity: probe only at each open without retaining the shared pidfile
+    lock, then this subprocess acquires LOCK_EX while the writable connection
+    is still live.
+    """
+    import sqlite3
+
+    root = _archive_root(monkeypatch, tmp_path)
+    with cli_archive_writer_ownership():
+        connection = sqlite3.connect(str(root / "index.db"))
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import fcntl, os, sys; fd=os.open(sys.argv[1], os.O_RDWR); "
+                    "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)",
+                    str(root / "daemon.pid"),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        finally:
+            connection.close()
+    assert result.returncode != 0
+
+
+def test_bound_write_lease_rejects_a_missing_archive_identity(tmp_path: Path) -> None:
+    """Every write under an archive-bound lease must name its archive.
+
+    Anti-vacuity: leave ``archive_root`` optional in ``require_write_lease``
+    and a caller can authorize a write to an unrelated archive by omitting it.
+    """
+    from polylogue.storage.sqlite.write_lease import arm_write_lease_enforcement, require_write_lease, write_lease
+
+    with arm_write_lease_enforcement(), write_lease("bound", archive_root=tmp_path):
+        with pytest.raises(UnleasedWriteError, match="omitted archive identity"):
+            require_write_lease("misrouted archive writer")

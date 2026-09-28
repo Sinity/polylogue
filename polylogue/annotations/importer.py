@@ -181,7 +181,7 @@ def _persist_annotation_batch(
 ) -> tuple[AnnotationImportRowOutcome, ...]:
     """Apply the complete user-tier batch write under one SQLite transaction."""
 
-    conn = open_connection(args.user_db_path)
+    conn = open_connection(args.user_db_path, archive_root=args.user_db_path.parent)
     conn.row_factory = sqlite3.Row
     imported_outcomes: list[AnnotationImportRowOutcome] = []
     try:

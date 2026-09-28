@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -70,29 +71,39 @@ _UNMEASURED_WORKLOAD_DIMENSIONS = (
 
 
 def _slo_workload_receipt(
-    *, catalog_text: str, active_tiers: frozenset[str] | None, wall_ms: float, blocking: bool
+    *, catalog_text: str, active_tiers: frozenset[str] | None, wall_ms: float | None, blocking: bool
 ) -> JSONDocument:
     """Adapt the SLO benchmark run into the shared workload receipt contract."""
     catalog_digest = hashlib.sha256(catalog_text.encode("utf-8")).hexdigest()
     tiers = ",".join(sorted(active_tiers)) if active_tiers is not None else "all"
+    try:
+        build = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True, timeout=2
+        )
+        build_id = f"git:{build.stdout.strip()}"
+    except (OSError, subprocess.SubprocessError):
+        build_id = None
+    phases = (
+        ()
+        if wall_ms is None
+        else (WorkloadPhaseObservation(name="benchmark", wall_ms=wall_ms, unavailable=_UNMEASURED_WORKLOAD_DIMENSIONS),)
+    )
     receipt = WorkloadReceipt.from_observations(
         spec=WorkloadEnvelopeSpec(
             workload_id=f"devtools:verify-slos:{tiers}",
             family_id="verification-slo",
             version=1,
             inputs=(WorkloadInputRef(input_id=f"slo-catalog:sha256:{catalog_digest}"),),
-            phases=("benchmark",),
+            phases=("benchmark",) if wall_ms is not None else (),
             measurement_scope=MeasurementScope.PROCESS_TREE,
         ),
         status=WorkloadRunStatus.FAILED if blocking else WorkloadRunStatus.SUCCEEDED,
-        build_id=None,
+        build_id=build_id,
         runtime_id=f"python:{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         archive_id=None,
         generation_id=None,
         frame_id=None,
-        phases=(
-            WorkloadPhaseObservation(name="benchmark", wall_ms=wall_ms, unavailable=_UNMEASURED_WORKLOAD_DIMENSIONS),
-        ),
+        phases=phases,
         notes=("SLO adapter records benchmark wall time only; resource dimensions are explicitly unavailable.",),
     )
     return receipt.to_payload()
@@ -384,7 +395,7 @@ def main(argv: list[str] | None = None) -> int:
         except BenchmarkRunUnavailableError as exc:
             benchmark_error = str(exc)
             benchmark_outcome = "unavailable"
-    benchmark_wall_ms = (time.monotonic() - benchmark_started) * 1_000
+    benchmark_wall_ms = (time.monotonic() - benchmark_started) * 1_000 if not args.skip_benchmarks else None
 
     # 4. Check each surface against its SLO
     catalog_errors: list[str] = []
@@ -436,11 +447,16 @@ def main(argv: list[str] | None = None) -> int:
         if stats is None:
             # A run that never happened is not the same fact as a surface with
             # no benchmark: only the second is "missing".
-            reason = (
-                "the benchmark run did not execute"
-                if benchmark_error is not None
-                else "no benchmark result for this test"
-            )
+            if benchmark_outcome == "failed":
+                reason = (
+                    "the benchmark run failed; emitted measurements were retained but not scored"
+                    if "measurement JSON was retained as diagnostics" in (benchmark_error or "")
+                    else "the benchmark run failed before valid measurements were available"
+                )
+            elif benchmark_error is not None:
+                reason = "the benchmark run did not execute"
+            else:
+                reason = "no benchmark result for this test"
             missing_result: dict[str, object] = {
                 "surface": surface_name,
                 "gate": gate,
@@ -518,6 +534,8 @@ def main(argv: list[str] | None = None) -> int:
         if benchmark_error is not None:
             if benchmark_outcome == "failed":
                 print(f"BENCHMARK RUN FAILED (exit {benchmark_returncode}):")
+                if "measurement JSON was retained as diagnostics" in benchmark_error:
+                    print("The run produced measurements, retained as diagnostics, but they were not scored.")
             else:
                 print("BENCHMARKS DID NOT RUN:")
             for line in benchmark_error.splitlines():
@@ -577,6 +595,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if active_tiers is not None:
             print(f"active_tiers={sorted(active_tiers)}")
+        print("workload_receipt=" + json.dumps(workload_receipt, sort_keys=True))
         print(f"blocking={blocking}")
 
     return 1 if blocking else 0

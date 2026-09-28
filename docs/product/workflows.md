@@ -44,7 +44,7 @@ separate prevents a session annotation from becoming model-claim authority.
 ## Executable evidence
 
 The examples above are backed by demo-archive golden paths in
-`polylogue/product/workflows.py`. They execute the real Click commands against
+`devtools/product_workflows.py`. They execute the real Click commands against
 a seeded archive and validate human and JSON results in
 `tests/unit/product/test_query_action_workflows.py`. The runtime action metadata
 served to CLI, daemon, MCP, and browser clients comes from

@@ -21,7 +21,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from polylogue.context.preamble import _git_project_state, build_context_preamble_payload
-from polylogue.context.scheduler import read_context_ledger
 from polylogue.core.refs import ExecutionContextRef
 from polylogue.markers import parse_markers
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -98,6 +97,8 @@ class TestGitProjectStateRealRepo:
         poly.compact_lineage = AsyncMock(return_value=None)
         poly.find_resume_candidates = AsyncMock(return_value=[])
         poly.list_assertion_claim_payloads = AsyncMock(return_value=[])
+        poly.record_context_ledger = AsyncMock()
+        poly.record_context_ledger = AsyncMock()
 
         preamble = await build_context_preamble_payload(
             poly,
@@ -220,10 +221,9 @@ class TestBuildContextPreambleGitEnrichment:
         )
 
         assert preamble is not None
-        with sqlite3.connect(tmp_path / "archive" / "ops.db") as conn:
-            records = read_context_ledger(conn, target_session="seed")
-        assert len(records) == 1
-        assert records[0].row.source == "context-precompact"
+        poly.record_context_ledger.assert_awaited_once()
+        assembly = poly.record_context_ledger.await_args.args[0]
+        assert assembly.ledger[0].source == "context-precompact"
         execution_context = cast(ExecutionContextRef, captured["execution_context"])
         assert execution_context.known_fields == (
             "boundary",

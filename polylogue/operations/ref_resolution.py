@@ -981,6 +981,51 @@ def _resolve_runtime_object_ref(
 ) -> PublicRefResolutionPayload:
     from polylogue.surfaces.payloads import PublicRefResolutionPayload
 
+    if object_ref.kind == "context-snapshot":
+        from polylogue.archive.query.predicate import QueryFieldPredicate, QueryFieldRef
+
+        predicate = QueryFieldPredicate(
+            field="boundary",
+            values=("compaction",),
+            field_ref=QueryFieldRef(scope="unit", name="boundary", source_name="boundary", unit="context-snapshot"),
+        )
+        offset = 0
+        while True:
+            rows = archive.query_context_snapshots(predicate, limit=200, offset=offset)
+            for row in rows:
+                snapshot = row.snapshot
+                if snapshot.snapshot_ref.format() != normalized_ref:
+                    continue
+                from polylogue.surfaces.payloads import ContextSnapshotQueryRowPayload, model_json_document
+
+                payload = ContextSnapshotQueryRowPayload(
+                    snapshot_ref=snapshot.snapshot_ref.format(),
+                    session_id=row.session_id,
+                    origin=row.origin,
+                    title=row.title or row.session_id,
+                    run_ref=snapshot.run_ref.format(),
+                    boundary=snapshot.boundary,
+                    inheritance_mode=snapshot.inheritance_mode,
+                    segment_refs=tuple(item.format() for item in snapshot.segment_refs),
+                    evidence_refs=tuple(item.format() for item in snapshot.evidence_refs),
+                    metadata=dict(snapshot.metadata),
+                )
+                return PublicRefResolutionPayload(
+                    ref=ref,
+                    normalized_ref=normalized_ref,
+                    kind="context-snapshot",
+                    resolved=True,
+                    payload_kind="context-snapshot",
+                    payload=model_json_document(payload),
+                    title=row.title or row.session_id,
+                    summary=f"{payload.boundary} ({payload.inheritance_mode})",
+                    object_refs=(f"session:{row.session_id}", normalized_ref, payload.run_ref, *payload.segment_refs),
+                    evidence_refs=payload.evidence_refs,
+                )
+            if len(rows) < 200:
+                break
+            offset += len(rows)
+
     summary_offset = 0
     while True:
         summaries = archive.list_summaries(limit=200, offset=summary_offset)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -24,6 +25,9 @@ from polylogue.storage.sqlite.write_lease import UnleasedWriteError, arm_write_l
 
 
 def _seed_delegation(archive_root: Path) -> None:
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    bootstrap_archive_root(archive_root)
     initialize_archive_database(archive_root / "index.db", ArchiveTier.INDEX)
     with sqlite3.connect(archive_root / "index.db") as conn:
         conn.execute("PRAGMA foreign_keys = ON")
@@ -146,11 +150,40 @@ def test_materializer_replaces_archive_projection_and_tracks_delegation_freshnes
         )
 
 
+def test_materializer_pins_digest_and_rows_to_the_same_index_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The published graph label and queried rows share one operation snapshot.
+
+    Anti-vacuity: separate freshness/read connections produce distinct SQLite
+    connection identities, so this fails if either read leaves the pinned
+    operation connection.
+    """
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    _seed_delegation(tmp_path)
+    connections: list[sqlite3.Connection] = []
+    snapshot = materializer._snapshot_connection
+    query = ArchiveStore.query_delegations
+
+    def record_snapshot(conn: sqlite3.Connection) -> object:
+        connections.append(conn)
+        return snapshot(conn)
+
+    def record_query(archive: ArchiveStore, *args: object, **kwargs: object) -> object:
+        connections.append(archive._conn)
+        return query(archive, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(materializer, "_snapshot_connection", record_snapshot)
+    monkeypatch.setattr(ArchiveStore, "query_delegations", record_query)
+
+    assert materialize_delegation_work_evidence_archive(tmp_path) == 1
+    assert len(connections) == 2
+    assert connections[0] is connections[1]
+
+
 def test_delegation_stage_reads_without_daemon_writer_lease(tmp_path: Path) -> None:
     """The freshness probe and materialization read run outside writer admission."""
-    from tests.infra.archive_templates import bootstrap_archive_root
-
-    bootstrap_archive_root(tmp_path)
     _seed_delegation(tmp_path)
     stage = make_delegation_work_evidence_stage(tmp_path / "index.db")
 
@@ -167,18 +200,18 @@ def test_delegation_stage_reads_without_daemon_writer_lease(tmp_path: Path) -> N
             assert stage.check(tmp_path / "source.jsonl") is False
 
 
-def test_stage_uses_archive_root_after_index_generation_promotion(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("conventional_path", ["missing", "stale-shadow"])
+def test_stage_uses_active_index_generation_after_promotion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, conventional_path: str
 ) -> None:
-    """The promoted index lives below the archive's durable source tier."""
-    from tests.infra.archive_templates import bootstrap_archive_root
-
-    bootstrap_archive_root(tmp_path)
+    """The active pointer wins when the conventional index is missing or stale."""
     _seed_delegation(tmp_path)
     generation = tmp_path / ".index-generations" / "promoted"
     generation.mkdir(parents=True)
-    (tmp_path / "index.db").rename(generation / "index.db")
-    (tmp_path / "index.db").symlink_to(generation / "index.db")
+    if conventional_path == "missing":
+        (tmp_path / "index.db").rename(generation / "index.db")
+    else:
+        shutil.copy2(tmp_path / "index.db", generation / "index.db")
     (tmp_path / ".index-active-pointer").write_text(str(generation / "index.db"), encoding="utf-8")
 
     real_needed = materializer.delegation_work_evidence_materialization_needed
@@ -200,6 +233,10 @@ def test_stage_uses_archive_root_after_index_generation_promotion(
     assert stage.check(subject) is True
     assert stage.execute(subject) is True
     assert delegation_work_evidence_materialization_needed(tmp_path) is False
+
+    if conventional_path == "stale-shadow":
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM work_evidence_graphs").fetchone()[0] == 0
     with sqlite3.connect(generation / "index.db") as conn:
         assert (
             conn.execute(

@@ -61,7 +61,7 @@ def blob_gc_command(max_batch: int, output_format: str) -> None:
         dry_run=True,
     )
     payload = {
-        "ok": True,
+        "ok": result.blocked_reason is None,
         "mode": "blob_gc",
         "mutates": False,
         **result.to_dict(),
@@ -69,6 +69,8 @@ def blob_gc_command(max_batch: int, output_format: str) -> None:
 
     if output_format == "json":
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        if result.blocked_reason is not None:
+            raise SystemExit(1)
         return
 
     click.echo("Blob GC dry-run (inspect, read-only)")
@@ -79,7 +81,7 @@ def blob_gc_command(max_batch: int, output_format: str) -> None:
         # refuses to delete any -- say why, rather than let it read as
         # "nothing to reclaim".
         click.echo(f"Blocked:    {result.blocked_reason}")
-        return
+        raise SystemExit(1)
     click.echo(f"Candidates: {result.candidate_count:,}")
     click.echo(f"Inspected:  {result.inspected_count:,}")
     click.echo(f"Result:     would delete {result.would_delete_count:,} blob(s)")

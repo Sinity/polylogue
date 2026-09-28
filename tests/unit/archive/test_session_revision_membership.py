@@ -1185,6 +1185,38 @@ def test_direct_export_survives_equal_frontier_dom_native_conflict() -> None:
     assert "raw-direct" in set(result.accepted_raw_ids + result.equivalent_raw_ids + result.ambiguous_raw_ids)
 
 
+def test_existing_dom_head_is_not_reaccepted_against_stale_native() -> None:
+    """Keep an established DOM head out of membership writeback.
+
+    Anti-vacuity: remove the existing-head guard in ``classify_membership_revisions``;
+    the DOM raw returns in ``accepted_raw_ids`` and can downgrade byte authority.
+    """
+    dom = _browser_revision("raw-dom", "dom snapshot", "2026-01-02T00:00:00Z", "dom")
+    native = _browser_revision("raw-native", "native snapshot", "2026-01-01T00:00:00Z", "native")
+
+    result = classify_membership_revisions([dom, native], existing_accepted_raw_id="raw-dom")
+
+    assert result.accepted_raw_ids == ()
+    assert result.ambiguous_raw_ids == ("raw-dom", "raw-native")
+
+
+def test_native_equivalent_follows_ambiguous_representative() -> None:
+    """An identical duplicate of a quarantined native capture is quarantined too.
+
+    Anti-vacuity: classify all collapsed equivalents as equivalent to the DOM
+    and ``raw-native-duplicate`` leaves ambiguity despite its twin being held.
+    """
+    dom = _browser_revision("raw-dom", "dom snapshot", "2026-01-02T00:00:00Z", "dom")
+    native = _browser_revision("raw-native", "native snapshot", "2026-01-01T00:00:00Z", "native")
+    duplicate = _browser_revision("raw-native-duplicate", "native snapshot", "2026-01-01T00:00:00Z", "native")
+
+    result = classify_membership_revisions([dom, native, duplicate])
+
+    assert result.accepted_raw_ids == ("raw-dom",)
+    assert result.ambiguous_raw_ids == ("raw-native", "raw-native-duplicate")
+    assert result.equivalent_raw_ids == ()
+
+
 def test_equal_content_collapse_prefers_direct_export_over_browser_capture() -> None:
     """Equal content is not equal authority: a direct export must survive over
     a browser capture that happens to project to identical content, even

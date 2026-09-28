@@ -12,6 +12,8 @@ from __future__ import annotations
 import ast
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock, patch
 
 import click
@@ -31,6 +33,12 @@ from polylogue.operations.daemon_protocol import (
     DaemonFallback,
     daemon_operation_spec,
 )
+from polylogue.operations.mutation_transaction import ConfirmationRequiredError
+
+if TYPE_CHECKING:
+    from polylogue.operations.audit import AuditRepository
+    from polylogue.operations.daemon_protocol import DaemonOperationRequest
+    from polylogue.operations.operation_context import OperationContext, PinnedOperationRead
 
 
 def _env(*, plain: bool = True) -> MagicMock:
@@ -68,6 +76,32 @@ class TestDeclaredMutationAuthority:
         with pytest.raises(OperationUnavailableError):
             OperationKernel(lambda _request: None).execute(OperationRequest(operation, {}))
         assert executed is False
+
+    def test_daemon_executor_requires_request_confirmation_before_authorizing(self) -> None:
+        """A direct destructive request cannot mint its own bound confirmation.
+
+        Anti-vacuity: removing the daemon-side confirmation check lets this
+        request reach ``authorize_bound`` with ``bound_token`` strength.
+        """
+        from polylogue.operations import daemon_mutations
+
+        context = SimpleNamespace(runtime=object(), archive_root=Path("/archive"), principal=object())
+        binding = SimpleNamespace(actuator=SimpleNamespace(required_confirmation="confirm_flag"))
+        request = SimpleNamespace(payload={"publication_ids": ["reservation:1"]}, operation="maintenance.reset")
+        with (
+            patch.object(daemon_mutations, "runtime_operation_binding", return_value=binding),
+            patch.object(daemon_mutations, "OperationExecutor") as executor,
+        ):
+            with pytest.raises(ConfirmationRequiredError, match="explicit confirmation"):
+                daemon_mutations._execute_named_mutation(
+                    cast("DaemonOperationRequest", request),
+                    cast("OperationContext", context),
+                    cast("AuditRepository", object()),
+                    cast("PinnedOperationRead", object()),
+                    object(),
+                    object(),
+                )
+        executor.assert_not_called()
 
 
 class TestDeleteChokePoint:

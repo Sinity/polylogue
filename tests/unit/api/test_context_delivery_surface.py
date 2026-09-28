@@ -14,7 +14,10 @@ end-to-end against a real archive.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -28,6 +31,20 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.live_ingest import write_index_session
+
+
+@pytest.fixture
+def facade_daemon_writer(monkeypatch: pytest.MonkeyPatch) -> Callable[[Path], AbstractContextManager[object]]:
+    """Run context writes through the production daemon operation route."""
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from tests.infra.daemon_operations import running_daemon_operations
+
+    monkeypatch.setattr("polylogue.daemon.api_auth.resolve_api_auth_token", lambda *_args, **_kwargs: None)
+
+    def start(archive_root: Path) -> AbstractContextManager[object]:
+        return running_daemon_operations(archive_root, socket_path=daemon_socket_path(archive_root))
+
+    return start
 
 
 def _seed(archive_root: Path, *, provider_session_id: str, text: str) -> None:
@@ -52,76 +69,83 @@ def _seed(archive_root: Path, *, provider_session_id: str, text: str) -> None:
         )
 
 
-async def test_compile_and_record_context_persists_the_exact_compiled_image(tmp_path: Path) -> None:
+async def test_compile_and_record_context_persists_the_exact_compiled_image(
+    tmp_path: Path, facade_daemon_writer: Callable[[Path], AbstractContextManager[object]]
+) -> None:
     """The delivery boundary records exactly the image compile_context produced."""
 
     archive_root = tmp_path / "archive"
     _seed(archive_root, provider_session_id="delivery-target", text="quoted archival evidence")
 
-    async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
-        envelope = await poly.compile_and_record_context(
-            recipient_ref="agent:codex-main",
-            delivered_by_ref="user:local",
-            boundary="explicit-recall",
-            query="quoted archival",
-            max_sessions=1,
-        )
-
-        assert isinstance(envelope, ArchiveContextDeliveryEnvelope)
-        assert envelope.outcome == "recorded"
-        assert envelope.recipient_ref == "agent:codex-main"
-        assert envelope.delivered_by_ref == "user:local"
-        assert envelope.boundary == "explicit-recall"
-        message_segments = [s for s in envelope.context_image.segments if s.payload_kind == "messages"]
-        assert message_segments, "expected a messages segment for the delivered image"
-        assert "quoted archival evidence" in (message_segments[0].markdown or "")
-
-        # Fetching the receipt back returns exactly the delivered image.
-        fetched = await poly.get_context_delivery(envelope.snapshot_ref, recipient_ref="agent:codex-main")
-        assert fetched is not None
-        assert fetched.context_image == envelope.context_image
-        assert fetched.context_image_sha256 == envelope.context_image_sha256
-
-        # A wrong recipient never sees the receipt.
-        wrong_recipient = await poly.get_context_delivery(envelope.snapshot_ref, recipient_ref="agent:other")
-        assert wrong_recipient is None
-
-
-async def test_compile_and_record_context_replay_is_idempotent_and_drift_is_rejected(tmp_path: Path) -> None:
-    archive_root = tmp_path / "archive"
-    _seed(archive_root, provider_session_id="delivery-target", text="quoted archival evidence")
-
-    async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
-        first = await poly.compile_and_record_context(
-            recipient_ref="agent:codex-main",
-            delivered_by_ref="user:local",
-            boundary="explicit-recall",
-            query="quoted archival",
-            max_sessions=1,
-        )
-        replay = await poly.compile_and_record_context(
-            recipient_ref="agent:codex-main",
-            delivered_by_ref="user:local",
-            boundary="explicit-recall",
-            query="quoted archival",
-            max_sessions=1,
-        )
-        assert replay.outcome == "idempotent"
-        assert replay.snapshot_ref == first.snapshot_ref
-        assert replay.context_image == first.context_image
-
-        listed = await poly.list_context_deliveries(recipient_ref="agent:codex-main")
-        assert [item.snapshot_ref for item in listed] == [first.snapshot_ref]
-
-        # Same snapshot ref, different recipient: identity drift is rejected.
-        with pytest.raises(ValueError, match="different delivery identity"):
-            await poly.compile_and_record_context(
-                recipient_ref="agent:someone-else",
+    with facade_daemon_writer(archive_root):
+        async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
+            envelope = await poly.compile_and_record_context(
+                recipient_ref="agent:codex-main",
                 delivered_by_ref="user:local",
                 boundary="explicit-recall",
                 query="quoted archival",
                 max_sessions=1,
             )
+
+            assert isinstance(envelope, ArchiveContextDeliveryEnvelope)
+            assert envelope.outcome == "recorded"
+            assert envelope.recipient_ref == "agent:codex-main"
+            assert envelope.delivered_by_ref == "user:local"
+            assert envelope.boundary == "explicit-recall"
+            message_segments = [s for s in envelope.context_image.segments if s.payload_kind == "messages"]
+            assert message_segments, "expected a messages segment for the delivered image"
+            assert "quoted archival evidence" in (message_segments[0].markdown or "")
+
+            # Fetching the receipt back returns exactly the delivered image.
+            fetched = await poly.get_context_delivery(envelope.snapshot_ref, recipient_ref="agent:codex-main")
+            assert fetched is not None
+            assert fetched.context_image_sha256 == envelope.context_image_sha256
+
+            # A wrong recipient never sees the receipt.
+            wrong_recipient = await poly.get_context_delivery(envelope.snapshot_ref, recipient_ref="agent:other")
+            assert wrong_recipient is None
+
+
+async def test_compile_and_record_context_replay_is_idempotent_and_drift_is_rejected(
+    tmp_path: Path, facade_daemon_writer: Callable[[Path], AbstractContextManager[object]]
+) -> None:
+    archive_root = tmp_path / "archive"
+    _seed(archive_root, provider_session_id="delivery-target", text="quoted archival evidence")
+
+    with facade_daemon_writer(archive_root):
+        async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
+            first = await poly.compile_and_record_context(
+                recipient_ref="agent:codex-main",
+                delivered_by_ref="user:local",
+                boundary="explicit-recall",
+                query="quoted archival",
+                max_sessions=1,
+            )
+            replay = await poly.compile_and_record_context(
+                recipient_ref="agent:codex-main",
+                delivered_by_ref="user:local",
+                boundary="explicit-recall",
+                query="quoted archival",
+                max_sessions=1,
+            )
+            assert replay.outcome == "idempotent"
+            assert replay.snapshot_ref == first.snapshot_ref
+            assert replay.context_image_sha256 == first.context_image_sha256
+
+            listed = await poly.list_context_deliveries(recipient_ref="agent:codex-main")
+            assert [item.snapshot_ref for item in listed] == [first.snapshot_ref]
+
+            # Same snapshot ref, different recipient: identity drift is rejected.
+            from polylogue.operations.daemon_errors import DaemonOperationRejectedError
+
+            with pytest.raises(DaemonOperationRejectedError, match="different delivery identity"):
+                await poly.compile_and_record_context(
+                    recipient_ref="agent:someone-else",
+                    delivered_by_ref="user:local",
+                    boundary="explicit-recall",
+                    query="quoted archival",
+                    max_sessions=1,
+                )
 
 
 async def test_compile_and_record_context_refuses_assertion_read_failure(
@@ -181,31 +205,34 @@ async def test_compile_and_record_context_refuses_assertion_read_failure(
         assert await poly.list_context_deliveries(recipient_ref="agent:codex-main") == []
 
 
-async def test_list_context_deliveries_never_includes_full_context_image(tmp_path: Path) -> None:
+async def test_list_context_deliveries_never_includes_full_context_image(
+    tmp_path: Path, facade_daemon_writer: Callable[[Path], AbstractContextManager[object]]
+) -> None:
     """The bounded list surface is a summary read, not a disclosure surface."""
 
     archive_root = tmp_path / "archive"
     _seed(archive_root, provider_session_id="delivery-target", text="quoted archival evidence")
 
-    async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
-        recorded = await poly.compile_and_record_context(
-            recipient_ref="agent:codex-main",
-            delivered_by_ref="user:local",
-            boundary="explicit-recall",
-            query="quoted archival",
-            max_sessions=1,
-        )
-        listed = await poly.list_context_deliveries(recipient_ref="agent:codex-main")
-        assert len(listed) == 1
-        # The list path returns the same durable envelope type as get -- the
-        # summary/full split is enforced at the surface payload layer
-        # (MCPContextDeliverySummaryPayload), not by truncating the facade
-        # return type. Prove it round-trips to the same recorded receipt.
-        assert listed[0].snapshot_ref == recorded.snapshot_ref
-        assert listed[0].context_image == recorded.context_image
+    with facade_daemon_writer(archive_root):
+        async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
+            recorded = await poly.compile_and_record_context(
+                recipient_ref="agent:codex-main",
+                delivered_by_ref="user:local",
+                boundary="explicit-recall",
+                query="quoted archival",
+                max_sessions=1,
+            )
+            listed = await poly.list_context_deliveries(recipient_ref="agent:codex-main")
+            assert len(listed) == 1
+            # The list path returns the same durable envelope type as get -- the
+            # summary/full split is enforced at the surface payload layer
+            # (MCPContextDeliverySummaryPayload), not by truncating the facade
+            # return type. Prove it round-trips to the same recorded receipt.
+            assert listed[0].snapshot_ref == recorded.snapshot_ref
+            assert listed[0].context_image_sha256 == recorded.context_image_sha256
 
-        unrelated = await poly.list_context_deliveries(recipient_ref="agent:unrelated")
-        assert unrelated == []
+            unrelated = await poly.list_context_deliveries(recipient_ref="agent:unrelated")
+            assert unrelated == []
 
 
 async def test_record_context_delivery_requires_initialized_user_tier(tmp_path: Path) -> None:
@@ -221,26 +248,34 @@ async def test_record_context_delivery_requires_initialized_user_tier(tmp_path: 
     with sqlite3.connect(archive_root / "index.db") as index_conn:
         initialize_archive_tier(index_conn, ArchiveTier.INDEX)
 
-    async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
-        with pytest.raises(ValueError, match="context-delivery user tier is not initialized"):
-            await poly.compile_and_record_context(
-                recipient_ref="agent:codex-main",
-                delivered_by_ref="user:local",
-                boundary="explicit-recall",
-                query="anything",
-                max_sessions=1,
-            )
+    from polylogue.config import Config
+    from polylogue.context.compiler import ContextImage
+    from polylogue.operations.facade_writers import _archive_record_context_delivery
+
+    with pytest.raises(ValueError, match="context-delivery user tier is not initialized"):
+        _archive_record_context_delivery(
+            Config(archive_root=archive_root, render_root=archive_root, sources=[]),
+            image=cast(ContextImage, object()),  # The guard must run before dereferencing the image.
+            boundary="explicit-recall",
+            recipient_ref="agent:codex-main",
+            delivered_by_ref="user:local",
+            run_ref=None,
+            inheritance_mode="explicit",
+        )
 
 
-async def test_context_scheduler_ledger_has_a_facade_reader(tmp_path: Path) -> None:
+async def test_context_scheduler_ledger_has_a_facade_reader(
+    tmp_path: Path, facade_daemon_writer: Callable[[Path], AbstractContextManager[object]]
+) -> None:
     archive_root = tmp_path / "archive-ledger-reader"
     _seed(archive_root, provider_session_id="ledger-target", text="scheduler evidence")
 
-    async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
-        from polylogue.context.compiler import ContextSpec
+    with facade_daemon_writer(archive_root):
+        async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
+            from polylogue.context.compiler import ContextSpec
 
-        await poly.compile_context(ContextSpec(seed_refs=("session:codex-session:ledger-target",), max_tokens=100))
-        records = await poly.list_context_injection_ledger(target_session="codex-session:ledger-target")
+            await poly.compile_context(ContextSpec(seed_refs=("session:codex-session:ledger-target",), max_tokens=100))
+            records = await poly.list_context_injection_ledger(target_session="codex-session:ledger-target")
 
     assert records
     assert records[0].row.source == "archive-context"

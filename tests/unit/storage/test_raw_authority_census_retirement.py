@@ -175,3 +175,38 @@ def test_frontier_obligation_states_are_the_only_blocker_writers_left(tmp_path: 
         }
     assert origins <= {"frontier_obligation"}
     assert {state.value for state in RawAuthorityFrontierState} >= {"missing_bytes_reacquire", "corrupt"}
+
+
+def test_terminal_supersessions_are_reported_but_not_counted_as_plans(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.core.json import json_document
+    from polylogue.storage.raw_reconciler import RawAuthorityFrontierItem
+
+    terminal = RawAuthorityFrontierItem(
+        state=RawAuthorityFrontierState.SUPERSEDED,
+        raw_id="raw:terminal",
+        logical_source_key=None,
+        session_id=None,
+        reason="terminal supersession",
+        evidence_digest="digest",
+        input_raw_ids=(),
+        source_preconditions=json_document({}),
+        index_preconditions=json_document({}),
+        plan_id="plan:terminal",
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.raw_reconciler._frontier_items",
+        lambda _config: ((terminal,), 0, 1),
+    )
+    monkeypatch.setattr(
+        "polylogue.maintenance.offline_guard.offline_maintenance_block_reason",
+        lambda _config, **_kwargs: None,
+    )
+    monkeypatch.setattr("polylogue.storage.raw_reconciler._reconcile_frontier_obligations", lambda *_args: {})
+
+    census = inspect_raw_authority_frontier(_config(tmp_path))
+
+    assert census.terminal_superseded_count == 1
+    assert census.plan_count == 0
+    assert census.items[0].state is RawAuthorityFrontierState.SUPERSEDED

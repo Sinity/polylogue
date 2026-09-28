@@ -136,10 +136,10 @@ def _catchup_receipt_status(*, failures: int, pending: int, stopped: bool) -> Op
 class ComposedEmbeddingConvergence:
     """One retained owner and adapter for the daemon's shared compute capacity."""
 
-    callback: EmbeddingConvergenceCallback
+    callback: Callable[..., Awaitable[EmbeddingConvergenceResult]]
 
-    async def __call__(self, scope: Sequence[str] | None) -> EmbeddingConvergenceResult:
-        return await self.callback(scope)
+    async def __call__(self, scope: Sequence[str] | None, **limits: object) -> EmbeddingConvergenceResult:
+        return await self.callback(scope, **limits)
 
 
 class _EmbeddingBackfillExecution:
@@ -358,14 +358,14 @@ def compose_embedding_convergence(
     cfg = load_polylogue_config()
     if not bool(cfg.embedding_enabled):
 
-        async def disabled(_scope: Sequence[str] | None) -> EmbeddingConvergenceResult:
+        async def disabled(_scope: Sequence[str] | None, **_limits: object) -> EmbeddingConvergenceResult:
             return EmbeddingConvergenceResult(None, "disabled")
 
         return ComposedEmbeddingConvergence(disabled)
     voyage_key = cfg.get("voyage_api_key")
     if not voyage_key:
 
-        async def no_key(_scope: Sequence[str] | None) -> EmbeddingConvergenceResult:
+        async def no_key(_scope: Sequence[str] | None, **_limits: object) -> EmbeddingConvergenceResult:
             return EmbeddingConvergenceResult(None, "provider_unavailable")
 
         return ComposedEmbeddingConvergence(no_key)
@@ -374,6 +374,8 @@ def compose_embedding_convergence(
     pass_lock = asyncio.Lock()
     receipt_lock = threading.Lock()
     active_receipt: _PassReceipt | None = None
+    active_quiet = quiet
+    active_progress_callback = progress_callback
 
     def reserve(actor: str, function: Callable[[], T], /) -> T:
         """Create one conservative spend reservation before the first provider call."""
@@ -407,8 +409,8 @@ def compose_embedding_convergence(
 
         nonlocal progress_count
         progress_count += 1
-        if progress_callback is not None:
-            progress_callback(
+        if active_progress_callback is not None:
+            active_progress_callback(
                 {
                     **dict(event),
                     "sequence": progress_count,
@@ -424,12 +426,12 @@ def compose_embedding_convergence(
         dimension=cfg.embedding_dimension,
         archive_root=archive_root,
         reserve=reserve,
-        quiet=quiet,
+        quiet=lambda: bool(active_quiet and active_quiet()),
         progress_callback=observe_progress,
     )
     if adapter is None:
 
-        async def unavailable(_scope: Sequence[str] | None) -> EmbeddingConvergenceResult:
+        async def unavailable(_scope: Sequence[str] | None, **_limits: object) -> EmbeddingConvergenceResult:
             return EmbeddingConvergenceResult(None, "provider_unavailable")
 
         return ComposedEmbeddingConvergence(unavailable)
@@ -445,15 +447,25 @@ def compose_embedding_convergence(
         write_bridge=write_bridge,
     )
 
-    async def converge(scope: Sequence[str] | None) -> EmbeddingConvergenceResult:
-        nonlocal active_receipt, progress_count
+    async def converge(scope: Sequence[str] | None, **limits: object) -> EmbeddingConvergenceResult:
+        nonlocal active_receipt, progress_count, active_quiet, active_progress_callback
         async with pass_lock:
             progress_count = 0
+            active_quiet = cast(Callable[[], bool] | None, limits.get("quiet", quiet))
+            active_progress_callback = cast(
+                Callable[[Mapping[str, object]], None] | None,
+                limits.get("progress_callback", progress_callback),
+            )
+            effective_max_messages = cast(int | None, limits.get("max_messages", max_messages))
+            effective_max_cost_usd = cast(float | None, limits.get("max_cost_usd", max_cost_usd))
+            effective_stop_after_seconds = cast(int | None, limits.get("stop_after_seconds", stop_after_seconds))
+            effective_max_errors = cast(int | None, limits.get("max_errors", max_errors))
+            effective_scope_limited = bool(limits.get("scope_limited", scope_limited))
             compute_budget = EMBEDDING_PASS_MAX_MESSAGES
-            if max_messages is not None:
-                compute_budget = min(compute_budget, max_messages)
-            if max_cost_usd is not None:
-                compute_budget = min(compute_budget, max(0, int(max_cost_usd / estimated_cost_per_message)))
+            if effective_max_messages is not None:
+                compute_budget = min(compute_budget, effective_max_messages)
+            if effective_max_cost_usd is not None:
+                compute_budget = min(compute_budget, max(0, int(effective_max_cost_usd / estimated_cost_per_message)))
             if monthly_cap > 0.0:
                 from polylogue.daemon.embedding_backlog import _archive_embedding_catchup_estimated_cost_this_month
 
@@ -483,9 +495,12 @@ def compose_embedding_convergence(
                         compute=compute_budget,
                         publication=compute_budget,
                         retained_outcomes=compute_budget,
+                        max_errors=effective_max_errors,
                         deadline_s=min(
                             EMBEDDING_PASS_DEADLINE_S,
-                            float(stop_after_seconds) if stop_after_seconds is not None else EMBEDDING_PASS_DEADLINE_S,
+                            float(effective_stop_after_seconds)
+                            if effective_stop_after_seconds is not None
+                            else EMBEDDING_PASS_DEADLINE_S,
                         ),
                     ),
                     domains=(adapter.domain,),
@@ -534,15 +549,19 @@ def compose_embedding_convergence(
                         ),
                     )
                 deferred = None
-                if max_cost_usd is not None and compute_budget < EMBEDDING_PASS_MAX_MESSAGES and report.pending:
+                if (
+                    effective_max_cost_usd is not None
+                    and compute_budget < EMBEDDING_PASS_MAX_MESSAGES
+                    and report.pending
+                ):
                     deferred = "cost_cap_exceeded"
                 elif monthly_cap > 0.0 and compute_budget < EMBEDDING_PASS_MAX_MESSAGES and report.pending:
                     deferred = "monthly_cost_cap"
-                elif stop_after_seconds is not None and report.pending:
+                elif effective_stop_after_seconds is not None and report.pending:
                     deferred = "stop_after_seconds"
-                elif max_errors is not None and failures >= max_errors:
+                elif effective_max_errors is not None and failures >= effective_max_errors:
                     deferred = "max_errors"
-                elif scope_limited:
+                elif effective_scope_limited:
                     deferred = "max_sessions"
                 return EmbeddingConvergenceResult(report, deferred)
             finally:
@@ -609,19 +628,26 @@ async def execute_embedding_backfill_operation(
         )
         stop_after_seconds = _bound("stop_after_seconds")
         max_errors = _bound("max_errors")
-        owner = compose_embedding_convergence(
-            root / "index.db",
-            compute_adapter=daemon_compute_adapter(),
-            write_bridge=DaemonWriteThreadBridge(daemon_write_coordinator(), owner_loop),
-            quiet=lambda: runtime.stop_reason(request) is not None,
+        owner = getattr(runtime, "embedding_convergence", None)
+        if owner is None:
+            # Early startup can accept operations before periodic services are
+            # composed; install one shared runtime owner for subsequent work.
+            owner = compose_embedding_convergence(
+                root / "index.db",
+                compute_adapter=daemon_compute_adapter(),
+                write_bridge=DaemonWriteThreadBridge(daemon_write_coordinator(), owner_loop),
+            )
+            runtime.embedding_convergence = owner
+        result = await owner(
+            execution.scope,
             max_messages=max_messages,
             max_cost_usd=max_cost_usd,
             stop_after_seconds=stop_after_seconds,
             max_errors=max_errors,
             scope_limited=execution.scope_limited,
+            quiet=lambda: runtime.stop_reason(request) is not None,
             progress_callback=lambda event: runtime.emit_progress(request, event),
         )
-        result = await owner(execution.scope)
         report = result.report
         stop_reason = runtime.stop_reason(request) or result.deferred_reason
         terminal: dict[str, object] = {
@@ -655,15 +681,22 @@ async def execute_embedding_backfill_operation(
         await execution.finalize(terminal)
     except Exception as exc:
         if execution.operation_id is not None:
+            error_text = str(exc)[:512]
             await execution.stop("cancelled" if runtime.stop_reason(request) == "cancelled" else "refused")
             await execution.finalize(
                 {
                     "operation": request.operation,
                     "outcome": "failed",
                     "sequence": 1,
-                    "effect": "no-effect",
+                    "effect": "indeterminate",
                     "stop_reason": "refused",
-                    "error": str(exc)[:512],
+                    # Provider/publication may have partially completed. These
+                    # are explicitly unmeasured, not fabricated zero counters.
+                    # The shape remains decodable by durable replay.
+                    "affected_count": None,
+                    "progress": {"state": "unknown", "computed": None, "failed": None, "estimated_cost_usd": None},
+                    "result": {"done": None, "pending": None, "failed": None},
+                    "error": {"code": "embedding_backfill_failed", "message": error_text},
                 },
                 status="failed",
             )

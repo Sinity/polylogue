@@ -6,6 +6,8 @@ import pytest
 
 from polylogue.context.configuration_evidence import (
     ConfigurationArtifactVersion,
+    ConfigurationObservation,
+    EfficacyComparison,
     artifact_from_bytes,
     compare_cohorts,
     git_artifact_history,
@@ -64,6 +66,8 @@ def test_efficacy_requires_honest_limits() -> None:
     )
     assert report.confounds == ("task mix",)
     with pytest.raises(ValueError):
+        EfficacyComparison("a", "b", "x", (), "", "")
+    with pytest.raises(ValueError):
         compare_cohorts(
             cohort="a", compared_cohort="b", outcome="x", confounds=(), coverage="12", judgment_authority="human"
         )
@@ -115,3 +119,67 @@ def test_git_history_preserves_same_second_revisions_as_ambiguous(
 
     assert len(history) == 2
     assert resolve_context(history, at_ms=1_767_225_600_000).status == "overlap"
+    assert resolve_context(history, at_ms=1_767_225_601_000).artifacts[0].content_hash == history[-1].content_hash
+
+
+def test_capture_and_git_history_hash_symlink_target_name(tmp_path: Path) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    (tmp_path / "target").write_text("target contents")
+    (tmp_path / "AGENTS.md").symlink_to("target")
+    subprocess.run(["git", "add", "AGENTS.md", "target"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "symlink"], cwd=tmp_path, check=True)
+    from polylogue.context.configuration_evidence import capture_path
+
+    live = capture_path(
+        tmp_path / "AGENTS.md", kind="instruction", owner="operator", repository=None, observed_from_ms=1
+    )
+    historic = git_artifact_history(tmp_path, "AGENTS.md", owner="operator", kind="instruction")[0]
+    assert live.content_hash == historic.content_hash
+
+
+def test_observation_unknowns_and_artifact_kind_affect_context_identity() -> None:
+    instruction = artifact_from_bytes(
+        kind="instruction", path="same", payload=b"x", owner="o", repository=None, observed_from_ms=0
+    )
+    hook = artifact_from_bytes(kind="hook", path="same", payload=b"x", owner="o", repository=None, observed_from_ms=0)
+    exact = resolve_context((instruction,), at_ms=1)
+    unknown = resolve_context(ConfigurationObservation((instruction,), ("mcp_profile",)), at_ms=1)
+    other_kind = resolve_context((hook,), at_ms=1)
+    assert exact.context != unknown.context
+    assert unknown.context is not None
+    assert unknown.status == "partial" and not unknown.context.is_complete
+    assert exact.context != other_kind.context
+
+
+def test_invocations_join_by_explicit_declaration_name_mapping() -> None:
+    declaration = artifact_from_bytes(
+        kind="skill",
+        path=".claude/skills/review/SKILL.md",
+        payload=b"review",
+        owner="o",
+        repository=None,
+        observed_from_ms=0,
+    )
+    joined = join_invocations((("review", "skill", 1),), (declaration,), declaration_names={"review": declaration.path})
+    assert joined[0].declaration == declaration
+
+
+def test_git_deletion_closes_the_prior_revision(tmp_path: Path) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    path = tmp_path / "CLAUDE.md"
+    path.write_text("old")
+    subprocess.run(["git", "add", "CLAUDE.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "add"], cwd=tmp_path, check=True)
+    path.unlink()
+    subprocess.run(["git", "add", "-u"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "delete"], cwd=tmp_path, check=True)
+    history = git_artifact_history(tmp_path, "CLAUDE.md", owner="o", kind="instruction")
+    assert len(history) == 1 and history[0].observed_until_ms is not None

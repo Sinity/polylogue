@@ -643,9 +643,12 @@ def main() -> None:
 
     from polylogue.runtime import require_free_threaded_runtime
 
-    require_free_threaded_runtime(consumer="polylogue CLI")
-    _guard_checkout_or_exit()
-    run_machine_entry(cli, sys.argv[1:])
+    def guarded_entry(standalone_mode: bool = False) -> object:
+        require_free_threaded_runtime(consumer="polylogue CLI")
+        _guard_checkout_or_exit()
+        return cli(standalone_mode=standalone_mode)
+
+    run_machine_entry(guarded_entry, sys.argv[1:])
 
 
 __all__ = [

@@ -116,7 +116,7 @@ from polylogue.archive.stats import ArchiveStats
 from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
 from polylogue.core.digest import REFERENCE, canonical_bytes
-from polylogue.core.enums import DisplayLabelSource, Origin, Provider
+from polylogue.core.enums import BranchType, DisplayLabelSource, Origin, Provider, SessionKind
 from polylogue.core.errors import (
     ArchiveTierUnavailableError,
     PostFilterAfterLimitError,
@@ -1486,7 +1486,7 @@ class ArchiveStore:
             )
         if initialize:
             initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        return open_connection(self.user_db_path)
+        return open_connection(self.user_db_path, archive_root=self._write_lease_archive_root)
 
     def commit(self) -> None:
         """Commit index.db and any source transaction left by other callers.
@@ -1595,18 +1595,49 @@ class ArchiveStore:
         event_type = validate_work_event_type(event_type)
         resolved = self.resolve_session_id(session_id)
         existing = self.read_session(resolved)
+        existing_row = self._conn.execute(
+            "SELECT commit_hash, pending_drafts_json FROM sessions WHERE session_id = ?",
+            (resolved,),
+        ).fetchone()
+        if existing_row is None:
+            raise KeyError(f"session not found: {resolved}")
         provider = provider_from_origin(Origin.from_string(existing.origin))
         event_payload = {"event_id": event_id, "summary": summary, **payload}
         event = ParsedSessionEvent(event_type=event_type, timestamp=timestamp, payload=event_payload)
+        # Keep the ordinary append writer's session upsert lossless. This
+        # lightweight ParsedSession intentionally has no messages, so copy
+        # every session-owned field represented on the archive envelope.
         session = ParsedSession(
             source_name=provider,
             provider_session_id=existing.native_id,
             title=existing.title,
+            session_kind=SessionKind(existing.session_kind),
+            created_at=existing.created_at,
+            updated_at=existing.updated_at,
             messages=[],
             session_events=[event],
+            active_leaf_message_provider_id=existing.active_leaf_message_id,
+            instructions_text=existing.instructions_text,
+            reported_cost_usd=existing.reported_cost_usd,
+            pending_drafts=json.loads(existing_row["pending_drafts_json"] or "[]"),
+            git_branch=existing.git_branch,
+            git_repository_url=existing.git_repository_url,
+            git_commit_hash=existing_row["commit_hash"],
+            branch_type=BranchType(existing.branch_type) if existing.branch_type else None,
+            working_directories=list(existing.working_directories),
+            provider_project_ref=existing.provider_project_ref,
+            display_name=existing.display_name,
         )
         raw_payload = json.dumps(
-            {"event_id": event_id, "event_type": event_type, "payload": event_payload},
+            {
+                "_polylogue_work_event": 1,
+                "provider": provider.value,
+                "native_session_id": existing.native_id,
+                "event_id": event_id,
+                "event_type": event_type,
+                "timestamp": timestamp,
+                "payload": event_payload,
+            },
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
@@ -2993,7 +3024,7 @@ class ArchiveStore:
                    s.message_count, s.word_count, s.tool_use_count,
                    s.created_at_ms, s.updated_at_ms, s.git_repository_url,
                    s.git_branch, sp.first_message_at, sp.last_message_at,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), s.reported_cost_usd)
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd))
                       FROM session_model_usage u WHERE u.session_id = s.session_id)
                      AS profile_total_cost_usd
             FROM thread_sessions ts
@@ -3143,9 +3174,9 @@ class ArchiveStore:
             SELECT s.session_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
                    s.sort_key_ms,
                    (SELECT SUM(u.cost_credits) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_credits,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), s.reported_cost_usd) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
                    (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_is_estimated,
-                   COALESCE((SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id), CASE WHEN s.reported_cost_usd IS NOT NULL THEN 'origin_reported' END) AS cost_provenance,
+                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
                    (
                        SELECT smu.model_name
                        FROM session_model_usage smu
@@ -3913,10 +3944,10 @@ class ArchiveStore:
                    sp.terminal_state_confidence, sp.duration_ms, sp.substantive_count,
                    sp.attachment_count,
                    sp.tool_calls_per_minute,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), s.reported_cost_usd) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
                    (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_is_estimated,
-                   COALESCE((SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id), CASE WHEN s.reported_cost_usd IS NOT NULL THEN 'origin_reported' END) AS cost_provenance,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), s.reported_cost_usd) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd, sp.total_duration_ms,
+                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd, sp.total_duration_ms,
                    sp.input_row_count, sp.input_content_hash, sp.materializer_version,
                    sp.evidence_payload_json, sp.inference_payload_json, sp.enrichment_payload_json
             FROM session_profiles sp
@@ -4057,10 +4088,10 @@ class ArchiveStore:
                    sp.terminal_state_confidence, sp.duration_ms, sp.substantive_count,
                    sp.attachment_count,
                    sp.tool_calls_per_minute,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), s.reported_cost_usd) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
                    (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_is_estimated,
-                   COALESCE((SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id), CASE WHEN s.reported_cost_usd IS NOT NULL THEN 'origin_reported' END) AS cost_provenance,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), s.reported_cost_usd) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd, sp.total_duration_ms,
+                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd, sp.total_duration_ms,
                    sp.evidence_payload_json, sp.inference_payload_json, sp.enrichment_payload_json
             FROM session_profiles sp
             JOIN sessions s ON s.session_id = sp.session_id
@@ -4088,8 +4119,8 @@ class ArchiveStore:
                    s.title_source, s.title_ref, s.git_branch, s.git_repository_url, s.provider_project_ref,
                    s.display_name,
                    sp.terminal_state,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), s.reported_cost_usd) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd,
-                   COALESCE((SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id), CASE WHEN s.reported_cost_usd IS NOT NULL THEN 'origin_reported' END) AS cost_provenance,
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd,
+                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
                    COALESCE(
                        (
                            SELECT json_group_array(swd.path)
@@ -4293,6 +4324,10 @@ class ArchiveStore:
         finally:
             user_conn.close()
         self._attach_user_tier_if_present()
+        if changed:
+            from polylogue.storage.search.cache import invalidate_search_cache
+
+            invalidate_search_cache()
         return changed
 
     def remove_user_tags(self, session_ids: tuple[str, ...], tags: tuple[str, ...]) -> int:
@@ -4327,6 +4362,10 @@ class ArchiveStore:
         finally:
             user_conn.close()
         self._attach_user_tier_if_present()
+        if removed:
+            from polylogue.storage.search.cache import invalidate_search_cache
+
+            invalidate_search_cache()
         return removed
 
     def list_user_tags(self, *, origin: str | None = None) -> dict[str, int]:
@@ -5710,6 +5749,12 @@ class ArchiveStore:
         deleted = 0
         deleted_session_ids: list[str] = []
         try:
+            # This recovery path uses executescript(), which commits implicitly.
+            # Restore missing triggers before the delete transaction so a later
+            # trigger-install failure cannot commit the destructive work early.
+            from polylogue.storage.fts.fts_lifecycle import ensure_fts_triggers_sync
+
+            ensure_fts_triggers_sync(conn)
             conn.execute("BEGIN IMMEDIATE")
             try:
                 for session_id in resolved_session_ids:
@@ -6342,8 +6387,8 @@ class ArchiveStore:
                    s.title_source, s.title_ref, s.git_branch, s.git_repository_url, s.provider_project_ref,
                    s.display_name,
                    sp.terminal_state,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), s.reported_cost_usd) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd,
-                   COALESCE((SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id), CASE WHEN s.reported_cost_usd IS NOT NULL THEN 'origin_reported' END) AS cost_provenance,
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd,
+                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
                    COALESCE(
                        (
                            SELECT json_group_array(swd.path)
@@ -6893,6 +6938,7 @@ class ArchiveStore:
         message_type: str | None = None,
         material_origins: Sequence[str] = (),
         per_session_limit: int | None = None,
+        text_prefix_chars: int | None = None,
     ) -> list[ArchiveMessageQueryRow]:
         return _archive_query_reads.query_session_messages(
             self,
@@ -6904,6 +6950,7 @@ class ArchiveStore:
             message_type=message_type,
             material_origins=material_origins,
             per_session_limit=per_session_limit,
+            text_prefix_chars=text_prefix_chars,
         )
 
     def count_session_messages(
@@ -7032,6 +7079,7 @@ class ArchiveStore:
         offset: int = 0,
         sort_direction: Literal["asc", "desc"] = "asc",
         per_session_limit: int | None = None,
+        text_prefix_chars: int | None = None,
     ) -> list[ArchiveActionQueryRow]:
         return _archive_query_reads.query_session_actions(
             self,
@@ -7040,6 +7088,7 @@ class ArchiveStore:
             offset=offset,
             sort_direction=sort_direction,
             per_session_limit=per_session_limit,
+            text_prefix_chars=text_prefix_chars,
         )
 
     def query_session_action_occurrences(

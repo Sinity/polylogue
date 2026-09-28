@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from collections import Counter
 from pathlib import Path
@@ -25,6 +26,8 @@ from tests.infra.workload_artifacts import (
     gc_seeded_archive_artifacts,
     validate_seeded_archive_reachability,
 )
+
+_MAX_REFUSAL_LENGTH = 2_048
 
 
 def _report_payload(report: ArtifactGcReport, *, inventory: SeededArchiveReachabilityInventory) -> dict[str, object]:
@@ -93,6 +96,20 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
     receipt = (args.receipt or root / ".seeded-archive-gc-receipt.json").expanduser()
 
     try:
+        if not math.isfinite(args.grace_period_s) or args.grace_period_s < 0:
+            raise ValueError("grace period must be finite and non-negative")
+        artifacts_root = (root / "artifacts").resolve()
+        receipt_resolved = receipt.resolve(strict=False)
+        if receipt_resolved == artifacts_root or artifacts_root in receipt_resolved.parents:
+            raise ValueError("receipt path must be outside the managed artifacts directory")
+    except (OSError, ValueError) as exc:
+        if args.json:
+            print(json.dumps({"refused": str(exc)}, indent=2, sort_keys=True), file=output)
+        else:
+            print(f"refused: {exc}", file=output)
+        return 1
+
+    try:
         inventory = current_seeded_archive_reachability()
         validate_seeded_archive_reachability(inventory)
         report = gc_seeded_archive_artifacts(
@@ -105,7 +122,10 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
         )
     except (OSError, RuntimeError, ValueError) as exc:
         if args.json:
-            print(json.dumps({"refused": str(exc)}, indent=2, sort_keys=True), file=output)
+            message = str(exc)
+            if len(message) > _MAX_REFUSAL_LENGTH:
+                message = message[: _MAX_REFUSAL_LENGTH - 3] + "..."
+            print(json.dumps({"refused": message}, indent=2, sort_keys=True), file=output)
         else:
             print(f"refused: {exc}", file=output)
         return 1

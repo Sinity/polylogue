@@ -33,7 +33,7 @@
           "required_initial": false
         },
         {
-          "description": "Declared result projection such as session-summary or cost-rollup.",
+          "description": "Declared result projection such as sessions or personal-state kinds.",
           "enum_values": [],
           "kind": "string",
           "name": "projection",
@@ -152,7 +152,7 @@
           "arguments": {
             "expression": "actions where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20",
             "limit": 20,
-            "projection": "action-evidence"
+            "projection": "default"
           },
           "id": "query-file-actions",
           "result_note": "An exhaustive page of action rows with object/evidence refs, one result_ref, and a continuation when more rows exist.",
@@ -162,10 +162,10 @@
           "arguments": {
             "expression": "sessions where origin:(claude-code-session|codex-session) AND date >= 2026-07-01",
             "limit": 50,
-            "projection": "cost-rollup"
+            "projection": "sessions"
           },
           "id": "query-cost-cohort",
-          "result_note": "A session result set suitable for a declared cost-rollup projection; coverage still governs completeness.",
+          "result_note": "A filtered session result set for a later cost audit; coverage still governs completeness.",
           "title": "Select a recent provider cohort for a cost audit"
         }
       ],
@@ -215,7 +215,7 @@
           "required_initial": false
         },
         {
-          "description": "Message reference whose surrounding window should be read.",
+          "description": "Raw message ID (not a message: ref); only with view=messages and without offset or continuation.",
           "enum_values": [],
           "kind": "string",
           "name": "around",
@@ -236,11 +236,11 @@
           "arguments": {
             "limit": 20,
             "ref": "polylogue://session/codex-session:demo-lineage-fork",
-            "view": "chronicle"
+            "view": "messages"
           },
-          "id": "read-session-chronicle",
-          "result_note": "A bounded chronicle page retaining message/block evidence refs and the same result_ref across continuation pages.",
-          "title": "Read a session chronicle"
+          "id": "read-session-messages",
+          "result_note": "A bounded messages page; use its returned offset for the next page.",
+          "title": "Read a session message page"
         }
       ],
       "name": "read",
@@ -302,7 +302,7 @@
     {
       "arguments": [
         {
-          "description": "Declared explanation subject: query, field, value, ref, capability, completions, result, or recovery.",
+          "description": "Declared explanation subject: query, completions, ref, capability, result, or recovery.",
           "enum_values": [],
           "kind": "string",
           "name": "subject",
@@ -483,12 +483,12 @@
         {
           "arguments": {
             "budget_tokens": 4000,
-            "intent": "resume",
+            "intent": "coordination",
             "query": "sessions where repo:polylogue AND NOT tag:complete"
           },
-          "id": "context-resume",
+          "id": "context-cohort",
           "result_note": "A bounded context snapshot plus receipt describing selected refs, omissions, policy, and budget use.",
-          "title": "Compile a resume packet"
+          "title": "Compile a context snapshot"
         }
       ],
       "name": "context",
@@ -629,9 +629,9 @@
       "examples": [
         {
           "arguments": {
-            "operation": "tag.add",
+            "operation": "add_tag",
             "session_id": "codex-session:demo-lineage-fork",
-            "value": "review"
+            "tag": "review"
           },
           "id": "write-tag",
           "result_note": "A mutation receipt with actor, target, effect identity, and resulting generation; no destructive confirmation is invented.",
@@ -890,7 +890,7 @@
     {
       "arguments": [
         {
-          "description": "Saved-query or recipe ref.",
+          "description": "Saved-query or saved-view ref.",
           "enum_values": [],
           "kind": "string",
           "name": "ref",
@@ -910,15 +910,15 @@
         {
           "arguments": {
             "limit": 20,
-            "ref": "recipe:cost-audit"
+            "ref": "saved-view:cost-audit"
           },
-          "id": "run-cost-recipe",
-          "result_note": "A result_ref and receipt for the declared recipe; mutation authority is never gained from the recipe wrapper.",
-          "title": "Run a saved read-only cost audit"
+          "id": "run-saved-cost-view",
+          "result_note": "A result_ref and receipt for the saved view; mutation authority is never gained from the wrapper.",
+          "title": "Run a saved read-only cost view"
         }
       ],
       "name": "run",
-      "purpose": "Execute a saved query or governed recipe ref; any nested mutation inherits its own capability and confirmation policy.",
+      "purpose": "Execute a saved query or saved view; any nested mutation inherits its own capability and confirmation policy.",
       "required_capability": "write",
       "result_semantics": [
         "exhaustive_page",

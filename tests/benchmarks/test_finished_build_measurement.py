@@ -29,6 +29,10 @@ from unittest.mock import patch
 import pytest
 
 from devtools.measurement_receipts import emit_receipt
+from polylogue.pipeline.services.process_pool import (
+    parallel_threads_effective,
+    resolve_revision_backfill_census_dispatch,
+)
 from polylogue.sources import revision_backfill
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.revision_backfill import (
@@ -416,7 +420,9 @@ def _completed_generation_index_path(root: Path, receipt: _ArmReceipt) -> Path:
     return Path(IndexGenerationStore.for_archive_root(root, repair_anchor=False).load(generation_id).index_path)
 
 
-def _work_identity(sealed: SealedRawInput, *, uses_shard_transport: bool) -> FinishedBuildWorkIdentity:
+def _work_identity(
+    sealed: SealedRawInput, *, uses_shard_transport: bool, worker_count: int
+) -> FinishedBuildWorkIdentity:
     """Bind the sealed source, exact route code, and one selected profile."""
     routes: tuple[Callable[..., object] | type, ...]
     if uses_shard_transport:
@@ -426,7 +432,7 @@ def _work_identity(sealed: SealedRawInput, *, uses_shard_transport: bool) -> Fin
     return finished_build_work_identity(
         sealed,
         profile=(
-            f"finished-build:sealed-{sealed.raw_count}-raw:thread-4:owned-inactive-generation:"
+            f"finished-build:sealed-{sealed.raw_count}-raw:workers-{worker_count}:owned-inactive-generation:"
             f"{'session-shard' if uses_shard_transport else 'inline-replay'}"
         ),
         routes=routes,
@@ -488,10 +494,18 @@ def _run_arm(
         _RETAINED_INDEX_INLINE_COMPARISON,
     ):
         raise RuntimeError("finished-build measurement runs only the declared selected arm")
+    # Report the dispatch width the production census will really use. GIL
+    # builds deliberately parse sequentially even when a larger width was
+    # requested.
+    effective_workers = resolve_revision_backfill_census_dispatch(
+        ingest_workers=worker_count,
+        record_count=sealed.raw_count,
+        free_threaded=parallel_threads_effective(),
+    ).worker_count
+    resource_probe = FinishedBuildResourceProbe.start()
     destination, owned_generation = _candidate_root(root, arm)
     index_path = destination / "index.db"
     wal_sampler = _SampledWalSize(index_path)
-    resource_probe = FinishedBuildResourceProbe.start()
     wal_sampler.start()
     observed_deferred_indexes: list[tuple[str, ...]] = []
     observed_restored_indexes: list[tuple[str, ...]] = []
@@ -523,7 +537,7 @@ def _run_arm(
             result = backfill_historical_revision_evidence(
                 destination,
                 owned_inactive_generation=owned_generation,
-                ingest_workers=worker_count,
+                ingest_workers=effective_workers,
                 use_session_shards=arm.uses_shard_transport,
                 defer_secondary_indexes=arm.defer_secondary_indexes,
             )
@@ -533,7 +547,7 @@ def _run_arm(
         output = capture_finished_build_output(
             destination,
             index_path,
-            work=_work_identity(sealed, uses_shard_transport=arm.uses_shard_transport),
+            work=_work_identity(sealed, uses_shard_transport=arm.uses_shard_transport, worker_count=effective_workers),
             route=FinishedBuildRoute.from_production_callable(arm.name, backfill_historical_revision_evidence),
             resource_probe=resource_probe,
             session_ids=ids[:3],
@@ -549,7 +563,7 @@ def _run_arm(
         archive_bytes=archive_bytes,
         wall_seconds=output.resources.elapsed_seconds,
         peak_rss_bytes=output.resources.peak_rss_self_bytes,
-        worker_count=worker_count,
+        worker_count=effective_workers,
     )
     if metrics.unaccounted_bytes:
         raise AssertionError(f"{arm.name} left unclassified input bytes: {metrics.unaccounted_bytes}")
@@ -581,8 +595,8 @@ def _run_arm(
     candidate_git_sha, candidate_checkout_dirty = _candidate_checkout()
     return _ArmReceipt(
         arm=arm.name,
-        worker_mode=arm.worker_mode,
-        worker_count=worker_count,
+        worker_mode=arm.worker_mode if effective_workers > 1 else "sequential",
+        worker_count=effective_workers,
         input_digest=sealed.digest,
         work=output.work,
         route=output.route,
