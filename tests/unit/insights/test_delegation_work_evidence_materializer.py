@@ -205,9 +205,6 @@ def test_stage_uses_active_index_generation_after_promotion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, conventional_path: str
 ) -> None:
     """The active pointer wins when the conventional index is missing or stale."""
-    from tests.infra.archive_templates import bootstrap_archive_root
-
-    bootstrap_archive_root(tmp_path)
     _seed_delegation(tmp_path)
     generation = tmp_path / ".index-generations" / "promoted"
     generation.mkdir(parents=True)
