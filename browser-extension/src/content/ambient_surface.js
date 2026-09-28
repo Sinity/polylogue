@@ -492,6 +492,9 @@
       panel.hidden = false;
       chip.setAttribute("aria-expanded", "true");
       close.focus();
+      runtime.sendMessage({ type: "polylogue.missionControl.status", refresh: false, include_intelligence: true })
+        .then((nextSnapshot) => { if (nextSnapshot?.ok && !stopped) render(nextSnapshot); })
+        .catch(() => undefined);
     }
 
     function closePanel() {
@@ -515,6 +518,8 @@
         }) || null),
       });
       if (!selectionCandidate) {
+        editor.hidden = true;
+        assertionButton.disabled = true;
         selectionText.textContent = "Select text inside a conversation message to prepare an assertion candidate.";
         return;
       }

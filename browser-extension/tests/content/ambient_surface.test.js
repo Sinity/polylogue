@@ -100,7 +100,7 @@ describe("ambient capture status surface", () => {
   it("mounts one zero-layout-shift closed shadow surface with no remote assets", async () => {
     const dom = freshDom();
     const bodyChildrenBefore = dom.window.document.body.children.length;
-    const { api, runtime } = mount(dom);
+    const { api } = mount(dom);
 
     await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
 
@@ -132,7 +132,7 @@ describe("ambient capture status surface", () => {
 
   it("renders the same conversation, receiver, event, and assertion contracts as the popup", async () => {
     const dom = freshDom();
-    const { api } = mount(dom);
+    const { api, runtime } = mount(dom);
     await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
 
     const text = api.shadow.textContent;
@@ -193,7 +193,7 @@ describe("ambient capture status surface", () => {
 
   it("opens as a modal slide-over, closes on Escape, and restores focus to the chip", async () => {
     const dom = freshDom();
-    const { api } = mount(dom);
+    const { api, runtime } = mount(dom);
     await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
 
     const panel = api.shadow.querySelector(".panel");
@@ -213,6 +213,7 @@ describe("ambient capture status surface", () => {
     expect(panel.hidden).toBe(true);
     expect(chip.getAttribute("aria-expanded")).toBe("false");
     expect(api.shadow.activeElement).toBe(chip);
+    expect(runtime.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ include_intelligence: true }));
   });
 
   it("creates an ephemeral assertion candidate only for text selected inside a supported message", async () => {
@@ -252,6 +253,8 @@ describe("ambient capture status surface", () => {
 
     const outsideSelection = selectNode(dom.window.document.getElementById("outside"));
     expect(api.getSelectionCandidate()).toBeNull();
+    expect(api.shadow.querySelector(".editor").hidden).toBe(true);
+    expect(api.shadow.querySelector("button.disabled").disabled).toBe(true);
     expect(dom.window.PolylogueAmbientSurface.deriveSelectionCandidate(outsideSelection)).toBeNull();
 
     const crossMessageRange = dom.window.document.createRange();

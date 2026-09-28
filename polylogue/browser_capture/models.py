@@ -343,7 +343,7 @@ class BrowserCaptureAcceptedPayload(BaseModel):
 
 
 class BrowserCaptureCapabilitiesPayload(BaseModel):
-    """Receiver-declared browser-capture contract required before backfill."""
+    """Receiver-declared browser-capture capabilities required by extensions."""
 
     ok: Literal[True] = True
     receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
@@ -352,6 +352,7 @@ class BrowserCaptureCapabilitiesPayload(BaseModel):
         "receiver_request_id",
         "content_hash",
     )
+    assertion_candidates: Literal[True] = True
 
 
 class BrowserBackfillCheckpointRequest(BaseModel):

@@ -22,6 +22,7 @@ const GROK_QUERY_TAB = {
   title: "Grok query conversation",
   url: "https://grok.com/?conversation=query-77",
 };
+const GEMINI_TAB = { id: 78, title: "Gemini conversation", url: "https://gemini.google.com/app/gemini-session" };
 const ORDINARY_TAB = {
   id: 88,
   title: "Example",
@@ -154,6 +155,12 @@ async function loadPopup(storagePatch = {}, tabs = [CHATGPT_TAB], sendMessage = 
 }
 
 describe("popup capture", () => {
+  it("anti-vacuity: lists active Gemini app conversations as supported", async () => {
+    await loadPopup({}, [GEMINI_TAB]);
+    expect(document.getElementById("page").textContent).toContain("Gemini");
+    expect(document.getElementById("open-tabs").textContent).toContain("Gemini conversation");
+    expect(document.getElementById("operator-state").textContent).not.toContain("Unsupported");
+  });
   beforeEach(() => {
     vi.restoreAllMocks();
   });

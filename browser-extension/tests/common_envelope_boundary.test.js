@@ -128,6 +128,17 @@ function maximalTurn() {
 }
 
 describe("common.js buildEnvelope boundary contract (real source, not a copy)", () => {
+  it("anti-vacuity: emits a full SHA-256 fingerprint matching the canonical digest", () => {
+    const dom = installCommon();
+    const observation = dom.window.polylogueCapture.identityObservation({
+      provider: "chatgpt", conversationId: "c-1", messageId: "m-1", text: "abc",
+      adapterName: "fixture", fidelity: "native",
+    });
+    expect(observation.content_fingerprint)
+      .toBe("sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    dom.window.close();
+  });
+
   it("types provider, page, and session-id title evidence", () => {
     const providerDom = installCommon();
     const providerEnvelope = providerDom.window.polylogueCapture.buildEnvelope({

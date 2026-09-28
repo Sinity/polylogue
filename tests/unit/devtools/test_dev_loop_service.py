@@ -438,6 +438,67 @@ try {
     assert payload["calls"][-1] == ["close", "B" * 32]
 
 
+def test_anti_vacuity_owned_target_cleanup_timeout_rejects_normal_completion() -> None:
+    program = """
+import { createOwnedTargetCleanup } from './scripts/shared_chrome_proof_cleanup.mjs';
+const cleanup = createOwnedTargetCleanup({ control: () => new Promise(() => {}), targetId: 'C'.repeat(32), timeoutMs: 5 });
+try { await cleanup.finish(); process.exitCode = 2; }
+catch (error) { console.log(error.message); }
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "--eval", program],
+        cwd="browser-extension",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "cleanup timed out" in completed.stdout
+
+
+def test_anti_vacuity_live_proof_parses_diagnostic_json_and_tracks_invalid_target() -> None:
+    program = """
+import { openAgentWindow } from './scripts/live_provider_proof.mjs';
+import { firstControlJson } from './scripts/shared_chrome_control.mjs';
+const owned = [];
+try {
+  const raw = `diagnostic line\\n${JSON.stringify({ id: 'D'.repeat(32), url: 'https://unexpected.example/', parked: true, workspace: 'agentbrowser', show_with: 'F7' })}\\n`;
+  await openAgentWindow('https://chatgpt.com/', 1000, (id) => owned.push(id), async () => firstControlJson(Buffer.from(raw)));
+  process.exitCode = 2;
+} catch (error) { console.log(JSON.stringify({ error: error.message, owned })); }
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "--eval", program],
+        cwd="browser-extension",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert "not verified hidden" in payload["error"]
+    assert payload["owned"] == ["D" * 32]
+
+
+def test_anti_vacuity_live_proof_fails_when_cdp_does_not_close_owned_targets() -> None:
+    program = """
+import { closeProofTargets } from './scripts/live_provider_proof.mjs';
+try {
+  await closeProofTargets({ call: async () => ({ success: false }) }, ['E'.repeat(32)]);
+  process.exitCode = 2;
+} catch (error) { console.log(error.message); }
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "--eval", program],
+        cwd="browser-extension",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "success=false" in completed.stdout
+
+
 def test_api_readiness_uses_the_unauthenticated_liveness_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     observed: list[str] = []
 

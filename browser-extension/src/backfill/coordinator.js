@@ -591,15 +591,18 @@ export class BackfillCoordinator {
       const failures = Array.isArray(result?.failures) ? result.failures : [];
       if (!failures.length) return null;
       const errors = {};
-      const now = nowIso(this.clock());
+      const nowMs = this.clock();
+      const now = nowIso(nowMs);
       for (const failure of failures) {
         if (typeof failure?.job_id !== "string") continue;
         const detail = String(failure.error || "capture_job_receiver_commit_failed");
         errors[failure.job_id] = detail;
         const job = await this.store.getJob(failure.job_id);
         if (job?.status === "running") {
+          const rateLimited = failure.outcome === "rate_limited" && Number.isFinite(failure.retry_after_ms);
           await this.store.controlJob(failure.job_id, "paused", now, {
-            cooldown_reason: "receiver_capture_job_authority_unavailable",
+            cooldown_reason: rateLimited ? "provider_rate_limited" : "receiver_capture_job_authority_unavailable",
+            cooldown_until_ms: rateLimited ? nowMs + Math.max(0, failure.retry_after_ms) : job.cooldown_until_ms,
             last_error: detail,
           });
         }
