@@ -3102,6 +3102,18 @@ class TestReaderViewProfiles:
         assert format_status == 400
         assert format_payload["error"] == "invalid_format"
 
+    def test_topology_read_view_requires_its_dedicated_route(self, workspace_env: dict[str, Path]) -> None:
+        """The generic read route cannot label raw metadata as topology.
+
+        Anti-vacuity: removing the capability-route guard makes this accepted
+        request return a successful envelope whose payload is a raw session.
+        """
+        with _running_server(workspace_env) as (_, base_url):
+            status, payload = _get_json_ex(base_url, f"/api/sessions/{C1}/read?view=topology")
+
+        assert status == 400
+        assert payload["error"] == "read_view_requires_dedicated_route"
+
 
 class TestReaderAssertionEndpoint:
     def test_archive_debt_endpoint_returns_shared_payload(self, workspace_env: dict[str, Path]) -> None:

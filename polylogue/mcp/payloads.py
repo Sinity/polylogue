@@ -132,6 +132,7 @@ class MCPBlackboardNoteListPayload(SurfacePayloadModel):
 
     items: tuple[MCPBlackboardNotePayload, ...]
     total: int
+    outcome: OutcomeEnvelope
     limit: int | None = None
     offset: int = 0
     next_offset: int | None = None
@@ -880,6 +881,7 @@ class MCPUserMarkListPayload(SurfacePayloadModel):
     limit: int
     offset: int
     next_offset: int | None = None
+    outcome: OutcomeEnvelope
 
 
 class MCPUserAnnotationPayload(SurfacePayloadModel):
@@ -899,6 +901,7 @@ class MCPUserAnnotationListPayload(SurfacePayloadModel):
     limit: int
     offset: int
     next_offset: int | None = None
+    outcome: OutcomeEnvelope
 
 
 class MCPSavedViewPayload(SurfacePayloadModel):
@@ -914,6 +917,7 @@ class MCPSavedViewListPayload(SurfacePayloadModel):
     limit: int
     offset: int
     next_offset: int | None = None
+    outcome: OutcomeEnvelope
 
 
 class MCPRecallPackPayload(SurfacePayloadModel):
@@ -930,6 +934,7 @@ class MCPRecallPackListPayload(SurfacePayloadModel):
     limit: int
     offset: int
     next_offset: int | None = None
+    outcome: OutcomeEnvelope
 
 
 class MCPReaderWorkspacePayload(SurfacePayloadModel):
@@ -949,6 +954,7 @@ class MCPReaderWorkspaceListPayload(SurfacePayloadModel):
     limit: int
     offset: int
     next_offset: int | None = None
+    outcome: OutcomeEnvelope
 
 
 class MCPStatsByPayload(MCPRootPayload[dict[str, int]]):

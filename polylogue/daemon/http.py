@@ -4498,6 +4498,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if output_format not in capability.formats:
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_format")
             return
+        if capability.route != "/api/sessions/{session_id}/read":
+            self._send_error(HTTPStatus.BAD_REQUEST, "read_view_requires_dedicated_route")
+            return
 
         if view == "messages":
             limit = self._get_int(params, "limit", 50)
