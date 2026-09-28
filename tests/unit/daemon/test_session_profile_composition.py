@@ -450,10 +450,10 @@ async def test_backlog_call_sweeps_every_domain_in_bounded_passes(tmp_path: Path
         real_pass = composed.audit_pass
         assert real_pass is not None
 
-        async def counting(deadline_s: float) -> DerivationReport | None:
+        async def counting(deadline_at: float) -> DerivationReport | None:
             nonlocal passes
             passes += 1
-            report = await real_pass(deadline_s)
+            report = await real_pass(deadline_at)
             assert report is None or report.work.published <= 64
             return report
 
