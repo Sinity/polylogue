@@ -71,6 +71,34 @@ jobs:
             - .cache/mypy
             # Rendered base-commit schema states; see verify_schema_manifest.
             - .cache/verify/schema-state
+  stacked-review-threads:
+    # Branch protection resolves conversations on master only, so a PR merged
+    # into this PR's head branch (at any stack depth) is never gated there.
+    # Fails while any such PR has an unresolved review thread, naming each PR
+    # and thread. Resolving a thread triggers no pipeline: rerun this job.
+    # Reads threads with the project's GH_TOKEN environment variable.
+    docker:
+      - image: cimg/python:3.14
+    resource_class: small
+    steps:
+      - checkout
+      - run:
+          name: Unresolved review threads on PRs stacked into this PR
+          command: |
+            if [ -z "${CIRCLE_PULL_REQUEST:-}" ]; then
+              echo "Not a pull request build; nothing to evaluate."
+              exit 0
+            fi
+            # A fork PR's head branch lives in the fork, and a PR can only
+            # merge into a branch of this repository, so nothing stacks on it.
+            if [ -n "${CIRCLE_PR_USERNAME:-}" ]; then
+              echo "Fork pull request; no PR in this repository can merge into its head."
+              exit 0
+            fi
+            python -m devtools.stacked_review_threads \
+              --repo "$CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME" \
+              --pr "${CIRCLE_PULL_REQUEST##*/}"
+
   dependency-audit:
     docker:
       - image: cimg/python:3.14
@@ -106,6 +134,12 @@ workflows:
     jobs:
       - quick-gate:
           filters:
+            tags:
+              ignore: /.*/
+      - stacked-review-threads:
+          filters:
+            branches:
+              ignore: master
             tags:
               ignore: /.*/
       - release-verify:

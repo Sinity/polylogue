@@ -13,16 +13,15 @@ live one: after the parent PR was opened and, below the root, before the parent
 itself merged. A PR merged into a child after that child merged never reached
 the root, so it is excluded.
 
-Stdlib only: the workflow runs it without installing the project.
+Stdlib only, so the CircleCI ``stacked-review-threads`` job runs it without
+syncing the project. The GitHub token comes from ``GH_TOKEN`` or
+``GITHUB_TOKEN``, else from ``gh auth token``.
 
 Usage::
 
-    python -m devtools.stacked_review_threads --repo OWNER/NAME [--pr N] [--post-status]
+    python -m devtools.stacked_review_threads --repo OWNER/NAME [--pr N]
 
-Without ``--post-status`` the exit status is 1 when any evaluated PR has
-stacked unresolved threads. With it, each verdict is posted as the
-``stacked-review-threads`` commit status on the PR head and the exit status
-reports only transport errors.
+The exit status is 1 when any evaluated PR has stacked unresolved threads.
 """
 
 from __future__ import annotations
@@ -32,12 +31,12 @@ import json
 import os
 import subprocess
 import sys
+import urllib.request
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
-STATUS_CONTEXT = "stacked-review-threads"
-STATUS_DESCRIPTION_LIMIT = 140
+GRAPHQL_URL = "https://api.github.com/graphql"
 
 Transport = Callable[[str, dict[str, Any]], dict[str, Any]]
 
@@ -62,10 +61,7 @@ query($owner: String!, $name: String!, $number: Int!) {
 
 _ROOT_FRAGMENT = """
 fragment Root on PullRequest {
-  number url state baseRefName headRefName headRefOid createdAt isCrossRepository
-  commits(last: 1) {
-    nodes { commit { status { contexts { context state description } } } }
-  }
+  number url state baseRefName headRefName createdAt isCrossRepository
 }
 """
 
@@ -77,17 +73,13 @@ query($owner: String!, $name: String!, $branch: String!, $cursor: String) {
       nodes {
         number url headRefName createdAt mergedAt
         mergeCommit { oid }
-        reviewThreads(first: 100) {
-          pageInfo { hasNextPage endCursor }
-          nodes { isResolved comments(first: 1) { nodes { url } } }
-        }
       }
     }
   }
 }
 """
 
-_MORE_THREADS_QUERY = """
+_THREADS_QUERY = """
 query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
@@ -119,20 +111,14 @@ class RootPullRequest:
     number: int
     url: str
     head_ref: str
-    head_oid: str
     created_at: str
     cross_repository: bool
-    current_status: tuple[str, str] | None
 
 
 @dataclass(frozen=True)
 class StackedPullRequest:
     number: int
     url: str
-    head_ref: str
-    created_at: str
-    merged_at: str
-    merge_oid: str | None
     unresolved_thread_urls: tuple[str, ...]
     parent_number: int
 
@@ -146,16 +132,6 @@ class Verdict:
     def state(self) -> str:
         return "failure" if self.offenders else "success"
 
-    @property
-    def description(self) -> str:
-        if not self.offenders:
-            return "No unresolved review threads on stacked PRs"
-        parts = ", ".join(f"#{pr.number} ({len(pr.unresolved_thread_urls)})" for pr in self.offenders)
-        text = f"Unresolved threads on stacked PRs: {parts}"
-        if len(text) > STATUS_DESCRIPTION_LIMIT:
-            text = text[: STATUS_DESCRIPTION_LIMIT - 3] + "..."
-        return text
-
     def report_lines(self) -> list[str]:
         lines = [f"#{self.root.number} {self.root.url}: {self.state}"]
         for pr in self.offenders:
@@ -164,19 +140,27 @@ class Verdict:
         return lines
 
 
-def gh_transport(query: str, variables: dict[str, Any]) -> dict[str, Any]:
-    """Run one GraphQL request through the authenticated ``gh`` CLI."""
-    body = json.dumps({"query": query, "variables": variables})
-    completed = subprocess.run(
-        ["gh", "api", "graphql", "--input", "-"],
-        input=body,
-        capture_output=True,
-        text=True,
-        check=False,
+def _token() -> str:
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        if os.environ.get(name):
+            return os.environ[name]
+    try:
+        completed = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, check=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError("no GitHub token: set GH_TOKEN or GITHUB_TOKEN, or log in with gh") from exc
+    return completed.stdout.strip()
+
+
+def github_transport(query: str, variables: dict[str, Any]) -> dict[str, Any]:
+    """Run one GraphQL request against the GitHub API."""
+    request = urllib.request.Request(
+        GRAPHQL_URL,
+        data=json.dumps({"query": query, "variables": variables}).encode(),
+        headers={"Authorization": f"bearer {_token()}", "Content-Type": "application/json"},
+        method="POST",
     )
-    if completed.returncode != 0:
-        raise RuntimeError(f"gh api graphql failed: {completed.stderr.strip()}")
-    response: dict[str, Any] = json.loads(completed.stdout)
+    with urllib.request.urlopen(request, timeout=60) as reply:
+        response: dict[str, Any] = json.load(reply)
     if response.get("errors"):
         raise RuntimeError(f"GraphQL errors: {response['errors']}")
     return response
@@ -211,65 +195,63 @@ class StackedThreadGate:
     def evaluate(self, root: RootPullRequest) -> Verdict:
         verdict = Verdict(root)
         root_commits: set[str] | None = None
-        # (branch, parent number, parent created_at, parent merged_at or None for the root)
+        # (branch, parent number, parent created_at, parent merged_at or None for the root).
+        # Expansion is keyed by parent PR, not branch name: a reused branch name
+        # is a different lifetime with its own merge window.
         pending: list[tuple[str, int, str, str | None]] = [(root.head_ref, root.number, root.created_at, None)]
-        visited: set[str] = set()
+        expanded: set[int] = set()
         while pending:
             branch, parent_number, parent_created, parent_merged = pending.pop()
-            if branch in visited or branch == "master":
+            if parent_number in expanded or branch == "master":
                 continue
-            visited.add(branch)
-            for child in self._merged_into(branch, parent_number):
-                if child.merge_oid is not None:
+            expanded.add(parent_number)
+            for child in self._merged_into(branch):
+                if child["number"] in expanded or child["number"] == root.number:
+                    continue
+                merge_oid = (child.get("mergeCommit") or {}).get("oid")
+                if merge_oid is not None:
                     if root_commits is None:
                         root_commits = self._commits(root.number)
-                    in_root_history = child.merge_oid in root_commits
+                    in_root_history = merge_oid in root_commits
                 else:
                     in_root_history = False
-                merged_while_live = child.merged_at >= parent_created and (
-                    parent_merged is None or child.merged_at <= parent_merged
+                merged_while_live = child["mergedAt"] >= parent_created and (
+                    parent_merged is None or child["mergedAt"] <= parent_merged
                 )
                 if not (in_root_history or merged_while_live):
                     continue
-                if child.unresolved_thread_urls:
-                    verdict.offenders.append(child)
-                pending.append((child.head_ref, child.number, child.created_at, child.merged_at))
+                unresolved = self._unresolved_threads(child["number"])
+                if unresolved and all(pr.number != child["number"] for pr in verdict.offenders):
+                    verdict.offenders.append(
+                        StackedPullRequest(
+                            number=child["number"],
+                            url=child["url"],
+                            unresolved_thread_urls=tuple(unresolved),
+                            parent_number=parent_number,
+                        )
+                    )
+                pending.append((child["headRefName"], child["number"], child["createdAt"], child["mergedAt"]))
         verdict.offenders.sort(key=lambda pr: pr.number)
         return verdict
 
-    def _merged_into(self, branch: str, parent_number: int) -> Iterator[StackedPullRequest]:
+    def _merged_into(self, branch: str) -> Iterator[dict[str, Any]]:
         cursor: str | None = None
         while True:
             page = self._query(_CHILDREN_QUERY, branch=branch, cursor=cursor)["pullRequests"]
-            for node in page["nodes"]:
-                threads = node["reviewThreads"]
-                unresolved = _unresolved_urls(threads["nodes"])
-                if threads["pageInfo"]["hasNextPage"]:
-                    unresolved.extend(self._more_unresolved(node["number"], threads["pageInfo"]["endCursor"]))
-                yield StackedPullRequest(
-                    number=node["number"],
-                    url=node["url"],
-                    head_ref=node["headRefName"],
-                    created_at=node["createdAt"],
-                    merged_at=node["mergedAt"],
-                    merge_oid=(node.get("mergeCommit") or {}).get("oid"),
-                    unresolved_thread_urls=tuple(unresolved),
-                    parent_number=parent_number,
-                )
+            yield from page["nodes"]
             if not page["pageInfo"]["hasNextPage"]:
                 return
             cursor = page["pageInfo"]["endCursor"]
 
-    def _more_unresolved(self, number: int, cursor: str) -> list[str]:
+    def _unresolved_threads(self, number: int) -> list[str]:
         urls: list[str] = []
-        next_cursor: str | None = cursor
-        while next_cursor is not None:
-            threads = self._query(_MORE_THREADS_QUERY, number=number, cursor=next_cursor)["pullRequest"][
-                "reviewThreads"
-            ]
+        cursor: str | None = None
+        while True:
+            threads = self._query(_THREADS_QUERY, number=number, cursor=cursor)["pullRequest"]["reviewThreads"]
             urls.extend(_unresolved_urls(threads["nodes"]))
-            next_cursor = threads["pageInfo"]["endCursor"] if threads["pageInfo"]["hasNextPage"] else None
-        return urls
+            if not threads["pageInfo"]["hasNextPage"]:
+                return urls
+            cursor = threads["pageInfo"]["endCursor"]
 
     def _commits(self, number: int) -> set[str]:
         oids: set[str] = set()
@@ -283,20 +265,12 @@ class StackedThreadGate:
 
 
 def _parse_root(node: dict[str, Any]) -> RootPullRequest:
-    current: tuple[str, str] | None = None
-    for commit_node in node["commits"]["nodes"]:
-        status = commit_node["commit"].get("status") or {}
-        for context in status.get("contexts") or []:
-            if context["context"] == STATUS_CONTEXT:
-                current = (context["state"].lower(), context["description"] or "")
     return RootPullRequest(
         number=node["number"],
         url=node["url"],
         head_ref=node["headRefName"],
-        head_oid=node["headRefOid"],
         created_at=node["createdAt"],
         cross_repository=node["isCrossRepository"],
-        current_status=current,
     )
 
 
@@ -310,33 +284,10 @@ def _unresolved_urls(threads: list[dict[str, Any]]) -> list[str]:
     return urls
 
 
-def post_status(repo: str, verdict: Verdict, target_url: str | None) -> None:
-    args = [
-        "gh",
-        "api",
-        "--method",
-        "POST",
-        f"repos/{repo}/statuses/{verdict.root.head_oid}",
-        "-f",
-        f"state={verdict.state}",
-        "-f",
-        f"context={STATUS_CONTEXT}",
-        "-f",
-        f"description={verdict.description}",
-    ]
-    if target_url:
-        args += ["-f", f"target_url={target_url}"]
-    completed = subprocess.run(args, capture_output=True, text=True, check=False)
-    if completed.returncode != 0:
-        raise RuntimeError(f"posting status for #{verdict.root.number} failed: {completed.stderr.strip()}")
-
-
-def main(argv: list[str] | None = None, transport: Transport = gh_transport) -> int:
+def main(argv: list[str] | None = None, transport: Transport = github_transport) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo", required=True, help="OWNER/NAME")
     parser.add_argument("--pr", type=int, help="evaluate one PR instead of every open PR targeting master")
-    parser.add_argument("--post-status", action="store_true", help=f"post the {STATUS_CONTEXT} commit status")
-    parser.add_argument("--target-url", help="details link for posted statuses")
     args = parser.parse_args(argv)
     owner, name = args.repo.split("/", 1)
     gate = StackedThreadGate(transport, owner, name)
@@ -351,17 +302,6 @@ def main(argv: list[str] | None = None, transport: Transport = gh_transport) -> 
     for verdict in verdicts:
         lines.extend(verdict.report_lines())
     print("\n".join(lines) if lines else "No open PR targeting master to evaluate")
-    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
-    if summary_path:
-        with open(summary_path, "a", encoding="utf-8") as summary:
-            summary.write("## Stacked review threads\n\n```\n" + "\n".join(lines) + "\n```\n")
-
-    if args.post_status:
-        for verdict in verdicts:
-            if verdict.root.current_status == (verdict.state, verdict.description):
-                continue
-            post_status(args.repo, verdict, args.target_url)
-        return 0
     return 1 if any(verdict.offenders for verdict in verdicts) else 0
 
 

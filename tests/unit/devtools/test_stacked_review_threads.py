@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from devtools.stacked_review_threads import STATUS_CONTEXT, StackedThreadGate, main
+from devtools.stacked_review_threads import StackedThreadGate, main
 
 
 def _threads(*resolved: bool, number: int, has_next: bool = False) -> dict[str, Any]:
@@ -46,24 +46,19 @@ def _merged(
         "createdAt": created,
         "mergedAt": merged,
         "mergeCommit": {"oid": oid},
-        "reviewThreads": _threads(*threads, number=number, has_next=more_threads),
+        "_threads": _threads(*threads, number=number, has_next=more_threads),
     }
 
 
-def _root(number: int, head: str, *, created: str, status: tuple[str, str] | None = None) -> dict[str, Any]:
-    contexts = (
-        [] if status is None else [{"context": STATUS_CONTEXT, "state": status[0].upper(), "description": status[1]}]
-    )
+def _root(number: int, head: str, *, created: str) -> dict[str, Any]:
     return {
         "number": number,
         "url": f"https://example.test/pull/{number}",
         "state": "OPEN",
         "baseRefName": "master",
         "headRefName": head,
-        "headRefOid": f"head{number}",
         "createdAt": created,
         "isCrossRepository": False,
-        "commits": {"nodes": [{"commit": {"status": {"contexts": contexts}}}]},
     }
 
 
@@ -82,6 +77,7 @@ class FakeGitHub:
         self.commits = commits
         self.extra_threads = extra_threads or {}
         self.queried_branches: list[str] = []
+        self.thread_queries: list[int] = []
 
     def __call__(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
         page = {"hasNextPage": False, "endCursor": None}
@@ -91,9 +87,20 @@ class FakeGitHub:
             repo = {"pullRequest": next(r for r in self.roots if r["number"] == variables["number"])}
         elif "states: MERGED" in query:
             self.queried_branches.append(variables["branch"])
-            repo = {"pullRequests": {"pageInfo": page, "nodes": self.merged_into.get(variables["branch"], [])}}
+            nodes = [
+                {k: v for k, v in pr.items() if k != "_threads"} for pr in self.merged_into.get(variables["branch"], [])
+            ]
+            repo = {"pullRequests": {"pageInfo": page, "nodes": nodes}}
         elif "reviewThreads(first: 100, after: $cursor)" in query:
-            repo = {"pullRequest": {"reviewThreads": self.extra_threads[variables["number"]]}}
+            self.thread_queries.append(variables["number"])
+            if variables["cursor"] is None:
+                first = next(
+                    pr for prs in self.merged_into.values() for pr in prs if pr["number"] == variables["number"]
+                )
+                threads = first["_threads"]
+            else:
+                threads = self.extra_threads[variables["number"]]
+            repo = {"pullRequest": {"reviewThreads": threads}}
         elif "commits(first: 100" in query:
             oids = self.commits[variables["number"]]
             repo = {"pullRequest": {"commits": {"pageInfo": page, "nodes": [{"commit": {"oid": o}} for o in oids]}}}
@@ -253,7 +260,51 @@ def test_branch_cycle_terminates() -> None:
         commits={50: ["m51", "m52"]},
     )
     assert set(_offenders(fake, 50)) == {52}
-    assert fake.queried_branches.count("a") == 1
+    assert fake.queried_branches == ["a", "b", "a"]
+
+
+def test_each_lifetime_of_a_reused_child_branch_is_walked_with_its_own_window() -> None:
+    fake = FakeGitHub(
+        roots=[_root(80, "feat", created="2026-01-01T00:00:00Z")],
+        merged_into={
+            "feat": [
+                _merged(81, "child", created="2026-01-02T00:00:00Z", merged="2026-01-04T00:00:00Z", oid="x81"),
+                _merged(82, "child", created="2026-01-05T00:00:00Z", merged="2026-01-07T00:00:00Z", oid="x82"),
+            ],
+            "child": [
+                _merged(
+                    83, "g1", created="2026-01-02T00:00:00Z", merged="2026-01-03T00:00:00Z", oid="x83", threads=(False,)
+                ),
+                _merged(
+                    84, "g2", created="2026-01-05T00:00:00Z", merged="2026-01-06T00:00:00Z", oid="x84", threads=(False,)
+                ),
+            ],
+        },
+        commits={80: ["rebased"]},
+    )
+    assert set(_offenders(fake, 80)) == {83, 84}
+
+
+def test_threads_are_read_only_for_prs_in_the_stack() -> None:
+    fake = FakeGitHub(
+        roots=[_root(90, "feat", created="2026-03-01T00:00:00Z")],
+        merged_into={
+            "feat": [
+                _merged(
+                    91,
+                    "old",
+                    created="2025-01-01T00:00:00Z",
+                    merged="2025-01-02T00:00:00Z",
+                    oid="m91",
+                    threads=(False,),
+                ),
+                _merged(92, "new", created="2026-03-02T00:00:00Z", merged="2026-03-03T00:00:00Z", oid="m92"),
+            ]
+        },
+        commits={90: ["m92"]},
+    )
+    assert _offenders(fake, 90) == {}
+    assert fake.thread_queries == [92]
 
 
 def test_cli_exit_status_reflects_offenders(capsys: pytest.CaptureFixture[str]) -> None:
