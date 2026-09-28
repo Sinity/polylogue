@@ -150,6 +150,38 @@ def test_materializer_replaces_archive_projection_and_tracks_delegation_freshnes
         )
 
 
+def test_materializer_pins_digest_and_rows_to_the_same_index_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The published graph label and queried rows share one operation snapshot.
+
+    Anti-vacuity: separate freshness/read connections produce distinct SQLite
+    connection identities, so this fails if either read leaves the pinned
+    operation connection.
+    """
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    _seed_delegation(tmp_path)
+    connections: list[sqlite3.Connection] = []
+    snapshot = materializer._snapshot_connection
+    query = ArchiveStore.query_delegations
+
+    def record_snapshot(conn: sqlite3.Connection) -> object:
+        connections.append(conn)
+        return snapshot(conn)
+
+    def record_query(archive: ArchiveStore, *args: object, **kwargs: object) -> object:
+        connections.append(archive._conn)
+        return query(archive, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(materializer, "_snapshot_connection", record_snapshot)
+    monkeypatch.setattr(ArchiveStore, "query_delegations", record_query)
+
+    assert materialize_delegation_work_evidence_archive(tmp_path) == 1
+    assert len(connections) == 2
+    assert connections[0] is connections[1]
+
+
 def test_delegation_stage_reads_without_daemon_writer_lease(tmp_path: Path) -> None:
     """The freshness probe and materialization read run outside writer admission."""
     _seed_delegation(tmp_path)
