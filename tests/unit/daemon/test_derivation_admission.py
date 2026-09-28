@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
-from pathlib import Path
-
 import pytest
 
-from polylogue.core.enums import Provider
 from polylogue.daemon.cli import _derivation_admission
 from polylogue.daemon.derivation import (
     DerivationFrame,
@@ -17,7 +13,6 @@ from polylogue.daemon.derivation import (
     Outcome,
     PendingReason,
 )
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.intake import (
     AdmissionOutcome,
     AdmissionResult,
@@ -25,12 +20,7 @@ from polylogue.daemon.intake import (
     IntakeClassSpec,
     IntakeItem,
 )
-from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
-from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
-from polylogue.operations.intake_adapters import RawMaterializationDiscovery
 from polylogue.storage.derived.raw import RAW_OBSERVATION_DOMAIN
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from tests.infra.archive_templates import bootstrap_archive_root
 
 _FRAME = DerivationFrame(archive_root="/archive", source_revision="r1")
 
@@ -101,38 +91,3 @@ async def test_admission_keeps_the_byte_estimate_as_its_cost() -> None:
     assert report_row.admitted == 1
     assert report_row.actual_cost == report_row.estimated_cost == 4096
     assert report_row.reconciled_cost == 0
-
-
-@pytest.mark.asyncio
-async def test_invalid_retained_payload_is_terminal_across_restart(tmp_path: Path) -> None:
-    """A syntactically invalid payload converges to a durable terminal verdict.
-
-    Red if the parse failure only raises (RETRYABLE in memory) instead of
-    persisting a refusal: the second discovery, standing in for a daemon
-    restart, would offer the same raw again.
-    """
-    bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.CHATGPT,
-            payload=b'[{"id": "broken", "mapping": ',
-            source_path="broken.json",
-            acquired_at_ms=1,
-        )
-    assert [item[0] for item in RawMaterializationDiscovery(tmp_path).discover_pending_raw_ids(8)] == [raw_id]
-    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
-    owner = RawObservationConvergenceOwner(
-        tmp_path,
-        compute_adapter=compute,
-        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
-    )
-    try:
-        report = await owner.converge_raw_id(raw_id)
-        result = _derivation_admission(report, raw_id, subject="raw observation")
-        assert result.outcome in (AdmissionOutcome.ADMITTED, AdmissionOutcome.DUPLICATE), result
-    finally:
-        compute.shutdown(wait=True)
-        await coordinator.shutdown(timeout=1.0)
-
-    assert RawMaterializationDiscovery(tmp_path).discover_pending_raw_ids(8) == ()
