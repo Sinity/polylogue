@@ -143,7 +143,12 @@ def test_proof_daemon_runs_in_an_isolated_home(tmp_path: Path, monkeypatch: pyte
     assert home.is_dir() and home.is_relative_to(artifact_root)
     for variable in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"):
         assert Path(environment[variable]).is_relative_to(home)
-    assert "POLYLOGUE_CONFIG" not in environment
+    # Not merely dropped: an explicit override, pointed at a nonexistent
+    # path under the isolated home, disables the <cwd>/polylogue.toml
+    # fallback that a bare removal would leave live.
+    assert environment["POLYLOGUE_CONFIG"] != str(host / "polylogue.toml")
+    assert Path(environment["POLYLOGUE_CONFIG"]).is_relative_to(home)
+    assert not Path(environment["POLYLOGUE_CONFIG"]).exists()
     assert "POLYLOGUE_HERMES_ROOT" not in environment
     assert environment["POLYLOGUE_ARCHIVE_ROOT"] == str(tmp_path / "archive")
 
