@@ -1587,9 +1587,16 @@ class QueryErrorPayload(SurfacePayloadModel):
     error: str
     detail: str | None = None
     field: str | None = None
-    # Set where a row-bearing surface decides its terminal outcome as an error
-    # (for example the daemon HTTP boundary's unexpected-failure answer).
-    outcome: OutcomeEnvelope | None = None
+
+
+class QueryFailurePayload(QueryErrorPayload):
+    """An unexpected failure answered at a request boundary, with its terminal outcome.
+
+    Only the daemon HTTP boundary's 500 answer carries ``outcome``; every other
+    error keeps the four-field :class:`QueryErrorPayload` envelope.
+    """
+
+    outcome: OutcomeEnvelope
 
 
 class QueryMissReasonPayload(SurfacePayloadModel):
@@ -4543,6 +4550,7 @@ __all__ = [
     "DelegationSubtreePayload",
     "MutationResultPayload",
     "QueryErrorPayload",
+    "QueryFailurePayload",
     "QueryUnitAggregateEnvelope",
     "QueryUnitAggregateRowPayload",
     "QueryUnitEnvelope",

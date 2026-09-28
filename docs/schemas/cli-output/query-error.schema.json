@@ -1,44 +1,4 @@
 {
-  "$defs": {
-    "OutcomeEnvelope": {
-      "additionalProperties": false,
-      "description": "The terminal outcome of one operation, decided at the operation boundary.",
-      "properties": {
-        "detail": {
-          "additionalProperties": true,
-          "title": "Detail",
-          "type": "object"
-        },
-        "reason": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Reason"
-        },
-        "state": {
-          "enum": [
-            "ok",
-            "empty",
-            "degraded",
-            "error"
-          ],
-          "title": "State",
-          "type": "string"
-        }
-      },
-      "required": [
-        "state"
-      ],
-      "title": "OutcomeEnvelope",
-      "type": "object"
-    }
-  },
   "$id": "https://polylogue.dev/schemas/cli-output/query-error.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
@@ -77,17 +37,6 @@
       "default": false,
       "title": "Ok",
       "type": "boolean"
-    },
-    "outcome": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/OutcomeEnvelope"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
     }
   },
   "required": [

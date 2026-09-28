@@ -114,6 +114,7 @@ from polylogue.surfaces.outcome import OutcomeEnvelope, combine_outcomes, decide
 from polylogue.surfaces.payloads import (
     MutationResultPayload,
     QueryErrorPayload,
+    QueryFailurePayload,
     QueryMissDiagnosticsPayload,
     QueryMissReasonPayload,
     ReaderActionAvailabilityPayload,
@@ -1186,7 +1187,7 @@ def _write_route_exception_answer(handler: DaemonAPIHandler, exc: Exception, *, 
     )
     handler._send_json(
         HTTPStatus.INTERNAL_SERVER_ERROR,
-        QueryErrorPayload(error=error_code, outcome=OutcomeEnvelope(state="error", reason=error_code)).model_dump(
+        QueryFailurePayload(error=error_code, outcome=OutcomeEnvelope(state="error", reason=error_code)).model_dump(
             mode="json"
         ),
     )

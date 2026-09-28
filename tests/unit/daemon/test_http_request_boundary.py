@@ -15,7 +15,7 @@ import pytest
 from polylogue.archive.query.transaction import QueryArchiveEpochUnreadableError
 from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
 from polylogue.logging import DEBUG, capture, set_level
-from polylogue.surfaces.payloads import QueryErrorPayload
+from polylogue.surfaces.payloads import QueryFailurePayload
 
 
 @contextmanager
@@ -64,7 +64,7 @@ def test_escaped_read_error_is_answered_with_a_500_error_envelope(monkeypatch: p
     assert payload["error"] == "internal_error"
     assert payload["outcome"]["state"] == "error"
     # The answer stays inside the declared shared error contract.
-    assert QueryErrorPayload.model_validate(payload).outcome is not None
+    assert QueryFailurePayload.model_validate(payload).outcome.state == "error"
 
 
 def test_error_after_response_started_closes_without_a_second_status(monkeypatch: pytest.MonkeyPatch) -> None:
