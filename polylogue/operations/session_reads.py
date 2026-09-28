@@ -250,11 +250,30 @@ async def session_timeline(archive_root: Path, request: SessionTimeline) -> Sess
             SELECT 'session:' || e.session_id, e.session_id, s.origin, 'session-event',
                    e.event_type, e.occurred_at_ms, e.event_id, e.source_message_id,
                    -- polylogue-kc8eq retired the stored ``summary`` column as a
-                   -- write-time render of the payload. This is that render,
-                   -- moved to the read path: same COALESCE order, same '' floor,
-                   -- so the timeline text for a session-event is unchanged.
-                   COALESCE(json_extract(e.payload_json, '$.summary'),
-                            json_extract(e.payload_json, '$.text'), '')
+                   -- write-time render of the payload. Preserve its Python
+                   -- truthiness fallback before rendering the timeline text.
+                   CASE
+                     WHEN json_type(e.payload_json, '$.summary') IS NULL
+                       OR json_type(e.payload_json, '$.summary') = 'null'
+                       OR (json_type(e.payload_json, '$.summary') = 'text' AND json_extract(e.payload_json, '$.summary') = '')
+                       OR (json_type(e.payload_json, '$.summary') IN ('integer', 'real') AND json_extract(e.payload_json, '$.summary') = 0)
+                       OR (json_type(e.payload_json, '$.summary') = 'false')
+                       OR (json_type(e.payload_json, '$.summary') = 'array' AND json_array_length(e.payload_json, '$.summary') = 0)
+                       OR (json_type(e.payload_json, '$.summary') IN ('array', 'object')
+                           AND NOT EXISTS (SELECT 1 FROM json_each(e.payload_json, '$.summary')))
+                     THEN CASE
+                       WHEN json_type(e.payload_json, '$.text') IS NULL
+                         OR json_type(e.payload_json, '$.text') = 'null'
+                         OR (json_type(e.payload_json, '$.text') = 'text' AND json_extract(e.payload_json, '$.text') = '')
+                         OR (json_type(e.payload_json, '$.text') IN ('integer', 'real') AND json_extract(e.payload_json, '$.text') = 0)
+                         OR json_type(e.payload_json, '$.text') = 'false'
+                         OR (json_type(e.payload_json, '$.text') IN ('array', 'object')
+                             AND NOT EXISTS (SELECT 1 FROM json_each(e.payload_json, '$.text')))
+                       THEN ''
+                       ELSE json_extract(e.payload_json, '$.text')
+                     END
+                     ELSE json_extract(e.payload_json, '$.summary')
+                   END
             FROM session_events e JOIN sessions s ON s.session_id=e.session_id
         ) """
         where = "WHERE (? IS NULL OR origin=?) AND (? IS NULL OR instr(lower(text), lower(?))>0)"
@@ -314,7 +333,7 @@ def raw_operation(
     max_result_bytes: int = 256_000,
 ) -> RawPage | RawContent:
     from polylogue.operations.raw_sessions.memory import MemoryService
-    from polylogue.operations.raw_sessions.sessions import SessionLogService
+    from polylogue.operations.raw_sessions.sessions import SessionError, SessionLogService
     from polylogue.operations.raw_sessions.timeline import TimelineService
 
     service = SessionLogService(sources=sources, max_result_bytes=max_result_bytes)
@@ -377,28 +396,63 @@ def raw_operation(
     else:
         provider = _provider(request.origin)
         if isinstance(request, RawSearch):
-            result = service.search(
-                provider,
-                request.query,
-                request.limit,
-                reference=request.reference,
-                cursor=request.continuation,
-                cursor_key=key,
-                scan_bytes=request.scan_bytes,
-            )
-            rows = result["matches"]
+            source = service._source(provider)
+            if not source.root.is_dir():
+                result = {
+                    "matches": [],
+                    "sources": [
+                        {
+                            "source": provider,
+                            "availability": "unavailable",
+                            "reason": "source root unavailable",
+                            "coverage": {"scanned_bytes": 0, "truncated": False},
+                        }
+                    ],
+                    "scanned_bytes": 0,
+                    "truncated": False,
+                }
+                rows = []
+            else:
+                try:
+                    result = service.search(
+                        provider,
+                        request.query,
+                        request.limit,
+                        reference=request.reference,
+                        cursor=request.continuation,
+                        cursor_key=key,
+                        scan_bytes=request.scan_bytes,
+                    )
+                except SessionError as exc:
+                    if request.reference is None or "unavailable" not in str(exc):
+                        raise
+                    result = {
+                        "matches": [],
+                        "sources": [
+                            {
+                                "source": provider,
+                                "availability": "unavailable",
+                                "reason": "referenced session source unavailable",
+                                "coverage": {"scanned_bytes": 0, "truncated": False},
+                            }
+                        ],
+                        "scanned_bytes": 0,
+                        "truncated": False,
+                    }
+                rows = result["matches"]
         else:
             result = service.timeline(
                 provider, None, None, None, request.limit, cursor=request.continuation, cursor_key=key
             )
             rows = result["entries"]
-        result["sources"] = [
-            {
-                "source": provider,
-                "availability": "available",
-                "coverage": {"scanned_bytes": result["scanned_bytes"], "truncated": result["truncated"]},
-            }
-        ]
+        if "sources" not in result:
+            result["sources"] = [
+                {
+                    "source": provider,
+                    "availability": "available",
+                    "coverage": {"scanned_bytes": result["scanned_bytes"], "truncated": result["truncated"]},
+                }
+            ]
     # Each row carries the stat identity its text was read under; the scanner
     # verified the descriptor before and after that read. Emission reports
     # that observation instead of re-stating the file, so a later change can

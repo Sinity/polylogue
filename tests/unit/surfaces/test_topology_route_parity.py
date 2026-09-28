@@ -344,3 +344,27 @@ def test_cycle_topology_is_degraded(workspace_env: dict[str, Path]) -> None:
     )
     assert TOPOLOGY_GAP_CYCLE in topology.degraded_gaps()
     assert _outcome(topology_public_envelope(topology))["state"] == "degraded"
+
+
+def test_bounding_topology_filters_helpers_and_preserves_page_offset() -> None:
+    """Bound helpers stay referentially valid and resume at the absolute offset.
+
+    Anti-vacuity: red if helper references survive node removal or the next
+    token repeats earlier nodes by using page length as its offset.
+    """
+    envelope = {
+        "nodes": [{"session_id": f"n{i}"} for i in range(4)],
+        "edges": [],
+        "ancestors": ["n0", "n1", "n2"],
+        "descendants": ["n2", "n3"],
+        "siblings": ["n3"],
+        "thread": ["n0", "n1", "n2", "n3"],
+        "continuation": None,
+        "nodes_complete": True,
+        "edges_complete": True,
+        "outcome": {"state": "ok", "detail": {}},
+    }
+    bounded = bound_topology_envelope(envelope, node_limit=2, source_node_offset=500)
+    kept = {row["session_id"] for row in bounded["nodes"]}
+    assert bounded["continuation"] == "node-offset:502"
+    assert all(set(bounded[key]) <= kept for key in ("ancestors", "descendants", "siblings", "thread"))

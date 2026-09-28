@@ -155,11 +155,15 @@ def frame_request(
     original_arguments = {
         key: value for key, value in transaction.arguments.items() if key not in (extra_arguments or {})
     }
+    legacy_projection = original_arguments.pop("projection", None)
     original = SessionRead.model_validate(
         {**original_arguments, "limit": transaction.page_size, "offset": transaction.offset}
     )
     reference = {**_window_arguments(original), **dict(extra_arguments or {})}
-    if dict(transaction.arguments) != reference:
+    if dict(transaction.arguments) != reference and dict(transaction.arguments) != {
+        "ref": original.ref,
+        "projection": legacy_projection,
+    }:
         raise QueryContinuationInvalidError("continuation arguments do not match the requested transcript window")
     supplied = request.model_dump(mode="json", exclude_unset=True, exclude={"continuation", "operation"})
     for name, value in supplied.items():
@@ -293,7 +297,9 @@ def read_transcript_window_sync(
     )
 
 
-async def message_transcript_window(api: Any, request: SessionRead) -> TranscriptWindow[Any]:
+async def message_transcript_window(
+    api: Any, request: SessionRead, *, content_projection: Any = None
+) -> TranscriptWindow[Any]:
     """Answer a transcript window as domain ``Message`` rows.
 
     This is the binding the Python API, the CLI ``read --view messages`` verb,
@@ -304,15 +310,17 @@ async def message_transcript_window(api: Any, request: SessionRead) -> Transcrip
     owners.
     """
 
+    from polylogue.archive.message.types import MessageType
+
     session_id = request.ref.removeprefix("session:")
 
     async def read(limit: int, offset: int) -> tuple[list[Any], int, Any]:
         if request.material_origin:
-            from polylogue.archive.message.types import MessageType
-
             session = await api.get_session(session_id)
             if session is None:
-                raise ValueError(f"session not found: {session_id}")
+                from polylogue.operations.archive_mutation import SessionNotFoundError
+
+                raise SessionNotFoundError(session_id)
             messages = [
                 message
                 for message in session.messages
@@ -322,10 +330,47 @@ async def message_transcript_window(api: Any, request: SessionRead) -> Transcrip
                 )
                 and (not request.material_origin or message.material_origin in request.material_origin)
             ]
+            if content_projection is not None and content_projection.filters_content():
+                from polylogue.archive.semantic.content_projection import project_message_content
+
+                messages = project_message_content(messages, content_projection)
+            messages = [
+                message
+                for message in messages
+                if (not request.message_role or message.role in request.message_role)
+                and (
+                    request.message_type is None or message.message_type == MessageType.normalize(request.message_type)
+                )
+            ]
             completeness = await api.repository.get_lineage_completeness(session_id)
             return list(messages[offset : offset + limit]), len(messages), completeness
 
         resolved_session_id = await api.repository.resolve_id(session_id) or session_id
+        if content_projection is not None and content_projection.filters_content():
+            from polylogue.archive.semantic.content_projection import project_message_content
+
+            session = await api.get_session(resolved_session_id)
+            if session is None:
+                from polylogue.operations.archive_mutation import SessionNotFoundError
+
+                raise SessionNotFoundError(session_id)
+            projected = project_message_content(session.messages, content_projection)
+            projected = [
+                message
+                for message in projected
+                if not request.material_origin or message.material_origin in request.material_origin
+            ]
+            projected = [
+                message
+                for message in projected
+                if (not request.message_role or message.role in request.message_role)
+                and (
+                    request.message_type is None or message.message_type == MessageType.normalize(request.message_type)
+                )
+            ]
+            total = len(projected)
+            completeness = await api.repository.get_lineage_completeness(resolved_session_id)
+            return list(projected[offset : offset + limit]), total, completeness
         messages, total, completeness = await api.repository.get_messages_paginated(
             resolved_session_id,
             message_role=tuple(request.message_role),
@@ -334,7 +379,9 @@ async def message_transcript_window(api: Any, request: SessionRead) -> Transcrip
             offset=offset,
         )
         if total == 0 and resolved_session_id == session_id and await api.repository.resolve_id(session_id) is None:
-            raise ValueError(f"session not found: {session_id}")
+            from polylogue.operations.archive_mutation import SessionNotFoundError
+
+            raise SessionNotFoundError(session_id)
         return list(messages), total, completeness
 
     return await read_transcript_window(Path(api.archive_root), request, read=read)
