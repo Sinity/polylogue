@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -49,9 +50,22 @@ def _decode_provider_utf8(raw: bytes) -> str:
         return raw.decode("utf-8")
     except UnicodeDecodeError as error:
         try:
-            return raw.decode("utf-8", errors="surrogatepass")
+            decoded = raw.decode("utf-8", errors="surrogatepass")
         except UnicodeDecodeError:
             raise error from None
+        # A CESU-8 pair (a high and a low surrogate each encoded directly) is
+        # one character; kept as two code units it would be stored as two
+        # adjacent escapes, which every JSON reader combines, so the stored
+        # value would differ from the hashed one.
+        return _SURROGATE_PAIR.sub(_combined_pair, decoded)
+
+
+_SURROGATE_PAIR = re.compile("[\ud800-\udbff][\udc00-\udfff]")
+
+
+def _combined_pair(match: re.Match[str]) -> str:
+    high, low = (ord(char) for char in match.group())
+    return chr(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00))
 
 
 def _load_json_record(line: str) -> JSONValue:

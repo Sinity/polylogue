@@ -3536,3 +3536,11 @@ def test_sink_restores_surrogates_inside_the_owner_coordinate() -> None:
     assert restored.owner_coordinate is not None
     assert restored.owner_coordinate.stable_key == "s\ud800"
     assert restored.text == "t\ud800"
+
+
+def test_a_cesu8_pair_in_provider_bytes_decodes_to_one_character() -> None:
+    """Anti-vacuity: keep the two surrogatepass code units and the stored
+    escaped JSON re-reads as a different value."""
+    from polylogue.archive.raw_payload.decode import _decode_provider_utf8
+
+    assert _decode_provider_utf8(b"a\xed\xa0\xbd\xed\xb8\x80 \xed\xa0\x80") == "a\U0001f600 \ud800"
