@@ -666,25 +666,63 @@ def _incoming_write_carries_distinct_messages(
 _SIDECAR_EVENT_TYPES = ("claude_tool_result_sidecar", "gemini_cli_tool_output_sidecar")
 
 
+#: Replaces a matched TOOL_RESULT block's text when its sidecar's publication
+#: was refused as excised bytes: a non-content-bearing terminal value, never
+#: the excised text itself even in truncated or summarized form.
+_EXCISED_SIDECAR_TEXT = "[sidecar content excised; publication refused]"
+
+
 def _drop_refused_sidecar_blob_hashes(
     session_to_write: ParsedSession, blob_publisher: ArchiveBlobPublisher
 ) -> ParsedSession:
-    """Remove sidecar ``blob_hash`` references whose bytes a flush refused as excised."""
-    refused_positions = [
-        position
-        for position, event in enumerate(session_to_write.session_events)
+    """Remove refused sidecar ``blob_hash`` references and redact their block text.
+
+    A refused hash names bytes a prior excision already removed from the blob
+    store, but ``apply_tool_result_sidecars``/``apply_gemini_tool_output_sidecars``
+    already copied that same excised text into the matching TOOL_RESULT
+    block's ``text`` before this runs. Dropping only the event's ``blob_hash``
+    leaves that full text sitting in ``blocks.text``, which flush still
+    persists and FTS still indexes -- resurrecting deliberately excised
+    content under a fresh ingest despite this reporting a permanent
+    publication refusal. Both the event reference and the block text are
+    excised together.
+    """
+    refused_tool_use_ids = {
+        tool_use_id
+        for event in session_to_write.session_events
         if event.event_type in _SIDECAR_EVENT_TYPES
         and isinstance(blob_hash := event.payload.get("blob_hash"), str)
         and publication_refused(blob_publisher, blob_hash)
-    ]
-    if not refused_positions:
+        and isinstance(tool_use_id := event.payload.get("tool_use_id"), str)
+    }
+    if not refused_tool_use_ids:
         return session_to_write
-    updated = list(session_to_write.session_events)
-    for position in refused_positions:
-        payload = dict(updated[position].payload)
-        del payload["blob_hash"]
-        updated[position] = updated[position].model_copy(update={"payload": payload})
-    return session_to_write.model_copy(update={"session_events": updated})
+    updated_events = [
+        event.model_copy(update={"payload": {key: value for key, value in event.payload.items() if key != "blob_hash"}})
+        if event.event_type in _SIDECAR_EVENT_TYPES and event.payload.get("tool_use_id") in refused_tool_use_ids
+        else event
+        for event in session_to_write.session_events
+    ]
+    updated_messages = [
+        message.model_copy(
+            update={
+                "blocks": [
+                    block.model_copy(update={"text": _EXCISED_SIDECAR_TEXT})
+                    if block.type is BlockType.TOOL_RESULT
+                    and block.tool_id in refused_tool_use_ids
+                    and block.text is not None
+                    else block
+                    for block in message.blocks
+                ]
+            }
+        )
+        if any(
+            block.type is BlockType.TOOL_RESULT and block.tool_id in refused_tool_use_ids for block in message.blocks
+        )
+        else message
+        for message in session_to_write.messages
+    ]
+    return session_to_write.model_copy(update={"session_events": updated_events, "messages": updated_messages})
 
 
 def _preacquire_sidecar_blobs(

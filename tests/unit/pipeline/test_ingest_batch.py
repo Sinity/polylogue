@@ -1944,6 +1944,17 @@ def test_write_session_counts_and_references_no_refused_sidecar_blob(tmp_path: P
         ).fetchone()
         assert '"blob_hash"' not in event_row["payload_json"]
 
+        # AC: dropping the event's blob_hash is not enough -- the matched
+        # sidecar's full text was already copied into this TOOL_RESULT
+        # block, and a flush that leaves it there would republish the
+        # excised content into blocks.text/FTS under a fresh ingest.
+        block_row = conn.execute(
+            "SELECT text FROM blocks WHERE session_id = ? AND block_type = 'tool_result'",
+            ("claude-code-session:sidecar-excised",),
+        ).fetchone()
+        assert block_row["text"] != full_text
+        assert full_text not in block_row["text"]
+
 
 def test_write_session_dedups_identical_sidecar_blob_across_sessions(tmp_path: Path) -> None:
     """Two sessions with byte-identical acquired sidecar text share one blob (AC4 dedup).
