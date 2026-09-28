@@ -1135,3 +1135,44 @@ def test_an_oom_killed_step_keeps_its_diagnosis_over_the_missing_evidence(
     ):
         assert durable["termination_killer"] == "oom-kill"
         assert durable["termination_unit"] == "unit.service"
+
+
+def test_a_queued_run_keeps_its_slot_receipt_and_any_recorded_killer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Anti-vacuity: drop ``pytest_slot_receipt`` from the OOM return, or the
+    termination merge from the other returns, and these fields disappear."""
+    provenance = {"git_head": "abc", "git_branch": "b", "git_dirty": False, "git_worktree_content_sha256": "s"}
+    receipt = {"worktree_provenance": provenance, "memory_peak_mib": 900}
+
+    def run_with(outcome: SlotOutcome) -> dict[str, Any]:
+        monkeypatch.setattr(run_tests, "run_pytest", lambda *_a, **_k: outcome)
+        monkeypatch.setattr(run_tests, "write_run_receipt", lambda _path: None)
+        _rc, _elapsed, metadata = run_tests._run(
+            "pytest focused",
+            ["pytest"],
+            cwd=str(tmp_path),
+            env={},
+            run=cast(Any, None),
+            artifacts=cast(Any, None),
+            report_path=tmp_path / "report.json",
+        )
+        return metadata
+
+    oom = run_with(
+        SlotOutcome(
+            returncode=137, slot="agentctl job 9", receipt=receipt, termination={"killer": "oom-kill", "unit": "u"}
+        )
+    )
+    assert oom["diagnosis"] == "oom_killed"
+    assert oom["pytest_slot_receipt"] == receipt
+    assert oom["worktree_provenance"] == provenance
+
+    timed_out = run_with(
+        SlotOutcome(
+            returncode=124, slot="agentctl job 10", receipt=receipt, termination={"killer": "timeout", "unit": "u"}
+        )
+    )
+    assert timed_out["diagnosis"] == "pytest_failed"
+    assert timed_out["termination_killer"] == "timeout"
+    assert timed_out["termination_unit"] == "u"

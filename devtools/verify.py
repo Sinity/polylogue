@@ -1435,6 +1435,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             results=results,
         )
     executed: set[tuple[object, object, object]] = set()
+    tree_unknown = False
     for result in results:
         slot_receipt = result.get("pytest_slot_receipt")
         provenance = slot_receipt.get("worktree_provenance") if isinstance(slot_receipt, Mapping) else None
@@ -1451,7 +1452,11 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         elif result.get("diagnosis") == OOM_KILLED_DIAGNOSIS:
             # The kill took the slot receipt, so nothing identified the tree
             # pytest ran against; the admitted head is not that evidence.
-            run.record_execution_worktree({"capture_source": "unavailable"})
+            tree_unknown = True
+    if tree_unknown:
+        # Recorded after every step, so a later step's provenance cannot
+        # stand in for the tree the killed step ran against.
+        run.record_execution_worktree({"capture_source": "unavailable"})
     # The static gates read the checkout directly, with no slot to re-check it:
     # a run whose branch, HEAD or Git-visible content changed while it ran, or
     # whose pytest step executed other content, verified no single tree.
