@@ -718,6 +718,41 @@ def test_the_live_pass_writes_into_the_owned_generation_not_the_active_one(
         assert reader._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
 
 
+def test_a_file_intake_excludes_does_not_block_promotion(tmp_path: Path) -> None:
+    """The baseline records intake's own exclusion, so the build promotes (polylogue-se08w).
+
+    The source root holds one Codex session and one Codex JSONL that intake
+    excludes before acquisition (it carries no conversational record). No raw
+    row is ever written for it, so the baseline must not require one.
+
+    Anti-vacuity: removing the ``classify_pre_acquisition`` step from
+    ``capture_production_source_baseline`` records the sidecar as accepted,
+    and ``promote()`` raises ``ProductionBaselineError`` naming one unretained
+    revision.
+    """
+    root = tmp_path / "sessions"
+    root.mkdir()
+    session = root / "one.jsonl"
+    session.write_bytes(_codex_session("kept-session", "kept"))
+    sidecar = root / "meta-only.jsonl"
+    sidecar.write_bytes(b'{"type":"session_meta","payload":{"id":"meta-only","timestamp":"2026-06-02T00:00:00Z"}}\n')
+    generation = ColdBuildGeneration.begin(tmp_path, reason="test", sources=(WatchSource("codex", root),))
+    register_cold_build_generation(generation)
+    try:
+        metrics = asyncio.run(_processor(tmp_path, root).ingest_files([session, sidecar], emit_event=False))
+        assert metrics.succeeded_file_count == 1, metrics
+        assert metrics.excluded_file_count == 1, metrics
+        decisions = {row.path: row for row in generation.source_baseline.decisions}
+        assert decisions[str(sidecar)].disposition == "excluded"
+        assert decisions[str(sidecar)].reason == "intake_excluded:declared artifact rule: not parsed as a session"
+        assert decisions[str(session)].disposition == "accepted"
+
+        assert generation.promote().state == "active"
+        assert _active_session_count(tmp_path) == 1
+    finally:
+        clear_cold_build_generation()
+
+
 def test_the_build_spans_passes_and_keeps_the_deferred_indexes_dropped(
     tmp_path: Path, cold_build: ColdBuildGeneration
 ) -> None:

@@ -93,7 +93,6 @@ from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
 from polylogue.sources.acquisition_boundary import (
     admit_bound_bytes,
     capture_bound_path,
-    refuse_foreign_path,
     release_refused_capture,
 )
 from polylogue.sources.artifact_observations import record_session_artifact_observation
@@ -143,10 +142,10 @@ from polylogue.sources.live.batch_support import (
     _FullIngestResult,
     _ingest_pass_exhausted,
     _jsonl_provider_and_session_artifact,
-    _parse_path_as_session_artifact,
     _parse_payload_as_session_artifact,
     _path_size,
     _throttled_phase_heartbeat,
+    classify_pre_acquisition,
     claude_semantic_frontier_for_prefix,
     claude_semantic_frontier_for_prefix_with_bytes,
     cursor_prefix_hash,
@@ -157,6 +156,7 @@ from polylogue.sources.live.batch_support import (
     encode_cursor_hash_authority,
     file_prefix_sha256,
     fingerprint_file,
+    foreign_origin_exclusion,
     jsonl_complete_prefix,
     jsonl_complete_prefix_path,
     last_complete_newline_from_tail,
@@ -200,7 +200,6 @@ from polylogue.sources.origin_specs import (
     database_capability_for_provider,
     frontier_kind_for_origin,
     path_declaration_refuses_session,
-    recognize_source_class,
 )
 from polylogue.sources.parsers import antigravity, codex_state, hermes_identity, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
@@ -3164,13 +3163,43 @@ class LiveBatchProcessor:
                 failed.append(path)
                 continue
             captured_file_observations[path] = _file_observation(stat)
-            source_class = (
-                None
-                if path.suffix.lower() == ".zip"
-                else recognize_source_class(
-                    fallback_provider, path, source_only=source_only, source_size_bytes=stat.st_size
+            # The production baseline applies this same decision to every
+            # file discovery accepts, so a cold build requires retention of
+            # exactly the files this route retains.
+            try:
+                admission = classify_pre_acquisition(
+                    path, fallback_provider=fallback_provider, source_only=source_only, size_bytes=stat.st_size
                 )
-            )
+            except OSError:
+                failed.append(path)
+                continue
+            if admission.refused:
+                assert admission.excluded_reason is not None
+                self._mark_refused_cursor(
+                    path,
+                    stat,
+                    source_name=fallback_provider.value,
+                    reason=admission.excluded_reason,
+                    excluded=excluded_paths,
+                )
+                continue
+            if admission.excluded_reason is not None:
+                if admission.detection_crash is not None:
+                    detection_fallbacks[path] = admission.detection_crash
+                logger.info(
+                    "live.source_candidate_not_admitted path=%s provider=%s reason=%s",
+                    path,
+                    fallback_provider.value,
+                    admission.excluded_reason,
+                )
+                self._mark_excluded_cursor(
+                    path,
+                    stat,
+                    source_name=(admission.detected_provider or fallback_provider).value,
+                    reason=admission.excluded_reason,
+                    excluded=excluded_paths,
+                )
+                continue
             hermes_database_capability = database_capability_for_provider(Provider.HERMES)
             hermes_member = (
                 hermes_database_capability.member(path.name) if hermes_database_capability is not None else None
@@ -3181,43 +3210,7 @@ class LiveBatchProcessor:
                 and hermes_member is not None
                 and hermes_member.disposition != "out-of-scope"
             )
-            if source_class is not None and source_class.source_class == "unsupported" and not hermes_owned_sqlite_name:
-                # A broad Hermes root is suffix-enumerated so every candidate
-                # remains observable.  Only the OriginSpec recognizer may
-                # admit a candidate to the Hermes parser; unknown/config/cache
-                # material is a typed non-session observation instead --
-                # unless it carries another origin's shape, which is refused.
-                try:
-                    refuse_foreign_path(path, fallback_provider)
-                except ForeignOriginContentError as exc:
-                    self._mark_refused_cursor(
-                        path,
-                        stat,
-                        source_name=fallback_provider.value,
-                        reason=f"{exc.code}: {exc}",
-                        excluded=excluded_paths,
-                    )
-                    continue
-                except OSError:
-                    failed.append(path)
-                    continue
-                logger.info(
-                    "live.source_candidate_not_admitted path=%s provider=%s source_class=%s reason=%s",
-                    path,
-                    fallback_provider.value,
-                    source_class.source_class,
-                    source_class.reason,
-                )
-                self._mark_excluded_cursor(
-                    path,
-                    stat,
-                    source_name=fallback_provider.value,
-                    reason="unsupported source class",
-                    excluded=excluded_paths,
-                )
-                continue
             origin_artifact_rule = artifact_rule_for_path(fallback_provider, str(path))
-            strong_path_artifact = strong_path_classification(path, provider=fallback_provider)
             if heartbeat is not None:
                 heartbeat(
                     "full_file_scan",
@@ -3450,22 +3443,6 @@ class LiveBatchProcessor:
                         current_path=path,
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
-            elif codex_member is not None:
-                # Matched a known Codex state-db filename but either failed
-                # structural verification (mid-write, corrupt, or a future
-                # Codex schema change) or is a database CODEX_STATE_FIDELITY
-                # (sources/parsers/codex_state.py) declares out-of-scope
-                # (logs_2.sqlite's 627 MB of runtime tracing, codex-dev.db's
-                # automation config) -- exclude cleanly without ever reading
-                # the bytes as a generic session artifact.
-                self._mark_excluded_cursor(
-                    path,
-                    stat,
-                    source_name=fallback_provider.value,
-                    reason="declared out-of-scope or structurally unverified state database",
-                    excluded=excluded_paths,
-                )
-                continue
             elif source_only:
                 # A derived-only outage must not turn durable acquisition into
                 # an ad hoc parse pass. Provider detection and session/artifact
@@ -3506,7 +3483,7 @@ class LiveBatchProcessor:
                         path,
                         stat,
                         source_name=fallback_provider.value,
-                        reason=f"{exc.code}: {exc}",
+                        reason=foreign_origin_exclusion(exc),
                         excluded=excluded_paths,
                     )
                     continue
@@ -3524,23 +3501,6 @@ class LiveBatchProcessor:
                         current_path=path,
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
-            elif (
-                origin_artifact_rule is None
-                and not is_jsonl_source_path(str(path))
-                and strong_path_artifact is not None
-                and not strong_path_artifact.parse_as_session
-            ):
-                # Only definitive sidecar paths are excluded before retained
-                # acquisition. Weak locations reach the same parser at every
-                # size, where decoded evidence determines their disposition.
-                self._mark_excluded_cursor(
-                    path,
-                    stat,
-                    source_name=fallback_provider.value,
-                    reason="path rule classifies this as non-session evidence",
-                    excluded=excluded_paths,
-                )
-                continue
             elif origin_artifact_rule is not None and origin_artifact_rule.parse_policy != "session":
                 provider = fallback_provider
                 source_name = provider.value
@@ -3561,7 +3521,7 @@ class LiveBatchProcessor:
                         path,
                         stat,
                         source_name=fallback_provider.value,
-                        reason=f"{exc.code}: {exc}",
+                        reason=foreign_origin_exclusion(exc),
                         excluded=excluded_paths,
                     )
                     continue
@@ -3580,26 +3540,10 @@ class LiveBatchProcessor:
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
             elif is_jsonl_source_path(str(path)):
-                provider, parse_as_session, detection_crash = _jsonl_provider_and_session_artifact(
-                    path, fallback_provider
-                )
-                if detection_crash is not None:
-                    detection_fallbacks[path] = detection_crash
+                provider = admission.detected_provider or fallback_provider
+                if admission.detection_crash is not None:
+                    detection_fallbacks[path] = admission.detection_crash
                 source_name = provider.value
-                # An unknown JSONL cannot be safely excluded from acquire: the
-                # strict parse route persists typed terminal evidence for empty
-                # and malformed exports. Known-provider sidecars remain
-                # cursor-excluded here because their classification is already
-                # authoritative.
-                if not parse_as_session and provider is not Provider.UNKNOWN:
-                    self._mark_excluded_cursor(
-                        path,
-                        stat,
-                        source_name=source_name,
-                        reason="declared artifact rule: not parsed as a session",
-                        excluded=excluded_paths,
-                    )
-                    continue
                 try:
                     if heartbeat is not None:
                         heartbeat(
@@ -3623,7 +3567,7 @@ class LiveBatchProcessor:
                         path,
                         stat,
                         source_name=fallback_provider.value,
-                        reason=f"{exc.code}: {exc}",
+                        reason=foreign_origin_exclusion(exc),
                         excluded=excluded_paths,
                     )
                     continue
@@ -3647,22 +3591,10 @@ class LiveBatchProcessor:
                     )
             else:
                 json_document = path.suffix.lower() == ".json"
-                if json_document:
-                    provider = fallback_provider
-                else:
-                    provider, detection_crash = detect_provider_from_path_sample_evidence(path, fallback_provider)
-                    if detection_crash is not None:
-                        detection_fallbacks[path] = detection_crash
+                provider = admission.detected_provider or fallback_provider
+                if admission.detection_crash is not None:
+                    detection_fallbacks[path] = admission.detection_crash
                 source_name = provider.value
-                if path.suffix.lower() != ".json" and not _parse_path_as_session_artifact(path, provider=provider):
-                    self._mark_excluded_cursor(
-                        path,
-                        stat,
-                        source_name=source_name,
-                        reason="path rule refuses session parsing",
-                        excluded=excluded_paths,
-                    )
-                    continue
                 try:
                     if heartbeat is not None:
                         heartbeat(
@@ -3686,7 +3618,7 @@ class LiveBatchProcessor:
                         path,
                         stat,
                         source_name=fallback_provider.value,
-                        reason=f"{exc.code}: {exc}",
+                        reason=foreign_origin_exclusion(exc),
                         excluded=excluded_paths,
                     )
                     continue
@@ -5697,7 +5629,7 @@ class LiveBatchProcessor:
             level=WARNING,
             outcome="refused",
             source_path=member_path,
-            reason=f"{exc.code}: {exc}",
+            reason=foreign_origin_exclusion(exc),
         )
         self._cursor.record_convergence_debt(
             stage="live_ingest_admission",
