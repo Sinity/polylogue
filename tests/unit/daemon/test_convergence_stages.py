@@ -393,3 +393,11 @@ def test_an_older_failed_pass_cannot_overwrite_a_newer_clean_receipt(tmp_path: P
     newer = _claude_workflow_materialization_check(tmp_path)
     assert newer.status is OutcomeStatus.ERROR
     assert "newer failure" in newer.summary
+
+    # A successful pass writes after its own publication, so it replaces the
+    # receipt even when it started earlier: its graph is the one now current.
+    gapped = SimpleNamespace(
+        run_count=1, call_count=1, attempt_count=1, linked_session_count=1, unresolved_call_count=1, gaps=("gap",)
+    )
+    stages._record_claude_workflow_stage_event(tmp_path, gapped, started_at_ms=500)
+    assert _claude_workflow_materialization_check(tmp_path).status is OutcomeStatus.WARNING

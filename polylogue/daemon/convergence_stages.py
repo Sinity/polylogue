@@ -215,10 +215,11 @@ def _write_claude_workflow_stage_event(
     """Replace the claude_workflow stage receipt with this pass's outcome.
 
     The receipt is one row, and a write can be queued behind the writer lease
-    while a later pass completes. Each receipt records when its pass started;
-    a write from a pass that started before the current receipt's pass is
-    stale and is dropped, so an older failure cannot overwrite a newer clean
-    rematerialization.
+    while a later pass completes. Each receipt records when its pass started.
+    A *failed* pass's write is dropped when the stored receipt comes from a
+    pass that started later, so an older failure cannot overwrite a newer
+    rematerialization. A successful pass always writes: its receipt follows
+    its own publication, so the last published graph keeps the last word.
     """
     attempt_started_at_ms = int(time.time() * 1000) if started_at_ms is None else started_at_ms
     payload = {**payload, "attempt_started_at_ms": attempt_started_at_ms}
@@ -234,7 +235,9 @@ def _write_claude_workflow_stage_event(
 
         def record() -> None:
             with open_initialized_tier_connection(ops_db, ArchiveTier.OPS) as conn:
-                if _newer_claude_workflow_receipt(conn, f"{CLAUDE_WORKFLOW_STAGE_NAME}:current", attempt_started_at_ms):
+                if status == "failed" and _newer_claude_workflow_receipt(
+                    conn, f"{CLAUDE_WORKFLOW_STAGE_NAME}:current", attempt_started_at_ms
+                ):
                     return
                 record_daemon_stage_event(
                     conn,
