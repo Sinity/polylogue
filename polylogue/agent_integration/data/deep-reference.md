@@ -251,7 +251,7 @@ Example — Establish archive authority before making a broad claim:
 }
 ```
 
-Archive identity, selected source coverage, freshness/readiness state, and explicit degraded reasons.
+Archive session/message counts and origin totals only. These aggregate statistics do not establish archive identity, source coverage, freshness, or readiness.
 
 ### `write`
 

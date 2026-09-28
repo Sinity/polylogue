@@ -21,7 +21,7 @@ from polylogue.archive.query.search_hits import bound_display_title, bound_searc
 from polylogue.cli.query_contracts import QueryDeliveryTarget, QueryOutputSpec
 from polylogue.cli.query_output_contracts import QueryOutputDocument, StructuredRowsDocument
 from polylogue.cli.render.outcome import EMPTY_EXIT_CODE, emit_no_results
-from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.json import JSONDocument
 from polylogue.core.localtime import format_local_datetime
 from polylogue.logging import get_logger
 from polylogue.operations.authority import authority_for_config
@@ -340,7 +340,6 @@ def _summary_to_dict(summary: SessionSummary, message_count: int) -> JSONDocumen
         summary,
         message_count=message_count,
     ).selected()
-    payload.update(json_document(session_row(summary, message_count=message_count).as_dict()))
     return payload
 
 

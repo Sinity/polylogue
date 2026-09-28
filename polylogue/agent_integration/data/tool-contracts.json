@@ -541,7 +541,7 @@
             "scope": "archive"
           },
           "id": "status-archive",
-          "result_note": "Archive identity, selected source coverage, freshness/readiness state, and explicit degraded reasons.",
+          "result_note": "Archive session/message counts and origin totals only. These aggregate statistics do not establish archive identity, source coverage, freshness, or readiness.",
           "title": "Establish archive authority before making a broad claim"
         }
       ],

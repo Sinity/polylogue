@@ -427,6 +427,40 @@ async def test_list_summaries_by_query_uses_current_session_columns(tmp_path: Pa
         await repo.close()
 
 
+@pytest.mark.asyncio
+async def test_list_summaries_by_query_hydrates_session_profile_slice() -> None:
+    """Repository summaries carry profile outcome/cost when the profile exists.
+
+    Anti-vacuity: removing the batch profile lookup leaves the SessionSummary
+    defaults (None) and fails both profile-field assertions.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.storage.repository.archive.sessions import RepositoryArchiveSessionMixin
+
+    record = make_session("conv-profile-summary", source_name="codex", title="Profile Summary")
+    session_id = str(record.session_id)
+    profile = SimpleNamespace(terminal_state="refused", total_cost_usd=1.75, cost_provenance="provider_reported")
+    queries = SimpleNamespace(
+        list_session_summaries=AsyncMock(return_value=[record]),
+        get_message_counts_batch=AsyncMock(return_value={session_id: 4}),
+    )
+
+    class _Repo(RepositoryArchiveSessionMixin):
+        def __init__(self) -> None:
+            self.queries = queries
+            self._fetch_tags_by_session = AsyncMock(return_value={})
+            self.get_session_profiles_batch = AsyncMock(return_value={session_id: profile})
+
+    repo = _Repo()
+    summaries = await repo.list_summaries_by_query(_record_query(origin="codex-session", limit=1))
+    assert len(summaries) == 1
+    assert summaries[0].terminal_state == "refused"
+    assert summaries[0].total_cost_usd == 1.75
+    assert summaries[0].cost_provenance == "provider_reported"
+    repo.get_session_profiles_batch.assert_awaited_once_with([session_id])
+
+
 def test_actions_view_uses_blocks_without_session_payload_bloat(workspace_env: dict[str, Path]) -> None:
     """The archive actions surface derives from blocks and has no session payload column.
 
