@@ -536,7 +536,7 @@ def raw_term_case(conn: sqlite3.Connection, *, cte_name: str = "heads") -> tuple
             WHEN self_indexed = 1 THEN '{_TERM_MATERIALIZED}'
             WHEN any_indexed = 1 OR shares_indexed_key = 1 THEN '{_TERM_REVISION_SUPERSEDED}'
             WHEN valid_supersession = 1 THEN '{_TERM_BYTE_DUPLICATE}'
-            WHEN parse_error LIKE '%{_TERM_VALUE_BOUND_REFUSED}%' THEN '{_TERM_VALUE_BOUND_REFUSED}'
+            WHEN instr(parse_error, '{_TERM_VALUE_BOUND_REFUSED}') > 0 THEN '{_TERM_VALUE_BOUND_REFUSED}'
             WHEN parse_error IS NOT NULL THEN '{_TERM_PARSE_FAILURE}'
             WHEN validation_status = 'failed' THEN '{_TERM_VALIDATION_REJECTED}'
             WHEN parse_as_session = 0 AND artifact_kind IS NOT NULL AND artifact_kind != 'unknown'

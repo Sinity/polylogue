@@ -612,6 +612,39 @@ def test_value_bound_refusal_is_a_counted_warning_not_a_parse_failure(tmp_path: 
     assert check.evidence["blocking_count"] == 0
 
 
+def test_value_bound_token_is_matched_literally(tmp_path: Path) -> None:
+    """Only the exact refusal token types a raw as ``value_bound_refused``.
+
+    Anti-vacuity: a ``LIKE`` pattern treats each ``_`` as a wildcard, so the
+    source-controlled text ``value-bound-refused`` in an ordinary parser
+    error would be reported as a value-bound refusal.
+    """
+    _seed(tmp_path)
+    source = _write_source(tmp_path, "lookalike.json", b"{}")
+    blob_hash = BlobStore(tmp_path / "blob").write_from_bytes(b"{}")[0]
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        _insert_raw(
+            source_conn,
+            raw_id="raw-lookalike",
+            origin="chatgpt-export",
+            native_id="lookalike",
+            source_path=source,
+            blob_hash=blob_hash,
+            parsed=True,
+        )
+        source_conn.execute(
+            "UPDATE raw_sessions SET parse_error = ? WHERE raw_id = 'raw-lookalike'",
+            ("ValueError: unexpected field 'value-bound-refused' in node",),
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+    check = _run(tmp_path)
+    assert _count(check, "value_bound_refused") == 0
+    assert _count(check, "parse_failure") == 1
+
+
 def test_check_json_carries_every_term_with_its_rule(tmp_path: Path) -> None:
     _seed(tmp_path)
     payload = _run(tmp_path).to_json()

@@ -873,6 +873,12 @@ class ChatGPTNodeMapping(Mapping[str, object]):
             "child_json TEXT NOT NULL, child_key TEXT, PRIMARY KEY (node_ordinal, item_ordinal)) WITHOUT ROWID"
         )
         conn.execute("CREATE INDEX chatgpt_child_key ON chatgpt_child(node_ordinal, child_key, item_ordinal)")
+        conn.execute(
+            "CREATE TABLE chatgpt_sibling (node_key TEXT PRIMARY KEY, sibling_ordinal INTEGER NOT NULL) WITHOUT ROWID"
+        )
+        # Sibling ordinals depend on every node's final parent, so they are
+        # numbered in one pass after the last ``put`` rather than per node.
+        self._siblings_current = False
 
     def put(self, key: str, node: object, ordinal: int) -> None:
         encoded = require_storable_string(json.dumps(node, ensure_ascii=False), kind="serialized mapping node")
@@ -880,6 +886,7 @@ class ChatGPTNodeMapping(Mapping[str, object]):
         # missing or empty parent groups under the root key "".
         parent = node.get("parent") if isinstance(node, dict) else None
         parent_key = (parent if isinstance(parent, str) and parent else "") if isinstance(node, dict) else None
+        self._siblings_current = False
         previous = self.conn.execute("SELECT child_ordinal FROM chatgpt_node WHERE node_key = ?", (key,)).fetchone()
         if previous is not None and previous[0] is not None:
             self.conn.execute("DELETE FROM chatgpt_child WHERE node_ordinal = ?", (previous[0],))
@@ -930,16 +937,19 @@ class ChatGPTNodeMapping(Mapping[str, object]):
 
         The scratch form of ``chatgpt._sibling_ordinals``: mapping order is
         the export's record order, answered by index instead of a dict over
-        every node.
+        every node. All ordinals are numbered by one windowed scan the first
+        time one is asked for after a ``put``.
         """
-        row = self.conn.execute("SELECT parent_key, ordinal FROM chatgpt_node WHERE node_key = ?", (key,)).fetchone()
-        if row is None or row[0] is None:
-            return 0
-        return int(
+        if not self._siblings_current:
+            self.conn.execute("DELETE FROM chatgpt_sibling")
             self.conn.execute(
-                "SELECT COUNT(*) FROM chatgpt_node WHERE parent_key = ? AND ordinal < ?", (row[0], row[1])
-            ).fetchone()[0]
-        )
+                "INSERT INTO chatgpt_sibling SELECT node_key, "
+                "ROW_NUMBER() OVER (PARTITION BY parent_key ORDER BY ordinal) - 1 "
+                "FROM chatgpt_node WHERE parent_key IS NOT NULL"
+            )
+            self._siblings_current = True
+        row = self.conn.execute("SELECT sibling_ordinal FROM chatgpt_sibling WHERE node_key = ?", (key,)).fetchone()
+        return 0 if row is None else int(row[0])
 
     def declared_child_position(self, parent_key: str, child_id: object) -> int | None:
         """First index of ``child_id`` in the parent's spilled ``children`` array.

@@ -20,11 +20,31 @@ from __future__ import annotations
 import sqlite3
 from typing import Final
 
+#: SQLite's hard ceiling on ``SQLITE_MAX_LENGTH`` for any build.
+_SQLITE_LENGTH_CEILING: Final = 2**31 - 1
+
 
 def _sqlite_max_length() -> int:
+    """Observe the linked library's value-length limit through SQL.
+
+    ``Connection.getlimit`` is missing from supported drivers (the
+    ``pysqlite3`` compat build), so the limit is read the way every driver
+    exposes it: ``zeroblob(n)`` fails with "string or blob too big" exactly
+    when ``n`` exceeds the connection's ``SQLITE_LIMIT_LENGTH``, and
+    ``length()`` reads the size without materializing ``n`` bytes.
+    """
     connection = sqlite3.connect(":memory:")
     try:
-        return int(connection.getlimit(sqlite3.SQLITE_LIMIT_LENGTH))
+        low, high = 0, _SQLITE_LENGTH_CEILING
+        while low < high:
+            probe = (low + high + 1) // 2
+            try:
+                connection.execute("SELECT length(zeroblob(?))", (probe,)).fetchone()
+            except sqlite3.DataError:
+                high = probe - 1
+            else:
+                low = probe
+        return low
     finally:
         connection.close()
 

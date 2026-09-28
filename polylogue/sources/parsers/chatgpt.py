@@ -761,27 +761,51 @@ def _constructs_from_chatgpt_metadata(msg_metadata: object) -> list[ParsedWebCon
     return constructs
 
 
-def _active_path_node_ids(mapping: Mapping[str, object], current_node: str | None) -> list[str]:
-    """Return the active ChatGPT path from root to ``current_node``.
+@dataclass(frozen=True, slots=True)
+class _ActivePath:
+    """The ChatGPT active path from ``current_node`` up to its root.
 
     ChatGPT exports preserve regenerated and edited branches in ``mapping`` and
     use ``current_node`` only to identify the leaf the user last saw. The v1
     parser contract keeps every branch and carries the active path explicitly
     instead of using it as a lossy filter (#1743).
+
+    Membership lives in ``members``, a set from the caller's factory (scratch
+    on the preparation route), which also stops the walk at a parent cycle.
+    The path itself is never materialized: ``leaf_first`` re-walks the parent
+    chain for exactly ``length`` steps, the steps the first walk took.
     """
+
+    mapping: Mapping[str, object]
+    current_node: str | None
+    members: Container[str]
+    length: int
+
+    def leaf_first(self) -> Iterator[str]:
+        node_id = self.current_node
+        for _ in range(self.length):
+            assert node_id is not None
+            yield node_id
+            node = self.mapping[node_id]
+            parent = node.get("parent") if isinstance(node, dict) else None
+            node_id = parent if isinstance(parent, str) else None
+
+
+def _active_path(
+    mapping: Mapping[str, object],
+    current_node: str | None,
+    new_set: Callable[[], MutableSet[str]] = set,
+) -> _ActivePath:
+    members = new_set()
+    length = 0
     if current_node and current_node in mapping:
-        path: list[str] = []
-        seen: set[str] = set()
-        node_id: str | None = current_node
-        while node_id is not None and node_id in mapping and node_id not in seen:
-            seen.add(node_id)
-            path.append(node_id)
+        node_id: object = current_node
+        while isinstance(node_id, str) and node_id in mapping and node_id not in members:
+            members.add(node_id)
+            length += 1
             node = mapping[node_id]
             node_id = node.get("parent") if isinstance(node, dict) else None
-        path.reverse()
-        return path
-
-    return []
+    return _ActivePath(mapping, current_node, members, length)
 
 
 def _non_negative_int(value: object) -> int | None:
@@ -1397,7 +1421,7 @@ def extract_messages_from_mapping(
 ) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
     entries = _ListMessageEntries()
     attachments: list[ParsedAttachment] = []
-    active_path_ids = _collect_message_entries(
+    active_path = _collect_message_entries(
         mapping,
         current_node,
         entries,
@@ -1406,16 +1430,16 @@ def extract_messages_from_mapping(
         preserve_empty_messages=preserve_empty_messages,
         default_model_slug=default_model_slug,
     )
-    return list(_resolved_messages(entries, active_path_ids)), attachments
+    return list(_resolved_messages(entries, active_path)), attachments
 
 
-def _resolved_messages(entries: MessageEntries, active_path_ids: Sequence[str]) -> Iterator[ParsedMessage]:
+def _resolved_messages(entries: MessageEntries, active_path: _ActivePath) -> Iterator[ParsedMessage]:
     """Final order, parent references resolved to emitted ids, the active leaf marked."""
     emitted_message_ids = entries.emitted_provider_ids()
     active_leaf_position = next(
         (
             position
-            for node_id in reversed(active_path_ids)
+            for node_id in active_path.leaf_first()
             if (position := entries.position_for_node(node_id)) is not None
         ),
         None,
@@ -1442,7 +1466,7 @@ def _collect_message_entries(
     preserve_empty_messages: bool,
     default_model_slug: str | None,
     new_seen_set: Callable[[], MutableSet[str]] = set,
-) -> list[str]:
+) -> _ActivePath:
     """Normalize every message node into ``entries``; return the active path."""
     if admission is not None:
         admission.expect(
@@ -1451,8 +1475,7 @@ def _collect_message_entries(
         )
     message_ordinal = 0
     sibling_ordinal = _sibling_ordinal_lookup(mapping)
-    active_path_ids = _active_path_node_ids(mapping, current_node)
-    active_path_id_set = set(active_path_ids)
+    active_path = _active_path(mapping, current_node, new_seen_set)
     for idx, node_id in enumerate(mapping.keys(), start=1):
         node = mapping.get(node_id)
         if not isinstance(node, dict):
@@ -2163,7 +2186,7 @@ def _collect_message_entries(
             position=idx - 1,
             branch_index=branch_index,
             variant_index=branch_index,
-            is_active_path=node_id in active_path_id_set if active_path_ids else None,
+            is_active_path=node_id in active_path.members if active_path.length else None,
             model_name=model_name,
             model_effort=model_effort,
             duration_ms=duration_ms,
@@ -2181,7 +2204,7 @@ def _collect_message_entries(
         entries.add(_coerce_float(timestamp), idx, node_id, parsed)
         if admission is not None:
             admission.materialized(AdmissionUnit.MESSAGE, current_message_ordinal, node_id)
-    return active_path_ids
+    return active_path
 
 
 def _mapping_nodes_are_valid(mapping: Mapping[str, object]) -> bool:
@@ -2428,7 +2451,7 @@ def _run_stream_text(aggregate_result: Mapping[str, object]) -> str:
 
 def _aggregate_result_events(
     mapping: Mapping[str, object], emitted_message_ids: Container[str]
-) -> list[ParsedSessionEvent]:
+) -> Iterator[ParsedSessionEvent]:
     """Conserve each code-interpreter run's own record.
 
     The run's output already IS the result node's text, so the stream text is
@@ -2439,7 +2462,6 @@ def _aggregate_result_events(
     in the parsed session, and neither does the executed program, which rides
     the ``aggregate_result`` web construct.
     """
-    events: list[ParsedSessionEvent] = []
     for node_id, node in mapping.items():
         if not isinstance(node, Mapping):
             continue
@@ -2478,20 +2500,17 @@ def _aggregate_result_events(
             payload["stream_retained_as_message_text"] = stream_text == node_text
             if stream_text != node_text:
                 payload["stream_text"] = stream_text
-        events.append(
-            ParsedSessionEvent(
-                event_type="chatgpt_code_interpreter_run",
-                timestamp=_string_value(aggregate_result, "end_time", "update_time", "start_time"),
-                source_message_provider_id=message_id,
-                payload=payload,
-            )
+        yield ParsedSessionEvent(
+            event_type="chatgpt_code_interpreter_run",
+            timestamp=_string_value(aggregate_result, "end_time", "update_time", "start_time"),
+            source_message_provider_id=message_id,
+            payload=payload,
         )
-    return events
 
 
 def _message_authorship_events(
     mapping: Mapping[str, object], emitted_message_ids: Container[str]
-) -> list[ParsedSessionEvent]:
+) -> Iterator[ParsedSessionEvent]:
     """Conserve the wire's own statement of what a message is and who wrote it.
 
     ``channel`` separates a turn's reasoning-adjacent ``commentary`` from the
@@ -2499,7 +2518,6 @@ def _message_authorship_events(
     ``phase`` -- and ``author.metadata.real_author`` names the tool that
     actually produced a message rendered through another role's envelope.
     """
-    events: list[ParsedSessionEvent] = []
     for node_id, node in mapping.items():
         if not isinstance(node, Mapping):
             continue
@@ -2518,37 +2536,29 @@ def _message_authorship_events(
             payload["channel"] = channel
         if real_author is not None:
             payload["real_author"] = real_author
-        events.append(
-            ParsedSessionEvent(
-                event_type="chatgpt_message_authorship",
-                timestamp=str(message.get("create_time")) if message.get("create_time") is not None else None,
-                source_message_provider_id=message_id,
-                payload=payload,
-            )
+        yield ParsedSessionEvent(
+            event_type="chatgpt_message_authorship",
+            timestamp=str(message.get("create_time")) if message.get("create_time") is not None else None,
+            source_message_provider_id=message_id,
+            payload=payload,
         )
-    return events
 
 
-def _block_metadata_evidence_events(messages: Iterable[ParsedMessage]) -> list[ParsedSessionEvent]:
-    events: list[ParsedSessionEvent] = []
+def _block_metadata_evidence_events(messages: Iterable[ParsedMessage]) -> Iterator[ParsedSessionEvent]:
     for message in messages:
         for block_index, block in enumerate(message.blocks):
             if not block.metadata:
                 continue
-            events.append(
-                ParsedSessionEvent(
-                    event_type="chatgpt_block_metadata",
-                    timestamp=message.timestamp,
-                    source_message_provider_id=message.provider_message_id,
-                    payload={"block_index": block_index, **dict(block.metadata)},
-                )
+            yield ParsedSessionEvent(
+                event_type="chatgpt_block_metadata",
+                timestamp=message.timestamp,
+                source_message_provider_id=message.provider_message_id,
+                payload={"block_index": block_index, **dict(block.metadata)},
             )
-    return events
 
 
-def _iter_message_nodes(mapping: Mapping[str, object]) -> list[tuple[str, Mapping[str, object]]]:
+def _iter_message_nodes(mapping: Mapping[str, object]) -> Iterator[tuple[str, Mapping[str, object]]]:
     """Every ``(provider_message_id, message)`` pair in mapping order."""
-    pairs: list[tuple[str, Mapping[str, object]]] = []
     for node in mapping.values():
         if not isinstance(node, Mapping):
             continue
@@ -2557,11 +2567,10 @@ def _iter_message_nodes(mapping: Mapping[str, object]) -> list[tuple[str, Mappin
             continue
         # The same identity ``extract_messages_from_mapping`` mints, so the
         # events these feed bind to the message the parser emitted.
-        pairs.append((str(message.get("id") or node.get("id") or ""), message))
-    return pairs
+        yield str(message.get("id") or node.get("id") or ""), message
 
 
-def _message_metadata_evidence_events(mapping: Mapping[str, object]) -> list[ParsedSessionEvent]:
+def _message_metadata_evidence_events(mapping: Mapping[str, object]) -> Iterator[ParsedSessionEvent]:
     """Message-level ``metadata`` evidence with no column or block to hold it.
 
     Three separately named facts rather than one metadata bag, so a reader
@@ -2583,7 +2592,6 @@ def _message_metadata_evidence_events(mapping: Mapping[str, object]) -> list[Par
         A just-in-time plugin's call and response payload -- the only
         record of what a plugin was asked and what it answered.
     """
-    events: list[ParsedSessionEvent] = []
     for message_id, message in _iter_message_nodes(mapping):
         metadata = message.get("metadata")
         if not isinstance(metadata, Mapping):
@@ -2595,13 +2603,11 @@ def _message_metadata_evidence_events(mapping: Mapping[str, object]) -> list[Par
             payload: dict[str, object] = {"targeted_reply": targeted_reply}
             if (label := _string_value(metadata, "targeted_reply_label")) is not None:
                 payload["targeted_reply_label"] = label
-            events.append(
-                ParsedSessionEvent(
-                    event_type="chatgpt_targeted_reply",
-                    timestamp=timestamp_text,
-                    source_message_provider_id=message_id,
-                    payload=payload,
-                )
+            yield ParsedSessionEvent(
+                event_type="chatgpt_targeted_reply",
+                timestamp=timestamp_text,
+                source_message_provider_id=message_id,
+                payload=payload,
             )
         delivery: dict[str, object] = {}
         weight = message.get("weight")
@@ -2612,25 +2618,20 @@ def _message_metadata_evidence_events(mapping: Mapping[str, object]) -> list[Par
         if (channel := _string_value(message, "channel")) is not None:
             delivery["channel"] = channel
         if delivery:
-            events.append(
-                ParsedSessionEvent(
-                    event_type="chatgpt_message_delivery",
-                    timestamp=timestamp_text,
-                    source_message_provider_id=message_id,
-                    payload=delivery,
-                )
+            yield ParsedSessionEvent(
+                event_type="chatgpt_message_delivery",
+                timestamp=timestamp_text,
+                source_message_provider_id=message_id,
+                payload=delivery,
             )
         jit_plugin_data = metadata.get("jit_plugin_data")
         if isinstance(jit_plugin_data, Mapping) and jit_plugin_data:
-            events.append(
-                ParsedSessionEvent(
-                    event_type="chatgpt_jit_plugin_data",
-                    timestamp=timestamp_text,
-                    source_message_provider_id=message_id,
-                    payload=dict(jit_plugin_data),
-                )
+            yield ParsedSessionEvent(
+                event_type="chatgpt_jit_plugin_data",
+                timestamp=timestamp_text,
+                source_message_provider_id=message_id,
+                payload=dict(jit_plugin_data),
             )
-    return events
 
 
 #: Conversation-level keys that state how the operator configured or filed
@@ -2893,7 +2894,7 @@ def parse(payload: Mapping[str, object], fallback_id: str, *, spill: SessionSpil
     conversation_model_slug = _string_value(payload, "default_model_slug")
     entries: MessageEntries = spill.entries() if spill is not None else _ListMessageEntries()
     attachments: MutableSequence[ParsedAttachment] = spill.attachments() if spill is not None else []
-    active_path_ids = _collect_message_entries(
+    active_path = _collect_message_entries(
         mapping,
         current_node,
         entries,
@@ -2944,7 +2945,7 @@ def parse(payload: Mapping[str, object], fallback_id: str, *, spill: SessionSpil
     reported_duration_ms: int | None = None
     model_names: set[str] = set()
     active_leaf_message_provider_id: str | None = None
-    for message in _resolved_messages(entries, active_path_ids):
+    for message in _resolved_messages(entries, active_path):
         resolved_timing = timing_by_message_id.get(message.provider_message_id)
         if resolved_timing is not None:
             message = message.model_copy(update={"duration_ms": resolved_timing.elapsed_duration_ms})

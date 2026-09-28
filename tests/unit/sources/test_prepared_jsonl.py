@@ -3226,6 +3226,40 @@ def test_chatgpt_spill_keeps_every_per_node_collection_in_scratch(
         store.close()
 
 
+def test_chatgpt_node_mapping_numbers_sibling_ordinals_in_one_scan(tmp_path: Path) -> None:
+    """Scratch sibling ordinals equal ``_sibling_ordinals`` and cost one scan.
+
+    Anti-vacuity: a per-lookup prefix ``COUNT(*)`` (quadratic over a wide
+    sibling set) shows up as traced ``COUNT`` statements; skipping the
+    renumbering after a later ``put`` returns the stale ordinal of ``b``,
+    whose re-put moved it to another parent.
+    """
+    nodes: dict[str, object] = {
+        "root": {"id": "root", "parent": None},
+        "a": {"id": "a", "parent": "root"},
+        "b": {"id": "b", "parent": "root"},
+        "c": {"id": "c", "parent": "root"},
+        "d": {"id": "d", "parent": "a"},
+    }
+    conn = sqlite3.connect(tmp_path / "scratch.db")
+    try:
+        mapping = ChatGPTNodeMapping(conn)
+        for ordinal, (key, node) in enumerate(nodes.items()):
+            mapping.put(key, node, ordinal)
+        statements: list[str] = []
+        conn.set_trace_callback(statements.append)
+        assert {key: mapping.sibling_ordinal(key) for key in nodes} == chatgpt._sibling_ordinals(nodes)
+        assert sum("INSERT INTO chatgpt_sibling" in sql for sql in statements) == 1
+        assert not any("COUNT(" in sql for sql in statements)
+        conn.set_trace_callback(None)
+
+        nodes["b"] = {"id": "b", "parent": "a"}
+        mapping.put("b", nodes["b"], 5)
+        assert {key: mapping.sibling_ordinal(key) for key in nodes} == chatgpt._sibling_ordinals(nodes)
+    finally:
+        conn.close()
+
+
 def test_chatgpt_refuses_values_that_only_combine_past_the_cell_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
