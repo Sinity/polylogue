@@ -353,8 +353,9 @@ class TestBoundedReadsDegradeByName:
     ) -> None:
         """The facets scope is paged, never truncated.
 
-        Anti-vacuity: read only the first scope page and a one-session page
-        size reports ``total_sessions == 1`` for a two-session archive.
+        Anti-vacuity: read only the first family chunk, or overwrite a
+        family's counts per chunk instead of summing them, and a one-session
+        chunk reports one session's families for a two-session archive.
         """
         self._seed_sessions(tmp_path, 2)
         params = {"query": "origin:claude-code-session"}
@@ -363,13 +364,25 @@ class TestBoundedReadsDegradeByName:
             assert cast(dict[str, Any], uncapped["outcome"])["state"] == "ok"
             assert uncapped["total_sessions"] == 2
 
-            monkeypatch.setattr("polylogue.api.archive.FACET_SCOPE_PAGE", 1)
+            monkeypatch.setattr("polylogue.api.archive._FACET_FAMILY_CHUNK", 1)
             paged = execute_read_operation(
                 "facets", {"params": {**params, "no_idf": True}}, archive=archive, serving_identity="test"
             )
 
         assert cast(dict[str, Any], paged["outcome"])["state"] == "ok"
         assert paged["total_sessions"] == 2
+
+        # The scoped SQL families, aggregated one session per chunk, sum to
+        # the single-chunk aggregation.
+        from polylogue.api import archive as archive_api
+        from polylogue.archive.query.spec import SessionQuerySpec
+
+        with ArchiveStore.open_existing(tmp_path) as archive:
+            chunked = archive_api._archive_facet_buckets(archive, SessionQuerySpec())
+            monkeypatch.setattr("polylogue.api.archive._FACET_FAMILY_CHUNK", 900)
+            whole = archive_api._archive_facet_buckets(archive, SessionQuerySpec())
+        assert chunked == whole
+        assert sum(whole.role_counts.values()) > 0 and whole.total_sessions == 2
 
     def test_query_envelope_degrades_when_the_attached_projection_is_cut(self, tmp_path: Path) -> None:
         """``with messages`` over a 250-message session degrades, it does not lie.

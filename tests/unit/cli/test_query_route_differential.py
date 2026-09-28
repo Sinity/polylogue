@@ -320,9 +320,8 @@ def test_exclude_text_post_filter_hydrates_in_bounded_chunks(monkeypatch: pytest
         def count_sessions(self, **kwargs: object) -> int:
             return total
 
-        def list_summaries(self, **kwargs: object) -> list[SimpleNamespace]:
-            limit = kwargs.get("limit")
-            return summaries[: int(limit)] if isinstance(limit, int) else list(summaries)
+        def iter_summaries(self, **kwargs: object) -> Iterator[SimpleNamespace]:
+            yield from summaries
 
         def read_session(self, session_id: str) -> SimpleNamespace:
             reads.append(session_id)
@@ -369,16 +368,15 @@ def test_exclude_text_post_filter_pages_a_scope_of_any_size(monkeypatch: pytest.
 
     from polylogue.api import archive as archive_api
 
-    monkeypatch.setattr(archive_api, "POST_FILTER_CANDIDATE_PAGE", 3)
     monkeypatch.setattr(archive_api, "POST_FILTER_HYDRATION_CHUNK", 2)
     ids = [f"s{index}" for index in range(10)]
 
     class _PagedArchive:
-        def list_summaries(self, *, limit: int, offset: int, **kwargs: object) -> list[SimpleNamespace]:
-            return [
-                SimpleNamespace(session_id=session_id, display_label=None, display_label_source=None)
-                for session_id in ids[offset : offset + limit]
-            ]
+        def iter_summaries(self, *, limit: int | None, **kwargs: object) -> Iterator[SimpleNamespace]:
+            # One forward cursor: no page size, no offset to re-walk.
+            assert limit is None and "offset" not in kwargs, (limit, kwargs)
+            for session_id in ids:
+                yield SimpleNamespace(session_id=session_id, display_label=None, display_label_source=None)
 
         def read_session(self, session_id: str) -> str:
             return session_id
@@ -421,16 +419,14 @@ def test_exclude_text_post_filter_randomizes_survivors_not_candidate_pages(
 
     from polylogue.api import archive as archive_api
 
-    monkeypatch.setattr(archive_api, "POST_FILTER_CANDIDATE_PAGE", 3)
     ids = [f"s{index}" for index in range(10)]
 
     class _PagedArchive:
-        def list_summaries(self, *, limit: int, offset: int, **kwargs: object) -> list[SimpleNamespace]:
+        def iter_summaries(self, *, limit: int | None, **kwargs: object) -> Iterator[SimpleNamespace]:
             assert "sample" not in kwargs and kwargs.get("sort") != "random", kwargs
-            return [
-                SimpleNamespace(session_id=session_id, display_label=None, display_label_source=None)
-                for session_id in ids[offset : offset + limit]
-            ]
+            assert limit is None and "offset" not in kwargs, (limit, kwargs)
+            for session_id in ids:
+                yield SimpleNamespace(session_id=session_id, display_label=None, display_label_source=None)
 
         def read_session(self, session_id: str) -> str:
             return session_id
@@ -493,17 +489,15 @@ def test_facet_scope_post_filter_hydrates_each_candidate_once(monkeypatch: pytes
     from polylogue.api import archive as archive_api
     from polylogue.archive.query.spec import SessionQuerySpec
 
-    monkeypatch.setattr(archive_api, "POST_FILTER_CANDIDATE_PAGE", 3)
-    monkeypatch.setattr(archive_api, "FACET_SCOPE_PAGE", 2)
     ids = [f"s{index}" for index in range(10)]
     reads: list[str] = []
 
     class _PagedArchive:
-        def list_summaries(self, *, limit: int, offset: int, **kwargs: object) -> list[SimpleNamespace]:
-            return [
-                SimpleNamespace(session_id=session_id, display_label=None, display_label_source=None)
-                for session_id in ids[offset : offset + limit]
-            ]
+        def iter_summaries(self, *, limit: int | None, **kwargs: object) -> Iterator[SimpleNamespace]:
+            # One forward cursor: no page size, no offset to re-walk.
+            assert limit is None and "offset" not in kwargs, (limit, kwargs)
+            for session_id in ids:
+                yield SimpleNamespace(session_id=session_id, display_label=None, display_label_source=None)
 
         def read_session(self, session_id: str) -> str:
             reads.append(session_id)

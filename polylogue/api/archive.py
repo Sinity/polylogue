@@ -570,11 +570,6 @@ def _archive_list_summaries_for_spec(
 #: chunk rather than the whole candidate set.
 POST_FILTER_HYDRATION_CHUNK = 200
 
-#: Candidate summaries fetched per SQL page while a content-dependent filter
-#: scans its scope. A pacing bound only: every page is read until the scope or
-#: the requested page is exhausted, so no scope size is refused.
-POST_FILTER_CANDIDATE_PAGE = 2_000
-
 
 def _post_filter_candidates(
     archive: Any,
@@ -582,34 +577,27 @@ def _post_filter_candidates(
     query_text: str | None,
     query_kwargs: dict[str, object],
 ) -> Iterator[ArchiveSessionSummary]:
-    """Stream the SQL candidate set for a post-filtered spec, one page at a time.
+    """Stream the SQL candidate set for a post-filtered spec in one forward pass.
 
     ``exclude_text`` has no SQL reduction, so every candidate may need to be
-    hydrated to be tested. Pages keep that bounded in memory without refusing a
-    large scope; the caller stops reading once its page is full.
+    hydrated to be tested. One cursor (``iter_summaries``/``iter_search_summaries``
+    with ``limit=None``) keeps that bounded in memory without refusing a large
+    scope, and never re-walks earlier rows the way a growing ``OFFSET`` does;
+    the caller stops reading once its page is full.
     """
 
     query_kwargs = dict(query_kwargs)
-    query_kwargs["limit"] = POST_FILTER_CANDIDATE_PAGE
-    # Paging needs a stable order: a sampled read ignores ``offset`` and would
-    # return a fresh random page forever, and a random sort reshuffles between
-    # pages. Randomization applies to the survivors instead.
+    query_kwargs["limit"] = None
+    query_kwargs.pop("offset", None)
+    # Randomization applies to the survivors, not the candidates.
     query_kwargs.pop("sample", None)
     if query_kwargs.get("sort") == "random":
         query_kwargs.pop("sort")
-    offset = 0
-    while True:
-        query_kwargs["offset"] = offset
-        if query_text is not None:
-            page = [
-                archive.read_summary(hit.session_id) for hit in archive.search_summaries(query_text, **query_kwargs)
-            ]
-        else:
-            page = cast(list[ArchiveSessionSummary], archive.list_summaries(**query_kwargs))
-        yield from page
-        if len(page) < POST_FILTER_CANDIDATE_PAGE:
-            return
-        offset += len(page)
+    if query_text is not None:
+        for hit in cast(Iterator[Any], archive.iter_search_summaries(query_text, **query_kwargs)):
+            yield archive.read_summary(hit.session_id)
+        return
+    yield from cast(Iterator[ArchiveSessionSummary], archive.iter_summaries(**query_kwargs))
 
 
 def _iter_post_filtered_summaries(
@@ -900,42 +888,40 @@ def _archive_facet_buckets(
 
     ``spec.limit``/``spec.offset`` are stripped before the scope query: a
     caller's page size is a display bound, not a denominator. The scope is
-    read in pages, so its size never truncates the buckets.
+    streamed in one pass, so its size never truncates the buckets.
     """
     from polylogue.archive.query.facets import FacetBuckets
 
     del scope_gaps
-    summaries = _iter_facet_scope(archive, spec)
     origins: dict[str, int] = {}
     tags: dict[str, int] = {}
     total_messages = 0
-    session_ids: list[str] = []
-    seen_session_ids: set[str] = set()
-    for summary in summaries:
-        if summary.session_id in seen_session_ids:
-            continue
-        seen_session_ids.add(summary.session_id)
-        session_ids.append(summary.session_id)
-        total_messages += summary.message_count
-        origins[summary.origin] = origins.get(summary.origin, 0) + 1
-        for tag in set(summary.tags):
-            tags[tag] = tags.get(tag, 0) + 1
-    sql_buckets = (
-        _archive_aggregate_facet_families(
-            archive._conn,
-            session_ids=session_ids if spec is not None else None,
-        )
-        if include_deferred
-        else {
-            "repos": {},
-            "role_counts": {},
-            "material_origins": {},
-            "message_types": {},
-            "action_types": {},
-            "has_flags": {},
-            "omitted": {},
-        }
-    )
+    total_sessions = 0
+    sql_buckets = _empty_facet_families()
+    # A scoped aggregation reads its SQL families one bounded chunk of
+    # sessions at a time; the global one needs no session list at all.
+    chunk: list[str] = []
+    scoped = include_deferred and spec is not None
+    with _DistinctSessions() as distinct:
+        for summary in _iter_facet_scope(archive, spec):
+            if not distinct.add(summary.session_id):
+                continue
+            total_sessions += 1
+            total_messages += summary.message_count
+            origins[summary.origin] = origins.get(summary.origin, 0) + 1
+            for tag in set(summary.tags):
+                tags[tag] = tags.get(tag, 0) + 1
+            if scoped:
+                chunk.append(summary.session_id)
+                if len(chunk) >= _FACET_FAMILY_CHUNK:
+                    _merge_facet_families(
+                        sql_buckets, _archive_aggregate_facet_families(archive._conn, session_ids=chunk)
+                    )
+                    chunk = []
+    if scoped and chunk:
+        _merge_facet_families(sql_buckets, _archive_aggregate_facet_families(archive._conn, session_ids=chunk))
+    elif include_deferred and spec is None:
+        sql_buckets = _archive_aggregate_facet_families(archive._conn, session_ids=None)
     return FacetBuckets(
         origins=origins,
         tags=tags,
@@ -946,17 +932,44 @@ def _archive_facet_buckets(
         action_types=sql_buckets["action_types"],
         has_flags=sql_buckets["has_flags"],
         omitted=sql_buckets["omitted"],
-        total_sessions=len(session_ids),
+        total_sessions=total_sessions,
         total_messages=total_messages,
     )
 
 
-def _archive_aggregate_facet_families(
-    conn: Any,
-    *,
-    session_ids: list[str] | None,
-) -> dict[str, dict[str, int]]:
-    result: dict[str, dict[str, int]] = {
+#: Sessions whose SQL facet families are aggregated per query; below SQLite's
+#: bound-parameter limit.
+_FACET_FAMILY_CHUNK = 900
+
+
+class _DistinctSessions:
+    """Membership of the session ids already counted, held on scratch disk.
+
+    A search scope yields one hit per matching block, so a session repeats;
+    remembering the ids in a set would grow with the scope.
+    """
+
+    def __enter__(self) -> _DistinctSessions:
+        import tempfile
+
+        self._scratch = tempfile.TemporaryDirectory(prefix="polylogue-facet-scope-")
+        self._conn = sqlite3.connect(Path(self._scratch.name) / "seen.db")
+        self._conn.execute("PRAGMA journal_mode=OFF")
+        self._conn.execute("PRAGMA synchronous=OFF")
+        self._conn.execute("CREATE TABLE seen (session_id TEXT PRIMARY KEY) WITHOUT ROWID")
+        return self
+
+    def add(self, session_id: str) -> bool:
+        """Record ``session_id``; return whether it was new."""
+        return self._conn.execute("INSERT OR IGNORE INTO seen VALUES (?)", (session_id,)).rowcount == 1
+
+    def __exit__(self, *exc: object) -> None:
+        self._conn.close()
+        self._scratch.cleanup()
+
+
+def _empty_facet_families() -> dict[str, dict[str, int]]:
+    return {
         "repos": {},
         "role_counts": {},
         "material_origins": {},
@@ -965,6 +978,22 @@ def _archive_aggregate_facet_families(
         "has_flags": {},
         "omitted": {},
     }
+
+
+def _merge_facet_families(total: dict[str, dict[str, int]], part: dict[str, dict[str, int]]) -> None:
+    """Add one disjoint session chunk's family counts into ``total``."""
+    for family, counts in part.items():
+        merged = total.setdefault(family, {})
+        for key, count in counts.items():
+            merged[key] = merged.get(key, 0) + count
+
+
+def _archive_aggregate_facet_families(
+    conn: Any,
+    *,
+    session_ids: list[str] | None,
+) -> dict[str, dict[str, int]]:
+    result = _empty_facet_families()
     if session_ids is not None and not session_ids:
         return result
 
@@ -979,7 +1008,11 @@ def _archive_aggregate_facet_families(
         return rows
 
     def keyed(rows: list[Any]) -> dict[str, int]:
-        return {str(row[0]): int(row[1] or 0) for row in rows if row[0]}
+        counts: dict[str, int] = {}
+        for row in rows:
+            if row[0]:
+                counts[str(row[0])] = counts.get(str(row[0]), 0) + int(row[1] or 0)
+        return counts
 
     def table_has_column(table: str, column: str) -> bool:
         try:
