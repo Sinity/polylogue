@@ -1106,6 +1106,40 @@ def test_source_only_antigravity_metadata_stays_pending_with_mutable_companion(t
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
 
 
+def test_unreadable_state_database_stays_retryable_instead_of_excluded(tmp_path: Path) -> None:
+    """A read fault on a declared database fails the file; it is never excluded.
+
+    The Codex state recognizer cannot open the file and reads it as "not
+    Codex state". Anti-vacuity: without the readability probe in
+    ``classify_pre_acquisition`` the batch records a cursor exclusion, which
+    no later pass revisits while the file's observation is unchanged.
+    """
+    bootstrap_archive_root(tmp_path)
+    root = tmp_path / "codex"
+    root.mkdir()
+    state = root / "state_5.sqlite"
+    with sqlite3.connect(state) as conn:
+        conn.execute("CREATE TABLE threads(id TEXT)")
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root, suffixes=(".sqlite",)),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    state.chmod(0)
+    try:
+        result = processor._ingest_full_paths_sync([state], source_name="codex")
+    finally:
+        state.chmod(0o600)
+
+    assert result.failed == [state]
+    assert result.succeeded == []
+    record = cursor.get_record(state)
+    assert record is None or record.excluded is False
+
+
 def test_source_only_full_ingest_streams_admitted_zip_members_without_decoding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1132,7 +1166,7 @@ def test_source_only_full_ingest_streams_admitted_zip_members_without_decoding(
     for target in (
         "polylogue.sources.live.batch.iter_zip_entry_raw_data",
         "polylogue.sources.live.batch.sniff_zip_provider",
-        "polylogue.sources.live.batch._detect_provider_from_raw_bytes",
+        "polylogue.sources.live.batch.detect_provider_from_path_sample_evidence",
         "polylogue.sources.source_acquisition_components.iter_entry_payloads",
         "polylogue.sources.source_acquisition_components.classify_artifact",
     ):
