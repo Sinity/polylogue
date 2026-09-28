@@ -1432,7 +1432,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         since there is no kernel connection-table entry for a fabricated
         ``client_address``.
         """
-        client_address = self.client_address
+        client_address: object = self.client_address
         if not isinstance(client_address, tuple) or len(client_address) < 2:
             return False
         server_address = getattr(self.server, "server_address", None)
