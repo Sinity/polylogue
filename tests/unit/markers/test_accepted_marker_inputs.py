@@ -630,16 +630,9 @@ async def test_public_process_ingest_batch_recovers_empty_marker_carrier(
                 pass
             repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
             service = ParsingService(repository=repository, archive_root=tmp_path, config=config, ingest_workers=1)
-            with pytest.raises(AcceptedMarkerInputRefusedError, match="replaced index incarnation"):
-                await ingest_batch_core.process_ingest_batch(
-                    service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-                )
-            with sqlite3.connect(tmp_path / "source.db") as source:
-                assert source.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (1,)
-                assert source.execute("SELECT COUNT(*) FROM accepted_marker_inputs").fetchone() == (0,)
-            with sqlite3.connect(tmp_path / "index.db") as index:
-                assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
-            return
+            # The pending prepare was witnessed only by the replaced index, so
+            # it was never accepted or delivered. Refusing it would strand the
+            # raw on every restarted build; the new incarnation re-prepares it.
         await ingest_batch_core.process_ingest_batch(
             service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
         )
@@ -659,14 +652,20 @@ async def test_public_process_ingest_batch_recovers_empty_marker_carrier(
 
 
 @pytest.mark.asyncio
-async def test_public_marker_retry_reuses_pending_carrier_after_another_raw_publishes_session(
+async def test_public_marker_retry_replaces_uncommitted_pending_carrier(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A rollback carrier survives a same-incarnation publication by another raw.
+    """A rolled-back raw retries through the ordinary writer after another raw publishes its session.
+
+    The first raw's index transaction never commits, so its pending carrier
+    has no witness. Anti-vacuity: restoring the hash-only pending-carrier
+    shortcut skips the writer, which leaves ``sessions.raw_id`` on the
+    intervening raw, records no skipped session, and accepts the stale
+    pending bytes instead of the retry's no-op interpretation.
 
     Every parse returns a new object: the production batch deliberately clears
     parsed payloads after use, so reusing the fixture object would hide the
-    retry that must retain the original marker bytes.
+    retry.
     """
     bootstrap_archive_root(tmp_path)
     config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[])
@@ -762,11 +761,12 @@ async def test_public_marker_retry_reuses_pending_carrier_after_another_raw_publ
             assert index.execute("SELECT raw_id FROM sessions").fetchone() == (raw_ids[1],)
 
         # Retry the first raw from a fresh parsed object. Its ordinary writer
-        # now sees a no-op, but the existing session proves the retained
-        # pending interpretation was successfully published in this
-        # incarnation. Finalization must preserve those exact bytes.
+        # sees an unchanged session: it re-links provenance and records the
+        # skip. The uncommitted pending carrier is replaced by that no-op
+        # interpretation; the intervening raw's carrier owns the marker.
+        retry_result = ParseResult()
         await ingest_batch_core.process_ingest_batch(
-            service, repository.backend, [raw_ids[0]], ParseResult(), None, repair_message_fts=False
+            service, repository.backend, [raw_ids[0]], retry_result, None, repair_message_fts=False
         )
     finally:
         await repository.close()
@@ -774,19 +774,32 @@ async def test_public_marker_retry_reuses_pending_carrier_after_another_raw_publ
     assert len(parsed_objects) == 3
     assert len({id(parsed) for parsed in parsed_objects}) == 3
     assert reuse_raw_ids == [raw_ids[0], raw_ids[1], raw_ids[0]]
+    assert retry_result.counts["skipped_sessions"] == 1
     with sqlite3.connect(tmp_path / "source.db") as source:
-        accepted = source.execute(
-            "SELECT payload FROM accepted_marker_inputs WHERE raw_id = ?", (raw_ids[0],)
+        accepted = dict(
+            source.execute(
+                "SELECT raw_id, payload FROM accepted_marker_inputs WHERE raw_id IN (?, ?)", raw_ids
+            ).fetchall()
+        )
+        assert set(accepted) == set(raw_ids)
+        retried = json.loads(accepted[raw_ids[0]])
+        assert bytes(cast(bytes, accepted[raw_ids[0]])) != pending_payload
+        assert [session["disposition"] for session in retried["sessions"]] == ["no-op"]
+        assert all(not session["candidates"] for session in retried["sessions"])
+        intervening = json.loads(accepted[raw_ids[1]])
+        assert sum(len(session["candidates"]) for session in intervening["sessions"]) == 1
+        assert source.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
+        retried_digest = source.execute(
+            "SELECT payload_sha256 FROM accepted_marker_inputs WHERE raw_id = ?", (raw_ids[0],)
         ).fetchone()
-        assert accepted is not None
-        assert bytes(cast(bytes, accepted[0])) == pending_payload
-        assert source.execute(
-            "SELECT COUNT(*) FROM pending_accepted_marker_inputs WHERE raw_id = ?", (raw_ids[0],)
-        ).fetchone() == (0,)
     with sqlite3.connect(tmp_path / "index.db") as index:
-        assert index.execute(
-            "SELECT carrier_digest FROM ingest_marker_witnesses WHERE request_key = ?", (pending[0],)
-        ).fetchone() == (pending[1],)
+        assert index.execute("SELECT raw_id FROM sessions").fetchone() == (raw_ids[0],)
+        assert (
+            index.execute(
+                "SELECT carrier_digest FROM ingest_marker_witnesses WHERE request_key = ?", (pending[0],)
+            ).fetchone()
+            == retried_digest
+        )
 
 
 @pytest.mark.asyncio

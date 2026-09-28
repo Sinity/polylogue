@@ -1147,6 +1147,13 @@ writes:
     tier: "source"
     classification: lifecycle_transition
     reason: "finalization inserts or verifies the immutable accepted marker input and deletes only the pending row for that exact request_key in the same caller-owned source transaction; a rollback therefore retains the pending carrier and cannot split accepted bytes from obligation removal"
+  - file: "polylogue/storage/accepted_marker_inputs.py"
+    function: "replace_uncommitted_pending_marker_input_sync"
+    table: "pending_accepted_marker_inputs"
+    kind: "update"
+    tier: "source"
+    classification: two_phase_recovery
+    reason: "cross-tier two-phase abort: the caller holds the index write transaction and has observed no ingest_marker_witnesses row for this request in the current incarnation, so the pending prepare never committed there and was never accepted or delivered; the update matches request_key, raw_id and the retained carrier_digest with rowcount == 1 and installs the validated current interpretation; accepted carriers are never touched"
 caller_supplied_sql:
   - file: "polylogue/storage/io_phase_metrics.py"
     function: "_MeasuredConnection.execute"

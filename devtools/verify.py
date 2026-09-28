@@ -42,10 +42,12 @@ from devtools.pytest_invocation import (
 )
 from devtools.pytest_rerun import rerun_failed_once
 from devtools.pytest_slot import (
+    OOM_KILLED_DIAGNOSIS,
     WORKTREE_PROVENANCE_ENV,
     PytestSlotUnavailableError,
     run_pytest,
     run_pytest_isolated,
+    termination_metadata,
 )
 from devtools.pytest_stream_report import REPORT_FILE_OPTION, report_file_argument, spool_paths
 from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV, write_run_receipt
@@ -129,7 +131,7 @@ _GRAPH_FREE_SELECTIONS = frozenset({"descriptor", "none"})
 DESCRIPTOR_CONTRACT_TESTS = (
     "tests/unit/devtools/test_deployment_browser_smoke_service.py::test_declared_browser_smoke_has_no_private_browser_service_lease",
     "tests/unit/devtools/test_deployment_browser_smoke_service.py::test_declared_live_provider_proof_declares_no_port_lease",
-    "tests/unit/devtools/test_deployment_browser_smoke_service.py::test_agentctl_parser_accepts_the_unleased_shared_chrome_operation",
+    "tests/unit/devtools/test_deployment_browser_smoke_service.py::test_descriptor_declares_the_unleased_shared_chrome_operation_and_workspace_contract",
     "tests/unit/devtools/test_dev_loop_service.py::test_declared_operation_has_a_json_contract_and_no_retired_keys",
     "tests/unit/devtools/test_seeded_archive_cache_gc.py::test_declared_agentctl_operation_is_bounded_and_previewable",
     "tests/unit/devtools/test_agent_env.py::test_every_declared_pytest_pool_operation_classifies_its_own_worker",
@@ -822,6 +824,7 @@ def _run(
     hypothesis_profile_source: str | None = None
     completed: subprocess.CompletedProcess[Any]
     rerun: dict[str, Any] | None = None
+    termination: dict[str, Any] = {}
     executable_result = executable_gate_result(command, gate=label, env=env)
     if not executable_result.ok:
         early_metadata = {
@@ -866,6 +869,7 @@ def _run(
             _write_step_result(label, pytest_step, f"FAILED ({exc})")
             return 125, time.monotonic() - started, early_metadata
         slot = outcome.slot
+        termination = termination_metadata(outcome)
         completed = subprocess.CompletedProcess(command, outcome.returncode)
         metadata_receipt = outcome.receipt
         # Exit 1 is "tests failed", the only outcome a rerun can speak to.
@@ -903,6 +907,7 @@ def _run(
     }
     if pytest_step:
         metadata["pytest_slot"] = slot
+        metadata.update(termination)
         metadata["hypothesis_profile"] = hypothesis_profile
         metadata["hypothesis_profile_source"] = hypothesis_profile_source
         metadata["runner"] = runner
@@ -1430,6 +1435,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             results=results,
         )
     executed: set[tuple[object, object, object]] = set()
+    tree_unknown = False
     for result in results:
         slot_receipt = result.get("pytest_slot_receipt")
         provenance = slot_receipt.get("worktree_provenance") if isinstance(slot_receipt, Mapping) else None
@@ -1443,6 +1449,14 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                     provenance.get("git_worktree_content_sha256"),
                 )
             )
+        elif result.get("diagnosis") == OOM_KILLED_DIAGNOSIS:
+            # The kill took the slot receipt, so nothing identified the tree
+            # pytest ran against; the admitted head is not that evidence.
+            tree_unknown = True
+    if tree_unknown:
+        # Recorded after every step, so a later step's provenance cannot
+        # stand in for the tree the killed step ran against.
+        run.record_execution_worktree({"capture_source": "unavailable"})
     # The static gates read the checkout directly, with no slot to re-check it:
     # a run whose branch, HEAD or Git-visible content changed while it ran, or
     # whose pytest step executed other content, verified no single tree.

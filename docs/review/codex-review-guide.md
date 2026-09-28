@@ -1,7 +1,5 @@
 # Codex review guide
 
-Guide version: v1. End every finding you post with the line `Review-guide: v1`.
-
 You review a single-writer archive. Its durable tiers (`source.db`, `user.db`,
 `audit.db`) are irreplaceable. `index.db` and `ops.db` are rebuilt from them;
 `embeddings.db` is expensive to rebuild because vectors are purchased again and

@@ -118,6 +118,7 @@ def validate_api_bind_policy(*, enabled: bool, host: str, allow_remote: bool, au
 
 
 if TYPE_CHECKING:
+    from polylogue.daemon.derivation import DerivationReport
     from polylogue.daemon.events import DaemonEventRecord
     from polylogue.daemon.fts_convergence import FtsConvergenceOwner
     from polylogue.daemon.http import DaemonAPIHTTPServer
@@ -1170,6 +1171,39 @@ def _raw_materialized_session_ids(archive: Path, raw_id: str) -> tuple[str, ...]
     from polylogue.operations.raw_observation_derivation import raw_observation_output_session_ids
 
     return raw_observation_output_session_ids(archive, raw_id)
+
+
+def _derivation_admission(report: DerivationReport, key: str, *, subject: str) -> AdmissionResult:
+    """Map one exact-key derivation pass onto a fair-intake admission verdict.
+
+    A discovery or bulk-inspection failure is recorded under the domain-wide
+    key ``"*"``, not under ``key``; it still means this pass did not decide
+    ``key`` and must be retried, never acknowledged as a duplicate. The
+    retained outcome sample may be truncated, so the authoritative failure
+    count also counts. No ``actual_cost`` is returned: discovery costed the
+    item in payload bytes, and that estimate is what the pass spent.
+    """
+    from polylogue.daemon.derivation import Outcome
+
+    outcomes = tuple(outcome for outcome in report.outcomes if outcome.key.key in (key, "*"))
+    failed = next((outcome for outcome in outcomes if outcome.outcome is Outcome.FAILED), None)
+    if failed is not None or (report.done == 0 and report.failed > 0):
+        return AdmissionResult(
+            AdmissionOutcome.RETRYABLE,
+            reason=(failed.error if failed is not None else None) or f"{subject} derivation failed",
+        )
+    pending = next((outcome for outcome in outcomes if outcome.outcome is Outcome.PENDING), None)
+    if pending is not None or (report.done == 0 and report.pending > 0):
+        return AdmissionResult(
+            AdmissionOutcome.RETRYABLE,
+            reason=pending.reason.value if pending is not None and pending.reason is not None else f"{subject} pending",
+        )
+    if report.done:
+        return AdmissionResult(AdmissionOutcome.ADMITTED)
+    # A concurrent publisher may have made the inspected key valid between
+    # discovery and this exact pass. Acknowledgement is then warranted, but
+    # only because the canonical output relation said so.
+    return AdmissionResult(AdmissionOutcome.DUPLICATE)
 
 
 async def _converge_raw_materialized_session_profiles(
@@ -2865,36 +2899,15 @@ async def _run_daemon_services_under_active_writer_lease(
                         return await asyncio.wrap_future(submitted.future)
 
                     async def admit_raw_intake(raw_id: str) -> AdmissionResult:
-                        from polylogue.daemon.derivation import Outcome
-
                         report = await raw_observation_owner.converge_raw_id(raw_id)
-                        outcomes = tuple(outcome for outcome in report.outcomes if outcome.key.key == raw_id)
-                        failed = next((outcome for outcome in outcomes if outcome.outcome is Outcome.FAILED), None)
-                        if failed is not None:
-                            return AdmissionResult(
-                                AdmissionOutcome.RETRYABLE,
-                                reason=failed.error or "raw observation derivation failed",
-                            )
-                        pending = next((outcome for outcome in outcomes if outcome.outcome is Outcome.PENDING), None)
-                        if pending is not None:
-                            return AdmissionResult(
-                                AdmissionOutcome.RETRYABLE,
-                                reason=pending.reason.value
-                                if pending.reason is not None
-                                else "raw observation pending",
-                            )
-                        if report.done:
+                        result = _derivation_admission(report, raw_id, subject="raw observation")
+                        if result.outcome is AdmissionOutcome.ADMITTED:
                             await _converge_raw_materialized_session_profiles(
                                 archive_root_path,
                                 raw_id,
                                 session_profile_callback,
                             )
-                            return AdmissionResult(AdmissionOutcome.ADMITTED, actual_cost=1)
-                        # A concurrent publisher may have made the inspected
-                        # raw valid between discovery and this exact pass.
-                        # Dispatcher acknowledgement is then warranted, but
-                        # only because the canonical output relation said so.
-                        return AdmissionResult(AdmissionOutcome.DUPLICATE, actual_cost=1)
+                        return result
 
                     async def discover_hook_events(limit: int) -> Sequence[tuple[str, int]]:
                         from polylogue.operations.hook_event_derivation import discover_pending_hook_carriers
@@ -2915,7 +2928,6 @@ async def _run_daemon_services_under_active_writer_lease(
                         is already materialized is a duplicate.
                         """
 
-                        from polylogue.daemon.derivation import Outcome
                         from polylogue.operations.hook_event_derivation import converge_hook_carriers
 
                         submitted = daemon_compute.submit(
@@ -2925,22 +2937,7 @@ async def _run_daemon_services_under_active_writer_lease(
                             admission_class="incremental-background",
                         )
                         report = await asyncio.wrap_future(submitted.future)
-                        outcomes = tuple(outcome for outcome in report.outcomes if outcome.key.key == raw_id)
-                        failed = next((outcome for outcome in outcomes if outcome.outcome is Outcome.FAILED), None)
-                        if failed is not None:
-                            return AdmissionResult(
-                                AdmissionOutcome.RETRYABLE,
-                                reason=failed.error or "hook event derivation failed",
-                            )
-                        pending = next((outcome for outcome in outcomes if outcome.outcome is Outcome.PENDING), None)
-                        if pending is not None:
-                            return AdmissionResult(
-                                AdmissionOutcome.RETRYABLE,
-                                reason=pending.reason.value if pending.reason is not None else "hook events pending",
-                            )
-                        if report.done:
-                            return AdmissionResult(AdmissionOutcome.ADMITTED, actual_cost=1)
-                        return AdmissionResult(AdmissionOutcome.DUPLICATE, actual_cost=1)
+                        return _derivation_admission(report, raw_id, subject="hook event")
 
                     drive_sources_configured = False
                     with contextlib.suppress(Exception):

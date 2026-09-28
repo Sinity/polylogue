@@ -209,5 +209,5 @@ def test_a_transplanted_tier_at_the_birth_version_is_still_refused_above_the_flo
         foreign.execute("CREATE TABLE foreign_lineage (id INTEGER PRIMARY KEY) STRICT")
         foreign.execute(f"PRAGMA user_version = {advanced[ArchiveTier.SOURCE]}")
 
-    with pytest.raises(RuntimeError, match="is not part of polylogue.archive-format.v4"):
+    with pytest.raises(RuntimeError, match="is not part of polylogue.archive-format.v5"):
         archive_plan.assert_archive_format_lineage(tmp_path)
