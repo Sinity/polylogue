@@ -70,9 +70,11 @@ def read_file_edits_page(
     take, because it rejects window coordinates outright. There was no
     successful retry, so the session was simply unreadable through this view.
 
-    The payload SELECT is bounded in SQLite, in the repository's own order
-    (``ORDER BY message_id, tool_use_block_id``). A separate scalar count
-    supplies the relation's total without materializing off-page payloads.
+    The relation is read whole and sliced here, like ``session_events``: the
+    order that must be preserved is the repository's own
+    (``ORDER BY message_id, tool_use_block_id``), and composing the page from
+    the full ordered list keeps "the same rows, in the same order" checkable.
+    The returned total is the relation's own count, never the page's.
     """
 
     from polylogue.storage.sqlite.queries.file_edits import _SELECT_COLUMNS
@@ -148,9 +150,9 @@ def read_web_content_constructs_page(
     web evidence crossed the 8 MiB operation-result bound and became
     unreadable with no retry that could succeed.
 
-    The payload SELECT applies LIMIT/OFFSET in the repository's own order
-    (``ORDER BY message_id, block_id, position``); a separate scalar count
-    supplies the relation's total without materializing off-page payloads.
+    Sliced from the repository's own order
+    (``ORDER BY message_id, block_id, position``); the reported total is the
+    relation's own row count.
     """
 
     from polylogue.storage.sqlite.queries.mappers_archive import _row_to_web_content_construct
