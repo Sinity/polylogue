@@ -446,7 +446,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Measure what a pytest selection costs to collect, before any test runs.",
         "devtools.collection_cost",
         json_flag=True,
-        flags=(("--budget-mib", "Exit 3 when the collection peak exceeds this many MiB."),),
         use_when=(
             "Reproduce the per-worker collection cost a width is bounded by, before and after a change, on one head."
         ),
@@ -455,6 +454,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools bench collection --budget-mib 430",
             "devtools bench collection tests/unit/devtools/",
         ),
+    ),
+    CommandSpec(
+        "bench ingest-throughput",
+        "benchmarking",
+        "Measure ingest throughput against synthetic source records.",
+        "devtools.ingest_throughput_probe",
+        json_flag=True,
+        examples=("devtools bench ingest-throughput --json",),
     ),
     CommandSpec(
         "bench baseline",
