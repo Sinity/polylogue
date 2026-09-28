@@ -23,7 +23,7 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 from resource import RUSAGE_SELF, getrusage
 from time import perf_counter, sleep
-from typing import Any
+from typing import Any, SupportsFloat, cast
 
 import pytest
 
@@ -398,7 +398,7 @@ def test_bench_daemon_cancellation(
     result = benchmark_repeated(benchmark, run)
     record_metrics(
         benchmark,
-        cancellation_ms=float(result["_cancellation_elapsed_ms"]),
+        cancellation_ms=float(cast(SupportsFloat, result["_cancellation_elapsed_ms"])),
         bytes=len(json.dumps(result, separators=(",", ":")).encode()),
     )
 

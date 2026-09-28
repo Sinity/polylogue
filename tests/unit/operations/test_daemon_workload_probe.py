@@ -1437,7 +1437,9 @@ def test_an_unavailable_debt_ledger_is_not_zero_debt() -> None:
     assert debt["unresolved_count"] == {"before": None, "after": 4, "delta": None, "measured": False}
 
 
-def test_unavailable_debt_is_rendered_unknown_and_cli_fails_closed(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+def test_unavailable_debt_is_rendered_unknown_and_cli_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     """The human command cannot turn an unreadable debt ledger into healthy zero.
 
     Anti-vacuity: reverting the unavailable branch to printing numeric sentinels

@@ -17,6 +17,7 @@ import sqlite3
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -248,12 +249,13 @@ async def test_record_context_delivery_requires_initialized_user_tier(tmp_path: 
         initialize_archive_tier(index_conn, ArchiveTier.INDEX)
 
     from polylogue.config import Config
+    from polylogue.context.compiler import ContextImage
     from polylogue.operations.facade_writers import _archive_record_context_delivery
 
     with pytest.raises(ValueError, match="context-delivery user tier is not initialized"):
         _archive_record_context_delivery(
             Config(archive_root=archive_root, render_root=archive_root, sources=[]),
-            image=object(),  # The guard must run before dereferencing the image.
+            image=cast(ContextImage, object()),  # The guard must run before dereferencing the image.
             boundary="explicit-recall",
             recipient_ref="agent:codex-main",
             delivered_by_ref="user:local",

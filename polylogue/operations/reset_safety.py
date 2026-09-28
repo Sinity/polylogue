@@ -10,7 +10,7 @@ def unresolvable_raw_source_count(archive_root: Path) -> int:
     source_db = archive_root / "source.db"
     if not source_db.exists():
         return 0
-    from polylogue.storage.sqlite.connection import open_readonly_connection
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
     conn = open_readonly_connection(source_db, validate_schema=False)
     try:

@@ -13,6 +13,7 @@ import ast
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock, patch
 
 import click
@@ -33,6 +34,11 @@ from polylogue.operations.daemon_protocol import (
     daemon_operation_spec,
 )
 from polylogue.operations.mutation_transaction import ConfirmationRequiredError
+
+if TYPE_CHECKING:
+    from polylogue.operations.audit import AuditRepository
+    from polylogue.operations.daemon_protocol import DaemonOperationRequest
+    from polylogue.operations.operation_context import OperationContext, PinnedOperationRead
 
 
 def _env(*, plain: bool = True) -> MagicMock:
@@ -87,7 +93,14 @@ class TestDeclaredMutationAuthority:
             patch.object(daemon_mutations, "OperationExecutor") as executor,
         ):
             with pytest.raises(ConfirmationRequiredError, match="explicit confirmation"):
-                daemon_mutations._execute_named_mutation(request, context, object(), object(), object(), object())
+                daemon_mutations._execute_named_mutation(
+                    cast("DaemonOperationRequest", request),
+                    cast("OperationContext", context),
+                    cast("AuditRepository", object()),
+                    cast("PinnedOperationRead", object()),
+                    object(),
+                    object(),
+                )
         executor.assert_not_called()
 
 

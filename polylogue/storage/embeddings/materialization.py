@@ -16,7 +16,7 @@ import contextlib
 import sqlite3
 import threading
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import partial
@@ -1695,7 +1695,7 @@ _SESSION_ATTEMPT_LOCKS: dict[str, tuple[threading.Lock, int]] = {}
 
 
 @contextlib.contextmanager
-def _session_attempt_lock(key: str) -> Iterable[None]:
+def _session_attempt_lock(key: str) -> Iterator[None]:
     """Serialize one session's provider work across live and backlog owners."""
     with _SESSION_ATTEMPT_LOCK_GUARD:
         lock, users = _SESSION_ATTEMPT_LOCKS.get(key, (threading.Lock(), 0))

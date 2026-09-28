@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING, cast
 
 import pytest
+
+if TYPE_CHECKING:
+    from devtools.verify_runs import VerifyRun
 
 from polylogue.scenarios.workload import (
     BudgetAggregation,
@@ -178,7 +182,9 @@ def test_verifier_common_finalizer_adds_receipt_on_early_failure(monkeypatch: py
     import polylogue.context.failure_seed as failure_seed
 
     monkeypatch.setattr(failure_seed, "write_failure_seed", lambda **_kwargs: None)
-    payload = verify._finish_and_record_verification(run=Run(), exit_code=2, duration_s=0.0, workload_receipt=None)
+    payload = verify._finish_and_record_verification(
+        run=cast("VerifyRun", Run()), exit_code=2, duration_s=0.0, workload_receipt=None
+    )
 
     receipt = payload["workload_receipt"]
     assert isinstance(receipt, dict)

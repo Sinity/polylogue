@@ -77,7 +77,8 @@ def read_file_edits_page(
     The returned total is the relation's own count, never the page's.
     """
 
-    from polylogue.storage.sqlite.queries.file_edits import _SELECT_COLUMNS, _row_to_file_edit
+    from polylogue.storage.sqlite.queries.file_edits import _SELECT_COLUMNS
+    from polylogue.storage.sqlite.queries.mappers import _row_to_file_edit
 
     conn = archive._conn
     total = int(conn.execute("SELECT COUNT(*) FROM file_edits WHERE session_id = ?", (session_id,)).fetchone()[0])
@@ -154,10 +155,8 @@ def read_web_content_constructs_page(
     relation's own row count.
     """
 
-    from polylogue.storage.sqlite.queries.web_content_constructs import (
-        _SELECT_COLUMNS,
-        _row_to_web_content_construct,
-    )
+    from polylogue.storage.sqlite.queries.mappers_archive import _row_to_web_content_construct
+    from polylogue.storage.sqlite.queries.web_content_constructs import _SELECT_COLUMNS
 
     conn = archive._conn
     total = int(

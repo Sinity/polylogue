@@ -364,7 +364,7 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
         _browser_capture_parsed_attachment(
             attachment,
             message_provider_id=attachment.message_provider_id,
-            role=parsed_roles.get(attachment.message_provider_id),
+            role=parsed_roles.get(attachment.message_provider_id) if attachment.message_provider_id else None,
         )
         for attachment in envelope.session.attachments
     )

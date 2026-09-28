@@ -1370,7 +1370,7 @@ class TestReaderSearchState:
         """Anti-vacuity: ignoring cursor returns ranked hits instead of invalid_cursor."""
         _seed_archive_test_archive(workspace_env)
         with _running_server_without_seed() as (_, base_url):
-            payload = _get_json(base_url, "/api/sessions?query=archive&cursor=invalid-cursor")
+            payload = cast(dict[str, Any], _get_json(base_url, "/api/sessions?query=archive&cursor=invalid-cursor"))
 
         assert payload.get("error") == "invalid_cursor"
 

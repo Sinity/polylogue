@@ -6,7 +6,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
 import pytest
 
@@ -446,9 +446,12 @@ def test_max_errors_stops_derivation_before_more_provider_calls() -> None:
         def inspect(self, _frame: object, keys: Sequence[str]) -> Mapping[str, KeyStatus]:
             return dict.fromkeys(keys, KeyStatus.MISSING)
 
-        def compute(self, _frame: object, key: str) -> object:
+        def compute(self, _frame: object, key: str) -> NoReturn:
             self.calls.append(key)
             raise RuntimeError("provider 429")
+
+        def publish(self, _frame: object, _replacement: object) -> bool:
+            raise AssertionError("compute always fails before publish is reached")
 
     adapter = FailingEmbedding()
     report = converge(
