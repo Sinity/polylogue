@@ -80,7 +80,7 @@ def _baseline(path: Path) -> Counter[Anchor]:
             raise ValueError(f"invalid baseline entry in {path}: {raw_line!r}")
         if (
             not file_name
-            or len(digest) != hashlib.sha1().digest_size * 2
+            or len(digest) != 40
             or any(character not in "0123456789abcdef" for character in digest)
             or count < 1
         ):
@@ -112,7 +112,7 @@ def _match_anchor(root: Path, item: dict[str, Any], file_lines: dict[str, list[s
     if line_number > len(lines):
         raise ValueError(f"ast-grep match line is outside {file_name}: {line_number}")
     normalized_line = lines[line_number - 1].strip()
-    digest = hashlib.sha1(normalized_line.encode("utf-8")).hexdigest()
+    digest = hashlib.sha1(normalized_line.encode("utf-8"), usedforsecurity=False).hexdigest()
     return file_name, digest
 
 
@@ -143,6 +143,32 @@ def _scan(root: Path, rule: Rule) -> Counter[Anchor]:
     return matches
 
 
+def _locations(root: Path, rule: Rule) -> dict[Anchor, list[int]]:
+    """Return current source coordinates for content anchors used in diagnostics."""
+    command = ["ast-grep", "scan", "--rule", str(rule.rule_path), "--json=compact", "--globs", "*.py", "polylogue"]
+    completed = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=120)
+    if completed.returncode:
+        detail = completed.stderr.strip() or completed.stdout.strip() or f"exit {completed.returncode}"
+        raise RuntimeError(detail)
+    payload = json.loads(completed.stdout or "[]")
+    if not isinstance(payload, list):
+        raise ValueError("ast-grep returned a non-list JSON result")
+    result: dict[Anchor, list[int]] = {}
+    file_lines: dict[str, list[str]] = {}
+    for item in payload:
+        if not isinstance(item, dict):
+            raise ValueError("ast-grep returned a malformed match")
+        anchor = _match_anchor(root, item, file_lines)
+        line = item["range"]["start"]["line"] + 1
+        result.setdefault(anchor, []).append(line)
+    return result
+
+
+def _new_match_detail(rule: Rule, anchor: Anchor, count: int, locations: dict[Anchor, list[int]]) -> str:
+    line_text = f" at lines {', '.join(map(str, locations[anchor]))}" if anchor in locations else ""
+    return f"{rule.rule_id} {_anchor_text(anchor, count)}{line_text} (owner {rule.owner})"
+
+
 def _payload(root: Path) -> dict[str, Any]:
     rules = _rules(root)
     details: list[str] = []
@@ -152,6 +178,7 @@ def _payload(root: Path) -> dict[str, Any]:
     missing = 0
     inspected = 0
     new_match_count = 0
+    stale_match_count = 0
     executable_available = shutil.which("ast-grep") is not None
     if not executable_available:
         gate = evidence_gate_result(
@@ -187,11 +214,13 @@ def _payload(root: Path) -> dict[str, Any]:
             details.append(f"{rule.rule_id}: pending ({sum(matches.values())} candidate matches; owner {rule.owner})")
             continue
         new_match_count += sum(new.values())
-        new_matches.extend(
-            f"{rule.rule_id} {_anchor_text(anchor, count)} (owner {rule.owner})"
-            for anchor, count in sorted(new.items())
-        )
+        try:
+            locations = _locations(root, rule) if new else {}
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, json.JSONDecodeError):
+            locations = {}
+        new_matches.extend(_new_match_detail(rule, anchor, count, locations) for anchor, count in sorted(new.items()))
         stale_matches.extend(f"{rule.rule_id} {_anchor_text(anchor, count)}" for anchor, count in sorted(stale.items()))
+        stale_match_count += sum(stale.values())
         details.append(f"{rule.rule_id}: enforcing ({sum(matches.values())} matches, {sum(stale.values())} prunable)")
     gate = evidence_gate_result(
         gate="patterns",
@@ -201,7 +230,7 @@ def _payload(root: Path) -> dict[str, Any]:
         inspected_count=inspected,
         missing_count=missing,
         error_count=len(errors),
-        semantic_violation_count=new_match_count,
+        semantic_violation_count=new_match_count + stale_match_count,
         details=(*errors, *new_matches, *(f"stale baseline: {item}" for item in stale_matches), *details),
     )
     return {

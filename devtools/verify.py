@@ -85,6 +85,7 @@ from devtools.verify_runs import (
     git_worktree_content_sha256,
     prune_successful_verify_runs,
     reconcile_and_record_abandoned_verify_runs,
+    verify_history_path,
 )
 from devtools.verify_test_collection import count_collected
 from devtools.worker_memory import CORPUS_MAX_WORKERS
@@ -1069,9 +1070,10 @@ def _finish_and_record_verification(
         pytest_aggregate=pytest_aggregate,
         workload_receipt=workload_receipt,
     )
-    append_verify_history(payload)
+    history_path = verify_history_path(root=ROOT)
+    append_verify_history(payload, path=history_path)
     append_verification_evidence(payload)
-    prune_successful_verify_runs(root=ROOT)
+    prune_successful_verify_runs(root=ROOT, history_path=history_path)
     if exit_code != 0:
         try:
             from polylogue.context.failure_seed import write_failure_seed

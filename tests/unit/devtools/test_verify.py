@@ -331,7 +331,7 @@ def test_missing_checkout_venv_tool_is_a_typed_failure(
     monkeypatch.setattr(
         verify, "build_verify_steps", lambda **_kwargs: [("gate lint", [str(tmp_path / ".venv/bin/ruff")])]
     )
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
 
     assert verify._main(["--quick"]) == 127
     assert history["diagnosis"] == expected_diagnosis
@@ -377,7 +377,7 @@ def test_quick_missing_ruff_is_a_named_failed_gate(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
     monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("gate lint", ["ruff", "check"])])
     monkeypatch.setattr(required_gate.shutil, "which", lambda name, path=None: None if name == "ruff" else "/bin/true")  # type: ignore[attr-defined]
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
 
     assert verify._main(["--quick"]) == 127
     step = history["steps"][0]
@@ -399,7 +399,7 @@ def test_required_gate_subprocess_launch_failure_is_typed(monkeypatch: pytest.Mo
         "Popen",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("ruff")),
     )
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
 
     assert verify._main(["--quick"]) == 127
     assert history["diagnosis"] == "gate_subprocess_launch_failed"
@@ -902,7 +902,7 @@ def test_verify_main_records_why_no_pytest_step_ran(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(verify, "build_verify_steps", capture_steps)
     monkeypatch.setattr(verify, "_run", lambda *_args, **_kwargs: (0, 0.1, {"diagnosis": "gate_passed"}))
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
     monkeypatch.setattr(verify, "append_verification_evidence", lambda _payload: None)
     monkeypatch.setattr(verify, "prune_successful_verify_runs", lambda **_kwargs: None)
 
@@ -951,7 +951,7 @@ def test_verify_main_routes_descriptor_diff_to_bounded_selection(
         capture_steps,
     )
     monkeypatch.setattr(verify, "_run", lambda *_args, **_kwargs: (0, 0.1, {"diagnosis": "gate_passed"}))
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
     monkeypatch.setattr(verify, "append_verification_evidence", lambda _payload: None)
     monkeypatch.setattr(verify, "prune_successful_verify_runs", lambda **_kwargs: None)
 
@@ -1001,7 +1001,7 @@ def test_affected_admission_refuses_without_launching_pytest(
         return 0, 0.1, {}
 
     monkeypatch.setattr(verify, "_run", capture_run)
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
     monkeypatch.setattr(verify, "append_verification_evidence", lambda _payload: None)
     monkeypatch.setattr(verify, "prune_successful_verify_runs", lambda **_kwargs: None)
 
@@ -1138,7 +1138,7 @@ def test_verify_persists_terminal_receipt_when_outer_deadline_sends_sigterm(
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
     monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("pytest parallel (all)", ["pytest"])])
     monkeypatch.setattr(verify, "_run", interrupt)
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
 
     assert verify._main(["--quick"]) == 143
 
@@ -1165,7 +1165,7 @@ def test_verify_emits_shared_workload_receipt_for_step_timing(
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
     monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("gate lint", ["ruff", "check"])])
     monkeypatch.setattr(verify, "_run", lambda *_args, **_kwargs: (0, 0.25, {"diagnosis": "gate_passed"}))
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
 
     assert verify._main(["--quick"]) == 0
 

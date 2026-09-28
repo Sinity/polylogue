@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.archive_tiers import (
     ARCHIVE_DDL_BY_TIER,
     ARCHIVE_FORMAT_FLOOR_VERSION,
@@ -290,7 +291,7 @@ def _migration_integrity_violations(
                 violations.append(f"{tier.value}: added migration has an invalid numbered name: {change.new_path}")
         elif change.status.startswith("D") and not allow_predecessor_retirement:
             violations.append(f"{tier.value}: required migration was deleted: {change.old_path}")
-        elif change.status.startswith(("M", "R", "C")):
+        elif change.status.startswith(("M", "R", "C", "T")):
             violations.append(f"{tier.value}: required migration was modified: {change.old_path}")
     return violations
 
@@ -511,9 +512,13 @@ def _provider_named_index_objects() -> list[str]:
 def _check_tier(tier: ArchiveTier, path: Path | None) -> dict[str, Any]:
     expected = canonical_schema_manifest(tier)
     result: dict[str, Any] = {"tier": tier.value, "version": expected.version, "ok": True}
-    if path is None or not path.exists():
+    if path is None:
         return result
-    with sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True) as conn:
+    if not path.exists():
+        result["ok"] = False
+        result["diff"] = {"file": {"expected": "present", "actual": "missing"}}
+        return result
+    with sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True) as conn:
         actual = SchemaManifest.from_connection(conn, tier)
     diff = schema_manifest_diff(expected, actual)
     if actual.version != expected.version:
@@ -551,9 +556,12 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"FAIL: {violation}")
             print("durable-schema-evolution: PASS" if not violations else "durable-schema-evolution: FAIL")
         return 0 if not violations else 1
+    location = ArchiveLocation.resolve(args.archive_root) if args.archive_root is not None else None
     results = []
     for tier in ArchiveTier:
-        path = args.archive_root / f"{tier.value}.db" if args.archive_root is not None else None
+        path = None
+        if location is not None:
+            path = location.active_index_path if tier is ArchiveTier.INDEX else args.archive_root / f"{tier.value}.db"
         results.append(_check_tier(tier, path))
     benign_violations = _benign_ddl_violations()
     provider_named = _provider_named_index_objects()

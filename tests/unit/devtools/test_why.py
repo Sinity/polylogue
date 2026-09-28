@@ -137,7 +137,7 @@ def test_history_mode_reports_where_the_time_went(tmp_path: Path, monkeypatch: p
         + "\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(why, "VERIFY_HISTORY_PATH", history)
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HISTORY_PATH", str(history))
     stream = io.StringIO()
 
     assert why._render_history(24.0, stream) == 0

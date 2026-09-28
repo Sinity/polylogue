@@ -97,7 +97,7 @@ def test_synthetic_new_match_makes_the_ratchet_red(monkeypatch: pytest.MonkeyPat
     assert payload["required_gate"]["diagnosis"] == "gate_semantic_violation"
 
 
-def test_stale_baseline_is_reported_as_shrinkable_not_a_failure(
+def test_stale_baseline_is_a_blocking_exemption_that_must_be_pruned(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     rule = _rule(tmp_path)
@@ -106,9 +106,24 @@ def test_stale_baseline_is_reported_as_shrinkable_not_a_failure(
 
     payload = verify_patterns._payload(tmp_path)
 
-    assert payload["blocking"] is False
+    assert payload["blocking"] is True
     digest = hashlib.sha1(b"return None").hexdigest()
     assert payload["stale_matches"] == [f"synthetic polylogue/existing.py:{digest}"]
+
+
+def test_baseline_digest_validation_does_not_call_security_restricted_sha1_constructor(tmp_path: Path) -> None:
+    path = tmp_path / "baseline.txt"
+    path.write_text("file.py:" + "a" * 40 + "\n", encoding="utf-8")
+    assert verify_patterns._baseline(path) == Counter({("file.py", "a" * 40): 1})
+
+
+def test_new_match_diagnostic_keeps_current_one_based_locations() -> None:
+    """Anti-vacuity: content anchors alone must still point to source locations."""
+    rule = verify_patterns.Rule("synthetic", Path("rule"), Path("baseline"), "owner", "enforcing")
+    detail = verify_patterns._new_match_detail(
+        rule, ("polylogue/a.py", "f" * 40), 1, {("polylogue/a.py", "f" * 40): [54]}
+    )
+    assert "at lines 54" in detail
 
 
 def test_missing_ast_grep_is_typed_and_actionable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -193,5 +208,5 @@ def test_duplicate_content_anchors_are_compared_as_a_multiset(monkeypatch: pytes
         lambda _root, _rule: Counter({("polylogue/existing.py", digest): 1}),
     )
     payload = verify_patterns._payload(tmp_path)
-    assert payload["blocking"] is False
+    assert payload["blocking"] is True
     assert payload["stale_matches"] == [f"synthetic polylogue/existing.py:{digest}"]
