@@ -805,6 +805,16 @@ def test_delete_protocol_accepts_selections_of_any_size() -> None:
     assert DeleteCancelRequest.model_validate({"preview_refs": refs}).preview_refs == refs
     assert DeleteExecuteRequest.model_validate({"authorization_refs": refs}).authorization_refs == refs
 
+    # The follow-up phases carry one ref per preview chunk of the same
+    # selection, so they share the preview's transport bound.
+    from polylogue.operations.daemon_protocol import daemon_operation_spec
+
+    body_limits = {
+        step: cast(Any, daemon_operation_spec(f"mutation.session.delete.{step}")).max_body_bytes
+        for step in ("preview", "authorize", "cancel", "execute")
+    }
+    assert len(set(body_limits.values())) == 1, body_limits
+
 
 def test_cli_delete_preparation_resolves_canonical_ids_in_bounded_pages(tmp_path: Path) -> None:
     """A real archive selection must not spend one SQLite query per canonical ID.

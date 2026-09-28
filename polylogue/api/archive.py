@@ -195,6 +195,7 @@ _FACET_DEFERRED_FAMILIES = (
 _FACET_COMPLETE_FAMILIES = _FACET_CORE_FAMILIES + _FACET_DEFERRED_FAMILIES
 
 _ReadResultT = TypeVar("_ReadResultT")
+_T = TypeVar("_T")
 
 _CANDIDATE_CAPTURE_KIND_MAP: dict[str, AssertionKind] = {
     "note": AssertionKind.NOTE,
@@ -664,16 +665,39 @@ def _archive_list_summaries_with_post_filters(
     sampling before the filter would shrink the sample by the excluded rows.
     """
     candidates = _post_filter_candidates(archive, query_text=query_text, query_kwargs=query_kwargs)
+    survivors = _iter_post_filtered_summaries(archive, spec, candidates, needed=None)
     if query_kwargs.get("sample") or query_kwargs.get("sort") == "random":
-        survivors = list(_iter_post_filtered_summaries(archive, spec, candidates, needed=None))
-        random.shuffle(survivors)
         size = limit if limit is not None else cast("int | None", query_kwargs.get("limit"))
         start = 0 if query_kwargs.get("sample") else (offset if offset is not None else 0)
-        return survivors[start:] if size is None else survivors[start : start + max(size, 0)]
+        if size is None:
+            everything = list(survivors)
+            random.shuffle(everything)
+            return everything[start:]
+        # Reservoir sampling keeps memory at the returned window while every
+        # survivor still has an equal chance of selection.
+        chosen = _reservoir_sample(survivors, start + max(size, 0))
+        random.shuffle(chosen)
+        return chosen[start:]
     start = offset if offset is not None else 0
     end = None if limit is None else start + limit
-    filtered = list(_iter_post_filtered_summaries(archive, spec, candidates, needed=end))
-    return filtered[start:end]
+    # ``islice`` skips the offset without retaining it.
+    return list(itertools.islice(survivors, start, end))
+
+
+def _reservoir_sample(items: Iterable[_T], size: int) -> list[_T]:
+    """A uniform random sample of ``size`` items in one pass and O(size) memory."""
+
+    reservoir: list[_T] = []
+    if size <= 0:
+        return reservoir
+    for seen, item in enumerate(items):
+        if seen < size:
+            reservoir.append(item)
+            continue
+        slot = random.randint(0, seen)
+        if slot < size:
+            reservoir[slot] = item
+    return reservoir
 
 
 def _archive_search_hits_for_spec(
@@ -836,17 +860,28 @@ def _iter_facet_scope(archive: Any, spec: SessionQuerySpec | None) -> Iterator[A
     """Every session in the matched scope, read page by page."""
     from dataclasses import replace
 
+    # Order and sampling are display choices like ``limit``; a sampled read
+    # ignores ``offset`` and a random sort reshuffles between pages, so the
+    # scope is walked in the default order.
+    scope_spec = None if spec is None else replace(spec, limit=None, offset=0, sample=None, sort=None, reverse=False)
+    if scope_spec is not None and scope_spec.exclude_text_terms:
+        # One post-filter pass over the candidates: restarting it per facet
+        # page would re-hydrate every earlier survivor on each page.
+        candidates = _post_filter_candidates(
+            archive,
+            query_text=_archive_text_query(scope_spec),
+            query_kwargs=_archive_query_kwargs(scope_spec, default_limit=None),
+        )
+        yield from _iter_post_filtered_summaries(archive, scope_spec, candidates, needed=None)
+        return
     offset = 0
     while True:
-        if spec is None:
+        if scope_spec is None:
             page = cast(list[ArchiveSessionSummary], archive.list_summaries(limit=FACET_SCOPE_PAGE, offset=offset))
         else:
             page = _archive_list_summaries_for_spec(
                 archive,
-                # Order and sampling are display choices like ``limit``; a
-                # sampled read ignores ``offset`` and a random sort reshuffles
-                # between pages, so the scope is walked in the default order.
-                replace(spec, limit=None, offset=0, sample=None, sort=None, reverse=False),
+                scope_spec,
                 default_limit=FACET_SCOPE_PAGE,
                 limit=FACET_SCOPE_PAGE,
                 offset=offset,

@@ -454,3 +454,75 @@ def test_exclude_text_post_filter_randomizes_survivors_not_candidate_pages(
         offset=0,
     )
     assert sorted(summary.session_id for summary in page) == ["s8", "s9"]
+
+    one = archive_api._archive_list_summaries_with_post_filters(
+        _PagedArchive(),
+        spec,  # type: ignore[arg-type]
+        query_text=None,
+        query_kwargs={"limit": 1, **randomizer},
+        limit=None,
+        offset=0,
+    )
+    assert len(one) == 1 and one[0].session_id in {"s8", "s9"}
+
+
+def test_reservoir_sample_keeps_only_the_window() -> None:
+    """The random post-filter window is chosen in one pass over a generator.
+
+    Anti-vacuity: materialize the stream and the ``len`` check on the
+    generator-fed reservoir is the only guard; returning more than ``size``
+    items or duplicates fails the assertions.
+    """
+    from polylogue.api import archive as archive_api
+
+    chosen = archive_api._reservoir_sample((index for index in range(10_000)), 7)
+    assert len(chosen) == 7 and len(set(chosen)) == 7
+    assert archive_api._reservoir_sample(iter(range(3)), 7) == [0, 1, 2]
+    assert archive_api._reservoir_sample(iter(range(3)), 0) == []
+
+
+def test_facet_scope_post_filter_hydrates_each_candidate_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A post-filtered facet scope is one pass, not a restart per facet page.
+
+    Anti-vacuity: page the facet scope through
+    ``_archive_list_summaries_for_spec`` again and each later page restarts the
+    candidate scan, so candidates are hydrated more than once.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.api import archive as archive_api
+    from polylogue.archive.query.spec import SessionQuerySpec
+
+    monkeypatch.setattr(archive_api, "POST_FILTER_CANDIDATE_PAGE", 3)
+    monkeypatch.setattr(archive_api, "FACET_SCOPE_PAGE", 2)
+    ids = [f"s{index}" for index in range(10)]
+    reads: list[str] = []
+
+    class _PagedArchive:
+        def list_summaries(self, *, limit: int, offset: int, **kwargs: object) -> list[SimpleNamespace]:
+            return [
+                SimpleNamespace(session_id=session_id, display_label=None, display_label_source=None)
+                for session_id in ids[offset : offset + limit]
+            ]
+
+        def read_session(self, session_id: str) -> str:
+            reads.append(session_id)
+            return session_id
+
+    monkeypatch.setattr(
+        archive_api,
+        "archive_envelope_to_session",
+        lambda envelope, **kwargs: SimpleNamespace(id=envelope),
+    )
+    monkeypatch.setattr(
+        SessionQuerySpec,
+        "to_plan",
+        lambda self: SimpleNamespace(
+            _apply_full_filters=lambda sessions, sql_pushed: [s for s in sessions if s.id != "s0"]
+        ),
+    )
+    spec = SessionQuerySpec(exclude_text_terms=("absent",))
+    scope = [summary.session_id for summary in archive_api._iter_facet_scope(_PagedArchive(), spec)]
+
+    assert scope == ids[1:]
+    assert sorted(reads) == sorted(ids)

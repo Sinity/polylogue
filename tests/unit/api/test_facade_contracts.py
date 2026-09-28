@@ -6951,17 +6951,18 @@ def test_public_cost_insight_route_filters_enriched_status_before_the_page_cut(
     ]
 
     class _Archive:
-        def list_session_cost_insights(self, *, limit: int | None, offset: int, **scope: object) -> list[object]:
+        def list_session_cost_insights(
+            self, *, limit: int | None, offset: int, **scope: object
+        ) -> list[SimpleNamespace]:
             assert scope["status"] is None and scope["model"] is None
             return rows[offset:] if limit is None else rows[offset : offset + limit]
 
     monkeypatch.setattr(insights_api, "enrich_session_cost_insights", lambda archive, insights: list(insights))
     monkeypatch.setattr(insights_api, "SESSION_COST_FILTER_PAGE", 1)
 
-    by_status = insights_api._session_cost_insight_page(_Archive(), SessionCostInsightQuery(status="priced", limit=1))  # type: ignore[arg-type]
-    by_model = insights_api._session_cost_insight_page(
-        _Archive(), SessionCostInsightQuery(model="m", limit=1, offset=1)
-    )  # type: ignore[arg-type]
+    archive = cast("ArchiveStore", _Archive())
+    by_status = insights_api._session_cost_insight_page(archive, SessionCostInsightQuery(status="priced", limit=1))
+    by_model = insights_api._session_cost_insight_page(archive, SessionCostInsightQuery(model="m", limit=1, offset=1))
 
     assert [insight.session_id for insight in by_status] == ["older"]
     assert [insight.session_id for insight in by_model] == ["older"]

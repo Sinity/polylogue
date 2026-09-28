@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import itertools
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol
 
@@ -161,17 +162,20 @@ def _session_cost_insight_page(archive: ArchiveStore, request: SessionCostInsigh
             insight.estimate.model_name,
         }
 
+    def scan() -> Iterator[SessionCostInsight]:
+        page_offset = 0
+        while True:
+            rows = fetch(SESSION_COST_FILTER_PAGE, page_offset)
+            yield from (insight for insight in enrich_session_cost_insights(archive, rows) if matches(insight))
+            if len(rows) < SESSION_COST_FILTER_PAGE:
+                return
+            page_offset += len(rows)
+
+    # ``islice`` skips the offset without retaining it and stops the scan as
+    # soon as the page is full.
     start = max(int(request.offset), 0)
-    wanted = None if request.limit is None else start + max(int(request.limit), 0)
-    matched: list[SessionCostInsight] = []
-    page_offset = 0
-    while wanted is None or len(matched) < wanted:
-        rows = fetch(SESSION_COST_FILTER_PAGE, page_offset)
-        matched.extend(insight for insight in enrich_session_cost_insights(archive, rows) if matches(insight))
-        if len(rows) < SESSION_COST_FILTER_PAGE:
-            break
-        page_offset += len(rows)
-    return matched[start:wanted]
+    stop = None if request.limit is None else start + max(int(request.limit), 0)
+    return list(itertools.islice(scan(), start, stop))
 
 
 class _RepositorySurface(Protocol):

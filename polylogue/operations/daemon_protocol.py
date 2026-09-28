@@ -507,6 +507,12 @@ class InsightRebuildRequest(_OperationPayload):
         return self
 
 
+#: Transport bound shared by every delete phase. A selection accepted by the
+#: preview yields one preview (then authorization) reference per chunk, so the
+#: follow-up phases must accept a body sized for the same selection.
+DELETE_SELECTION_MAX_BODY_BYTES = 64 * 1024 * 1024
+
+
 class DeletePreviewRequest(_OperationPayload):
     # No count cap: the preview splits any selection into bounded audit
     # chunks, and the operation's ``max_body_bytes`` bounds the transport.
@@ -2144,7 +2150,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         deadline_s=30.0,
         # A preview carries the exact selection -- every session id, split
         # into bounded preview chunks -- not a parameter map.
-        max_body_bytes=64 * 1024 * 1024,
+        max_body_bytes=DELETE_SELECTION_MAX_BODY_BYTES,
         request_contract="mutation.session.delete.preview.request/v1",
         result_contract="mutation.session.delete.preview.result/v1",
         request_type="DeletePreviewRequest",
@@ -2158,6 +2164,8 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonFallback.NEVER,
         capability="archive.delete_session",
         deadline_s=30.0,
+        # Carries one reference per preview chunk of the selection.
+        max_body_bytes=DELETE_SELECTION_MAX_BODY_BYTES,
         request_contract="mutation.session.delete.authorize.request/v1",
         result_contract="mutation.session.delete.authorize.result/v1",
         request_type="DeleteAuthorizeRequest",
@@ -2171,6 +2179,8 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonFallback.NEVER,
         capability="archive.delete_session",
         deadline_s=30.0,
+        # Carries one reference per preview chunk of the selection.
+        max_body_bytes=DELETE_SELECTION_MAX_BODY_BYTES,
         request_contract="mutation.session.delete.cancel.request/v1",
         result_contract="mutation.session.delete.cancel.result/v1",
         request_type="DeleteCancelRequest",
@@ -2186,6 +2196,8 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         deadline_s=300.0,
         progress=True,
         accepted_reference=True,
+        # Carries one reference per preview chunk of the selection.
+        max_body_bytes=DELETE_SELECTION_MAX_BODY_BYTES,
         request_contract="mutation.session.delete.execute.request/v1",
         result_contract="mutation.result/v1",
         request_type="DeleteExecuteRequest",

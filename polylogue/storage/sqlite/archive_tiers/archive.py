@@ -12,6 +12,7 @@ contract spanning index and source) moved to
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import sqlite3
 import time
@@ -3161,21 +3162,25 @@ class ArchiveStore:
                 return insights_for(self._conn.execute(base_sql, tuple(params)).fetchall())
             rows = self._conn.execute(base_sql + " LIMIT ? OFFSET ?", (*params, max(int(limit), 0), start)).fetchall()
             return insights_for(rows)
+
         # A ``status`` filter is decided per row, so the SQL page cannot be cut
         # first: scan the matched scope page by page and stop once the
         # requested page is full.
-        wanted = None if limit is None else start + max(int(limit), 0)
-        matched: list[SessionCostInsight] = []
-        page_offset = 0
-        while wanted is None or len(matched) < wanted:
-            rows = self._conn.execute(
-                base_sql + " LIMIT ? OFFSET ?", (*params, COST_STATUS_FILTER_PAGE, page_offset)
-            ).fetchall()
-            matched.extend(insight for insight in insights_for(rows) if insight.estimate.status == status)
-            if len(rows) < COST_STATUS_FILTER_PAGE:
-                break
-            page_offset += len(rows)
-        return matched[start:wanted]
+        def scan() -> Iterator[SessionCostInsight]:
+            page_offset = 0
+            while True:
+                rows = self._conn.execute(
+                    base_sql + " LIMIT ? OFFSET ?", (*params, COST_STATUS_FILTER_PAGE, page_offset)
+                ).fetchall()
+                yield from (insight for insight in insights_for(rows) if insight.estimate.status == status)
+                if len(rows) < COST_STATUS_FILTER_PAGE:
+                    return
+                page_offset += len(rows)
+
+        # ``islice`` skips the offset without retaining it and stops the scan
+        # as soon as the page is full.
+        stop = None if limit is None else start + max(int(limit), 0)
+        return list(itertools.islice(scan(), start, stop))
 
     def list_cost_rollup_insights(
         self,
