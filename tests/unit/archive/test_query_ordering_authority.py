@@ -224,22 +224,27 @@ async def test_ranked_composed_sort_keeps_the_requested_candidate_pool(
 
 
 @pytest.mark.asyncio
-async def test_served_survivor_gets_its_own_page_unit_allowance(
+async def test_predicate_sees_the_units_the_served_session_carries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Units of a filtered page are projected over the sessions served.
+    """A unit-reading predicate and the served page see the same projection.
 
-    Anti-vacuity: keep the units projected over the candidate chunk and the
-    rejected neighbour halves the survivor's allowance, truncating it to one
-    message row.
+    ``kept-late`` is filtered alone in a partial candidate chunk and served on
+    a two-session page. Anti-vacuity: size the allowance by the chunk's own
+    session count and the predicate sees three message rows while the served
+    session carries one; reproject the served page by its own count and a
+    rejected neighbour changes what a survivor receives.
     """
-    _seed(tmp_path, "kept", updated_at="2026-01-01T00:00:00Z", messages=3)
+    _seed(tmp_path, "kept-late", updated_at="2026-01-01T00:00:00Z", messages=3)
     _seed(tmp_path, "rejected", updated_at="2026-01-02T00:00:00Z", messages=1)
+    _seed(tmp_path, "kept-early", updated_at="2026-01-03T00:00:00Z", messages=3)
     monkeypatch.setattr("polylogue.archive.query.attached_units._MAX_ROWS_PER_PAGE", 5)
-    monkeypatch.setattr("polylogue.archive.query.archive_execution._fetch_limit", lambda plan, *, default: 2)
+    monkeypatch.setattr("polylogue.archive.query.archive_execution._fetch_limit", lambda plan, *, default: 3)
+    seen: dict[str, int] = {}
 
     def is_kept(session: Session) -> bool:
-        return session.title == "kept"
+        seen[str(session.title)] = len(session.attached_units["message"])
+        return str(session.title).startswith("kept")
 
     sessions = await list_archive(
         SessionQueryPlan(predicates=(is_kept,), limit=2),
@@ -248,8 +253,12 @@ async def test_served_survivor_gets_its_own_page_unit_allowance(
         with_units=("message",),
     )
 
-    assert [session.title for session in sessions] == ["kept"]
-    assert len(sessions[0].attached_units["message"]) == 3
+    assert [session.title for session in sessions] == ["kept-early", "kept-late"]
+    assert {str(session.title): len(session.attached_units["message"]) for session in sessions} == {
+        "kept-early": seen["kept-early"],
+        "kept-late": seen["kept-late"],
+    }
+    assert seen["kept-late"] == seen["kept-early"]
 
 
 @pytest.mark.asyncio

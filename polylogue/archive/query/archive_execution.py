@@ -338,6 +338,7 @@ def _attach_units_to_domain(
     with_units: tuple[str, ...],
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
     with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
+    page_width: int | None = None,
 ) -> builtins.list[_AttachableT]:
     """Attach ``with <units>`` projection rows onto domain models (#2492).
 
@@ -358,7 +359,12 @@ def _attach_units_to_domain(
 
     session_ids = [item.id for item in items]
     attached = fetch_attached_units(
-        archive, session_ids, with_units, unit_fields=with_unit_fields, unit_windows=with_unit_windows
+        archive,
+        session_ids,
+        with_units,
+        unit_fields=with_unit_fields,
+        unit_windows=with_unit_windows,
+        page_width=page_width,
     )
     for gap in attached.gaps:
         emit(
@@ -455,9 +461,11 @@ async def list_archive(
     # sized from the requested window, so it keeps the requested plan.
     complete = composed_order and not ranked_window
     fetch_plan = replace(plan, limit=None, offset=0) if complete else plan
-    # Units filtered candidates see are projected at most one result page at
-    # a time: a candidate batch (ten pages wide under post-filters) exceeds
-    # the projector's per-page row budget.
+    # Units are projected at most one result page at a time (a candidate
+    # batch, ten pages wide under post-filters, exceeds the projector's row
+    # budget), and always with the allowance of a full requested page. A
+    # predicate therefore sees exactly the rows the served session carries,
+    # however its candidate chunk or served page happens to be filled.
     unit_page = plan.limit if plan.limit is not None and plan.limit > 0 else None
 
     def attach(archive: ArchiveStore, sessions: list[Session]) -> list[Session]:
@@ -466,7 +474,12 @@ async def list_archive(
         for start in range(0, len(sessions), width):
             attached.extend(
                 _attach_units_to_domain(
-                    sessions[start : start + width], archive, with_units, with_unit_fields, with_unit_windows
+                    sessions[start : start + width],
+                    archive,
+                    with_units,
+                    with_unit_fields,
+                    with_unit_windows,
+                    page_width=unit_page,
                 )
             )
         return attached
@@ -510,10 +523,11 @@ async def list_archive(
         ordered = plan._sort_sessions(candidates) if composed_order else order_query_sessions(plan, candidates)
         if (complete or filtering or ranked_window) and plan.offset:
             ordered = ordered[plan.offset :]
-        # The served page is projected once more on its own, so each
-        # returned session gets the allowance of the page it is served on,
-        # not of a candidate chunk that held rejected sessions.
-        return attach(archive, plan._finalize(ordered))
+        # Filtered survivors already carry the page-width projection their
+        # predicate saw; unfiltered sessions are projected over the served
+        # page only.
+        page = plan._finalize(ordered)
+        return page if filtering else attach(archive, page)
 
     return await run_archive_read(
         archive_root,
