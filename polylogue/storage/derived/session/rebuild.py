@@ -2044,6 +2044,7 @@ async def rebuild_session_insights_async(
     reconcile_usage_rollup: bool = True,
 ) -> SessionInsightCounts:
     """Async twin of :func:`rebuild_session_insights_sync`, same usage stage."""
+    from polylogue.storage.derived.session.repo_observations import refresh_session_repos
     from polylogue.storage.sqlite.queries.session_insight_profile_writes import (
         replace_session_latency_profile,
         replace_session_profile,
@@ -2070,6 +2071,7 @@ async def rebuild_session_insights_async(
         for bundle in record_bundles:
             await replace_session_profile(conn, bundle.profile_record, transaction_depth)
             await replace_session_latency_profile(conn, bundle.latency_profile_record, transaction_depth)
+            await refresh_session_repos(conn, str(bundle.session_id), bundle.repo_observations)
             # Run-projection cache tables are no longer materialized (polylogue-dab).
             # Reads fall back to source-derived CTEs when the tables are absent.
 

@@ -2081,3 +2081,47 @@ async def test_rebuild_binding_goes_stale_when_an_input_value_moves(
         conn.commit()
 
     assert _inspect_one(db_path, session_id) == "stale"
+
+
+async def test_async_rebuild_publishes_bundle_repo_observations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The surviving profile rebuild also publishes its prepared repo links.
+
+    Anti-vacuity: removing the repo-observation write from the async bundle
+    writer leaves ``session_repos`` empty and fails the persisted-row check.
+    """
+    from dataclasses import replace
+
+    from polylogue.storage.derived.session.repo_observations import RepoObservation
+
+    db_path = _current_index_db(tmp_path, "async-repo-observations")
+    session_id = _sid("async-repo-observations")
+    with open_connection(db_path) as conn:
+        store_records(
+            session=make_session("async-repo-observations", title="Repo observation"),
+            messages=[make_message("async-repo-observations:msg-1", "async-repo-observations", text="hello")],
+            attachments=[],
+            conn=conn,
+        )
+        conn.commit()
+
+    original_builder = rebuild_mod.build_session_insight_record_bundles
+
+    def build_with_repo(*args: object, **kwargs: object) -> list[object]:
+        bundles = original_builder(*args, **kwargs)
+        observation = RepoObservation("https://example.invalid/repo", "/repo/worktree", "repo", "main")
+        return [replace(bundle, repo_observations=(observation,)) for bundle in bundles]
+
+    monkeypatch.setattr(rebuild_mod, "build_session_insight_record_bundles", build_with_repo)
+    backend = SQLiteBackend(db_path=db_path)
+    async with backend.connection() as conn:
+        await rebuild_mod.rebuild_session_insights_async(conn, session_ids=[session_id])
+        await conn.commit()
+
+    with open_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT root_path, branch_name FROM session_repos WHERE session_id = ?",
+            (session_id,),
+        ).fetchall()
+    assert [tuple(row) for row in rows] == [("/repo/worktree", "main")]

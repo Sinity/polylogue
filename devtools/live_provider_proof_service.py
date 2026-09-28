@@ -45,6 +45,7 @@ def run_proof(*, repo_root: Path | None = None) -> dict[str, object]:
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     environment = os.environ.copy()
+    environment["XDG_CONFIG_HOME"] = str(scratch / "xdg-config")
     environment["POLYLOGUE_LIVE_PROVIDER_RECEIVER_TOKEN"] = receiver_token
     environment[_RECEIVER_PORT_ENV] = str(receiver_port)
     process: subprocess.Popen[Any] | None = None

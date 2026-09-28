@@ -313,6 +313,59 @@ def test_substitution_in_else_branch_is_the_absent_field_branch(tmp_path: Path) 
     ]
 
 
+def test_caller_loaded_profile_substitution_is_censused_without_sql(tmp_path: Path) -> None:
+    _package(
+        tmp_path,
+        "reader.py",
+        "def load(profile):\n    if not profile.parent_id:\n"
+        '        return profile.model_copy(update={"parent_id": infer_parent()})\n    return profile\n',
+    )
+    assert _kinds(tmp_path, "load") == {"read_path_substitution"}
+
+
+def test_bad_package_declaration_fails_even_with_no_sites(tmp_path: Path) -> None:
+    (tmp_path / "polylogue").mkdir()
+    declaration = tmp_path / "census.yaml"
+    declaration.write_text("package: polylgue\nsites: []\n", encoding="utf-8")
+    violations = collect_violations(repo_root=tmp_path, declaration_path=declaration)
+    assert violations[0]["rule"] == "derived_sweep_census_package_invalid"
+
+
+def test_rendered_yaml_quotes_arbitrary_reason_and_marks_new_entries_pending() -> None:
+    import yaml
+
+    from devtools.derived_sweep_census import CensusEntry, CensusObservation, SweepSite
+
+    site = SweepSite("polylogue/a.py", "f", "session_id", "read_path_substitution", "read_only_module", 1)
+    reason = 'uses "session_id" as the key'
+    rendered = render_declaration(
+        CensusObservation((site,)),
+        existing={
+            site.key: CensusEntry(
+                site.key,
+                site.file,
+                site.function,
+                site.subject,
+                site.kind,
+                site.scope,
+                "presentation_projection",
+                reason,
+            )
+        },
+    )
+    declaration = yaml.safe_load(rendered)
+    assert declaration["sites"][0]["reason"] == reason
+
+
+def test_new_site_render_does_not_claim_adjudication() -> None:
+    from devtools.derived_sweep_census import CensusObservation, SweepSite
+
+    site = SweepSite("polylogue/a.py", "f", "session_id", "read_path_substitution", "read_only_module", 1)
+    rendered = render_declaration(CensusObservation((site,)))
+    assert "Every entry below has been adjudicated" not in rendered
+    assert "classification: unclassified" in rendered
+
+
 def test_undeclared_site_is_a_gate_violation(tmp_path: Path) -> None:
     """An observed site missing from the declaration fails the gate by name.
 
