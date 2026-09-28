@@ -3010,17 +3010,29 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             state_filter=state_filter,
         )
         entries: list[LibraryEntry] = []
-        for raw_att, title, origin in rows:
+        canonical_titles: dict[str, str] = {}
+        for raw_att, _title, origin in rows:
             # The facade returns the attachment opaquely: polylogue/api may not
             # import polylogue/storage (gate layering), so the record type cannot
             # be named in its signature. Bind it structurally here instead.
             att = cast(_AttachmentRow, raw_att)
             sid = str(att.session_id)
+            # The SQL page's sessions.title is the parser title, which can be
+            # an echoed user prompt for heuristic titles. Resolve the same
+            # canonical display label used by session summaries before it
+            # reaches the attachment library.
+            if sid not in canonical_titles:
+                summary = await poly.get_session_summary(sid)
+                canonical_titles[sid] = (
+                    str(getattr(summary, "display_label", None) or getattr(summary, "title", None) or sid)
+                    if summary is not None
+                    else sid
+                )
             envelope = attachment_to_envelope(att, session_id=sid, message_id=att.message_id)
             entries.append(
                 LibraryEntry(
                     envelope=envelope,
-                    session_title=title,
+                    session_title=canonical_titles[sid],
                     origin=origin,
                     message_anchor=reader_anchor("message", att.message_id) if att.message_id else None,
                 )

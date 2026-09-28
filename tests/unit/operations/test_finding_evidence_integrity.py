@@ -42,6 +42,7 @@ def _grounded_finding(
     claim_key: str = "evidence-integrity-claim",
     evidence_refs: tuple[str, ...] = (),
     detector_ref: str = "agent:integrity-detector",
+    mismatch_result_set: bool = False,
 ) -> str:
     query = put_query(
         conn,
@@ -51,10 +52,21 @@ def _grounded_finding(
         rank_policy="mixed",
         created_at_ms=1,
     )
+    result_query_hash = query.query_hash
+    if mismatch_result_set:
+        other_query = put_query(
+            conn,
+            {"field": "origin", "value": "chatgpt"},
+            grain="session",
+            lane="dialogue",
+            rank_policy="mixed",
+            created_at_ms=1,
+        )
+        result_query_hash = other_query.query_hash
     result_set = put_result_set(
         conn,
         result_set_id=f"{claim_key}-rs",
-        query_hash=query.query_hash,
+        query_hash=result_query_hash,
         grain="session",
         corpus_epoch="index:g1",
         member_refs=("session:codex-session:one",),
@@ -100,6 +112,25 @@ def test_grounded_finding_is_supported(tmp_path: Path) -> None:
     assert verdict.supported is True
     assert verdict.frame_ref == "index:g1"
     assert verdict.reason_codes == ()
+
+
+def test_result_set_for_another_query_cannot_support_finding(tmp_path: Path) -> None:
+    """A result manifest must belong to the finding's declared query.
+
+    ANTI-VACUITY: removing the query-hash comparison in
+    ``_incompatible_result_set_refs`` lets this mismatched result set ground
+    the finding and changes the verdict from NOT_SUPPORTED to SUPPORTED.
+    """
+    with sqlite3.connect(_user_db(tmp_path)) as conn:
+        assertion_id = _grounded_finding(conn, mismatch_result_set=True)
+        conn.commit()
+        provenance = compute_finding_provenance(conn, assertion_id)
+        assert provenance is not None
+        verdict = evaluate_finding_evidence(conn, provenance)
+
+    assert verdict.status is EvidenceIntegrityStatus.NOT_SUPPORTED
+    assert verdict.supported is False
+    assert "grounding_incompatible" in verdict.reason_codes
 
 
 def test_missing_evidence_is_unresolved(tmp_path: Path) -> None:
