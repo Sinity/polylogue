@@ -115,8 +115,8 @@ _EXPLANATIONS: dict[str, Explanation] = {
         "(systemd-oomd, a hard cancel, a lost host), which no in-process handler can catch. "
         "This receipt was closed out from outside it, so its steps report what had finished, "
         "not what the run would have concluded.",
-        "Read the 'ended:' line above for the killer AgentCTL recorded; the receipt holds it, so "
-        "there is nothing to look up. Rerun the tier once the named cause is addressed.",
+        "If an 'ended:' line is present, use its recorded cause. If no ending was attributed, check the run and AgentCTL job records "
+        "for its cause. Rerun the tier once the cause is addressed.",
     ),
     "checkout_import_mismatch": Explanation(
         "The resolved polylogue package was outside the checkout being verified.",
@@ -165,7 +165,18 @@ def _latest_run(runs_dir: Path) -> Path | None:
     candidates = [path for path in runs_dir.glob("*/run.json") if path.is_file()]
     if not candidates:
         return None
-    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+    def ordering(path: Path) -> tuple[str, float]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            started = payload.get("started_at") if isinstance(payload, dict) else None
+            if isinstance(started, str) and started:
+                return started, path.stat().st_mtime
+        except (OSError, json.JSONDecodeError):
+            pass
+        return "", path.stat().st_mtime
+
+    return max(candidates, key=ordering)
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -226,7 +237,15 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
             print("  (no recorded explanation for this diagnosis -- reporting it verbatim)", file=stream)
         else:
             print(f"  cause : {explanation.cause}", file=stream)
-            print(f"  do    : {explanation.remedy}", file=stream)
+            remedy = explanation.remedy
+            if diagnosis == ABANDONED_DIAGNOSIS and not (
+                payload.get("termination_reason") or payload.get("termination_killer")
+            ):
+                remedy = (
+                    "No ending was attributed to this run. Check the run and AgentCTL job records for its cause, "
+                    "then rerun the tier once the cause is addressed."
+                )
+            print(f"  do    : {remedy}", file=stream)
 
     selection = payload.get("testmon_selection")
     if isinstance(selection, dict):
@@ -322,6 +341,9 @@ def _history_rows(hours: float) -> list[dict[str, Any]]:
 
 def _render_history_json(hours: float, stream: Any) -> int:
     """Emit one stable JSON document suitable for rerunnable measurements."""
+    if not VERIFY_HISTORY_PATH.exists():
+        print(f"why: no run history at {VERIFY_HISTORY_PATH}", file=sys.stderr)
+        return 1
     rows = _history_rows(hours)
     json.dump([_history_projection(entry) for entry in rows], stream, indent=2, sort_keys=True)
     stream.write("\n")
