@@ -3573,6 +3573,13 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       ) {
         throw new Error("freshness_hint_sender_identity_mismatch");
       }
+      if (provider !== "chatgpt" && sender.tab) {
+        // The freshness queue only knows how to refetch ChatGPT. Other
+        // providers recapture their own tab through captureTab, which applies
+        // the same automatic-capture policy and receiver pairing checks.
+        sendResponse({ ok: true, scheduled: false, capture: await captureTab(sender.tab, message.reason || "provider_page_hint") });
+        return;
+      }
       sendResponse({
         ok: true,
         ...(await scheduleCaptureFreshness({

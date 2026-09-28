@@ -813,11 +813,10 @@ def test_mission_control_archive_facts_read_a_real_archive(empty_archive_templat
     assert assertions["items"] == []
 
 
-def test_mission_control_reads_only_judged_session_and_message_assertions(
+def test_mission_control_reads_only_judged_session_assertions_in_one_bounded_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Anti-vacuity: candidates and message-targeted judgments must not disappear from this projection,
-    and message claims come from one prefix read, not one read per message."""
+    """Anti-vacuity: candidates must not reach this projection, and it must not issue one read per message."""
 
     import polylogue
 
@@ -836,9 +835,8 @@ def test_mission_control_reads_only_judged_session_and_message_assertions(
             statuses: tuple[str, ...],
             limit: int,
             target_ref: str | None = None,
-            target_ref_prefix: str | None = None,
         ) -> list[object]:
-            calls.append((target_ref or f"{target_ref_prefix}*", statuses))
+            calls.append((str(target_ref), statuses))
             return []
 
     monkeypatch.setattr(polylogue, "Polylogue", FakePolylogue)
@@ -847,7 +845,6 @@ def test_mission_control_reads_only_judged_session_and_message_assertions(
     assert result is not None
     assert calls == [
         ("session:chatgpt:conversation", ("active",)),
-        ("message:chatgpt:conversation:*", ("active",)),
     ]
 
 
