@@ -8,6 +8,7 @@ import pytest
 
 from polylogue.core.digest import IDENTITY, KeyCollisionError
 from polylogue.core.digest import canonical_bytes as profile_canonical_bytes
+from polylogue.material_protocol.v1 import MaterialProtocolError
 from polylogue.material_protocol.v1.canonical import canonical_bytes, canonical_line, nfc_normalize
 
 
@@ -28,6 +29,11 @@ def test_material_encoding_rejects_nfc_key_collisions_before_overwrite(payload: 
     with pytest.raises(KeyCollisionError):
         canonical_line(payload)  # type: ignore[arg-type]
     with pytest.raises(KeyCollisionError):
+        nfc_normalize(payload)  # type: ignore[arg-type]
+    # verify/decode reach this encoder on untrusted segments, and their
+    # callers catch MaterialProtocolError: a raw digest-layer error escaping
+    # here would bypass that contract.
+    with pytest.raises(MaterialProtocolError):
         nfc_normalize(payload)  # type: ignore[arg-type]
 
 
