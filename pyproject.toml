@@ -44,7 +44,7 @@ dependencies = [
   "mcp>=2.2.0,<3",  # Model Context Protocol SDK
   "pyyaml>=6.0",  # YAML output format
   "typing-extensions>=4.16.0",  # TypedDict that pydantic accepts on Py<3.12
-  "watchfiles>=1.2.0",  # Rust-backed filesystem watcher for live ingestion
+  "watchfiles>=1.3.0",  # Rust-backed filesystem watcher for live ingestion
   "nh3>=0.3.7",  # Rust-backed HTML sanitizer (ammonia bindings) for defense-in-depth
   # Identity-bearing, not an accelerator: `polylogue.core.json` imports it
   # unconditionally, and only msgspec produces the canonical float bytes the
