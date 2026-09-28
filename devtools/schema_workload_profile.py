@@ -39,7 +39,7 @@ from polylogue.schemas.synthetic.workload import (
     published_field_names,
     published_kind_tokens,
     record_skeleton,
-    string_lengths,
+    template_measures,
     text_measure,
     tool_name_of,
     workload_profile_path,
@@ -62,7 +62,7 @@ def _buckets() -> defaultdict[int, float]:
 
 
 class _Templates:
-    """Key skeletons and string-leaf lengths of template kinds, across streams.
+    """Key skeletons, and per-field string and list lengths, of template kinds.
 
     Kinds are already restricted to public record-type vocabulary by the
     classifiers, and skeleton keys to field names in the committed schema
@@ -73,24 +73,31 @@ class _Templates:
         self.allowed = allowed
         self.values = values
         self.skeletons: defaultdict[str, Weights] = defaultdict(_weights)
-        self.strings: defaultdict[str, defaultdict[int, float]] = defaultdict(_buckets)
+        #: ``measure -> kind -> field path -> bucket -> weight``.
+        self.measures: dict[str, defaultdict[str, defaultdict[str, defaultdict[int, float]]]] = {
+            "str": defaultdict(lambda: defaultdict(_buckets)),
+            "list": defaultdict(lambda: defaultdict(_buckets)),
+        }
 
     def add(self, kind: str, record: Mapping[str, object], weight: float) -> None:
         key = json.dumps(
             record_skeleton(record, allowed=self.allowed, values=self.values), sort_keys=True, separators=(",", ":")
         )
         self.skeletons[kind][key] += weight
-        for length in string_lengths(record):
-            self.strings[kind][log2_bucket(length)] += weight
+        for measure, path, length in template_measures(record, allowed=self.allowed):
+            self.measures[measure][kind][path][log2_bucket(length)] += weight
 
-    def payload(self) -> tuple[dict[str, object], dict[str, object]]:
+    def payload(self) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
         templates: dict[str, object] = {}
-        strings: dict[str, object] = {}
+        per_path: dict[str, dict[str, object]] = {"str": {}, "list": {}}
         for kind, entries in sorted(self.skeletons.items()):
             ranked = sorted(entries.items(), key=lambda item: (-item[1], item[0]))[:_SKELETONS_PER_KIND]
             templates[kind] = [{"skeleton": json.loads(key), "weight": _round2(weight)} for key, weight in ranked]
-            strings[kind] = _histogram(self.strings[kind])
-        return templates, strings
+            for measure, by_kind in self.measures.items():
+                per_path[measure][kind] = {
+                    path: _histogram(buckets) for path, buckets in sorted(by_kind[kind].items()) if _histogram(buckets)
+                }
+        return templates, per_path["str"], per_path["list"]
 
 
 def default_source_root(origin: str) -> Path:
@@ -363,7 +370,7 @@ def measure(origin: str, root: Path, *, sample: int, tail: int, seed: int) -> di
 
     fanout, nested_per_subagent, orphans_per_session = _fanout(origin, root, families)
     kinds = sorted({key.split(":", 1)[1] for key in shares if key.startswith("texts:")})
-    template_payload, template_strings = templates.payload()
+    template_payload, template_strings, template_lists = templates.payload()
     large = shares["sidecar_refs"] + shares["large_inline"]
     outcome_shares = (
         {
@@ -398,6 +405,7 @@ def measure(origin: str, root: Path, *, sample: int, tail: int, seed: int) -> di
         },
         "templates": template_payload,
         "template_strings": template_strings,
+        "template_lists": template_lists,
     }
 
 

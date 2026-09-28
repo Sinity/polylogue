@@ -94,3 +94,18 @@ def test_write_refuses_zero_sampling_bounds(tmp_path: Path, monkeypatch: pytest.
     with pytest.raises(SystemExit):
         main(["--origin", "claude-code", "--source", str(source), "--sample", "0", "--write"])
     assert target.read_text(encoding="utf-8") == "committed"
+
+
+def test_template_measures_keep_field_paths_and_list_lengths() -> None:
+    """Anti-vacuity (Codex P1/P2, #5670): one kind-wide string pool and no list
+    lengths cannot tell a file path from file content or report a 9-item list."""
+    from polylogue.schemas.synthetic.workload import template_measures
+
+    record = {
+        "type": "attachment",
+        "attachment": {"filePath": "/a/b", "content": "x" * 5000, "files": list("abcdefghi")},
+    }
+    measures = set(template_measures(record))
+    assert ("str", "attachment.filePath", 4) in measures
+    assert ("str", "attachment.content", 5000) in measures
+    assert ("list", "attachment.files", 9) in measures

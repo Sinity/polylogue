@@ -6,6 +6,7 @@ import dataclasses
 import json
 import random
 from collections import Counter
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from polylogue.schemas.synthetic.workload import (
     LAZY_TEXT_THRESHOLD,
     Histogram,
     WorkloadFile,
+    WorkloadProfile,
     _codex_session,
     _dumps,
     classify_claude_code_record,
@@ -479,3 +481,128 @@ def test_codex_completion_items_keep_their_public_type() -> None:
     )
     record = profile.template_record(random.Random(1), "record:event_msg:item_completed", {})
     assert not str(record.get("type", "")).startswith("=")
+
+
+def _scripted_codex(monkeypatch: pytest.MonkeyPatch, kinds: list[str]) -> list[dict[str, object]]:
+    from polylogue.schemas.synthetic.workload import StreamProfile
+
+    measured = load_workload_profile("codex")
+    profile = dataclasses.replace(
+        measured,
+        subagents_per_session=Histogram((0,), (1.0,)),
+        shares={**measured.shares, "orphan_subagents_per_session": 0.0},
+    )
+    monkeypatch.setattr(StreamProfile, "kind_sequence", lambda self, rng, count: list(kinds))
+    files, _ = _codex_session(random.Random(3), profile, index=0)
+    return _records(files[0].data)
+
+
+def test_a_result_with_no_open_call_of_its_class_emits_that_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P1, #5670): pop the first open call of any class and
+    a sampled function result answers the pending custom call as a
+    ``custom_tool_call_output``."""
+    records = _scripted_codex(monkeypatch, ["session_meta", "custom_tool_call", "function_call_output"])
+    types = [payload.get("type") for record in records if isinstance(payload := record.get("payload"), dict)]
+    assert "custom_tool_call_output" not in types
+    assert types.count("function_call") == 1
+
+
+def test_later_session_meta_draws_render_a_replayed_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P2, #5670): drop later ``session_meta`` draws and the
+    stream never carries the second distinct header continuation logic reads."""
+    records = _scripted_codex(monkeypatch, ["session_meta", "user_message", "session_meta"])
+    metas = [record["payload"] for record in records if record.get("type") == "session_meta"]
+    assert len(metas) == 2
+    opening, replayed = metas
+    assert isinstance(opening, dict) and isinstance(replayed, dict)
+    assert replayed["id"] != opening["id"]
+    assert str(replayed["timestamp"]) < str(opening["timestamp"])
+    assert replayed["cwd"] == opening["cwd"]
+
+
+def test_codex_token_subsets_stay_within_their_totals() -> None:
+    """Anti-vacuity (Codex P1, #5670): independent draws put cached input above
+    input (and reasoning above output) in a large share of token events."""
+    checked = 0
+    for item in generate_workload_corpus(seed=21, target_sessions=40, origins={"codex": 1.0}).iter_files():
+        for record in _records(item.data):
+            payload = record.get("payload")
+            if not (isinstance(payload, dict) and payload.get("type") == "token_count"):
+                continue
+            last = payload["info"]["last_token_usage"]
+            assert last["cached_input_tokens"] <= last["input_tokens"]
+            assert last["reasoning_output_tokens"] <= last["output_tokens"]
+            checked += 1
+    assert checked > 0
+
+
+def test_claude_results_carry_tool_specific_evidence(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P1, #5670): a generic shell-shaped ``toolUseResult``
+    for every call yields no parsed file edits and no Agent result naming a
+    generated child transcript."""
+    corpus = generate_workload_corpus(seed=12, target_sessions=60, origins={"claude-code": 1.0})
+    files = list(corpus.iter_files())
+    children = {item.relpath.rsplit("agent-", 1)[1].removesuffix(".jsonl") for item in files if item.role == "subagent"}
+    bound = file_edits = 0
+    for item in files:
+        if item.role != "transcript":
+            continue
+        records = _records(item.data)
+        for record in records:
+            result = record.get("toolUseResult")
+            if isinstance(result, dict) and result.get("agentId") in children:
+                bound += 1
+        for session in parse_payload("claude-code", records, item.relpath, source_path=item.relpath):
+            for message in session.messages:
+                file_edits += sum(1 for block in message.blocks if block.file_edit is not None)
+    assert bound > 0
+    assert file_edits > 0
+
+
+def _profile_with_template(
+    skeleton: object,
+    *,
+    template_lists: Mapping[str, Mapping[str, Histogram]] | None = None,
+    template_strings: Mapping[str, Mapping[str, Histogram]] | None = None,
+) -> WorkloadProfile:
+    measured = load_workload_profile("claude-code")
+    return dataclasses.replace(
+        measured,
+        templates={"record:probe": ((skeleton, 1.0),)},
+        template_lists=template_lists or {},
+        template_strings=template_strings or {},
+    )
+
+
+def test_template_fills_name_only_envelope_fields() -> None:
+    """Anti-vacuity (Codex P2, #5670): a key-only recursive fill overwrites the
+    nested ``attachment.content.type`` discriminator with the envelope type."""
+    profile = _profile_with_template({"type": "str", "attachment": {"content": {"type": "=text"}}})
+    record = profile.template_record(random.Random(1), "record:probe", {"type": "attachment"})
+    assert record["type"] == "attachment"
+    attachment = record["attachment"]
+    assert isinstance(attachment, dict)
+    assert attachment["content"]["type"] == "text"
+
+
+def test_template_lists_and_strings_follow_their_own_field_measures() -> None:
+    """Anti-vacuity (Codex P1/P2, #5670): regenerate every list with one to three
+    items and draw every string from one kind-wide pool, and a measured
+    16-31 item list and a 2 KiB-plus content field beside a short path vanish."""
+    profile = _profile_with_template(
+        {"files": ["str"], "filePath": "str", "content": "str"},
+        template_lists={"record:probe": {"files": Histogram((5,), (1.0,))}},
+        template_strings={
+            "record:probe": {
+                "files[]": Histogram((3,), (1.0,)),
+                "filePath": Histogram((3,), (1.0,)),
+                "content": Histogram((12,), (1.0,)),
+            }
+        },
+    )
+    record = profile.template_record(random.Random(2), "record:probe", {})
+    files = record["files"]
+    assert isinstance(files, list)
+    assert 16 <= len(files) <= 31
+    assert len(str(record["filePath"])) <= 7
+    assert len(str(record["content"])) >= 2048
