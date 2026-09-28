@@ -1363,6 +1363,17 @@ class TestReaderSearchState:
         assert hit["session"]["id"] == session_id
         assert hit["match"]["target_ref"]["identity_key"].startswith(f"message:{session_id}:")
 
+    def test_archive_search_cursor_reaches_canonical_cursor_validation(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """Anti-vacuity: ignoring cursor returns ranked hits instead of invalid_cursor."""
+        _seed_archive_test_archive(workspace_env)
+        with _running_server_without_seed() as (_, base_url):
+            payload = _get_json(base_url, "/api/sessions?query=archive&cursor=invalid-cursor")
+
+        assert payload.get("error") == "invalid_cursor"
+
     def test_archive_file_set_facets_from_archive_tiers(
         self,
         workspace_env: dict[str, Path],
