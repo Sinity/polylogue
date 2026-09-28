@@ -16,12 +16,12 @@ classifiers = [
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.11",
-  "Programming Language :: Python :: 3.12",
-  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Libraries",
 ]
-requires-python = ">=3.11"
+# Pins the main polylogue wheel, which requires 3.14; a lower floor here
+# would advertise interpreters pip cannot resolve the dependency on.
+requires-python = ">=3.14"
 # Thin wrapper distribution: re-exports the polylogue-mcp console script from
 # the main polylogue distribution. The version pin matches release-please's
 # synchronized X.Y.Z bump across the polylogue, polylogue-mcp, and
