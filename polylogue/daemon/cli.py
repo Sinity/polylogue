@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Coroutine, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextlib import redirect_stdout
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -134,6 +134,12 @@ _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
 #: Debt rows one retry tick inspects, shared by the admitted pass and the
 #: lease-free embedding pass that precedes it so both see the same window.
 _CONVERGENCE_DEBT_RETRY_LIMIT = 100
+#: Wall budget for draining due debt page after page within one retry tick.
+#: One page per tick made the drain cadence-bound: a cold build records a few
+#: deferred rows per admitted file, and 100 rows a minute is days of backlog
+#: for a full archive. Pages continue while they make progress, inside a
+#: budget shorter than the tick so ticks never pile up.
+_CONVERGENCE_DEBT_DRAIN_BUDGET_SECONDS = 45.0
 #: Convergence-debt stages whose backlog has its own recurring domain owner.
 #: The generic drain neither retries nor reports on these: the owner does.
 #: ``raw_retention`` is drained by ``LiveBatchProcessor`` on live-ingest passes
@@ -970,6 +976,24 @@ async def _periodic_convergence_check(
 
 async def _retry_convergence_debt_once(db: Path) -> None:
     """Run one logged derived-debt retry pass when the archive exists."""
+    from polylogue.daemon.intake_adapters import active_cold_build_generation
+
+    if active_cold_build_generation() is not None:
+        # Debt recorded during a cold build describes the unpromoted candidate,
+        # while every stage here reads the active generation. Running them now
+        # spends writer admission on the wrong archive, and an archive-wide
+        # stage would answer "converged" for the empty active index and clear
+        # rows the candidate still owes. Promotion ends the build; the next
+        # tick drains against the promoted generation.
+        emit(
+            "daemon.convergence_debt.pass.skipped",
+            level=DEBUG,
+            outcome="skipped",
+            reason="cold_build_in_progress",
+            loop="convergence debt retry",
+            path=db,
+        )
+        return
     if not db.exists():
         emit(
             "daemon.convergence_debt.pass.skipped",
@@ -995,7 +1019,7 @@ async def _retry_convergence_debt_once(db: Path) -> None:
             repaired = await asyncio.to_thread(
                 _run_with_stage_admission,
                 _daemon_stage_write_admission(),
-                partial(_drain_convergence_debt_once, db),
+                partial(_drain_convergence_debt_backlog, db),
             )
         except sqlite3.OperationalError as exc:
             if is_transient_sqlite_lock(exc):
@@ -1295,7 +1319,34 @@ def _run_with_stage_admission(admission: StageWriteAdmission, work: Callable[[],
         return work()
 
 
+def _drain_convergence_debt_backlog(
+    db: Path,
+    *,
+    limit: int = _CONVERGENCE_DEBT_RETRY_LIMIT,
+    budget_s: float = _CONVERGENCE_DEBT_DRAIN_BUDGET_SECONDS,
+) -> int:
+    """Drain due debt page by page until it is exhausted, stalls, or the budget ends.
+
+    A page that retried nothing, or found fewer due rows than a full page, ends
+    the drain: the rest is either absent or waiting for its retry time. Each
+    page's ledger write is separately admitted, so the writer interleaves other
+    work between pages.
+    """
+    deadline = time.monotonic() + budget_s
+    total = 0
+    while True:
+        retried, candidates = _drain_convergence_debt_page(db, limit=limit)
+        total += retried
+        if retried == 0 or candidates < limit or time.monotonic() >= deadline:
+            return total
+
+
 def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RETRY_LIMIT) -> int:
+    """Retry one page of due derived convergence debt; return the rows retried."""
+    return _drain_convergence_debt_page(db, limit=limit)[0]
+
+
+def _drain_convergence_debt_page(db: Path, *, limit: int = _CONVERGENCE_DEBT_RETRY_LIMIT) -> tuple[int, int]:
     """Retry due derived convergence debt without rereading source payloads.
 
     Debt identity is stage-scoped. A retry therefore runs only the recorded
@@ -1324,15 +1375,16 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
     # it keeps that startup-equivalent recovery, now under the writer.
     cursor = admit_stage_write("maintenance.convergence_debt.initialize", partial(CursorStore, db))
     now = datetime.now(UTC)
+    page = cursor.list_convergence_debt(limit=limit, retry_due_only=True, exclude_stages=_OWNED_DEBT_STAGES)
     candidate_debt = [
         debt
-        for debt in cursor.list_convergence_debt(limit=limit)
+        for debt in page
         if debt.subject_type in {"source_path", "session_id"}
         and debt.stage not in _OWNED_DEBT_STAGES
         and _debt_retry_due(debt, now=now)
     ]
     if not candidate_debt:
-        return 0
+        return 0, len(page)
 
     default_stages = make_default_convergence_stages(db)
     stages_by_name = {stage.name: stage for stage in default_stages}
@@ -1360,9 +1412,10 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
 
     due_debt = [debt for debt in candidate_debt if debt.stage in implemented_stages]
     if not due_debt:
-        return 0
+        return 0, len(page)
 
     subject_states: dict[tuple[str, str, str], object] = {}
+    converged_whole_archive: dict[str, int] = {}
     retryable_debt = tuple(due_debt)
     if retryable_debt:
         for stage_name in dict.fromkeys(debt.stage for debt in retryable_debt):
@@ -1374,9 +1427,25 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
             session_ids = tuple(
                 dict.fromkeys(debt.subject_id for debt in stage_debt if debt.subject_type == "session_id")
             )
+            subject_independent = stage_name != "convergence" and stages_by_name[stage_name].subject_independent
+            run_started_ms = int(time.time() * 1000)
+            if subject_independent and paths:
+                # The stage's check and work ignore the subject, so one run
+                # answers for every subject it owes. Run it once, on one
+                # representative subject, instead of once per page of rows.
+                paths = paths[:1]
             converger = DaemonConverger(stages=selected_stages)
             path_states, _path_timings = converger.converge_batch(paths)
             session_states, _session_timings = converger.converge_sessions(session_ids)
+            if subject_independent and paths:
+                representative = path_states.get(paths[0])
+                if representative is not None and bool(getattr(representative, "converged", False)):
+                    converged_whole_archive[stage_name] = run_started_ms
+                path_states = (
+                    {Path(debt.subject_id): representative for debt in stage_debt if debt.subject_type == "source_path"}
+                    if representative is not None
+                    else {}
+                )
             subject_states.update(
                 ((stage_name, "source_path", str(path)), state) for path, state in path_states.items()
             )
@@ -1384,22 +1453,55 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
                 ((stage_name, "session_id", session_id), state) for session_id, state in session_states.items()
             )
 
-    return admit_stage_write(
+    retried = admit_stage_write(
         "maintenance.convergence_debt.ledger",
-        partial(_record_convergence_debt_retries, cursor, due_debt, subject_states),
+        partial(_record_convergence_debt_retries, cursor, due_debt, subject_states, converged_whole_archive),
     )
+    return retried, len(page)
 
 
 def _record_convergence_debt_retries(
     cursor: CursorStore,
     due_debt: Sequence[Any],
     subject_states: dict[tuple[str, str, str], object],
+    converged_whole_archive: Mapping[str, int] | None = None,
 ) -> int:
     """Update the ops debt ledger for one drained pass. The only write here."""
     from polylogue.sources.live.convergence_debt import is_deferred_stage_state
 
     retried = 0
+    # Stages settled here by one archive-wide clear. Their rows are owned by
+    # that clear's cutoff: clearing them again per row would delete a row
+    # re-recorded after the converging run started.
+    settled_stages: set[str] = set()
+    cleared_stages: set[str] = set()
+    for stage_name, started_ms in (converged_whole_archive or {}).items():
+        try:
+            cleared = cursor.clear_stage_convergence_debt(stage=stage_name, recorded_before_ms=started_ms)
+        except RuntimeError as exc:
+            emit(
+                "daemon.convergence_debt.stage_clear_failed",
+                level=WARNING,
+                outcome="degraded",
+                reason="stage_clear_not_written",
+                stage=stage_name,
+                error_detail=str(exc),
+            )
+        else:
+            emit(
+                "daemon.convergence_debt.stage_cleared",
+                outcome="ok",
+                stage=stage_name,
+                rows=cleared,
+            )
+            cleared_stages.add(stage_name)
+        settled_stages.add(stage_name)
     for debt in due_debt:
+        if debt.stage in settled_stages:
+            # Cleared above, or left for the next pass when the clear could
+            # not be written; either way not this row's per-subject outcome.
+            retried += debt.stage in cleared_stages
+            continue
         state = subject_states.get((debt.stage, debt.subject_type, debt.subject_id))
         if state is None:
             # The stage ran but returned no state for this subject: the row's
@@ -3015,6 +3117,27 @@ async def _run_daemon_services_under_active_writer_lease(
                                     reason="promoted" if promoted else "discarded",
                                     generation_id=generation.generation_id,
                                 )
+                        if watcher is not None:
+                            # Work deferred behind the candidate (stages the
+                            # build could not run, retention it could not
+                            # apply) accrued retry backoff while it waited,
+                            # though nothing failed. Whether the candidate was
+                            # promoted or discarded, the deferral has ended.
+                            try:
+                                released = await write_coordinator.run_sync(
+                                    "daemon.cold_build.release_deferred_debt",
+                                    watcher._cursor.release_deferred_convergence_debt,
+                                )
+                            except Exception as exc:
+                                emit(
+                                    "daemon.cold_build.release_deferred_debt_failed",
+                                    level=WARNING,
+                                    outcome="degraded",
+                                    error_type=type(exc).__name__,
+                                    error_detail=str(exc),
+                                )
+                            else:
+                                emit("daemon.cold_build.deferred_debt_released", outcome="ok", rows=released)
                         if promoted and isinstance(session_profile_callback, ComposedSessionProfiles):
                             try:
                                 await session_profile_callback.converge_promoted()

@@ -359,11 +359,13 @@ def test_convergence_debt_summary_rejects_unknown_status(tmp_path: Path) -> None
             stage="fts",
             target_type="session_id",
             target_id="corrupt-status",
-            status="corrupt",
+            status="failed",
             attempts=1,
             created_at_ms=1_770_000_000_000,
             updated_at_ms=1_770_000_000_000,
         )
+        # The writer refuses unknown statuses, so corrupt the row beneath it.
+        conn.execute("UPDATE convergence_debt SET status = 'corrupt' WHERE target_id = 'corrupt-status'")
 
     summary = convergence_debt_summary_info(tmp_path / "archive.db", ops_db=ops_path)
 

@@ -117,6 +117,9 @@ def test_raw_authority_verdict_cache_stage_warms_in_bounded_batches_and_reports_
     assert stage.execute_many is not None
     assert stage.false_means_pending is True
     path = tmp_path / "source.jsonl"
+    # A zero pass budget stops after one bounded batch, which is what the two
+    # executions below observe.
+    monkeypatch.setattr(stages, "_DAEMON_RAW_AUTHORITY_CACHE_PASS_SECONDS", 0.0)
     with plog.capture() as records:
         assert stage.check(path) is True
         assert stage.execute_many((path,)) is False
@@ -152,6 +155,32 @@ def test_raw_authority_verdict_cache_stage_warms_in_bounded_batches_and_reports_
 
     monkeypatch.setattr(cache_module, "project_raw_authority_verdicts", _fail_projection)
     assert stage.execute_many((path,)) is True
+
+
+def test_raw_authority_verdict_cache_execution_keeps_warming_batches_within_its_budget(tmp_path: Path) -> None:
+    """Anti-vacuity: one batch per execution leaves the second batch pending,
+    so the single execution below returns False."""
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        for index in range(2 * stages._DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS + 1):
+            raw_id = f"full-{index}"
+            written_id = archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=f"payload-{index}".encode(),
+                source_path="session.jsonl",
+                acquired_at_ms=1,
+                raw_id=raw_id,
+            )
+            archive.bind_raw_revision(
+                written_id,
+                RawRevisionEnvelope(f"codex:full-{index}", RawRevisionKind.FULL, f"revision-{raw_id}", 0),
+            )
+
+    stage = make_raw_authority_verdict_cache_stage(tmp_path / "index.db")
+    assert stage.execute_many is not None
+    path = tmp_path / "source.jsonl"
+    assert stage.execute_many((path,)) is True
+    assert stage.check(path) is False
 
 
 def test_sinex_stage_uses_configured_source_tier_not_active_index_parent(
