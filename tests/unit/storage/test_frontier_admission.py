@@ -22,7 +22,7 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import upsert_ingest_curso
 
 
 def _raw(root: Path, raw_id: str, *, path: Path | None = None, logical_key: str | None = None) -> None:
-    with sqlite3.connect(root / "source.db") as conn:
+    with closing(sqlite3.connect(root / "source.db")) as conn, conn:
         conn.execute(
             "INSERT INTO raw_sessions(raw_id, origin, source_path, canonical_source_path, blob_hash, blob_size, acquired_at_ms, "
             "logical_source_key, revision_kind, source_revision, acquisition_generation, revision_authority) "
@@ -39,7 +39,7 @@ def _raw(root: Path, raw_id: str, *, path: Path | None = None, logical_key: str 
 
 
 def _session(root: Path, raw_id: str, number: int) -> None:
-    with sqlite3.connect(root / "index.db") as conn:
+    with closing(sqlite3.connect(root / "index.db")) as conn, conn:
         conn.execute(
             "INSERT INTO sessions(native_id, origin, raw_id, title, content_hash) "
             "VALUES (?, 'codex-session', ?, 'session', ?)",
@@ -48,7 +48,7 @@ def _session(root: Path, raw_id: str, number: int) -> None:
 
 
 def _head(root: Path, raw_id: str) -> None:
-    with sqlite3.connect(root / "index.db") as conn:
+    with closing(sqlite3.connect(root / "index.db")) as conn, conn:
         conn.execute(
             "INSERT OR REPLACE INTO raw_revision_heads("
             "logical_source_key, session_id, accepted_raw_id, accepted_source_revision, "

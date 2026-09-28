@@ -18,7 +18,7 @@ from urllib.parse import quote
 
 import ijson
 
-from polylogue.core.enums import Provider
+from polylogue.core.enums import BlockType, Provider
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider
@@ -59,6 +59,7 @@ from polylogue.sources.parsers.base_support import _unknown_wire_type
 from polylogue.sources.parsers.claude.ai_parser import parse_design_stream
 from polylogue.sources.prepared_message_sink import (
     ChatGPTNodeMapping,
+    GeminiToolOutputIndex,
     SqliteAttachmentSink,
     SqliteMessageSink,
     SqliteMessageStore,
@@ -66,7 +67,7 @@ from polylogue.sources.prepared_message_sink import (
     prepare_simple_chatgpt_mapping,
     read_chatgpt_mapping_object,
 )
-from polylogue.sources.sidecar_evidence import SidecarResolver
+from polylogue.sources.sidecar_evidence import RetainedSidecarScope, SidecarResolver
 from polylogue.storage.sqlite.archive_tiers.write import (
     PreparedSessionWrite,
     append_session_to_shard,
@@ -638,6 +639,7 @@ def prepare_jsonl_blob(
         chatgpt_envelope: dict[str, object] | None = None
         chatgpt_mapping: ChatGPTNodeMapping | None = None
         gemini_envelope: dict[str, JSONValue] | None = None
+        gemini_sidecar_scope: RetainedSidecarScope | None = None
         grok_count: int | None = None
         grok_positive_marker = False
         if not is_stream and provider is Provider.CHATGPT and Path(source_path).name.lower().endswith(".json"):
@@ -680,9 +682,8 @@ def prepare_jsonl_blob(
                 store.conn.execute("DROP TABLE gemini_raw_message")
             elif sidecar_resolver is not None:
                 session_id = gemini_envelope.get("sessionId")
-                if isinstance(session_id, str) and sidecar_resolver.gemini_cli_scope(source_path, session_id).available:
-                    gemini_envelope = None
-                    store.conn.execute("DROP TABLE gemini_raw_message")
+                if isinstance(session_id, str):
+                    gemini_sidecar_scope = sidecar_resolver.gemini_cli_scope(source_path, session_id)
         # Cohort callbacks may inspect or rewrite the entire parse result.
         # The direct worker route can publish independent bundle members.
         if (
@@ -780,6 +781,25 @@ def prepare_jsonl_blob(
                 )
                 admitted = local_agent.parse_gemini_cli(gemini_envelope, fallback_id)
                 gemini_session = gemini_session.model_copy(update={"unit_accounting": admitted.unit_accounting})
+                if gemini_sidecar_scope is not None and gemini_sidecar_scope.available:
+                    index = GeminiToolOutputIndex(store.conn)
+                    for row in store.conn.execute("SELECT message_json FROM gemini_raw_message ORDER BY ordinal"):
+                        index.observe(json.loads(row[0]))
+                    for outcome in index.join(gemini_sidecar_scope):
+                        gemini_session.session_events.append(local_agent.gemini_sidecar_event(outcome))
+                    for position in range(len(gemini_session.messages)):
+                        message = gemini_session.messages[position]
+                        updated_blocks = [
+                            block.model_copy(update={"text": replacement})
+                            if block.type is BlockType.TOOL_RESULT
+                            and block.tool_id is not None
+                            and (replacement := index.replacement_for(block.tool_id)) is not None
+                            else block
+                            for block in message.blocks
+                        ]
+                        if updated_blocks != message.blocks:
+                            gemini_session.messages[position] = message.model_copy(update={"blocks": updated_blocks})
+                    index.close()
             store.conn.execute("DROP TABLE gemini_raw_message")
             if gemini_session is not None and require_positive_conversational_evidence(
                 [gemini_session], provider=provider, source_path=source_path

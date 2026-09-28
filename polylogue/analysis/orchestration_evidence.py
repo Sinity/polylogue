@@ -36,7 +36,7 @@ _SHELL_TOOLS = {"Bash", "exec_command", "shell_command", "shell"}
 class SessionOrchestrationEvidence(BaseModel):
     """Versioned owner response; absent measurements remain JSON null."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, protected_namespaces=())
 
     version: Literal[1] = 1
     outcome: Literal["ok", "degraded"]

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -37,55 +36,25 @@ def test_declared_live_provider_proof_declares_no_port_lease() -> None:
     assert all(spec.module != "devtools.live_provider_proof_service" for spec in COMMAND_SPECS)
 
 
-def test_agentctl_parser_accepts_the_unleased_shared_chrome_operation() -> None:
-    """Cross-contract proof against the production agentctl descriptor parser.
+def test_descriptor_declares_the_unleased_shared_chrome_operation_and_workspace_contract() -> None:
+    """Hermetic projection of what the agentctl descriptor parser consumes.
 
-    The parser rejects unknown operation fields, so a successful parse is the
-    proof that the proof operation declares no service lease or parameters.
+    The parser (owned by the Sinnix checkout, not importable here) rejects
+    unknown operation fields; the exact key set stands in for that rejection,
+    so a service lease or parameter table added to the proof operation fails.
     """
-    repository_root = Path(__file__).resolve().parents[3]
-    sinnix_root = Path("/realm/project/sinnix")
-    package_root = sinnix_root / "pkgs" / "agentctl"
-    parser_program = """
-import json
-import sys
-from pathlib import Path
+    descriptor = tomllib.loads(Path(".agentctl/project.toml").read_text(encoding="utf-8"))
+    operation = descriptor["operations"]["deployment_browser_smoke"]
 
-from agentctl.projects import load_project_adapter
-
-adapter = load_project_adapter(Path(sys.argv[1]))
-proof = adapter.operation("deployment_browser_smoke")
-print(json.dumps({
-    "project_id": adapter.project_id,
-    "operation_count": len(adapter.operations),
-    "proof": {"command": proof.command, "pool": proof.pool, "result": proof.result},
-    "publish": adapter.workspace.publish,
-    "verify": dict(adapter.workspace.verify),
-}))
-"""
-    completed = subprocess.run(
-        [sys.executable, "-c", parser_program, str(repository_root)],
-        cwd=sinnix_root,
-        env=os.environ | {"PYTHONPATH": str(package_root)},
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    parsed = json.loads(completed.stdout)
-    assert parsed["project_id"] == "polylogue"
-    assert parsed["operation_count"] >= 6
-    assert parsed["proof"] == {
-        "command": ["python", "-m", "devtools.deployment_browser_smoke_service", "--json"],
-        "pool": "interactive",
-        "result": "json",
-    }
+    assert descriptor["project"]["id"] == "polylogue"
+    assert set(operation) == {"description", "exec", "pool", "result", "cache", "timeout_seconds"}
+    assert operation["pool"] == "interactive"
     # Focused runs require a behavioral pytest selector; complete-corpus
     # verification remains a separately declared operation.
-    assert parsed["publish"] == "pr"
-    assert parsed["verify"] == {"focused": "pytest_focused", "candidate": "hosted:ci/circleci: quick-gate"}
-    assert all(spec.module != "devtools.deployment_browser_smoke_service" for spec in COMMAND_SPECS)
+    workspace = descriptor["workspace"]
+    assert workspace["publish"] == "pr"
+    assert workspace["verify"] == {"focused": "pytest_focused", "candidate": "hosted:ci/circleci: quick-gate"}
+    assert "pytest_focused" in descriptor["operations"]
 
 
 def test_private_live_provider_module_imports_without_launching_chrome() -> None:
