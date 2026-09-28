@@ -148,9 +148,9 @@ def test_a_refused_split_element_does_not_drop_the_elements_after_it(
     )
 
     blob_store = BlobStore(tmp_path / "archive" / "blob")
-    acquired_ids = {json.loads(blob_store.read_all(record.blob_hash))["id"] for record in records}
+    acquired_ids = {json.loads(blob_store.read_all(str(record.blob_hash)))["id"] for record in records}
     assert acquired_ids == {"first", "second", "after"}
-    assert sorted(record.source_index for record in records) == [0, 1, 3]
+    assert sorted(int(record.source_index or 0) for record in records) == [0, 1, 3]
     failures = cursor_state.get("failed_files", [])
     assert any(
         failure["path"] == f"{zip_path}:conversations.json" and "object key" in failure["error"] for failure in failures
