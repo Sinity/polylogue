@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import threading
+import uuid
 from collections import deque
 from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -81,6 +82,7 @@ def _operation(client: DaemonClient, name: str, payload: dict[str, object] | Non
     assert isinstance(result, dict)
     assert result.get("protocol") == "polylogue.daemon-operation/v1"
     assert result.get("error") is None
+    assert result.get("outcome") == "completed", result.get("outcome")
     return result
 
 
@@ -341,15 +343,62 @@ def test_bench_daemon_live_completion(benchmark: BenchmarkFixture, bench_daemon_
 
 
 @pytest.mark.benchmark
-def test_bench_daemon_cancellation(benchmark: BenchmarkFixture, bench_daemon_uds_client: DaemonClient) -> None:
+def test_bench_daemon_cancellation(
+    benchmark: BenchmarkFixture, bench_daemon_uds_client: DaemonClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polylogue.operations.daemon_reads as daemon_reads
+
+    query_started = threading.Event()
+    real_query_payload = daemon_reads._query_payload
+
+    def delayed_query_payload(*args: Any, **kwargs: Any) -> Any:
+        # Keep the read in flight long enough for the benchmark's independent
+        # cancellation exchange to reach the daemon deterministically.
+        query_started.set()
+        sleep(0.1)
+        return real_query_payload(*args, **kwargs)
+
+    monkeypatch.setattr(daemon_reads, "_query_payload", delayed_query_payload)
+
     def run() -> dict[str, object]:
-        return _operation(bench_daemon_uds_client, "cli.query", {"params": {"limit": 1}})
+        request_id = uuid.uuid4().hex
+        query_started.clear()
+        started = perf_counter()
+        response: list[dict[str, object]] = []
+        failures: list[BaseException] = []
+
+        def submit() -> None:
+            try:
+                result = bench_daemon_uds_client.operation(
+                    "cli.query",
+                    {"params": {"limit": 20}},
+                    request_id=request_id,
+                    cancellation_token=request_id,
+                )
+                assert isinstance(result, dict)
+                response.append(result)
+            except BaseException as error:
+                failures.append(error)
+
+        request = threading.Thread(target=submit, daemon=True)
+        request.start()
+        assert query_started.wait(timeout=10), "query never reached daemon execution"
+        cancellation = bench_daemon_uds_client.cancel(request_id)
+        assert isinstance(cancellation, dict)
+        request.join(timeout=30)
+        assert not request.is_alive(), "cancelled query did not release its client request"
+        assert not failures, failures
+        assert len(response) == 1
+        result = response[0]
+        assert result.get("outcome") == "cancelled", result.get("outcome")
+        assert result.get("progress") != {"state": "complete"}
+        result["_cancellation_elapsed_ms"] = (perf_counter() - started) * 1000
+        return result
 
     result = benchmark_repeated(benchmark, run)
-    assert result["progress"] == {"state": "complete"}
     record_metrics(
         benchmark,
-        cancellation_ms=bench_daemon_uds_client.last_elapsed_ms or 0,
+        cancellation_ms=float(result["_cancellation_elapsed_ms"]),
         bytes=len(json.dumps(result, separators=(",", ":")).encode()),
     )
 
@@ -559,10 +608,11 @@ def test_bench_daemon_mixed_load(
         started = perf_counter()
         execution_context = kwargs.get("execution_context")
         request_id = getattr(execution_context, "call_id", None)
-        assert isinstance(request_id, str) and request_id, "read frame lacks its request correlation id"
         with real_open_operation_read(*args, **kwargs) as snapshot:
-            elapsed_ms = (perf_counter() - started) * 1000
-            frame_timings.record(request_id, elapsed_ms)
+            # Mutating operations intentionally open without a read execution
+            # context. Correlate only measured reads that have a request id.
+            if isinstance(request_id, str) and request_id:
+                frame_timings.record(request_id, (perf_counter() - started) * 1000)
             yield snapshot
 
     real_query_payload = daemon_reads._query_payload
@@ -792,6 +842,8 @@ def test_bench_daemon_mixed_load(
     def phase_read(params: Mapping[str, object]) -> dict[str, object]:
         client = DaemonClient(socket_path, timeout_s=5)
         result = _operation(client, "cli.query", {"params": params})
+        assert result.get("outcome") == "completed", result.get("outcome")
+        assert result.get("error") is None, result.get("error")
         client_ms = float(client.last_elapsed_ms or 0)
         request_id = result.get("request_id")
         assert isinstance(request_id, str) and request_id
