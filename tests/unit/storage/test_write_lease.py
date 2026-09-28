@@ -755,6 +755,20 @@ def test_archive_bound_lease_can_grant_a_thread_without_dropping_identity(tmp_pa
     assert grant.lease is lease
 
 
+def test_archive_bound_lease_can_delegate_without_dropping_identity(tmp_path: Path) -> None:
+    """Delegation must carry the archive identity checked by the lease.
+
+    Anti-vacuity: omitting ``archive_root`` from the delegation admission makes
+    this raise ``UnleasedWriteError`` under process-wide lease enforcement.
+    """
+    from polylogue.storage.sqlite.write_lease import adopt_write_lease, delegate_write_lease
+
+    with arm_write_lease_enforcement(process_wide=True), write_lease("archive-writer", archive_root=tmp_path) as lease:
+        delegation = delegate_write_lease()
+        with adopt_write_lease(delegation):
+            assert current_write_lease() is lease
+
+
 def test_a_reused_thread_ident_does_not_inherit_a_retired_workers_authority() -> None:
     """Authority belongs to the bound thread object, not its reusable ident.
 

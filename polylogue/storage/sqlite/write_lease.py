@@ -378,7 +378,11 @@ def delegate_write_lease() -> WriteLeaseDelegation:
     check runs through :func:`require_write_lease`, so delegation can never
     manufacture authority that the caller does not already have.
     """
-    lease = require_write_lease("delegating the daemon write lease")
+    active_lease = _ACTIVE.get()
+    lease = require_write_lease(
+        "delegating the daemon write lease",
+        archive_root=active_lease.archive_root if active_lease is not None else None,
+    )
     if lease is None:
         raise UnleasedWriteError(
             "cannot delegate the write lease without holding it; mint the delegation "

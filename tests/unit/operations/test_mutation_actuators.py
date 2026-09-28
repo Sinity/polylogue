@@ -276,7 +276,9 @@ class TestSessionDeleteActuator:
 
         assert receipt.affected_count == 1
         assert invalidated == [True]
-        assert deferred == [("invalidate_session_insights", False)]
+        # F614: the invalidation is part of the admitted writer transaction, so
+        # there is no independent deferred writer left to race the coordinator.
+        assert deferred == []
 
     def test_prepare_only_plans_currently_existing_sessions(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"

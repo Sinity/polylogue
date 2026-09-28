@@ -31,6 +31,17 @@ from polylogue.operations.mutation_transaction import (
 from polylogue.operations.operation_context import OperationContext, OperationControlRead, PinnedOperationRead
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
+_CONFIRMATION_REQUIRED_OPERATIONS = frozenset(
+    {
+        "mutation.session.excision",
+        "mutation.session.lifecycle-request",
+        "mutation.identity-reset",
+        "mutation.raw-authority-blocker.resolve",
+        "maintenance.reset",
+        "maintenance.blob-publications.abandon",
+    }
+)
+
 
 def _execute_named_mutation(
     request: DaemonOperationRequest,
@@ -43,8 +54,12 @@ def _execute_named_mutation(
     """Run one legacy domain actuator under the daemon's write authority."""
     assert context.runtime is not None
     binding = runtime_operation_binding(actuator)
-    if binding.required_confirmation != "role_only" and request.payload.get("confirm") is not True:
-        raise ConfirmationRequiredError(f"{actuator.operation} requires explicit confirmation")
+    if (
+        request.operation in _CONFIRMATION_REQUIRED_OPERATIONS
+        and binding.actuator.required_confirmation != "role_only"
+        and request.payload.get("confirm") is not True
+    ):
+        raise ConfirmationRequiredError(f"{request.operation} requires explicit confirmation")
     executor = OperationExecutor(audit=audit, archive_root=context.archive_root)
     preview = executor.prepare_bound_for_archive(binding, args, context.principal, archive_root=context.archive_root)
     authorization = executor.authorize_bound(binding, preview, context.principal, confirmation_strength="bound_token")

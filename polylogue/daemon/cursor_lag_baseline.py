@@ -253,7 +253,9 @@ def _record_archive_cursor_lag_samples(
     try:
         with (
             write_lease("daemon.cursor_lag.sample", archive_root=ops_db.parent),
-            closing(open_initialized_tier_connection(ops_db, ArchiveTier.OPS, timeout=0.1)) as conn,
+            closing(
+                open_initialized_tier_connection(ops_db, ArchiveTier.OPS, timeout=0.1, archive_root=ops_db.parent)
+            ) as conn,
         ):
             for family, source_path, max_lag_s, stuck_file_count, p50_s, p95_s in rows:
                 record_archive_cursor_lag_sample(

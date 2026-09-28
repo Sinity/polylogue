@@ -80,7 +80,7 @@ class TestDeclaredMutationAuthority:
         from polylogue.operations import daemon_mutations
 
         context = SimpleNamespace(runtime=object(), archive_root=Path("/archive"), principal=object())
-        binding = SimpleNamespace(required_confirmation="confirm_flag")
+        binding = SimpleNamespace(actuator=SimpleNamespace(required_confirmation="confirm_flag"))
         request = SimpleNamespace(payload={"publication_ids": ["reservation:1"]}, operation="maintenance.reset")
         with (
             patch.object(daemon_mutations, "runtime_operation_binding", return_value=binding),
