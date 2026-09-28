@@ -2283,6 +2283,7 @@ async def _run_daemon_services_under_active_writer_lease(
         _daemon_lifecycle = await write_coordinator.run_sync(
             "daemon.lifecycle.start",
             DaemonLifecycle.start,
+            archive_root_path=archive_root_path,
             details={"archive_root": str(archive_root_path)},
         )
         # Interrupted effects are classified once under the real daemon writer

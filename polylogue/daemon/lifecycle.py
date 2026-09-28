@@ -70,10 +70,20 @@ class DaemonLifecycle:
     received_signal_name: str | None = None
 
     @classmethod
-    def start(cls, *, details: dict[str, object] | None = None) -> DaemonLifecycle:
-        """Create and activate a lifecycle row for the current process."""
+    def start(
+        cls,
+        *,
+        archive_root_path: Path | None = None,
+        details: dict[str, object] | None = None,
+    ) -> DaemonLifecycle:
+        """Create and activate a lifecycle row for the current process.
+
+        ``polylogued`` names the archive its writer lease is bound to, so the
+        row lands in that archive's ``ops.db`` rather than one re-resolved here.
+        """
         global _active_lifecycle
-        lifecycle = cls(run_id=str(uuid.uuid4()), ops_db_path=_ops_db_path())
+        ops_db_path = _ops_db_path() if archive_root_path is None else archive_root_path / "ops.db"
+        lifecycle = cls(run_id=str(uuid.uuid4()), ops_db_path=ops_db_path)
         _write_lifecycle(
             lifecycle.ops_db_path,
             record_daemon_lifecycle_start,

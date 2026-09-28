@@ -2314,7 +2314,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
                 queue_units=0,
                 thread_name_prefix="test-daemon-api",
             )
-            self.operation_runtime = SimpleNamespace(shutdown=self._shutdown_operation_runtime)
+            self.operation_runtime = SimpleNamespace(
+                shutdown=self._shutdown_operation_runtime, embedding_convergence=None
+            )
 
         async def _shutdown_operation_runtime(self) -> None:
             events.append("operation-runtime-shutdown")

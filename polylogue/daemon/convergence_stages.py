@@ -238,7 +238,7 @@ def _write_claude_workflow_stage_event(
         ops_db.parent.mkdir(parents=True, exist_ok=True)
 
         def record() -> None:
-            with open_initialized_tier_connection(ops_db, ArchiveTier.OPS) as conn:
+            with open_initialized_tier_connection(ops_db, ArchiveTier.OPS, archive_root=archive_root) as conn:
                 if status == "failed" and _newer_claude_workflow_receipt(
                     conn, f"{CLAUDE_WORKFLOW_STAGE_NAME}:current", attempt_started_at_ns
                 ):
