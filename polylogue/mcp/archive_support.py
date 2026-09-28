@@ -437,8 +437,6 @@ def archive_search_payload(
     from polylogue.surfaces.payloads import build_search_envelope
 
     started_at = monotonic()
-    authority = authority_for_reader(archive, server_identity="direct", started_at=started_at)
-
     if spec.similar_session_id is not None:
         from polylogue.archive.query.archive_execution import archive_search_hits
         from polylogue.archive.query.spec import query_spec_to_plan
@@ -452,6 +450,7 @@ def archive_search_payload(
             default_limit=limit,
             archive=archive,
         )
+        authority = authority_for_reader(archive, server_identity="direct", started_at=started_at)
         return build_search_envelope(
             tuple(archive_search_hit_payload(hit, archive=archive) for hit, _summary in pairs),
             total=None,
@@ -481,6 +480,7 @@ def archive_search_payload(
         if total == 0
         else None
     )
+    authority = authority_for_reader(archive, server_identity="direct", started_at=started_at)
     return build_search_envelope(
         tuple(archive_search_hit_payload(hit, archive=archive) for hit in hits),
         total=total,

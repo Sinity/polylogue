@@ -58,7 +58,7 @@ def _synthetic_backend() -> ScriptedColdModelBackend:
                     {"tool": step.tool, "arguments": step.argument_dict(), "paginate": step.paginate}
                     for step in scenario.route_steps
                 ],
-                "stop_conditions": ["all continuations are exhausted"],
+                "stop_conditions": list(scenario.stop_conditions),
                 "citation_fields": [
                     next(
                         segment
@@ -148,7 +148,16 @@ class TestColdLane:
 
         assert report["coverage_errors"] == []
         assert report["scenario_count"] == len(CONTINUITY_SCENARIOS)
-        assert report["status"] == "pass"
+        assert report["status"] == "pass", [
+            {
+                "scenario": _doc(row).get("scenario"),
+                "disposition": _doc(row).get("disposition"),
+                "attempt": _doc(row).get("attempts"),
+                "execution_grades": _doc(row).get("execution_grades"),
+            }
+            for row in _rows(report["results"])
+            if _doc(row).get("disposition") != "pass"
+        ]
 
         receipt = _doc(report["discovery_receipt"])
         assert receipt["transport"] == "mcp-stdio-json-rpc"
@@ -174,7 +183,7 @@ class TestColdLane:
         wrong = json.dumps(
             {
                 "steps": [{"tool": "query", "arguments": {"expression": "sessions where nothing"}}],
-                "stop_conditions": ["stop"],
+                "stop_conditions": list(scenario.stop_conditions),
                 "citation_fields": ["message_id"],
                 "uncertainty": "low",
             }
@@ -208,7 +217,7 @@ class TestColdLane:
                         "paginate": True,
                     }
                 ],
-                "stop_conditions": ["continuation exhausted"],
+                "stop_conditions": list(scenario.stop_conditions),
                 "citation_fields": ["message_id"],
                 "uncertainty": "medium",
             }

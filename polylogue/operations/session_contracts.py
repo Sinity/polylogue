@@ -7,6 +7,7 @@ from typing import Annotated, Any, Generic, Literal, TypeVar
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from polylogue.archive.message.roles import Role
+from polylogue.archive.query.spec import DEFAULT_SESSION_LIST_LIMIT
 from polylogue.core.enums import MaterialOrigin, Origin
 
 Bound = Annotated[int, Field(ge=1, le=1000)]
@@ -35,7 +36,7 @@ class SessionList(Request):
     min_messages: Offset | None = None
     max_messages: Offset | None = None
     min_words: Offset | None = None
-    limit: Bound = 50
+    limit: Bound = DEFAULT_SESSION_LIST_LIMIT
     offset: Offset = 0
     continuation: Continuation | None = None
 

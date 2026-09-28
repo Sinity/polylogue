@@ -368,6 +368,10 @@ ARCHIVE_MESSAGE_QUERY_ROW_DISPOSITIONS: Dispositions = {
         "this column is only the fallback when a message has no block text at all"
     ),
     "blocks": delegated("hydrated per block by archive_block_to_domain"),
+    "text_chars": excluded(
+        "full joined-text length for a SQL-cut prefix; attached-unit bounding reads it to report "
+        "truncation and it has no Message field"
+    ),
 }
 
 # Message fields the bounded page projection does not select. They keep their

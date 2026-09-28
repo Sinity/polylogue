@@ -82,7 +82,10 @@ def verify_archive_command(
     )
 
     runtime = resolve_runtime_config()
-    source_frontier = configured_source_frontier(runtime) if runtime.source_paths.explicit else None
+    needs_source_frontier = not selected_checks or "source-conservation" in selected_checks
+    source_frontier = (
+        configured_source_frontier(runtime) if runtime.source_paths.explicit and needs_source_frontier else None
+    )
 
     declared_names = archive_verification_names_for_route("live-archive")
 
@@ -92,7 +95,7 @@ def verify_archive_command(
             checks=selected_checks or None,
             sample_limit=sample_limit,
             source_frontier=source_frontier,
-            require_source_frontier=bool(runtime.source_paths.explicit),
+            require_source_frontier=bool(runtime.source_paths.explicit and needs_source_frontier),
         )
     except ValueError as exc:
         raise click.BadParameter(

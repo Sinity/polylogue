@@ -28,7 +28,7 @@ from polylogue.analysis.archive import (
 )
 from polylogue.analysis.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
 from polylogue.analysis.cost_enrichment import enrich_session_cost_insights
-from polylogue.analysis.lineage_graph import CompactLineageGraph
+from polylogue.analysis.lineage_graph import DEFAULT_LINEAGE_PAGE_LIMIT, CompactLineageGraph
 from polylogue.analysis.tag_rollups import synthesize_origin_tag_rollups
 from polylogue.analysis.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
 from polylogue.analysis.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
@@ -554,9 +554,14 @@ class PolylogueInsightsMixin:
         if plan is None:
             return None
         when = (now or datetime.now(UTC)).astimezone(UTC)
-        # An outlook aggregates the archive population, not a presentation
-        # page; make the unbounded selection explicit.
-        session_costs = await self.list_session_cost_insights(SessionCostInsightQuery(limit=None))
+        from polylogue.cost.plans import cycle_for
+
+        cycle = cycle_for(plan, when)
+        if cycle is None:
+            return None
+        session_costs = await self.list_session_cost_insights(
+            SessionCostInsightQuery(since=cycle[0], until=cycle[1], limit=None)
+        )
         daily = session_costs_to_daily_usd(session_costs)
         return build_cycle_outlook(plan, daily, now=when, method=method)
 
@@ -772,11 +777,11 @@ class PolylogueInsightsMixin:
         unresolved native parent edges are surfaced via the topology
         object itself; see :class:`SessionTopology`.
         """
-        resolved = await self.repository.resolve_id(session_id, strict=False)
+        resolved = await self._resolve_for_topology(session_id)
         if resolved is None:
             return None
         return await self.repository.get_session_topology(
-            str(resolved),
+            resolved,
             node_offset=node_offset,
             node_limit=node_limit,
             edge_limit=edge_limit,
@@ -787,9 +792,9 @@ class PolylogueInsightsMixin:
         session_id: str,
         *,
         node_offset: int = 0,
-        node_limit: int | None = None,
+        node_limit: int | None = DEFAULT_LINEAGE_PAGE_LIMIT,
         edge_offset: int = 0,
-        edge_limit: int | None = None,
+        edge_limit: int | None = DEFAULT_LINEAGE_PAGE_LIMIT,
         include_accounting: bool = True,
     ) -> CompactLineageGraph | None:
         """Return the seed-relative compact lineage graph (polylogue-4ts.9).

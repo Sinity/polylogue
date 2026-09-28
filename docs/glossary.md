@@ -23,7 +23,7 @@ Read only as deep as you need:
 | Term | Plain-language meaning |
 |------|------------------------|
 | **Archive** | The on-disk SQLite file set under your XDG data directory that holds every ingested session. Not a single file — see *archive tier*. |
-| **Archive tier** | One of the six SQLite databases the archive is split into by durability class — see the canonical tier table in [architecture.md](architecture.md) (source, index, embeddings, user, audit, ops). Tiers are backed up and rebuilt independently. |
+| **Archive tier** | One of the six SQLite databases the archive is split into by durability class — see the six-tier table in [schema.md](schema.md#the-six-tiers) (source, index, embeddings, user, audit, ops). Tiers are backed up and rebuilt independently. |
 | **Source / origin / provider** | Three scopes of "where a session came from". *Source* = the material runtime root and lab attribution; *origin* = the public token on query surfaces (`claude-code-session`, `chatgpt-export`); *provider* = the low-level parser/schema identity. Public filters use **origin**. Full table in [provider-origin-identity.md](provider-origin-identity.md). |
 | **Ingest / acquisition** | Reading source files, detecting their provider by shape (not filename), parsing them, and writing normalized rows into the archive. |
 | **Content hash** | A SHA-256 over the NFC-normalized session payload (title, timestamps, messages, attachments). It is the archive's idempotency key: re-ingesting identical content is a no-op. Editable metadata (tags, summaries) is excluded, so editing those never triggers re-import. |

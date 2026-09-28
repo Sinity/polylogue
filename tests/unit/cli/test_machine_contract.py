@@ -21,6 +21,7 @@ from polylogue.cli.shared.machine_errors import (
     UNSUPPORTED_ENVIRONMENT,
     MachineError,
     MachineSuccess,
+    error_archive_writer_ownership,
     error_dependency_missing,
     error_invalid_arguments,
     error_invalid_path,
@@ -40,6 +41,15 @@ ErrorBuilderSpec = tuple[ErrorBuilder, str, str | None]
 class TestMachineErrorEnvelope:
     """Property: MachineError.to_dict() always has status=error, code, message;
     optional command/details appear iff non-empty."""
+
+    def test_undecidable_ownership_has_nonresident_remedy(self) -> None:
+        """An unknown owner is not described as a daemon observed in residence.
+
+        Anti-vacuity: use the default remedy unconditionally and the envelope
+        tells automation to route through or stop an unobserved daemon.
+        """
+        error = error_archive_writer_ownership("ownership unknown", code="archive_writer_ownership_undecidable")
+        assert "resident" not in str(error.details["remedy"])
 
     @given(
         code=st.text(min_size=1, max_size=50),
@@ -265,3 +275,15 @@ class TestExtractCommand:
     def test_extract_command_skips_option_values(self) -> None:
         argv = ["--format", "json", "--limit", "1", "read", "--all"]
         assert extract_command(argv) == ["read"]
+
+    def test_extract_command_skips_output_format_value(self) -> None:
+        """The recognized machine flag's value is not a command token.
+
+        Anti-vacuity: remove ``--output-format`` from the value-bearing set and
+        this reports ``json`` as part of the command path.
+        """
+        assert extract_command(["ops", "maintenance", "archive-init", "--output-format", "json"]) == [
+            "ops",
+            "maintenance",
+            "archive-init",
+        ]

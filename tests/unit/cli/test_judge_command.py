@@ -198,12 +198,70 @@ def test_judge_edit_preserves_the_candidate_lifecycle_kind() -> None:
         "polylogue.cli.archive_query._submit_mutation_operation",
         side_effect=_judgment_recorder(issued, payload),
     ):
-        _edit_and_accept(env, selected=selected, edited_body="Edited decision wording.", inject=True)
+        _edit_and_accept(
+            env,
+            selected=selected,
+            edited_body="Edited decision wording.",
+            inject=True,
+            expected_evidence_digest="evidence-current",
+        )
 
     review = _reviews(issued)[0]
     assert review["decision"] == "supersede"
     assert review["replacement_body_text"] == "Edited decision wording."
     assert review["replacement_kind"] is None
+    assert review["expected_evidence_digest"] == "evidence-current"
+
+
+def test_interactive_accept_forwards_digest_and_refuses_failed_receipt() -> None:
+    import polylogue.cli.commands.judge as judge_module
+    from polylogue.surfaces.action_affordances import assertion_candidate_review_affordances
+    from polylogue.surfaces.payloads import AssertionCandidateReviewItemPayload, AssertionCandidateReviewListPayload
+
+    review_item = AssertionCandidateReviewItemPayload(
+        candidate_ref="assertion:candidate-judge-1",
+        review_status="pending",
+        candidate=_candidate(),
+        action_affordances=assertion_candidate_review_affordances(candidate_ref="assertion:candidate-judge-1"),
+    )
+    review_payload = AssertionCandidateReviewListPayload(
+        items=(review_item,), total=1, limit=1, candidate_statuses=(AssertionStatus.CANDIDATE,)
+    )
+    selected = JudgeCandidateRow.from_review(review_item)
+    terminal = AssertionBulkJudgmentPayload(
+        items=(
+            AssertionBulkJudgmentItemPayload(
+                candidate_ref=selected.ref, outcome="failed", error="stale evidence digest"
+            ),
+        ),
+        applied_count=0,
+        idempotent_count=0,
+        failed_count=1,
+    )
+    issued: list[tuple[str, dict[str, object]]] = []
+    tty = SimpleNamespace(isatty=lambda: True)
+    env = SimpleNamespace(polylogue=SimpleNamespace(), config=MagicMock())
+
+    with (
+        patch.object(judge_module, "sys", SimpleNamespace(stdin=tty, stdout=tty)),
+        patch("polylogue.cli.commands.judge.run_coroutine_sync", return_value=review_payload),
+        patch("polylogue.cli.commands.judge._choose_candidate", return_value=selected),
+        patch("polylogue.cli.commands.judge.click.prompt", return_value="a"),
+        patch(
+            "polylogue.cli.archive_query._submit_mutation_operation",
+            side_effect=_judgment_recorder(issued, terminal),
+        ),
+    ):
+        invocation = CliRunner().invoke(
+            judge_command,
+            ["--expect-evidence-digest", "evidence-current"],
+            obj=env,
+        )
+
+    review = _reviews(issued)[0]
+    assert review["expected_evidence_digest"] == "evidence-current"
+    assert invocation.exit_code != 0
+    assert "Accepted." not in invocation.output
 
 
 def test_judge_accept_all_of_kind_applies_the_real_queue_filters() -> None:
