@@ -26,8 +26,14 @@ from typing import Any, cast
 
 import pytest
 
-from polylogue.core.enums import BlockType, Provider, Role
-from polylogue.sources.parsers.base import ParsedContentBlock, ParsedFileEdit, ParsedMessage, ParsedSession
+from polylogue.core.enums import BlockType, Provider, Role, WebConstructType
+from polylogue.sources.parsers.base import (
+    ParsedContentBlock,
+    ParsedFileEdit,
+    ParsedMessage,
+    ParsedSession,
+    ParsedWebConstruct,
+)
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 _NATIVE_ID = "evidence-readers"
@@ -52,6 +58,13 @@ def _seed(archive_root: Path) -> None:
                                 tool_name="Edit",
                                 tool_id=f"edit-{index}",
                                 tool_input={"file_path": f"/tmp/file-{index}.py"},
+                                web_constructs=[
+                                    ParsedWebConstruct(
+                                        construct_type=WebConstructType.SEARCH_RESULT,
+                                        url=f"https://example.test/page-{index}",
+                                        text=f"Page body {index}",
+                                    )
+                                ],
                             )
                         ],
                     )
@@ -408,3 +421,46 @@ def test_a_single_undeliverable_row_is_refused_without_inventing_a_retry(tmp_pat
     message = str(caught.value)
     assert "no retry can deliver it" in message
     assert "retry with a smaller limit" not in message
+
+
+@pytest.mark.parametrize("kind, relation", [("file-edits", "file_edits"), ("web-content", "web_content_constructs")])
+def test_evidence_page_limits_payload_rows_in_sql(seeded_root: Path, kind: str, relation: str) -> None:
+    """F169: restoring whole-relation reads yields two payload rows before a one-row page is sliced."""
+    import sqlite3
+
+    from polylogue.operations.daemon_reads import execute_read_operation
+
+    payload_rows: list[str] = []
+    statements: list[str] = []
+    with ArchiveStore.open_existing(seeded_root) as archive:
+        previous_factory = archive._conn.row_factory
+
+        def count_payload_rows(cursor: sqlite3.Cursor, row: tuple[object, ...]) -> object:
+            columns = {column[0] for column in cursor.description}
+            # Count materialized payload rows, not the scalar COUNT(*) or
+            # other statements needed by the real operation/continuation.
+            if (relation == "file_edits" and "original_file" in columns) or (
+                relation == "web_content_constructs" and "construct_id" in columns
+            ):
+                payload_rows.append(relation)
+            return previous_factory(cursor, row) if previous_factory is not None else row
+
+        archive._conn.row_factory = count_payload_rows
+        archive._conn.set_trace_callback(statements.append)
+        try:
+            page = execute_read_operation(
+                "session.read",
+                {"ref": f"session:{_SESSION_ID}", "kind": kind, "limit": 1, "offset": 1},
+                archive=archive,
+                serving_identity="test",
+            )
+        finally:
+            archive._conn.row_factory = previous_factory
+            archive._conn.set_trace_callback(None)
+    window = cast("dict[str, Any]", page["evidence_window"])
+    assert window["total"] == 2
+    assert window["returned"] == 1
+    assert window["complete"] is True
+    assert payload_rows == [relation], "SQL must not hydrate off-page unbounded payloads"
+    payload_sql = [sql.upper() for sql in statements if f"FROM {relation}" in sql and "COUNT(*)" not in sql]
+    assert payload_sql and all("LIMIT 1 OFFSET 1" in sql for sql in payload_sql)

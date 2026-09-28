@@ -469,3 +469,78 @@ def test_declared_read_set_covers_traced_sql(tmp_path: Path) -> None:
         if undeclared:
             failures.append(f"{label}: SQL read {sorted(undeclared)} outside declared {sorted(declared)}")
     assert not failures, "\n".join(failures)
+
+
+_PIPELINE_FRAME_CASES = (
+    "messages where role:user | sort by time asc",
+    "messages where role:user | limit 3 | offset 0",
+    "messages where role:user | select message_id, session.repo",
+    "messages where role:user | group by session.repo | count | sort by key asc",
+    "messages where role:user | group by role, session.repo | count",
+    "messages where role:user | group by session.repo | agg count, sum:word_count",
+)
+
+
+@pytest.mark.parametrize("expression", _PIPELINE_FRAME_CASES)
+def test_pipeline_continuation_ignores_unread_profile_churn(tmp_path: Path, expression: str) -> None:
+    """F181: the old blanket pipeline frame raises stale on the second real page."""
+    _seed(tmp_path)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        # Three real aggregate groups as well as three message rows: every
+        # case must issue a continuation, not merely execute an empty query.
+        conn.execute("UPDATE sessions SET git_repository_url = 'https://example.test/' || native_id")
+    statements: list[str] = []
+    first = _page(tmp_path, expression, trace=statements)
+    assert first.total == 1  # type: ignore[attr-defined]
+    token = first.continuation  # type: ignore[attr-defined]
+    assert token
+    source = parse_unit_source_expression(expression)
+    assert source is not None
+    declared = query_unit_frame_relations(source, {})
+    assert "session_profiles" not in declared
+    assert _traced_relations(statements, _view_relations(tmp_path)) <= declared
+
+    _write_session_profile(tmp_path, "codex-session:s2")
+
+    second = _resume(tmp_path, expression, token)
+    assert second.total == 1  # type: ignore[attr-defined]
+    assert second.offset == 1  # type: ignore[attr-defined]
+    # Narrowing may not become unconditional acceptance. All these routes
+    # read the session relation, including the aggregate grouping key.
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute("UPDATE sessions SET git_repository_url = 'https://example.test/changed' WHERE native_id = 's2'")
+    with pytest.raises(QueryContinuationStaleError):
+        _resume(tmp_path, expression, token)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "messages where role:user and session.tag:pinned | sort by time asc",
+        "sessions where tag:pinned | messages where role:user | sort by time asc",
+    ],
+)
+def test_pipeline_continuation_keeps_tag_dependency(tmp_path: Path, expression: str) -> None:
+    """F181: profile churn stays irrelevant while a filter's real dependency remains."""
+    _seed(tmp_path)
+    first = _page(tmp_path, expression)
+    token = first.continuation  # type: ignore[attr-defined]
+    assert token
+    _write_session_profile(tmp_path, "codex-session:s2")
+    assert _resume(tmp_path, expression, token).total == 1  # type: ignore[attr-defined]
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute("DELETE FROM session_tags WHERE session_id = 'codex-session:s2'")
+    with pytest.raises(QueryContinuationStaleError):
+        _resume(tmp_path, expression, token)
+
+
+def test_unknown_pipeline_stage_retains_conservative_frame() -> None:
+    """A future stage without a read-set declaration may not mint an underscoped frame."""
+    from dataclasses import replace
+
+    from polylogue.archive.query.frame_scope import FRAME_RELATIONS_ALL
+
+    source = parse_unit_source_expression(_UNSCOPED_EXPRESSION)
+    assert source is not None
+    unknown = replace(source, pipeline_stages=(object(),))  # type: ignore[arg-type]
+    assert query_unit_frame_relations(unknown, {}) == FRAME_RELATIONS_ALL

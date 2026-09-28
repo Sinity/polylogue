@@ -23,6 +23,18 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from polylogue.archive.query.expression import (
+    QueryUnitAggStage,
+    QueryUnitCountStage,
+    QueryUnitGroupStage,
+    QueryUnitLimitStage,
+    QueryUnitOffsetStage,
+    QueryUnitSessionScopeStage,
+    QueryUnitSortStage,
+    QueryUnitSource,
+    QueryUnitTransformStage,
+)
+from polylogue.archive.query.metadata import query_unit_descriptor
 from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
     QueryExistsPredicate,
@@ -172,6 +184,10 @@ def _predicate_relations(predicate: QueryPredicate | None) -> frozenset[str] | N
         relations = _EXISTS_UNIT_RELATIONS.get(predicate.unit)
         if relations is None:
             return None
+        child_relations = _predicate_relations(predicate.child)
+        if child_relations is None:
+            return None
+        relations |= child_relations
         if predicate.unit in {"action", "file"}:
             return relations | frozenset({"action_pairs"})
         return relations
@@ -196,6 +212,60 @@ def _predicate_relations(predicate: QueryPredicate | None) -> frozenset[str] | N
     return None
 
 
+def _pipeline_relations(source: QueryUnitSource) -> frozenset[str] | None:
+    """Declare the implemented shaping stages, not the mere presence of a pipe.
+
+    Sort/limit/offset use the selected relation. Group dimensions and metric
+    fields are columns of that relation or its sessions join; message
+    projections read a subset of the ordinary message payload. None makes a
+    profile sweep a dependency. Unknown stages/fields still widen the frame.
+    """
+    descriptor = query_unit_descriptor(source.unit)
+    if descriptor is None:
+        return None
+    relations: set[str] = set()
+    for stage in source.pipeline_stages:
+        if isinstance(stage, QueryUnitSessionScopeStage):
+            declared = _predicate_relations(stage.predicate)
+            if declared is None:
+                return None
+            relations |= declared
+        elif isinstance(stage, QueryUnitTransformStage):
+            if stage.name != "select":
+                return None
+        elif not isinstance(
+            stage,
+            (
+                QueryUnitSortStage,
+                QueryUnitLimitStage,
+                QueryUnitOffsetStage,
+                QueryUnitGroupStage,
+                QueryUnitCountStage,
+                QueryUnitAggStage,
+            ),
+        ):
+            return None
+    if source.aggregate not in (None, "count"):
+        return None
+    if source.group_by is not None and any(
+        field.strip() not in descriptor.aggregate_group_fields for field in source.group_by.split(",")
+    ):
+        return None
+    if any(
+        metric.field is not None and metric.field not in descriptor.aggregate_metric_fields
+        for metric in source.agg_metrics or ()
+    ):
+        return None
+    if any(field not in descriptor.projectable_fields for field in source.selected_fields):
+        return None
+    # The context-snapshot SQL includes parent-prefix evidence, unlike the
+    # message/block source. Removing the blanket pipeline frame must retain
+    # the lineage dependency that blanket previously covered.
+    if source.unit == "context-snapshot" and source.pipeline_stages:
+        relations.add("session_links")
+    return frozenset(relations)
+
+
 def query_unit_frame_relations(source: object, session_filters: Mapping[str, object] | None) -> frozenset[str]:
     """Return the tracked relations one lowered query-unit page can read.
 
@@ -203,25 +273,17 @@ def query_unit_frame_relations(source: object, session_filters: Mapping[str, obj
     recognise widens the answer to every tracked relation, so the caller
     over-invalidates instead of resuming over a relation that moved.
     """
-    unit = getattr(source, "unit", None)
-    if not isinstance(unit, str):
+    if not isinstance(source, QueryUnitSource):
         return FRAME_RELATIONS_ALL
-    unit_relations = _UNIT_RELATIONS.get(unit)
+    unit_relations = _UNIT_RELATIONS.get(source.unit)
     if unit_relations is None:
         return FRAME_RELATIONS_ALL
     relations = set(_BASE_RELATIONS | unit_relations)
 
-    # Result *shape* stages (group/aggregate/projection) are not modelled
-    # here; an aggregate page carries no offset continuation anyway, so
-    # widening costs nothing and keeps this declaration about relations only.
-    if (
-        getattr(source, "group_by", None) is not None
-        or getattr(source, "aggregate", None) is not None
-        or getattr(source, "agg_metrics", None)
-        or getattr(source, "selected_fields", None)
-        or getattr(source, "pipeline_stages", None)
-    ):
+    pipeline_relations = _pipeline_relations(source)
+    if pipeline_relations is None:
         return FRAME_RELATIONS_ALL
+    relations |= pipeline_relations
 
     for predicate in (getattr(source, "predicate", None), getattr(source, "session_predicate", None)):
         declared = _predicate_relations(predicate)

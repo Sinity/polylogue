@@ -1025,3 +1025,97 @@ def test_exact_session_multi_aggregate_work_is_not_amplified_by_irrelevant_growt
     assert bounded_ctx.receipt.cleanup_complete is True
     assert bounded_ctx.receipt.sqlite_vm_steps_lower_bound < 50_000
     assert mutant_ctx.receipt.sqlite_vm_steps_lower_bound >= 50_000
+
+
+async def test_queued_archive_reads_wait_for_notifications_not_polling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F939: restoring the 10-ms loop increases admission probes while capacity is unchanged."""
+    root = _bootstrap_archive(tmp_path)
+    controller = QueryAdmissionController(capacity=1, reserved_interactive=0)
+    contexts = [QueryExecutionContext.create(query_text=f"idle-{i}", timeout_s=None) for i in range(16)]
+    probes = dict.fromkeys((ctx.call_id for ctx in contexts), 0)
+    all_queued = asyncio.Event()
+    original = controller._may_admit_locked
+
+    def observe(ctx: QueryExecutionContext, weight: int) -> bool:
+        if ctx.call_id in probes:
+            probes[ctx.call_id] += 1
+            if all(probes.values()):
+                all_queued.set()
+        return original(ctx, weight)
+
+    monkeypatch.setattr(controller, "_may_admit_locked", observe)
+    tasks: list[asyncio.Task[int]] = []
+    holder = QueryExecutionContext.create(query_text="held-capacity", timeout_s=None)
+    with controller.admit_blocking(holder):
+        try:
+            tasks = [
+                asyncio.create_task(execute_archive_read(root, _cheap_work, ctx=ctx, controller=controller))
+                for ctx in contexts
+            ]
+            await asyncio.wait_for(all_queued.wait(), timeout=5)
+            before = dict(probes)
+            # A real scheduling interval distinguishes notification from
+            # polling; the test's real-clock module marker is intentional.
+            await asyncio.sleep(0.05)
+            assert probes == before, "idle queued reads repeatedly probe admission without a notification"
+            assert controller.in_flight_weight == 1
+        finally:
+            for ctx in contexts:
+                ctx.cancel()
+            outcomes = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5)
+    assert all(isinstance(outcome, QueryCancelledError) for outcome in outcomes)
+    assert controller.in_flight_weight == 0
+    assert all(controller.queue_position(ctx) is None for ctx in contexts)
+
+
+@pytest.mark.parametrize("cancel_index", [0, 1])
+async def test_queued_archive_read_thread_cancel_preserves_next_wakeup(tmp_path: Path, cancel_index: int) -> None:
+    """Both head and non-head cancellation wake without waiting for capacity to be released."""
+    root = _bootstrap_archive(tmp_path)
+    controller = QueryAdmissionController(capacity=1, reserved_interactive=0)
+    contexts = [QueryExecutionContext.create(query_text=f"cancel-{i}", timeout_s=None) for i in range(2)]
+    tasks: list[asyncio.Task[int]] = []
+    try:
+        with controller.admit_blocking(QueryExecutionContext.create(timeout_s=None)):
+            tasks = [
+                asyncio.create_task(execute_archive_read(root, _cheap_work, ctx=ctx, controller=controller))
+                for ctx in contexts
+            ]
+            # Test synchronization only: the implementation must have no
+            # corresponding periodic admission wakeup.
+            async def queued() -> None:
+                while any(controller.queue_position(ctx) is None for ctx in contexts):
+                    await asyncio.sleep(0)
+
+            await asyncio.wait_for(queued(), timeout=5)
+            await asyncio.to_thread(contexts[cancel_index].cancel)
+            with pytest.raises(QueryCancelledError):
+                await asyncio.wait_for(asyncio.shield(tasks[cancel_index]), timeout=5)
+            assert controller.queue_position(contexts[cancel_index]) is None
+            assert controller.queue_position(contexts[1 - cancel_index]) == 0
+            assert controller.in_flight_weight == 1
+        # The synchronous holder's release must notify the surviving async
+        # queue head, which then executes real SQLite work and releases once.
+        assert await asyncio.wait_for(asyncio.shield(tasks[1 - cancel_index]), timeout=5) == 1
+        assert contexts[1 - cancel_index].receipt.cleanup_complete
+        assert controller.in_flight_weight == 0
+    finally:
+        for ctx in contexts:
+            ctx.cancel()
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5)
+
+
+async def test_queued_archive_read_deadline_wakes_without_capacity_change(tmp_path: Path) -> None:
+    """Removing polling must not remove the caller's deadline while its request is queued."""
+    root = _bootstrap_archive(tmp_path)
+    controller = QueryAdmissionController(capacity=1, reserved_interactive=0)
+    with controller.admit_blocking(QueryExecutionContext.create(timeout_s=None)):
+        ctx = QueryExecutionContext.create(query_text="queued-deadline", timeout_s=0.05)
+        with pytest.raises(QueryTimeoutError):
+            await asyncio.wait_for(execute_archive_read(root, _cheap_work, ctx=ctx, controller=controller), timeout=5)
+        assert ctx.receipt.state == "timed_out"
+        assert controller.queue_position(ctx) is None
+        assert controller.in_flight_weight == 1
+    assert controller.in_flight_weight == 0
