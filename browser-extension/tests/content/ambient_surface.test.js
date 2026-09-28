@@ -100,7 +100,7 @@ describe("ambient capture status surface", () => {
   it("mounts one zero-layout-shift closed shadow surface with no remote assets", async () => {
     const dom = freshDom();
     const bodyChildrenBefore = dom.window.document.body.children.length;
-    const { api } = mount(dom);
+    const { api, runtime } = mount(dom);
 
     await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
 
