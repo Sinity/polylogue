@@ -904,33 +904,45 @@ def _scoped_identities(
     tail_counts: Counter[str] = Counter()
     tail_natives: Counter[str] = Counter()
     prefix_keys: list[tuple[int, int]] = []
+    before_positions: list[int] = []
+    natives: list[str | None] = []
     min_tail_position: int | None = None
     for ordinal, message in enumerate(messages):
         digest = digests[ordinal]
         position = message.position if message.position is not None else ordinal
+        native = _normalized_message_native_id(message)
+        natives.append(native)
         if start <= ordinal < start + count:
             prefix_keys.append((position, message.variant_index or 0))
             continue
         tail_counts[digest] += 1
-        native = _normalized_message_native_id(message)
         if native is not None:
             tail_natives[native] += 1
-        if ordinal >= start + count and (min_tail_position is None or position < min_tail_position):
+        if ordinal < start:
+            before_positions.append(position)
+        elif min_tail_position is None or position < min_tail_position:
             min_tail_position = position
-    tail_duplicates = frozenset(native for native, seen in tail_natives.items() if seen > 1)
     positions = [position for position, _variant in prefix_keys]
     fits = (
         len(set(prefix_keys)) == len(prefix_keys)
         and positions == sorted(positions)
         and (min_tail_position is None or not positions or positions[-1] < min_tail_position)
+        and (not before_positions or not positions or max(before_positions) < positions[0])
     )
     prefix_positions: dict[int, int] = {}
+    before_positions_map: dict[int, int] = {}
     tail_shift = 0
     if not fits:
+        # Rows gained before the copied prefix take the lowest positions,
+        # then the prefix densely, then the tail above both -- the order
+        # materialization composed, with room for what was added since.
+        for position in sorted(set(before_positions)):
+            before_positions_map[position] = len(before_positions_map)
         for position in positions:
-            prefix_positions.setdefault(position, len(prefix_positions))
-        if min_tail_position is not None and min_tail_position < len(prefix_positions):
-            tail_shift = len(prefix_positions) - min_tail_position
+            prefix_positions.setdefault(position, len(before_positions_map) + len(prefix_positions))
+        floor = len(before_positions_map) + len(prefix_positions)
+        if min_tail_position is not None and min_tail_position < floor:
+            tail_shift = floor - min_tail_position
     identities: list[MessageContentIdentity] = []
     cleared: set[int] = set()
     prefix_seen: Counter[str] = Counter()
@@ -950,9 +962,19 @@ def _scoped_identities(
             continue
         identities.append((digest, tail_seen[digest]))
         tail_seen[digest] += 1
+    # A native repeated outside the prefix, or shared with a copied prefix row
+    # that keeps it, is a content identity for the non-prefix row: the stored
+    # prefix row keeps its ID.
+    prefix_natives = {
+        native
+        for ordinal, native in enumerate(natives)
+        if native is not None and start <= ordinal < start + count and ordinal not in cleared
+    }
+    tail_duplicates = frozenset(native for native, seen in tail_natives.items() if seen > 1 or native in prefix_natives)
     view = _ScopedMessages(
         messages,
         start=start,
+        before_positions=before_positions_map,
         count=count,
         cleared=frozenset(cleared),
         tail_duplicates=tail_duplicates,
@@ -994,6 +1016,7 @@ class _ScopedMessages(_MessageTail):
         messages: Sequence[ParsedMessage],
         *,
         start: int,
+        before_positions: Mapping[int, int],
         count: int,
         cleared: frozenset[int],
         tail_duplicates: frozenset[str],
@@ -1002,25 +1025,36 @@ class _ScopedMessages(_MessageTail):
     ) -> None:
         super().__init__(messages, 0)
         self._prefix_start = start
+        self._before_positions = before_positions
         self._count = count
         self._cleared = cleared
         self._tail_duplicates = tail_duplicates
         self._prefix_positions = prefix_positions
         self._tail_shift = tail_shift
 
-    def remap_position(self, position: int | None, *, prefix: bool) -> int | None:
+    def remap_position(self, position: int | None, *, region: str) -> int | None:
+        """``position`` placed as materialization placed its region's rows."""
         if position is None:
             return None
-        if prefix and position in self._prefix_positions:
-            return self._prefix_positions[position]
-        return position + self._tail_shift if not prefix else position
+        if region == "prefix":
+            return self._prefix_positions.get(position, position)
+        if region == "before":
+            return self._before_positions.get(position, position)
+        return position + self._tail_shift
+
+    def _region(self, ordinal: int) -> str:
+        if ordinal < self._prefix_start:
+            return "before"
+        return "prefix" if ordinal < self._prefix_start + self._count else "tail"
 
     def _scoped(self, ordinal: int, message: ParsedMessage) -> ParsedMessage:
         update: dict[str, object] = {}
-        prefix = self._prefix_start <= ordinal < self._prefix_start + self._count
-        if ordinal in self._cleared or (not prefix and _normalized_message_native_id(message) in self._tail_duplicates):
+        region = self._region(ordinal)
+        if ordinal in self._cleared or (
+            region != "prefix" and _normalized_message_native_id(message) in self._tail_duplicates
+        ):
             update["provider_message_id"] = None
-        position = self.remap_position(message.position, prefix=prefix)
+        position = self.remap_position(message.position, region=region)
         if position != message.position:
             update["position"] = position
         return message.model_copy(update=update) if update else message
@@ -1043,7 +1077,7 @@ class _ScopedMessages(_MessageTail):
 
     def remap_events(self, events: Sequence[ParsedSessionEvent]) -> list[ParsedSessionEvent] | None:
         """Boundary positions moved with the rows they address, or ``None`` if none move."""
-        if not self._prefix_positions and not self._tail_shift:
+        if not self._prefix_positions and not self._tail_shift and not self._before_positions:
             return None
         min_tail = min(
             (
@@ -1057,8 +1091,11 @@ class _ScopedMessages(_MessageTail):
         def moved(position: int | None) -> int | None:
             if position is None:
                 return None
-            prefix = min_tail is None or position < min_tail
-            return self.remap_position(position, prefix=prefix)
+            if min_tail is not None and position >= min_tail:
+                return self.remap_position(position, region="tail")
+            if position in self._prefix_positions:
+                return self.remap_position(position, region="prefix")
+            return self.remap_position(position, region="before")
 
         return [
             event.model_copy(

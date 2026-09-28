@@ -4374,7 +4374,7 @@ def test_a_materialized_child_keeps_its_ids_when_a_message_is_prepended(tmp_path
     conn = _connect(tmp_path / "index.db")
     prepended = [
         _msg("", Role.USER, "preamble", 0),
-        *(message.model_copy(update={"position": message.position + 1}) for message in child),
+        *(message.model_copy(update={"position": (message.position or 0) + 1}) for message in child),
     ]
     write_parsed_session_to_archive(
         conn,
@@ -4411,3 +4411,53 @@ def test_a_scoped_replay_places_rows_as_materialization_did(tmp_path: Path) -> N
     ).fetchall()
     assert [row[0] for row in rows] == ["m0", "m1", "x"]
     conn.close()
+
+
+def _replay_child(tmp_path: Path, messages: list[ParsedMessage]) -> list[str]:
+    conn = _connect(tmp_path / "index.db")
+    write_parsed_session_to_archive(
+        conn,
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="child",
+            title="child",
+            parent_session_provider_id="parent",
+            branch_type=BranchType.FORK,
+            messages=messages,
+        ),
+        force_replace=True,
+    )
+    conn.commit()
+    ids = _child_ids(conn, "codex-session:child")
+    conn.close()
+    return ids
+
+
+def test_a_scoped_replay_places_a_prepended_row_before_a_renumbered_prefix(tmp_path: Path) -> None:
+    """Anti-vacuity: leave the prepended row out of the placement and it takes
+    the renumbered prefix's position, rolling the replay back on the
+    coordinate key."""
+    parent = [_msg("m0", Role.USER, "m0", 0), _msg("m1", Role.ASSISTANT, "m1", 1)]
+    child = [_msg("m0", Role.USER, "m0", 5), _msg("m1", Role.ASSISTANT, "m1", 6), _msg("x", Role.USER, "tail", 0)]
+    _inheriting, materialized, _replayed = _materialize_then_replay(
+        tmp_path, parent, child, [_msg("m0", Role.USER, "m0", 0)]
+    )
+    prepended = [
+        _msg("p", Role.USER, "preamble", 0),
+        *(m.model_copy(update={"position": (m.position or 0) + 1}) for m in child),
+    ]
+    assert set(materialized) <= set(_replay_child(tmp_path, prepended))
+
+
+def test_a_scoped_replay_keeps_a_prefix_native_id_a_new_row_repeats(tmp_path: Path) -> None:
+    """Anti-vacuity: compare natives only outside the prefix and the new row
+    takes the copied prefix row's ``n:m1`` ID, rolling the replay back."""
+    parent = [_msg("m0", Role.USER, "hello", 0), _msg("m1", Role.ASSISTANT, "hi there", 1)]
+    child = [*parent, _msg("x", Role.USER, "child diverges here", 2)]
+    _inheriting, materialized, _replayed = _materialize_then_replay(
+        tmp_path, parent, child, [_msg("m0", Role.USER, "hello", 0)]
+    )
+    extended = [*child, _msg("m1", Role.ASSISTANT, "a later reply reusing m1", 3)]
+    replayed = _replay_child(tmp_path, extended)
+    assert set(materialized) <= set(replayed)
+    assert len(replayed) == 4

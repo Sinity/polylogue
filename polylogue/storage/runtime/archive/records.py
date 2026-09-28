@@ -251,9 +251,10 @@ LINEAGE_TRUNCATION_CYCLE: LineageTruncationReason = "cycle"
 class LineageCompleteness(BaseModel):
     """Whether a composed transcript is the FULL logical transcript, or a
     silently truncated one (4ts.6). A prefix-sharing child composition can
-    drop ancestors past a recursion depth limit, or return only its own
-    divergent tail when the parent's branch point was hard-deleted, or stop
-    at a cycle. Each is a construct-validity hole if served without a signal."""
+    return only its own divergent tail when the parent's branch point is
+    missing, or stop at a cycle; composition is bounded by the ancestors it
+    has visited, never by a depth. Each is a construct-validity hole if
+    served without a signal."""
 
     complete: bool = True
     truncation_reason: LineageTruncationReason | None = None
