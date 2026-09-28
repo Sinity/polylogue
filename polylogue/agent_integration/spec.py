@@ -662,9 +662,9 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     _contract(
         name="run",
         source_names=_RUN_SOURCES,
-        purpose="Execute a saved query or governed recipe ref; any nested mutation inherits its own capability and confirmation policy.",
+        purpose="Execute a saved query or saved view; any nested mutation inherits its own capability and confirmation policy.",
         arguments=(
-            _arg("ref", "string", True, "Saved-query or recipe ref."),
+            _arg("ref", "string", True, "Saved-query or saved-view ref."),
             _arg("limit", "integer", False, "Bound on saved-query results."),
         ),
         examples=(

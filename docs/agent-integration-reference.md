@@ -415,13 +415,13 @@ A judgment receipt that leaves candidate history intact and reports conflicts ex
 - result semantics: `exhaustive_page`, `mutation`
 - continuation: `none`
 - emits result ref: `yes`
-- purpose: Execute a saved query or governed recipe ref; any nested mutation inherits its own capability and confirmation policy.
+- purpose: Execute a saved query or saved view; any nested mutation inherits its own capability and confirmation policy.
 
 Arguments:
 
 | Name | Kind | Required initially | Meaning |
 |---|---|---:|---|
-| `ref` | `string` | yes | Saved-query or recipe ref. |
+| `ref` | `string` | yes | Saved-query or saved-view ref. |
 | `limit` | `integer` | no | Bound on saved-query results. |
 
 Example — Run a saved read-only cost view:

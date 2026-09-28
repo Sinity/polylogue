@@ -52,7 +52,7 @@ Every declared tool is listed. A tool requiring a capability is registered only 
 | `record_work_event` | Record one typed live-agent work event against a session so later sessions can retrieve it as evidence. | `write` | `mutation` |
 | `emit_decision` | Record a typed decision with its evidence references, using the shared work-event vocabulary. | `write` | `mutation` |
 | `judge` | Accept, reject, defer, or supersede an assertion candidate while preserving candidate and judgment provenance. | `judge` | `mutation` |
-| `run` | Execute a saved query or governed recipe ref; any nested mutation inherits its own capability and confirmation policy. | `write` | `exhaustive_page`, `mutation` |
+| `run` | Execute a saved query or saved view; any nested mutation inherits its own capability and confirmation policy. | `write` | `exhaustive_page`, `mutation` |
 | `maintenance` | Rebuild session insights; there is no generic maintenance or repair umbrella. | `maintenance` | `maintenance` |
 
 ## Normal invocations

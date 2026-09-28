@@ -213,6 +213,8 @@ def test_published_examples_use_live_operation_vocabularies_and_preconditions() 
 
     run_ref = TOOL_CONTRACT_BY_NAME["run"].examples[0].arguments_dict()["ref"]
     assert run_ref.startswith(("saved-query:", "saved-view:"))
+    run_ref_description = next(arg.description for arg in TOOL_CONTRACT_BY_NAME["run"].arguments if arg.name == "ref")
+    assert "recipe" not in run_ref_description
 
 
 def _live_maintenance_signature() -> tuple[frozenset[str], frozenset[str]]:
