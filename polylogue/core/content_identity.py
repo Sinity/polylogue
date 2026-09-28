@@ -271,10 +271,21 @@ class _SpilledStrings:
         self._files: dict[str, IO[bytes]] = {}
         self._keys: dict[str, str] = {}
         self._placeholders = 0
-        #: A token past the physical value limit. Raised only once the whole
+        #: Tokens past the physical value limit. Raised only once the whole
         #: document has parsed: until then the bytes may not be JSON at all,
-        #: and a non-JSON member takes its byte identity instead.
-        self.refusal: ContentIdentityRefusal | None = None
+        #: and a non-JSON member takes its byte identity instead. A refused
+        #: key refuses the document; a refused value refuses it only if it
+        #: survives (a later duplicate key can replace it), which
+        #: ``surviving_refusal`` records.
+        self.key_refusal: ContentIdentityRefusal | None = None
+        self.value_refusal: ContentIdentityRefusal | None = None
+        self.value_refusals = 0
+        self.surviving_refusal = False
+        #: Complete number tokens seen by the token reader, and the ordinals
+        #: (counted from 1) of those past the limit: each is one ``number``
+        #: event, so the identity stream can tell which value was refused.
+        self.number_tokens = 0
+        self.refused_numbers: set[int] = set()
 
     def add(self, handle: IO[bytes]) -> bytes:
         marker = f"polylogue-spilled-string-{self._nonce}-{len(self._files)}"
@@ -290,9 +301,14 @@ class _SpilledStrings:
     def take_key(self, marker: str) -> str:
         return self._keys.pop(marker, marker) if self._keys else marker
 
-    def refuse(self, token: str, size: int) -> None:
-        if self.refusal is None:
-            self.refusal = ContentIdentityRefusal(token, size)
+    def refuse_key(self, size: int) -> None:
+        if self.key_refusal is None:
+            self.key_refusal = ContentIdentityRefusal("object key", size)
+
+    def refuse_value(self, token: str, size: int) -> None:
+        self.value_refusals += 1
+        if self.value_refusal is None:
+            self.value_refusal = ContentIdentityRefusal(token, size)
 
     def placeholder_key(self) -> bytes:
         """A unique stand-in for a refused key, keeping the document parseable."""
@@ -309,7 +325,12 @@ class _SpilledStrings:
             handle.close()
         self._files.clear()
         self._keys.clear()
-        self.refusal = None
+        self.key_refusal = None
+        self.value_refusal = None
+        self.value_refusals = 0
+        self.surviving_refusal = False
+        self.number_tokens = 0
+        self.refused_numbers.clear()
 
 
 class _TokenReader:
@@ -473,9 +494,12 @@ class _TokenReader:
     def _end_bare_run(self, out: bytearray) -> None:
         if not self._bare_open:
             return
+        if self._bare_state in _NUM_COMPLETE:
+            self._spills.number_tokens += 1
         if self._bare_suppressed:
             if self._bare_state in _NUM_COMPLETE:
-                self._spills.refuse("number token", self._bare_len)
+                self._spills.refused_numbers.add(self._spills.number_tokens)
+                self._spills.refuse_value("number token", self._bare_len)
             else:
                 out += b"x"
         self._bare_open = False
@@ -538,7 +562,7 @@ class _TokenReader:
                     pieces.append(piece)
             spill.close()
             if size > physical_value_limit():
-                self._spills.refuse("object key", size)
+                self._spills.refuse_key(size)
                 out += self._spills.placeholder_key()
             else:
                 # Held decoded and handed on as a marker: re-escaping it for
@@ -707,7 +731,7 @@ def _encode_spilled_text(raw: IO[bytes], sink: _Sink, spills: _SpilledStrings) -
                 pending_bytes = len(text[split:].encode("utf-8", "surrogatepass"))
             pending_text = text[split:]
             if pending_bytes > limit:
-                spills.refuse("combining character sequence", pending_bytes)
+                spills.refuse_value("combining character sequence", pending_bytes)
                 pending_text = ""
                 draining = True
         if draining:
@@ -775,8 +799,14 @@ class _EntryStore:
             self._connection = None
 
 
+#: The digest of a member whose value was refused (a token past the physical
+#: value limit): a later duplicate key can still replace it.
+_REFUSED_DIGEST = b""
+
+
 class _Entries:
-    """One object's members: raw key -> value digest, ``None`` for no identity.
+    """One object's members: raw key -> value digest, ``None`` for no identity,
+    :data:`_REFUSED_DIGEST` for a refused value.
 
     A repeated key replaces the earlier member, as the in-memory decoder does.
     Members stay in memory until the document's shared budget
@@ -832,6 +862,18 @@ class _Entries:
         key_hash = sha256(key.encode("utf-8", "surrogatepass")).digest()
         self._budget.connection().execute(
             "INSERT OR REPLACE INTO entries VALUES (?, ?, ?, ?)", (self._id, key_hash, normalized, digest)
+        )
+
+    def refused(self) -> bool:
+        if any(digest == _REFUSED_DIGEST for digest in self._memory.values()):
+            return True
+        if self._id is None:
+            return False
+        return (
+            self._budget.connection()
+            .execute("SELECT 1 FROM entries WHERE obj = ? AND digest = x'' LIMIT 1", (self._id,))
+            .fetchone()
+            is not None
         )
 
     def poisoned(self) -> bool:
@@ -893,7 +935,7 @@ class _Frame:
     not a hasher and a member table each.
     """
 
-    __slots__ = ("depth", "entries", "is_map", "key", "outer", "poisoned", "value")
+    __slots__ = ("depth", "entries", "is_map", "key", "outer", "poisoned", "refused", "value")
 
     def __init__(self, *, is_map: bool, outer: _Sink | None) -> None:
         self.is_map = is_map
@@ -907,6 +949,8 @@ class _Frame:
         self.value: _Digester | None = None
         #: An element had no identity (arrays only).
         self.poisoned = False
+        #: An element was refused (arrays only).
+        self.refused = False
         #: Arrays in this run (arrays only).
         self.depth = 1
 
@@ -924,6 +968,8 @@ def _stream_identity_into(events: Iterator[tuple[str, object]], spills: _Spilled
     stack: list[_Frame] = []
     documents = 0
     root_poisoned = False
+    root_refused = False
+    number_ordinal = 0
 
     def current() -> _Sink:
         if not stack:
@@ -938,13 +984,14 @@ def _stream_identity_into(events: Iterator[tuple[str, object]], spills: _Spilled
             top.value = sha256()
         return top.value
 
-    def finished_value(*, poisoned: bool = False) -> None:
-        nonlocal documents, root_poisoned
+    def finished_value(*, poisoned: bool = False, refused: bool = False) -> None:
+        nonlocal documents, root_poisoned, root_refused
         if not stack:
             documents += 1
             if documents > 1:
                 raise _NotJsonError
             root_poisoned = poisoned
+            root_refused = refused
             return
         top = stack[-1]
         if top.is_map:
@@ -953,13 +1000,16 @@ def _stream_identity_into(events: Iterator[tuple[str, object]], spills: _Spilled
                 top.entries = _Entries(store)
             if poisoned:
                 top.entries[top.key] = None
+            elif refused:
+                top.entries[top.key] = _REFUSED_DIGEST
             else:
                 assert top.value is not None
                 top.entries[top.key] = top.value.digest()
             top.key = None
             top.value = None
-        elif poisoned:
-            top.poisoned = True
+        else:
+            top.poisoned = top.poisoned or poisoned
+            top.refused = top.refused or refused
 
     for event, value in events:
         if event == "map_key":
@@ -988,6 +1038,9 @@ def _stream_identity_into(events: Iterator[tuple[str, object]], spills: _Spilled
                 if entries is not None and entries.poisoned():
                     finished_value(poisoned=True)
                     continue
+                if entries is not None and entries.refused():
+                    finished_value(refused=True)
+                    continue
                 sink = current()
                 if entries is None:
                     _encode_object_entries([], sink)
@@ -1007,10 +1060,13 @@ def _stream_identity_into(events: Iterator[tuple[str, object]], spills: _Spilled
                 frame.depth -= 1
                 continue
             stack.pop()
-            finished_value(poisoned=frame.poisoned)
+            finished_value(poisoned=frame.poisoned, refused=frame.refused)
         else:
             sink = current()
             spilled = spills.take(value) if event == "string" else None
+            refusals_before = spills.value_refusals
+            if event == "number":
+                number_ordinal += 1
             try:
                 if spilled is not None:
                     with spilled:
@@ -1027,9 +1083,15 @@ def _stream_identity_into(events: Iterator[tuple[str, object]], spills: _Spilled
                 # verdict waits for the enclosing object to close.
                 finished_value(poisoned=True)
                 continue
-            finished_value()
+            # A value past the physical limit is refused where it stands, so
+            # a later duplicate key can still replace it.
+            finished_value(
+                refused=spills.value_refusals > refusals_before
+                or (event == "number" and number_ordinal in spills.refused_numbers)
+            )
     if stack or documents != 1 or root_poisoned:
         raise _NotJsonError
+    spills.surviving_refusal = root_refused
     return root.hexdigest()
 
 
@@ -1109,9 +1171,12 @@ def _identity_as(handle: IO[bytes], start: int, encoding: str, errors: str) -> s
             # byte still moves it to the next encoding.
             text.drain()
             raise
-        if spills.refusal is not None:
-            # The document is JSON, so an overlong token is a real refusal.
-            raise spills.refusal
+        # The document is JSON, so an overlong key, or an overlong value that
+        # no later duplicate key replaced, is a real refusal.
+        if spills.key_refusal is not None:
+            raise spills.key_refusal
+        if spills.surviving_refusal and spills.value_refusal is not None:
+            raise spills.value_refusal
         return digest
     finally:
         spills.close()

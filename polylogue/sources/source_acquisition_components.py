@@ -15,6 +15,7 @@ from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.archive.zip_admission import ZipBombError
 from polylogue.config import Source
 from polylogue.core.content_identity import (
+    ContentIdentityRefusal,
     payload_content_identity,
     stream_payload_content_identity,
 )
@@ -108,51 +109,56 @@ class SerializedSplitPayload:
 
 @dataclass(slots=True)
 class SplitPayloadBuffer:
-    """Buffer ZIP payloads until an entry proves it contains multiple sessions."""
+    """Buffer ZIP payloads until an entry proves it contains multiple sessions.
+
+    An element whose content identity is refused keeps its source index and
+    is recorded in ``refusals``; the elements after it are still emitted.
+    """
 
     _pending: list[tuple[Provider, bytes]] = field(default_factory=list)
     _next_source_index: int = 0
     did_split: bool = False
+    refusals: list[ContentIdentityRefusal] = field(default_factory=list)
 
     @property
     def pending_index(self) -> int:
         return self._next_source_index + len(self._pending)
 
+    def element(self, provider: Provider, payload_bytes: bytes, index: int) -> SerializedSplitPayload | None:
+        """One split element with its identity, or ``None`` when that identity is refused."""
+        try:
+            identity = payload_content_identity(payload_bytes)
+        except ContentIdentityRefusal as refusal:
+            self.refusals.append(refusal)
+            return None
+        return SerializedSplitPayload(
+            provider=provider,
+            payload_bytes=payload_bytes,
+            source_index=index,
+            addressing_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
+            content_identity=identity,
+        )
+
     def add(self, provider: Provider, payload_bytes: bytes) -> tuple[SerializedSplitPayload, ...]:
         if self.did_split:
-            identity = payload_content_identity(payload_bytes)
-            payload = SerializedSplitPayload(
-                provider=provider,
-                payload_bytes=payload_bytes,
-                source_index=self._next_source_index,
-                addressing_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
-                content_identity=identity,
-            )
+            payload = self.element(provider, payload_bytes, self._next_source_index)
             self._next_source_index += 1
-            return (payload,)
+            return () if payload is None else (payload,)
 
         self._pending.append((provider, payload_bytes))
         if len(self._pending) < 2:
             return ()
 
         self.did_split = True
-        emitted_items: list[SerializedSplitPayload] = []
-        for index, (pending_provider, pending_payload_bytes) in enumerate(
-            self._pending,
-            start=self._next_source_index,
-        ):
-            identity = payload_content_identity(pending_payload_bytes)
-            emitted_items.append(
-                SerializedSplitPayload(
-                    provider=pending_provider,
-                    payload_bytes=pending_payload_bytes,
-                    source_index=index,
-                    addressing_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
-                    content_identity=identity,
-                )
+        emitted = tuple(
+            payload
+            for index, (pending_provider, pending_payload_bytes) in enumerate(
+                self._pending,
+                start=self._next_source_index,
             )
-        emitted = tuple(emitted_items)
-        self._next_source_index += len(emitted)
+            if (payload := self.element(pending_provider, pending_payload_bytes, index)) is not None
+        )
+        self._next_source_index += len(self._pending)
         self._pending.clear()
         return emitted
 
@@ -609,12 +615,11 @@ def _iter_zip_entry_split_payloads(
                 # emitted split siblings remain valid and must not be rolled
                 # back.
                 if split_buffer.did_split:
-                    yield SerializedSplitPayload(
-                        provider=detected.provider,
-                        payload_bytes=json_dumps_bytes(detected.payload),
-                        source_index=split_buffer.pending_index,
-                        addressing_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
+                    grouped = split_buffer.element(
+                        detected.provider, json_dumps_bytes(detected.payload), split_buffer.pending_index
                     )
+                    if grouped is not None:
+                        yield grouped
                     continue
                 break
             classify_start = time.perf_counter()
@@ -643,6 +648,10 @@ def _iter_zip_entry_split_payloads(
                 serialize_ms=round(serialize_ms, 3),
             )
             yield from split_buffer.add(detected.provider, payload_bytes)
+    if split_buffer.refusals:
+        # Every other element is already emitted; the refused ones are the
+        # member's recorded gap.
+        raise split_buffer.refusals[0]
 
 
 def replay_zip_entry_acquisition_payloads(

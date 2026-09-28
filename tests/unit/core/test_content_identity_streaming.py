@@ -443,10 +443,13 @@ def test_member_memory_is_one_budget_across_nested_and_long_keyed_objects(monkey
 
     monkeypatch.setattr(content_identity._Entries, "_spill", counting_spill)
     monkeypatch.setattr(content_identity, "_ENTRY_MEMORY_BYTES", 4096)
-    long_keys = {f"k{index}" * 400: index for index in range(4)}
+    # Four 1200-character keys cost more than the 4096-byte budget together.
+    long_keys = {f"k{index}" * 600: index for index in range(4)}
+    # Each open object already holds "b" when its nested value starts, so the
+    # 40 open objects spend one budget together.
     nested: object = 1
     for index in range(40):
-        nested = {"a": nested, "b": index}
+        nested = {"b": index, "a": nested}
 
     for value in (long_keys, nested):
         spilled.clear()
@@ -461,3 +464,30 @@ def test_bytes_no_encoding_decodes_keep_their_byte_identity() -> None:
     payload = b"\xef\xbb\xbf{}\xff\xff"
     assert payload_content_identity(payload) == sha256(payload).hexdigest()
     assert payload_content_identity(payload) != payload_content_identity(b"{}")
+
+
+def test_a_duplicate_key_drops_a_discarded_refused_member(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A refused value is scoped to its member, so last-key-wins can replace it.
+
+    Anti-vacuity: keep the refusal document-wide and ``{"a":<overlong>,"a":1}``
+    is refused instead of receiving the identity of ``{"a":1}``; drop the
+    refusal on replacement in the other order and an overlong surviving value
+    is hashed.
+    """
+    from polylogue.core import content_identity
+
+    monkeypatch.setattr(content_identity, "_SPILL_STRING_BYTES", 16)
+    monkeypatch.setattr(content_identity, "_STREAM_READ_BYTES", 8)
+    monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 32)
+    marks = b'"x' + "́".encode() * 40 + b'"'
+    number = b"1." + b"2" * 64
+    expected = payload_content_identity(b'{"a":1}')
+    for overlong in (marks, number):
+        assert payload_content_identity(b'{"a":' + overlong + b',"a":1}') == expected
+        assert payload_content_identity(b'{"b":[{"a":' + overlong + b',"a":1}]}') == payload_content_identity(
+            b'{"b":[{"a":1}]}'
+        )
+        with pytest.raises(content_identity.ContentIdentityRefusal):
+            payload_content_identity(b'{"a":1,"a":' + overlong + b"}")
+        with pytest.raises(content_identity.ContentIdentityRefusal):
+            payload_content_identity(b'{"a":[1,' + overlong + b'],"b":2}')

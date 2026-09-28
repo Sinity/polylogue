@@ -117,3 +117,40 @@ def test_a_live_zip_refusal_is_recorded_debt_until_the_zip_is_clean(
         archive.writestr("b.json", kept)
     assert extract() == {f"{zip_path}:b.json"}
     assert cursor.list_convergence_debt(stage="live_ingest_admission") == []
+
+
+def test_a_refused_split_element_does_not_drop_the_elements_after_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: let the refusal escape the split enumeration at the refused
+    element and the session after it is never acquired."""
+    monkeypatch.setattr(content_identity, "_SPILL_STRING_BYTES", 16)
+    monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 64)
+    source_root = tmp_path / "inbox"
+    source_root.mkdir()
+    zip_path = source_root / "export.zip"
+    first, second, after = (json.dumps({"id": name, "mapping": {}}).encode() for name in ("first", "second", "after"))
+    # Split elements are re-serialized from the decoded record, so the
+    # overlong token that survives is a key.
+    refused = b'{"id": "refused", "mapping": {}, "' + b"k" * 200 + b'": 1}'
+    document = b"[" + b", ".join((first, second, refused, after)) + b"]"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("conversations.json", document)
+
+    cursor_state: CursorStatePayload = {}
+    records = list(
+        iter_source_raw_data(
+            Source(name="chatgpt", path=source_root),
+            blob_store=BlobStore(tmp_path / "archive" / "blob"),
+            cursor_state=cursor_state,
+        )
+    )
+
+    blob_store = BlobStore(tmp_path / "archive" / "blob")
+    acquired_ids = {json.loads(blob_store.read_all(record.blob_hash))["id"] for record in records}
+    assert acquired_ids == {"first", "second", "after"}
+    assert sorted(record.source_index for record in records) == [0, 1, 3]
+    failures = cursor_state.get("failed_files", [])
+    assert any(
+        failure["path"] == f"{zip_path}:conversations.json" and "object key" in failure["error"] for failure in failures
+    )
