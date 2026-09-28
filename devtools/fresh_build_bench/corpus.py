@@ -196,6 +196,21 @@ def load_manifest(root: Path) -> dict[str, Any]:
     return manifest
 
 
+def change_stamp(root: Path) -> dict[str, tuple[int, int]]:
+    """``{relative path: (inode, ctime_ns)}`` for every corpus file.
+
+    A write changes a file's ctime even when its bytes are later restored
+    and its mtime set back, so two equal stamps mean no file was written or
+    replaced in between -- the endpoint content check alone cannot tell.
+    """
+    stamps: dict[str, tuple[int, int]] = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_file() and not path.is_symlink():
+            status = path.stat()
+            stamps[path.relative_to(root).as_posix()] = (status.st_ino, status.st_ctime_ns)
+    return stamps
+
+
 def verify_manifest(root: Path, manifest: dict[str, Any]) -> None:
     """Refuse a corpus whose bytes no longer match its seal.
 
@@ -437,17 +452,27 @@ def corpus_from_files(
     if out.exists() and any(out.iterdir()):
         raise ValueError(f"corpus directory must be absent or empty: {out}")
     _private_root(out)
-    sources = [(source.root.resolve(), source.suffixes) for source in default_sample_sources(home)]
+    from polylogue.core.enums import Provider
+    from polylogue.sources.origin_specs import recognize_source_class
+
+    sources = [(source.root.resolve(), source) for source in default_sample_sources(home)]
     home = home.resolve()
     for file in files:
         resolved = file.resolve(strict=True)
-        admitted = [suffixes for root, suffixes in sources if root in resolved.parents]
+        admitted = [source for root, source in sources if root in resolved.parents]
         if not admitted:
             raise ValueError(f"{file} is not under a default source root of {home}")
         # The watcher cursors only its declared transcript suffixes; any other
         # file would never be admitted, and the build could not go terminal.
-        if resolved.suffix.lower() not in admitted[0]:
-            raise ValueError(f"{file} is not a transcript its source root admits ({', '.join(admitted[0])})")
+        if resolved.suffix.lower() not in admitted[0].suffixes:
+            raise ValueError(f"{file} is not a transcript its source root admits ({', '.join(admitted[0].suffixes)})")
+        # The suffix makes a file observable, not a session: production's own
+        # source classifier decides (a Gemini tool-output sidecar is raw-only).
+        recognition = recognize_source_class(
+            Provider(admitted[0].origin), resolved, source_size_bytes=resolved.stat().st_size
+        )
+        if recognition is not None and recognition.source_class != "session":
+            raise ValueError(f"{file} is not a session transcript: {recognition.reason}")
         _copy_private(resolved, out / "home" / resolved.relative_to(home))
     staged: set[Path] = set()
     for origin, file in exports:

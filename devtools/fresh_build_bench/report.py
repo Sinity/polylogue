@@ -15,7 +15,7 @@ import json
 import re
 import sqlite3
 from collections import Counter, defaultdict
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
@@ -335,7 +335,13 @@ def _fts_postings(read: sqlite3.Connection) -> dict[str, Any]:
     return {"rows": postings, "terms": terms, "sha256": f"{total:064x}"}
 
 
-def output_fingerprint(archive: Path, promoted_index: str, scratch: Path) -> dict[str, Any]:
+class FingerprintCancelledError(RuntimeError):
+    """A cancellation arrived while the output fingerprint was being taken."""
+
+
+def output_fingerprint(
+    archive: Path, promoted_index: str, scratch: Path, *, cancelled: Callable[[], bool] = lambda: False
+) -> dict[str, Any]:
     """Per-table digests over the comparable index relations.
 
     Uses the differential harness's declared census, volatile-column policy
@@ -370,6 +376,10 @@ def output_fingerprint(archive: Path, promoted_index: str, scratch: Path) -> dic
             batch_bytes = 0
             rows = 0
             for row in read.execute(f'SELECT {selected} FROM "{table}"'):
+                if rows % 1000 == 0 and cancelled():
+                    # The one step that scales with the archive stops on a
+                    # cancellation, so the receipt is written in time.
+                    raise FingerprintCancelledError("cancelled during the output fingerprint")
                 payload = json.dumps(_fact_row(row), ensure_ascii=True, separators=(",", ":"))
                 batch.append((payload,))
                 batch_bytes += len(payload)
@@ -610,6 +620,11 @@ def config_digest(config: Any) -> str:
     payload = {
         "profile": config.profile,
         "profile_interval_s": config.profile_interval_s if config.profile else None,
+        # The observation loop decides when an unsettled run stops, so it is
+        # part of what two receipts must share.
+        "stall_timeout_s": config.stall_timeout_s,
+        "poll_s": config.poll_s,
+        "stable_polls": config.stable_polls,
         "extra_env": sorted(config.extra_env),
         "daemon_argv": ["run", "--no-browser-capture", "--no-api", "--cold-build-index"],
     }
@@ -676,6 +691,7 @@ def build_receipt(
     daemon_rss_hwm_bytes: int = 0,
     corpus_unchanged: bool = True,
     clock_step_s: float = 0.0,
+    cancelled: Callable[[], bool] = lambda: False,
 ) -> dict[str, Any]:
     events = analyse_events(paths["events"], origin_unix=started_wall)
     batches = analyse_batches(paths["archive"] / "ops.db")
@@ -686,7 +702,12 @@ def build_receipt(
     # An interrupted run has seconds before its supervisor escalates; the
     # fingerprint is the one step that scales with the archive.
     if config.fingerprint and final.promoted_index is not None and outcome != "interrupted":
-        fingerprint = output_fingerprint(paths["archive"], final.promoted_index, paths["work"] / "tmp")
+        try:
+            fingerprint = output_fingerprint(
+                paths["archive"], final.promoted_index, paths["work"] / "tmp", cancelled=cancelled
+            )
+        except FingerprintCancelledError:
+            fingerprint = None
     total_bytes = int(manifest["total_bytes"])
     tree = _tree_summary(tree_samples, promoted)
     if tree:
@@ -800,7 +821,8 @@ def build_receipt(
         "daemon_exit_code": exit_code,
         "observation_count": len(observations),
         "progress": _progress_timeline(observations),
-        "started_at_unix": round(started_wall, 3),
+        # Unrounded: ``refresh`` re-reduces the event log from this origin.
+        "started_at_unix": started_wall,
         "clock_step_s": round(clock_step_s, 3),
     }
     _derive_dependents(receipt)
@@ -943,6 +965,7 @@ def comparability_problems(before: dict[str, Any], after: dict[str, Any]) -> lis
         "effective_cpus",
         "effective_memory_bytes",
         "work_filesystem",
+        "work_device",
     ):
         if before["environment"].get(key) != after["environment"].get(key):
             problems.append(f"different host ({key})")

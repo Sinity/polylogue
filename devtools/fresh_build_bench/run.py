@@ -34,7 +34,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
-from devtools.fresh_build_bench.corpus import load_manifest, verify_manifest
+from devtools.fresh_build_bench.corpus import EXPORT_ORIGINS, change_stamp, load_manifest, verify_manifest
 
 #: Every archive-readiness domain a finished build must report ready. An
 #: unknown or newly unready domain keeps the build non-terminal.
@@ -225,6 +225,9 @@ class Observation:
     #: Sum of retry attempts over open debt: a scheduled retry that fails
     #: again still moves it.
     debt_attempts: int = 0
+    #: Summed cursor failures, and cursors waiting on a scheduled retry.
+    cursor_failures: int = 0
+    cursor_retry_waiting: int = 0
     promoted_index: str | None = None
     readiness: dict[str, bool] = field(default_factory=dict)
     error: str | None = None
@@ -299,6 +302,13 @@ def observe(archive: Path, started: float) -> Observation:
                 for stage, count in conn.execute("SELECT stage, COUNT(*) FROM convergence_debt GROUP BY stage"):
                     observation.debt_by_stage[str(stage)] = int(count)
                 observation.open_debt = sum(observation.debt_by_stage.values())
+                if "ingest_cursor" in tables:
+                    cursor_row = conn.execute(
+                        "SELECT COALESCE(SUM(failure_count), 0),"
+                        " COALESCE(SUM(next_retry_at IS NOT NULL AND next_retry_at > ?), 0) FROM ingest_cursor",
+                        (datetime.now(UTC).isoformat(),),
+                    ).fetchone()
+                    observation.cursor_failures, observation.cursor_retry_waiting = (int(v) for v in cursor_row)
                 observation.debt_attempts = int(
                     conn.execute("SELECT COALESCE(SUM(attempts), 0) FROM convergence_debt").fetchone()[0]
                 )
@@ -328,17 +338,33 @@ def observe(archive: Path, started: float) -> Observation:
                 )
         observation.promoted_index = _promoted_index(archive)
         if observation.intake_complete and observation.promoted_index is not None and observation.open_debt == 0:
-            from polylogue.storage.archive_readiness import archive_readiness_status
+            now = time.monotonic()
+            cached_at = _last_readiness.get("at")
+            if (
+                isinstance(cached_at, float)
+                and now - cached_at < _READINESS_POLL_S
+                and _last_readiness.get("archive") == str(archive)
+            ):
+                observation.readiness = dict(_last_readiness["readiness"])  # type: ignore[call-overload]
+            else:
+                from polylogue.storage.archive_readiness import archive_readiness_status
 
-            readiness = archive_readiness_status(archive)
-            surfaces = readiness.get("surfaces", {}) if readiness.get("checked") is True else {}
-            observation.readiness = {
-                str(name): isinstance(surface, dict) and surface.get("ready") is True
-                for name, surface in surfaces.items()
-            }
+                readiness = archive_readiness_status(archive)
+                surfaces = readiness.get("surfaces", {}) if readiness.get("checked") is True else {}
+                observation.readiness = {
+                    str(name): isinstance(surface, dict) and surface.get("ready") is True
+                    for name, surface in surfaces.items()
+                }
+                _last_readiness.update(at=now, archive=str(archive), readiness=dict(observation.readiness))
     except (OSError, sqlite3.Error) as exc:
         observation.error = f"{type(exc).__name__}: {exc}"
     return observation
+
+
+#: Seconds between readiness reads once everything else has settled: the
+#: readiness census reads every raw row, so it is not taken every poll.
+_READINESS_POLL_S = 60.0
+_last_readiness: dict[str, object] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +387,26 @@ def _filesystem(path: Path) -> str:
     except (OSError, subprocess.CalledProcessError):
         return "unknown"
     return output
+
+
+def _backing_device(path: Path) -> str:
+    """The mount source backing ``path`` (``/dev/nvme0n1p2``, ``server:/export``), else its device number."""
+    try:
+        device = os.stat(path).st_dev
+    except OSError:
+        return "unknown"
+    major, minor = os.major(device), os.minor(device)
+    try:
+        with open("/proc/self/mountinfo", encoding="utf-8") as stream:
+            for line in stream:
+                fields = line.split()
+                if len(fields) > 4 and fields[2] == f"{major}:{minor}" and " - " in line:
+                    source = line.split(" - ", 1)[1].split()
+                    if len(source) >= 2:
+                        return source[1]
+    except OSError:
+        pass
+    return f"{major}:{minor}"
 
 
 def _meminfo_kib(key: str) -> int | None:
@@ -424,6 +470,9 @@ def environment(config: RunConfig) -> dict[str, Any]:
         "python_build": probe[2],
         "python_executable": probe[3],
         "work_filesystem": _filesystem(config.work),
+        # Same filesystem type on another device (NVMe vs loop or network
+        # ext4) is not the same storage.
+        "work_device": _backing_device(config.work),
     }
 
 
@@ -548,7 +597,15 @@ def _prepare_paths(config: RunConfig) -> dict[str, Path]:
     # operator declares their directories as additional roots, and so does
     # this config. Embeddings are external API work and stay off.
     exports = config.corpus / "exports"
-    roots = sorted(str(path.resolve()) for path in exports.iterdir() if path.is_dir()) if exports.is_dir() else []
+    roots: list[str] = []
+    if exports.is_dir():
+        for path in sorted(exports.iterdir()):
+            # Only sealed, real export directories are sources: a symlink
+            # (or unknown child) would point the daemon at unsealed files the
+            # manifest never hashed.
+            if path.is_symlink() or not path.is_dir() or path.name not in EXPORT_ORIGINS:
+                raise ValueError(f"corpus export root is not a sealed export directory: {path}")
+            roots.append(str(path))
     config_path = paths["xdg"] / "config" / "polylogue" / "polylogue.toml"
     config_path.parent.mkdir(parents=True)
     config_path.write_text(
@@ -617,6 +674,7 @@ def _measure_and_write_receipt(
     from devtools.fresh_build_bench.report import build_receipt
 
     log_stream = paths["daemon_log"].open("wb")
+    corpus_stamp = change_stamp(config.corpus)
     started_wall = time.time()
     started = time.monotonic()
     process = subprocess.Popen(
@@ -659,6 +717,7 @@ def _measure_and_write_receipt(
                 tuple(sorted(observation.debt_by_stage.items())),
                 # Each scheduled retry attempt, even one that fails again.
                 observation.debt_attempts,
+                observation.cursor_failures,
                 observation.promoted_index,
                 # Derived convergence after promotion may move nothing but
                 # readiness; each domain turning ready is progress.
@@ -666,7 +725,7 @@ def _measure_and_write_receipt(
             )
             if progress_key != last_progress_key:
                 last_progress_key, last_progress_at = progress_key, observation.t
-            elif observation.debt_waiting_by_stage:
+            elif observation.debt_waiting_by_stage or observation.cursor_retry_waiting:
                 # Debt waits on its scheduled retry (the production backoff
                 # reaches 960 s, beyond the stall window): waiting on the
                 # schedule is not a stall.
@@ -707,7 +766,9 @@ def _measure_and_write_receipt(
     # The watcher may have read a file edited after the launch-time check.
     try:
         verify_manifest(config.corpus, manifest)
-        corpus_unchanged = True
+        # Content matching at both ends is not enough: a file written during
+        # the run and restored before its end changed ctime.
+        corpus_unchanged = change_stamp(config.corpus) == corpus_stamp
     except (OSError, ValueError):
         corpus_unchanged = False
     # Lazy imports run whatever the candidate tree holds when they execute; a
@@ -736,6 +797,7 @@ def _measure_and_write_receipt(
         daemon_rss_hwm_bytes=sampler.daemon_rss_hwm_bytes,
         corpus_unchanged=corpus_unchanged,
         clock_step_s=(finished_wall - started_wall) - (finished - started),
+        cancelled=lambda: bool(interrupted),
     )
     # Atomic: a receipt is either absent or complete.
     staging = paths["receipt"].with_name(paths["receipt"].name + ".tmp")

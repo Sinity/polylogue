@@ -1069,3 +1069,86 @@ def test_run_work_under_the_corpus_is_refused(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="outside the corpus"):
         _refuse_work_inside_sources(corpus / "home" / ".codex" / "sessions" / "bench", corpus)
     _refuse_work_inside_sources(tmp_path / "work", corpus)
+
+
+def test_a_cursor_waiting_on_its_scheduled_retry_is_not_a_stall(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity (Codex P1, #5678): track only debt retries and a cursor
+    backing off past the stall window is stopped as ``stalled``."""
+    waiting = {"cursor_complete": 0, "cursor_retry_waiting": 1}
+    captured = _scripted_run(tmp_path, monkeypatch, [waiting] * 4 + [_terminal_frame()], stall_timeout_s=900.0)
+
+    assert captured["outcome"] == "terminal"
+
+
+def test_the_stall_policy_is_part_of_the_config_digest(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P2, #5678): digest only the profile and env and runs
+    stopped under different stall timeouts compare as one configuration."""
+    from devtools.fresh_build_bench.report import config_digest
+
+    def config(stall: float) -> RunConfig:
+        return RunConfig(
+            corpus=tmp_path, work=tmp_path, candidate=tmp_path, python="p", label="l", stall_timeout_s=stall
+        )
+
+    assert config_digest(config(100.0)) != config_digest(config(900.0))
+
+
+def test_a_rewrite_that_restores_the_bytes_is_still_a_corpus_change(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P1, #5678): verify content only at the endpoints and
+    a transcript edited during the run and restored before its end passes."""
+    import os
+
+    from devtools.fresh_build_bench.corpus import change_stamp
+
+    transcript = tmp_path / "home" / "t.jsonl"
+    transcript.parent.mkdir()
+    transcript.write_bytes(b"sealed\n")
+    before = change_stamp(tmp_path)
+    status = transcript.stat()
+    transcript.write_bytes(b"transient\n")
+    transcript.write_bytes(b"sealed\n")
+    os.utime(transcript, ns=(status.st_atime_ns, status.st_mtime_ns))
+
+    assert change_stamp(tmp_path) != before
+
+
+def test_receipts_on_different_backing_devices_do_not_compare() -> None:
+    """Anti-vacuity (Codex P2, #5678): compare only the filesystem type and an
+    NVMe run and a loop-backed ext4 run compare as controlled."""
+    nvme = {"python": "3.14.4", "gil_enabled": False, "work_filesystem": "ext2/ext3", "work_device": "/dev/nvme0n1p2"}
+    loop = {**nvme, "work_device": "/dev/loop3"}
+    ok, text = compare(_receipt(qualified=True, environment=nvme), _receipt(qualified=True, environment=loop))
+    assert not ok and "work_device" in text
+
+
+def test_a_symlinked_export_root_is_refused(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P1, #5678): follow child symlinks of ``exports/`` and
+    an unsealed operator directory becomes a daemon source root."""
+    from devtools.fresh_build_bench import run
+
+    corpus = tmp_path / "corpus"
+    (corpus / "exports").mkdir(parents=True)
+    (corpus / "home").mkdir()
+    outside = tmp_path / "live"
+    outside.mkdir()
+    (corpus / "exports" / "chatgpt").symlink_to(outside)
+    config = RunConfig(corpus=corpus, work=tmp_path / "work", candidate=tmp_path, python="p", label="l")
+
+    with pytest.raises(ValueError, match="sealed export directory"):
+        run._prepare_paths(config)
+
+
+def test_a_raw_only_sidecar_is_not_a_corpus_transcript(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P2, #5678): admit every watched suffix and a Gemini
+    tool-output sidecar becomes a corpus whose run materializes nothing."""
+    from devtools.fresh_build_bench.corpus import corpus_from_files
+
+    home = tmp_path / "home"
+    sidecar = home / ".gemini" / "tmp" / "project" / "tool-outputs" / "session-x" / "result.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text('{"output": "x"}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not a session transcript"):
+        corpus_from_files(tmp_path / "out", [sidecar], home=home)
