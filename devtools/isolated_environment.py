@@ -11,8 +11,15 @@ def isolated_home_environment(inherited: Mapping[str, str], *, home: Path) -> di
 
     Sources are acquired only from canonical locations under ``HOME``, so a
     scratch daemon run must replace ``HOME`` and every XDG root, and drop the
-    Polylogue config and path overrides: any one of them inherited would add
-    the operator's real config or sources to the run.
+    Polylogue path overrides: any one of them inherited would add the
+    operator's real sources to the run. ``_user_config_path`` also falls
+    through to ``<cwd>/polylogue.toml`` when no ``POLYLOGUE_CONFIG`` is set,
+    so an untracked project-local config in the launch checkout's cwd (the
+    dev-loop proof deliberately runs the daemon from the repository root)
+    would still be discovered even with HOME and every XDG root replaced.
+    ``POLYLOGUE_CONFIG`` is pointed at a nonexistent path under the isolated
+    home instead of dropped: an explicit override -- present or not --
+    disables that cwd fallback outright.
     """
     env = dict(inherited)
     env["HOME"] = str(home)
@@ -24,8 +31,8 @@ def isolated_home_environment(inherited: Mapping[str, str], *, home: Path) -> di
     ):
         env[variable] = str(home / relative)
     env["POLYLOGUE_SITE_CONFIG"] = ""
+    env["POLYLOGUE_CONFIG"] = str(home / "unconfigured-polylogue.toml")
     for variable in (
-        "POLYLOGUE_CONFIG",
         "POLYLOGUE_HERMES_ROOT",
         "POLYLOGUE_BROWSER_CAPTURE_SPOOL_PATH",
         "POLYLOGUE_HOOK_SIDECAR_DIR",
