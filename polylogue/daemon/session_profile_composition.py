@@ -118,13 +118,13 @@ def compose_session_profile_callback(
     audit_reset = True
     demand_reset = False
 
-    async def audit_tick(deadline_s: float | None = None) -> DerivationReport:
+    async def audit_tick(deadline_at: float | None = None) -> DerivationReport:
         nonlocal audit_index, audit_reset, demand_reset
         domain = audit_domains[audit_index]
         frame = make_session_profile_frame(index_path, archive_root=archive_root, scope=None, profile_full_scan=True)
         report = await owner.converge(
             frame,
-            budget=audit_budget if deadline_s is None else replace(audit_budget, deadline_s=deadline_s),
+            budget=audit_budget if deadline_at is None else replace(audit_budget, deadline_at=deadline_at),
             domains=(domain,),
             resume=not audit_reset,
         )
@@ -154,12 +154,12 @@ def compose_session_profile_callback(
 
     async def audit_pass(deadline_at: float) -> DerivationReport | None:
         async with audit_lock:
-            # The remaining time is taken after the owner lock is held, so a
-            # wait for it is spent from the tick's budget, not added to it.
-            remaining = deadline_at - time.monotonic()
-            if audit_index >= len(audit_domains) or remaining <= 0:
+            # The pass carries the absolute instant, so time spent waiting for
+            # the owner's lock or a compute worker is spent from the tick's
+            # budget rather than added to it.
+            if audit_index >= len(audit_domains) or deadline_at <= time.monotonic():
                 return None
-            return await audit_tick(remaining)
+            return await audit_tick(deadline_at)
 
     async def converge_promoted() -> DerivationReport:
         nonlocal audit_index, audit_reset, demand_reset

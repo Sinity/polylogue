@@ -457,6 +457,9 @@ async def test_backlog_call_sweeps_every_domain_in_bounded_passes(tmp_path: Path
             assert report is None or report.work.published <= 64
             return report
 
+        # A pass whose instant already passed (e.g. spent waiting for the
+        # owner) does not start.
+        assert await real_pass(0.0) is None
         counted = replace(composed, audit_pass=counting)
         await counted.converge_backlog(600.0)
 
