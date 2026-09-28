@@ -1030,48 +1030,63 @@ class LiveBatchProcessor:
         synchronous archive-publication worker, where its thread-local scope
         cannot leak over page planning, parsing, or convergence.
         """
+        # A cold build's ops checkpoint holder spans the whole page: the
+        # archive pass closes before this page's cursor, convergence and
+        # attempt writes, and releasing it there made each of those
+        # publications checkpoint ``ops.db`` on close again.
+        from polylogue.sources.live.cold_build import active_cold_build_generation
+
+        cold_build = active_cold_build_generation(
+            Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        )
+        if cold_build is not None:
+            cold_build.begin_ops_page()
         attempt = _OpenIngestAttempt()
-        with attempt.scope:
-            try:
-                return await self._ingest_files(
-                    paths,
-                    queued_file_count=queued_file_count,
-                    skipped_file_count=skipped_file_count,
-                    emit_event=emit_event,
-                    max_pass_seconds=max_pass_seconds,
-                    whole_archive_convergence=whole_archive_convergence,
-                    defer_convergence=defer_convergence,
-                    open_attempt=attempt,
-                )
-            except asyncio.CancelledError:
-                # Cancellation is shutdown: no further ops write is admitted
-                # here (it could hold the writer past the shutdown deadline).
-                # The row stays ``running`` and the next start records it as
-                # ``interrupted``, which is what happened; this event says so
-                # now, with the attempt it names.
-                if attempt.attempt_id is not None and not attempt.finished:
-                    emit(
-                        "live.ingest.attempt_cancelled",
-                        level=WARNING,
-                        outcome="refused",
-                        # Cancelled before the start write returned: the row
-                        # exists only if that write was already admitted (the
-                        # coordinator then finishes it detached); a queued
-                        # start never commits. Say which case was observed.
-                        reason=(
-                            "cancelled_during_finish"
-                            if attempt.finishing
-                            else "cancelled"
-                            if attempt.started
-                            else "cancelled_before_start_confirmed"
-                        ),
-                        attempt_id=attempt.attempt_id,
+        try:
+            with attempt.scope:
+                try:
+                    return await self._ingest_files(
+                        paths,
+                        queued_file_count=queued_file_count,
+                        skipped_file_count=skipped_file_count,
+                        emit_event=emit_event,
+                        max_pass_seconds=max_pass_seconds,
+                        whole_archive_convergence=whole_archive_convergence,
+                        defer_convergence=defer_convergence,
+                        open_attempt=attempt,
                     )
-                raise
-            except Exception as exc:
-                await self._finish_escaped_attempt(attempt, exc)
-                raise_if_storage_fault(exc)
-                raise
+                except asyncio.CancelledError:
+                    # Cancellation is shutdown: no further ops write is admitted
+                    # here (it could hold the writer past the shutdown deadline).
+                    # The row stays ``running`` and the next start records it as
+                    # ``interrupted``, which is what happened; this event says so
+                    # now, with the attempt it names.
+                    if attempt.attempt_id is not None and not attempt.finished:
+                        emit(
+                            "live.ingest.attempt_cancelled",
+                            level=WARNING,
+                            outcome="refused",
+                            # Cancelled before the start write returned: the row
+                            # exists only if that write was already admitted (the
+                            # coordinator then finishes it detached); a queued
+                            # start never commits. Say which case was observed.
+                            reason=(
+                                "cancelled_during_finish"
+                                if attempt.finishing
+                                else "cancelled"
+                                if attempt.started
+                                else "cancelled_before_start_confirmed"
+                            ),
+                            attempt_id=attempt.attempt_id,
+                        )
+                    raise
+                except Exception as exc:
+                    await self._finish_escaped_attempt(attempt, exc)
+                    raise_if_storage_fault(exc)
+                    raise
+        finally:
+            if cold_build is not None:
+                cold_build.end_ops_page()
 
     async def _finish_escaped_attempt(self, attempt: _OpenIngestAttempt, exc: Exception) -> None:
         """Close the attempt row an escaping exception left ``running``.

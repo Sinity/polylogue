@@ -143,7 +143,9 @@ def model_json_document(payload: BaseModel, *, exclude_none: bool = False) -> JS
 class SurfacePayloadModel(BaseModel):
     """Shared base for immutable JSON payload models exposed by surfaces."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # Surface fields such as ``model_name`` and ``model_ref`` are payload data,
+    # not pydantic API; generated projection models inherit this setting.
+    model_config = ConfigDict(extra="forbid", frozen=True, protected_namespaces=())
 
     def to_json(self, *, exclude_none: bool = False) -> str:
         return serialize_surface_payload(self, exclude_none=exclude_none)
